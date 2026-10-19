@@ -107,11 +107,22 @@ pub enum Auth {
     Command(String),
 }
 
-/// One configured provider.
+/// One configured provider: an instance of a kind. Several instances of one kind may exist (`openai`,
+/// `openai_2`), each with its own key, label and accent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderConfig {
+    /// The instance id: letters, digits, `-` and `_`. It names the instance in model names (`<id>/<model>`).
     pub id: String,
     pub kind: ProviderKind,
+    /// The name the consoles show; the preset's label (or the id) when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// An optional marker colour for lists and the model picker, `#rrggbb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    /// A disabled instance keeps its settings and key but takes no calls and offers no models.
+    #[serde(default = "enabled_default", skip_serializing_if = "is_enabled")]
+    pub enabled: bool,
     /// Overrides the kind's default endpoint (required for `openai-compatible`
     /// and `azure-openai`; for `bedrock` and the Vertex kinds it replaces the
     /// regional host).
@@ -137,12 +148,23 @@ pub struct ProviderConfig {
     pub options: Value,
 }
 
+fn enabled_default() -> bool {
+    true
+}
+
+fn is_enabled(enabled: &bool) -> bool {
+    *enabled
+}
+
 impl ProviderConfig {
     /// A provider with defaults for everything but its id and kind.
     pub fn new(id: impl Into<String>, kind: ProviderKind) -> Self {
         ProviderConfig {
             id: id.into(),
             kind,
+            label: None,
+            accent: None,
+            enabled: true,
             base_url: None,
             auth: Auth::None,
             extra_headers: BTreeMap::new(),

@@ -20,6 +20,7 @@ ruzstd = "0.9"
 bytemuck = { version = "1", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
+apz-theme = { path = "../apz-theme" }
 
 ab_glyph = "0.2"
 # The GPU match rules' regexes: regex-lite keeps the web engine small (no lookaround; the rules need none).

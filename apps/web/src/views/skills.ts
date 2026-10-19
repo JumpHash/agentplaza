@@ -1,11 +1,12 @@
 // Skills: the skill library (docs/design/skill-library.md). `#/skills` lists skills, creates one from the template and
 // imports them (a zip or .skill file, or GitHub); `#/skills/<id>` opens one in the editor (views/skill-editor.ts).
 
+import '../styles/proto/library.css';
 import '../styles/skills.css';
 import { api, skillsApi, ApiError, type RoleView, type SkillPreview, type SkillRules, type SkillSource, type SkillSummary } from '../api';
 import { on } from '../store';
 import { go, href } from '../router';
-import { ago, badge, button, field, input, modal, table, textarea, toast, type Column, type Tone } from '../ui/components';
+import { ago, badge, button, card, empty, field, input, modal, table, textarea, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { mountEditor, splitTags } from './skill-editor';
@@ -15,7 +16,7 @@ const LIVE_MS = 250;
 type Status = 'loading' | 'ready' | 'error';
 type SourceFilter = 'all' | SkillSource['kind'];
 
-const INTRO = 'Versioned SKILL.md folders that agents read on demand, each checked against the plaza\'s rules as it is written. The live version is the one in use; the best version is the highest-scoring one kept.';
+const INTRO = 'The skills your agents can read: a SKILL.md with the files it needs, checked and scored on every version.';
 const EMPTY_TEXT = 'The library holds the skills your agents can read: a SKILL.md with the files it needs, checked and scored on every version. Start with New skill, or bring existing skills in with Import or From GitHub.';
 
 const SOURCE_FILTERS: [SourceFilter, string][] = [['all', 'All sources'], ['built', 'Built'], ['upload', 'Upload'], ['github', 'GitHub']];
@@ -138,7 +139,7 @@ function mountList(root: HTMLElement): Cleanup {
   ) as HTMLSelectElement;
   const archivedIn = h('input', { type: 'checkbox' }) as HTMLInputElement;
   const exportSlot = h('span.skills-export');
-  const countLine = h('p.skills-count', { 'aria-live': 'polite' });
+  const countLine = h('p.sk-note', { 'aria-live': 'polite' });
   const listBox = h('div.skills-list');
 
   search.addEventListener('input', () => {
@@ -223,61 +224,59 @@ function mountList(root: HTMLElement): Cleanup {
       label: 'Skill',
       cell: (s) =>
         h(
-          'div.skills-name',
+          'div',
           null,
-          h('a', { href: href('skills', s.id) }, s.name),
-          s.description ? h('p.skills-desc', null, s.description) : null,
-          s.tags.length ? h('div.skills-tags', null, s.tags.map((t) => h('span.skills-tag', null, t))) : null,
-          s.archived_ms != null ? badge('Archived') : null,
+          h('a', { href: href('skills', s.id) }, h('strong', null, s.title || s.name)),
+          ' ',
+          h('span.mono.sk-note', null, s.name),
+          s.description ? h('div.sk-note', null, s.description) : null,
+          s.tags.length || s.archived_ms != null ? h('div', null, s.archived_ms != null ? badge('Archived') : null, s.tags.map((t) => badge(t))) : null,
         ),
     },
-    { label: 'Bindings', cell: (s) => (s.bindings.length ? h('div.skills-chips', null, s.bindings.map((b) => bindingChip(b))) : h('span.skills-muted', null, 'Unbound')) },
-    { label: 'Live', cell: (s) => (s.active_version != null ? `v${s.active_version}` : h('span.skills-muted', null, 'Unpublished')) },
+    { label: 'Bindings', cell: (s) => (s.bindings.length ? h('span', null, s.bindings.map((b) => bindingChip(b))) : h('span.sk-note', null, 'Unbound')) },
+    { label: 'Live', cell: (s) => (s.active_version != null ? `v${s.active_version}` : h('span.sk-note', null, 'Unpublished')) },
     {
       label: 'Score',
       cell: (s) => {
-        const parts: Node[] = [s.score != null ? badge(String(s.score), scoreTone(s.score)) : h('span.skills-muted', null, '—')];
-        if (s.best_version != null && s.best_version !== s.active_version) parts.push(h('span.skills-best', null, `best: v${s.best_version}`));
-        return h('div.skills-score', null, parts);
+        const parts: Node[] = [s.score != null ? badge(String(s.score), scoreTone(s.score)) : h('span.sk-note', null, '—')];
+        if (s.best_version != null && s.best_version !== s.active_version) parts.push(h('div.sk-note', null, `best: v${s.best_version}`));
+        return h('div', null, parts);
       },
     },
     { label: 'Source', cell: (s) => sourceCell(s.source) },
     { label: 'Updated', cell: (s) => ago(s.updated_ms) },
+    { label: '', cell: (s) => button('Open', () => go('skills', s.id), { kind: 'ghost', size: 'sm' }) },
   ];
 
   function renderList(): void {
     if (status === 'loading') {
       countLine.textContent = '';
-      replace(listBox, h('p.skills-muted', null, 'Loading the skills…'));
+      replace(listBox, h('p.sk-note', null, 'Loading the skills…'));
       return;
     }
     if (status === 'error') {
       countLine.textContent = '';
-      replace(
-        listBox,
-        h('div.skills-error', { role: 'alert' }, h('p', null, `The skills could not be loaded. ${failure}`), button('Try again', () => void load(), { size: 'sm' })),
-      );
+      replace(listBox, empty('alert', 'The skills could not be loaded.', failure, button('Try again', () => void load(), { size: 'sm' })));
       return;
     }
     const shown = visible();
     const total = skills.filter((s) => showArchived || s.archived_ms == null).length;
     countLine.textContent = total ? `Showing ${shown.length} of ${total}` : '';
     if (shown.length) {
-      replace(listBox, h('div.skills-table-wrap', null, table(columns, shown, undefined, (s) => s.id)));
+      replace(listBox, h('div.tbl-wrap', null, table(columns, shown, undefined, (s) => s.id)));
       return;
     }
     if (total === 0 && bindingFilter === 'all' && sourceFilter === 'all' && !query) {
       replace(
         listBox,
-        h(
-          'div.skills-empty',
-          null,
-          h('h3', null, 'No skills yet'),
-          h('p', null, EMPTY_TEXT),
+        empty(
+          'file',
+          'No skills yet',
+          EMPTY_TEXT,
           h(
-            'div.skills-actions',
+            'div.lib-acts',
             null,
-            button('New skill', () => openNew(), { kind: 'primary' }),
+            button('New skill', () => openNew(), { kind: 'primary', icon: 'plus' }),
             button('Import', () => openImport()),
             button('From GitHub', () => openGithub()),
           ),
@@ -285,10 +284,7 @@ function mountList(root: HTMLElement): Cleanup {
       );
       return;
     }
-    replace(
-      listBox,
-      h('div.skills-empty', null, h('p', null, 'No skills match these filters.'), button('Clear filters', () => clearFilters(), { size: 'sm' })),
-    );
+    replace(listBox, empty('search', 'No skills match these filters.', undefined, button('Clear filters', () => clearFilters(), { kind: 'ghost', size: 'sm' })));
   }
 
   /** The new-skill dialog: title, optional id, tags, bindings and the SKILL.md that starts from the template. */
@@ -529,32 +525,34 @@ function mountList(root: HTMLElement): Cleanup {
   }
 
   const head = h(
-    'header.skills-head',
+    'header.page-head',
     null,
-    h('div', null, h('h1', null, 'Skills'), h('p.skills-intro', null, INTRO)),
     h(
-      'div.skills-actions',
+      'div.page-head-row',
       null,
-      button('New skill', () => openNew(), { kind: 'primary' }),
-      button('Import', () => openImport()),
-      button('From GitHub', () => openGithub()),
-      exportSlot,
+      h('h1', null, 'Skills'),
+      h('span.sp'),
+      h(
+        'div.page-actions',
+        null,
+        button('New skill', () => openNew(), { kind: 'primary', icon: 'plus' }),
+        button('Import', () => openImport()),
+        button('From GitHub', () => openGithub()),
+        exportSlot,
+      ),
     ),
+    h('p.lede', null, INTRO),
   );
   const toolbar = h(
-    'div.skills-toolbar',
+    'div.sk-bar',
     null,
-    h(
-      'div.skills-row',
-      null,
-      h('label.skills-filter', null, h('span', null, 'Binding'), bindingSel),
-      h('label.skills-filter', null, h('span', null, 'Source'), sourceSel),
-      h('label.skills-toggle', null, archivedIn, ' Show archived'),
-    ),
-    h('div.skills-row', null, search, countLine),
+    search,
+    bindingSel,
+    sourceSel,
+    h('label.check', null, archivedIn, ' Show archived'),
   );
 
-  replace(root, h('section.skills-view', null, head, toolbar, listBox));
+  replace(root, head, card('Installed', [toolbar, countLine, listBox], { flush: false }));
   renderBindingOptions();
   renderExport();
   renderList();

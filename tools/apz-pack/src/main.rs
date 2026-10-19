@@ -5,9 +5,13 @@
 //! Cargo.lock pins), and writes the glue and the wasm into <dir> under content-hashed names, with
 //! `.br` and `.gz` siblings. `apz-pack web-ide --out <dir>` does the same for crates/apz-ide-web,
 //! the IDE model's bindings, and `apz-pack web-graph --out <dir>` for crates/apz-graph-web, the task
-//! graph's layout. Built with `--features wasm-opt` it also runs wasm-opt -Oz and keeps
+//! graph's layout, and `apz-pack web-theme --out <dir>` for crates/apz-theme-web, the theme engine.
+//! Built with `--features wasm-opt` it also runs wasm-opt -Oz and keeps
 //! that output only when it is smaller over the wire (brotli): an LTO'd opt-level z build can come
 //! out of -Oz smaller raw but larger compressed. Each prints one JSON line with the names and sizes.
+//!
+//! `apz-pack web-backdrop --out <dir>` writes the backdrop shader for the web: the WGSL, and the GLSL ES 3.00 that naga
+//! translates it to, one file per entry point. It builds nothing for wasm.
 //!
 //! `apz-pack compress <dir>` writes `.br` and `.gz` siblings for every js, css, wasm, html and svg
 //! file in <dir>, for the hub to serve to browsers that accept them.
@@ -40,6 +44,10 @@ const GRAPH: WebCrate = WebCrate {
     package: "apz-graph-web",
     lib: "apz_graph_web",
 };
+const THEME: WebCrate = WebCrate {
+    package: "apz-theme-web",
+    lib: "apz_theme_web",
+};
 
 /// Extensions that get precompressed siblings. Fonts and images are already compressed.
 const COMPRESSIBLE: [&str; 5] = ["js", "css", "wasm", "html", "svg"];
@@ -64,12 +72,112 @@ fn run(args: &[String]) -> Result<String, String> {
         [cmd, flag, out] if cmd == "web-graph" && flag == "--out" => {
             web_crate(Path::new(out), &GRAPH)
         }
+        [cmd, flag, out] if cmd == "web-theme" && flag == "--out" => {
+            web_crate(Path::new(out), &THEME)
+        }
+        [cmd, flag, out] if cmd == "web-backdrop" && flag == "--out" => {
+            web_backdrop(Path::new(out))
+        }
         [cmd, dir] if cmd == "compress" => compress_dir(Path::new(dir)),
         _ => Err(
-            "usage: apz-pack web-engine|web-ide|web-graph --out <dir> | apz-pack compress <dir>"
+            "usage: apz-pack web-engine|web-ide|web-graph|web-theme|web-backdrop --out <dir> | apz-pack compress <dir>"
                 .to_string(),
         ),
     }
+}
+
+/// Writes the backdrop shader for the web: the WGSL as it is, and the GLSL ES 3.00 that naga translates it to, one file
+/// per entry point. The browser loads the WGSL under WebGPU and the GLSL under WebGL2 (src/view/backdrop.ts).
+fn web_backdrop(out: &Path) -> Result<String, String> {
+    use naga::back::glsl;
+
+    let source = apz_theme::backdrop::WGSL;
+    let module = naga::front::wgsl::parse_str(source)
+        .map_err(|e| format!("backdrop.wgsl: {}", e.emit_to_string(source)))?;
+    let info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::empty(),
+    )
+    .validate(&module)
+    .map_err(|e| format!("backdrop.wgsl: {e:?}"))?;
+    let options = glsl::Options {
+        version: glsl::Version::Embedded {
+            version: 300,
+            is_webgl: true,
+        },
+        ..glsl::Options::default()
+    };
+    let vertex = glsl_stage(
+        &module,
+        &info,
+        &options,
+        naga::ShaderStage::Vertex,
+        "vs_main",
+    )?;
+    let fragment = top_left_fragment(&glsl_stage(
+        &module,
+        &info,
+        &options,
+        naga::ShaderStage::Fragment,
+        "fs_main",
+    )?)?;
+
+    fs::create_dir_all(out).map_err(|e| format!("out dir: {e}"))?;
+    write(&out.join("backdrop.wgsl"), source.as_bytes())?;
+    write(&out.join("backdrop.vert.glsl"), vertex.as_bytes())?;
+    write(&out.join("backdrop.frag.glsl"), fragment.as_bytes())?;
+    Ok(serde_json::json!({
+        "wgsl": "backdrop.wgsl",
+        "vertex": "backdrop.vert.glsl",
+        "fragment": "backdrop.frag.glsl",
+    })
+    .to_string())
+}
+
+/// The fragment position as the shader reads it: from the top edge, as WebGPU gives it. WebGL's gl_FragCoord is measured
+/// from the bottom, and naga does not flip it, so the GLSL takes the height from the uniform block (its `size.y`, the
+/// canvas height in device px). Refuses a source whose names are not the ones this rewrite was written for.
+fn top_left_fragment(glsl: &str) -> Result<String, String> {
+    const POS: &str = "gl_FragCoord";
+    const BLOCK: &str = "_group_0_binding_0_fs";
+    if glsl.matches(POS).count() != 1 || !glsl.contains(BLOCK) {
+        return Err(
+            "backdrop.frag.glsl: naga's fragment position or uniform name changed".to_string(),
+        );
+    }
+    Ok(glsl.replace(
+        POS,
+        &format!("vec4(gl_FragCoord.x, {BLOCK}.size.y - gl_FragCoord.y, gl_FragCoord.zw)"),
+    ))
+}
+
+/// One entry point of a validated module as GLSL, for WebGL2.
+fn glsl_stage(
+    module: &naga::Module,
+    info: &naga::valid::ModuleInfo,
+    options: &naga::back::glsl::Options,
+    stage: naga::ShaderStage,
+    entry: &str,
+) -> Result<String, String> {
+    let pipeline = naga::back::glsl::PipelineOptions {
+        shader_stage: stage,
+        entry_point: entry.to_string(),
+        multiview: None,
+    };
+    let mut out = String::new();
+    {
+        let mut writer = naga::back::glsl::Writer::new(
+            &mut out,
+            module,
+            info,
+            options,
+            &pipeline,
+            naga::proc::BoundsCheckPolicies::default(),
+        )
+        .map_err(|e| format!("glsl {entry}: {e:?}"))?;
+        writer.write().map_err(|e| format!("glsl {entry}: {e:?}"))?;
+    }
+    Ok(out)
 }
 
 /// The repository root: the working directory when it is the repository (build.mjs runs apz-pack from there), else the

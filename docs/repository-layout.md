@@ -33,16 +33,20 @@ Cargo workspace members (`Cargo.toml`), plus the non-Cargo parts.
 | [`crates/apz-ide`](../crates/apz-ide) | The IDE model: workspaces, entries, buffers, diffs, path rules, state reducer |
 | [`crates/apz-ide-web`](../crates/apz-ide-web) | The browser bindings of the IDE model |
 | [`crates/apz-graph`](../crates/apz-graph) | The task graph's layout for the Work screen: columns by links, card order, routed links (golden fixtures in `assets/graphs`) |
-| [`crates/apz-graph-web`](../crates/apz-graph-web) | The browser bindings of the task graph layout |
+| [`crates/apz-graph-web`](../crates/apz-graph-web) | The browser bindings of the task graph layout and the force layout |
+| [`crates/apz-theme`](../crates/apz-theme) | Themes for both consoles: the token list, `.apztheme.json`, Loom and Graphite, OKLCH derivation, the contrast pass, VS Code import, background specs and the backdrop shader |
+| [`crates/apz-theme-web`](../crates/apz-theme-web) | The browser bindings of the theme engine (saved and imported themes, the editor, the backdrop's uniforms) |
+| [`crates/apz-view`](../crates/apz-view) | The panel model both consoles render (Metrics and artifacts), the formatter, artifact validation and caps, the vendored HTML libraries, the code highlighter and PNG export |
+| [`crates/apz-artifact`](../crates/apz-artifact) | The hub's compile step for HTML artifacts: TypeScript and JSX to JavaScript with oxc, vendored imports to globals |
 | [`crates/apz-rich`](../crates/apz-rich) | The rich-content classifier: which references become chips and hover cards |
 | [`crates/apz-skill`](../crates/apz-skill) | The skill library core: SKILL.md parsing, checks, zip import and export |
 | [`crates/apz-prompt`](../crates/apz-prompt) | The prompt library core: checks and scores for system prompts and AGENTS.md |
 | [`crates/jhrl`](../crates/jhrl) | The JHRL law engine: lexer, parser, dimension checker, evaluator, model checker |
 | [`crates/mcp-relay`](../crates/mcp-relay) | The relay container for MCP servers (a pipe to the hub's egress proxy) |
-| [`apps/web`](../apps/web) | The web console: TypeScript, esbuild, committed `dist/` (CSP, `textContent` only) |
+| [`apps/web`](../apps/web) | The web console and the share viewer: TypeScript, esbuild, `dist/` built by CI (CSP, `textContent` only) |
 | [`apps/desktop`](../apps/desktop) | The native desktop app (iced + wgpu), at parity with the web console |
 | [`apps/cli`](../apps/cli) | The `agentplaza` command and its terminal UI |
-| [`apps/shared`](../apps/shared) | Shared app data (onboarding) |
+| [`apps/shared`](../apps/shared) | Shared app data: onboarding, the built-in themes and their generated tokens, the highlighter's rules |
 | [`tools/apz-pack`](../tools/apz-pack) | Builds the web engine for wasm: cargo, wasm-bindgen, wasm-opt, content-hashed names |
 | [`trainer/`](../trainer) | The Foundry trainer (`apz_train`, Python, with CPU, CUDA and ROCm images) |
 | [`tests/acceptance`](../tests/acceptance) | The acceptance harness (Python standard library): suites for the demo, red team, kill and resume, jail, budgets, fleet, treasury, social, agora and council |

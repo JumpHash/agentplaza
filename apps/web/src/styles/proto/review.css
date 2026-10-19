@@ -1,0 +1,60 @@
+/* The review panel (the Weft review graph and its expert table), the prototype's rules with the console's token names. */
+.rv{display:grid;gap:var(--gap);min-width:0;container-type:inline-size}
+.rv-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.rv-head-l{display:flex;flex-wrap:wrap;align-items:center;gap:12px;min-width:0}
+.rv-verdict{margin:0;color:var(--ink);overflow-wrap:anywhere}
+.rv-round{color:var(--ink-3);font-size:var(--fs-sm)}
+.rv-tabs{display:inline-flex;gap:4px}
+.rv .btn[aria-pressed="true"]{background:var(--signal-soft);color:var(--ink)}
+.rv-stage{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:var(--gap);align-items:start}
+.rv-canvas{min-width:0}
+.rv-svg{display:block;width:100%;max-width:640px;height:auto}
+.rv-svg-flow{display:block;width:100%;max-width:640px;height:auto}
+.rv-side{min-width:0;display:grid;gap:8px;align-content:start}
+.rv-side h3,.rv-block h3{margin:0;font-size:var(--fs-h2);overflow-wrap:anywhere}
+.rv-side h4{margin:8px 0 0;font-size:var(--fs-sm);color:var(--ink-3);font-weight:600}
+.rv-line{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;min-width:0;overflow-wrap:anywhere}
+.rv-list{margin:0;padding-left:16px;display:grid;gap:4px}
+.rv-link{background:none;border:0;padding:0;font:inherit;color:var(--signal-ink);text-align:left;cursor:pointer;overflow-wrap:anywhere}
+.rv-link.changed{font-weight:600}
+.rv-sd{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ink-3);flex:none;align-self:center}
+.rv-sd.t-ok{background:var(--ok)} .rv-sd.t-danger{background:var(--crit)} .rv-sd.t-muted{background:var(--ink-3)}
+.rv-arc{fill:none;stroke:var(--rule-strong);stroke-width:14;cursor:pointer}
+.rv-arc.better{stroke:var(--ok)} .rv-arc.worse{stroke:var(--crit)} .rv-arc.neutral{stroke:var(--ink-3)}
+.rv-arc.on{stroke-width:20}
+.rv-arc-l{font-size:13px;fill:var(--ink-3);pointer-events:none;paint-order:stroke;stroke:var(--panel);stroke-width:4px;stroke-linejoin:round}
+.rv-spoke,.rv-dlink{stroke:var(--rule-strong);stroke-width:1}
+.rv-tlink{stroke:var(--rule-strong);stroke-width:1;stroke-dasharray:3 3}
+.rv-tlink.worded{stroke-dasharray:1 3}
+.rv-hit{fill:transparent;cursor:pointer}
+.rv-dot{fill:var(--sheet-2);stroke:var(--rule-strong);stroke-width:1.5}
+.rv-i-l{font-size:13px;fill:var(--ink-2);pointer-events:none;paint-order:stroke;stroke:var(--panel);stroke-width:4px;stroke-linejoin:round}
+.rv-i.open .rv-dot{stroke:var(--signal);stroke-width:3}
+.rv-i.orphan .rv-dot{stroke-dasharray:3 2}
+.rv-d-g.sel .rv-dot,.rv-t-g.sel .rv-dot,.rv-fd.sel .rv-dot{stroke:var(--ink);stroke-width:2.5}
+.rv-t-g.changed .rv-dot{stroke:var(--signal)}
+.rv-centre text{font-size:14px;fill:var(--ink);font-family:var(--font-mono);pointer-events:none}
+.rv .t-ok .rv-dot,.rv .t-better .rv-dot{fill:var(--ok);stroke:var(--ok)}
+.rv .t-warn .rv-dot,.rv .t-watch .rv-dot,.rv .t-rework .rv-dot{fill:var(--warn);stroke:var(--warn)}
+.rv .t-danger .rv-dot,.rv .t-needs .rv-dot,.rv .t-fail .rv-dot{fill:var(--crit);stroke:var(--crit)}
+.rv .t-owner .rv-dot,.rv .t-accent .rv-dot{fill:var(--signal);stroke:var(--signal)}
+.rv .t-info .rv-dot,.rv .t-run .rv-dot{fill:var(--info);stroke:var(--info)}
+.rv .t-muted .rv-dot,.rv .t-wait .rv-dot,.rv .t-none .rv-dot,.rv .t-neutral .rv-dot{fill:var(--ink-3);stroke:var(--ink-3)}
+.rv-fl{stroke:var(--rule-strong);stroke-width:2}
+.rv-flowwrap{display:grid;gap:4px;min-width:0;overflow-x:auto}
+.rv-fd.pulse .rv-dot{animation:rv-pulse 1.6s ease-in-out infinite}
+.rv-svg g.rv-i,.rv-svg g.rv-d-g,.rv-svg g.rv-t-g,.rv-svg .rv-arc{animation:rv-in 480ms var(--ease) both}
+@keyframes rv-in{from{opacity:0}to{opacity:1}}
+@keyframes rv-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.rv-runs{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.rv-run[aria-pressed="true"]{background:var(--signal-soft)}
+.rv-rs{color:var(--ink-2)}
+.rv-block{display:grid;gap:8px;min-width:0}
+.rv-cell{font-family:var(--font-mono)}
+.rv-cell.tone-better{color:var(--ok)} .rv-cell.tone-worse{color:var(--crit)} .rv-cell.tone-neutral{color:var(--ink-2)}
+.rv-cell em{font-style:normal;color:var(--ink-3);font-size:var(--fs-xs);margin-left:4px}
+.rv-major{color:var(--crit);font-weight:600}
+.rv-rules{display:grid;gap:4px;margin:0}
+.rv-rules dt{color:var(--ink-2)} .rv-rules dd{margin:0 0 4px 16px;color:var(--ink)}
+@container (max-width:760px){.rv-stage{grid-template-columns:minmax(0,1fr)}.rv-svg{max-width:480px;margin-inline:auto}}
+@media (prefers-reduced-motion:reduce){.rv *{animation:none!important}}

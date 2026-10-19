@@ -5,8 +5,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{button, checkbox, column, row, text, text_editor, text_input};
-use iced::{Element, Length, Subscription, Task};
+use iced::widget::{
+    Space, button, checkbox, column, container, row, text, text_editor, text_input,
+};
+use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -403,15 +405,22 @@ fn matches_query(p: &Summary, needle: &str) -> bool {
         || p.tags.iter().any(|t| t.to_lowercase().contains(needle))
 }
 
+/// The Prompts' intro under the head (the web's wording).
+const INTRO: &str = "The prompt library: system prompts, AGENTS.md files and fragments. Every version is checked and scored.";
+
+/// The table's columns, by their share of the width: title, kind, binding, live, score, tags, updated.
+const COLUMNS: [u16; 7] = [4, 2, 2, 1, 2, 3, 2];
+
 pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     if let Some(ed) = st.editor.as_ref() {
         return prompt_editor::view(ed, ctx).map(Msg::Editor);
     }
-    let head = ui::view_head(
+    let head = ui::view_head_with_intro(
         "Prompts",
+        INTRO,
         vec![ui::btn(
             if st.form_open { "Close" } else { "New prompt" },
-            None,
+            Some("plus"),
             ui::Kind::Primary,
             Some(Msg::FormToggle),
         )],
@@ -422,21 +431,42 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         (Filter::AgentsMd, "AGENTS.md"),
         (Filter::Fragment, "Fragments"),
     ];
-    let toolbar = row![
-        ui::seg(&kinds, st.filter, Msg::Filter),
-        ui::seg(
-            &[(false, "Hide archived"), (true, "Show archived")],
-            st.show_archived,
-            Msg::Archived
-        ),
-    ]
-    .spacing(12);
+    // The tabs count the rows the archived toggle leaves, per kind.
+    let live: Vec<&Summary> = st
+        .prompts
+        .iter()
+        .filter(|p| st.show_archived || p.archived_ms.is_none())
+        .collect();
+    let labels: Vec<String> = kinds
+        .iter()
+        .map(|(f, name)| {
+            format!(
+                "{name} {}",
+                live.iter().filter(|p| f.matches(&p.kind)).count()
+            )
+        })
+        .collect();
+    let options: Vec<(Filter, &str)> = kinds
+        .iter()
+        .zip(labels.iter())
+        .map(|((f, _), label)| (*f, label.as_str()))
+        .collect();
+    let tabs = ui::tabs(&options, st.filter, Msg::Filter);
     let search = text_input("Search id, title, description or tags", &st.query)
         .on_input(Msg::Query)
         .padding(8)
-        .style(crate::theme::input);
+        .style(crate::theme::input)
+        .width(Length::Fill);
+    let bar = row![
+        search,
+        checkbox(st.show_archived)
+            .label("Show archived")
+            .on_toggle(Msg::Archived),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
 
-    let mut page = column![head, toolbar, search].spacing(14);
+    let mut page = column![tabs, bar].spacing(12);
     if st.form_open {
         page = page.push(form_view(st));
     }
@@ -454,10 +484,9 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     }
 
     let needle = st.query.trim().to_lowercase();
-    let visible: Vec<&Summary> = st
-        .prompts
+    let visible: Vec<&Summary> = live
         .iter()
-        .filter(|p| st.show_archived || p.archived_ms.is_none())
+        .copied()
         .filter(|p| st.filter.matches(&p.kind))
         .filter(|p| needle.is_empty() || matches_query(p, &needle))
         .collect();
@@ -472,79 +501,124 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         } else if visible.is_empty() {
             page = page.push(
                 column![
-                    ui::empty(
-                        "file",
-                        "Nothing matches",
-                        "Try another kind, or clear the search."
-                    ),
+                    ui::empty("search", "No prompts match these filters.", ""),
                     ui::btn_sm(
                         "Clear filters",
                         None,
-                        ui::Kind::Secondary,
+                        ui::Kind::Ghost,
                         Some(Msg::ClearFilters)
                     ),
                 ]
                 .spacing(12),
             );
+        } else {
+            page = page.push(table(&visible));
         }
     }
 
-    let mut list = column![].spacing(10);
-    for p in visible {
-        list = list.push(row_card(p));
-    }
-    page = page.push(list);
-
-    ui::scroll(page.padding(16)).width(Length::Fill).into()
+    ui::sheet(head, ui::scroll(page).width(Length::Fill).into())
 }
 
-fn row_card(p: &Summary) -> Element<'_, Msg> {
-    let muted = crate::theme::palette().ink_3;
-    let mut badges: Vec<Element<'_, Msg>> = vec![ui::badge(kind_label(&p.kind), ui::Tone::Muted)];
-    if let Some(b) = p.binding.as_deref() {
-        badges.push(ui::badge(&binding_label(b), ui::Tone::Info));
-    }
-    match p.active_version {
-        Some(v) => badges.push(ui::badge(&format!("v{v} live"), ui::Tone::Ok)),
-        None => {
-            let label = match p.latest_version {
-                Some(v) => format!("Unpublished, latest v{v}"),
-                None => "Unpublished".to_string(),
-            };
-            badges.push(ui::badge(&label, ui::Tone::Warn));
-        }
-    }
-    if let Some(s) = p.score {
-        badges.push(ui::badge(&format!("score {s:.0}"), score_tone(s)));
-    }
-    if let Some(b) = p.best_version
-        && Some(b) != p.active_version
-    {
-        badges.push(ui::badge(&format!("best: v{b}"), ui::Tone::Muted));
-    }
-    if p.archived_ms.is_some() {
-        badges.push(ui::badge("Archived", ui::Tone::Muted));
-    }
-
+/// The prompts as the web's table: a head row in the label voice, one row a prompt (its title and id, kind, binding,
+/// live version, score, tags and age); a press opens the prompt in the editor.
+fn table<'a>(rows: &[&'a Summary]) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let heads = [
+        "Title", "Kind", "Binding", "Live", "Score", "Tags", "Updated",
+    ];
+    let head = row(heads
+        .iter()
+        .zip(COLUMNS)
+        .map(|(name, portion)| {
+            container(ui::label(name))
+                .width(Length::FillPortion(portion))
+                .into()
+        })
+        .collect::<Vec<Element<'a, Msg>>>())
+    .spacing(0);
     let mut body = column![
-        button(text(p.title.as_str()).size(16.0))
-            .on_press(Msg::Open(p.id.clone()))
-            .style(button::text),
-        row(badges).spacing(6),
-    ]
-    .spacing(8);
-    if !p.description.is_empty() {
-        body = body.push(text(ui::ellipsize(&p.description, 200)).size(14.0));
+        container(head).padding([9, 12]).width(Length::Fill),
+        container(Space::new().height(1.0))
+            .width(Length::Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().rule_strong.into()),
+                ..Default::default()
+            }),
+    ];
+    for &prompt in rows {
+        let muted = p.ink_3;
+        let mut title = column![
+            text(prompt.title.as_str())
+                .font(crate::theme::SANS_SEMIBOLD)
+                .size(14.0)
+                .color(p.ink)
+        ];
+        title = title.push(ui::mono(prompt.id.as_str(), 11.0, muted));
+        let binding: Element<'_, Msg> = match prompt.binding.as_deref() {
+            Some(b) => ui::badge(&binding_label(b), ui::Tone::Info),
+            None => ui::faint("—").into(),
+        };
+        let live: Element<'_, Msg> = match prompt.active_version {
+            Some(v) => text(format!("v{v}")).size(13.0).color(p.ink).into(),
+            None => ui::faint("Unpublished").into(),
+        };
+        let mut score = column![].spacing(4);
+        match prompt.score {
+            Some(s) => score = score.push(ui::badge(&format!("{s:.0}"), score_tone(s))),
+            None => score = score.push(ui::faint("—")),
+        }
+        if let Some(b) = prompt.best_version
+            && Some(b) != prompt.active_version
+        {
+            score = score.push(ui::faint(format!("best: v{b}")));
+        }
+        let tags: Vec<Element<'_, Msg>> = prompt
+            .tags
+            .iter()
+            .map(|t| ui::badge(t, ui::Tone::Muted))
+            .collect();
+        let cells: Vec<Element<'_, Msg>> = vec![
+            container(title)
+                .width(Length::FillPortion(COLUMNS[0]))
+                .into(),
+            container(text(kind_label(&prompt.kind)).size(13.0).color(p.ink_2))
+                .width(Length::FillPortion(COLUMNS[1]))
+                .into(),
+            container(binding)
+                .width(Length::FillPortion(COLUMNS[2]))
+                .into(),
+            container(live)
+                .width(Length::FillPortion(COLUMNS[3]))
+                .into(),
+            container(score)
+                .width(Length::FillPortion(COLUMNS[4]))
+                .into(),
+            container(ui::chip_row(tags))
+                .width(Length::FillPortion(COLUMNS[5]))
+                .into(),
+            container(ui::faint(ago(prompt.updated_ms)))
+                .width(Length::FillPortion(COLUMNS[6]))
+                .into(),
+        ];
+        let line = button(row(cells).spacing(0).align_y(Alignment::Center))
+            .on_press(Msg::Open(prompt.id.clone()))
+            .style(button::text)
+            .padding([9, 12])
+            .width(Length::Fill);
+        body = body.push(line);
+        body = body.push(
+            container(Space::new().height(1.0))
+                .width(Length::Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(crate::theme::palette().rule.into()),
+                    ..Default::default()
+                }),
+        );
     }
-    if !p.tags.is_empty() {
-        body = body.push(text(p.tags.join(" · ")).size(12.0).color(muted));
-    }
-    body = body.push(
-        text(format!("updated {}", ago(p.updated_ms)))
-            .size(12.0)
-            .color(muted),
-    );
-    ui::card(&p.id, body.into())
+    container(body)
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
 }
 
 /// A form field: its label above its input.
@@ -617,6 +691,7 @@ fn form_view(st: &State) -> Element<'_, Msg> {
         field(
             "Body",
             text_editor(&st.new_body)
+                .style(crate::theme::editor)
                 .on_action(Msg::NewBody)
                 .padding(8)
                 .height(Length::Fixed(240.0))

@@ -7,7 +7,9 @@
 // wasm IDE state (ide/wasm). Console (and Escape) goes back to the screen the IDE was opened from.
 
 import ideCss from '../styles/ide.css';
-import shellCss from '../styles/ide-shell.css';
+import protoCss from '../styles/proto/ide.css';
+import chatCss from '../styles/proto/ide-chat.css';
+import moreCss from '../styles/proto/ide-more.css';
 import { ideApi, type IdeWorkspaceInfo } from '../api';
 import { go } from '../router';
 import { LAST_WORKSPACE_KEY } from '../ide/model';
@@ -20,7 +22,7 @@ import { themeSwitch } from '../ui/theme';
 import type { Cleanup } from './index';
 import { Editor } from './ide-editor';
 import { keyboardHelp, statusBar } from './ide-chrome';
-import { buildFrame, type DrawerTab, type Frame, type RightView } from './ide-frame';
+import { buildFrame, iconBtn, type DrawerTab, type Frame, type RightView } from './ide-frame';
 import { sidebar } from './ide-sidebar';
 import { palette, type Palette } from './ide-palette';
 import { cidOf, closeOverlay, message, newCtx, readStore, VIEWS, type IdeCtx } from './ide-ctx';
@@ -43,7 +45,7 @@ function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;
-  style.textContent = `${ideCss}\n${shellCss}\n.ide-host [hidden]{display:none!important}`;
+  style.textContent = `${ideCss}\n${protoCss}\n${chatCss}\n${moreCss}\n.ide-host [hidden]{display:none!important}`;
   document.head.appendChild(style);
 }
 
@@ -96,12 +98,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (c.state.filter_changed) void loadChangedDirs(c);
     renderAll(c);
   });
-  const searchBtn = button('', () => toggleSearch(c), { icon: 'search', size: 'sm', title: 'Search the workspace (Ctrl/Cmd+Shift+F)' });
-  const quickBtn = button('', () => openQuick(c), { icon: 'file', size: 'sm', title: 'Quick open (Ctrl/Cmd+P)' });
+  const searchBtn = iconBtn('search', 'Search the workspace (Ctrl/Cmd+Shift+F)', () => toggleSearch(c));
+  const quickBtn = iconBtn('file', 'Quick open (Ctrl/Cmd+P)', () => openQuick(c));
   const treeList = h('div.ide-tree-list', { role: 'tree' });
-  const searchHost = h('div.iw-files-search', { hidden: true });
-  const cpHost = h('div.iw-files-cp');
-  const filesEl = h('div.iw-files', null, h('div.ide-tree-tools', null, changedToggle, searchBtn, quickBtn), searchHost, treeList, cpHost);
+  const searchHost = h('div.ide-filesearch', { hidden: true });
+  const cpHost = h('div.ide-filecp');
+  const filesEl = h('div.ided-panel', null, h('div.ide-tree-tools', null, changedToggle, h('span.sp'), searchBtn, quickBtn), searchHost, treeList, cpHost);
 
   const saveBtn = button('Save', () => void save(c), { kind: 'primary', size: 'sm', title: 'Save (Ctrl+S)' });
   const tabBar = h('div.ide-tabbar', { role: 'tablist' });
@@ -110,11 +112,16 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const emptyHost = h('div.ide-empty-centre');
   /** The diff view: the changes since the base, in place of the editor. */
   const reviewHost = h('div.ide-review');
-  const editorBar = h('div.iw-editor-bar', null, h('span.spacer'), saveBtn);
+  const editorBar = h('div.ide-editor-bar', null, h('span.ide-editor-path'), saveBtn);
   const termHost = h('div.ide-term-host');
   const editor = new Editor(cmHost);
 
-  const sideEl = sidebar({ onOpen: (key) => openKey(c, key), onNewAgent: () => newAgent() });
+  const sideEl = sidebar({
+    onOpen: (key) => openKey(c, key),
+    onNewAgent: () => newAgent(),
+    onHide: () => toggleLeftPanel(c),
+    onConsole: () => leaveIde(c),
+  });
   const help = keyboardHelp();
   const status = statusBar(() => help.set(!help.isOpen()));
   const edges = layoutEdges(c);
@@ -131,7 +138,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   frame.centre.views.editor.append(editorBar, tabBar, banners, cmHost, emptyHost);
   frame.centre.views.diff.append(reviewHost);
   frame.centre.views.terminal.append(termHost);
-  frame.centre.views.terminal.classList.add('iw-view-term');
+  frame.centre.views.terminal.classList.add('ide-view-term');
 
   /** The palette (Ctrl/Cmd+K): agents, repositories, files, tasks and commands. */
   const pal: Palette = palette((item) => runPaletteItem(c, item));
@@ -229,6 +236,10 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       if (c.cid !== null) go('agents', c.cid);
     });
     for (const k of Object.keys(frame.right.tabs) as RightView[]) frame.right.tabs[k].addEventListener('click', () => setRight(c, k));
+    // The dock's own tabs: the Diff is the centre's Diff view; the Terminal and the Run open the drawer on their tab.
+    frame.right.extra.diff.addEventListener('click', () => setCentre(c, 'diff'));
+    frame.right.extra.terminal.addEventListener('click', () => setDrawer(c, true, 'terminal'));
+    frame.right.extra.run.addEventListener('click', () => setDrawer(c, true, 'run'));
     for (const k of Object.keys(frame.drawer.tabs) as DrawerTab[]) frame.drawer.tabs[k].addEventListener('click', () => setDrawer(c, true, k));
   }
 

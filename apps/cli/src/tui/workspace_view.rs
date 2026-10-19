@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Paragraph};
 use serde_json::Value;
 
 use super::app::Palette;
+use super::context_bar::{self, Owner};
 use super::screens::{clip, local_time, show};
 use super::workspace::{
     Composer, Glyph, Item, Pane, Row, Target, Transcript, Workspace, agent_of, data_of, first_seq,
@@ -48,6 +49,9 @@ pub fn render(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palett
     pane(frame, agents, ws, Pane::Agents, palette);
     pane(frame, chat, ws, Pane::Chat, palette);
     pane(frame, board, ws, Pane::Board, palette);
+    if let Some(picker) = &ws.picker {
+        context_bar::overlay(frame, area, picker, palette);
+    }
 }
 
 fn pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, which: Pane, palette: Palette) {
@@ -223,8 +227,9 @@ fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette
             ..
         })
     );
-    let [body, compose] = Layout::vertical([
+    let [body, bar, compose] = Layout::vertical([
         Constraint::Min(0),
+        Constraint::Length(1),
         Constraint::Length(if steering { 3 } else { 0 }),
     ])
     .areas(area);
@@ -262,7 +267,7 @@ fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette
         lines.push(Line::from(Span::styled("Loading the conversation…", muted)));
     } else if ranges.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No messages yet. Press i to write to the agent.",
+            "No messages yet. Press t to write to the agent.",
             muted,
         )));
     }
@@ -286,6 +291,14 @@ fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette
     let shown = lines[top..end].to_vec();
     frame.render_widget(block, body);
     frame.render_widget(Paragraph::new(shown), inner);
+    let context = ws.contexts.get(&Owner::Agent(cid));
+    frame.render_widget(
+        Paragraph::new(context_bar::bar_line(context, bar.width, palette)),
+        bar,
+    );
+    if ws.breakdown {
+        context_bar::panel(frame, body, context, palette);
+    }
 
     if let Some(composer) = ws
         .composer

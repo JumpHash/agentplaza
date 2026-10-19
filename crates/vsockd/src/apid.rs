@@ -472,6 +472,7 @@ pub fn refusal(message: &GuestMessage, reason: &str) -> Option<HostMessage> {
             output: reason.to_string(),
             is_error: true,
             program: None,
+            engine: None,
             approval: None,
         }),
         _ => None,

@@ -7,13 +7,13 @@ use std::fmt;
 use std::time::Duration;
 
 use iced::widget::{Space, checkbox, column, pick_list, row, text_input};
-use iced::{Alignment, Element, Subscription, Task};
+use iced::{Alignment, Element, Length, Subscription, Task};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Id, history};
 use crate::console::client::{self, enc};
-use crate::console::ui::{self, INK, INK_2, Kind, Tone};
+use crate::console::ui::{self, Kind, Tone};
 use crate::console::{Ctx, events};
 use crate::theme;
 
@@ -83,6 +83,8 @@ pub struct Integration {
     pub identity: Account,
     /// Set when the authorization needs the owner's attention (uninstalled on the platform, an expired sign-in).
     pub error: Option<String>,
+    /// Where the platform manages the authorization (the "Change on GitHub" link), when it has one.
+    pub manage_url: Option<String>,
 }
 
 /// One namespace an authorization reaches, with the owner's grant (None when the plaza may not use it).
@@ -415,14 +417,6 @@ fn warning(i: &Integration) -> Option<&str> {
     i.error.as_deref().filter(|e| !e.is_empty())
 }
 
-fn connected_text(n: usize) -> String {
-    if n == 0 {
-        "No repository connected".to_string()
-    } else {
-        plural(n as u64, "repository connected", "repositories connected")
-    }
-}
-
 /// What an installation reaches on the platform, in plain words.
 fn selection_text(selection: &str) -> &'static str {
     match selection {
@@ -705,6 +699,8 @@ pub struct State {
     grants: Option<GrantsView>,
     /// The last connect's line, under its repository: (repository, sentence).
     connected_note: Option<(String, String)>,
+    /// The "Add a platform" disclosure, once something is authorized: open or folded away.
+    add_open: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -761,6 +757,10 @@ pub enum Msg {
     },
     Disconnect(String, String),
     Disconnected(Result<Value, String>),
+    /// The "Add a platform" disclosure opened or shut.
+    ToggleAdd,
+    /// Opens the platform's own page for an authorization (its "Change on GitHub" link).
+    Manage(String),
     /// A hub event: a platform change, or a Weft one that changes a connection, reloads the screen.
     Event(events::Event),
 }
@@ -1166,6 +1166,16 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.grants = None;
             Task::none()
         }
+        Msg::ToggleAdd => {
+            state.add_open = !state.add_open;
+            Task::none()
+        }
+        Msg::Manage(url) => {
+            if let Err(e) = ui::open_url(&url) {
+                state.error = Some(e);
+            }
+            Task::none()
+        }
         Msg::NamespacesLoaded(id, res) => {
             let Some(view) = state.grants.as_mut().filter(|v| v.integration == id) else {
                 return Task::none();
@@ -1431,7 +1441,10 @@ pub fn subscription(state: &State, ctx: &Ctx) -> Subscription<Msg> {
 
 /// The line under the head: the state, in one sentence.
 fn lede<'a>(line: String) -> Element<'a, Msg> {
-    ui::prose(line).size(15.0).color(INK_2).into()
+    ui::prose(line)
+        .size(15.0)
+        .color(crate::theme::palette().ink_2)
+        .into()
 }
 
 /// Rows with a hairline between each.
@@ -1470,30 +1483,53 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         parts.push(
             row![
                 ui::faint("Waiting for the platform…"),
-                ui::btn("Cancel", None, Kind::Ghost, Some(Msg::CancelFlow)),
+                ui::btn_sm("Cancel", None, Kind::Ghost, Some(Msg::CancelFlow)),
             ]
             .spacing(12)
             .align_y(Alignment::Center)
             .into(),
         );
     }
-    let cards: Vec<Element<'a, Msg>> = Platform::ALL
-        .into_iter()
-        .map(|p| add_card(state, p))
-        .collect();
-    parts.push(ui::card_grid(cards));
-    if let Some(listing) = &state.listing
-        && !listing.integrations.is_empty()
-    {
+    let authorized = state
+        .listing
+        .as_ref()
+        .filter(|l| !l.integrations.is_empty());
+    // What is authorized comes first; the way to add more folds away under a disclosure once something is.
+    if let Some(listing) = authorized {
         parts.push(authorizations(state, listing));
     }
     if let Some(grants) = grants_card(state) {
         parts.push(grants);
     }
+    let cards: Vec<Element<'a, Msg>> = Platform::ALL
+        .into_iter()
+        .map(|p| add_card(state, p))
+        .collect();
+    if authorized.is_none() {
+        parts.push(section_head("Add"));
+        parts.push(ui::card_grid(cards));
+    } else {
+        parts.push(ui::disclosure(
+            "Add a platform".to_string(),
+            crate::theme::palette().ink_2,
+            state.add_open,
+            Msg::ToggleAdd,
+        ));
+        if state.add_open {
+            parts.push(ui::card_grid(cards));
+        }
+    }
     ui::sheet(
         ui::view_head("Git platforms", vec![]),
-        column(parts).spacing(18).into(),
+        column(parts).spacing(22).width(Length::Fill).into(),
     )
+}
+
+/// A section heading in the web's `h2.plat-sec`: semibold 15 in ink.
+fn section_head<'a>(title: &str) -> Element<'a, Msg> {
+    ui::sans(title.to_string(), 15.0, crate::theme::palette().ink)
+        .font(ui::SANS_SEMIBOLD)
+        .into()
 }
 
 /// One "Add" card: the host, then the platform's own way in (an app to create, or a sign-in), and a token.
@@ -1503,9 +1539,11 @@ fn add_card<'a>(state: &'a State, p: Platform) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = vec![
         ui::label("Host").into(),
         text_input(p.default_host(), &card.host)
+            .style(crate::theme::input)
             .on_input(move |v| Msg::Host(p, v))
             .padding(8)
             .into(),
+        ui::faint("Change it only for a self-hosted instance.").into(),
     ];
     if p == Platform::Github {
         items.extend(github_part(state, p, &host));
@@ -1516,10 +1554,7 @@ fn add_card<'a>(state: &'a State, p: Platform) -> Element<'a, Msg> {
     if let Some(e) = &card.error {
         items.push(ui::error_line(e));
     }
-    ui::card(
-        &format!("Add {}", p.label()),
-        column(items).spacing(10).into(),
-    )
+    ui::card(p.label(), column(items).spacing(10).into())
 }
 
 /// GitHub: the plaza's App, created once for the host, then installed on an account or an organisation.
@@ -1555,6 +1590,7 @@ fn github_part<'a>(state: &'a State, p: Platform, host: &str) -> Vec<Element<'a,
             .into(),
             ui::label("Organisation (optional)").into(),
             text_input("Organisation", &card.org)
+                .style(crate::theme::input)
                 .on_input(move |v| Msg::Org(p, v))
                 .padding(8)
                 .into(),
@@ -1584,6 +1620,7 @@ fn oauth_part<'a>(state: &'a State, p: Platform, host: &str) -> Vec<Element<'a, 
         ui::faint("Register an OAuth app on the host, with this redirect URI:").into(),
         // Read-only, and selectable: the owner copies it into the platform.
         text_input("", callback)
+            .style(crate::theme::input)
             .on_input(|_| Msg::Noop)
             .padding(8)
             .into(),
@@ -1595,6 +1632,7 @@ fn oauth_part<'a>(state: &'a State, p: Platform, host: &str) -> Vec<Element<'a, 
     items.push(ui::label("Client ID").into());
     items.push(
         text_input("Client ID", &card.client_id)
+            .style(crate::theme::input)
             .on_input(move |v| Msg::ClientId(p, v))
             .padding(8)
             .into(),
@@ -1602,6 +1640,7 @@ fn oauth_part<'a>(state: &'a State, p: Platform, host: &str) -> Vec<Element<'a, 
     items.push(ui::label("Client secret").into());
     items.push(
         text_input("Client secret", &card.client_secret)
+            .style(crate::theme::input)
             .secure(true)
             .on_input(move |v| Msg::ClientSecret(p, v))
             .padding(8)
@@ -1644,6 +1683,7 @@ fn token_part<'a>(state: &'a State, p: Platform) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = vec![
         ui::label("Token").into(),
         text_input("Token", &card.token)
+            .style(crate::theme::input)
             .secure(true)
             .on_input(move |v| Msg::TokenValue(p, v))
             .padding(8)
@@ -1652,7 +1692,8 @@ fn token_part<'a>(state: &'a State, p: Platform) -> Element<'a, Msg> {
             ui::label("Level"),
             pick_list(choices, selected, move |c: ScopeChoice| {
                 Msg::TokenScope(p, c.scope)
-            }),
+            })
+            .style(crate::theme::pick_list),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
@@ -1661,6 +1702,7 @@ fn token_part<'a>(state: &'a State, p: Platform) -> Element<'a, Msg> {
     if card.scope != Scope::User {
         items.push(
             text_input(target_hint(p, card.scope), &card.target)
+                .style(crate::theme::input)
                 .on_input(move |v| Msg::TokenTarget(p, v))
                 .padding(8)
                 .into(),
@@ -1683,55 +1725,57 @@ fn token_part<'a>(state: &'a State, p: Platform) -> Element<'a, Msg> {
 }
 
 /// The authorizations, one card per host.
+/// The authorizations, grouped by platform and host as the web's `h3.plat-grp`: the platform's name and the host,
+/// then one card per authorization.
 fn authorizations<'a>(state: &'a State, listing: &'a Listing) -> Element<'a, Msg> {
-    let counts = connected_by_authorization(&state.weft);
-    let cards: Vec<Element<'a, Msg>> = by_host(&listing.integrations)
-        .into_iter()
-        .map(|(host, rows)| {
-            let title = format!(
-                "{} · {}",
-                rows.first()
-                    .and_then(|i| Platform::parse(&i.kind))
-                    .map_or("Platform", Platform::label),
-                host_name(host)
-            );
-            let items: Vec<Element<'a, Msg>> = rows
-                .into_iter()
-                .map(|i| auth_row(state, i, counts.get(&i.id).copied().unwrap_or(0)))
-                .collect();
-            ui::card(&title, rules(items))
-        })
-        .collect();
-    column(cards).spacing(16).into()
+    let mut parts: Vec<Element<'a, Msg>> = vec![section_head("Authorizations")];
+    for (host, rows) in by_host(&listing.integrations) {
+        let platform = rows
+            .first()
+            .and_then(|i| Platform::parse(&i.kind))
+            .map_or("Platform", Platform::label);
+        let heading: Element<'a, Msg> = row![
+            ui::sans(platform.to_string(), 14.0, crate::theme::palette().ink)
+                .font(ui::SANS_SEMIBOLD),
+            ui::faint(host_name(host).to_string()),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into();
+        let cards: Vec<Element<'a, Msg>> = rows.into_iter().map(|i| auth_card(state, i)).collect();
+        parts.push(
+            column![heading, ui::card_grid(cards)]
+                .spacing(10)
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+    column(parts).spacing(14).width(Length::Fill).into()
 }
 
-/// One authorization: whose it is, its level and how it was given, what it connects, the identity exports carry, a
-/// warning when there is one, and its actions.
-fn auth_row<'a>(state: &'a State, i: &'a Integration, connected: usize) -> Element<'a, Msg> {
+/// One authorization as the web's card: its account as the title; its platform, level and how it was given as
+/// badges; whose identity the exports carry; the repositories it may use, with the platform's own page; a warning
+/// when there is one; and its actions.
+fn auth_card<'a>(state: &'a State, i: &'a Integration) -> Element<'a, Msg> {
     let id = i.id.clone();
-    let mut head: Vec<Element<'a, Msg>> = vec![
-        ui::sans(i.account.login.clone(), 14.0, INK)
-            .font(ui::SANS_SEMIBOLD)
-            .into(),
+    let title = if i.account.login.is_empty() {
+        i.account.name.clone()
+    } else {
+        i.account.login.clone()
+    };
+    let mut lines: Vec<Element<'a, Msg>> = vec![
+        row![
+            ui::badge(
+                Platform::parse(&i.kind).map_or("Platform", Platform::label),
+                Tone::Muted
+            ),
+            ui::badge(level_label(&i.kind, &i.level), Tone::Muted),
+            ui::badge(via_label(&i.via), Tone::Muted),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into(),
     ];
-    if !i.account.name.is_empty() {
-        head.push(ui::faint(i.account.name.clone()).into());
-    }
-    head.push(ui::badge(level_label(&i.kind, &i.level), Tone::Muted));
-    head.push(ui::faint(via_label(&i.via)).into());
-    let mut lines: Vec<Element<'a, Msg>> =
-        vec![row(head).spacing(12).align_y(Alignment::Center).into()];
-    if i.level == "repo"
-        && let Some(target) = i.target.as_deref().filter(|t| !t.is_empty())
-    {
-        lines.push(ui::faint(format!("Repository {target}")).into());
-    }
-    let mut facts = vec![connected_text(connected)];
-    let selection = selection_text(i.repository_selection.as_deref().unwrap_or(""));
-    if !selection.is_empty() {
-        facts.push(selection.to_string());
-    }
-    lines.push(ui::faint(facts.join(" · ")).into());
     if i.identity.login.is_empty() {
         lines.push(warn_text(format!(
             "No account signed in on {}: exports need an author. Sign in on the platform.",
@@ -1740,52 +1784,57 @@ fn auth_row<'a>(state: &'a State, i: &'a Integration, connected: usize) -> Eleme
     } else {
         lines.push(ui::faint(identity_text(&i.identity)).into());
     }
+    let selection = selection_text(i.repository_selection.as_deref().unwrap_or(""));
+    if !selection.is_empty() {
+        let mut facts: Vec<Element<'a, Msg>> = vec![ui::faint(selection).into()];
+        if let Some(url) = i.manage_url.as_deref().filter(|u| !u.is_empty()) {
+            facts.push(ui::faint(" · ").into());
+            facts.push(ui::link(
+                "Change on GitHub",
+                Msg::Manage(url.to_string()),
+                false,
+            ));
+        }
+        lines.push(row(facts).align_y(Alignment::Center).into());
+    }
     if let Some(e) = warning(i) {
-        lines.push(
-            row![
-                ui::badge("Needs attention", Tone::Warn),
-                warn_text(e.to_string())
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into(),
-        );
+        lines.push(warn_text(e.to_string()));
     }
     lines.push(
         row![
-            ui::btn(
+            ui::btn_sm(
                 "Choose what the plaza may use",
                 None,
                 Kind::Secondary,
                 Some(Msg::OpenGrants(id.clone())),
             ),
-            ui::btn(
+            ui::btn_sm(
                 "Sync",
-                None,
-                Kind::Ghost,
+                Some("refresh-cw"),
+                Kind::Secondary,
                 press(!state.busy, Msg::Sync(id.clone())),
             ),
             remove_part(state, &id),
         ]
-        .spacing(10)
+        .spacing(8)
         .align_y(Alignment::Center)
         .into(),
     );
-    column(lines).spacing(8).into()
+    ui::card(&title, column(lines).spacing(10).width(Length::Fill).into())
 }
 
 /// Remove: one press asks, the next forgets the authorization and its tokens.
 fn remove_part<'a>(state: &'a State, id: &str) -> Element<'a, Msg> {
     if state.confirm_remove.as_deref() == Some(id) {
         row![
-            ui::faint("Forget this authorization and its tokens?"),
-            ui::btn(
+            ui::faint("The plaza forgets this authorization and its tokens. Nothing changes on the platform itself."),
+            ui::btn_sm(
                 "Remove",
                 None,
                 Kind::Danger,
                 press(!state.busy, Msg::Remove(id.to_string())),
             ),
-            ui::btn("Keep", None, Kind::Ghost, Some(Msg::CancelRemove)),
+            ui::btn_sm("Cancel", None, Kind::Ghost, Some(Msg::CancelRemove)),
         ]
         .spacing(10)
         .align_y(Alignment::Center)
@@ -1988,6 +2037,7 @@ fn connect_form<'a>(state: &'a State, form: &'a ConnectForm) -> Element<'a, Msg>
                 form.project.clone(),
                 Msg::ConnectProject,
             )
+            .style(crate::theme::pick_list)
             .placeholder("Choose a project"),
         ]
         .spacing(12)

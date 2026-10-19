@@ -1,7 +1,0 @@
-/* The Lab's section strip (`#/lab`): one line at any width. The tabs keep their natural width and
-   scroll sideways inside their own wrapper rather than breaking a label across lines. */
-
-.lab-strip { min-width: 0; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
-.lab-strip::-webkit-scrollbar { display: none; }
-.lab-strip .tabs { width: max-content; min-width: 100%; }
-.lab-strip .tabs button { white-space: nowrap; flex: none; }

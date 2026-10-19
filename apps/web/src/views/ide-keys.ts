@@ -127,7 +127,7 @@ export function onKey(c: IdeCtx, e: KeyboardEvent): void {
   } else if (e.key === '?' && !mod && !e.altKey && !inTyping(e.target)) {
     e.preventDefault();
     c.dom.help.set(!c.dom.help.isOpen());
-  } else if (e.key === 'Escape' && !e.defaultPrevented && c.overlay === null && !c.dom.pal.isOpen() && !document.querySelector('.modal-backdrop') && !inField(e.target)) {
+  } else if (e.key === 'Escape' && !e.defaultPrevented && c.overlay === null && !c.dom.pal.isOpen() && !document.querySelector('.scrim') && !inField(e.target)) {
     // A field's Escape (the editor's search, a note) is the field's. Otherwise: the help, then a narrow drawer, then the console.
     if (c.dom.help.isOpen()) c.dom.help.set(false);
     else if ((c.narrow && c.sheets.drawer) || (c.mid && c.sheets.sheet)) closeDrawerIfNarrow(c);

@@ -1,0 +1,59 @@
+/* The theme editor and the import screen. Cards, fields, tabs, tables, chips and the diff and code blocks are the
+   prototype's own; this file only lays them out and gives the few parts the editor adds (the colour inputs, the drop
+   zones, the sample chart) the prototype's tokens. */
+
+.te-root .te-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: 20px; align-items: start; }
+.te-root .te-layout > * { min-width: 0; }
+@media (max-width: 900px) { .te-root .te-layout { grid-template-columns: minmax(0, 1fr); } }
+
+.te-root .te-group + .te-group { margin-top: 18px; }
+.te-root .te-group h4 { margin: 0 0 6px; font: 500 12px/1.4 var(--font); color: var(--ink-3); }
+.te-root .te-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.te-root .te-meta .mono { font-size: 12.5px; color: var(--ink); }
+.te-root .tbl td { vertical-align: middle; }
+.te-root .tbl td:nth-child(2) { white-space: nowrap; }
+.te-root .tbl td:nth-child(3) { white-space: nowrap; text-align: right; }
+.te-root .tbl th:nth-child(3) { text-align: right; }
+
+.te-root .te-swatch {
+  width: 28px; height: 28px; padding: 0; flex: none; cursor: pointer;
+  border: 1px solid var(--rule-strong); border-radius: 6px; background: none;
+}
+.te-root .te-swatch::-webkit-color-swatch-wrapper { padding: 2px; }
+.te-root .te-swatch::-webkit-color-swatch { border: 0; border-radius: 4px; }
+.te-root .te-hex { width: 104px; font-family: var(--font-mono); font-size: 12.5px; }
+.te-root .te-invalid { border-color: var(--crit) !important; }
+.te-root .hint.bad { color: var(--crit); }
+
+.te-root .te-preview {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px;
+  background: var(--paper); color: var(--ink); border: 1px solid var(--rule); border-radius: var(--radius-lg);
+  font: 400 var(--fs-sm)/1.45 var(--font);
+}
+.te-root .te-preview .card-b { padding: 12px; gap: 8px; }
+.te-root .te-preview .card-h { min-height: 36px; padding: 6px 12px; }
+.te-root .te-preview p { margin: 0; }
+.te-root .te-preview .cluster { gap: 6px; }
+.te-root .te-preview .btn { min-height: 26px; pointer-events: none; }
+.te-root .te-preview .dlines { font-size: 12px; }
+.te-root .te-preview .code { font-size: 12px; }
+.te-root .te-comment { color: var(--syn-comment); }
+.te-root .te-chart {
+  display: flex; align-items: flex-end; gap: 6px; height: 72px; padding: 8px;
+  border: 1px solid var(--rule); border-radius: var(--radius); background: var(--sheet);
+}
+.te-root .te-bar { flex: 1; min-height: 4px; border-radius: 3px 3px 0 0; background: var(--signal); opacity: .8; }
+.te-root .te-bar:nth-child(even) { background: var(--info); }
+
+.te-root .te-drop {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0;
+  padding: 18px; border: 1px dashed var(--rule-strong); border-radius: var(--radius-lg);
+  background: var(--sheet-2); color: var(--ink); cursor: pointer;
+}
+.te-root .te-drop strong { font-weight: 600; }
+.te-root .te-drop:hover,
+.te-root .te-drop:focus-visible,
+.te-root .te-drop.over { border-color: var(--signal); background: var(--signal-soft); outline: none; }
+
+.te-root .te-cmp { display: flex; flex-direction: column; gap: 6px; margin: 0; min-width: 0; }
+.te-root .te-cmp figcaption { font-size: var(--fs-xs); color: var(--ink-3); }

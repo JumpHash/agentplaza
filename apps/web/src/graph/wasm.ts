@@ -1,6 +1,6 @@
 // The task graph's layout (crates/apz-graph-web), loaded on first use. The console never fetches it at start: nothing
 // imports this module then, and `loadGraph()` imports the glue (and so the wasm) only when the Work screen first draws a
-// graph. The wasm's one export takes and returns JSON text; the wrapper here gives callers the shapes below.
+// graph. The wasm's exports take and return JSON text; the wrapper here gives callers the shapes below.
 
 /** The card size and gaps, in CSS pixels; any left out take the desk sizes (232 x 104 cards, 46 and 14 gaps, 24 pad). */
 export interface LayoutOptions {
@@ -43,15 +43,33 @@ export interface GraphInput {
   edges: [string, string][];
 }
 
+/** The box a force layout fills, and its optional settings: the steps (300 by default) and the node size kept clear of the
+ * box's edges (28 by default). */
+export interface ForceOptions {
+  width: number;
+  height: number;
+  iterations?: number;
+  node_size?: number;
+}
+
+/** Each node's centre inside the box, by node id. */
+export interface ForceLayout {
+  positions: Record<string, [number, number]>;
+}
+
 /** The glue's exports, as wasm-bindgen generates them (`--target web`). */
 export interface GraphGlue {
   default(): Promise<unknown>;
   layout(graph: string, options: string): string;
+  force_layout(input: string): string;
 }
 
-/** The layout, typed. A refusal (sizes it cannot lay out) throws an Error with apz-graph's message. */
+/** The layouts, typed. A refusal (sizes it cannot lay out) throws an Error with apz-graph's message. */
 export interface GraphLayout {
   layout(graph: GraphInput, options?: LayoutOptions): Layout;
+  /** A force-directed layout of nodes and links with no natural order. Edges naming an unknown node are skipped. The
+   * same Rust runs on the desk, so both consoles place the nodes alike. */
+  force(nodes: string[], edges: [string, string][], opts: ForceOptions): ForceLayout;
 }
 
 /** The typed wrapper over a glue. Exported so the wrapping is testable without the wasm. Only the ids and the links
@@ -65,6 +83,8 @@ export function wrapGraph(glue: GraphGlue): GraphLayout {
           options ? JSON.stringify(options) : '',
         ),
       ) as Layout,
+    force: (nodes, edges, opts) =>
+      JSON.parse(glue.force_layout(JSON.stringify({ nodes, edges, ...opts }))) as ForceLayout,
   };
 }
 

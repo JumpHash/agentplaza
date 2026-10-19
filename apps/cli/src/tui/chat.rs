@@ -16,6 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Row, Table};
 use serde_json::Value;
 
+use super::context_bar::{self, Owner};
 use super::{App, Palette};
 use crate::cmd::chat::{delta_text, draft_lines, speaker, startable, unanswered};
 use crate::tui::screens::{clip, local_time, show};
@@ -220,6 +221,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
     list(frame, list_area, app);
     conversation(frame, talk_area, app);
+    if let Some(picker) = &app.ws.picker {
+        context_bar::overlay(frame, area, picker, app.palette);
+    }
+}
+
+/// The conversation the tab selects, as the context bar reads it: its owner, and its model as the list says it.
+pub fn selected(app: &App) -> Option<(Owner, Option<String>)> {
+    let summary = app.array(PATH).get(app.selected)?;
+    let id = summary.get("id")?.as_str()?;
+    Some((
+        Owner::Conversation(id.to_string()),
+        context_bar::model_of(summary.get("model")),
+    ))
 }
 
 fn list(frame: &mut Frame, area: Rect, app: &App) {
@@ -281,6 +295,8 @@ fn conversation(frame: &mut Frame, area: Rect, app: &App) {
             Layout::vertical([Constraint::Min(3), Constraint::Length(height)]).areas(area);
         (talk, Some(below))
     };
+    // The context bar sits under the transcript, above the draft and the footer's input.
+    let [talk, bar] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(talk);
     let title = format!(
         " {id} · {} · t message · n new ",
         clip(&show(summary.get("title")), 40)
@@ -302,6 +318,15 @@ fn conversation(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(lines).block(Block::bordered().title(title)),
         talk,
     );
+    let owner = Owner::Conversation(id);
+    let context = app.ws.contexts.get(&owner);
+    frame.render_widget(
+        Paragraph::new(context_bar::bar_line(context, bar.width, palette)),
+        bar,
+    );
+    if app.ws.breakdown {
+        context_bar::panel(frame, talk, context, palette);
+    }
     if let (Some(below), Some(draft)) = (below, draft) {
         let lines: Vec<Line> = drafted.into_iter().map(Line::from).collect();
         let block = Block::bordered().title(draft_title(draft, project));

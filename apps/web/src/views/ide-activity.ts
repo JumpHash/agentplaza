@@ -1,12 +1,22 @@
-// The Activity tab of the IDE right column: time split per agent and the tool-call list.
+// The Activity tab of the IDE right column: time split per agent and the tool-call list. The markup is the prototype's
+// Activity panel (m-ide-more.js; styles/proto/ide-more.css).
+import moreCss from '../styles/proto/ide-more.css';
 import { api, type Entry } from '../api';
 import { ago } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { activitySplit, formatMs } from '../ide/view';
 import { on } from '../store';
-import css from '../styles/ide-panels.css';
 
-const STYLE_ID = 'apz-ide-panels-style';
+/** The prototype's IDE rules (styles/proto/ide-more.css), inserted once per page. */
+const MORE_STYLE_ID = 'apz-ide-more-style';
+function ensureMoreStyle(): void {
+  if (document.getElementById(MORE_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = MORE_STYLE_ID;
+  style.textContent = moreCss;
+  document.head.append(style);
+}
+
 const LOAD_LAST = 1000;
 const MAX_ROWS = 200;
 const DEBOUNCE_MS = 400;
@@ -28,49 +38,37 @@ const OUTCOME: Record<Call['outcome'], string> = {
   running: 'running',
 };
 
-function ensureStyle(): void {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = css;
-  document.head.appendChild(style);
-}
-
 function pct(part: number, total: number): string {
   return `${Math.round((part / total) * 100)}%`;
 }
 
 function seg(cls: string, share: number): HTMLElement {
-  const el = h('span.ipa-seg');
-  el.classList.add(cls);
+  const el = h(`span.${cls}`);
   el.style.width = `${(Math.max(0, Math.min(1, share)) * 100).toFixed(2)}%`;
   return el;
 }
 
-function key(cls: string, text: string): HTMLElement {
-  const swatch = h('i.ipa-swatch', { 'aria-hidden': 'true' });
-  swatch.classList.add(cls);
-  return h('li.ipa-key', null, swatch, text);
-}
-
 function callRow(c: Call): HTMLElement {
-  return h('li.ipa-row', { 'data-outcome': c.outcome },
-    h('span.ipa-name', null, c.name),
-    h('span.ipa-ms', null, c.ms == null ? 'running' : formatMs(c.ms)),
-    h('span.ipa-outcome', null, OUTCOME[c.outcome]),
-    h('span.ipa-ago', null, ago(c.at)));
+  return h('div.idem-call', { 'data-outcome': c.outcome },
+    h('span.idem-call-name', { title: c.name }, c.name),
+    h('span.num', null, c.ms == null ? 'running' : formatMs(c.ms)),
+    h('span.muted', null, OUTCOME[c.outcome]),
+    h('span.muted', null, ago(c.at)));
 }
 
 export function activityPanel(opts: { cid: number; agentName: string }): ActivityPanel {
-  ensureStyle();
+  ensureMoreStyle();
   const { cid, agentName } = opts;
-  const summaryEl = h('div.ipa-summary');
-  const scroller = h('div.ipa-scroll', { tabindex: 0, 'aria-label': 'Tool calls' });
-  const el = h('section.ipa', { 'aria-label': 'Activity' },
-    h('header.ipa-head', null, h('span.ipa-title', null, 'Activity'), h('span.ipa-agent', null, agentName)),
+  const summaryEl = h('div.idem-summary');
+  const capEl = h('div.muted');
+  capEl.hidden = true;
+  const scroller = h('div.idem-list', { tabindex: 0, 'aria-label': 'Tool calls' });
+  const el = h('div.idem-panel', { 'aria-label': 'Activity' },
+    h('div.idem-panel-h', null, h('span.idem-h', null, 'Activity'), h('span.muted', null, agentName)),
     summaryEl,
+    capEl,
     scroller);
-  replace(summaryEl, h('p.ipa-note', null, 'Loading activity'));
+  replace(summaryEl, h('div.muted', null, 'Loading activity'));
 
   let entries: Entry[] = [];
   let error: string | null = null;
@@ -86,19 +84,19 @@ export function activityPanel(opts: { cid: number; agentName: string }): Activit
     const total = split.totalMs;
 
     if (error !== null) {
-      replace(summaryEl, h('p.ipa-note', null, error));
+      replace(summaryEl, h('div.muted', null, error));
     } else if (total === 0) {
-      replace(summaryEl, h('p.ipa-note', null, 'No activity yet'));
+      replace(summaryEl, h('div.muted', null, 'No activity yet'));
     } else {
       const other = Math.max(0, total - split.thinkingMs - split.toolMs);
-      const bar = h('div.ipa-bar', { 'aria-hidden': 'true' },
-        seg('ipa-think', split.thinkingMs / total),
-        seg('ipa-tool', split.toolMs / total),
-        seg('ipa-other', other / total));
-      const keys = h('ul.ipa-keys', null,
-        key('ipa-think', `Thinking ${formatMs(split.thinkingMs)} · ${pct(split.thinkingMs, total)}`),
-        key('ipa-tool', `Tools ${formatMs(split.toolMs)} · ${pct(split.toolMs, total)}`),
-        key('ipa-other', `Other ${formatMs(other)} · ${pct(other, total)}`));
+      const bar = h('div.idem-activity-bar', { 'aria-hidden': 'true' },
+        seg('idem-seg-t', split.thinkingMs / total),
+        seg('idem-seg-h', split.toolMs / total),
+        seg('idem-seg-o', other / total));
+      const keys = h('div.idem-keys', null,
+        h('span', null, `Thinking ${formatMs(split.thinkingMs)} · ${pct(split.thinkingMs, total)}`),
+        h('span', null, `Tools ${formatMs(split.toolMs)} · ${pct(split.toolMs, total)}`),
+        h('span', null, `Other ${formatMs(other)} · ${pct(other, total)}`));
       replace(summaryEl, bar, keys);
     }
 
@@ -106,12 +104,10 @@ export function activityPanel(opts: { cid: number; agentName: string }): Activit
     const calls = error === null ? split.calls : [];
     const capped = calls.length > MAX_ROWS;
     const shown = capped ? calls.slice(-MAX_ROWS) : calls;
+    capEl.hidden = !capped;
+    if (capped) capEl.textContent = `Showing the newest ${MAX_ROWS} of ${calls.length} calls.`;
     const top = scroller.scrollTop;
-    replace(scroller,
-      capped ? h('p.ipa-note', null, `Showing the newest ${MAX_ROWS} of ${calls.length} calls.`) : null,
-      shown.length > 0
-        ? h('ol.ipa-list', null, shown.map(callRow))
-        : h('p.ipa-note', null, 'No tool calls yet'));
+    replace(scroller, shown.length > 0 ? shown.map(callRow) : h('div.muted', null, 'No tool calls yet'));
     scroller.scrollTop = top;
   }
 

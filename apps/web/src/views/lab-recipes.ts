@@ -1,12 +1,12 @@
-// The Lab's recipes (`#/lab/recipes`): each registered recipe with its pin, its vet and its schema.
-// Vetting asks for a commit (checked here the way apid checks it), confirms, then records the vet.
+// The Lab's recipes (`#/lab/recipes`), in the prototype's layout: one card per registered recipe with
+// its facts (id, repo, commit, vet) and its schema as chips. Vet opens a dialog: a commit (checked
+// here the way apid checks it), a review line, then a confirm that records the vet.
 
-import '../styles/lab-data.css';
 import { listRecipes, vetRecipe, type Recipe } from '../api';
-import { ago, button, clip, field, input, modal, toast } from '../ui/components';
+import { badge, card, field, input, modal, toast } from '../ui/components';
 import { h, keepState, replace } from '../ui/dom';
 import type { Cleanup } from './index';
-import { errorText, fmtTime, labEmpty, pollEvery } from './lab-common';
+import { agoText, errorText, labButton, labEmpty, pollEvery } from './lab-common';
 
 type Facts = Record<string, unknown>;
 
@@ -18,96 +18,61 @@ function commitProblem(commit: string): string | null {
   const c = commit.trim();
   if (!c) return 'Enter the commit to vet.';
   if (HEX_COMMIT.test(c) || DEV_COMMIT.test(c)) return null;
-  return 'A commit is 7 to 64 hex characters, or dev-... for a local-dev pin.';
+  return 'Seven to 64 hex characters of the commit, or dev-... for a local-dev pin.';
 }
 
-/** The commit as the list shows it: its first twelve characters. The full value is the tooltip. */
+/** The commit as the card shows it: its first twelve characters. The full value is the tooltip. */
 const shortCommit = (commit: string): string => (commit.length > 12 ? commit.slice(0, 12) : commit);
-
-/** A state badge in the Lab's mono skeleton (`lab-badge`), toned ok, warn, info, accent or muted. */
-const tag = (text: string, tone: 'ok' | 'warn' | 'accent' | 'muted' = 'muted'): HTMLElement => h('span.lab-badge', { class: tone }, text);
 
 const asFacts = (v: unknown): Facts | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Facts) : null);
 const names = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
-function kv(label: string, value: Node | string): HTMLElement {
-  return h('div', null, h('dt', null, label), h('dd', null, value));
+/** A fact cell: a mono-label over its value (the prototype's `lab2-fact`). */
+function fact(label: string, value: Node | string, wide = false): HTMLElement {
+  return h('div.lab2-fact', { class: wide ? 'lab2-wide' : null }, h('span.lab2-k', null, label), h('span.lab2-v', null, value));
 }
 
-/** The vet state: a badge, then who vetted it and when. */
-function vetLine(r: Recipe): HTMLElement {
-  if (!r.vetted_ms) return h('span', null, tag('not vetted', 'warn'));
-  return h(
-    'span',
-    null,
-    tag('vetted', 'ok'),
-    ' by ',
-    r.vetted_by ?? 'unknown',
-    ' ',
-    h('span.lab-muted', { title: fmtTime(r.vetted_ms) }, ago(r.vetted_ms)),
-  );
+/** The vet state: a warning badge when not vetted; else who vetted it and how long ago. */
+function vetLine(r: Recipe): Node {
+  if (!r.vetted_ms) return badge('not vetted', 'warn');
+  return h('span', null, `vetted by ${r.vetted_by ?? 'unknown'} `, h('span.lab2-note', null, agoText(r.vetted_ms)));
 }
 
-/** One side of the schema: its title, a count note, and its feature names as chips (categorical ones dashed). */
-function facet(title: string, note: string, chips: { name: string; cat?: boolean }[]): HTMLElement {
-  return h(
-    'div.lab-schema',
-    null,
-    h('div.lab-schema-head', null, title, ' · ', h('b', null, note)),
-    h(
-      'div.lab-chips',
-      null,
-      chips.map((c) => h('span.lab-chip', { class: c.cat ? 'cat' : '' }, c.name)),
-    ),
-  );
-}
-
-/** The recipe's input and output schema, summarised: the features (numeric, categorical) and the classes. */
-function schemaBlock(schema: unknown): HTMLElement {
+/** The recipe's schema as chips: numeric and embedding and bucket counts, categorical features dashed, the classes in accent. */
+function schemaChips(schema: unknown): Node[] {
   const s = asFacts(schema);
   const input = asFacts(s?.input);
   const output = asFacts(s?.output);
-  if (!input && !output) {
-    if (!s || Object.keys(s).length === 0) return h('div.lab-schema', null, h('div.lab-schema-head', null, 'Schema'), h('span.lab-muted', null, 'Not declared.'));
-    return h('div.lab-schema', null, h('div.lab-schema-head', null, 'Schema'), h('p.lab-raw', null, clip(JSON.stringify(s), 240)));
-  }
-  const numeric = names(input?.numeric);
-  const categorical = names(input?.categorical);
-  const notes: string[] = [];
-  if (numeric.length) notes.push(`${numeric.length} numeric`);
-  if (categorical.length) notes.push(`${categorical.length} categorical`);
-  if (typeof input?.embedding_dim === 'number') notes.push(`embedding ${input.embedding_dim}`);
-  if (typeof input?.hash_buckets === 'number') notes.push(`${input.hash_buckets} hash buckets`);
-  const classes = names(output?.classes);
-  return h(
-    'div',
-    null,
-    facet('Inputs', notes.join(', ') || 'none', [...numeric.map((name) => ({ name })), ...categorical.map((name) => ({ name, cat: true }))]),
-    facet('Outputs', classes.length ? `${classes.length} classes` : 'none', classes.map((name) => ({ name }))),
-  );
+  const chips: Node[] = [];
+  const numeric = typeof input?.numeric === 'number' ? input.numeric : names(input?.numeric).length;
+  if (numeric) chips.push(badge(`${numeric} numeric`, 'muted'));
+  for (const c of names(input?.categorical)) chips.push(h('span.chip.lab2-dash', null, c));
+  if (typeof input?.embedding_dim === 'number') chips.push(badge(`embedding ${input.embedding_dim}`, 'info'));
+  if (typeof input?.hash_buckets === 'number') chips.push(badge(`${input.hash_buckets.toLocaleString('en-US')} hash buckets`, 'muted'));
+  for (const c of names(output?.classes)) chips.push(badge(c, 'accent'));
+  return chips;
 }
 
-/** One recipe: its name and local-dev badge, its facts, its schema, and the Vet action. */
+/** One recipe: a local-dev badge when it has one, its facts, its schema chips, and the Vet action. */
 function recipeCard(r: Recipe, onVet: (r: Recipe) => void): HTMLElement {
-  return h(
-    'article.lab-card.lab-recipe',
+  const chips = schemaChips(r.schema);
+  const body = h(
+    'div',
     null,
-    h('header.lab-card-head', null, h('h3', null, r.name), r.local_dev ? tag('local dev', 'accent') : null),
+    r.local_dev ? h('div.lab2-row', { style: 'justify-content:flex-start;margin-bottom:8px' }, badge('local dev', 'info')) : null,
     h(
-      'div.lab-card-body',
+      'div.lab2-facts',
       null,
-      h(
-        'dl.lab-kv',
-        null,
-        kv('Id', h('span.lab-mono', null, r.id)),
-        kv('Repo', h('span.lab-mono', null, r.repo)),
-        kv('Commit', h('span.lab-mono', { title: r.commit }, shortCommit(r.commit))),
-        kv('Vetted', vetLine(r)),
-      ),
-      schemaBlock(r.schema),
-      h('div.lab-recipe-foot', null, button('Vet', () => onVet(r), { icon: 'check', title: `Vet ${r.id}` })),
+      fact('Id', h('span.mono.lab2-clip', { title: r.id }, r.id)),
+      fact('Repo', h('span.mono.lab2-clip', { title: r.repo }, r.repo || '—')),
+      fact('Commit', h('span.mono.lab2-clip', { title: r.commit }, shortCommit(r.commit))),
+      fact('Vet', vetLine(r)),
+      fact('Schema', chips.length ? h('div.lab2-row', { style: 'justify-content:flex-start' }, chips) : 'none', true),
     ),
   );
+  return card(r.name || r.id, body, {
+    actions: [labButton('Vet', () => onVet(r), { kind: 'ghost', sm: true, icon: 'check', title: `Vet ${r.id}` })],
+  });
 }
 
 /**
@@ -115,8 +80,8 @@ function recipeCard(r: Recipe, onVet: (r: Recipe) => void): HTMLElement {
  * refusal stays on the dialog; a recorded vet closes it and reloads the list.
  */
 function vetDialog(r: Recipe, reload: () => void): void {
-  const box = h('div.lab-form');
-  const commit = input({ autocomplete: 'off', spellcheck: 'false', placeholder: '7 to 64 hex characters, or dev-...' });
+  const box = h('div.lab2-form');
+  const commit = input({ autocomplete: 'off', spellcheck: 'false', placeholder: '7 to 64 hex characters, or dev-...', 'aria-label': 'Commit' });
   commit.value = r.commit;
   let close: () => void = () => undefined;
   let error: string | null = null;
@@ -129,7 +94,7 @@ function vetDialog(r: Recipe, reload: () => void): void {
     show('confirm', target);
     try {
       const done = await vetRecipe(r.id, target);
-      toast(`Vetted ${done.id} at ${shortCommit(done.commit)}`);
+      toast(`Vetted ${r.id} at ${shortCommit(done.commit)}`);
       close();
       reload();
     } catch (err) {
@@ -140,7 +105,7 @@ function vetDialog(r: Recipe, reload: () => void): void {
   };
 
   const show = (step: 'edit' | 'confirm', target = commit.value.trim()): void => {
-    const note = error ? h('div.lab-error', null, error) : null;
+    const note = h('p.lab2-err', { role: 'alert' }, error ?? '');
     if (step === 'edit') {
       const hint = r.local_dev
         ? `A local-dev recipe vets only at its own pin, ${r.commit}.`
@@ -150,10 +115,10 @@ function vetDialog(r: Recipe, reload: () => void): void {
         field('Commit', commit, hint),
         note,
         h(
-          'div.lab-form-actions',
+          'div.lab-actions',
           null,
-          button('Cancel', () => close(), { kind: 'ghost' }),
-          button(
+          labButton('Cancel', () => close(), { kind: 'ghost' }),
+          labButton(
             'Review',
             () => {
               error = commitProblem(commit.value);
@@ -167,13 +132,13 @@ function vetDialog(r: Recipe, reload: () => void): void {
     }
     replace(
       box,
-      h('p', null, 'Vet ', h('span.lab-mono', null, r.id), ' at commit ', h('span.lab-mono', null, target), '? The vet records you as the vetter at this commit, so a job can use the recipe.'),
+      h('p', null, 'Vet ', h('span.mono', null, r.id), ' at commit ', h('span.mono', null, target), '? The vet records you as the vetter at this commit, so a job can use the recipe.'),
       note,
       h(
-        'div.lab-form-actions',
+        'div.lab-actions',
         null,
-        button('Back', () => show('edit'), { kind: 'ghost', disabled: busy }),
-        button('Confirm vet', () => void doVet(target), { kind: 'primary', disabled: busy }),
+        labButton('Back', () => show('edit'), { kind: 'ghost', disabled: busy }),
+        labButton('Confirm vet', () => void doVet(target), { kind: 'primary', disabled: busy }),
       ),
     );
   };
@@ -191,13 +156,12 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
 
   const paint = (): void => {
     const restore = keepState(body);
-    const count = recipes ? `${recipes.length} registered` : '';
-    const nodes: Node[] = [h('div.lab-page-head', null, h('h2', null, 'Recipes'), h('div.lab-actions', null, h('span.lab-muted', null, count)))];
-    if (failure) nodes.push(h('div.lab-error', null, failure));
+    const nodes: Node[] = [];
+    if (failure) nodes.push(h('p.lab-err', { role: 'alert' }, failure));
     if (recipes && recipes.length === 0) {
-      nodes.push(labEmpty('file', 'No recipes registered', 'Recipes come from trainer/recipes; a recipe must be vetted at a commit before a job can use it.'));
+      nodes.push(labEmpty('flask-conical', 'No recipes registered'));
     } else if (recipes) {
-      nodes.push(h('div.lab-grid.lab-recipes', null, recipes.map((r) => recipeCard(r, (picked) => vetDialog(picked, load)))));
+      nodes.push(h('div.lab2-grid', null, recipes.map((r) => recipeCard(r, (picked) => vetDialog(picked, load)))));
     }
     replace(body, nodes);
     restore();

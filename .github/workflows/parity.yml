@@ -1,0 +1,73 @@
+# Visual parity: the same screens in every built-in theme and mode, on the web console (headless Chromium)
+# and the desktop app (its own snapshot), compared with a perceptual diff (scripts/parity). By hand only.
+# The report and the diff images go up as the parity-report artifact.
+name: Parity
+run-name: "Visual parity by hand"
+
+on:
+  workflow_dispatch:
+    inputs:
+      themes: { type: string, default: "", description: "Comma-separated theme ids; empty: every built-in theme" }
+      screens: { type: string, default: "", description: "Comma-separated screen names from screens.json; empty: all" }
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: Visual parity
+    runs-on: ["self-hosted", "Linux", "X64", "hetzner"]
+    timeout-minutes: 120
+    env:
+      THEMES: ${{ inputs.themes }}
+      SCREENS: ${{ inputs.screens }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: CI image
+        run: .github/ci/image.sh
+      - name: The web console
+        run: .github/ci/in-image.sh "cd apps/web && npm ci && npm run build"
+      - name: The hub and the desktop app
+        run: .github/ci/in-image.sh "cargo build --release --locked -p apid -p agentplaza-desktop"
+      # The hub and the harness share one container, so the hub is stopped when the harness ends.
+      # Its state directory (the owner token) stays under the workspace and is deleted below.
+      # The CI image carries no browser: fetch Chrome's headless shell, pinned, into the workspace.
+      - name: Headless Chrome
+        run: .github/ci/in-image.sh "npx --yes @puppeteer/browsers@2.10.5 install chrome-headless-shell@138.0.7204.94 --path parity-out/browsers"
+      - name: Capture and compare
+        run: |
+          mkdir -p parity-out
+          args=""
+          if [ -n "$THEMES" ]; then args="$args --themes $THEMES"; fi
+          if [ -n "$SCREENS" ]; then args="$args --screens $SCREENS"; fi
+          .github/ci/in-image.sh "
+            : > parity-out/empty.env
+            /ci-target/release/apid --port 7700 --state-dir parity-out/state --env-file parity-out/empty.env \
+              --console apps/web/dist --dev-models > parity-out/hub.log 2>&1 &
+            hub=\$!
+            trap 'kill \$hub 2>/dev/null || true' EXIT
+            for _ in \$(seq 60); do [ -s parity-out/state/owner-token ] && break; sleep 1; done
+            CHROMIUM=\$(find parity-out/browsers -type f -name chrome-headless-shell | head -1) xvfb-run -a node scripts/parity/shots.mjs \
+              --hub http://127.0.0.1:7700 --token-file parity-out/state/owner-token --out parity-out \
+              --binary /ci-target/release/agentplaza-desktop $args
+          "
+      - name: Summary
+        if: always()
+        run: cat parity-out/report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - name: Remove the hub state (it holds the owner token)
+        if: always()
+        run: rm -rf parity-out/state
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-report
+          path: |
+            parity-out/*.png
+            parity-out/report.json
+            parity-out/report.md
+          retention-days: 14
+          if-no-files-found: warn

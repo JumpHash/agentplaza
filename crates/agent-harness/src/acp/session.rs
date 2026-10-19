@@ -46,7 +46,8 @@ use apz_acp::rpc::{self, Peer};
 use apz_acp::types::{self as types, AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES};
 use serde_json::{Value, json};
 
-use super::catalog::{Entry, ModelVia};
+use super::catalog::ModelVia;
+use super::instance::Instance;
 use super::layout;
 use super::link::{EngineLink, Verdict};
 use super::mcp::{self, Socket};
@@ -71,7 +72,7 @@ const TICK: Duration = Duration::from_millis(20);
 
 /// How to start and drive one engine session.
 pub struct Options<'w> {
-    pub entry: &'static Entry,
+    pub entry: &'w Instance,
     pub workspace: &'w Workspace,
     /// The folder the engine works in (absolute, inside the workspace): the process's cwd and the
     /// ACP session's `cwd`.
@@ -128,7 +129,7 @@ pub fn prompt_turn(
         .split_first()
         .ok_or_else(|| format!("the {} engine has no command", entry.id))?;
     let args: Vec<&str> = rest.iter().map(String::as_str).collect();
-    let home = layout::engine_home(options.workspace, entry.id);
+    let home = layout::engine_home(options.workspace, &entry.home);
     let mut command = bash::command(
         program,
         &args,
@@ -251,7 +252,7 @@ enum Event {
 /// What the engine's client requests need: the session's checks, the workspace and the terminals.
 /// Shared by the worker thread of each request, so everything in it is `Sync`.
 struct Ctx<'a> {
-    entry: &'static Entry,
+    entry: &'a Instance,
     workspace: &'a Workspace,
     link: &'a dyn EngineLink,
     terminals: &'a Terminals,
@@ -273,7 +274,7 @@ impl Ctx<'_> {
             } else {
                 params.clone()
             };
-            let (name, input) = gate::permission_check(self.entry.id, &request);
+            let (name, input) = gate::permission_check(&self.entry.id, &request);
             let verdict = self.link.decide(&name, &input, self.deadline);
             let answer = gate::permission_answer(&request, &verdict);
             Ok(if self.v2 {
@@ -322,7 +323,7 @@ impl Ctx<'_> {
 
     /// Asks the hub about a client method; a denial or a cancel is the error the engine gets.
     fn check(&self, method: &str, params: &Value, label: Option<&str>) -> Result<(), types::Error> {
-        let (name, input) = match gate::client_check(self.entry.id, method, params, label) {
+        let (name, input) = match gate::client_check(&self.entry.id, method, params, label) {
             gate::Check::None => return Ok(()),
             // Refused without a question to the hub: it would decide the cut-off command.
             gate::Check::TooLong => {
@@ -513,7 +514,7 @@ fn run_turn(
     // The model is the one option the catalogue sets after the session; the other engines took it
     // from their command line or environment. An engine that refuses it runs on its default.
     if let (true, Some(model)) = (
-        matches!(entry.model, ModelVia::ConfigOption),
+        matches!(entry.model_via, ModelVia::ConfigOption),
         options.model.as_deref(),
     ) {
         let _ = peer.call(
@@ -533,7 +534,7 @@ fn run_turn(
 
     let terminals = Terminals::new(
         options.workspace.clone(),
-        layout::engine_home(options.workspace, options.entry.id),
+        layout::engine_home(options.workspace, &options.entry.home),
     );
     let ctx = Ctx {
         entry,
@@ -544,7 +545,7 @@ fn run_turn(
         checkpoint: Mutex::new(None),
         v2,
     };
-    let mut stream = Stream::new(link, entry.id, &session);
+    let mut stream = Stream::new(link, &entry.id, &session);
     let prompt_params = json!({"sessionId": session, "prompt": blocks});
     let budget =
         options.deadline.saturating_duration_since(Instant::now()) + CANCEL_GRACE + PROMPT_SLACK;
@@ -787,9 +788,8 @@ mod tests {
     use std::env;
     use std::path::Path;
     use std::process::Command;
-    use std::sync::Once;
+    use std::sync::{Once, OnceLock};
 
-    use super::super::catalog::ENGINES;
     use super::*;
 
     /// The fake agent, beside this test binary. A workspace test run (cargo test or nextest) builds it for
@@ -823,11 +823,9 @@ mod tests {
         target.join("apz-acp-fake-agent")
     }
 
-    fn claude() -> &'static Entry {
-        ENGINES
-            .iter()
-            .find(|engine| engine.id == "claude")
-            .expect("the claude engine")
+    fn claude() -> &'static Instance {
+        static CLAUDE: OnceLock<Instance> = OnceLock::new();
+        CLAUDE.get_or_init(|| Instance::from_catalogue("claude").expect("the claude engine"))
     }
 
     /// A folder of the test's own, for its script and its log.

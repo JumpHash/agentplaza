@@ -133,6 +133,8 @@ pub struct App {
     pub members: crate::membership::Members,
     /// The owner's conversations with the orchestrator, each its own thread (`conversations`).
     pub conversations: crate::conversations::Store,
+    /// Each chat's context and tool calls, and one-message model choices (`context_track.rs`).
+    pub context: crate::context_track::Tracker,
     /// Each project's overrides of the plaza's settings (`project_settings`).
     pub project_settings: crate::project_settings::Store,
     /// Loops and per-agent harness limits.
@@ -183,7 +185,17 @@ pub struct App {
     /// The secret vault (docs/design/vault.md): sealed or unsealed, encrypted at rest.
     pub vault: Arc<crate::vault::Store>,
     pub settings: settings::Store,
+    /// The owner's appearance: theme, skin, background and mode, and saved themes (appearance.rs).
+    pub appearance: crate::appearance::Store,
+    /// Agents' artifacts (artifacts/), their versions and data blobs.
+    pub artifacts: Arc<crate::artifacts::Store>,
+    /// Share links (shares/).
+    pub shares: Arc<crate::shares::Store>,
     pub providers: providers::Store,
+    /// The coding engines as instances (`engine_instances.rs`).
+    pub engines: crate::engine_instances::Store,
+    /// The usage providers (CLIProxyAPI hubs), `usage_providers.rs`.
+    pub usage_providers: crate::usage_providers::Store,
     pub roles: agents::Roles,
     pub agents: agents::Roster,
     /// The model registry: the records on disk and the compiled models in memory.
@@ -267,6 +279,7 @@ impl App {
             toolbox: crate::toolbox::Store::load(&config.state_dir),
             projects: crate::projects::Store::load(&config.state_dir),
             members: crate::membership::Members::load(config.state_dir.join("members.json")),
+            context: Default::default(),
             conversations: crate::conversations::Store::load(
                 config.state_dir.join("conversations.json"),
             ),
@@ -332,7 +345,15 @@ impl App {
                 )
             },
             settings: settings::Store::load(&config.state_dir, config.dev_models)?,
+            appearance: crate::appearance::Store::load(&config.state_dir),
+            artifacts: Arc::new(crate::artifacts::Store::load(
+                &config.state_dir,
+                Arc::clone(&library),
+            )),
+            shares: Arc::new(crate::shares::Store::load(&config.state_dir)),
             providers: providers::Store::load(&config.state_dir, Arc::clone(&vault))?,
+            engines: crate::engine_instances::Store::load(&config.state_dir)?,
+            usage_providers: crate::usage_providers::Store::load(&config.state_dir)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
             names: agents::Names::load(config.state_dir.join("names.json")),
             spawned: spawned::Store::load(config.state_dir.join("spawned.json")),
@@ -384,6 +405,10 @@ impl App {
         }
         // Postgres is the state of record: restore from it, then keep it current.
         crate::db::restore_all(&app);
+        // The built-in skills join the skill library (one the library already holds is left alone).
+        if let Err(why) = crate::skills::seed_builtins(&app.skills, "owner", apz_plaza::now_ms()) {
+            eprintln!("apid: cannot seed the built-in skills: {why}");
+        }
         // The built-in role prompts join the prompt library (new ones published, the owner's edits kept).
         crate::prompts::seed::import(
             &app.prompts,
@@ -404,11 +429,13 @@ impl App {
         crate::vault::spawn_saver(Arc::clone(&app));
         // Weft starts once the vault can give it its keys.
         crate::weft_hub::start(Arc::clone(&app));
+        crate::shares::relay::start(Arc::clone(&app));
         // Promoted models come back on the roster with their CIDs.
         app.models.revive(&app.agents, &app.looks);
         crate::db::spawn_writer(Arc::clone(&app));
         spawn_treasury_saver(Arc::clone(&app));
         spawn_component_savers(Arc::clone(&app));
+        crate::provider_health::spawn(Arc::clone(&app));
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
         crate::maintenance::spawn_ticker(Arc::clone(&app));
@@ -444,6 +471,12 @@ impl App {
             max_head: 16 << 10,
             max_body: 512 << 20,
         });
+        // The content origin for HTML artifacts (content.rs): a second listener, kept for the hub's life. A hub
+        // that cannot open it still serves everything else; HTML artifacts then show their stills.
+        match crate::content::spawn(&app) {
+            Ok(handle) => std::mem::forget(handle),
+            Err(e) => eprintln!("apid: the content origin did not start: {e}"),
+        }
         let router = api::router();
         // The hub's front door first (owner token off loopback), then the routes.
         server.spawn(move |request| {

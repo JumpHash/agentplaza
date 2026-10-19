@@ -1,15 +1,22 @@
 //! A project's Settings tab (the web's `project-settings.ts`): every setting its agents get, inherited from the plaza
 //! or overridden here, with Change and Reset to plaza; the models by role; and the project's budget, with credits set
 //! aside from the plaza's or given back. The instructions and skills are the prompt and skills bound to
-//! `project:<id>`.
+//! `project:<id>`. Each change is typed in a dialog (`ui::modal`), as the web's `modal()` does.
 
-use iced::widget::{column, container, row, text_input};
-use iced::{Alignment, Element, Length, Task};
+use iced::widget::{Space, column, container, pick_list, rich_text, row, span, text, text_input};
+use iced::{Alignment, Background, Color, Element, Length, Task, Theme};
 use serde_json::{Value, json};
 
 use super::Id;
 use crate::console::{Ctx, client, roles, ui};
 use crate::theme;
+
+/// The width of a dialog (the web's `.sheet`).
+const DIALOG: f32 = 560.0;
+/// The widths of a table row's value, source and actions columns; the name takes the rest.
+const VALUE_WIDTH: f32 = 200.0;
+const FROM_WIDTH: f32 = 170.0;
+const ACTIONS_WIDTH: f32 = 200.0;
 
 /// How a setting is entered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,12 +94,13 @@ const SPECS: [Spec; 9] = [
     },
 ];
 
-/// A change being typed: a setting (by its key) or a role's model, and the value so far.
+/// A change being typed: a setting (by its key) or a role's model, its dialog's title, and the value so far.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edit {
     key: &'static str,
     role: Option<String>,
     value: String,
+    title: String,
 }
 
 /// Credits being set aside (or, `back`, given back to the plaza).
@@ -221,6 +229,7 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
                     key: s.key,
                     role: None,
                     value: start_value(&current, s.input),
+                    title: s.label.to_string(),
                 });
                 state.budget = None;
                 state.new_role = None;
@@ -236,6 +245,7 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
             state.edit = Some(Edit {
                 key: "default_model",
                 value: start_value(&current, Input::Model),
+                title: format!("{role}’s model"),
                 role: Some(role),
             });
             state.budget = None;
@@ -303,6 +313,7 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
             }
             state.edit = Some(Edit {
                 key: "default_model",
+                title: format!("{role}’s model"),
                 role: Some(role),
                 value: String::new(),
             });
@@ -373,7 +384,7 @@ fn save(project: &str, change: Value, what: String, ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-/// Where a value comes from, as a badge.
+/// Where a value comes from, as a badge: overridden here, or inherited from the plaza.
 fn source_badge<'a>(v: &Value) -> Element<'a, Msg> {
     if v["source"].as_str() == Some("project") {
         ui::badge("Overridden", ui::Tone::Signal)
@@ -382,85 +393,220 @@ fn source_badge<'a>(v: &Value) -> Element<'a, Msg> {
     }
 }
 
-/// A table row: the name and hint, the value, where it comes from, and the actions.
+/// A hairline across, in `color` (the table's rules).
+fn rule<'a>(color: Color) -> Element<'a, Msg> {
+    container(Space::new().height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(Background::Color(color)),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A table row's cells, as the web's `.tbl` lays them: the name, the value, its source, and the actions at the right.
+fn cells<'a>(
+    name: Element<'a, Msg>,
+    value: Element<'a, Msg>,
+    from: Element<'a, Msg>,
+    actions: Element<'a, Msg>,
+) -> Element<'a, Msg> {
+    row![
+        container(name).width(Length::Fill),
+        container(value).width(Length::Fixed(VALUE_WIDTH)),
+        container(from).width(Length::Fixed(FROM_WIDTH)),
+        container(actions)
+            .width(Length::Fixed(ACTIONS_WIDTH))
+            .align_x(Alignment::End),
+    ]
+    .spacing(24)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The table's head: its labels in the label voice, the rule under it strong.
+fn table_head<'a>() -> Element<'a, Msg> {
+    column![
+        container(cells(
+            ui::label("Setting").into(),
+            ui::label("Value").into(),
+            ui::label("From").into(),
+            text("").into(),
+        ))
+        .padding([8, 0]),
+        rule(theme::palette().rule_strong),
+    ]
+    .into()
+}
+
+/// A table of rows, each under a rule but the last (the web's `.tbl`), with an optional head.
+fn table<'a>(head: Option<Element<'a, Msg>>, rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let mut lines: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(head) = head {
+        lines.push(head);
+    }
+    let last = rows.len();
+    for (i, r) in rows.into_iter().enumerate() {
+        lines.push(r);
+        if i + 1 < last {
+            lines.push(rule(theme::palette().rule));
+        }
+    }
+    column(lines).into()
+}
+
+/// A table row: the name (with its hint, if it has one), the value in mono, where it comes from, and the actions.
 fn table_row<'a>(
     name: Element<'a, Msg>,
     value: String,
     v: &Value,
     actions: Vec<Element<'a, Msg>>,
 ) -> Element<'a, Msg> {
-    column![
-        row![
-            container(name).width(Length::FillPortion(4)),
-            container(ui::mono(value, 12.5, theme::palette().ink)).width(Length::FillPortion(3)),
-            container(source_badge(v)).width(Length::FillPortion(3)),
-            container(row(actions).spacing(6)).width(Length::FillPortion(3)),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .padding([8, 0]),
-        ui::hairline(),
-    ]
+    container(cells(
+        name,
+        ui::mono(value, 12.5, theme::palette().ink).into(),
+        source_badge(v),
+        row(actions).spacing(8).align_y(Alignment::Center).into(),
+    ))
+    .padding([9, 0])
     .into()
 }
 
-/// The form for the change being typed.
-fn edit_form<'a>(edit: &'a Edit) -> Element<'a, Msg> {
-    let (title, hint, input) = match &edit.role {
-        Some(role) => (
-            format!("{}'s model", roles::label(role)),
-            "Its agents on this project run this model",
-            Input::Model,
-        ),
-        None => {
-            let s = spec(edit.key).unwrap_or(&SPECS[0]);
-            (s.label.to_string(), s.hint, s.input)
-        }
-    };
-    let field: Element<'a, Msg> = match input {
-        Input::Choice(choices) => row(choices.iter().map(|c| {
-            ui::btn_sm(
-                c,
-                None,
-                if edit.value == *c {
-                    ui::Kind::Primary
+/// A row's name: its label in semibold, its hint under it in small ink-3.
+fn named<'a>(label: &str, hint: Option<&str>) -> Element<'a, Msg> {
+    let mut name = column![
+        text(label.to_string())
+            .font(ui::SANS_SEMIBOLD)
+            .size(13.5)
+            .color(theme::palette().ink)
+    ]
+    .spacing(4);
+    if let Some(hint) = hint {
+        name = name.push(ui::faint(hint.to_string()).size(12.0));
+    }
+    name.into()
+}
+
+/// A dialog's field: its label in the label voice, the control, and its hint under it.
+fn field<'a>(label: &str, control: Element<'a, Msg>, hint: &str) -> Element<'a, Msg> {
+    let mut col = column![ui::label(label), control].spacing(6);
+    if !hint.is_empty() {
+        col = col.push(ui::faint(hint.to_string()));
+    }
+    col.into()
+}
+
+/// The dialog open over the tab, if any (the web's `modal()`): a change being typed, a role's name, or the budget form.
+fn dialog<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
+    let error: Option<Element<'a, Msg>> = state.error.as_deref().map(ui::error_line);
+    if let Some(edit) = &state.edit {
+        let s = spec(edit.key).unwrap_or(&SPECS[0]);
+        let (label, control): (&str, Element<'a, Msg>) = match s.input {
+            Input::Choice(choices) => (
+                if edit.role.is_some() {
+                    "Model"
                 } else {
-                    ui::Kind::Secondary
+                    s.label
                 },
-                Some(Msg::Value(c.to_string())),
+                pick_list(
+                    choices.to_vec(),
+                    choices.iter().copied().find(|c| *c == edit.value),
+                    |c: &'static str| Msg::Value(c.to_string()),
+                )
+                .width(Length::Fill)
+                .padding(8)
+                .style(theme::pick_list)
+                .into(),
+            ),
+            Input::Model | Input::Number => {
+                let placeholder = if s.input == Input::Model {
+                    "provider/model, e.g. anthropic/claude-sonnet-5-5"
+                } else {
+                    ""
+                };
+                (
+                    if edit.role.is_some() {
+                        "Model"
+                    } else {
+                        s.label
+                    },
+                    text_input(placeholder, &edit.value)
+                        .on_input(Msg::Value)
+                        .on_submit(Msg::Save)
+                        .padding(8)
+                        .style(theme::input)
+                        .into(),
+                )
+            }
+        };
+        let mut body: Vec<Element<'a, Msg>> = vec![field(label, control, s.hint)];
+        body.extend(error);
+        return Some(ui::modal(
+            &edit.title,
+            column(body).spacing(12).into(),
+            vec![ui::btn("Save", None, ui::Kind::Primary, Some(Msg::Save))],
+            Msg::Cancel,
+            DIALOG,
+        ));
+    }
+    if let Some(name) = &state.new_role {
+        let role: Element<'a, Msg> = text_input("builder", name)
+            .on_input(Msg::RoleName)
+            .on_submit(Msg::RoleNext)
+            .padding(8)
+            .style(theme::input)
+            .into();
+        let mut body: Vec<Element<'a, Msg>> = vec![field(
+            "Role",
+            role,
+            "Its agents on this project run the model you pick next",
+        )];
+        body.extend(error);
+        return Some(ui::modal(
+            "A role’s model",
+            column(body).spacing(12).into(),
+            vec![ui::btn(
+                "Next",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::RoleNext),
+            )],
+            Msg::Cancel,
+            DIALOG,
+        ));
+    }
+    if let Some(form) = &state.budget {
+        let (title, lead, go) = if form.back {
+            (
+                "Give credits back to the plaza",
+                "They go back to the plaza’s budget.",
+                "Give back",
             )
-        }))
-        .spacing(6)
-        .wrap()
-        .into(),
-        Input::Model | Input::Number => text_input(
-            if input == Input::Model {
-                "provider/model, e.g. anthropic/claude-sonnet-5-5"
-            } else {
-                "A whole number"
-            },
-            &edit.value,
-        )
-        .on_input(Msg::Value)
-        .on_submit(Msg::Save)
-        .padding(8)
-        .style(theme::input)
-        .into(),
-    };
-    ui::card(
-        &format!("Change {title}"),
-        column![
-            ui::faint(hint),
-            field,
-            row![
-                ui::btn("Save", None, ui::Kind::Primary, Some(Msg::Save)),
-                ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
-            ]
-            .spacing(8),
-        ]
-        .spacing(10)
-        .into(),
-    )
+        } else {
+            (
+                "Set credits aside",
+                "They move from the plaza’s budget to this project’s: its tasks are funded from it.",
+                "Set aside",
+            )
+        };
+        let amount: Element<'a, Msg> = text_input("5000", &form.amount)
+            .on_input(Msg::Amount)
+            .on_submit(Msg::MoveBudget)
+            .padding(8)
+            .style(theme::input)
+            .into();
+        let mut body: Vec<Element<'a, Msg>> =
+            vec![ui::faint(lead).into(), field("Credits", amount, "")];
+        body.extend(error);
+        return Some(ui::modal(
+            title,
+            column(body).spacing(12).into(),
+            vec![ui::btn(go, None, ui::Kind::Primary, Some(Msg::MoveBudget))],
+            Msg::Cancel,
+            DIALOG,
+        ));
+    }
+    None
 }
 
 /// The tab for the project `project` (`live`: it can still be changed).
@@ -474,16 +620,13 @@ pub fn view<'a>(state: &'a State, project: &'a str, live: bool) -> Element<'a, M
     }
     let Some(view) = &state.view else {
         parts.push(ui::loading());
-        return column(parts).spacing(16).into();
+        return column(parts).spacing(20).into();
     };
-    if let Some(edit) = &state.edit {
-        parts.push(edit_form(edit));
-    }
     // The settings.
     let mut rows: Vec<Element<'a, Msg>> = Vec::new();
     for s in &SPECS {
         let v = &view["settings"][s.key];
-        let mut actions = Vec::new();
+        let mut actions: Vec<Element<'a, Msg>> = Vec::new();
         if live {
             actions.push(ui::btn_sm(
                 "Change",
@@ -500,160 +643,121 @@ pub fn view<'a>(state: &'a State, project: &'a str, live: bool) -> Element<'a, M
                 ));
             }
         }
-        let name = column![
-            ui::sans(s.label, 13.0, theme::palette().ink),
-            ui::faint(s.hint).size(11.5)
-        ]
-        .spacing(2)
-        .into();
-        rows.push(table_row(name, shown(v), v, actions));
+        rows.push(table_row(
+            named(s.label, Some(s.hint)),
+            shown(v),
+            v,
+            actions,
+        ));
     }
-    parts.push(ui::card("Settings", column(rows).into()));
+    parts.push(ui::card("Settings", table(Some(table_head()), rows)));
     // The models by role.
-    let mut roles_body: Vec<Element<'a, Msg>> = Vec::new();
-    if live {
-        roles_body.push(
-            row![ui::btn_sm(
-                "Set a role's model",
-                Some("plus"),
-                ui::Kind::Secondary,
-                Some(Msg::NewRole)
-            )]
-            .into(),
-        );
-    }
-    if let Some(name) = &state.new_role {
-        roles_body.push(
-            column![
-                ui::label("Role"),
-                ui::faint("Its agents on this project run the model you pick next"),
-                row![
-                    text_input("builder", name)
-                        .on_input(Msg::RoleName)
-                        .on_submit(Msg::RoleNext)
-                        .padding(8)
-                        .style(theme::input),
-                    ui::btn("Next", None, ui::Kind::Primary, Some(Msg::RoleNext)),
-                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            ]
-            .spacing(8)
-            .into(),
-        );
-    }
-    let role_models = view["role_models"].as_object();
-    match role_models.filter(|m| !m.is_empty()) {
-        None => roles_body.push(
-            ui::faint("No role has a model of its own here or at the plaza: every role runs the model above.").into(),
-        ),
-        Some(models) => {
-            for (role, v) in models {
-                let mut actions = Vec::new();
-                if live {
+    let mut role_rows: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(models) = view["role_models"].as_object().filter(|m| !m.is_empty()) {
+        for (role, v) in models {
+            let mut actions: Vec<Element<'a, Msg>> = Vec::new();
+            if live {
+                actions.push(ui::btn_sm(
+                    "Change",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::ChangeRole(role.clone())),
+                ));
+                if v["source"].as_str() == Some("project") {
                     actions.push(ui::btn_sm(
-                        "Change",
+                        "Reset to plaza",
                         None,
                         ui::Kind::Ghost,
-                        Some(Msg::ChangeRole(role.clone())),
+                        Some(Msg::ResetRole(role.clone())),
                     ));
-                    if v["source"].as_str() == Some("project") {
-                        actions.push(ui::btn_sm(
-                            "Reset to plaza",
-                            None,
-                            ui::Kind::Ghost,
-                            Some(Msg::ResetRole(role.clone())),
-                        ));
-                    }
                 }
-                let name = ui::sans(roles::label(role), 13.0, theme::palette().ink).into();
-                roles_body.push(table_row(name, shown(v), v, actions));
             }
+            role_rows.push(table_row(named(role, None), shown(v), v, actions));
         }
     }
-    parts.push(ui::card(
-        "Models by role",
-        column(roles_body).spacing(8).into(),
-    ));
+    let role_body: Element<'a, Msg> = if role_rows.is_empty() {
+        ui::faint(
+            "No role has a model of its own here or at the plaza: every role runs the model above.",
+        )
+        .into()
+    } else {
+        table(None, role_rows)
+    };
+    let role_actions = if live {
+        vec![ui::btn_sm(
+            "Set a role’s model",
+            Some("plus"),
+            ui::Kind::Secondary,
+            Some(Msg::NewRole),
+        )]
+    } else {
+        Vec::new()
+    };
+    parts.push(ui::card_with("Models by role", role_actions, role_body));
     // The budget.
     let b = &view["budget"];
     let own = b["own"].as_bool().unwrap_or(false);
     let balance = b["balance"].as_i64().unwrap_or(0);
     let plaza = b["plaza"].as_i64().unwrap_or(0);
-    let mut budget: Vec<Element<'a, Msg>> = vec![
-        ui::prose(if own {
-            format!("{} credits left in this project's budget. Its tasks are funded from it, and when it is over the rest goes back to the plaza.", ui::thousands(balance))
-        } else {
-            "This project has no budget of its own yet: its tasks are funded from the plaza's.".to_string()
-        })
-        .into(),
-        ui::faint(format!("The plaza's budget: {} credits.", ui::thousands(plaza))).into(),
+    let lead: Element<'a, Msg> = if own {
+        let spans: Vec<text::Span<'a>> = vec![
+            span(balance.to_string()).font(ui::SANS_SEMIBOLD),
+            span(
+                " credits left in this project’s budget. Its tasks are funded from it, and when it is over the rest goes back to the plaza.",
+            ),
+        ];
+        rich_text(spans)
+            .size(13.5)
+            .color(theme::palette().ink)
+            .into()
+    } else {
+        ui::prose(
+            "This project has no budget of its own yet: its tasks are funded from the plaza’s.",
+        )
+        .into()
+    };
+    let budget: Vec<Element<'a, Msg>> = vec![
+        lead,
+        ui::faint(format!("The plaza’s budget: {plaza} credits.")).into(),
     ];
+    let mut budget_actions: Vec<Element<'a, Msg>> = Vec::new();
     if live {
-        let mut buttons = row![ui::btn_sm(
+        budget_actions.push(ui::btn_sm(
             "Set credits aside…",
             Some("plus"),
             ui::Kind::Secondary,
-            Some(Msg::Budget(false))
-        )]
-        .spacing(8);
+            Some(Msg::Budget(false)),
+        ));
         if own && balance > 0 {
-            buttons = buttons.push(ui::btn_sm(
+            budget_actions.push(ui::btn_sm(
                 "Give back…",
                 None,
                 ui::Kind::Ghost,
                 Some(Msg::Budget(true)),
             ));
         }
-        budget.push(buttons.into());
     }
-    if let Some(form) = &state.budget {
-        budget.push(
-            column![
-                ui::faint(if form.back {
-                    "They go back to the plaza's budget."
-                } else {
-                    "They move from the plaza's budget to this project's: its tasks are funded from it."
-                }),
-                row![
-                    text_input("5000", &form.amount)
-                        .on_input(Msg::Amount)
-                        .on_submit(Msg::MoveBudget)
-                        .padding(8)
-                        .width(Length::Fixed(160.0))
-                        .style(theme::input),
-                    ui::btn(
-                        if form.back { "Give back" } else { "Set aside" },
-                        None,
-                        ui::Kind::Primary,
-                        Some(Msg::MoveBudget)
-                    ),
-                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            ]
-            .spacing(8)
-            .into(),
-        );
-    }
-    parts.push(ui::card("Budget", column(budget).spacing(10).into()));
+    parts.push(ui::card_with(
+        "Budget",
+        budget_actions,
+        column(budget).spacing(12).into(),
+    ));
     // Where its instructions and skills bind.
     parts.push(ui::card(
         "Instructions and skills",
-        column![
-            ui::prose(format!("An AGENTS.md prompt bound to project:{project} is added to this project's agents' instructions, and skills bound to it are theirs too.")),
-            row![
-                ui::text_link("Prompts", Msg::Go(Id::Prompts)),
-                ui::text_link("Skills", Msg::Go(Id::Skills)),
-            ]
-            .spacing(14),
+        row![
+            ui::prose("An AGENTS.md prompt bound to "),
+            ui::mono(format!("project:{project}"), 12.5, theme::palette().ink),
+            ui::prose(" is added to this project’s agents’ instructions, and skills bound to it are theirs too. Bind them in "),
+            ui::text_link("Prompts", Msg::Go(Id::Prompts)),
+            ui::prose(" and "),
+            ui::text_link("Skills", Msg::Go(Id::Skills)),
+            ui::prose("."),
         ]
-        .spacing(10)
+        .wrap()
         .into(),
     ));
-    column(parts).spacing(16).into()
+    ui::with_modal(column(parts).spacing(20).into(), dialog(state))
 }
 
 #[cfg(test)]
@@ -673,6 +777,7 @@ mod tests {
             key: "max_turns",
             role: None,
             value: " 30 ".into(),
+            title: String::new(),
         };
         assert_eq!(patch_of(&number), Ok(json!({ "max_turns": 30 })));
         let words = Edit {
@@ -684,6 +789,7 @@ mod tests {
             key: "default_model",
             role: Some("builder".into()),
             value: "anthropic/claude-sonnet-5-5".into(),
+            title: String::new(),
         };
         assert_eq!(
             patch_of(&role),

@@ -1,8 +1,8 @@
 import { h, replace } from '../ui/dom';
-import { attempt, badge, button, card, clip, empty, table, ago, type Column } from '../ui/components';
+import { attempt, badge, button, card, clip, empty } from '../ui/components';
 import { vaultApi, type VaultAuditLine, type VaultBrokenEntry } from '../api';
 import { auditDetail, bindingLabel, errorText, nodeName, type VaultCtx } from './vault-common';
-import '../styles/vault-audit.css';
+import { agoText, dim, tableWrap } from './vault-ui';
 
 const PAGE = 50;
 
@@ -18,8 +18,8 @@ function chainMessage(ok: boolean, count: number | null | undefined, broken: Vau
 }
 
 export function vaultAuditSection(ctx: VaultCtx): HTMLElement {
-  const verifySlot = h('span.vault-audit-verify');
-  const paintVerified = () => replace(verifySlot, verified ? badge(verified.message, verified.ok ? 'ok' : 'danger', true) : null);
+  const verifySlot = h('span');
+  const paintVerified = () => replace(verifySlot, verified ? badge(verified.message, verified.ok ? 'ok' : 'danger') : null);
 
   const verifyBtn = button('Verify chain', onVerify, {
     disabled: ctx.locked,
@@ -37,28 +37,43 @@ export function vaultAuditSection(ctx: VaultCtx): HTMLElement {
     const broken = res.first_broken ?? null;
     verified = { ok, message: chainMessage(ok, res.verified, broken), broken };
     paintVerified();
-    body.querySelector<HTMLElement>('.vault-audit-broken')?.scrollIntoView({ block: 'center' });
+    paint();
+    body.querySelector<HTMLElement>('.vlt-broken')?.scrollIntoView({ block: 'center' });
   }
 
-  const columns: Column<VaultAuditLine>[] = [
-    { label: 'Time', cell: (l) => h('span', { title: new Date(l.ts_ms).toLocaleString() }, ago(l.ts_ms)) },
+  const columns: { label: string; cell: (l: VaultAuditLine) => Node | string }[] = [
+    { label: 'Time', cell: (l) => h('span', { title: new Date(l.ts_ms).toLocaleString() }, agoText(l.ts_ms)) },
     {
       label: 'Event',
       cell: (l) => {
         const isBroken = verified?.broken?.seq === l.seq;
-        const parts = [h('span.vault-audit-event', null, l.event), h('small.vault-audit-seq', null, `#${l.seq}`), ...(isBroken ? [badge('broken', 'danger')] : [])];
-        return isBroken ? h('div.vault-audit-broken', null, ...parts) : h('div', null, ...parts);
+        return h(
+          'span',
+          { class: isBroken ? 'vlt-broken' : null },
+          l.event,
+          ' ',
+          h('span.vlt-sub.mono', null, `#${l.seq}`),
+          isBroken ? ' ' : null,
+          isBroken ? badge('broken', 'danger') : null,
+        );
       },
     },
     { label: 'Actor', cell: (l) => l.actor || '—' },
-    { label: 'Entry', cell: (l) => (l.name ? h('span.vault-audit-mono', null, l.name) : '—') },
+    { label: 'Entry', cell: (l) => (l.name ? h('span.mono', null, l.name) : '—') },
     { label: 'Binding', cell: (l) => (l.binding ? bindingLabel(l.binding, ctx.data.consumers) : '—') },
     { label: 'Node', cell: (l) => (l.node ? nodeName(l.node, ctx.data.status.nodes) : '—') },
-    { label: 'Cid', cell: (l) => l.cid ?? '—' },
-    { label: 'Detail', cell: (l) => (l.detail ? h('span', { title: auditDetail(l.detail) }, clip(auditDetail(l.detail), 120)) : '—') },
+    { label: 'Cid', cell: (l) => (l.cid != null ? String(l.cid) : '—') },
+    {
+      label: 'Detail',
+      cell: (l) => {
+        const d = l.detail ? auditDetail(l.detail) : '';
+        return d ? h('span', { title: d }, clip(d, 120)) : '—';
+      },
+    },
   ];
 
-  const body = h('div.vault-audit');
+  const body = h('div');
+  const section = card('Audit log', body, { actions: [verifySlot, verifyBtn] });
   let lines: VaultAuditLine[] = [];
   let after = 0;
   let hasMore = false;
@@ -68,12 +83,25 @@ export function vaultAuditSection(ctx: VaultCtx): HTMLElement {
 
   const paint = () => {
     const nodes: Node[] = [];
-    if (failed) nodes.push(empty('file', 'Could not read the audit log', failed));
-    else if (!loaded) nodes.push(h('p.vault-audit-note', null, 'Loading the audit log.'));
-    else if (!lines.length) nodes.push(empty('file', 'No audit events yet'));
-    else {
-      nodes.push(h('div.vault-audit-scroll', null, table(columns, lines, undefined, (l) => String(l.seq))));
-      if (hasMore) nodes.push(h('div.vault-audit-more', null, button('Load more', onMore, { kind: 'ghost' })));
+    section.classList.remove('flush');
+    if (ctx.locked) {
+      nodes.push(dim('Unseal the vault to read the audit log.'));
+    } else if (failed !== null) {
+      nodes.push(h('div.vlt-err', { role: 'alert' }, `Could not read the audit log. ${failed}`), button('Try again', onRetry, { kind: 'ghost' }));
+    } else if (!loaded) {
+      nodes.push(dim('Loading the audit log.'));
+    } else if (!lines.length) {
+      nodes.push(empty('file', 'No audit events yet'));
+    } else {
+      section.classList.add('flush');
+      const table = h(
+        'table.tbl',
+        null,
+        h('thead', null, h('tr', null, columns.map((c) => h('th', null, c.label)))),
+        h('tbody', null, lines.map((l) => h('tr', { 'data-key': String(l.seq) }, columns.map((c) => h('td', null, c.cell(l)))))),
+      );
+      nodes.push(tableWrap(table));
+      if (hasMore) nodes.push(h('div.vlt-bar', null, button('Load more', onMore, { kind: 'ghost' })));
     }
     replace(body, nodes);
   };
@@ -102,14 +130,21 @@ export function vaultAuditSection(ctx: VaultCtx): HTMLElement {
     void loadPage();
   }
 
+  function onRetry() {
+    if (busy) return;
+    failed = null;
+    loaded = false;
+    paint();
+    void loadPage();
+  }
+
   paintVerified();
   if (ctx.locked) {
-    replace(body, h('p.vault-audit-note', null, 'Unseal the vault to read the audit log.'));
+    paint();
   } else {
     paint();
     void loadPage();
   }
 
-  const actions = h('span.vault-audit-actions', null, verifySlot, verifyBtn);
-  return card('Audit log', body, { actions: [actions] });
+  return section;
 }

@@ -90,6 +90,10 @@ fn fix_sources_on_request() {
         }
         let mut out = serde_json::to_string_pretty(&file).unwrap();
         out.push('\n');
-        std::fs::write(root().join(format!("apps/shared/themes/{id}.apztheme.json")), out).unwrap();
+        std::fs::write(
+            root().join(format!("apps/shared/themes/{id}.apztheme.json")),
+            out,
+        )
+        .unwrap();
     }
 }

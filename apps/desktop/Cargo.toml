@@ -14,6 +14,7 @@ apz-ide = { path = "../../crates/apz-ide" }
 # The Metrics view model (the panels the hub composes) and the metrics core types, shared with the hub.
 apz-metrics.workspace = true
 apz-metrics-view = { path = "../../crates/apz-metrics-view" }
+apz-view = { path = "../../crates/apz-view" }
 # The wgpu renderer is the WebGPU-compatible backend; tiny-skia is the software
 # fallback the renderer stack drops to when wgpu cannot get a device.
 # `smol` (not `thread-pool`) is the executor: it provides `time::every` for the
@@ -34,6 +35,7 @@ iced = { version = "0.14", default-features = false, features = [
     # The console's icons (the web console's lucide set) and agent portraits.
     "svg",
     "image",
+    "markdown",
     # The graphics adapter in use, so a software fallback is visible, not just slow.
     "sysinfo",
 ] }
@@ -45,6 +47,7 @@ tiny-skia = "0.11"
 ab_glyph = "0.2"
 # The hub client: plain HTTP on loopback, pinned TLS to a remote hub.
 apz-engine = { path = "../../crates/apz-engine" }
+apz-theme = { path = "../../crates/apz-theme" }
 apz-http = { path = "../../crates/apz-http" }
 # The IDE terminal's emulator (the VT screen over vte; no UI, so it stays testable here).
 apz-vt = { path = "../../crates/apz-vt" }
@@ -64,6 +67,15 @@ base64.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The Lab's upload picks its JSONL file with the native file dialog, as the web's file input does.
 rfd = "0.17"
+# The page's links open in the system browser, and a file the page saves goes to the Downloads folder.
+open = "5"
+dirs = "6"
+
+# The HTML artifacts' live frames: a native webview per frame (WebKitGTK on Linux, WebView2 on Windows, WKWebView on
+# macOS). The arm64 Linux packages are cross-built without WebKit, so there the frames are the still card.
+[target.'cfg(any(windows, target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))'.dependencies]
+iced_wry = "0.1"
+wry = "0.55"
 
 [dev-dependencies]
 # The web's layout binding, natively: the Work screen's test lays the fixtures out both ways and compares them.

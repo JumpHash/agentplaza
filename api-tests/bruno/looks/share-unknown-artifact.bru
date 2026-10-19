@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a share link for an artifact that does not exist
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "aunknownid00"
+    }
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

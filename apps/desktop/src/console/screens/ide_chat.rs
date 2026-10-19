@@ -13,21 +13,22 @@ use std::sync::LazyLock;
 
 use apz_ide::EntryKind;
 use iced::widget::scrollable::Viewport;
-use iced::widget::{Space, Stack, column, container, operation, row, text_editor};
-use iced::{Alignment, Element, Length, Padding, Task};
+use iced::widget::{Space, Stack, button, column, container, operation, row, text_editor};
+use iced::{Alignment, Element, Length, Padding, Task, Theme};
 use serde_json::{Value, json};
 
 use super::ide::{self, Centre, Msg, State};
 use super::ide_model::{self, Row};
 use super::ide_panels;
 use super::ide_sidebar;
+use crate::console::chat_tools;
 use crate::console::rich;
 use crate::console::ui::{self, Kind};
 use crate::theme;
 
 /// The reading column's width, and the composer's height.
-const COLUMN_MAX: f32 = 760.0;
-const COMPOSER_H: f32 = 88.0;
+const COLUMN_MAX: f32 = 780.0;
+const COMPOSER_H: f32 = 64.0;
 /// How far from the end the chat still counts as at the bottom, in px (a rounding margin).
 const BOTTOM_SLACK: f32 = 4.0;
 
@@ -149,7 +150,7 @@ pub fn update_scroll(st: &mut State, msg: ChatMsg) -> Option<Task<Msg>> {
 
 /// Agent text, drawn with its rich content (chips, cards, images: `console::rich`). Every place that shows agent prose
 /// calls this one function.
-pub fn prose<'a>(source: &str, rctx: &rich::RichCtx, cards: &rich::Cards) -> Element<'a, Msg> {
+pub fn prose<'a>(source: &str, rctx: &rich::RichCtx, cards: &'a rich::Cards) -> Element<'a, Msg> {
     rich::view(source, rctx, cards, &on_rich)
 }
 
@@ -234,39 +235,52 @@ pub fn header(st: &State) -> Element<'_, Msg> {
             )
         })
         .collect();
-    head = head.push(ui::tabs(&views, st.centre, Msg::Centre));
+    // The web's segmented control: the views in one bordered group, the open one filled.
+    head = head.push(ui::seg(&views, st.centre, Msg::Centre));
     head.into()
 }
 
-/// The owner's message: a bubble on the right.
+/// The owner's message: the web's `.msg-owner`, a bubble on the right at most 78% of the column, its last corner square.
 fn owner_bubble<'a>(body: &str) -> Element<'a, Msg> {
     let p = theme::palette();
     let bubble = container(ui::prose(body.to_string()))
-        .padding([8, 12])
-        .max_width(520.0)
+        .padding([11, 15])
+        .max_width(600.0)
         .style(move |_| container::Style {
             background: Some(p.hover.into()),
             border: iced::Border {
                 color: p.rule,
                 width: 1.0,
-                radius: 12.0.into(),
+                radius: iced::border::Radius {
+                    top_left: 16.0,
+                    top_right: 16.0,
+                    bottom_right: 4.0,
+                    bottom_left: 16.0,
+                },
             },
             ..Default::default()
         });
     row![Space::new().width(Length::Fill), bubble].into()
 }
 
-/// A board nudge or a bookkeeping line: a system bubble, centred, with its text faint.
+/// A board nudge or a bookkeeping line: the web's `.notice`, a bar on the paper with an info mark.
 fn system_bubble<'a>(body: &str) -> Element<'a, Msg> {
     let p = theme::palette();
-    container(ui::faint(body.to_string()))
-        .padding([6, 12])
+    let line = row![
+        ui::icon::<Msg>("info", 14.0, p.ink_3),
+        ui::sans(body.to_string(), 13.0, p.ink_2),
+    ]
+    .spacing(9)
+    .align_y(Alignment::Center);
+    container(line)
+        .padding([8, 12])
         .width(Length::Fill)
         .style(move |_| container::Style {
+            background: Some(p.paper_side.into()),
             border: iced::Border {
                 color: p.rule,
                 width: 1.0,
-                radius: 8.0.into(),
+                radius: 10.0.into(),
             },
             ..Default::default()
         })
@@ -281,7 +295,7 @@ fn s<'a>(v: &'a Value, key: &str) -> &'a str {
 fn entry_view<'a>(
     entry: &'a Value,
     rctx: &rich::RichCtx,
-    cards: &rich::Cards,
+    cards: &'a rich::Cards,
 ) -> Option<Element<'a, Msg>> {
     let data = entry.get("data").unwrap_or(&Value::Null);
     let p = theme::palette();
@@ -339,148 +353,236 @@ fn entry_view<'a>(
     })
 }
 
-/// A run of tool steps (the entries `first..end`): one line, which opens to show each call and its decision.
-fn steps_view(
-    entries: &[Value],
-    first: usize,
-    end: usize,
-    summary: &str,
-    open: bool,
-) -> Element<'static, Msg> {
+/// The verb and icon of a step, by its tool's name: the web's first rule that matches, else the name itself.
+fn step_verb(name: &str) -> (&'static str, String) {
+    let n = name.to_lowercase();
+    let any = |words: &[&str]| words.iter().any(|w| n.contains(w));
+    if n.starts_with("read") || n.starts_with("view") || n.starts_with("open") {
+        ("file-text", "Read".into())
+    } else if any(&["edit", "patch", "replace"]) {
+        ("pencil", "Edited".into())
+    } else if any(&["write", "create"]) {
+        ("file-plus", "Wrote".into())
+    } else if any(&["bash", "shell", "command", "exec", "run"]) {
+        ("terminal", "Ran".into())
+    } else if any(&["grep", "search", "glob", "find"]) {
+        ("search", "Searched".into())
+    } else {
+        ("circle", name.to_string())
+    }
+}
+
+/// A run of tool steps (the entries `first..end`): the web's "N steps · the last one · outcome" toggle over a row
+/// per step (icon, verb, the argument it acted on, and its time or status), open by default.
+fn steps_view(entries: &[Value], first: usize, end: usize, open: bool) -> Element<'static, Msg> {
     let p = theme::palette();
-    let mut col = column![ui::disclosure(
-        summary.to_string(),
-        p.ink_2,
-        open,
-        Msg::Chat(ChatMsg::Steps(first))
-    )]
-    .spacing(6);
+    let steps = ide_model::steps_of(&entries[first..end]);
+    let count = steps.len();
+    let noun = if count == 1 { "step" } else { "steps" };
+    let last = steps.last().map(ide_model::step_label).unwrap_or_default();
+    let label = format!(
+        "{count} {noun} · {last} · {}",
+        ide_model::group_outcome(&steps)
+    );
+    let chevron = ui::icon::<Msg>(
+        if open {
+            "chevron-down"
+        } else {
+            "chevron-right"
+        },
+        14.0,
+        p.ink_3,
+    );
+    let head = button(
+        row![
+            ui::sans(label, 13.5, p.ink_3),
+            Space::new().width(Length::Fill),
+            chevron
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding([6, 0])
+    .style(|_: &Theme, _| button::Style {
+        background: None,
+        text_color: theme::palette().ink_3,
+        ..Default::default()
+    })
+    .on_press(Msg::Chat(ChatMsg::Steps(first)));
+    let mut col = column![head, rule_line()].spacing(0);
     if open {
-        let mut lines = column![].spacing(3);
-        for entry in &entries[first..end] {
-            let data = entry.get("data").unwrap_or(&Value::Null);
-            let line: Option<Element<'static, Msg>> =
-                match entry.get("kind").and_then(Value::as_str).unwrap_or("") {
-                    "tool_request" => {
-                        Some(ui::mono(format!("→ {}", s(data, "name")), 11.5, p.ink).into())
-                    }
-                    "tool_decision" => Some(
-                        ui::mono(
-                            format!("  decision: {}", s(data, "decision")),
-                            11.5,
-                            p.ink_3,
-                        )
-                        .into(),
-                    ),
-                    "tool_result" => Some(
-                        ui::mono(
-                            format!("  result: {}", ui::ellipsize(s(data, "output"), 160)),
-                            11.5,
-                            p.ink_3,
-                        )
-                        .into(),
-                    ),
-                    _ => None,
-                };
-            if let Some(line) = line {
-                lines = lines.push(line);
-            }
+        let mut rows = column![].spacing(2);
+        for step in &steps {
+            let (icon_name, verb) = step_verb(&step.name);
+            let meta = match step.ms {
+                Some(ms) => ide_model::format_ms(ms),
+                None => step.outcome.to_string(),
+            };
+            rows = rows.push(
+                row![
+                    ui::icon::<Msg>(icon_name, 14.0, p.ink_2),
+                    ui::sans(verb, 13.0, p.ink_3),
+                    ui::mono(step.detail.clone(), 12.0, p.ink).width(Length::Fill),
+                    ui::sans(meta, 12.0, p.ink_3),
+                ]
+                .spacing(9)
+                .align_y(Alignment::Center),
+            );
         }
-        col = col.push(container(lines).padding(Padding {
-            top: 0.0,
-            right: 0.0,
-            bottom: 0.0,
-            left: 14.0,
-        }));
+        col = col.push(
+            container(rows)
+                .padding(Padding {
+                    top: 10.0,
+                    right: 0.0,
+                    bottom: 14.0,
+                    left: 0.0,
+                })
+                .width(Length::Fill),
+        );
     }
     col.into()
 }
 
-/// A coding engine's call as one block: its header, what it said, its tools and plan, and the checks it holds for
-/// the owner, each with Approve and Deny. Status is a bracketed mark in the mono face, as the plan's checklist is.
+/// The glyph of a tool's kind, the web's `KIND_GLYPH`; a kind not listed gets the bullet.
+fn kind_glyph(kind: &str) -> &'static str {
+    match kind {
+        "read" => "◫",
+        "edit" => "✎",
+        "delete" => "✕",
+        "move" => "↦",
+        "search" => "⌕",
+        "execute" => "▸",
+        "think" => "…",
+        "fetch" => "↓",
+        "switch_mode" => "⇄",
+        _ => "•",
+    }
+}
+
+/// A tool call's status word: the web's `TOOL_WORD`, from the ACP status the engine reports.
+fn tool_word(status: &str) -> &'static str {
+    match status {
+        "in_progress" => "running",
+        "completed" => "done",
+        "failed" => "failed",
+        _ => "pending",
+    }
+}
+
+/// One labelled part of an engine block: the web's `.ic-eng-l` label over its body.
+fn section<'a>(label: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    let p = theme::palette();
+    column![ui::sans(label.to_string(), 11.0, p.ink_3), body]
+        .spacing(4)
+        .into()
+}
+
+/// A coding engine's call as one card: its engine badge, session and status, what it said, its tools, plan and the
+/// checks it holds for the owner, each with Deny and Approve while it waits.
 fn engine_block<'a>(
     view: &ide_model::EngineView,
     rctx: &rich::RichCtx,
-    cards: &rich::Cards,
+    cards: &'a rich::Cards,
 ) -> Element<'a, Msg> {
     let p = theme::palette();
-    let indent = Padding {
-        top: 0.0,
-        right: 0.0,
-        bottom: 0.0,
-        left: 14.0,
-    };
-    let mut col = column![ui::mono(view.summary.clone(), 11.5, p.ink_2)].spacing(6);
+    let session: String = view.session.chars().take(8).collect();
+    let mut head = row![ui::badge::<Msg>(&view.engine, ui::Tone::Signal)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    if !session.is_empty() {
+        head = head.push(ui::mono(session, 11.5, p.ink_3));
+    }
+    head = head.push(Space::new().width(Length::Fill)).push(ui::sans(
+        view.status.clone(),
+        13.0,
+        p.ink_2,
+    ));
+    let mut col = column![head].spacing(12);
     if !view.message.trim().is_empty() {
         col = col.push(prose(view.message.trim(), rctx, cards));
     }
     if !view.tools.is_empty() {
-        let mut tools = column![].spacing(3);
+        let mut tools = column![].spacing(8);
         for tool in &view.tools {
-            let mark = match tool.status.as_str() {
-                "completed" => "[x]",
-                "failed" => "[!]",
-                "in_progress" => "[~]",
-                _ => "[ ]",
-            };
-            let kind = if tool.kind.is_empty() {
-                String::new()
-            } else {
-                format!(" · {}", tool.kind)
-            };
-            tools = tools.push(ui::mono(
-                format!("{mark} {}{kind}", tool.title),
-                11.5,
-                p.ink,
-            ));
-            for location in &tool.locations {
-                tools = tools.push(ui::mono(format!("      {location}"), 11.5, p.ink_3));
+            let glyph = kind_glyph(&tool.kind);
+            let mut item = column![
+                row![
+                    ui::mono(glyph, 13.0, p.ink_3),
+                    ui::mono(tool.title.clone(), 12.5, p.ink).width(Length::Fill),
+                    ui::sans(tool_word(&tool.status), 12.5, p.ink_3),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(4);
+            if !tool.locations.is_empty() {
+                item = item.push(ui::mono(tool.locations.join("  "), 11.5, p.ink_3));
             }
+            tools = tools.push(item);
         }
-        col = col.push(container(tools).padding(indent));
+        col = col.push(section("Tools", tools.into()));
     }
     if !view.plan.is_empty() {
-        let mut plan = column![].spacing(3);
+        let mut plan = column![].spacing(6);
         for item in &view.plan {
             let (mark, tone) = if item.done {
-                ("[x]", p.ink_3)
+                ("✓", p.ink_3)
             } else {
-                ("[ ]", p.ink)
+                ("○", p.ink_2)
             };
-            plan = plan.push(ui::mono(format!("{mark} {}", item.content), 11.5, tone));
+            plan = plan.push(
+                row![
+                    ui::mono(mark, 12.5, tone),
+                    ui::sans(item.content.clone(), 13.0, tone),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
         }
-        col = col.push(container(plan).padding(indent));
+        col = col.push(section("Plan", plan.into()));
     }
-    for check in &view.pending {
-        // A check the plaza named no approval for has nothing to decide, so its buttons stay off.
-        let decide = |approve: bool| {
-            (!check.approval.is_empty())
-                .then(|| Msg::Chat(ChatMsg::Decide(check.approval.clone(), approve)))
-        };
-        col = col.push(
-            row![
-                ui::faint(format!("Waiting for approval: {}", check.title)),
-                ui::btn("Approve", None, Kind::Primary, decide(true)),
-                ui::btn("Deny", None, Kind::Danger, decide(false)),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
+    if !view.pending.is_empty() {
+        let mut checks = column![].spacing(8);
+        for check in &view.pending {
+            // A check the plaza named no approval for has nothing to decide, so its buttons stay off.
+            let decide = |approve: bool| {
+                (!check.approval.is_empty())
+                    .then(|| Msg::Chat(ChatMsg::Decide(check.approval.clone(), approve)))
+            };
+            checks = checks.push(
+                row![
+                    ui::sans(check.title.clone(), 13.0, p.ink_2).width(Length::Fill),
+                    ui::sans("waiting", 12.5, p.ink_3),
+                    ui::btn_sm("Deny", None, Kind::Danger, decide(false)),
+                    ui::btn_sm("Approve", None, Kind::Primary, decide(true)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+        }
+        col = col.push(section("Checks", checks.into()));
     }
-    col.into()
+    container(col)
+        .padding(16)
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
 }
 
 /// The transcript as rows, then the working line and any error.
 fn transcript(st: &State) -> Element<'_, Msg> {
     let entries = &st.panels.entries;
     let rctx = rich_ctx(st);
-    let mut col = column![].spacing(14);
+    let agent = ide::selected_agent(st);
+    let who = agent.map_or_else(|| "the agent".to_string(), |a| a.name.clone());
+    let mut col = column![].spacing(12);
     if let Some(error) = &st.panels.entries_error {
         col = col.push(ui::error_line(error));
     } else if !st.panels.entries_loaded {
         col = col.push(ui::faint("Loading the conversation…"));
     } else if entries.is_empty() {
-        col = col.push(ui::faint("No messages yet. Say something below."));
+        col = col.push(ui::faint(format!("No messages with {who} yet.")));
     }
     for item in ide_model::rows(entries) {
         match item {
@@ -489,17 +591,11 @@ fn transcript(st: &State) -> Element<'_, Msg> {
                     col = col.push(view);
                 }
             }
-            Row::Steps {
-                first,
-                end,
-                summary,
-                ..
-            } => {
+            Row::Steps { first, end, .. } => {
                 col = col.push(steps_view(
                     entries,
                     first,
                     end,
-                    &summary,
                     st.steps_open.contains(&first),
                 ));
             }
@@ -509,29 +605,69 @@ fn transcript(st: &State) -> Element<'_, Msg> {
             }
         }
     }
-    if ide::selected_agent(st).is_some_and(|a| a.status == "working") {
-        col = col.push(
-            row![
-                ide_sidebar::dot_mark(ide_model::Dot::Working),
-                ui::faint("Working…")
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
+    if agent.is_some_and(|a| a.status == "working") {
+        col = col.push(working_line());
     }
     col.into()
 }
 
-/// The composer: who the note goes to, the note, and Send (or Stop while the agent works).
+/// The web's working line: "Working" and three dots.
+fn working_line<'a>() -> Element<'a, Msg> {
+    let p = theme::palette();
+    let dots = iced::widget::Row::with_children(
+        (0..3).map(|_| Element::<Msg>::from(ui::sans("•", 10.0, p.ink_3))),
+    )
+    .spacing(3)
+    .align_y(Alignment::Center);
+    row![ui::sans("Working", 13.0, p.ink_3), dots]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// The web's `.worked` rule under a toggle: a 1px line across the column.
+fn rule_line<'a>() -> Element<'a, Msg> {
+    let p = theme::palette();
+    container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
+        .style(move |_| container::Style {
+            background: Some(p.rule.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The round icon button of the composer's bar that is not a send: the web's `.pick`, a ghost with the hover ground.
+fn pick_style(_: &Theme, status: button::Status) -> button::Style {
+    let p = theme::palette();
+    let hot = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: hot.then(|| p.hover.into()),
+        text_color: if hot { p.ink } else { p.ink_2 },
+        border: iced::Border {
+            radius: 9.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// The composer, the web's `.composer`: a bordered box on the raised ground holding the note, and under it a bar with
+/// the target line ("Sending to: …"), the paperclip and the round Send. While the agent works, Stop takes Send's place.
 fn composer(st: &State) -> Element<'_, Msg> {
+    let p = theme::palette();
     let agent = ide::selected_agent(st);
     let who = agent.map_or_else(|| "the agent".to_string(), |a| a.name.clone());
     let on = ide::selected_project(st)
         .map(|p| format!(" on {}", p.title))
-        .unwrap_or_default();
+        .unwrap_or_else(|| " on no project".to_string());
     let editor = text_editor(&st.panels.steer)
-        .placeholder("Message the agent. Enter sends, Shift+Enter starts a new line.")
         .height(Length::Fixed(COMPOSER_H))
+        .padding(Padding {
+            top: 14.0,
+            right: 16.0,
+            bottom: 6.0,
+            left: 16.0,
+        })
         .on_action(|action| Msg::Panels(ide_panels::Msg::Steer(action)))
         .key_binding(|press| {
             if press.key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter)
@@ -543,6 +679,13 @@ fn composer(st: &State) -> Element<'_, Msg> {
             } else {
                 text_editor::Binding::from_key_press(press)
             }
+        })
+        .style(|_: &Theme, _| text_editor::Style {
+            background: iced::Background::Color(iced::Color::TRANSPARENT),
+            border: iced::Border::default(),
+            placeholder: theme::palette().ink_3,
+            value: theme::palette().ink,
+            selection: theme::palette().signal,
         });
     let len = st.panels.steer.text().trim().chars().count();
     let files = !st.panels.attachments.is_empty();
@@ -553,47 +696,112 @@ fn composer(st: &State) -> Element<'_, Msg> {
         && agent.is_some();
     let working = agent.is_some_and(|a| a.status == "working");
     let stop = working && !st.cancelling;
-    let foot = row![
-        ui::sans(
-            format!("Sending to: {who}{on}"),
-            11.5,
-            theme::palette().ink_3
-        ),
-        Space::new().width(Length::Fill),
-        ui::btn(
-            "Attach",
-            Some("file"),
-            Kind::Secondary,
+    let (signal_fill, on_signal) = (p.signal_fill, p.on_signal);
+    let pick = button(ui::icon::<Msg>("paperclip", 16.0, p.ink_2))
+        .padding([0, 9])
+        .height(Length::Fixed(30.0))
+        .style(pick_style)
+        .on_press_maybe(
             agent
                 .is_some()
-                .then_some(Msg::Panels(ide_panels::Msg::Pick))
-        ),
-        ui::btn(
+                .then_some(Msg::Panels(ide_panels::Msg::Pick)),
+        );
+    let action: Element<'_, Msg> = if working {
+        ui::btn_sm(
             "Stop",
-            Some("stop"),
+            None,
             Kind::DangerOutline,
-            stop.then_some(Msg::Chat(ChatMsg::Cancel))
-        ),
-        ui::btn(
-            "Send",
-            Some("send"),
-            Kind::Primary,
-            can_send.then_some(Msg::Panels(ide_panels::Msg::SteerSend))
-        ),
+            stop.then_some(Msg::Chat(ChatMsg::Cancel)),
+        )
+    } else {
+        button(ui::icon::<Msg>("arrow-up", 16.0, on_signal))
+            .padding(0)
+            .width(Length::Fixed(32.0))
+            .height(Length::Fixed(32.0))
+            .style(move |_: &Theme, status: button::Status| {
+                let alpha = if matches!(status, button::Status::Disabled) {
+                    0.4
+                } else {
+                    1.0
+                };
+                button::Style {
+                    background: Some(signal_fill.scale_alpha(alpha).into()),
+                    text_color: on_signal,
+                    border: iced::Border {
+                        radius: 16.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            })
+            .on_press_maybe(can_send.then_some(Msg::Panels(ide_panels::Msg::SteerSend)))
+            .into()
+    };
+    let chip = container(
+        chat_tools::chip(&st.panels.chat_tools).map(|m| Msg::Panels(ide_panels::Msg::ChatTools(m))),
+    )
+    .width(Length::Fixed(360.0));
+    let bar = row![
+        ui::sans(format!("Sending to: {who}{on}"), 12.0, p.ink_3),
+        Space::new().width(Length::Fill),
+        chip,
+        pick,
+        action,
     ]
-    .spacing(8)
+    .spacing(2)
     .align_y(Alignment::Center);
-    let mut col = column![].spacing(8);
+    let bar = container(bar)
+        .padding(Padding {
+            top: 6.0,
+            right: 8.0,
+            bottom: 8.0,
+            left: 8.0,
+        })
+        .width(Length::Fill);
+    let mut boxed = column![].spacing(0);
     if let Some(chips) =
         ide_panels::attachment_chips(&st.panels.attachments, st.panels.uploading, |id| {
             Msg::Panels(ide_panels::Msg::Detach(id))
         })
     {
-        col = col.push(chips);
+        boxed = boxed.push(container(chips).padding(Padding {
+            top: 8.0,
+            right: 12.0,
+            bottom: 0.0,
+            left: 12.0,
+        }));
     }
-    col = col.push(editor).push(foot);
+    let context = container(
+        chat_tools::bar(&st.panels.chat_tools).map(|m| Msg::Panels(ide_panels::Msg::ChatTools(m))),
+    )
+    .padding(Padding {
+        top: 8.0,
+        right: 12.0,
+        bottom: 0.0,
+        left: 12.0,
+    })
+    .width(Length::Fill);
+    boxed = boxed.push(context).push(editor).push(bar);
+    let (raised, rule_strong) = (p.raised, p.rule_strong);
+    let mut col = column![
+        container(boxed)
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(raised.into()),
+                border: iced::Border {
+                    color: rule_strong,
+                    width: 1.0,
+                    radius: 18.0.into(),
+                },
+                ..Default::default()
+            })
+    ]
+    .spacing(8);
     if let Some(notice) = &st.panels.steer_notice {
         col = col.push(ui::faint(notice.clone()));
+    }
+    if let Some(e) = chat_tools::notice(&st.panels.chat_tools) {
+        col = col.push(e.map(|m| Msg::Panels(ide_panels::Msg::ChatTools(m))));
     }
     col.into()
 }
@@ -607,7 +815,12 @@ pub fn chat(st: &State) -> Element<'_, Msg> {
     let body = container(reading)
         .width(Length::Fill)
         .center_x(Length::Fill)
-        .padding([12, 16]);
+        .padding(Padding {
+            top: 28.0,
+            right: 16.0,
+            bottom: 20.0,
+            left: 16.0,
+        });
     let scroll = ui::scroll(body)
         .id(CHAT_ID.clone())
         .on_scroll(|viewport| Msg::Chat(ChatMsg::Scrolled(viewport)))
@@ -641,7 +854,12 @@ pub fn chat(st: &State) -> Element<'_, Msg> {
         container(base)
             .width(Length::Fill)
             .center_x(Length::Fill)
-            .padding([8, 16]),
+            .padding(Padding {
+                top: 0.0,
+                right: 16.0,
+                bottom: 18.0,
+                left: 16.0
+            }),
     ]
     .spacing(0)
     .height(Length::Fill)

@@ -99,17 +99,28 @@ FPM_COMMON=(
   --after-install "$HERE/postinstall.sh"
 )
 
+# The live HTML artifacts link WebKitGTK on x86_64 (the arm64 packages are cross-built without it), so only those
+# packages depend on its runtime library: the deb and pacman names of it, and the rpm name.
+WEBVIEW_DEB=()
+WEBVIEW_PAC=()
+WEBVIEW_RPM=()
+if [ "$ARCH" = x86_64 ]; then
+  WEBVIEW_DEB=(--depends libwebkit2gtk-4.1-0)
+  WEBVIEW_PAC=(--depends webkit2gtk-4.1)
+  WEBVIEW_RPM=(--depends webkit2gtk4.1)
+fi
+
 # fpm refuses to overwrite, so clear this version's earlier outputs first.
 rm -f "$OUT"/agentplaza_"$VERSION"_* "$OUT"/agentplaza-"$VERSION"-*
 
 DEB="$OUT/agentplaza_${VERSION}_${DEB_ARCH}.deb"
 fpm "${FPM_COMMON[@]}" -t deb --architecture "$DEB_ARCH" --deb-priority optional \
-  --deb-recommends docker.io --package "$DEB" .
+  --deb-recommends docker.io "${WEBVIEW_DEB[@]}" --package "$DEB" .
 echo "built: $DEB"
 
 PAC="$OUT/agentplaza-${VERSION}-1-${ARCH}.pkg.tar.zst"
 fpm "${FPM_COMMON[@]}" -t pacman --iteration 1 --architecture "$ARCH" \
-  --pacman-compression zstd --package "$PAC" .
+  "${WEBVIEW_PAC[@]}" --pacman-compression zstd --package "$PAC" .
 echo "built: $PAC"
 
 TGZ="$OUT/agentplaza-${VERSION}-linux-${ARCH}.tar.gz"
@@ -140,5 +151,5 @@ fi
 
 # rpm last, so a host without rpmbuild still gets the other artifacts.
 RPM="$OUT/agentplaza-${VERSION}-1.${ARCH}.rpm"
-fpm "${FPM_COMMON[@]}" -t rpm --iteration 1 --architecture "$ARCH" --package "$RPM" .
+fpm "${FPM_COMMON[@]}" -t rpm --iteration 1 --architecture "$ARCH" "${WEBVIEW_RPM[@]}" --package "$RPM" .
 echo "built: $RPM"

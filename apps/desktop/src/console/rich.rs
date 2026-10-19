@@ -12,6 +12,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use apz_rich::{AgentName, Ctx, Ref, Span};
+use apz_view::artifact::Artifact;
 use iced::widget::image::Handle as RasterHandle;
 use iced::widget::svg::Handle as SvgHandle;
 use iced::widget::{Space, button, column, container, image, row, svg, text, tooltip};
@@ -39,6 +40,8 @@ const IMAGE_MAX: usize = 8 * 1024 * 1024;
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const IMAGE_MAX_HEIGHT: f32 = 360.0;
 const CARD_WIDTH: f32 = 320.0;
+/// The tallest an artifact embed's body draws; past it the body scrolls.
+const EMBED_BODY_MAX: f32 = 320.0;
 const HOVER_DELAY: Duration = Duration::from_millis(300);
 const RADIUS: f32 = 6.0;
 /// A merged pull request's colour: the one hue the palette does not carry.
@@ -57,6 +60,10 @@ pub enum RichAction {
     OpenPath { path: String, line: Option<u32> },
     /// Open a library file or deliverable.
     OpenLibrary(String),
+    /// Open a hub artifact, by its id, in its own screen.
+    OpenArtifact(String),
+    /// Share a hub artifact, by its id: the screen that owns the share dialog takes it.
+    Share(String),
 }
 
 impl RichAction {
@@ -67,9 +74,22 @@ impl RichAction {
             RichAction::OpenAgent(cid) => Some(Id::Agent(*cid)),
             RichAction::OpenTask(number) => Some(Id::Task(format!("t{number}"))),
             RichAction::OpenLibrary(_) => Some(Id::Library),
+            RichAction::OpenArtifact(id) => Some(Id::Artifact(id.clone())),
+            RichAction::Share(id) => {
+                SHARE_ASKED.store(true, std::sync::atomic::Ordering::Relaxed);
+                Some(Id::Artifact(id.clone()))
+            }
             RichAction::OpenUrl(_) | RichAction::OpenPath { .. } => None,
         }
     }
+}
+
+/// Set when a Share press on an embed routes to the artifact's screen, which opens its share dialog once loaded.
+static SHARE_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a Share press asked the artifact screen to open its dialog; reading it clears it.
+pub fn take_share_asked() -> bool {
+    SHARE_ASKED.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// What a surface's rich content sends back: a click, or the answers a load fetched.
@@ -90,6 +110,7 @@ pub struct Loaded {
     roster: Option<Vec<AgentName>>,
     images_asked: Vec<String>,
     images: Vec<(String, ImageBytes)>,
+    artifacts: Vec<(String, Artifact)>,
 }
 
 /// An image's content type and bytes, or why it was not fetched.
@@ -119,6 +140,8 @@ pub struct Cards {
     image_pending: HashSet<String>,
     /// The hub's base URL, as the last load saw it: its own `/v1/files` and `/v1/library` links are library references.
     hub: Option<String>,
+    /// The artifacts a load fetched, by reference key (the id and the version it pins), typed for the embed card.
+    artifacts: HashMap<String, Artifact>,
 }
 
 impl std::fmt::Debug for Cards {
@@ -198,6 +221,9 @@ impl Cards {
         for url in &loaded.images_asked {
             self.image_pending.remove(url);
         }
+        for (k, artifact) in loaded.artifacts {
+            self.artifacts.insert(k, artifact);
+        }
         for (url, result) in loaded.images {
             let picture = match result {
                 Ok((content_type, bytes)) if content_type == "image/svg+xml" => {
@@ -212,6 +238,11 @@ impl Cards {
 
     fn picture(&self, url: &str) -> Option<&Picture> {
         self.images.get(url)
+    }
+
+    /// The artifact a load fetched for a reference key, when it did.
+    fn artifact(&self, key: &str) -> Option<&Artifact> {
+        self.artifacts.get(key)
     }
 }
 
@@ -262,6 +293,7 @@ pub fn prefetch(
                         urls.push(url.clone());
                     }
                 }
+                Ref::Artifact { .. } if seen.insert(key(&r)) => refs.push(r.clone()),
                 other if unfurls(other) && seen.insert(key(other)) => {
                     refs.push(r.clone());
                 }
@@ -332,8 +364,25 @@ impl Job {
                 }
             }
         }
+        // Artifacts are read from the hub's artifact store, one by one; the other references go to the unfurl.
         let mut answers = Vec::new();
-        for batch in batches(&refs) {
+        let mut artifacts = Vec::new();
+        for r in refs.iter().filter(|r| matches!(r, Ref::Artifact { .. })) {
+            let k = key(r);
+            match fetch_artifact(&self.client, r) {
+                Ok((value, artifact)) => {
+                    answers.push((k.clone(), json!({"ok": true, "card": value})));
+                    artifacts.push((k, artifact));
+                }
+                Err(_) => answers.push((k, json!({"ok": false, "error": "unavailable"}))),
+            }
+        }
+        let unfurl: Vec<Ref> = refs
+            .iter()
+            .filter(|r| !matches!(r, Ref::Artifact { .. }))
+            .cloned()
+            .collect();
+        for batch in batches(&unfurl) {
             let keys: Vec<String> = batch.iter().map(key).collect();
             let cards = post_unfurl(&self.client, batch).unwrap_or_default();
             for (i, k) in keys.into_iter().enumerate() {
@@ -373,6 +422,7 @@ impl Job {
             roster,
             images_asked: self.images,
             images,
+            artifacts,
         }
     }
 }
@@ -478,7 +528,8 @@ fn path_of(url: &str) -> String {
     }
 }
 
-/// Whether the hub unfurls a reference (the rest are workspace paths, media or plain links).
+/// Whether the hub unfurls a reference (the rest are workspace paths, media, plain links, and artifacts, which are read
+/// from the artifact store).
 fn unfurls(r: &Ref) -> bool {
     !matches!(
         r,
@@ -488,7 +539,20 @@ fn unfurls(r: &Ref) -> bool {
             | Ref::Html { .. }
             | Ref::Link { .. }
             | Ref::MentionAll
+            | Ref::Artifact { .. }
     )
+}
+
+/// `GET /v1/artifacts/{id}` at the version the reference pins (the newest when it pins none): the artifact as the hub
+/// serves it, and the same artifact typed for the embed card.
+fn fetch_artifact(client: &Client, r: &Ref) -> Result<(Value, Artifact), String> {
+    let Ref::Artifact { id, version } = r else {
+        return Err("not an artifact".into());
+    };
+    let query = version.map(|v| format!("?v={v}")).unwrap_or_default();
+    let value = client.call("GET", &format!("/v1/artifacts/{id}{query}"), None)?;
+    let artifact = serde_json::from_value::<Artifact>(value.clone()).map_err(|e| e.to_string())?;
+    Ok((value, artifact))
 }
 
 /// The cache key of a reference: its JSON, as the hub's own cache keys it.
@@ -506,7 +570,7 @@ pub fn batches(refs: &[Ref]) -> Vec<&[Ref]> {
 pub fn view<'a, M: Clone + 'a>(
     source: &str,
     ctx: &RichCtx,
-    cards: &Cards,
+    cards: &'a Cards,
     on: &dyn Fn(RichAction) -> M,
 ) -> Element<'a, M> {
     ui::markdown_with(source, &|body, base, size, color| {
@@ -522,7 +586,7 @@ fn paragraph<'a, M: Clone + 'a>(
     size: f32,
     color: Color,
     ctx: &RichCtx,
-    cards: &Cards,
+    cards: &'a Cards,
     on: &dyn Fn(RichAction) -> M,
 ) -> Element<'a, M> {
     let spans = apz_rich::classify(body, ctx);
@@ -531,6 +595,8 @@ fn paragraph<'a, M: Clone + 'a>(
     }
     let mut flow: Vec<Element<'a, M>> = Vec::new();
     let mut blocks: Vec<Element<'a, M>> = Vec::new();
+    // Only the paragraph's first artifact is embedded; the rest are chips.
+    let mut embedded = false;
     for span in spans {
         match span {
             Span::Text(t) | Span::Code(t) => words(&mut flow, ui::inline(&t), base, size, color),
@@ -554,6 +620,13 @@ fn paragraph<'a, M: Clone + 'a>(
                     ));
                 }
                 Ref::Video { url } | Ref::Html { url } => blocks.push(media_card(&r, url, on)),
+                Ref::Artifact { id, version } => {
+                    flow.push(chip(&r, &raw, ctx, cards, on));
+                    if !embedded {
+                        embedded = true;
+                        blocks.push(artifact_card(&r, id, *version, cards, on));
+                    }
+                }
                 Ref::Link { url } => flow.push(link(
                     &label.unwrap_or_else(|| apz_rich::label(&r)),
                     url,
@@ -632,12 +705,17 @@ fn chip<'a, M: Clone + 'a>(
     let answer = cards.answer(&key(r));
     let card = answer.and_then(|a| a.get("card")).filter(|c| !c.is_null());
     let accent = tone_color(chip_tone(r, card));
+    // An artifact's chip is its title once the hub has answered, else "Artifact".
+    let label = match r {
+        Ref::Artifact { .. } => answer
+            .and_then(|a| a["card"]["title"].as_str())
+            .unwrap_or("Artifact")
+            .to_string(),
+        _ => chip_label(r, ctx),
+    };
     let content = row![
         glyph(r, accent),
-        text(chip_label(r, ctx))
-            .font(SANS_MEDIUM)
-            .size(12.0)
-            .color(p.ink)
+        text(label).font(SANS_MEDIUM).size(12.0).color(p.ink)
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -660,7 +738,7 @@ fn chip<'a, M: Clone + 'a>(
         b = b.on_press(on(action));
     }
     let chip: Element<'a, M> = b.into();
-    if !unfurls(r) {
+    if !unfurls(r) && !matches!(r, Ref::Artifact { .. }) {
         return chip;
     }
     tooltip(chip, card_panel(r, answer), tooltip::Position::Bottom)
@@ -799,6 +877,7 @@ pub fn action_for(r: &Ref, raw: &str, ctx: &RichCtx) -> Option<RichAction> {
             line: *line,
         },
         Ref::Library { id } => RichAction::OpenLibrary(id.clone()),
+        Ref::Artifact { id, .. } => RichAction::OpenArtifact(id.clone()),
         Ref::Image { url } | Ref::Video { url } | Ref::Html { url } | Ref::Link { url } => {
             RichAction::OpenUrl(url.clone())
         }
@@ -904,6 +983,7 @@ fn card_body<'a, M: 'a>(r: &Ref, card: &Value) -> Element<'a, M> {
         Ref::Task { .. } => task_lines(card),
         Ref::Library { .. } => library_lines(card),
         Ref::LibraryTool { .. } => tool_lines(card),
+        Ref::Artifact { .. } => artifact_lines(card),
         _ => Vec::new(),
     };
     column(items).spacing(5).width(Length::Fill).into()
@@ -1164,6 +1244,22 @@ fn tool_lines<'a, M: 'a>(c: &Value) -> Vec<Element<'a, M>> {
     out
 }
 
+fn artifact_lines<'a, M: 'a>(c: &Value) -> Vec<Element<'a, M>> {
+    let mut out = vec![title(str_of(c, "title"))];
+    out.extend(
+        (!str_of(c, "sub").is_empty())
+            .then(|| line(str_of(c, "sub"), 12.0, theme::palette().ink_2)),
+    );
+    out.push(meta(format!(
+        "{} · v{} of {}",
+        str_of(c, "kind"),
+        num_of(c, "version").unwrap_or(0),
+        num_of(c, "latest").unwrap_or(0)
+    )));
+    out.push(meta(format!("by {}", str_of(c, "author"))));
+    out
+}
+
 /// A library file or a deliverable's size, as the hover card shows it.
 fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
@@ -1224,6 +1320,74 @@ fn image_block<'a, M: Clone + 'a>(
             })
             .into(),
     }
+}
+
+/// An artifact's embed card under its paragraph: its title, kind and version, a "Newer version" chip when the reference
+/// pins an older version, its first panel, and Open and Share buttons. A note stands in while the hub answers, or when
+/// it cannot give the artifact.
+fn artifact_card<'a, M: Clone + 'a>(
+    r: &Ref,
+    id: &str,
+    version: Option<u32>,
+    cards: &'a Cards,
+    on: &dyn Fn(RichAction) -> M,
+) -> Element<'a, M> {
+    let p = theme::palette();
+    let k = key(r);
+    let Some(artifact) = cards.artifact(&k) else {
+        let note = match cards.answer(&k) {
+            None => "Loading artifact…".to_string(),
+            Some(a) => format!("Artifact unavailable: {}", reason(a)),
+        };
+        return container(ui::faint(note))
+            .padding([8, 10])
+            .width(Length::Fill)
+            .style(ui::frame(None, p.rule))
+            .into();
+    };
+    let mut heading = row![
+        column![
+            title(&artifact.title),
+            meta(format!("{} · v{}", artifact.kind, artifact.version)),
+        ]
+        .spacing(2),
+        Space::new().width(Length::Fill),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    if version.is_some_and(|pinned| pinned < artifact.latest) {
+        heading = heading.push(ui::badge("Newer version", ui::Tone::Signal));
+    }
+    let mut col: Vec<Element<'a, M>> = vec![heading.into()];
+    // The first panel's title, subtitle and body. The body borrows the panel from the cards, which the surfaces lend
+    // for as long as the element lives; it draws at most `EMBED_BODY_MAX` tall and scrolls past that.
+    if let Some(panel) = artifact.panels.first() {
+        col.push(line(panel.title.clone(), 13.0, p.ink));
+        if !panel.sub.is_empty() {
+            col.push(meta(panel.sub.clone()));
+        }
+        col.push(
+            container(ui::scroll(crate::console::view::body(&panel.body)))
+                .max_height(EMBED_BODY_MAX)
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+    let open = Some(on(RichAction::OpenArtifact(id.to_string())));
+    let share = Some(on(RichAction::Share(id.to_string())));
+    col.push(
+        row![
+            ui::btn_sm("Open", None, Kind::Secondary, open),
+            ui::btn_sm("Share", None, Kind::Secondary, share),
+        ]
+        .spacing(8)
+        .into(),
+    );
+    container(column(col).spacing(8))
+        .padding([8, 10])
+        .width(Length::Fill)
+        .style(ui::frame(None, p.rule))
+        .into()
 }
 
 /// A video or HTML file, or an image that did not load: its name, its kind, and an Open button that leaves the app.

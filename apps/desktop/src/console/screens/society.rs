@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use iced::widget::{Space, canvas, column, container, mouse_area, row};
+use iced::widget::{Space, canvas, column, container, responsive, row, text};
 use iced::{
     Alignment, Background, Color, Element, Length, Point, Rectangle, Renderer, Size, Task, Theme,
     border, mouse,
@@ -18,7 +18,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Id, sanctions};
-use crate::console::engine::roles::agent_hue;
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::{Ctx, client};
 
@@ -26,9 +25,10 @@ use crate::console::{Ctx, client};
 /// the box onto the graph area, so the graph grows and shrinks with the panel.
 const LW: f32 = 760.0;
 const LH: f32 = 700.0;
-/// The least scale the graph is drawn at. Name tags are a fixed size in pixels, so the room they
-/// take is reserved in world units at this scale.
-const TAG_SCALE: f32 = 0.7;
+/// An agent's disc radius, as drawn (the web's DISC).
+const DISC: f32 = 20.0;
+/// How far an agent's name tag reaches below its centre (the web's TAG_DOWN).
+const TAG_DOWN: f32 = 40.0;
 /// Clear space kept between two nodes' footprints.
 const GAP: f32 = 10.0;
 /// Collision passes. A box too crowded to clear in this many is left with the overlap it has.
@@ -40,18 +40,24 @@ const DISAGREE: f32 = 0.25;
 const NOTE_PREVIEW: usize = 220;
 /// Above this many agents the graph opens at the family level.
 const GROUP_AT: usize = 24;
-/// Name tags and cluster labels are mono text of this size, in pixels, with this padding.
-const LABEL_SIZE: f32 = 13.0;
-/// One mono character at `LABEL_SIZE`, a little generous so that no glyph is cut off.
-const LABEL_CHAR: f32 = 0.7 * LABEL_SIZE;
+/// Name tags and group labels are sans text of this size (the web's 11.5px), with the web's width
+/// estimate per character and this padding.
+const LABEL_SIZE: f32 = 11.5;
+const LABEL_CHAR: f32 = 7.4;
 const LABEL_PAD: f32 = 8.0;
 /// The pop: how long the nodes that come into view take to grow out of the ones that went, and the
 /// step between frames.
 const POP: Duration = Duration::from_millis(250);
 const FRAME: Duration = Duration::from_millis(16);
-const RED: Color = Color::from_rgb8(0xe5, 0x53, 0x3d);
-const AMBER: Color = Color::from_rgb8(0xf2, 0xb8, 0x4b);
-const GREEN: Color = Color::from_rgb8(0x3f, 0xae, 0x6a);
+fn red() -> Color {
+    crate::theme::palette().crit
+}
+fn amber() -> Color {
+    crate::theme::palette().warn
+}
+fn green() -> Color {
+    crate::theme::palette().ok
+}
 
 /// The society as `GET /v1/society` returns it.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -119,6 +125,7 @@ pub enum Key {
 }
 
 pub use apz_engine::roles::role_family;
+use apz_engine::roles::role_label;
 
 /// A family's name on screen.
 pub fn family_label(family: &str) -> &'static str {
@@ -425,13 +432,23 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
                 t: ease(a.at.elapsed()),
                 keys: &a.keys,
             });
-            let graph = Graph {
-                scene: &state.scene,
-                pos: &state.pos,
-                selected: state.selected.as_ref(),
-                grow,
-                suspended: &state.suspended,
-            };
+            let (scene, pos, suspended) = (&state.scene, &state.pos, &state.suspended);
+            let selected = state.selected.as_ref();
+            // The graph is as tall as the web's SVG: the world box (LW by LH) at the width it is given.
+            let graph = responsive(move |size: Size| -> Element<'a, Msg> {
+                canvas(Graph {
+                    scene,
+                    pos,
+                    selected,
+                    grow,
+                    suspended,
+                })
+                .width(Length::Fill)
+                .height(Length::Fixed(size.width * LH / LW))
+                .into()
+            })
+            .width(Length::Fill)
+            .height(Length::Shrink);
             let panel = match &state.selected {
                 Some(Key::Agent(cid)) => match d.agents.iter().find(|a| a.cid == *cid) {
                     Some(me) => detail(state, d, me),
@@ -440,25 +457,26 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
                 Some(key) if d.agents.iter().any(|a| in_group(a, key)) => group_panel(d, key),
                 _ => legend(),
             };
-            let mut left = column![toolbar(grouped, state.nav.len())];
+            // The graph card, then the panel card at a fixed 340, as the web's `.soc-wrap`: both as tall as
+            // their content, top aligned, and the page scrolls.
+            let mut left = column![toolbar(grouped, state.nav.len())]
+                .spacing(12)
+                .width(Length::Fill);
             if grouped {
                 left = left.push(crumbs(&state.nav));
             }
-            left = left.push(canvas(graph).width(Length::Fill).height(Length::Fill));
+            left = left.push(graph);
             row![
                 container(left)
-                    .width(Length::FillPortion(3))
-                    .height(Length::Fill),
-                container(
-                    ui::scroll(column![panel])
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                )
-                .width(Length::FillPortion(2))
-                .height(Length::Fill),
+                    .padding(16)
+                    .width(Length::Fill)
+                    .style(surface),
+                container(column![panel].width(Length::Fill))
+                    .padding(16)
+                    .width(Length::Fixed(340.0))
+                    .style(surface),
             ]
-            .spacing(16)
-            .height(Length::Fill)
+            .spacing(12)
             .into()
         }
     };
@@ -561,13 +579,12 @@ fn visible(a: &Agent, nav: &[Key], count: &HashMap<Key, usize>) -> Key {
 /// A node for a key and the agents it stands for.
 fn node_of(key: &Key, members: &[&Agent]) -> Node {
     if let (Key::Agent(_), [a]) = (key, members) {
-        let s = side(a.reputation);
         return Node {
             key: key.clone(),
             label: label_of(a),
             members: vec![a.cid],
-            w: s,
-            h: s,
+            w: 2.0 * DISC,
+            h: 2.0 * DISC,
             fp: foot(a),
         };
     }
@@ -579,22 +596,26 @@ fn node_of(key: &Key, members: &[&Agent]) -> Node {
         Key::Role(_, r) => clip(r),
         Key::Agent(_) => String::new(),
     };
-    // Sized by member count on a square root scale, and wide enough for its label.
-    let size = 52.0 + 10.0 * (cids.len() as f32).sqrt();
-    let w = size.max(label_width(&label));
-    let h = size.max(60.0);
+    // A box sized by its member count on a square root scale; its label sits under it.
+    let side = box_side(cids.len());
+    let tag_half = tag_width(&label) / 2.0;
     Node {
         key: key.clone(),
         label,
         members: cids,
-        w,
-        h,
+        w: side,
+        h: side,
         fp: Foot {
-            half: w / 2.0,
-            up: h / 2.0 + 8.0,
-            down: h / 2.0 + 8.0,
+            half: (side / 2.0).max(tag_half),
+            up: side / 2.0,
+            down: side / 2.0 + 20.0,
         },
     }
+}
+
+/// A group box's side in world units: the web's 58 + 24 * sqrt(count).
+fn box_side(count: usize) -> f32 {
+    58.0 + 24.0 * (count as f32).sqrt()
 }
 
 /// The links among the nodes in view. At the agent level each bond is kept with its direction. Once
@@ -658,12 +679,10 @@ struct Foot {
 }
 
 fn foot(a: &Agent) -> Foot {
-    let half = side(a.reputation) / 2.0;
-    let tag = tag_width(&label_of(a));
     Foot {
-        half: half.max(tag / (2.0 * TAG_SCALE)),
-        up: half + 18.0,
-        down: half + 8.0 + 22.0 / TAG_SCALE,
+        half: DISC.max(tag_width(&label_of(a)) / 2.0),
+        up: DISC,
+        down: TAG_DOWN,
     }
 }
 
@@ -710,14 +729,20 @@ fn layout(nodes: &[Node], links: &[Link], pos: &mut HashMap<Key, Pt>) {
             pos.insert(nodes[i].key.clone(), spot);
         }
     } else {
-        for (n, &i) in fresh.iter().enumerate() {
-            let angle = n as f32 * 2.39996; // golden angle, so a crowd fans out evenly
-            let r = 70.0 + 26.0 * (n as f32).sqrt();
+        // The first layout rings the nodes round the box, as the prototype does.
+        let n = fresh.len().max(1) as f32;
+        let ring = if fresh.len() <= 1 {
+            0.0
+        } else {
+            (120.0 + 22.0 * n).min(280.0)
+        };
+        for (k, &i) in fresh.iter().enumerate() {
+            let angle = -std::f32::consts::FRAC_PI_2 + k as f32 * 2.0 * std::f32::consts::PI / n;
             pos.insert(
                 nodes[i].key.clone(),
                 Pt {
-                    x: LW / 2.0 + angle.cos() * r,
-                    y: LH / 2.0 + angle.sin() * r,
+                    x: LW / 2.0 + ring * angle.cos(),
+                    y: LH / 2.0 + ring * angle.sin() * 0.85,
                 },
             );
         }
@@ -761,7 +786,10 @@ fn layout(nodes: &[Node], links: &[Link], pos: &mut HashMap<Key, Pt>) {
         }
     }
 
-    let steps = if fresh.len() == nodes.len() {
+    // A first layout is the ring as it is; later ones settle under the springs and repulsion.
+    let steps = if !placed {
+        0
+    } else if fresh.len() == nodes.len() {
         FIRST_STEPS
     } else {
         LATER_STEPS
@@ -799,9 +827,6 @@ fn layout(nodes: &[Node], links: &[Link], pos: &mut HashMap<Key, Pt>) {
             b.x = clamp(b.x + b.vx, b.fp.half, LW - b.fp.half);
             b.y = clamp(b.y + b.vy, b.fp.up, LH - b.fp.down);
         }
-    }
-    if !placed {
-        stretch(&mut bodies);
     }
     separate(&mut bodies);
     for (n, b) in nodes.iter().zip(&bodies) {
@@ -868,29 +893,6 @@ fn clearest(nodes: &[Node], i: usize, links: &[Link], pos: &HashMap<Key, Pt>) ->
     best
 }
 
-/// Stretches the nodes over the box, each axis on its own, so a first layout uses all of it.
-/// A single row or column of nodes goes to the middle of its axis.
-fn stretch(bodies: &mut [Body]) {
-    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-    for b in bodies.iter() {
-        x0 = x0.min(b.x);
-        y0 = y0.min(b.y);
-        x1 = x1.max(b.x);
-        y1 = y1.max(b.y);
-    }
-    let map = |v: f32, lo: f32, hi: f32, out_lo: f32, out_hi: f32| {
-        if hi - lo < 1.0 {
-            (out_lo + out_hi) / 2.0
-        } else {
-            out_lo + (v - lo) / (hi - lo) * (out_hi - out_lo)
-        }
-    };
-    for b in bodies.iter_mut() {
-        b.x = map(b.x, x0, x1, 60.0, LW - 60.0);
-        b.y = map(b.y, y0, y1, 70.0, LH - 70.0);
-    }
-}
-
 /// Pushes the footprints apart until none clash, or the passes run out. A clash moves both nodes
 /// along the axis where they overlap least; a placed node stays put. Nodes are kept in the box.
 fn separate(bodies: &mut [Body]) {
@@ -940,19 +942,14 @@ fn separate(bodies: &mut [Body]) {
 
 // ---- Graph -----------------------------------------------------------------
 
-/// The node's side in world units: bigger with reputation.
-fn side(reputation: f32) -> f32 {
-    46.0 + 12.0 * clamp(reputation / 100.0, 0.0, 1.0)
-}
-
 /// The trust band's colour: red below 0.4, amber to 0.6, green above.
 fn band(e: f32) -> Color {
     if e < 0.4 {
-        RED
+        red()
     } else if e <= 0.6 {
-        AMBER
+        amber()
     } else {
-        GREEN
+        green()
     }
 }
 
@@ -1032,9 +1029,12 @@ fn edge_curve(a: Pt, z: Pt, ra: f32, rz: f32) -> (Pt, Pt, Pt) {
     (p0, c, p1)
 }
 
-/// How far a node's edges start from its centre.
+/// How far a node's edges start from its centre: the disc's edge, or a box's.
 fn radius(n: &Node) -> f32 {
-    n.w.min(n.h) / 2.0 + 8.0
+    match n.key {
+        Key::Agent(_) => DISC,
+        _ => n.w.min(n.h) / 2.0,
+    }
 }
 
 /// The pop in progress, as the graph draws it: `keys` sit at `origin` at t = 0 and at their spots at t = 1.
@@ -1066,23 +1066,16 @@ impl Graph<'_> {
         })
     }
 
-    /// The node under a point of the canvas, if any: its body, or for an agent its name tag too.
+    /// The node under a point of the canvas, if any: its body and its label, as its footprint.
     fn hit(&self, at: Point, size: Size) -> Option<Key> {
         let xf = Xf::fit(size);
         for n in self.scene.nodes.iter().rev() {
             let Some(p) = self.at(&n.key) else { continue };
             let c = xf.map(p);
-            let (up, down) = if matches!(n.key, Key::Agent(_)) {
-                (16.0, 30.0)
-            } else {
-                (0.0, 0.0)
-            };
-            let (w, h) = match n.key {
-                Key::Agent(_) => (n.w * xf.s, n.h * xf.s),
-                _ => cluster_box(n, xf.s),
-            };
-            let (hw, hh) = (w / 2.0, h / 2.0);
-            if (at.x - c.x).abs() <= hw && at.y >= c.y - hh - up && at.y <= c.y + hh + down {
+            if (at.x - c.x).abs() <= n.fp.half * xf.s
+                && at.y >= c.y - n.fp.up * xf.s
+                && at.y <= c.y + n.fp.down * xf.s
+            {
                 return Some(n.key.clone());
             }
         }
@@ -1120,30 +1113,69 @@ impl canvas::Program<Msg> for Graph<'_> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
+        let p = crate::theme::palette();
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let xf = Xf::fit(bounds.size());
         let k = xf.s;
         let nodes: HashMap<&Key, &Node> = self.scene.nodes.iter().map(|n| (&n.key, n)).collect();
-        // The nodes the selection has a link to.
-        let touching: HashSet<&Key> = match self.selected {
-            Some(sel) => self
+        // An agent selection lights the node it is drawn in; a group selection lights its members.
+        let sel_node: Option<&Key> = match self.selected {
+            Some(Key::Agent(cid)) => self
                 .scene
-                .links
+                .nodes
                 .iter()
-                .filter_map(|l| {
-                    if &l.from == sel {
-                        Some(&l.to)
-                    } else if &l.to == sel {
-                        Some(&l.from)
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-            None => HashSet::new(),
+                .find(|n| n.members.contains(cid))
+                .map(|n| &n.key),
+            _ => None,
         };
+        let group: Option<HashSet<u64>> = self
+            .selected
+            .filter(|key| !matches!(key, Key::Agent(_)))
+            .map(|key| {
+                self.scene
+                    .nodes
+                    .iter()
+                    .find(|n| &n.key == key)
+                    .map(|n| n.members.iter().copied().collect())
+                    .unwrap_or_default()
+            });
+        let in_group = |n: &Node| {
+            group
+                .as_ref()
+                .is_some_and(|g| n.members.iter().all(|c| g.contains(c)))
+        };
+        // The links the selection lights: a group's crossing contacts, or an agent's own.
+        let lit = |l: &Link| -> bool {
+            if group.is_some() {
+                let a = nodes.get(&l.from).is_some_and(|n| in_group(n));
+                let z = nodes.get(&l.to).is_some_and(|n| in_group(n));
+                a != z
+            } else {
+                sel_node.is_some_and(|s| l.from == *s || l.to == *s)
+            }
+        };
+        // The selection's nodes stay bright, with the far end of each lit contact; the rest dim.
+        let mut bright: HashSet<&Key> = HashSet::new();
+        if let Some(key) = self.selected {
+            bright.insert(key);
+            if let Some(s) = sel_node {
+                bright.insert(s);
+            }
+            for n in &self.scene.nodes {
+                if in_group(n) {
+                    bright.insert(&n.key);
+                }
+            }
+            for l in &self.scene.links {
+                if lit(l) {
+                    bright.insert(&l.from);
+                    bright.insert(&l.to);
+                }
+            }
+        }
 
-        // Links first, so the nodes sit on top of them.
+        // Links first, so the nodes sit on top of them. Their colour is the trust band, the mutual
+        // pairs are dark grey; the selection lights its own, and fades the rest.
         for l in &self.scene.links {
             let (Some(from), Some(to), Some(a), Some(z)) = (
                 self.at(&l.from),
@@ -1159,50 +1191,16 @@ impl canvas::Program<Msg> for Graph<'_> {
                 pb.move_to(s0);
                 pb.quadratic_curve_to(sc, s1);
             });
-            let (colour, width, dashed, arrow) = if l.directed {
-                match self.selected {
-                    None => (
-                        if l.mutual {
-                            crate::theme::palette().ink_2
-                        } else {
-                            crate::theme::palette().ink_3
-                        },
-                        if l.mutual { 1.5 } else { 1.2 },
-                        false,
-                        false,
-                    ),
-                    Some(sel) if l.from == *sel || l.to == *sel => {
-                        let out = l.from == *sel;
-                        (
-                            band(l.e),
-                            1.5 + 4.0 * clamp(l.strength / 10.0, 0.0, 1.0),
-                            !out,
-                            out,
-                        )
-                    }
-                    Some(_) => (
-                        crate::theme::palette().ink_3.scale_alpha(0.25),
-                        1.0,
-                        false,
-                        false,
-                    ),
-                }
+            let base = if l.mutual { p.ink_2 } else { band(l.e) };
+            let base_width =
+                1.25 + 0.75 * clamp(l.strength / if l.directed { 10.0 } else { 30.0 }, 0.0, 1.0);
+            let (colour, width, dashed, arrow) = if self.selected.is_none() {
+                (base.scale_alpha(0.55), base_width, false, false)
+            } else if lit(l) {
+                let out = l.directed && sel_node.is_some_and(|s| l.from == *s);
+                (base, 2.0, l.directed && !out, out)
             } else {
-                // Aggregated: thicker with the summed strength, coloured by the mean trust.
-                let touches = self
-                    .selected
-                    .is_some_and(|sel| l.from == *sel || l.to == *sel);
-                let colour = if self.selected.is_some() && !touches {
-                    band(l.e).scale_alpha(0.2)
-                } else {
-                    band(l.e)
-                };
-                (
-                    colour,
-                    1.0 + 4.0 * clamp(l.strength / 40.0, 0.0, 1.0),
-                    false,
-                    false,
-                )
+                (base.scale_alpha(0.12), base_width, false, false)
             };
             let mut stroke = canvas::Stroke::default()
                 .with_color(colour)
@@ -1218,50 +1216,94 @@ impl canvas::Program<Msg> for Graph<'_> {
             }
             frame.stroke(&path, stroke);
             if arrow {
-                // The arrowhead points into the holder's peer, at the node's edge.
+                // The arrowhead points into the peer, at the node's edge.
                 let (dx, dy) = (s1.x - sc.x, s1.y - sc.y);
                 let len = (dx * dx + dy * dy).sqrt().max(0.001);
                 let (ux, uy) = (dx / len, dy / len);
-                let base = Point::new(s1.x - ux * 12.0, s1.y - uy * 12.0);
-                let (nx, ny) = (-uy * 5.0, ux * 5.0);
+                let base_pt = Point::new(s1.x - ux * 10.0 * k, s1.y - uy * 10.0 * k);
+                let (nx, ny) = (-uy * 5.0 * k, ux * 5.0 * k);
                 let head = canvas::Path::new(|pb| {
                     pb.move_to(s1);
-                    pb.line_to(Point::new(base.x + nx, base.y + ny));
-                    pb.line_to(Point::new(base.x - nx, base.y - ny));
+                    pb.line_to(Point::new(base_pt.x + nx, base_pt.y + ny));
+                    pb.line_to(Point::new(base_pt.x - nx, base_pt.y - ny));
                     pb.close();
                 });
-                frame.fill(&head, colour);
+                frame.fill(&head, band(l.e));
             }
         }
 
-        // Nodes: the agents as robots, the clusters as labelled boxes.
+        // Nodes: the agents as discs, the groups as boxes.
         for n in &self.scene.nodes {
-            let Some(p) = self.at(&n.key) else { continue };
-            let c = xf.map(p);
+            let Some(pt) = self.at(&n.key) else { continue };
+            let c = xf.map(pt);
             let selected = self.selected == Some(&n.key);
-            let dim = self
-                .selected
-                .is_some_and(|sel| sel != &n.key && !touching.contains(&n.key));
-            let alpha = if dim { 0.35 } else { 1.0 };
+            let alpha = if self.selected.is_some() && !bright.contains(&n.key) {
+                0.35
+            } else {
+                1.0
+            };
+            let suspended = n.members.iter().any(|cid| self.suspended.contains(cid));
             match &n.key {
-                Key::Agent(_) => draw_agent(
-                    &mut frame,
-                    n,
-                    c,
-                    k,
-                    alpha,
-                    selected,
-                    self.suspended.contains(&n.members[0]),
-                ),
-                _ => draw_cluster(&mut frame, n, c, k, alpha, selected),
+                Key::Agent(_) => draw_agent(&mut frame, n, c, k, alpha, selected, suspended),
+                _ => draw_group(&mut frame, n, c, k, alpha, selected, suspended),
             }
         }
         vec![frame.into_geometry()]
     }
 }
 
-/// An agent: a square body with a head, two eyes, a mouth and a name tag. A suspended agent carries a
-/// danger-coloured ring segment at the top-right corner of its body.
+/// The initials on an agent's disc: the first letters of its first two words, or its first two letters.
+fn initials(label: &str) -> String {
+    let words: Vec<&str> = label.split_whitespace().collect();
+    if words.len() > 1 {
+        words
+            .iter()
+            .take(2)
+            .filter_map(|w| w.chars().next())
+            .collect::<String>()
+            .to_uppercase()
+    } else {
+        label.chars().take(2).collect::<String>().to_uppercase()
+    }
+}
+
+/// One line of canvas text: where it sits, how it is set, and whether it has the panel's halo, which
+/// the web's labels carry so that they read over the lines.
+struct Line<'s> {
+    text: &'s str,
+    at: Point,
+    colour: Color,
+    size: f32,
+    font: iced::Font,
+    x: iced::widget::text::Alignment,
+    y: iced::alignment::Vertical,
+    halo: bool,
+}
+
+fn line(frame: &mut canvas::Frame, l: Line<'_>) {
+    let mut put = |at: Point, colour: Color| {
+        frame.fill_text(canvas::Text {
+            content: l.text.to_string(),
+            position: at,
+            color: colour,
+            size: l.size.into(),
+            font: l.font,
+            align_x: l.x,
+            align_y: l.y,
+            ..canvas::Text::default()
+        });
+    };
+    if l.halo {
+        let panel = crate::theme::palette().panel;
+        for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            put(Point::new(l.at.x + dx, l.at.y + dy), panel);
+        }
+    }
+    put(l.at, l.colour);
+}
+
+/// An agent: its disc with its initials, its name under it, and a dot when it is suspended. The
+/// selected agent's disc takes the signal's ring, as the web's does.
 fn draw_agent(
     frame: &mut canvas::Frame,
     n: &Node,
@@ -1271,235 +1313,168 @@ fn draw_agent(
     selected: bool,
     suspended: bool,
 ) {
-    let cid = n.members[0];
-    let sz = n.w * k;
-    let half = sz / 2.0;
-    let hue = agent_hue(cid);
-    let ink = crate::theme::palette().ink.scale_alpha(alpha);
-
-    // The print shadow, the antenna and its tip.
-    frame.fill_rectangle(
-        Point::new(c.x - half + 3.0, c.y - half + 3.0),
-        Size::new(sz, sz),
-        crate::theme::palette().ink.scale_alpha(0.85 * alpha),
-    );
-    let antenna = canvas::Path::line(
-        Point::new(c.x, c.y - half),
-        Point::new(c.x, c.y - half - 12.0 * k),
-    );
+    let p = crate::theme::palette();
+    let disc = canvas::Path::circle(c, DISC * k);
+    frame.fill(&disc, p.raised.scale_alpha(alpha));
+    let (colour, width) = if selected {
+        (p.signal, 2.5)
+    } else {
+        (p.rule_strong, 1.5)
+    };
     frame.stroke(
-        &antenna,
+        &disc,
         canvas::Stroke::default()
-            .with_color(ink)
-            .with_width(3.0 * k),
+            .with_color(colour.scale_alpha(alpha))
+            .with_width(width * k),
     );
-    let tip = canvas::Path::circle(Point::new(c.x, c.y - half - 13.0 * k), 4.5 * k);
-    frame.fill(&tip, ui::hsl(hue, 0.7, 0.55).scale_alpha(alpha));
-    frame.stroke(
-        &tip,
-        canvas::Stroke::default()
-            .with_color(ink)
-            .with_width(2.5 * k),
+    line(
+        frame,
+        Line {
+            text: &initials(&n.label),
+            at: c,
+            colour: p.ink.scale_alpha(alpha),
+            size: 12.0,
+            font: crate::theme::SANS_SEMIBOLD,
+            x: iced::widget::text::Alignment::Center,
+            y: iced::alignment::Vertical::Center,
+            halo: false,
+        },
     );
-
-    // The body, and the ring round the selected agent.
-    let body = canvas::Path::rectangle(Point::new(c.x - half, c.y - half), Size::new(sz, sz));
-    frame.fill(&body, ui::hsl(hue, 0.6, 0.64).scale_alpha(alpha));
-    frame.stroke(
-        &body,
-        canvas::Stroke::default()
-            .with_color(ink)
-            .with_width(3.0 * k),
+    line(
+        frame,
+        Line {
+            text: &n.label,
+            at: Point::new(c.x, c.y + (DISC + 6.0) * k),
+            colour: p.ink_2.scale_alpha(alpha),
+            size: LABEL_SIZE,
+            font: crate::theme::SANS,
+            x: iced::widget::text::Alignment::Center,
+            y: iced::alignment::Vertical::Top,
+            halo: true,
+        },
     );
-    if selected {
-        let ring = canvas::Path::rectangle(
-            Point::new(c.x - half - 5.0, c.y - half - 5.0),
-            Size::new(sz + 10.0, sz + 10.0),
-        );
-        frame.stroke(
-            &ring,
-            canvas::Stroke::default()
-                .with_color(crate::theme::palette().signal)
-                .with_width(2.0),
-        );
-    }
     if suspended {
-        // A quarter ring centred on the body's top-right corner, outside the body: from straight up to straight right.
-        let corner = Point::new(c.x + half, c.y - half);
-        let arc = canvas::Path::new(|pb| {
-            pb.arc(canvas::path::Arc {
-                center: corner,
-                radius: 9.0 * k,
-                start_angle: (-std::f32::consts::FRAC_PI_2).into(),
-                end_angle: 0.0_f32.into(),
-            });
-        });
-        frame.stroke(
-            &arc,
-            canvas::Stroke::default()
-                .with_color(Tone::Danger.color().scale_alpha(alpha))
-                .with_width(3.0 * k)
-                .with_line_cap(canvas::LineCap::Round),
+        suspended_dot(
+            frame,
+            Point::new(c.x + DISC * 0.7 * k, c.y - DISC * 0.7 * k),
+            k,
+            alpha,
         );
     }
-
-    // Two eyes: a white sclera with an ink pupil each.
-    for dir in [-1.0_f32, 1.0] {
-        let ex = c.x + dir * sz * 0.2;
-        let ey = c.y - sz * 0.08;
-        let sclera = canvas::Path::circle(Point::new(ex, ey), sz * 0.14);
-        frame.fill(&sclera, Color::WHITE.scale_alpha(alpha));
-        frame.stroke(
-            &sclera,
-            canvas::Stroke::default()
-                .with_color(ink)
-                .with_width(2.0 * k),
-        );
-        let pupil = canvas::Path::circle(Point::new(ex + 1.5 * k, ey + 1.5 * k), sz * 0.06);
-        frame.fill(&pupil, ink);
-    }
-
-    // The mouth.
-    let mouth = canvas::Path::new(|pb| {
-        pb.move_to(Point::new(c.x - sz * 0.16, c.y + sz * 0.22));
-        pb.quadratic_curve_to(
-            Point::new(c.x, c.y + sz * 0.34),
-            Point::new(c.x + sz * 0.16, c.y + sz * 0.22),
-        );
-    });
-    frame.stroke(
-        &mouth,
-        canvas::Stroke::default()
-            .with_color(ink)
-            .with_width(2.5 * k)
-            .with_line_cap(canvas::LineCap::Round),
-    );
-
-    // The name tag, under the body.
-    let tag_w = tag_width(&n.label);
-    let tag_top = c.y + half + 8.0 * k;
-    let tag = canvas::Path::rectangle(
-        Point::new(c.x - tag_w / 2.0, tag_top),
-        Size::new(tag_w, 22.0),
-    );
-    frame.fill(&tag, crate::theme::palette().paper.scale_alpha(alpha));
-    frame.stroke(
-        &tag,
-        canvas::Stroke::default().with_color(ink).with_width(1.0),
-    );
-    frame.fill_text(canvas::Text {
-        content: n.label.clone(),
-        position: Point::new(c.x - tag_w / 2.0 + LABEL_PAD, tag_top + 4.0),
-        color: ink,
-        size: LABEL_SIZE.into(),
-        font: crate::theme::SANS,
-        ..canvas::Text::default()
-    });
 }
 
-/// A cluster's drawn box in pixels: its world size scaled, but never narrower than its label or its
-/// count, which are drawn at a fixed size.
-fn cluster_box(n: &Node, k: f32) -> (f32, f32) {
-    let count = label_width(&format!("{} agents", n.members.len()));
-    (
-        (n.w * k).max(label_width(&n.label)).max(count),
-        (n.h * k).max(56.0),
-    )
+/// The dot a suspended agent carries: a danger-coloured disc at its corner.
+fn suspended_dot(frame: &mut canvas::Frame, at: Point, k: f32, alpha: f32) {
+    let dot = canvas::Path::circle(at, 5.0 * k);
+    frame.fill(&dot, Tone::Danger.color().scale_alpha(alpha));
 }
 
-/// A cluster: a labelled box with its member count, and up to three of its members as dots.
-fn draw_cluster(frame: &mut canvas::Frame, n: &Node, c: Point, k: f32, alpha: f32, selected: bool) {
-    let (w, h) = cluster_box(n, k);
-    let (x0, y0) = (c.x - w / 2.0, c.y - h / 2.0);
-    let ink = crate::theme::palette().ink.scale_alpha(alpha);
-    let radius = border::Radius::from(8.0 * k);
-
-    frame.fill(
-        &canvas::Path::rounded_rectangle(Point::new(x0 + 3.0, y0 + 3.0), Size::new(w, h), radius),
-        crate::theme::palette().ink.scale_alpha(0.85 * alpha),
+/// A group's box: a rounded square, dashed, with up to three of its members as chips and its count
+/// in the middle; its name under it. The selected group's edge takes the signal.
+fn draw_group(
+    frame: &mut canvas::Frame,
+    n: &Node,
+    c: Point,
+    k: f32,
+    alpha: f32,
+    selected: bool,
+    suspended: bool,
+) {
+    let p = crate::theme::palette();
+    let side = n.w * k;
+    let half = side / 2.0;
+    let (x0, y0) = (c.x - half, c.y - half);
+    let body = canvas::Path::rounded_rectangle(
+        Point::new(x0, y0),
+        Size::new(side, side),
+        border::Radius::from(12.0 * k),
     );
-    let body = canvas::Path::rounded_rectangle(Point::new(x0, y0), Size::new(w, h), radius);
-    frame.fill(&body, crate::theme::palette().paper.scale_alpha(alpha));
+    frame.fill(&body, p.sheet_2.scale_alpha(alpha));
+    let (colour, width) = if selected {
+        (p.signal, 2.5)
+    } else {
+        (p.rule_strong, 1.0)
+    };
+    let dashed = canvas::Stroke {
+        line_dash: canvas::stroke::LineDash {
+            segments: &[4.0, 3.0],
+            offset: 0,
+        },
+        ..canvas::Stroke::default()
+    };
     frame.stroke(
         &body,
-        canvas::Stroke::default()
-            .with_color(ink)
-            .with_width(2.5 * k),
+        dashed
+            .with_color(colour.scale_alpha(alpha))
+            .with_width(width * k.max(0.5)),
     );
-    if selected {
-        let ring = canvas::Path::rounded_rectangle(
-            Point::new(x0 - 5.0, y0 - 5.0),
-            Size::new(w + 10.0, h + 10.0),
-            radius,
+    for i in 0..n.members.len().min(3) {
+        let chip = canvas::Path::rounded_rectangle(
+            Point::new(x0 + (8.0 + i as f32 * 14.0) * k, y0 + 8.0 * k),
+            Size::new(10.0 * k, 10.0 * k),
+            border::Radius::from(2.0 * k),
         );
-        frame.stroke(
-            &ring,
-            canvas::Stroke::default()
-                .with_color(crate::theme::palette().signal)
-                .with_width(2.0),
-        );
+        frame.fill(&chip, p.signal_soft.scale_alpha(alpha));
     }
-
-    frame.fill_text(canvas::Text {
-        content: n.label.clone(),
-        position: Point::new(x0 + LABEL_PAD, y0 + 7.0),
-        color: ink,
-        size: LABEL_SIZE.into(),
-        font: crate::theme::SANS,
-        ..canvas::Text::default()
-    });
-    frame.fill_text(canvas::Text {
-        content: format!("{} agents", n.members.len()),
-        position: Point::new(x0 + LABEL_PAD, y0 + 26.0),
-        color: crate::theme::palette().ink_2.scale_alpha(alpha),
-        size: 12.0.into(),
-        font: crate::theme::SANS,
-        ..canvas::Text::default()
-    });
-    for (i, cid) in n.members.iter().take(3).enumerate() {
-        let dot = canvas::Path::circle(Point::new(x0 + 14.0 + i as f32 * 12.0, y0 + h - 12.0), 4.5);
-        frame.fill(&dot, ui::hsl(agent_hue(*cid), 0.6, 0.64).scale_alpha(alpha));
-        frame.stroke(
-            &dot,
-            canvas::Stroke::default().with_color(ink).with_width(1.2),
+    line(
+        frame,
+        Line {
+            text: &n.members.len().to_string(),
+            at: c,
+            colour: p.ink_2.scale_alpha(alpha),
+            size: 12.0,
+            font: crate::theme::SANS,
+            x: iced::widget::text::Alignment::Center,
+            y: iced::alignment::Vertical::Center,
+            halo: false,
+        },
+    );
+    line(
+        frame,
+        Line {
+            text: &n.label,
+            at: Point::new(c.x, c.y + half + 6.0 * k),
+            colour: p.ink_2.scale_alpha(alpha),
+            size: LABEL_SIZE,
+            font: crate::theme::SANS,
+            x: iced::widget::text::Alignment::Center,
+            y: iced::alignment::Vertical::Top,
+            halo: true,
+        },
+    );
+    if suspended {
+        suspended_dot(
+            frame,
+            Point::new(x0 + side - 4.0 * k, y0 + 4.0 * k),
+            k,
+            alpha,
         );
     }
 }
 
 // ---- Breadcrumb and controls -----------------------------------------------
 
-/// The controls above the graph: the family toggle, and Back when a level is open.
+/// The controls above the graph (the web's `.soc-toolbar`): the family toggle, and Back when a family is open.
 fn toolbar<'a>(grouped: bool, depth: usize) -> Element<'a, Msg> {
-    let rule = ui::frame(None, crate::theme::palette().ink);
-    let style = move |t: &Theme| if grouped { on_box(t) } else { rule(t) };
-    let colour = if grouped {
-        crate::theme::palette().paper
-    } else {
-        crate::theme::palette().ink
-    };
-    let toggle = mouse_area(
-        container(ui::sans("GROUP BY FAMILY", 11.0, colour))
-            .padding([4.0, 8.0])
-            .style(style),
-    )
-    .on_press(Msg::Group);
-    let mut bar = row![toggle].spacing(8);
+    let mut bar = row![ui::btn_sm(
+        "Group by family",
+        None,
+        Kind::Secondary,
+        Some(Msg::Group)
+    )]
+    .spacing(12);
     if grouped && depth > 0 {
-        bar = bar.push(ui::btn(
+        bar = bar.push(ui::btn_sm(
             "Back",
             None,
             Kind::Secondary,
             Some(Msg::Level(depth - 1)),
         ));
     }
-    bar.push(Space::new().width(Length::Fill)).into()
+    bar.align_y(Alignment::Center).into()
 }
 
-fn on_box(_: &Theme) -> container::Style {
-    filled(crate::theme::palette().ink)
-}
-
-/// The breadcrumb, "All families › Build › builder": each crumb but the last one climbs back to it.
+/// The breadcrumb, "All families  Build  builder" (the web's `.soc-crumbs`): each crumb but the last one climbs back to it.
 fn crumbs<'a>(nav: &[Key]) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = vec![crumb("All families", 0, nav.is_empty())];
     for (i, key) in nav.iter().enumerate() {
@@ -1508,27 +1483,45 @@ fn crumbs<'a>(nav: &[Key]) -> Element<'a, Msg> {
             Key::Role(_, r) => r.clone(),
             Key::Agent(_) => String::new(),
         };
-        parts.push(ui::faint("›").into());
         parts.push(crumb(&label, i + 1, i + 1 == nav.len()));
     }
-    row(parts).spacing(8).into()
+    row(parts).spacing(12).align_y(Alignment::Center).into()
 }
 
 fn crumb<'a>(label: &str, level: usize, current: bool) -> Element<'a, Msg> {
-    let text = ui::sans(
-        label.to_string(),
-        12.0,
-        if current {
-            crate::theme::palette().ink
-        } else {
-            crate::theme::palette().ink_2
-        },
-    );
     if current {
-        text.into()
+        ui::sans(label.to_string(), 12.0, crate::theme::palette().ink).into()
     } else {
-        mouse_area(text).on_press(Msg::Level(level)).into()
+        ui::btn_sm(label, None, Kind::Ghost, Some(Msg::Level(level)))
     }
+}
+
+/// A card's surface for the graph and the panel (the web's `.soc-graph`, `.soc-panel`): the sheet, ruled, the
+/// skin's large radius, no shadow.
+fn surface(_: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(crate::theme::palette().ink),
+        background: Some(crate::theme::palette().sheet.into()),
+        border: border::Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A heading in the panel (the web's `h2`, `h3`): semibold sans at `size`.
+fn heading<'a>(content: &str, size: f32) -> text::Text<'a> {
+    text(content.to_string())
+        .font(crate::theme::SANS_SEMIBOLD)
+        .size(size)
+        .color(crate::theme::palette().ink)
+}
+
+/// A panel's section heading (the web's `h3`).
+fn h3<'a>(content: &str) -> Element<'a, Msg> {
+    heading(content, 13.0).into()
 }
 
 // ---- Panel -----------------------------------------------------------------
@@ -1536,6 +1529,19 @@ fn crumb<'a>(label: &str, level: usize, current: bool) -> Element<'a, Msg> {
 /// The bond from `from` to `to`, if there is one.
 fn bond_between(d: &Society, from: u64, to: u64) -> Option<&Bond> {
     d.bonds.iter().find(|b| b.from == from && b.to == to)
+}
+
+/// The panel's head (the web's `viewHead`): the title, and under it the subtitle.
+fn panel_head<'a>(title: String, sub: String, extra: Option<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let mut line = row![heading(&title, 18.0)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    if let Some(extra) = extra {
+        line = line.push(extra);
+    }
+    column![line, ui::sans(sub, 13.0, crate::theme::palette().ink_3)]
+        .spacing(4)
+        .into()
 }
 
 /// The selected agent's panel: its own reputation and contacts, both ways round.
@@ -1563,8 +1569,8 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
             "added" => (Tone::Ok, "added"),
             _ => (Tone::Muted, "met"),
         };
-        let mut top = row![
-            ui::btn(
+        let mut names_row = row![
+            ui::btn_sm(
                 &peer_name,
                 None,
                 Kind::Ghost,
@@ -1572,39 +1578,18 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
             ),
             ui::badge(kind, kind_tone)
         ]
-        .spacing(8);
+        .spacing(8)
+        .align_y(Alignment::Center);
         if gap(peer) {
-            top = top.push(ui::badge("they disagree", Tone::Warn));
+            names_row = names_row.push(ui::badge("they disagree", Tone::Warn));
         }
-        let mut item = column![top, bar(&bond.opinion)].spacing(6);
-        if let Some(note) = bond
+        let note = bond
             .note
             .as_deref()
             .map(str::trim)
             .filter(|n| !n.is_empty())
-        {
-            let open = state.open_notes.contains(&peer);
-            let long = note.chars().count() > NOTE_PREVIEW;
-            let shown = if long && !open {
-                format!("{}…", note.chars().take(NOTE_PREVIEW).collect::<String>())
-            } else {
-                note.to_string()
-            };
-            item = item.push(ui::markdown(&shown));
-            if long {
-                item = item.push(ui::btn(
-                    if open { "Show less" } else { "Show all" },
-                    None,
-                    Kind::Ghost,
-                    Some(Msg::Note(peer)),
-                ));
-            }
-        }
-        container(item)
-            .padding([10.0, 0.0])
-            .width(Length::Fill)
-            .style(ui::frame(None, crate::theme::palette().rule))
-            .into()
+            .map(|n| note_view(n, peer, state.open_notes.contains(&peer)));
+        peer_entry(names_row.into(), &bond.opinion, note)
     };
 
     let outgoing: Vec<Element<'a, Msg>> = d
@@ -1620,36 +1605,38 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
         .map(|b| peer_row(b.from, b))
         .collect();
 
-    let mut title = row![ui::sans(name.clone(), 18.0, crate::theme::palette().ink)]
-        .spacing(8)
-        .align_y(Alignment::Center);
-    if state.suspended.contains(&me.cid) {
-        title = title.push(ui::badge("suspended", Tone::Danger));
-    }
+    let suspended = state
+        .suspended
+        .contains(&me.cid)
+        .then(|| ui::badge("suspended", Tone::Danger));
+    let rep_meter = meter(if rated { rep / 100.0 } else { 0.0 });
     let mut panel = column![
-        column![title, ui::faint(me.role.clone())].spacing(4),
-        stat(
-            "Reputation",
-            if rated {
-                format!("{} / 100", rep.round())
-            } else {
-                "Unrated".to_string()
-            }
-        ),
-        meter(if rated { rep / 100.0 } else { 0.0 }),
-        stat(
-            "Confidence",
-            format!("{}%", (clamp(me.confidence, 0.0, 1.0) * 100.0).round())
-        ),
-        stat("Wallet", compact(me.wallet)),
+        panel_head(name.clone(), role_label(&me.role), suspended),
+        stats(vec![
+            stat_box(
+                "Reputation",
+                if rated {
+                    format!("{} / 100", rep.round())
+                } else {
+                    "Unrated".to_string()
+                },
+                Some(rep_meter),
+            ),
+            stat_box(
+                "Confidence",
+                format!("{}%", (clamp(me.confidence, 0.0, 1.0) * 100.0).round()),
+                None,
+            ),
+            stat_box("Wallet", compact(me.wallet), None),
+        ]),
         row![
-            ui::btn(
+            ui::btn_sm(
                 "Trust more",
                 None,
                 Kind::Primary,
                 Some(Msg::Rate(me.cid, 1.0))
             ),
-            ui::btn(
+            ui::btn_sm(
                 "Trust less",
                 None,
                 Kind::Secondary,
@@ -1657,21 +1644,21 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
             ),
         ]
         .spacing(8),
-        ui::label(&format!("How {name} sees others")),
+        h3(&format!("How {name} sees others")),
     ]
-    .spacing(14);
+    .spacing(12);
     let outgoing_list: Element<'a, Msg> = if outgoing.is_empty() {
         ui::faint("No contacts yet.").into()
     } else {
-        column(outgoing).spacing(4).into()
+        column(outgoing).into()
     };
     let incoming_list: Element<'a, Msg> = if incoming.is_empty() {
         ui::faint("Nobody has met them yet.").into()
     } else {
-        column(incoming).spacing(4).into()
+        column(incoming).into()
     };
     panel = panel.push(outgoing_list);
-    panel = panel.push(ui::label(&format!("How others see {name}")));
+    panel = panel.push(h3(&format!("How others see {name}")));
     panel = panel.push(incoming_list);
 
     let mut out: Vec<Element<'a, Msg>> = Vec::new();
@@ -1679,11 +1666,11 @@ fn detail<'a>(state: &'a State, d: &'a Society, me: &'a Agent) -> Element<'a, Ms
         out.push(ui::error_line(e));
     }
     out.push(panel.into());
-    column(out).spacing(14).padding(4.0).into()
+    column(out).spacing(12).into()
 }
 
-/// A family's or a role's panel: its members, the trust that runs in and out of it, and its
-/// strongest ties outside.
+/// A family's or a role's panel (the web's `groupDetail`): its members, the trust that runs in and out
+/// of it, and its strongest outside ties.
 fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
     let members: Vec<&Agent> = d.agents.iter().filter(|a| in_group(a, key)).collect();
     let inside: HashSet<u64> = members.iter().map(|a| a.cid).collect();
@@ -1710,17 +1697,19 @@ fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
             .map(|b| b.opinion.e)
             .collect(),
     );
-    let shown = |v: Option<f32>| {
-        v.map(|e| format!("{e:.2}"))
-            .unwrap_or_else(|| "none yet".to_string())
-    };
     let mut ties = outside.clone();
     ties.sort_by(|a, b| b.strength.total_cmp(&a.strength));
 
-    let title = match key {
-        Key::Family(f) => family_label(f).to_string(),
-        Key::Role(_, r) => r.clone(),
-        Key::Agent(_) => String::new(),
+    let (title, sub) = match key {
+        Key::Family(f) => (
+            family_label(f).to_string(),
+            format!("{} agents", members.len()),
+        ),
+        Key::Role(f, r) => (
+            r.clone(),
+            format!("{} agents · {}", members.len(), family_label(f)),
+        ),
+        Key::Agent(_) => (String::new(), String::new()),
     };
     let member_list: Element<'a, Msg> = if members.is_empty() {
         ui::faint("No agents here.").into()
@@ -1728,104 +1717,187 @@ fn group_panel<'a>(d: &'a Society, key: &Key) -> Element<'a, Msg> {
         column(
             members
                 .iter()
-                .map(|a| ui::btn(&name_of(a), None, Kind::Ghost, Some(Msg::Member(a.cid))))
+                .map(|a| member_row(name_of(a), role_label(&a.role), Msg::Member(a.cid)))
                 .collect::<Vec<Element<'a, Msg>>>(),
         )
-        .spacing(4)
         .into()
     };
     let tie_list: Vec<Element<'a, Msg>> = ties
         .iter()
-        .take(6)
+        .take(3)
         .map(|b| -> Element<'a, Msg> {
-            let (mine, other) = if inside.contains(&b.from) {
-                (b.from, b.to)
+            let peer = if inside.contains(&b.from) {
+                b.to
             } else {
-                (b.to, b.from)
+                b.from
             };
-            let mine_name = names
-                .get(&mine)
+            let peer_name = names
+                .get(&peer)
                 .map(|a| name_of(a))
-                .unwrap_or_else(|| format!("agent {mine}"));
-            let other_name = names
-                .get(&other)
-                .map(|a| name_of(a))
-                .unwrap_or_else(|| format!("agent {other}"));
-            column![
-                ui::btn(&other_name, None, Kind::Ghost, Some(Msg::Member(other))),
-                ui::faint(format!("{mine_name} · strength {:.1}", b.strength)),
-                bar(&b.opinion),
+                .unwrap_or_else(|| format!("agent {peer}"));
+            let head = row![
+                ui::btn_sm(&peer_name, None, Kind::Ghost, Some(Msg::Member(peer))),
+                ui::badge(&b.kind, Tone::Muted)
             ]
-            .spacing(6)
-            .into()
+            .spacing(8)
+            .align_y(Alignment::Center);
+            let note = b
+                .note
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .map(|n| ui::sans(n.to_string(), 12.5, crate::theme::palette().ink_2).into());
+            peer_entry(head.into(), &b.opinion, note)
         })
         .collect();
     let ties_col: Element<'a, Msg> = if tie_list.is_empty() {
-        ui::faint("No ties outside yet.").into()
+        ui::faint("No contacts across the edge.").into()
     } else {
-        column(tie_list).spacing(10).into()
+        column(tie_list).into()
     };
 
-    let panel = column![
-        column![
-            ui::sans(title, 18.0, crate::theme::palette().ink),
-            ui::faint(format!("{} agents", members.len()))
-        ]
-        .spacing(4),
-        stat("Mean trust in", shown(trust_in)),
-        stat("Mean trust out", shown(trust_out)),
-        ui::label("Members"),
+    column![
+        panel_head(title, sub, None),
+        stats(vec![
+            stat_box(
+                "Mean trust in",
+                shown(trust_in),
+                trust_in.map(|e| bar(&Opinion { e, u: 0.0 }))
+            ),
+            stat_box(
+                "Mean trust out",
+                shown(trust_out),
+                trust_out.map(|e| bar(&Opinion { e, u: 0.0 }))
+            ),
+        ]),
+        h3("Members"),
         member_list,
-        ui::label("Strongest outside ties"),
+        h3("Strongest outside ties"),
         ties_col,
     ]
-    .spacing(14);
-    column![panel].padding(4.0).into()
+    .spacing(12)
+    .into()
 }
 
-fn stat<'a>(key: &'static str, value: String) -> Element<'a, Msg> {
-    row![
-        ui::faint(key),
-        Space::new().width(Length::Fill),
-        ui::sans(value, 13.0, crate::theme::palette().ink)
+/// A mean trust, to two places; "none yet" when there are no bonds.
+fn shown(v: Option<f32>) -> String {
+    v.map(|e| format!("{e:.2}"))
+        .unwrap_or_else(|| "none yet".to_string())
+}
+
+/// One peer's entry in a panel: the name and its badges, the opinion on the right, the opinion's bar,
+/// then the private note when there is one.
+fn peer_entry<'a>(
+    head: Element<'a, Msg>,
+    opinion: &Opinion,
+    note: Option<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
+    let num = ui::sans(
+        format!("{:.2}", opinion.e),
+        12.0,
+        crate::theme::palette().ink_2,
+    );
+    let top = row![container(head).width(Length::Fill), num]
+        .spacing(12)
+        .align_y(Alignment::Center);
+    let mut item = column![top, bar(opinion)].spacing(8);
+    if let Some(note) = note {
+        item = item.push(note);
+    }
+    column![
+        container(item).padding([12.0, 0.0]).width(Length::Fill),
+        ui::hairline()
     ]
     .into()
 }
 
-/// Reputation as a bar, filled to `frac`.
-fn meter<'a>(frac: f32) -> Element<'a, Msg> {
-    let filled = permille(frac);
-    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
-    if filled > 0 {
-        parts.push(tint(
-            Length::FillPortion(filled),
-            crate::theme::palette().ink,
-        ));
+/// A private note, clamped to NOTE_PREVIEW characters; "Show all" opens it, and "Show less" closes it.
+fn note_view<'a>(note: &str, peer: u64, open: bool) -> Element<'a, Msg> {
+    let long = note.chars().count() > NOTE_PREVIEW;
+    let shown = if long && !open {
+        format!("{}…", note.chars().take(NOTE_PREVIEW).collect::<String>())
+    } else {
+        note.to_string()
+    };
+    let text = ui::sans(shown, 12.5, crate::theme::palette().ink_2);
+    if !long {
+        return text.into();
     }
-    if filled < 1000 {
-        parts.push(
-            Space::new()
-                .width(Length::FillPortion(1000 - filled))
-                .height(Length::Fill)
-                .into(),
-        );
+    let toggle = ui::btn_sm(
+        if open { "Show less" } else { "Show all" },
+        None,
+        Kind::Ghost,
+        Some(Msg::Note(peer)),
+    );
+    column![text, toggle].spacing(4).into()
+}
+
+/// A group's member: the name as a ghost button, and its role on the right.
+fn member_row<'a>(name: String, role: String, msg: Msg) -> Element<'a, Msg> {
+    let line = row![
+        ui::btn_sm(&name, None, Kind::Ghost, Some(msg)),
+        Space::new().width(Length::Fill),
+        ui::faint(role),
+    ]
+    .align_y(Alignment::Center);
+    column![
+        container(line).padding([12.0, 0.0]).width(Length::Fill),
+        ui::hairline()
+    ]
+    .into()
+}
+
+/// Three stat boxes in a row (the web's `.soc-stats`, three columns); fewer leave the rest empty.
+fn stats<'a>(cells: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let mut slots: Vec<Element<'a, Msg>> = cells
+        .into_iter()
+        .map(|c| container(c).width(Length::FillPortion(1)).into())
+        .collect();
+    while slots.len() < 3 {
+        slots.push(Space::new().width(Length::FillPortion(1)).into());
     }
-    container(row(parts).height(Length::Fill))
+    row(slots).spacing(12).into()
+}
+
+/// A stat box (the web's `.stat`): its label in ink-3, its value, and a meter under it when it has one.
+fn stat_box<'a>(label: &str, value: String, extra: Option<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let mut body = column![ui::faint(label.to_string()), heading(&value, 13.5)].spacing(4);
+    if let Some(extra) = extra {
+        body = body.push(extra);
+    }
+    container(body)
+        .padding([14.0, 16.0])
         .width(Length::Fill)
-        .height(6.0)
-        .style(ui::frame(None, crate::theme::palette().ink))
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().raised.into()),
+            border: border::Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: crate::theme::skin().radius_lg.into(),
+            },
+            ..container::Style::default()
+        })
         .into()
 }
 
-/// An opinion: the filled part is the expected trust e; the lighter tail runs on by the uncertainty u.
+/// Reputation as a bar, filled to `frac` in the ok colour (the web's `.soc-bar` with `.t-ok`).
+fn meter<'a>(frac: f32) -> Element<'a, Msg> {
+    track(frac, 0.0, green())
+}
+
+/// An opinion (the web's `.soc-bar`): the filled part is the expected trust e; the hatched tail runs on by u.
 fn bar<'a>(o: &Opinion) -> Element<'a, Msg> {
     let e = clamp(o.e, 0.0, 1.0);
-    let tail = clamp(o.u, 0.0, 1.0).min(1.0 - e);
-    let fill = permille(e);
+    track(e, clamp(o.u, 0.0, 1.0).min(1.0 - e), band(e))
+}
+
+/// A track of `width` fraction filled in `colour`, then a faint run of `tail` fraction.
+fn track<'a>(width: f32, tail: f32, colour: Color) -> Element<'a, Msg> {
+    let fill = permille(width);
     let tail_w = permille(tail).min(1000 - fill);
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if fill > 0 {
-        parts.push(tint(Length::FillPortion(fill), band(e)));
+        parts.push(tint(Length::FillPortion(fill), colour));
     }
     if tail_w > 0 {
         parts.push(tint(
@@ -1841,65 +1913,83 @@ fn bar<'a>(o: &Opinion) -> Element<'a, Msg> {
                 .into(),
         );
     }
-    let track = container(row(parts).height(Length::Fill))
+    container(row(parts).height(Length::Fill))
         .width(Length::Fill)
         .height(8.0)
-        .style(ui::frame(None, crate::theme::palette().ink));
-    row![
-        track,
-        ui::sans(format!("{e:.2}"), 12.0, crate::theme::palette().ink)
-    ]
-    .spacing(8)
-    .into()
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule.into()),
+            border: border::Border {
+                radius: 4.0.into(),
+                ..border::Border::default()
+            },
+            ..container::Style::default()
+        })
+        .into()
 }
 
-/// The page with nothing selected: how to read the graph.
+/// The page with nothing selected (the web's `legend`): how to read the graph.
 fn legend<'a>() -> Element<'a, Msg> {
-    let line =
-        |colour: Color, height: f32| -> Element<'a, Msg> { tint_sized(18.0, height, colour) };
+    let p = crate::theme::palette();
+    let swatch =
+        |colour: Color, height: f32| -> Element<'a, Msg> { tint_sized(28.0, height, colour) };
     let dashed = || -> Element<'a, Msg> {
         row![
-            tint_sized(5.0, 2.0, crate::theme::palette().ink_3),
-            tint_sized(5.0, 2.0, crate::theme::palette().ink_3),
-            tint_sized(5.0, 2.0, crate::theme::palette().ink_3)
+            tint_sized(6.0, 4.0, p.ink_3),
+            tint_sized(6.0, 4.0, p.ink_3),
+            tint_sized(6.0, 4.0, p.ink_3)
         ]
-        .spacing(2)
+        .spacing(4)
         .into()
     };
-    let entry = |swatch: Element<'a, Msg>, text: &'static str| -> Element<'a, Msg> {
+    let entry = |sw: Element<'a, Msg>, text: &'static str| -> Element<'a, Msg> {
         row![
-            container(swatch).width(24.0).center_y(Length::Shrink),
-            ui::prose(text)
+            container(sw).width(28.0).center_y(Length::Shrink),
+            ui::sans(text, 13.0, p.ink_2)
         ]
-        .spacing(10)
+        .spacing(12)
+        .align_y(Alignment::Center)
         .into()
     };
+    let boxed =
+        container(Space::new().width(14.0).height(14.0)).style(|_: &Theme| container::Style {
+            border: border::Border {
+                color: crate::theme::palette().rule_strong,
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+            ..container::Style::default()
+        });
     column![
+        panel_head(
+            "Nothing selected".to_string(),
+            "Pick an agent to see how it sees the others, and how they see it.".to_string(),
+            None,
+        ),
+        h3("Reading the graph"),
         column![
-            ui::sans("Nothing selected", 18.0, crate::theme::palette().ink),
-            ui::faint("Pick an agent to see how it sees the others, and how they see it.")
+            entry(swatch(red(), 4.0), "trust below 0.4"),
+            entry(swatch(amber(), 4.0), "trust from 0.4 to 0.6"),
+            entry(swatch(green(), 4.0), "trust above 0.6"),
+            entry(
+                swatch(p.ink_3, 4.0),
+                "solid, with an arrowhead: its own opinions"
+            ),
+            entry(dashed(), "dashed: the opinions held of it"),
+            entry(swatch(p.ink_3, 8.0), "thicker line: a stronger contact"),
+            entry(swatch(p.ink_2, 4.0), "darker grey: a mutual pair"),
+            entry(
+                boxed.into(),
+                "a box: a group of agents, sized by its count; click to open it",
+            ),
         ]
-        .spacing(4),
-        ui::label("Reading the graph"),
-        entry(tint_sized(18.0, 10.0, RED), "trust below 0.4"),
-        entry(tint_sized(18.0, 10.0, AMBER), "trust from 0.4 to 0.6"),
-        entry(tint_sized(18.0, 10.0, GREEN), "trust above 0.6"),
-        entry(
-            line(crate::theme::palette().ink_3, 2.0),
-            "solid, with an arrowhead: its own opinions"
+        .spacing(10),
+        ui::sans(
+            "Trusting an agent more or less moves the opinions held of it.",
+            11.5,
+            p.ink_3,
         ),
-        entry(dashed(), "dashed: the opinions held of it"),
-        entry(
-            line(crate::theme::palette().ink_3, 4.0),
-            "thicker line: a stronger contact"
-        ),
-        entry(
-            line(crate::theme::palette().ink_2, 3.0),
-            "darker grey: a mutual pair"
-        ),
-        ui::faint("Trusting an agent more or less moves the opinions held of it."),
     ]
-    .spacing(10)
+    .spacing(12)
     .into()
 }
 

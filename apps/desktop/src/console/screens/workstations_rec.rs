@@ -750,7 +750,10 @@ fn detail_view<'a>(
     let picture = container(picture)
         .width(Length::Fill)
         .height(Length::Fixed(360.0))
-        .style(ui::frame(Some(theme::SUBSTRATE), theme::RULE));
+        .style(ui::frame(
+            Some(crate::theme::palette().sheet_2),
+            crate::theme::palette().rule,
+        ));
 
     let play = ui::btn(
         if open.playing { "Pause" } else { "Play" },

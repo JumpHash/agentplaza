@@ -2,10 +2,9 @@
 // picture (a 160 x 120 thumbnail, drawn by the Rust engine) with its facts and load bars. Opening
 // a row grows its panel open, and the engine's live 3D view fills the row's stage slot; closing
 // hides it. One row is open at a time, and the engine's one stage canvas sits over the open row.
-// A build without the engine shows each row's line-art picture instead.
+// A build without the engine shows each row's line-art picture instead. The markup is the
+// prototype's (styles/proto/machines.css): `.mlist` rows, `.mt-*` tallies, bars, tables and chips.
 
-import '../styles/ops.css';
-import '../styles/machine-list.css';
 import { api, type Agent, type FleetApple, type MachineNode, type ProcessUsage, type Run, type StationView, type Vm, type VmUsage } from '../api';
 import { agentName, roleLabel } from '../roles';
 import { ago, badge, button, type Tone } from '../ui/components';
@@ -16,6 +15,8 @@ import { lookOfSpec, sizeLine, specKey, THUMB_H, THUMB_W, VIEWS, type PictureSpe
 import { engineWanted, followLook, isEngineStopped, startEngineStage, startThumbEngine, type EngineStage } from './engine-mount';
 import { styleKey } from './machine-style';
 import { href } from '../router';
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
 export type Stats = NonNullable<MachineNode['stats']>;
 type VmDetail = Vm & { serial?: string };
@@ -41,6 +42,9 @@ const RUN_COLUMNS: [string, boolean][] = [
   ['Started', true],
   ['', false],
 ];
+
+// The prototype's stack colours: the services, the agents, the rest of the system, the free share.
+const SWATCH: Record<Part['cls'], string> = { services: 'mt-s1', agents: 'mt-s2', rest: 'mt-s3', free: 'mt-s4' };
 
 const DEFAULT_SORT: AgentSort = { key: 'cpu', dir: -1 };
 // Each machine's Agents-table sort, kept across the refreshes.
@@ -105,98 +109,110 @@ export function specOf(m: MachineNode): PictureSpec {
   return isStationNode(m) ? { ...spec, look: stationLook(m.station.facts) } : spec;
 }
 
-// The last 60 CPU samples on a small canvas: a ruled baseline and one ink line.
-function sparkline(history: Stats['history']): HTMLCanvasElement {
-  const W = 240;
-  const H = 72;
-  const canvas = document.createElement('canvas');
-  canvas.className = 'mach-spark';
-  canvas.width = W;
-  canvas.height = H;
-  canvas.setAttribute('aria-hidden', 'true');
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return canvas;
-  const css = getComputedStyle(document.documentElement);
-  ctx.strokeStyle = css.getPropertyValue('--rule').trim() || '#999';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(0, H - 0.5);
-  ctx.lineTo(W, H - 0.5);
-  ctx.stroke();
-  const pts = history.slice(-60);
-  if (pts.length < 2) return canvas;
-  ctx.strokeStyle = css.getPropertyValue('--ink').trim() || '#111';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  pts.forEach((p, i) => {
-    const x = (i / (pts.length - 1)) * W;
-    const y = H - 4 - (clamp(p.cpu_percent, 0, 100) / 100) * (H - 8);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-  return canvas;
+// ---- The prototype's parts: meters, tallies, captions, key-value pairs and the sparkline -------------------------
+
+/** A thin bar filled to `p` per cent: the prototype's `.mt-bar`. */
+export function meterBar(p: number): HTMLElement {
+  const fill = h('i');
+  fill.style.width = `${clamp(p, 0, 100).toFixed(1)}%`;
+  return h('div.mt-bar', null, fill);
 }
 
-function memBar(s: Stats): HTMLElement {
-  const fill = h('div.mach-bar-fill', null);
-  fill.style.width = `${clamp((s.mem_used_mib / Math.max(s.mem_total_mib, 1)) * 100, 0, 100)}%`;
-  return h('div.mach-bar', null, fill);
+/** A labelled load bar with its figure: the prototype's `.mt-meter`. */
+export function meter(label: string, p: number, text: string, title = ''): HTMLElement {
+  return h('div.mt-meter', null, h('span.mt-faint', null, label), meterBar(p), h('span.mt-num', title ? { title } : null, text));
 }
 
-function tally(label: string, figure: string, caption: string | null, extra?: Node): HTMLElement {
-  const fig = h('div.mach-figure', null, figure);
-  if (figure.length > 8) fig.classList.add('long');
+/** A tally: its label, figure, caption and an optional extra (a sparkline or a bar): the prototype's `.mt-tally`. */
+export function tally(label: string, figure: string, caption: string | null, extra?: Node | null): HTMLElement {
   return h(
-    'div.mach-tally',
+    'div.mt-tally',
     null,
-    h('div.mach-tally-label', null, label),
-    fig,
+    h('span.mt-faint', null, label),
+    h(`span.mt-fig${figure.length > 8 ? '.long' : ''}`, null, figure),
+    caption ? h('span.mt-faint', null, caption) : null,
     extra ?? null,
-    caption === null ? null : h('div.mach-caption', null, caption),
   );
 }
 
-// ---- Where the resources go -------------------------------------------------
+/** A caption heading: the prototype's `.mt-cap`. */
+export function cap(text: string): HTMLElement {
+  return h('p.mt-cap', null, text);
+}
 
-// A bar that is 100% of the machine (or of its total when the parts overrun it), with a legend.
-function stackedBar(title: string, parts: Part[], whole: number, fmt: (v: number) => string): HTMLElement {
+/** A faint line: the prototype's `.mt-faint`. */
+export function faint(text: string): HTMLElement {
+  return h('p.mt-faint', null, text);
+}
+
+/** Label and value pairs: the prototype's `dl.kv`. */
+export function kv(pairs: [string, string][]): HTMLElement {
+  return h('dl.kv', null, pairs.map(([k, v]) => h('div', null, h('dt', null, k), h('dd', null, v))));
+}
+
+/** The prototype's sparkline: the last 60 values on a ruled baseline, as an SVG. */
+export function sparkSvg(values: number[], w: number, hgt: number, label: string, cls = ''): SVGSVGElement {
+  const v = values.slice(-60);
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', `mt-spark${cls ? ` ${cls}` : ''}`);
+  svg.setAttribute('viewBox', `0 0 ${w} ${hgt}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', label);
+  const base = document.createElementNS(SVG_NS, 'line');
+  base.setAttribute('x1', '0');
+  base.setAttribute('y1', String(hgt - 4));
+  base.setAttribute('x2', String(w));
+  base.setAttribute('y2', String(hgt - 4));
+  const line = document.createElementNS(SVG_NS, 'polyline');
+  line.setAttribute(
+    'points',
+    v.map((y, i) => `${(v.length === 1 ? w / 2 : (i * w) / (v.length - 1)).toFixed(1)},${(hgt - 4 - (clamp(y, 0, 100) / 100) * (hgt - 8)).toFixed(1)}`).join(' '),
+  );
+  svg.append(base, line);
+  return svg;
+}
+
+// The CPU samples of a history, as numbers: what a sparkline draws.
+function cpuSamples(history: Stats['history']): number[] {
+  return history.map((p) => p.cpu_percent).filter((x) => Number.isFinite(x));
+}
+
+// A bar of parts that add up to `whole` (or to their own sum when they overrun it), with its legend.
+function stackBar(parts: Part[], whole: number, fmt: (v: number) => string): HTMLElement {
   const sum = parts.reduce((n, p) => n + p.value, 0);
   const span = Math.max(whole, sum, 1);
   const bar = h(
-    'div.res-bar',
+    'div.mt-stack',
     null,
     parts.map((p) => {
-      const seg = h(`span.res-seg.res-${p.cls}`, { title: `${p.label}: ${fmt(p.value)}`, 'data-key': `seg-${p.cls}` });
-      seg.style.width = `${clamp((p.value / span) * 100, 0, 100)}%`;
+      const seg = h('i', { title: `${p.label}: ${fmt(p.value)}` });
+      seg.className = SWATCH[p.cls];
+      seg.style.width = `${clamp((p.value / span) * 100, 0, 100).toFixed(2)}%`;
       return seg;
     }),
   );
   const legend = h(
-    'ul.res-legend',
+    'div.mt-legend',
     null,
-    parts.map((p) => h('li', { 'data-key': `part-${p.cls}` }, h(`span.res-swatch.res-${p.cls}`, null), h('span', null, p.label), h('strong', null, fmt(p.value)))),
+    parts.map((p) => h('span', null, h('i', { class: SWATCH[p.cls] }), `${p.label} ${fmt(p.value)}`)),
   );
-  return h('div.res-row', null, h('div.res-title', null, title), bar, legend);
+  return h('div', null, bar, legend);
 }
 
 function servicesTable(rows: ProcessUsage[]): HTMLElement {
   return h(
-    'div.res-scroll',
+    'div.tbl-wrap',
     null,
     h(
-      'table.table.res-table',
+      'table.tbl.mt-tbl',
       null,
-      h(
-        'thead',
-        null,
-        h('tr', null, h('th', null, 'Service'), h('th', { class: 'num' }, 'PID'), h('th', { class: 'num' }, 'CPU'), h('th', { class: 'num' }, 'Memory')),
-      ),
+      h('thead', null, h('tr', null, h('th', null, 'Service'), h('th', { class: 'num' }, 'PID'), h('th', { class: 'num' }, 'CPU'), h('th', { class: 'num' }, 'Memory'))),
       h(
         'tbody',
         null,
         rows.map((p) =>
-          h('tr', { 'data-key': `svc-${p.name}` }, h('td', null, p.name), h('td', { class: 'num res-pid' }, String(p.pid)), h('td', { class: 'num' }, pct(p.cpu_percent)), h('td', { class: 'num' }, human(p.rss_mib))),
+          h('tr', { 'data-key': `svc-${p.name}` }, h('td', null, p.name), h('td', { class: 'num' }, String(p.pid)), h('td', { class: 'num' }, pct(p.cpu_percent)), h('td', { class: 'num' }, human(p.rss_mib))),
         ),
       ),
     ),
@@ -204,17 +220,12 @@ function servicesTable(rows: ProcessUsage[]): HTMLElement {
 }
 
 // A VM's guest memory as "used / usable", with a thin bar of the share used.
-function guestCell(v: VmUsage): HTMLElement {
+function guestCell(v: VmUsage): (Node | null)[] {
   const used = v.guest_used_mib;
   const usable = v.usable_mib;
   const text = `${used === null ? '—' : human(used)} / ${usable === null ? '—' : human(usable)}`;
-  let mini: HTMLElement | null = null;
-  if (used !== null && usable !== null && usable > 0) {
-    const fill = h('div.mach-bar-fill', null);
-    fill.style.width = `${clamp((used / usable) * 100, 0, 100)}%`;
-    mini = h('div.mach-bar.res-mini', null, fill);
-  }
-  return h('div.res-guest', null, h('span', null, text), mini);
+  const mini: Node | null = used !== null && usable !== null && usable > 0 ? meterBar((used / usable) * 100) : null;
+  return [h('span', null, text), mini];
 }
 
 function agentsTable(m: MachineNode, vms: VmUsage[], byCid: Map<number, Agent>, onSort: (key: AgentSort['key']) => void): HTMLElement {
@@ -224,7 +235,7 @@ function agentsTable(m: MachineNode, vms: VmUsage[], byCid: Map<number, Agent>, 
 
   const head = (label: string, k: AgentSort['key']): HTMLElement => {
     const active = sort.key === k;
-    const btn = h('button.res-sort', { type: 'button' }, active ? `${label} ${sort.dir === -1 ? '↓' : '↑'}` : label);
+    const btn = h('button.mt-sortbtn', { type: 'button' }, active ? `${label} ${sort.dir === -1 ? '↓' : '↑'}` : label);
     btn.addEventListener('click', () => onSort(k));
     return h('th', { class: 'num', 'aria-sort': active ? (sort.dir === -1 ? 'descending' : 'ascending') : 'none' }, btn);
   };
@@ -236,11 +247,11 @@ function agentsTable(m: MachineNode, vms: VmUsage[], byCid: Map<number, Agent>, 
     return h(
       'tr',
       { 'data-key': `vm-${v.run}-${v.vm}` },
-      h('td', null, h('div', null, name), h('div.faint', null, role ? roleLabel(role) : '—')),
-      h('td', { class: 'res-pid' }, `${v.run}/${v.vm}`),
+      h('td', null, h('div', null, name), h('div.mt-faint', null, role ? roleLabel(role) : '—')),
+      h('td', { class: 'mt-mono' }, `${v.run}/${v.vm}`),
       h('td', { class: 'num' }, pct(v.cpu_percent)),
       h('td', { class: 'num' }, human(v.rss_mib)),
-      h('td', { class: 'num' }, guestCell(v)),
+      h('td', null, guestCell(v)),
     );
   });
 
@@ -252,28 +263,24 @@ function agentsTable(m: MachineNode, vms: VmUsage[], byCid: Map<number, Agent>, 
   const guestTotal = guestReported.length ? `${human(guestUsed)} / ${human(guestUsable)}` : '—';
 
   return h(
-    'div.res-scroll',
+    'div.tbl-wrap',
     null,
     h(
-      'table.table.res-table',
+      'table.tbl.mt-tbl',
       null,
+      h('thead', null, h('tr', null, h('th', null, 'Agent'), h('th', null, 'VM'), head('CPU', 'cpu'), head('Host memory', 'mem'), h('th', null, 'Guest used / usable'))),
       h(
-        'thead',
+        'tbody',
         null,
-        h('tr', null, h('th', null, 'Agent'), h('th', null, 'VM'), head('CPU', 'cpu'), head('Host memory', 'mem'), h('th', { class: 'num' }, 'Guest used / usable')),
-      ),
-      h('tbody', null, body),
-      h(
-        'tfoot',
-        null,
+        body,
         h(
           'tr',
-          { class: 'res-total' },
+          { class: 'mt-res-total' },
           h('td', null, `${vms.length} VMs`),
           h('td', null),
           h('td', { class: 'num' }, pct(sumCpu)),
           h('td', { class: 'num' }, human(sumRss)),
-          h('td', { class: 'num' }, guestTotal),
+          h('td', null, guestTotal),
         ),
       ),
     ),
@@ -286,7 +293,7 @@ function resourcesPanel(m: MachineNode, byCid: Map<number, Agent>): HTMLElement 
   const s = m.stats;
   const plaza = s?.plaza;
   if (!s || !plaza) {
-    return h('div.res', null, h('div.mach-caps', null, 'Where the resources go'), h('p.faint', null, "This node doesn't report a breakdown yet."));
+    return h('div.res', null, cap('Where the resources go'), faint("This node doesn't report a breakdown yet."));
   }
   const t = plaza.total;
   const cpuParts: Part[] = [
@@ -312,13 +319,15 @@ function resourcesPanel(m: MachineNode, byCid: Map<number, Agent>): HTMLElement 
   root = h(
     'div.res',
     null,
-    h('div.mach-caps', null, 'Where the resources go'),
-    stackedBar('CPU', cpuParts, 100, pct),
-    stackedBar('Memory', memParts, s.mem_total_mib, (v) => `${gib(v)} GiB`),
-    h('div.mach-caps.res-sub', null, 'Services'),
+    cap('Where the resources go'),
+    faint('CPU'),
+    stackBar(cpuParts, 100, pct),
+    faint('Memory'),
+    stackBar(memParts, s.mem_total_mib, (v) => `${gib(v)} GiB`),
+    cap('Services'),
     servicesTable(plaza.services),
-    h('div.mach-caps.res-sub', null, 'Agents'),
-    plaza.vms.length ? agentsTable(m, plaza.vms, byCid, onSort) : h('p.faint', null, 'No agent VMs on this node.'),
+    cap('Agents'),
+    plaza.vms.length ? agentsTable(m, plaza.vms, byCid, onSort) : faint('No agent VMs on this node.'),
   );
   return root;
 }
@@ -343,23 +352,29 @@ export function newRunState(kill: (id: string) => void): RunState {
 }
 
 function vmList(runId: string, vms: VmDetail[], rs: RunState): HTMLElement {
-  if (!vms.length) return h('p.faint', null, 'No VMs.');
+  if (!vms.length) return faint('No VMs.');
   return h(
-    'div.vms',
+    'div.mt-vms',
     null,
     vms.map((vm) => {
       const key = `${runId}/${vm.index}`;
-      let serial: HTMLElement | null = null;
+      let serial: Node[] | null = null;
       if (vm.serial) {
-        const d = h('details', null, h('summary', null, 'Serial'), h('pre.pre', null, vm.serial)) as HTMLDetailsElement;
-        d.open = rs.serialOpen.has(key);
-        d.addEventListener('toggle', () => (d.open ? rs.serialOpen.add(key) : rs.serialOpen.delete(key)));
-        serial = d;
+        const pre = h('pre.mt-serialtxt', { hidden: !rs.serialOpen.has(key) }, vm.serial);
+        const toggle = button('Serial', () => {
+          const shown = pre.hidden;
+          pre.hidden = !shown;
+          if (shown) rs.serialOpen.add(key);
+          else rs.serialOpen.delete(key);
+        }, { kind: 'ghost', size: 'sm' });
+        serial = [toggle, pre];
       }
       return h(
-        'div.vm',
+        'div.mt-vm',
         { 'data-key': `vm-${vm.index}` },
-        h('div.row', null, h('strong', null, `VM ${vm.index}`), badge(vm.state, stateTone(vm.state), true), h('span.faint', null, `guest CID ${vm.guest_cid ?? '—'}`)),
+        h('strong', null, `VM ${vm.index}`),
+        badge(vm.state, stateTone(vm.state)),
+        h('span.mt-faint', null, `guest CID ${vm.guest_cid ?? '—'}`),
         serial,
       );
     }),
@@ -368,15 +383,15 @@ function vmList(runId: string, vms: VmDetail[], rs: RunState): HTMLElement {
 
 function detailRow(run: Run, rs: RunState): HTMLTableRowElement {
   const cached = rs.runCache.get(run.id);
-  const cell = h('td', { colspan: RUN_COLUMNS.length }, cached ? vmList(run.id, cached.vms, rs) : h('p.faint', null, 'Loading…'));
-  const tr = h('tr.detail', { 'data-key': `detail-${run.id}` }, cell);
+  const cell = h('td', { colspan: RUN_COLUMNS.length }, cached ? vmList(run.id, cached.vms, rs) : faint('Loading…'));
+  const tr = h('tr.mt-rundetail', { 'data-key': `detail-${run.id}` }, cell);
   void api.run(run.id).then(
     (fresh) => {
       rs.runCache.set(run.id, fresh);
       if (tr.isConnected) replace(cell, vmList(run.id, fresh.vms, rs));
     },
     (err: unknown) => {
-      if (tr.isConnected) replace(cell, h('p.faint', null, err instanceof Error ? err.message : String(err)));
+      if (tr.isConnected) replace(cell, faint(err instanceof Error ? err.message : String(err)));
     },
   );
   return tr;
@@ -384,12 +399,14 @@ function detailRow(run: Run, rs: RunState): HTMLTableRowElement {
 
 function toggleRun(run: Run, tr: HTMLTableRowElement, rs: RunState): void {
   const next = tr.nextElementSibling;
-  if (next && next.classList.contains('detail')) {
+  if (next && next.classList.contains('mt-rundetail')) {
     next.remove();
     rs.expanded.delete(run.id);
+    tr.setAttribute('aria-expanded', 'false');
   } else {
     rs.expanded.add(run.id);
     tr.after(detailRow(run, rs));
+    tr.setAttribute('aria-expanded', 'true');
   }
 }
 
@@ -405,24 +422,34 @@ function runsTable(runs: Run[], rs: RunState): HTMLElement {
       { kind: 'danger', size: 'sm', icon: 'stop' },
     );
     const tr = h(
-      'tr.clickable',
-      { 'data-key': `run-${run.id}` },
-      h('td', null, run.id),
+      'tr.mt-runrow',
+      { 'data-key': `run-${run.id}`, role: 'button', tabindex: '0', 'aria-expanded': String(rs.expanded.has(run.id)) },
+      h('td', { class: 'mt-mono' }, run.id),
       h('td', null, run.role ?? 'fleet'),
-      h('td', null, badge(run.state, stateTone(run.state), true)),
+      h('td', null, badge(run.state, stateTone(run.state))),
       h('td', { class: 'num' }, `${run.vms.length} VMs`),
       h('td', { class: 'num' }, `started ${ago(run.created_at)}`),
       h('td', { class: 'num' }, kill),
     );
     tr.addEventListener('click', () => toggleRun(run, tr, rs));
+    tr.addEventListener('keydown', (ev) => {
+      if ((ev.key === 'Enter' || ev.key === ' ') && ev.target === tr) {
+        ev.preventDefault();
+        toggleRun(run, tr, rs);
+      }
+    });
     tbody.append(tr);
     if (rs.expanded.has(run.id)) tbody.append(detailRow(run, rs));
   }
   return h(
-    'table.table.mach-runs',
+    'div.tbl-wrap',
     null,
-    h('thead', null, h('tr', null, RUN_COLUMNS.map(([label, num]) => h('th', { class: num ? 'num' : '' }, label)))),
-    tbody,
+    h(
+      'table.tbl.mt-tbl',
+      null,
+      h('thead', null, h('tr', null, RUN_COLUMNS.map(([label, num]) => h('th', { class: num ? 'num' : '' }, label)))),
+      tbody,
+    ),
   );
 }
 
@@ -449,7 +476,7 @@ function stationPicture(id: string): { el: HTMLElement; stop: () => void } {
   const img = h('img', { alt: '', draggable: 'false' }) as HTMLImageElement;
   img.style.maxWidth = '100%';
   img.hidden = true;
-  const note = h('p.faint', null, 'Loading the picture...');
+  const note = faint('Loading the picture...');
   const el = h('div.mlist-station-pic', null, img, note);
   let alive = true;
   let timer: number | undefined;
@@ -516,15 +543,11 @@ function stationDetail(s: StationView): HTMLElement {
     ['Address', s.address || '—'],
   ];
   const gpus = f.gpus.length
-    ? h(
-        'div.mlist-facts',
-        null,
-        f.gpus.map((g) => h('div.mlist-fact', null, h('span', null, `${g.vendor} ${g.name}`), h('span', null, g.vram_mb > 0 ? `${gib(g.vram_mb)} GiB VRAM` : 'VRAM not reported'))),
-      )
-    : h('p.faint', null, 'No GPUs.');
+    ? f.gpus.map((g) => h('div.mt-gpu', null, h('strong', null, `${g.vendor} ${g.name}`), h('div.mt-faint', null, g.vram_mb > 0 ? `${gib(g.vram_mb)} GiB VRAM` : 'VRAM not reported')))
+    : [faint('No GPUs.')];
   const leases = s.leases.length
     ? h(
-        'ul.mlist-leases',
+        'ul',
         null,
         s.leases.map((l) =>
           h(
@@ -534,19 +557,19 @@ function stationDetail(s: StationView): HTMLElement {
           ),
         ),
       )
-    : h('p.faint', null, 'No leases.');
+    : faint('No leases.');
   const root = h(
     'div.mlist-machine',
     null,
-    h('p.mach-sentence', null, stationLine(s)),
-    h('dl.kv', null, pairs.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
-    h('div.mach-caps', null, 'GPUs'),
+    h('p.mt-sentence', null, stationLine(s)),
+    kv(pairs),
+    cap('GPUs'),
     gpus,
-    h('div.mach-caps', null, 'Leases'),
+    cap('Leases'),
     leases,
-    h('div.mach-caps', null, 'Live picture'),
+    cap('Live picture'),
     pic.el,
-    h('p', null, h('a', { href: '#/workstations' }, 'Open in Workstations')),
+    h('p', null, h('a.mt-link', { href: '#/workstations' }, 'Open in Workstations')),
   );
   detailStops.set(root, pic.stop);
   return root;
@@ -559,42 +582,49 @@ export function machineDetail(m: MachineNode, byCid: Map<number, Agent>, rs: Run
   const s = m.stats;
   const live = s
     ? h(
-        'div.mach-live',
+        'div',
         null,
         h(
-          'div.mach-tallies',
+          'div.mt-live',
           null,
-          tally('CPU', `${Math.round(s.cpu_percent)}%`, null, sparkline(s.history)),
-          tally('Memory', `${gib(s.mem_used_mib)} / ${gib(s.mem_total_mib)}`, 'GiB used of GiB', memBar(s)),
+          tally('CPU', `${Math.round(s.cpu_percent)}%`, null, sparkSvg(cpuSamples(s.history), 240, 72, 'CPU over the last hour')),
+          tally('Memory', `${gib(s.mem_used_mib)} / ${gib(s.mem_total_mib)}`, 'GiB used of GiB', meterBar((s.mem_used_mib / Math.max(s.mem_total_mib, 1)) * 100)),
           tally('Load', (s.load ?? []).map(fx1).join(' · ') || '–', '1 / 5 / 15 min'),
           tally("Agents' VMs", String(s.vms_running), `${gib(s.guest_mem_mib)} GiB reserved`),
         ),
-        h('p.faint', null, `Up ${uptime(s.uptime_s)}`),
+        faint(`Up ${uptime(s.uptime_s)}`),
       )
-    : h('p.mach-none', null, 'No live stats.');
+    : faint('No live stats.');
 
-  const dl = h('dl.kv');
-  const rows: [string, string][] = [
+  const details = kv([
     ['Class', m.class],
     ['Arch', m.arch],
     ['Backend', m.backend],
     ['Irqchip', m.irqchip],
     ['vsock', m.vsock_mode],
     ['noded port', m.noded_port === undefined ? '—' : String(m.noded_port)],
-  ];
-  for (const [k, v] of rows) dl.append(h('dt', null, k), h('dd', null, v));
-  const tech = h('details.mach-tech', null, h('summary', null, 'Technical details'), dl) as HTMLDetailsElement;
-  tech.open = rs.techOpen.has(m.id);
-  tech.addEventListener('toggle', () => (tech.open ? rs.techOpen.add(m.id) : rs.techOpen.delete(m.id)));
+  ]);
+  details.hidden = !rs.techOpen.has(m.id);
+  const tech = h(
+    'div.mt-tech',
+    null,
+    button('Technical details', () => {
+      const shown = details.hidden;
+      details.hidden = !shown;
+      if (shown) rs.techOpen.add(m.id);
+      else rs.techOpen.delete(m.id);
+    }, { kind: 'ghost', size: 'sm' }),
+    details,
+  );
 
   return h(
     'div.mlist-machine',
     null,
-    h('p.mach-sentence', null, sentence(m)),
+    h('p.mt-sentence', null, sentence(m)),
     live,
     resourcesPanel(m, byCid),
-    h('div.mach-caps', null, 'Runs'),
-    runs.length ? runsTable(runs, rs) : h('p.faint', null, 'No runs.'),
+    cap('Runs'),
+    runs.length ? runsTable(runs, rs) : faint('No runs.'),
     tech,
   );
 }
@@ -833,26 +863,16 @@ function bodyOf(row: ListRow): (Node | null)[] {
       'div.mlist-head',
       null,
       h('strong.mlist-name', null, row.name),
-      badge(row.status.label, row.status.tone, true),
-      (row.tags ?? []).map((t) => badge(t, 'info', true)),
+      badge(row.status.label, row.status.tone),
+      (row.tags ?? []).map((t) => badge(t, 'info')),
     ),
-    row.subtitle ? h('div.mlist-sub', null, row.subtitle) : null,
+    row.subtitle ? faint(row.subtitle) : null,
     h(
-      'div.mlist-facts',
+      'dl.mlist-facts',
       null,
-      row.facts.map(([label, value]) => h('div.mlist-fact', null, h('span', null, label), h('span', null, value))),
+      row.facts.flatMap(([label, value]) => [h('dt', null, label), h('dd', null, value)]),
     ),
-    row.bars.length
-      ? h(
-          'div.mlist-bars',
-          null,
-          row.bars.map((b) => {
-            const fill = h('div.mach-bar-fill', null);
-            fill.style.width = `${clamp(b.pct, 0, 100)}%`;
-            return h('div.mlist-bar', null, h('span', null, b.label), h('div.mach-bar', null, fill), h('span', null, b.text));
-          }),
-        )
-      : null,
+    row.bars.length ? h('div.mlist-bars', null, row.bars.map((b) => meter(b.label, b.pct, b.text))) : null,
   ];
 }
 
@@ -1001,12 +1021,22 @@ export function machineList(): MachineList {
   const paintDetail = (it: Item): void => {
     stopDetailTimers(it.inner);
     const slot = h('div.mlist-stage-slot', null, it.onStage ? null : fallbackPicture(it.row));
-    const caption = it.onStage ? h('p.mlist-caption', null, 'Drag to rotate, scroll to zoom') : null;
+    const caption = it.onStage ? faint('Drag to rotate, scroll to zoom') : null;
     // The desktop's labelled toggle: closes the open row's 3D view (the row's picture comes back).
     const toggle = it.onStage ? button('Hide 3D view', () => choose(it.key), { kind: 'ghost', size: 'sm' }) : null;
     replace(
       it.inner,
-      h('div.mlist-detail', null, h('div.mlist-stage-col', null, slot, caption, toggle, it.views ?? null), h('div.mlist-detail-main', null, it.row.machineId !== null ? h('div.mlist-detail-head', null, h('a.mlist-open', { href: href('machines', it.row.machineId) }, 'Open')) : null, it.row.detail())),
+      h(
+        'div.mt-detail',
+        null,
+        h('div.mt-dcol', null, h('div.mlist-stage-col', null, slot, caption, toggle, it.views ?? null)),
+        h(
+          'div.mt-dcol',
+          null,
+          it.row.machineId !== null ? h('div', null, h('a.mt-link', { href: href('machines', it.row.machineId) }, 'Open')) : null,
+          it.row.detail(),
+        ),
+      ),
     );
   };
 
@@ -1144,13 +1174,13 @@ export function machineList(): MachineList {
     return stage;
   }
 
-  /** Keeps the engine canvas over the open row's stage slot (the panel's height moves the slot during a morph). */
+  /** Keeps the engine canvas over the open row's stage slot, inside its 1px rule (the panel's height moves the slot during a morph). */
   function placeEngine(): void {
     if (eng === null || openKey === null) return;
     const slotEl = items.get(openKey)?.inner.querySelector<HTMLElement>('.mlist-stage-slot');
     if (!slotEl) return;
     const box = rel(slotEl);
-    placeCanvas(eng.canvas, box.x, box.y, box.w, box.h, 'none', true);
+    placeCanvas(eng.canvas, box.x + 1, box.y + 1, Math.max(0, box.w - 2), Math.max(0, box.h - 2), 'none', true);
   }
 
   /** Destroys the engine and removes its canvas (the open row closed, or the list was destroyed). */

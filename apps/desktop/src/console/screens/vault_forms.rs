@@ -4,14 +4,16 @@
 
 use std::fmt;
 
-use iced::widget::{checkbox, pick_list, row, text, text_input};
-use iced::{Element, Length};
+use iced::widget::{checkbox, column, container, pick_list, row, text_input};
+use iced::{Alignment, Element, Length};
 use serde_json::{Map, Value, json};
 
 use super::{
-    ConsumerRef, Msg, Pending, State, ago, gate, node_name, now_ms, slot_kind_label, stack,
+    ConsumerRef, Msg, Pending, State, THIS_HUB, failure_line, field, gate, layer, node_name,
+    slot_kind_label,
 };
 use crate::console::ui;
+use crate::theme;
 
 /// The hint under the key-file button: the hub writes the file on its own disk, and a file that can be read unseals.
 pub const KEYFILE_NOTE: &str = "A key file is written on this hub's disk. Anyone who can read it can unseal the vault without a passphrase.";
@@ -328,267 +330,323 @@ fn encode(s: &str) -> String {
     out
 }
 
-pub(super) fn sealed_card<'a>(state: &'a State) -> Element<'a, Msg> {
-    let method = state.unseal.method;
-    let mut items: Vec<Element<'a, Msg>> = vec![
-        ui::faint("Unseal with a passphrase, a recovery code or the key file. Only the one you pick is sent.").into(),
-        row(vec![
-            ui::faint("Method").into(),
-            pick_list(
-                vec![UnsealMethod::Passphrase, UnsealMethod::Recovery, UnsealMethod::KeyFile],
-                Some(method),
-                Msg::PickMethod,
-            )
-            .into(),
-        ])
-        .spacing(12)
-        .into(),
-    ];
-    if method != UnsealMethod::KeyFile {
-        let placeholder = if method == UnsealMethod::Recovery {
-            "Recovery code"
-        } else {
-            "Passphrase"
-        };
-        items.push(
-            text_input(placeholder, &state.unseal.secret)
-                .secure(true)
-                .on_input(Msg::UnsealSecret)
-                .on_submit(Msg::Unseal)
-                .padding(8)
-                .into(),
-        );
-    }
-    items.push(ui::btn(
-        "Unseal",
-        None,
-        ui::Kind::Primary,
-        gate(state.busy, Msg::Unseal),
-    ));
-    ui::card("Sealed", stack(items))
+/// The rekey dialog's lede: what a rekey rewrites, and who gives a secret.
+const REKEY_LEDE: &str = "Rekey re-encrypts the vault under a new root key. Secret values do not change. Every passphrase and recovery slot is rewritten, so each one must be given now, except the one that unlocked this session.";
+
+/// A row of the vault's node choices, as the test dialog's node field shows them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeChoice {
+    pub id: String,
+    pub label: String,
 }
 
-/// The confirmation for a pending act: what it does, and the button that runs it.
-pub(super) fn pending_card<'a>(pending: &Pending, busy: bool) -> Element<'a, Msg> {
-    let (title, body, confirm) = match pending {
+impl fmt::Display for NodeChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+/// Whether a binding is one that wants the name (the create form lists those first, as the web does).
+fn binding_wants(consumers: &[ConsumerRef], binding: &str, name: &str) -> bool {
+    !name.is_empty()
+        && consumers
+            .iter()
+            .any(|c| c.binding == binding && c.wants == name)
+}
+
+/// The confirmation for a pending act: what it does, and the button that runs it. Cancel returns to the
+/// form it came from, if there is one.
+pub(super) fn pending_layer<'a>(state: &'a State, pending: &Pending) -> Element<'a, Msg> {
+    let (title, lines, confirm, danger): (String, Vec<String>, &str, bool) = match pending {
         Pending::Seal => (
-            "Seal the vault",
-            "Sealing locks every secret until the vault is unsealed again.".to_string(),
+            "Seal the vault?".to_string(),
+            vec!["Sealing locks every secret until the vault is unsealed again.".to_string()],
             "Seal",
+            false,
         ),
         Pending::RemoveSlot { kind, .. } => (
-            "Remove a key slot",
-            format!("Remove this {} slot? The hub refuses to remove the last slot.", slot_kind_label(kind).to_lowercase()),
-            "Remove slot",
+            "Remove key slot".to_string(),
+            vec![format!(
+                "Remove the {} slot? The vault cannot be unsealed with it afterwards.",
+                slot_kind_label(kind).to_lowercase()
+            )],
+            "Remove",
+            true,
         ),
         Pending::Rekey => (
-            "Rekey the vault",
-            "Rekey re-encrypts the vault under a new root key. Secret values do not change. Every passphrase and recovery slot is rewritten. The slot this session unlocked with needs no secret, so each other one must be given now.".to_string(),
+            "Rekey the vault?".to_string(),
+            vec![
+                "Rekey re-encrypts the vault under a new root key. Secret values do not change. Every passphrase and recovery slot is rewritten.".to_string(),
+                "The slot this session unlocked with needs no secret, so each other one must be given now.".to_string(),
+            ],
             "Rekey",
+            false,
         ),
         Pending::RemoveEntry { name, .. } => (
-            "Remove a secret",
-            format!("Remove {name}? The hub leaves a tombstone, so an env import never brings the name back."),
-            "Remove",
+            format!("Delete {name}?"),
+            vec![format!(
+                "This removes {name}. The removal is recorded in the audit log and blocks an env import from bringing it back."
+            )],
+            "Delete",
+            true,
         ),
-        Pending::Rollback { name, v, .. } => ("Roll back", format!("Roll {name} back to v{v}?"), "Roll back"),
+        Pending::Rollback { name, v, .. } => (
+            format!("Roll back {name}"),
+            vec![format!("Roll {name} back to v{v}? It becomes the current value.")],
+            "Roll back",
+            false,
+        ),
+        Pending::AddKeyfile => (
+            "Add key file slot".to_string(),
+            vec![
+                "The hub creates the key file on its own disk. The vault can then be unsealed with that file, without a passphrase.".to_string(),
+                KEYFILE_NOTE.to_string(),
+            ],
+            "Add key file slot",
+            false,
+        ),
+        Pending::Recovery => (
+            "Create recovery code".to_string(),
+            vec!["This replaces the old recovery code.".to_string()],
+            "Create recovery code",
+            false,
+        ),
     };
-    let danger = matches!(
-        pending,
-        Pending::RemoveSlot { .. } | Pending::RemoveEntry { .. }
-    );
+    let mut body: Vec<Element<'a, Msg>> = lines
+        .into_iter()
+        .map(|line| ui::prose(line).into())
+        .collect();
+    body.extend(failure_line(state));
     let kind = if danger {
         ui::Kind::Danger
     } else {
         ui::Kind::Primary
     };
-    ui::card(
-        title,
-        stack(vec![
-            ui::faint(body).into(),
-            row(vec![
-                ui::btn("Keep", None, ui::Kind::Secondary, Some(Msg::Cancel)),
-                ui::btn(confirm, None, kind, gate(busy, Msg::RunPending)),
-            ])
-            .spacing(12)
-            .into(),
-        ]),
+    layer(
+        &title,
+        body,
+        vec![
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
+            ui::btn(confirm, None, kind, gate(state.busy, Msg::RunPending)),
+        ],
     )
 }
 
-/// The new recovery code, shown once.
-pub(super) fn recovery_card<'a>(code: &str) -> Element<'a, Msg> {
-    ui::card(
-        "Recovery code",
-        stack(vec![
-            ui::faint("Shown once. This replaces the old recovery code. Keep it somewhere safe; it is not shown again.").into(),
-            text(code.to_string()).into(),
-            row(vec![
-                ui::btn("Copy", None, ui::Kind::Primary, Some(Msg::CopyRecovery)),
-                ui::btn("Done", None, ui::Kind::Ghost, Some(Msg::DismissRecovery)),
-            ])
-            .spacing(12)
-            .into(),
-        ]),
-    )
-}
-
-/// The key slots, each removable, then the passphrase form and the recovery and rekey actions.
-pub(super) fn slots_card<'a>(state: &'a State) -> Element<'a, Msg> {
-    let Some(status) = state.status.as_ref() else {
-        return ui::card("Key slots", ui::loading());
+/// The new recovery code, shown once: the code in a box with Copy, the tick that says it is saved, then Close.
+pub(super) fn recovery_layer<'a>(state: &'a State, code: &'a str) -> Element<'a, Msg> {
+    let code_box: Element<'a, Msg> = if state.copy_failed {
+        // The clipboard did not take it: the code sits in a read-only field to select.
+        text_input("", code)
+            .on_input(|_| Msg::Noop)
+            .font(theme::MONO)
+            .padding(8)
+            .style(theme::input)
+            .width(Length::Fill)
+            .into()
+    } else {
+        container(ui::mono(code, 13.0, theme::palette().ink))
+            .padding([8, 12])
+            .width(Length::Fill)
+            .style(theme::boxed)
+            .into()
     };
-    let now = now_ms();
-    let mut items: Vec<Element<'a, Msg>> = Vec::new();
-    if status.slots.is_empty() {
-        items.push(ui::faint("No key slots.").into());
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        ui::prose("Save this code somewhere safe. It is shown once and cannot be shown again.")
+            .into(),
+    ];
+    if state.copy_failed {
+        body.push(ui::faint("Could not copy. Select the code and copy it.").into());
     }
-    for (i, slot) in status.slots.iter().enumerate() {
-        if i > 0 {
-            items.push(ui::hairline());
-        }
-        items.push(
-            row(vec![
-                text(slot_kind_label(&slot.kind))
-                    .width(Length::FillPortion(3))
-                    .into(),
-                ui::faint(format!("added {}", ago(slot.created_ms, now)))
-                    .width(Length::FillPortion(2))
-                    .into(),
-                ui::btn_sm(
-                    "Remove",
-                    None,
-                    ui::Kind::Ghost,
-                    gate(
-                        state.busy,
-                        Msg::Ask(Pending::RemoveSlot {
-                            id: slot.id.clone(),
-                            kind: slot.kind.clone(),
-                        }),
-                    ),
-                ),
-            ])
-            .spacing(12)
-            .into(),
-        );
-    }
-    items.push(ui::hairline());
-    items.push(ui::label("Add a passphrase slot").into());
-    items.push(
-        text_input("Passphrase", &state.add_pass.pass)
-            .secure(true)
-            .on_input(Msg::PassPhrase)
-            .padding(8)
+    body.push(
+        row![
+            container(code_box).width(Length::Fill),
+            ui::btn("Copy", None, ui::Kind::Ghost, Some(Msg::CopyRecovery)),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    body.push(
+        checkbox(state.recovery_saved)
+            .label("I saved it")
+            .on_toggle(Msg::RecoverySaved)
             .into(),
     );
-    items.push(
-        text_input("Passphrase again", &state.add_pass.again)
-            .secure(true)
-            .on_input(Msg::PassAgain)
-            .on_submit(Msg::AddPassphrase)
-            .padding(8)
-            .into(),
-    );
-    items.push(
-        ui::faint("A recovery code replaces the old one. Rekey rewrites every passphrase and recovery slot, except the one this session unlocked with.")
-            .into(),
-    );
-    let has_keyfile = status.slots.iter().any(|slot| slot.kind == "keyfile");
-    let mut actions: Vec<Element<'a, Msg>> = vec![
-        ui::btn(
-            "Add passphrase",
+    layer(
+        "Recovery code",
+        body,
+        vec![ui::btn(
+            "Close",
             None,
-            ui::Kind::Secondary,
-            gate(state.busy, Msg::AddPassphrase),
-        ),
-        ui::btn(
-            "Make recovery code",
-            None,
-            ui::Kind::Secondary,
-            gate(state.busy, Msg::MakeRecovery),
-        ),
-        ui::btn(
-            "Rekey",
-            None,
-            ui::Kind::Secondary,
-            gate(state.busy, Msg::OpenRekey),
+            ui::Kind::Primary,
+            state.recovery_saved.then_some(Msg::DismissRecovery),
+        )],
+    )
+}
+
+/// The unseal dialog: a passphrase or a recovery code (only the one picked is sent), the key file when there is one.
+pub(super) fn unseal_layer<'a>(state: &'a State) -> Element<'a, Msg> {
+    let method = state.unseal.method;
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        ui::faint("Enter a passphrase or a recovery code. Only the one you pick is sent.").into(),
+        ui::seg(
+            &[
+                (UnsealMethod::Passphrase, "Use a passphrase"),
+                (UnsealMethod::Recovery, "Use a recovery code"),
+            ],
+            method,
+            Msg::PickMethod,
         ),
     ];
-    // One key-file slot at most: the hub refuses a second, so the button is shown only without one.
-    if !has_keyfile {
-        items.push(ui::faint(KEYFILE_NOTE).into());
+    if method != UnsealMethod::KeyFile {
+        let label = if method == UnsealMethod::Recovery {
+            "Recovery code"
+        } else {
+            "Passphrase"
+        };
+        let secret = text_input("", &state.unseal.secret)
+            .secure(true)
+            .on_input(Msg::UnsealSecret)
+            .on_submit(Msg::Unseal)
+            .padding(8)
+            .style(theme::input);
+        body.push(field(label, secret.into(), None));
+    }
+    body.extend(failure_line(state));
+    let has_keyfile = state
+        .status
+        .as_ref()
+        .is_some_and(|s| s.slots.iter().any(|slot| slot.kind == "keyfile"));
+    let mut actions: Vec<Element<'a, Msg>> = Vec::new();
+    if has_keyfile {
         actions.push(ui::btn(
-            "Add key file",
+            "Use the key file",
             None,
-            ui::Kind::Secondary,
-            gate(state.busy, Msg::AddKeyfile),
+            ui::Kind::Ghost,
+            gate(state.busy, Msg::UnsealKeyfile),
         ));
     }
-    items.push(row(actions).spacing(12).into());
-    ui::card("Key slots", stack(items))
+    actions.push(ui::btn(
+        "Cancel",
+        None,
+        ui::Kind::Ghost,
+        Some(Msg::CloseUnseal),
+    ));
+    actions.push(ui::btn(
+        "Unseal",
+        None,
+        ui::Kind::Primary,
+        gate(state.busy, Msg::Unseal),
+    ));
+    layer("Unseal the vault", body, actions)
 }
 
-/// The rekey form: each passphrase or recovery slot's secret, then the review that confirms it.
-pub(super) fn rekey_card<'a>(fields: &'a [RekeyField], busy: bool) -> Element<'a, Msg> {
-    let mut items: Vec<Element<'a, Msg>> = vec![
-        ui::faint("Give the passphrase or recovery code of each slot except the one this session unlocked with. Each one is rewritten under the new key.")
-            .into(),
-    ];
-    for (i, field) in fields.iter().enumerate() {
-        items.push(ui::label(&slot_kind_label(&field.kind)).into());
-        items.push(
-            text_input("Passphrase or recovery code", &field.secret)
+/// The add-passphrase dialog: the passphrase typed twice.
+pub(super) fn pass_layer<'a>(state: &'a State) -> Element<'a, Msg> {
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        field(
+            "Passphrase",
+            text_input("", &state.add_pass.pass)
                 .secure(true)
-                .on_input(move |v| Msg::RekeyInput(i, v))
+                .on_input(Msg::PassPhrase)
                 .padding(8)
+                .style(theme::input)
                 .into(),
-        );
-    }
-    items.push(
-        row(vec![
-            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseRekey)),
+            Some("Another way to unseal the vault."),
+        ),
+        field(
+            "Confirm passphrase",
+            text_input("", &state.add_pass.again)
+                .secure(true)
+                .on_input(Msg::PassAgain)
+                .on_submit(Msg::AddPassphrase)
+                .padding(8)
+                .style(theme::input)
+                .into(),
+            None,
+        ),
+    ];
+    body.extend(failure_line(state));
+    layer(
+        "Add passphrase",
+        body,
+        vec![
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::ClosePass)),
             ui::btn(
-                "Review rekey",
+                "Add passphrase",
                 None,
                 ui::Kind::Primary,
-                gate(busy, Msg::Ask(Pending::Rekey)),
+                gate(state.busy, Msg::AddPassphrase),
             ),
-        ])
-        .spacing(12)
-        .into(),
-    );
-    ui::card("Rekey", stack(items))
+        ],
+    )
 }
 
-/// The create form: name, kind, label, the value (secure, cleared on submit), scope and bindings.
-pub(super) fn create_card<'a>(state: &'a State, form: &'a SecretForm) -> Element<'a, Msg> {
-    let mut items: Vec<Element<'a, Msg>> = vec![
-        text_input("API_KEY", &form.name).on_input(Msg::CName).padding(8).into(),
-        ui::faint(NAME_HINT).into(),
-        row(vec![
-            ui::label("Kind").into(),
-            pick_list(SecretKind::ALL.to_vec(), Some(form.kind), Msg::CKind).into(),
-        ])
-        .spacing(12)
-        .into(),
-        text_input("Label (optional)", &form.label).on_input(Msg::CLabel).padding(8).into(),
-        text_input("Value", &form.value)
+/// The rekey dialog: each passphrase or recovery slot's secret. Rekey asks for the confirmation before it runs.
+pub(super) fn rekey_layer<'a>(state: &'a State, fields: &'a [RekeyField]) -> Element<'a, Msg> {
+    let mut body: Vec<Element<'a, Msg>> = vec![ui::prose(REKEY_LEDE).into()];
+    if fields.is_empty() {
+        body.push(ui::faint("No other passphrase or recovery slot needs a secret.").into());
+    }
+    for (i, slot) in fields.iter().enumerate() {
+        let secret = text_input("", &slot.secret)
             .secure(true)
-            .on_input(Msg::CValue)
-            .on_submit(Msg::CSubmit)
+            .on_input(move |v| Msg::RekeyInput(i, v))
             .padding(8)
-            .into(),
-        ui::faint("The value is never shown again. It is cleared on save, so type it again after an error.").into(),
-        row(vec![
-            ui::label("Scope").into(),
-            pick_list(vec![ScopeMode::Plaza, ScopeMode::Nodes], Some(form.scope), Msg::CScope).into(),
-        ])
-        .spacing(12)
+            .style(theme::input);
+        body.push(field(
+            &format!("{} ({})", slot_kind_label(&slot.kind), slot.slot),
+            secret.into(),
+            None,
+        ));
+    }
+    body.extend(failure_line(state));
+    layer(
+        "Rekey the vault",
+        body,
+        vec![
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseRekey)),
+            ui::btn(
+                "Rekey",
+                None,
+                ui::Kind::Primary,
+                gate(state.busy, Msg::Ask(Pending::Rekey)),
+            ),
+        ],
+    )
+}
+
+/// The add-secret dialog: name, kind, label, the value (secure, cleared on save), scope and bindings.
+pub(super) fn create_layer<'a>(state: &'a State, form: &'a SecretForm) -> Element<'a, Msg> {
+    let name = text_input("API_KEY", &form.name)
+        .on_input(Msg::CName)
+        .font(theme::MONO)
+        .padding(8)
+        .style(theme::input);
+    let kind =
+        pick_list(SecretKind::ALL.to_vec(), Some(form.kind), Msg::CKind).style(theme::pick_list);
+    let label = text_input("", &form.label)
+        .on_input(Msg::CLabel)
+        .padding(8)
+        .style(theme::input);
+    let value = text_input("", &form.value)
+        .secure(true)
+        .on_input(Msg::CValue)
+        .on_submit(Msg::CSubmit)
+        .padding(8)
+        .style(theme::input);
+    let mut scope: Vec<Element<'a, Msg>> = vec![
+        pick_list(
+            vec![ScopeMode::Plaza, ScopeMode::Nodes],
+            Some(form.scope),
+            Msg::CScope,
+        )
+        .style(theme::pick_list)
         .into(),
     ];
     if form.scope == ScopeMode::Nodes {
         for (i, (id, on)) in form.nodes.iter().enumerate() {
-            items.push(
+            scope.push(
                 checkbox(*on)
                     .label(node_name(&state.nodes, id))
                     .on_toggle(move |v| Msg::CNode(i, v))
@@ -596,20 +654,41 @@ pub(super) fn create_card<'a>(state: &'a State, form: &'a SecretForm) -> Element
             );
         }
     }
-    items.push(ui::label("Bindings").into());
-    if form.bindings.is_empty() {
-        items.push(ui::faint("Nothing asks for a secret yet. You can bind it later.").into());
-    }
-    for (i, (binding, on)) in form.bindings.iter().enumerate() {
-        items.push(
+    let wanted = form.name.trim().to_ascii_uppercase();
+    let mut order: Vec<usize> = (0..form.bindings.len()).collect();
+    order.sort_by_key(|&i| !binding_wants(&state.consumers, &form.bindings[i].0, &wanted));
+    let bindings: Vec<Element<'a, Msg>> = order
+        .into_iter()
+        .map(|i| {
+            let (binding, on) = &form.bindings[i];
             checkbox(*on)
                 .label(binding_label(binding, &state.consumers))
                 .on_toggle(move |v| Msg::CBinding(i, v))
-                .into(),
-        );
-    }
-    items.push(
-        row(vec![
+                .into()
+        })
+        .collect();
+    let bindings_col: Element<'a, Msg> = if bindings.is_empty() {
+        ui::faint("Nothing asks for a secret yet. You can bind it later.").into()
+    } else {
+        column(bindings).spacing(6).into()
+    };
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        field("Name", name.into(), Some(NAME_HINT)),
+        field("Kind", kind.into(), None),
+        field("Label", label.into(), Some("Optional. Shown in lists.")),
+        field(
+            "Value",
+            value.into(),
+            Some("Never shown again. It is cleared on save, so type it again after an error."),
+        ),
+        field("Scope", column(scope).spacing(6).into(), None),
+        field("Bindings", bindings_col, None),
+    ];
+    body.extend(failure_line(state));
+    layer(
+        "Add secret",
+        body,
+        vec![
             ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseCreate)),
             ui::btn(
                 "Save secret",
@@ -617,36 +696,28 @@ pub(super) fn create_card<'a>(state: &'a State, form: &'a SecretForm) -> Element
                 ui::Kind::Primary,
                 gate(state.busy, Msg::CSubmit),
             ),
-        ])
-        .spacing(12)
-        .into(),
-    );
-    ui::card("New secret", stack(items))
+        ],
+    )
 }
 
-/// The edit form: one entry's label, scope and bindings. The value is not part of it, so rotate sets a new one.
-pub(super) fn edit_card<'a>(state: &'a State, form: &'a EditForm) -> Element<'a, Msg> {
-    let mut items: Vec<Element<'a, Msg>> = vec![
-        ui::faint("The value does not change here. Rotate it to set a new one.").into(),
-        text_input("Label (optional)", &form.label)
-            .on_input(Msg::EditLabel)
-            .padding(8)
-            .into(),
-        row(vec![
-            ui::label("Scope").into(),
-            pick_list(
-                vec![ScopeMode::Plaza, ScopeMode::Nodes],
-                Some(form.scope),
-                Msg::EditScope,
-            )
-            .into(),
-        ])
-        .spacing(12)
+/// The edit dialog: one entry's label, scope and bindings. The value is not part of it: rotate sets a new one.
+pub(super) fn edit_layer<'a>(state: &'a State, form: &'a EditForm) -> Element<'a, Msg> {
+    let label = text_input("", &form.label)
+        .on_input(Msg::EditLabel)
+        .padding(8)
+        .style(theme::input);
+    let mut scope: Vec<Element<'a, Msg>> = vec![
+        pick_list(
+            vec![ScopeMode::Plaza, ScopeMode::Nodes],
+            Some(form.scope),
+            Msg::EditScope,
+        )
+        .style(theme::pick_list)
         .into(),
     ];
     if form.scope == ScopeMode::Nodes {
         for (i, (id, on)) in form.nodes.iter().enumerate() {
-            items.push(
+            scope.push(
                 checkbox(*on)
                     .label(node_name(&state.nodes, id))
                     .on_toggle(move |v| Msg::EditNode(i, v))
@@ -654,59 +725,139 @@ pub(super) fn edit_card<'a>(state: &'a State, form: &'a EditForm) -> Element<'a,
             );
         }
     }
-    items.push(ui::label("Bindings").into());
-    if form.bindings.is_empty() {
-        items.push(ui::faint("Nothing asks for a secret yet.").into());
-    }
-    for (i, (binding, on)) in form.bindings.iter().enumerate() {
-        items.push(
+    let bindings: Vec<Element<'a, Msg>> = form
+        .bindings
+        .iter()
+        .enumerate()
+        .map(|(i, (binding, on))| {
             checkbox(*on)
                 .label(binding_label(binding, &state.consumers))
                 .on_toggle(move |v| Msg::EditBinding(i, v))
-                .into(),
-        );
-    }
-    items.push(
-        row(vec![
+                .into()
+        })
+        .collect();
+    let bindings_col: Element<'a, Msg> = if bindings.is_empty() {
+        ui::faint("Nothing asks for a secret yet.").into()
+    } else {
+        column(bindings).spacing(6).into()
+    };
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        field("Label", label.into(), None),
+        field("Scope", column(scope).spacing(6).into(), None),
+        field("Bindings", bindings_col, None),
+    ];
+    body.extend(failure_line(state));
+    layer(
+        &format!("Edit {}", form.name),
+        body,
+        vec![
             ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseEdit)),
             ui::btn(
-                "Save changes",
+                "Save",
                 None,
                 ui::Kind::Primary,
                 gate(state.busy, Msg::EditSubmit),
             ),
-        ])
-        .spacing(12)
-        .into(),
-    );
-    ui::card(&format!("Edit {}", form.name), stack(items))
+        ],
+    )
 }
 
-/// The rotate form: a new value for one entry, typed once and cleared on submit.
-pub(super) fn rotate_card<'a>(rotate: &'a Rotate, busy: bool) -> Element<'a, Msg> {
-    ui::card(
+/// The rotate dialog: a new value for one entry, typed once and cleared on save.
+pub(super) fn rotate_layer<'a>(state: &'a State, rotate: &'a Rotate) -> Element<'a, Msg> {
+    let value = text_input("", &rotate.value)
+        .secure(true)
+        .on_input(Msg::RotateValue)
+        .on_submit(Msg::RotateSubmit)
+        .padding(8)
+        .style(theme::input);
+    let mut body: Vec<Element<'a, Msg>> = vec![field(
+        "New value",
+        value.into(),
+        Some("Never shown again. Each change is a new version."),
+    )];
+    body.extend(failure_line(state));
+    layer(
         &format!("Rotate {}", rotate.name),
-        stack(vec![
-            ui::faint("Type the new value. It becomes the next version and is cleared on save.")
-                .into(),
-            text_input("New value", &rotate.value)
-                .secure(true)
-                .on_input(Msg::RotateValue)
-                .on_submit(Msg::RotateSubmit)
-                .padding(8)
-                .into(),
-            row(vec![
-                ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseRotate)),
-                ui::btn(
-                    "Rotate value",
-                    None,
-                    ui::Kind::Primary,
-                    gate(busy, Msg::RotateSubmit),
+        body,
+        vec![
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseRotate)),
+            ui::btn(
+                "Rotate value",
+                None,
+                ui::Kind::Primary,
+                gate(state.busy, Msg::RotateSubmit),
+            ),
+        ],
+    )
+}
+
+/// The test dialog: the probe runs on the chosen node. Only the hub's text is shown, never a value.
+pub(super) fn test_layer<'a>(state: &'a State, id: &'a str, name: &str) -> Element<'a, Msg> {
+    let mut options: Vec<NodeChoice> = state
+        .status
+        .as_ref()
+        .map(|s| {
+            s.nodes
+                .iter()
+                .map(|n| NodeChoice {
+                    id: n.id.clone(),
+                    label: if n.id == THIS_HUB {
+                        "This hub".to_string()
+                    } else if n.name.is_empty() {
+                        n.id.clone()
+                    } else {
+                        n.name.clone()
+                    },
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if options.is_empty() {
+        options.push(NodeChoice {
+            id: THIS_HUB.to_string(),
+            label: "This hub".to_string(),
+        });
+    }
+    let current = options.iter().find(|o| o.id == state.test_node).cloned();
+    let node =
+        pick_list(options, current, |o: NodeChoice| Msg::TestNode(o.id)).style(theme::pick_list);
+    let mut body: Vec<Element<'a, Msg>> = vec![field("Node", node.into(), None)];
+    if let Some(result) = &state.test_note {
+        body.push(
+            row![
+                ui::badge(
+                    if result.ok { "Passed" } else { "Failed" },
+                    if result.ok {
+                        ui::Tone::Ok
+                    } else {
+                        ui::Tone::Danger
+                    },
                 ),
-            ])
+                ui::faint(result.detail.clone()),
+            ]
             .spacing(12)
+            .align_y(Alignment::Center)
             .into(),
-        ]),
+        );
+    }
+    body.extend(failure_line(state));
+    let run = if state.test_note.is_some() {
+        "Run test again"
+    } else {
+        "Run test"
+    };
+    layer(
+        &format!("Test {name}"),
+        body,
+        vec![
+            ui::btn("Close", None, ui::Kind::Ghost, Some(Msg::CloseTest)),
+            ui::btn(
+                run,
+                None,
+                ui::Kind::Primary,
+                gate(state.busy, Msg::RunTest(id.to_string())),
+            ),
+        ],
     )
 }
 

@@ -21,9 +21,13 @@ mod adopt;
 mod agent_proposals;
 mod agents;
 mod api;
+mod appearance;
 mod approvals;
+mod artifacts;
 mod autoscale;
 mod connectors;
+mod content;
+mod context_track;
 mod control;
 mod conversations;
 mod db;
@@ -36,6 +40,7 @@ mod e2b_obs;
 mod e2b_tpl;
 mod egress_inject;
 mod engine_feed;
+mod engine_instances;
 mod environments;
 mod events;
 mod fleet;
@@ -71,6 +76,7 @@ mod project_files;
 mod project_settings;
 mod projects;
 mod prompts;
+mod provider_health;
 mod providers;
 mod replan;
 mod review_graph;
@@ -80,6 +86,7 @@ mod rules;
 mod sanctions;
 mod scheduler;
 mod settings;
+mod shares;
 mod skills;
 mod sleep;
 mod society;
@@ -96,6 +103,7 @@ mod transcript;
 mod unfurl;
 mod upstream;
 mod usage;
+mod usage_providers;
 mod vault;
 mod vendor_relay;
 mod vm_snapshots;
@@ -133,6 +141,8 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
                      first start, refused when group or world readable
   --mcp-proxy-port PORT  the MCP egress proxy's port on 127.0.0.1 (default 19128)
   --e2b-gateway-port PORT  vsockd's E2B gateway on 127.0.0.1 (default 49982)
+  --content-port PORT  the content origin that serves HTML artifacts, on the API's address (default the
+                     API port + 1)
   --dev-models       relax the model policy (mock and local models; tests only)";
 
 fn main() -> ExitCode {
@@ -150,6 +160,13 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let args = match e2b::take_gateway_port(args) {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("apid: {err}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let args = match content::take_port(args) {
         Ok(args) => args,
         Err(err) => {
             eprintln!("apid: {err}\n\n{USAGE}");

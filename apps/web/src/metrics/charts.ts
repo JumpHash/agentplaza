@@ -121,7 +121,7 @@ export function xLabelIndexes(n: number, width: number): number[] {
 /** The number of points a chart draws: the longest series, or the label count of a labelled axis. */
 function pointCount(c: Chart): number {
   let n = c.x.type === 'labels' ? c.x.labels.length : 0;
-  for (const s of [...c.series, ...c.ghosts]) n = Math.max(n, s.values.length);
+  for (const s of [...c.series, ...(c.ghosts ?? [])]) n = Math.max(n, s.values.length);
   if (c.band) n = Math.max(n, c.band.hi.length, c.band.lo.length);
   return n;
 }
@@ -175,7 +175,7 @@ function svgNode(tag: string, attrs: Record<string, string | number | null | und
 }
 
 function svgText(x: number, y: number, text: string, anchor: 'start' | 'middle' | 'end' = 'start', css: Record<string, string> = {}): SVGElement {
-  const el = svgNode('text', { x, y, 'text-anchor': anchor }, css);
+  const el = svgNode('text', { class: 'mt-ax', x, y, 'text-anchor': anchor }, css);
   el.textContent = text;
   return el;
 }
@@ -202,17 +202,17 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
   let frame: number | null = null;
   let geo: Geometry | null = null;
 
-  const box = h('div.mx-chart');
-  const legend = h('div.mx-legend');
-  const tip = h('div.mx-tip', { style: 'display:none' });
+  const box = h('div.mt-plot');
+  const legend = h('div.mt-legend');
+  const tip = h('div.mt-tip', { style: 'display:none' });
   const svgWrap = h('div');
   box.append(legend, tip, svgWrap);
   host.appendChild(box);
 
   // One hint under the time charts of a host: the first time chart adds it.
   let hint: HTMLElement | null = null;
-  if (c.x.type === 'time' && !host.querySelector('.mx-hint')) {
-    hint = h('div.mx-hint', null, 'drag to zoom · click a point for what changed');
+  if (c.x.type === 'time' && !host.querySelector('.mt-hint')) {
+    hint = h('div.mt-hint', null, 'drag to zoom · click a point for what changed');
     host.appendChild(hint);
   }
 
@@ -232,7 +232,7 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
 
   function legendItem(s: Series): HTMLElement {
     const colour = toneVar(s.tone);
-    const swatch = h('i', { class: s.dash ? 'mx-dash' : null, style: `background:${colour};border-color:${colour}` });
+    const swatch = h('i.mt-sw', { style: `background:${colour};${s.dash ? 'opacity:.6' : ''}` });
     const scope = s.scope;
     if (!scope) return h('span', null, swatch, s.name);
     // A series with a scope navigates: the view listens for this event on the host.
@@ -247,8 +247,8 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
   function paintLegend(): void {
     const cur = current;
     const items: Node[] = cur.series.map((s) => legendItem(s));
-    for (const g of cur.ghosts) {
-      items.push(h('span.mx-mute', null, h('i.mx-dash', { style: `border-color:${toneVar(g.tone)}` }), g.name));
+    for (const g of cur.ghosts ?? []) {
+      items.push(h('span.mt-tip-g', null, h('i.mt-sw', { style: `background:${toneVar(g.tone)};opacity:.6` }), g.name));
     }
     if (cur.band) {
       items.push(h('span', null, h('i', { style: `background:${toneVar(cur.band.tone)};opacity:.3;height:8px` }), cur.band.name));
@@ -270,7 +270,7 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
     const xs = starts.map((i) => X(i));
     const xAt = (j: number): number => xs[j] ?? 0;
     const series = cur.series.map((s) => ({ s, vals: thin(s.values, starts) }));
-    const ghosts = cur.ghosts.map((g) => ({ g, vals: thin(g.values, starts) }));
+    const ghosts = (cur.ghosts ?? []).map((g) => ({ g, vals: thin(g.values, starts) }));
     const bandSpec = cur.band;
     const band = bandSpec ? { tone: bandSpec.tone, lo: thin(bandSpec.lo, starts, 'min'), hi: thin(bandSpec.hi, starts) } : null;
     const totals = starts.map((_, j) => series.reduce((sum, { vals }) => sum + (vals[j] ?? 0), 0));
@@ -287,12 +287,12 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
     const ym = tk[4] ?? 1;
     const Y = (v: number): number => PAD_T + ih - (v / ym) * ih;
 
-    const root = svgNode('svg', { width: W, height: H, role: 'img', 'aria-label': chartLabel(cur) });
+    const root = svgNode('svg', { class: 'mt-svg', width: W, height: H, role: 'img', 'aria-label': chartLabel(cur) });
 
     // Grid and axes.
     for (const v of tk) {
       const y = Y(v);
-      root.append(svgNode('line', { x1: PAD_L, x2: W - PAD_R, y1: y, y2: y }, { stroke: 'var(--chart-grid)' }), svgText(PAD_L - 6, y + 3, format(cur.unit, v), 'end'));
+      root.append(svgNode('line', { class: 'mt-gl', x1: PAD_L, x2: W - PAD_R, y1: y, y2: y }, { stroke: 'var(--rule)' }), svgText(PAD_L - 6, y + 3, format(cur.unit, v), 'end'));
     }
     for (const i of xLabelIndexes(n, W)) {
       root.append(svgText(X(i), H - 4, xText(i), i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'));
@@ -452,14 +452,14 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
       return;
     }
     const val = (v: number | null | undefined): string => (v == null ? '—' : format(cur.unit, v));
-    const rows: Node[] = [h('div.mx-t', null, xText(i))];
+    const rows: Node[] = [h('div.mt-tip-t', null, xText(i))];
     for (const s of cur.series) {
-      rows.push(h('div', null, h('i', { style: `background:${toneVar(s.tone)}` }), ` ${s.name} `, h('b.mx-num', null, val(s.values[i]))));
+      rows.push(h('div', null, h('i', { style: `background:${toneVar(s.tone)}` }), ` ${s.name} `, h('b.num', null, val(s.values[i]))));
     }
-    for (const gh of cur.ghosts) {
-      rows.push(h('div.mx-mute', null, `┄ ${gh.name} `, h('span.mx-num', null, val(gh.values[i]))));
+    for (const gh of cur.ghosts ?? []) {
+      rows.push(h('div.mt-tip-g', null, `┄ ${gh.name} `, h('span.num', null, val(gh.values[i]))));
     }
-    if (cur.band) rows.push(h('div.mx-mute', null, `${cur.band.name}: ${val(cur.band.lo[i])} – ${val(cur.band.hi[i])}`));
+    if (cur.band) rows.push(h('div.mt-tip-g', null, `${cur.band.name}: ${val(cur.band.lo[i])} – ${val(cur.band.hi[i])}`));
     tip.replaceChildren(...rows);
     tip.style.display = 'block';
     const left = x + 14 + 200 > box.clientWidth ? x - 210 : x + 14;
@@ -497,17 +497,17 @@ export function lineChart(host: HTMLElement, c: Chart, ctx: ChartCtx): ChartHand
     table(): HTMLElement {
       const cur = current;
       const n = pointCount(cur);
-      const cols = [...cur.series, ...cur.ghosts];
+      const cols = [...cur.series, ...(cur.ghosts ?? [])];
       const head = h('tr', null, h('th', null, cur.x.type === 'time' ? 'Time' : 'Label'), ...cols.map((s) => h('th', null, s.name)));
       const rows: HTMLElement[] = [];
       for (let i = n - 1; i >= 0; i--) {
         const cells = cols.map((s, k) => {
           const v = s.values[i];
-          return h('td', { class: k >= cur.series.length ? 'mx-mute mx-num' : 'mx-num' }, v == null ? '—' : format(cur.unit, v));
+          return h('td', { class: k >= cur.series.length ? 'muted num' : 'num' }, v == null ? '—' : format(cur.unit, v));
         });
         rows.push(h('tr', null, h('td', null, xText(i)), ...cells));
       }
-      return h('table.mx-t', null, h('thead', null, head), h('tbody', null, ...rows));
+      return h('table.tbl', null, h('thead', null, head), h('tbody', null, ...rows));
     },
     csv(): string {
       const cur = current;

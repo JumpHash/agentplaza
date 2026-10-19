@@ -11,12 +11,30 @@ pub const DEFAULT_THEME: &str = "loom-clay";
 
 /// The sources, in the Appearance screen's order.
 pub const SOURCES: &[(&str, &str)] = &[
-    ("loom-clay", include_str!("../../../apps/shared/themes/loom-clay.apztheme.json")),
-    ("loom-moss", include_str!("../../../apps/shared/themes/loom-moss.apztheme.json")),
-    ("loom-indigo", include_str!("../../../apps/shared/themes/loom-indigo.apztheme.json")),
-    ("graphite-cobalt", include_str!("../../../apps/shared/themes/graphite-cobalt.apztheme.json")),
-    ("graphite-violet", include_str!("../../../apps/shared/themes/graphite-violet.apztheme.json")),
-    ("graphite-teal", include_str!("../../../apps/shared/themes/graphite-teal.apztheme.json")),
+    (
+        "loom-clay",
+        include_str!("../../../apps/shared/themes/loom-clay.apztheme.json"),
+    ),
+    (
+        "loom-moss",
+        include_str!("../../../apps/shared/themes/loom-moss.apztheme.json"),
+    ),
+    (
+        "loom-indigo",
+        include_str!("../../../apps/shared/themes/loom-indigo.apztheme.json"),
+    ),
+    (
+        "graphite-cobalt",
+        include_str!("../../../apps/shared/themes/graphite-cobalt.apztheme.json"),
+    ),
+    (
+        "graphite-violet",
+        include_str!("../../../apps/shared/themes/graphite-violet.apztheme.json"),
+    ),
+    (
+        "graphite-teal",
+        include_str!("../../../apps/shared/themes/graphite-teal.apztheme.json"),
+    ),
 ];
 
 /// Every built-in theme. A source that does not parse is a build error caught by the tests.

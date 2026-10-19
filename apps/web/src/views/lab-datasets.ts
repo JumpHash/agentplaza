@@ -1,20 +1,18 @@
-// The Lab's datasets (`#/lab/datasets`): the training sets, exported from the plaza's records or
-// uploaded as JSONL. A table (or cards) sorted newest first; a row opens its detail panel. Export and
-// upload are dialogs; an export is confirmed before it is written.
+// The Lab's datasets (`#/lab/datasets`), in the prototype's layout: a bar (the count, the Table or
+// Cards view, Upload, Export), the datasets newest first, and a detail card under the list for the
+// one picked. Export and upload are dialogs; an export is confirmed before it is written.
 
-import '../styles/lab-data.css';
 import { createDataset, listDatasets, uploadDataset, type Dataset, type DatasetKind, type DatasetSpec } from '../api';
-import { button, field, input, modal, select, toast } from '../ui/components';
+import { badge, card, field, input, modal, select, table as dataTable, toast, type Column } from '../ui/components';
 import { h, keepState, replace } from '../ui/dom';
 import type { Cleanup } from './index';
-import { errorText, fmtNumber, fmtSize, fmtTime, labEmpty, pollEvery } from './lab-common';
+import { agoText, errorText, fmtNumber, fmtTime, labButton, labEmpty, pollEvery, seg } from './lab-common';
 
 type View = 'table' | 'cards';
-type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'accent' | 'muted';
 
-const VIEWS: { key: View; label: string }[] = [
-  { key: 'table', label: 'Table' },
-  { key: 'cards', label: 'Cards' },
+const VIEWS: [View, string][] = [
+  ['table', 'Table'],
+  ['cards', 'Cards'],
 ];
 /** The kinds an export can take, in the order the form offers them. */
 const EXPORT_KINDS: { key: Exclude<DatasetKind, 'upload'>; label: string }[] = [
@@ -26,9 +24,9 @@ const EXPORT_KINDS: { key: Exclude<DatasetKind, 'upload'>; label: string }[] = [
 /** The label classes in the order the rung predictor reads them; any other class follows. */
 const CLASS_ORDER = ['cheap', 'mid', 'frontier'];
 
-const tag = (text: string, tone: Tone = 'muted'): HTMLElement => h('span.lab-badge', { class: tone }, text);
-const mono = (text: string): HTMLElement => h('span.lab-mono', null, text);
-const kv = (label: string, value: Node | string): HTMLElement => h('div', null, h('dt', null, label), h('dd', null, value));
+const kindBadge = (d: Dataset): HTMLElement => badge(d.kind, d.kind === 'upload' ? 'info' : 'muted');
+const mono = (text: string): HTMLElement => h('span.mono', null, text);
+const fact = (label: string, value: Node | string): HTMLElement => h('div', null, h('dt', null, label), h('dd', null, value));
 
 /** Where a dataset came from: its provenance's `source` when it names one, else what its kind says. */
 function sourceOf(d: Dataset): string {
@@ -53,30 +51,24 @@ function balanceEntries(balance: Record<string, number>): [string, number][] {
 function balanceBar(d: Dataset): HTMLElement {
   const entries = balanceEntries(d.label_balance);
   const total = entries.reduce((sum, [, n]) => sum + n, 0);
-  if (total === 0) return h('span.lab-muted', null, 'no labels');
+  if (total === 0) return h('span.lab2-note', null, 'no labels');
   const label = entries.map(([k, n]) => `${k} ${fmtNumber(n)}`).join(', ');
   return h(
-    'div.lab-balance',
+    'div',
     null,
     h(
-      'div.lab-bar',
+      'div.lab2-bal',
       { role: 'img', 'aria-label': label },
-      entries
-        .filter(([, n]) => n > 0)
-        .map(([k, n]) => h('span', { class: k, title: `${k} ${fmtNumber(n)}`, style: `flex-grow: ${n}` })),
+      entries.map(([k, n]) => h('span', { class: CLASS_ORDER.includes(k) ? `lab2-c-${k}` : 'lab2-c-other', style: `flex-grow:${n}`, title: `${k} ${fmtNumber(n)}` })),
     ),
-    h(
-      'div.lab-legend',
-      null,
-      entries.map(([k, n]) => h('span.lab-key', null, h('i', { class: k }), `${k} ${fmtNumber(n)}`)),
-    ),
+    h('div.lab2-legend', null, entries.map(([k, n]) => h('span', null, `${k} ${fmtNumber(n)}`))),
   );
 }
 
-/** The taint flags as warn badges, or a muted none. */
-function taintsOf(d: Dataset): HTMLElement {
-  if (d.taint.length === 0) return h('span.lab-muted', null, 'none');
-  return h('div.lab-taints', null, d.taint.map((t) => tag(t, 'warn')));
+/** The taint flags as warn badges, or `none`. */
+function taintsOf(d: Dataset): Node | string {
+  if (d.taint.length === 0) return 'none';
+  return h('span', null, ...d.taint.map((t) => h('span', null, badge(t, 'warn'), ' ')));
 }
 
 /** The row count, with the frozen set under it (a padlock and its count) when there is one. */
@@ -85,120 +77,75 @@ function rowsOf(d: Dataset): HTMLElement {
     'div',
     null,
     h('span', null, fmtNumber(d.rows)),
-    d.frozen_rows > 0 ? h('div.lab-frozen', { title: `Frozen file: ${d.frozen_file}` }, h('i.lab-lock'), `${fmtNumber(d.frozen_rows)} frozen`) : null,
+    d.frozen_rows > 0 ? h('div.lab2-note', { title: `Frozen file: ${d.frozen_file}` }, `${fmtNumber(d.frozen_rows)} frozen`) : null,
   );
 }
 
-/** The time span, from and to, in local time. */
-function rangeOf(d: Dataset): HTMLElement {
-  return h('div.lab-range', null, fmtTime(d.from_ms), h('span', null, 'to ', fmtTime(d.to_ms)));
-}
-
-/** The name over the id, so a long name still shows which dataset it is. */
-function nameOf(d: Dataset): HTMLElement {
-  return h('div.lab-name', null, h('strong', null, d.name), mono(d.id));
-}
+/** The time span, from and to, in local dates. */
+const rangeOf = (d: Dataset): string => `${new Date(d.from_ms).toLocaleDateString()} to ${new Date(d.to_ms).toLocaleDateString()}`;
 
 /** The datasets as a table; a row opens its detail. The rows keep their order (newest first). */
 function tableOf(rows: Dataset[], selected: string | null, pick: (id: string) => void): HTMLElement {
-  const heads = ['Name', 'Kind', 'Source', 'Time range', 'Rows', 'Label balance', 'Taint'];
-  return h(
-    'div.lab-table-wrap',
-    null,
-    h(
-      'table.lab-table',
-      null,
-      h('thead', null, h('tr', null, heads.map((label, i) => h('th', { class: i === 4 ? 'num' : '' }, label)))),
-      h(
-        'tbody',
-        null,
-        rows.map((d) => {
-          const tr = h('tr', { 'data-link': '', 'data-key': d.id, class: d.id === selected ? 'is-selected' : '', 'aria-selected': String(d.id === selected) }, [
-            h('td', null, nameOf(d)),
-            h('td', null, tag(d.kind, d.kind === 'upload' ? 'info' : 'muted')),
-            h('td', null, sourceOf(d)),
-            h('td', null, rangeOf(d)),
-            h('td', { class: 'num' }, rowsOf(d)),
-            h('td', null, balanceBar(d)),
-            h('td', null, taintsOf(d)),
-          ]);
-          tr.addEventListener('click', () => pick(d.id));
-          return tr;
-        }),
-      ),
-    ),
-  );
+  const cols: Column<Dataset>[] = [
+    { label: 'Name', cell: (d) => h('div', null, h('strong', null, d.name), h('div.mono.lab2-note', null, d.id)) },
+    { label: 'Kind', cell: (d) => kindBadge(d) },
+    { label: 'Source', cell: (d) => sourceOf(d) },
+    { label: 'Rows', num: true, cell: (d) => rowsOf(d) },
+    { label: 'Time range', cell: (d) => rangeOf(d) },
+    { label: 'Label balance', cell: (d) => balanceBar(d) },
+    { label: 'Taint', cell: (d) => taintsOf(d) },
+    { label: 'Created', cell: (d) => agoText(d.created_ms) },
+  ];
+  const el = h('div.tbl-wrap', null, dataTable(cols, rows, (d) => pick(d.id), (d) => d.id));
+  for (const tr of el.querySelectorAll<HTMLTableRowElement>('tbody tr')) {
+    if (tr.dataset.key === selected) tr.setAttribute('aria-current', 'true');
+  }
+  return el;
 }
 
-/** The datasets as cards: the same facts, one card each, opening its detail on a click or Enter. */
-function cardsOf(rows: Dataset[], selected: string | null, pick: (id: string) => void): HTMLElement {
+/** The datasets as cards: the kind, the rows, the balance, and an Open action that opens the detail. */
+function cardsOf(rows: Dataset[], pick: (id: string) => void): HTMLElement {
   return h(
-    'div.lab-grid.lab-dataset-cards',
+    'div.lab2-grid',
     null,
     rows.map((d) =>
-      h(
-        'article.lab-card.lab-dataset',
-        {
-          role: 'button',
-          tabindex: '0',
-          'aria-pressed': String(d.id === selected),
-          class: d.id === selected ? 'is-selected' : '',
-          onclick: () => pick(d.id),
-          onkeydown: (e: Event) => {
-            const key = (e as KeyboardEvent).key;
-            if (key === 'Enter' || key === ' ') {
-              e.preventDefault();
-              pick(d.id);
-            }
-          },
-        },
-        h('header.lab-card-head', null, h('h3', null, d.name), tag(d.kind, d.kind === 'upload' ? 'info' : 'muted')),
+      card(
+        d.name,
         h(
-          'div.lab-card-body',
+          'div',
           null,
-          h(
-            'dl.lab-kv',
-            null,
-            kv('Id', h('span.lab-mono.lab-id', null, d.id)),
-            kv('Source', sourceOf(d)),
-            kv('Time range', rangeOf(d)),
-            kv('Rows', rowsOf(d)),
-            kv('Balance', balanceBar(d)),
-            kv('Taint', taintsOf(d)),
-          ),
+          h('div.lab2-row', { style: 'justify-content:flex-start' }, kindBadge(d), h('span.lab2-note', null, `${fmtNumber(d.rows)} rows${d.frozen_rows ? `, ${fmtNumber(d.frozen_rows)} frozen` : ''}`)),
+          balanceBar(d),
         ),
+        { actions: [labButton('Open', () => pick(d.id), { kind: 'ghost', sm: true })] },
       ),
     ),
   );
 }
 
-/** The detail panel of one dataset: its facts, and its provenance folded away in a block. */
+/** The detail card of one dataset: its facts, and its provenance folded away in a block. */
 function detailOf(d: Dataset, close: () => void): HTMLElement {
-  return h(
-    'section.lab-card.lab-detail',
+  const body = h(
+    'div',
     null,
-    h('header.lab-card-head', null, h('h3', null, d.name), tag(d.kind, d.kind === 'upload' ? 'info' : 'muted'), button('', close, { kind: 'ghost', icon: 'x', title: 'Close' })),
     h(
-      'div.lab-card-body',
+      'dl.kv',
       null,
-      h(
-        'dl.lab-kv',
-        null,
-        kv('Id', h('span.lab-mono.lab-id', null, d.id)),
-        kv('Source', sourceOf(d)),
-        kv('Created', fmtTime(d.created_ms)),
-        kv('Time range', rangeOf(d)),
-        kv('Rows', fmtNumber(d.rows)),
-        kv('Frozen rows', fmtNumber(d.frozen_rows)),
-        kv('Label balance', balanceBar(d)),
-        kv('Taint', taintsOf(d)),
-        kv('SHA-256', mono(d.sha256 || 'none')),
-        kv('File', mono(d.file || 'none')),
-        kv('Frozen file', mono(d.frozen_file || 'none')),
-      ),
-      h('details.lab-json', null, h('summary', null, 'Provenance'), h('pre', null, JSON.stringify(d.provenance ?? {}, null, 2))),
+      fact('Id', mono(d.id)),
+      fact('Source', sourceOf(d)),
+      fact('Created', fmtTime(d.created_ms)),
+      fact('Time range', rangeOf(d)),
+      fact('Rows', fmtNumber(d.rows)),
+      fact('Frozen rows', d.frozen_rows ? fmtNumber(d.frozen_rows) : 'none'),
+      fact('Label balance', balanceBar(d)),
+      fact('Taint', d.taint.length ? d.taint.join(', ') : 'none'),
+      fact('SHA-256', mono(d.sha256 || 'none')),
+      fact('File', mono(d.file || 'none')),
+      fact('Frozen file', mono(d.frozen_file || 'none')),
     ),
+    h('details', { style: 'margin-top:12px' }, h('summary', null, 'Provenance'), h('pre.lab2-out', null, JSON.stringify(d.provenance ?? null, null, 2))),
   );
+  return h('div', null, card(d.name, body, { actions: [labButton('', close, { kind: 'ghost', icon: 'x', title: 'Close' })] }));
 }
 
 /** A datetime-local value as unix ms (local time): undefined when empty, NaN when it is not a date. */
@@ -230,11 +177,11 @@ function jsonlProblem(text: string): string | null {
  * dataset is written by apid and handed to `done`.
  */
 function exportDialog(done: (d: Dataset) => void): void {
-  const box = h('div.lab-form');
+  const box = h('div.lab2-form');
   const kind = select(EXPORT_KINDS.map((k) => ({ value: k.key, label: k.label })), 'cascade');
-  const name = input({ autocomplete: 'off', placeholder: 'e.g. cascade-october' });
-  const since = input({ type: 'datetime-local' });
-  const until = input({ type: 'datetime-local' });
+  const name = input({ autocomplete: 'off', placeholder: 'e.g. cascade-october', 'aria-label': 'Name' });
+  const since = input({ type: 'datetime-local', 'aria-label': 'From (optional)' });
+  const until = input({ type: 'datetime-local', 'aria-label': 'To (optional)' });
   let close: () => void = () => undefined;
   let error: string | null = null;
   let busy = false;
@@ -271,19 +218,19 @@ function exportDialog(done: (d: Dataset) => void): void {
   };
 
   const show = (step: 'edit' | 'confirm', spec?: DatasetSpec): void => {
-    const note = error ? h('div.lab-error', null, error) : null;
+    const note = h('p.lab2-err', { role: 'alert' }, error ?? '');
     if (step === 'edit' || !spec) {
       replace(
         box,
-        field('Kind', kind, 'The records to export from the plaza.'),
+        h('label.field', null, h('span.field-l', null, 'Kind'), kind, h('small.hint', null, 'The records to export from the plaza.')),
         field('Name', name),
-        h('div.lab-row', null, field('From (optional)', since, 'Local time, inclusive.'), field('To (optional)', until, 'Local time, exclusive.')),
+        h('div.lab2-row', { style: 'justify-content:flex-start' }, field('From (optional)', since, 'Local time, inclusive.'), field('To (optional)', until, 'Local time, exclusive.')),
         note,
         h(
-          'div.lab-form-actions',
+          'div.lab-actions',
           null,
-          button('Cancel', () => close(), { kind: 'ghost' }),
-          button(
+          labButton('Cancel', () => close(), { kind: 'ghost' }),
+          labButton(
             'Review',
             () => {
               const picked = readSpec();
@@ -301,18 +248,19 @@ function exportDialog(done: (d: Dataset) => void): void {
       );
       return;
     }
-    const range = spec.since_ms !== undefined || spec.until_ms !== undefined
-      ? ` from ${spec.since_ms !== undefined ? fmtTime(spec.since_ms) : 'the start'} to ${spec.until_ms !== undefined ? fmtTime(spec.until_ms) : 'now'} (local time)`
-      : ' over all of the records';
+    const range =
+      spec.since_ms !== undefined || spec.until_ms !== undefined
+        ? ` from ${spec.since_ms !== undefined ? fmtTime(spec.since_ms) : 'the start'} to ${spec.until_ms !== undefined ? fmtTime(spec.until_ms) : 'now'} (local time)`
+        : ' over all of the records';
     replace(
       box,
-      h('p', null, 'Export ', h('span.lab-mono', null, spec.kind), ' records', range, ' as ', h('span.lab-mono', null, spec.name), '? This writes a new dataset from the plaza.'),
+      h('p', null, 'Export ', h('span.mono', null, spec.kind), ' records', range, ' as ', h('span.mono', null, spec.name), '? This writes a new dataset from the plaza.'),
       note,
       h(
-        'div.lab-form-actions',
+        'div.lab-actions',
         null,
-        button('Back', () => show('edit'), { kind: 'ghost', disabled: busy }),
-        button('Export', () => void doExport(spec), { kind: 'primary', disabled: busy }),
+        labButton('Back', () => show('edit'), { kind: 'ghost', disabled: busy }),
+        labButton('Export', () => void doExport(spec), { kind: 'primary', disabled: busy }),
       ),
     );
   };
@@ -326,20 +274,14 @@ function exportDialog(done: (d: Dataset) => void): void {
  * object); apid checks the rows' fields. The new dataset is shown on the dialog and handed to `done`.
  */
 function uploadDialog(done: (d: Dataset) => void): void {
-  const box = h('div.lab-form');
-  const name = input({ autocomplete: 'off', placeholder: 'e.g. rung-labels-october' });
-  const file = input({ type: 'file', accept: '.jsonl,.ndjson,application/x-ndjson' });
-  const picked = h('div.lab-file', null, 'No file chosen.');
+  const box = h('div.lab2-form');
+  const name = input({ autocomplete: 'off', placeholder: 'e.g. rung-labels-october', 'aria-label': 'Name' });
+  const file = input({ type: 'file', accept: '.jsonl,.ndjson,application/x-ndjson', 'aria-label': 'JSONL file' });
   let close: () => void = () => undefined;
   let chosen: File | null = null;
   let error: string | null = null;
   let busy = false;
   let made: Dataset | null = null;
-
-  file.addEventListener('change', () => {
-    chosen = file.files?.[0] ?? null;
-    picked.textContent = chosen ? `${chosen.name} · ${fmtSize(chosen.size)}` : 'No file chosen.';
-  });
 
   const doUpload = async (): Promise<void> => {
     const label = name.value.trim();
@@ -378,43 +320,33 @@ function uploadDialog(done: (d: Dataset) => void): void {
   };
 
   const show = (): void => {
-    const note = error ? h('div.lab-error', null, error) : null;
+    const note = h('p.lab2-err', { role: 'alert' }, error ?? '');
     if (made) {
       replace(
         box,
-        h(
-          'div.lab-result',
-          null,
-          h('p', null, 'Uploaded as ', h('span.lab-mono', null, made.id), '.'),
-          h(
-            'dl.lab-kv',
-            null,
-            kv('Name', made.name),
-            kv('Rows', fmtNumber(made.rows)),
-            kv('Frozen rows', fmtNumber(made.frozen_rows)),
-            kv('Label balance', balanceBar(made)),
-            kv('Taint', taintsOf(made)),
-          ),
-        ),
-        h('div.lab-form-actions', null, button('Done', () => close(), { kind: 'primary' })),
+        h('p', null, 'Uploaded as ', h('span.mono', null, made.id), '.'),
+        h('dl.kv', null, fact('Name', made.name), fact('Rows', fmtNumber(made.rows)), fact('Frozen rows', fmtNumber(made.frozen_rows)), fact('Label balance', balanceBar(made)), fact('Taint', taintsOf(made))),
+        h('div.lab-actions', null, labButton('Done', () => close(), { kind: 'primary' })),
       );
       return;
     }
     replace(
       box,
       field('Name', name),
-      field('File', file, 'One JSON object per line. Each row needs ts (unix ms), label and the recipe features.'),
-      picked,
+      h('label.field', null, h('span.field-l', null, 'File'), file, h('small.hint', null, 'One JSON object per line: .jsonl or .ndjson.')),
       note,
       h(
-        'div.lab-form-actions',
+        'div.lab-actions',
         null,
-        button('Cancel', () => close(), { kind: 'ghost', disabled: busy }),
-        button(busy ? 'Uploading' : 'Upload', () => void doUpload(), { kind: 'primary', disabled: busy }),
+        labButton('Cancel', () => close(), { kind: 'ghost', disabled: busy }),
+        labButton(busy ? 'Uploading' : 'Upload', () => void doUpload(), { kind: 'primary', icon: 'upload', disabled: busy }),
       ),
     );
   };
 
+  file.addEventListener('change', () => {
+    chosen = file.files?.[0] ?? null;
+  });
   show();
   close = modal('Upload a JSONL dataset', box);
 }
@@ -459,23 +391,25 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
     const restore = keepState(body);
     const sorted = rows ? [...rows].sort((a, b) => b.created_ms - a.created_ms) : null;
     const current = sorted?.find((d) => d.id === selected) ?? null;
-    const toggle = h('div.lab-seg', { role: 'group', 'aria-label': 'View' }, VIEWS.map((v) => {
-      const b = h('button', { type: 'button', 'aria-pressed': String(v.key === view) }, v.label);
-      b.addEventListener('click', () => {
-        view = v.key;
+    const bar = h(
+      'div.lab2-row',
+      null,
+      h('span.lab2-note', null, sorted ? `${sorted.length} ${sorted.length === 1 ? 'dataset' : 'datasets'}` : ''),
+      seg(VIEWS, view, (v) => {
+        view = v as View;
         paint();
-      });
-      return b;
-    }));
-    const actions = h('div.lab-actions', null, h('span.lab-muted', null, sorted ? `${sorted.length} ${sorted.length === 1 ? 'dataset' : 'datasets'}` : ''), toggle, button('Upload', () => uploadDialog(created), { title: 'Upload a JSONL file as a dataset' }), button('Export', () => exportDialog(created), { kind: 'primary', title: 'Export from the plaza records' }));
-    const nodes: Node[] = [h('div.lab-page-head', null, h('h2', null, 'Datasets'), actions)];
-    if (failure) nodes.push(h('div.lab-error', null, failure));
-    if (current) nodes.push(detailOf(current, () => pick(current.id)));
+      }),
+      labButton('Upload', () => uploadDialog(created), { kind: 'ghost', icon: 'upload', title: 'Upload a JSONL file as a dataset' }),
+      labButton('Export', () => exportDialog(created), { kind: 'primary', icon: 'download', title: 'Export from the plaza records' }),
+    );
+    const nodes: Node[] = [bar];
+    if (failure) nodes.push(h('p.lab-err', { role: 'alert' }, failure));
     if (sorted && sorted.length === 0) {
       nodes.push(labEmpty('library', 'No datasets yet', "Export cascade outcomes or tasks from the plaza's records, or upload a JSONL file of rows."));
     } else if (sorted) {
-      nodes.push(view === 'table' ? tableOf(sorted, selected, pick) : cardsOf(sorted, selected, pick));
+      nodes.push(view === 'table' ? tableOf(sorted, selected, pick) : cardsOf(sorted, pick));
     }
+    if (current) nodes.push(detailOf(current, () => pick(current.id)));
     replace(body, nodes);
     restore();
   };

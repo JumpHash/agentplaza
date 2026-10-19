@@ -3,12 +3,15 @@
 // change applies to the agents spawned from now on. The pure helpers (the name rule, the role list parser) are exported
 // and unit-tested (test/tests.ts).
 
-import '../styles/mcp.css';
-import { api, volumesApi, type DataVolume, type Settings } from '../api';
-import { button, card, empty, field, input, modal, toast } from '../ui/components';
+import '../styles/proto/settings-d.css';
+import { api, volumesApi, type Agent, type DataVolume, type Settings } from '../api';
+import { card, field, input, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { errorText } from './vault-common';
+import { btn, dialog, empty, head, ptable, type PCol } from './workstations-ui';
+
+interface RoleRow { role: string; box: HTMLInputElement }
 
 export const VOLUME_NAME_RE = /^[a-z0-9][a-z0-9-]{0,19}$/;
 export const MAX_ROLE_VOLUMES = 4;
@@ -41,12 +44,15 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let volumesError: unknown = null;
   let settings: Settings | null = null;
   let settingsError: unknown = null;
+  // The agents' names by CID, for the volumes each one mounts.
+  let names = new Map<number, string>();
 
-  const tableError = h('p.mcp-danger');
-  const volumesSlot = h('div', null, h('p.mcp-loading', null, 'Loading the volumes...'));
-  const createError = h('p.mcp-danger');
-  const rolesError = h('p.mcp-danger');
-  const rolesSlot = h('div', null, h('p.mcp-loading', null, 'Loading the roles...'));
+  // The error line of each card: a failed create or removal, a failed save of a role.
+  const volError = h('div.e2b-err');
+  const rolesError = h('div.e2b-err');
+  const volumesSlot = h('div');
+  const rolesSlot = h('div');
+  const agentName = (cid: number): string => names.get(cid) ?? `agent ${cid}`;
 
   // ---- Volumes --------------------------------------------------------------------------------------------------------
 
@@ -61,56 +67,51 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     if (alive) drawVolumes();
   };
 
+  const loadAgents = async (): Promise<void> => {
+    const ag: Agent[] = await api.agents().catch((): Agent[] => []);
+    if (!alive) return;
+    names = new Map(ag.map((a): [number, string] => [a.cid, a.name]));
+    drawVolumes();
+  };
+
   const doRemove = async (v: DataVolume): Promise<void> => {
-    replace(tableError);
+    replace(volError);
     try {
       await volumesApi.remove(v.name);
       if (!alive) return;
       toast(`Removed ${v.name}`);
     } catch (err) {
-      if (alive) replace(tableError, errorText(err));
+      if (alive) replace(volError, errorText(err));
     }
     if (alive) void loadVolumes();
   };
 
   const removeVolume = (v: DataVolume): void => {
-    const close = modal(
-      `Remove ${v.name}`,
-      h(
-        'div.mcp-confirm',
-        null,
-        h('p', null, 'The volume is removed from the hub.'),
-        h(
-          'div.mcp-actions',
-          null,
-          button('Cancel', () => close()),
-          button(
-            'Remove',
-            () => {
-              close();
-              void doRemove(v);
-            },
-            { kind: 'danger' },
-          ),
-        ),
+    const close = dialog(`Remove ${v.name}`, h('p', null, 'The volume is removed from the hub.'), [
+      btn('Cancel', () => close(), { kind: 'ghost' }),
+      btn(
+        'Remove',
+        () => {
+          close();
+          void doRemove(v);
+        },
+        { kind: 'danger' },
       ),
-    );
+    ]);
   };
 
-  const volumeRow = (v: DataVolume): HTMLElement => {
-    const remove = button('Remove', () => removeVolume(v), { kind: 'danger', size: 'sm', icon: 'trash' });
+  const volumeColumns = (): PCol<DataVolume>[] => [
+    { label: 'Name', cell: (v) => h('b', null, v.name) },
+    { label: 'Size', cls: 'num', cell: (v) => h('span', { style: 'white-space:nowrap' }, `${(v.size_bytes / MIB).toFixed(1)} MiB`) },
+    { label: 'Mounted by', cell: (v) => (v.in_use.length ? v.in_use.map(agentName).join(', ') : '—') },
+    { label: 'Source', cell: (v) => h('span.ws-mono', null, v.source) },
     // A volume an agent mounts stays until that agent lets go of it.
-    remove.disabled = v.in_use.length > 0;
-    return h(
-      'tr',
-      null,
-      h('td', { 'data-label': 'Name' }, v.name),
-      h('td', { 'data-label': 'Size' }, `${(v.size_bytes / MIB).toFixed(1)} MiB`),
-      h('td', { 'data-label': 'Mounted by' }, v.in_use.length ? v.in_use.join(', ') : '—'),
-      h('td', { 'data-label': 'Source' }, v.source),
-      h('td', { 'data-label': 'Actions', class: 'mcp-actions-cell' }, remove),
-    );
-  };
+    {
+      label: '',
+      cls: 'num',
+      cell: (v) => btn('Remove', () => removeVolume(v), { kind: 'danger', sm: true, icon: 'trash', disabled: v.in_use.length > 0 }),
+    },
+  ];
 
   const drawVolumes = (): void => {
     if (volumesError) {
@@ -118,40 +119,22 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       return;
     }
     if (!volumes) return;
-    replace(
-      volumesSlot,
-      volumes.length
-        ? h(
-            'div.mcp-table-wrap',
-            null,
-            h(
-              'table',
-              null,
-              h(
-                'thead',
-                null,
-                h('tr', null, h('th', null, 'Name'), h('th', null, 'Size'), h('th', null, 'Mounted by'), h('th', null, 'Source'), h('th', null, '')),
-              ),
-              h('tbody', null, ...volumes.map(volumeRow)),
-            ),
-          )
-        : empty('wrench', 'No volumes yet', 'Create one below.'),
-    );
+    replace(volumesSlot, volumes.length ? ptable(volumeColumns(), volumes) : empty('wrench', 'No volumes yet', 'Create one below.'));
   };
 
-  const nameIn = input({ placeholder: 'deps', spellcheck: 'false' });
-  const sourceIn = input({ placeholder: '/srv/volumes/deps.ext4', spellcheck: 'false' });
+  const nameIn = input({ id: 'vol-name', placeholder: 'deps', spellcheck: 'false' });
+  const sourceIn = input({ id: 'vol-source', placeholder: '/srv/volumes/deps.ext4', spellcheck: 'false' });
 
   const createVolume = async (): Promise<void> => {
-    replace(createError);
+    replace(volError);
     const name = nameIn.value.trim();
     const source = sourceIn.value.trim();
     if (!volumeNameOk(name)) {
-      replace(createError, 'A name is a-z, 0-9 and dashes, up to 20 characters.');
+      replace(volError, 'A name is a-z, 0-9 and dashes, up to 20 characters.');
       return;
     }
     if (!source.startsWith('/')) {
-      replace(createError, 'The source is an absolute path on the hub machine.');
+      replace(volError, 'The source is an absolute path on the hub machine.');
       return;
     }
     try {
@@ -161,20 +144,11 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       nameIn.value = '';
       sourceIn.value = '';
     } catch (err) {
-      if (alive) replace(createError, errorText(err));
+      if (alive) replace(volError, errorText(err));
       return;
     }
     if (alive) void loadVolumes();
   };
-
-  const createBlock = h(
-    'div.stack',
-    null,
-    createError,
-    field('Name', nameIn, 'What agents see under /data/<name>. Up to 20 characters.'),
-    field('Source', sourceIn, 'An ext4 image or a directory on the hub machine.'),
-    h('div', null, button('Create volume', () => void createVolume())),
-  );
 
   // ---- Roles ----------------------------------------------------------------------------------------------------------
 
@@ -231,8 +205,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     if (copy) void saveRoles(copy, `Removed ${role}`);
   };
 
-  const roleIn = input({ placeholder: 'coder', spellcheck: 'false' });
-  const addList = input({ placeholder: 'deps, models', spellcheck: 'false' });
+  const roleIn = input({ id: 'vol-new-role', placeholder: 'coder', spellcheck: 'false' });
+  const addList = input({ id: 'vol-new-vols', placeholder: 'deps, models', spellcheck: 'false' });
 
   const addRole = (): void => {
     replace(rolesError);
@@ -260,22 +234,6 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     if (copy) void saveRoles(copy, `Added ${role}`);
   };
 
-  const roleRow = (role: string, names: string[]): HTMLElement => {
-    const list = input({ spellcheck: 'false', 'aria-label': `Volumes for ${role}`, value: names.join(', ') });
-    return h(
-      'tr',
-      null,
-      h('td', { 'data-label': 'Role' }, role),
-      h('td', { 'data-label': 'Volumes' }, list),
-      h(
-        'td',
-        { 'data-label': 'Actions', class: 'mcp-actions-cell' },
-        button('Save', () => saveRole(role, list), { kind: 'ghost', size: 'sm' }),
-        button('Remove', () => removeRole(role), { kind: 'danger', size: 'sm', icon: 'trash' }),
-      ),
-    );
-  };
-
   const drawRoles = (): void => {
     if (settingsError) {
       replace(rolesSlot, empty('alert', 'Could not load the roles', errorText(settingsError)));
@@ -283,48 +241,81 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     }
     if (!settings) return;
     const entries = Object.entries(settings.role_volumes ?? {});
+    if (!entries.length) {
+      replace(rolesSlot, empty('wrench', 'No role mounts a volume', 'Add a role below.'));
+      return;
+    }
+    const rows: RoleRow[] = entries.map(([role, list]) => ({
+      role,
+      box: input({ id: `vol-row-${role}`, 'aria-label': `Volumes for ${role}`, spellcheck: 'false', value: list.join(', ') }),
+    }));
     replace(
       rolesSlot,
-      entries.length
-        ? h(
-            'div.mcp-table-wrap',
-            null,
-            h(
-              'table',
-              null,
-              h('thead', null, h('tr', null, h('th', null, 'Role'), h('th', null, 'Volumes'), h('th', null, ''))),
-              h('tbody', null, ...entries.map(([role, names]) => roleRow(role, names))),
-            ),
-          )
-        : empty('wrench', 'No role mounts a volume', 'Add a role below.'),
+      ptable<RoleRow>(
+        [
+          { label: 'Role', cell: (r) => r.role },
+          { label: 'Volumes', cell: (r) => r.box },
+          {
+            label: '',
+            cls: 'num',
+            cell: (r) => [
+              btn('Save', () => saveRole(r.role, r.box), { kind: 'ghost', sm: true }),
+              btn('Remove', () => removeRole(r.role), { kind: 'danger', sm: true, icon: 'trash' }),
+            ],
+          },
+        ],
+        rows,
+      ),
     );
   };
 
-  const addBlock = h(
-    'div.stack',
-    null,
-    field('Role', roleIn),
-    field('Volumes', addList, 'Up to four volume names, separated by commas.'),
-    h('div', null, button('Add role', addRole)),
-  );
-
-  replace(
-    root,
+  root.append(
+    head(
+      'Volumes',
+      [],
+      'A volume is a read-only data set on the hub machine: an ext4 image or a directory. An agent of a role mounts each volume the role names at /data/<name>. A role change applies to the agents spawned from now on.',
+    ),
     h(
-      'div.stack',
+      'div.vol-grid',
       null,
-      h(
-        'p',
-        null,
-        'A volume is a read-only data set on the hub machine: an ext4 image or a directory. An agent of a role mounts each volume the role names at /data/<name>. A role change applies to the agents spawned from now on.',
+      card(
+        'Volumes',
+        h(
+          'div.ws-stack',
+          null,
+          volumesSlot,
+          h(
+            'div.ws-stack',
+            null,
+            volError,
+            field('Name', nameIn, 'What agents see under /data/<name>. Up to 20 characters.'),
+            field('Source', sourceIn, 'An ext4 image or a directory on the hub machine.'),
+            h('div.vol-act', null, btn('Create volume', () => void createVolume())),
+          ),
+        ),
       ),
-      card('Volumes', [tableError, volumesSlot, createBlock]),
-      card('Roles', [rolesError, rolesSlot, addBlock]),
+      card(
+        'Roles',
+        h(
+          'div.ws-stack',
+          null,
+          rolesError,
+          rolesSlot,
+          h(
+            'div.ws-stack',
+            null,
+            field('Role', roleIn),
+            field('Volumes', addList, 'Up to four volume names, separated by commas.'),
+            h('div', null, btn('Add role', addRole, { kind: 'primary' })),
+          ),
+        ),
+      ),
     ),
   );
 
   void loadVolumes();
   void loadSettings();
+  void loadAgents();
   return () => {
     alive = false;
   };

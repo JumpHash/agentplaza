@@ -169,7 +169,13 @@ mod tests {
 
     #[test]
     fn closure_loads_dependencies_first() {
-        assert_eq!(closure(&["recharts"]), vec!["react", "react-dom", "prop-types", "recharts"]);
-        assert_eq!(closure(&["d3", "react", "react-dom"]), vec!["d3", "react", "react-dom"]);
+        assert_eq!(
+            closure(&["recharts"]),
+            vec!["react", "react-dom", "prop-types", "recharts"]
+        );
+        assert_eq!(
+            closure(&["d3", "react", "react-dom"]),
+            vec!["d3", "react", "react-dom"]
+        );
     }
 }

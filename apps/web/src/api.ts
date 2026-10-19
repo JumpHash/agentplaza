@@ -195,6 +195,10 @@ export interface Settings {
   doze_idle_s: number;
   /** Shared read-only data volumes per role: agents of the role mount each one at /data/<name>. */
   role_volumes: Record<string, string[]>;
+  /** Seconds between the hub's background provider checks; 0 turns them off. */
+  health_interval_s?: number;
+  /** The owner's favourite models, `<provider>/<model>`: the pickers list them first. */
+  favourite_models?: string[];
   /** Take a checkpoint of the agent's VM before each irreversible tool call. */
   vm_auto_checkpoints: boolean;
   /** ACP: editors (Zed, JetBrains, Neovim) may prompt a plaza agent from the editor. */

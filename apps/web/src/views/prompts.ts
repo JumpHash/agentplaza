@@ -1,12 +1,13 @@
-// Prompts: the prompt library (docs/design/prompt-library.md). `#/prompts` lists system prompts, AGENTS.md files and
-// fragments, with a kind filter, archived toggle and search, and opens the new-prompt dialog; `#/prompts/<id>` opens
-// one in the editor (views/prompt-editor.ts).
+// Prompts: the prompt library (docs/design/prompt-library.md). `#/settings/agents/prompts` lists system prompts, AGENTS.md
+// files and fragments, with a kind tab, an archived toggle and search, and opens the new-prompt dialog; `#/.../prompts/<id>`
+// opens one in the editor (views/prompt-editor.ts). The Loom prototype's layout: a page head, the kind tabs with counts,
+// the search bar and the table.
 
-import '../styles/prompts.css';
+import '../styles/proto/library.css';
 import { promptsApi, ApiError, type PromptCreate, type PromptKind, type PromptSummary } from '../api';
 import { on } from '../store';
 import { go, href } from '../router';
-import { ago, badge, button, field, input, modal, select, table, textarea, toast, type Column, type Tone } from '../ui/components';
+import { ago, badge, button, empty, field, input, modal, select, table, textarea, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { bindingField, metaProblem, mountEditor, parseTags } from './prompt-editor';
@@ -16,7 +17,7 @@ const LIVE_MS = 250;
 type Status = 'loading' | 'ready' | 'error';
 type KindFilter = 'all' | PromptKind;
 
-const INTRO = 'Versioned system prompts, AGENTS.md files and fragments, each checked against the plaza\'s rules as it is written. The live version is the one in use; the best version is the highest-scoring one kept.';
+const INTRO = 'The prompt library: system prompts, AGENTS.md files and fragments. Every version is checked and scored.';
 const EMPTY_TEXT = 'The library holds the system prompts your agents run on, the AGENTS.md files that guide them and the fragments you reuse across prompts. Every version is checked against the rules and scored, so you can see which one is best and roll back to it. Start with New prompt.';
 
 const KIND_LABEL: Record<PromptKind, string> = { system: 'System prompt', agents_md: 'AGENTS.md', fragment: 'Fragment' };
@@ -29,7 +30,7 @@ function scoreTone(score: number): Tone {
 
 /** A binding as a chip: `role:x` reads "Role: x", `plaza` reads "Whole plaza". */
 function bindingChip(binding: string | null): Node | string {
-  if (!binding) return '—';
+  if (!binding) return h('span.pr-note', null, '—');
   if (binding === 'plaza') return badge('Whole plaza', 'info');
   if (binding.startsWith('role:')) return badge(`Role: ${binding.slice('role:'.length)}`, 'info');
   return badge(binding, 'info');
@@ -59,7 +60,7 @@ function starters(): Promise<Record<PromptKind, string>> {
 export function mount(root: HTMLElement, params: string[]): Cleanup {
   if (params[0]) {
     return mountEditor(root, params[0], () => {
-      location.hash = '#/prompts';
+      location.hash = href('prompts');
     });
   }
   return mountList(root);
@@ -78,11 +79,12 @@ function mountList(root: HTMLElement): Cleanup {
   let liveTimer: number | undefined;
 
   const search = input({ type: 'search', placeholder: 'Search by title, id, description or tag', 'aria-label': 'Search prompts', autocomplete: 'off' });
+  search.classList.add('pr-q');
   const archivedIn = h('input', { type: 'checkbox' }) as HTMLInputElement;
-  const chipBox = h('div.prompts-chips', { role: 'group', 'aria-label': 'Kind' });
-  const countLine = h('p.prompts-count', { 'aria-live': 'polite' });
-  const listBox = h('div.prompts-list');
-  const newButton = button('New prompt', () => openNew(), { kind: 'primary' });
+  const tabBox = h('div');
+  const countLine = h('p.pr-note', { 'aria-live': 'polite' });
+  const listBox = h('div');
+  const newButton = button('New prompt', () => openNew(), { kind: 'primary', icon: 'plus' });
 
   search.addEventListener('input', () => {
     query = search.value.trim().toLowerCase();
@@ -93,23 +95,24 @@ function mountList(root: HTMLElement): Cleanup {
     void load();
   });
 
-  function renderChips(): void {
+  /** The kind tabs, with the count of each kind among the rows the archived toggle leaves. */
+  function renderTabs(): void {
+    const live = prompts.filter((p) => showArchived || p.archived_ms == null);
+    const count = (k: KindFilter): number => (k === 'all' ? live.length : live.filter((p) => p.kind === k).length);
     replace(
-      chipBox,
-      KIND_FILTERS.map(([key, label]) =>
-        h(
-          'button.prompts-chip',
-          {
-            type: 'button',
-            'aria-pressed': String(kindFilter === key),
-            onclick: () => {
-              kindFilter = key;
-              renderChips();
-              renderList();
-            },
-          },
-          label,
-        ),
+      tabBox,
+      h(
+        'div.tabs',
+        { role: 'tablist' },
+        KIND_FILTERS.map(([key, label]) => {
+          const b = h('button.tab', { type: 'button', role: 'tab', 'aria-selected': String(kindFilter === key) }, label, ' ', h('span.count.num', null, String(count(key))));
+          b.addEventListener('click', () => {
+            kindFilter = key;
+            renderTabs();
+            renderList();
+          });
+          return b;
+        }),
       ),
     );
   }
@@ -128,7 +131,7 @@ function mountList(root: HTMLElement): Cleanup {
     kindFilter = 'all';
     query = '';
     search.value = '';
-    renderChips();
+    renderTabs();
     renderList();
   }
 
@@ -137,76 +140,55 @@ function mountList(root: HTMLElement): Cleanup {
       label: 'Title',
       cell: (p) =>
         h(
-          'div.prompts-title',
+          'span',
           null,
-          h('a', { href: href('prompts', p.id) }, p.title || p.id),
-          h('code.prompts-id', null, p.id),
+          h('a', { href: href('prompts', p.id), onclick: (e: Event) => e.stopPropagation() }, h('strong', null, p.title || p.id)),
+          p.archived_ms != null ? ' ' : null,
           p.archived_ms != null ? badge('Archived') : null,
+          h('div.mono.pr-note', null, p.id),
         ),
     },
     { label: 'Kind', cell: (p) => KIND_LABEL[p.kind] ?? p.kind },
     { label: 'Binding', cell: (p) => bindingChip(p.binding) },
     {
       label: 'Live',
-      cell: (p) => (p.active_version != null ? `v${p.active_version}` : h('span.prompts-muted', null, 'Unpublished')),
+      cell: (p) => (p.active_version != null ? `v${p.active_version}` : h('span.pr-note', null, 'Unpublished')),
     },
     {
       label: 'Score',
       cell: (p) => {
-        const parts: Node[] = [
-          p.score != null ? badge(String(p.score), scoreTone(p.score)) : h('span.prompts-muted', null, '—'),
-        ];
-        if (p.best_version != null && p.best_version !== p.active_version) parts.push(h('span.prompts-best', null, `best: v${p.best_version}`));
-        return h('div.prompts-score', null, parts);
+        const parts: Node[] = [p.score != null ? badge(String(p.score), scoreTone(p.score)) : h('span.pr-note', null, '—')];
+        if (p.best_version != null && p.best_version !== p.active_version) parts.push(h('div.pr-note', null, `best: v${p.best_version}`));
+        return h('div', null, parts);
       },
     },
-    { label: 'Tags', cell: (p) => h('div.prompts-tags', null, p.tags.map((t) => h('span.prompts-tag', null, t))) },
+    { label: 'Tags', cell: (p) => h('span', null, p.tags.map((t) => badge(t))) },
     { label: 'Updated', cell: (p) => ago(p.updated_ms) },
   ];
 
   function renderList(): void {
     if (status === 'loading') {
       countLine.textContent = '';
-      replace(listBox, h('p.prompts-muted', null, 'Loading the prompts…'));
+      replace(listBox, h('p.pr-note', null, 'Loading the prompts…'));
       return;
     }
     if (status === 'error') {
       countLine.textContent = '';
-      replace(
-        listBox,
-        h('div.prompts-error', { role: 'alert' }, h('p', null, `The prompts could not be loaded. ${failure}`), button('Try again', () => void load(), { size: 'sm' })),
-      );
+      replace(listBox, empty('alert', 'The prompts could not be loaded.', failure, button('Try again', () => void load(), { size: 'sm' })));
       return;
     }
     const shown = visible();
     const total = prompts.filter((p) => showArchived || p.archived_ms == null).length;
     countLine.textContent = total ? `Showing ${shown.length} of ${total}` : '';
     if (shown.length) {
-      replace(listBox, h('div.prompts-table-wrap', null, table(columns, shown, undefined, (p) => p.id)));
+      replace(listBox, h('div.tbl-wrap', null, table(columns, shown, (p) => go('prompts', p.id), (p) => p.id)));
       return;
     }
     if (total === 0 && kindFilter === 'all' && !query) {
-      replace(
-        listBox,
-        h(
-          'div.prompts-empty',
-          null,
-          h('h3', null, 'No prompts yet'),
-          h('p', null, EMPTY_TEXT),
-          button('New prompt', () => openNew(), { kind: 'primary' }),
-        ),
-      );
+      replace(listBox, empty('file', 'No prompts yet', EMPTY_TEXT, button('New prompt', () => openNew(), { kind: 'primary', icon: 'plus' })));
       return;
     }
-    replace(
-      listBox,
-      h(
-        'div.prompts-empty',
-        null,
-        h('p', null, 'No prompts match these filters.'),
-        button('Clear filters', () => clearFilters(), { size: 'sm' }),
-      ),
-    );
+    replace(listBox, empty('search', 'No prompts match these filters.', undefined, button('Clear filters', () => clearFilters(), { kind: 'ghost', size: 'sm' })));
   }
 
   /** The new-prompt dialog: kind, title, optional id, binding, description, tags and the body from the kind's starter. */
@@ -217,7 +199,7 @@ function mountList(root: HTMLElement): Cleanup {
     );
     const titleIn = input({ type: 'text', required: true, autocomplete: 'off', placeholder: 'What the prompt is for' });
     const idIn = input({ type: 'text', autocomplete: 'off', placeholder: 'generated from the title' });
-    const bindingBox = h('div.prompts-binding');
+    const bindingBox = h('div');
     let bind = bindingField(kindSel.value as PromptKind, null);
     const descIn = input({ type: 'text', autocomplete: 'off', placeholder: 'A line on what it is for' });
     const tagsIn = input({ type: 'text', autocomplete: 'off', placeholder: 'comma, separated' });
@@ -287,7 +269,7 @@ function mountList(root: HTMLElement): Cleanup {
     );
 
     const form = h(
-      'form.prompts-form',
+      'form.lib-form',
       {
         onsubmit: (e: Event) => {
           e.preventDefault();
@@ -301,7 +283,7 @@ function mountList(root: HTMLElement): Cleanup {
       field('Description', descIn),
       field('Tags', tagsIn, 'Separate them with commas.'),
       field('Body', bodyIn),
-      h('div.prompts-actions', null, button('Cancel', () => closeDialog?.(), { kind: 'ghost' }), submit),
+      h('div.lib-acts', null, button('Cancel', () => closeDialog?.(), { kind: 'ghost' }), submit),
     );
     closeDialog = modal('New prompt', form);
   }
@@ -324,26 +306,29 @@ function mountList(root: HTMLElement): Cleanup {
       failure = err instanceof Error ? err.message : String(err);
       status = 'error';
     }
+    renderTabs();
     renderList();
   }
 
-  const toolbar = h(
-    'div.prompts-toolbar',
-    null,
-    h('div.prompts-row', null, chipBox, h('label.prompts-toggle', null, archivedIn, ' Show archived')),
-    h('div.prompts-row', null, search, countLine),
-  );
   replace(
     root,
     h(
-      'section.prompts-view',
+      'header.page-head',
       null,
-      h('header.prompts-head', null, h('div', null, h('h1', null, 'Prompts'), h('p.prompts-intro', null, INTRO)), newButton),
-      toolbar,
-      listBox,
+      h('div.page-head-row', null, h('h1', null, 'Prompts'), h('span.sp'), h('div.page-actions', null, newButton)),
+      h('p.lede', null, INTRO),
     ),
+    tabBox,
+    h(
+      'div.pr-bar',
+      null,
+      search,
+      h('label.check', null, archivedIn, ' Show archived'),
+    ),
+    countLine,
+    listBox,
   );
-  renderChips();
+  renderTabs();
   renderList();
   void load();
 
@@ -361,3 +346,4 @@ function mountList(root: HTMLElement): Cleanup {
     closeDialog = null;
   };
 }
+

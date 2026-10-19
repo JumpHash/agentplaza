@@ -15,8 +15,11 @@
 
 pub mod artifact;
 pub mod format;
+pub mod highlight;
 pub mod libs;
 pub mod model;
+#[cfg(feature = "raster")]
+pub mod raster;
 
 pub use apz_metrics::catalog::Unit;
 pub use model::*;

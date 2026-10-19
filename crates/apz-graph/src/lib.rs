@@ -28,6 +28,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod force;
+
 /// A project's graph, as the read model gives it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Graph {

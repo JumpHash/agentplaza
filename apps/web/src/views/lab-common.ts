@@ -4,8 +4,8 @@
 
 import { ApiError, type JobEvent } from '../api';
 import { on } from '../store';
-import { h, icon } from '../ui/dom';
-import type { IconName } from '../ui/icons.gen';
+import { h, lu } from '../ui/dom';
+import type { LucideName } from '../ui/icons.gen';
 
 // ---- Requests --------------------------------------------------------------
 
@@ -132,13 +132,67 @@ export function pollEvery(ms: number, load: () => void): () => void {
 
 // ---- Empty state -----------------------------------------------------------
 
-/** The empty (or not-yet-built) state: an icon, a mono title and an optional serif sentence. */
-export function labEmpty(iconName: IconName, title: string, text?: string): HTMLElement {
+/** The empty (or not-yet-built) state: the prototype's `h.empty` (an icon, a bold title, an optional sentence). */
+export function labEmpty(iconName: LucideName, title: string, text?: string, action?: Node): HTMLElement {
+  return h('div.empty', null, lu(iconName, 22), h('b', null, title), text ? h('span', null, text) : null, action ?? null);
+}
+
+// ---- The prototype's small text and control helpers -------------------------
+
+/** A relative time as the prototype reads it: `just now`, `30 min ago`, `2 h ago`, `3 d ago`. */
+export function agoText(ms: number | null | undefined, now = Date.now()): string {
+  if (!ms) return DASH;
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  if (s < 45) return 'just now';
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+
+/** A job's run time as the prototype prints it: `40 min`, `2.0 h`. */
+export function runTimeText(ms: number): string {
+  return ms < 3600000 ? `${Math.round(ms / 60000)} min` : `${(ms / 3600000).toFixed(1)} h`;
+}
+
+/** GPU-hours used of a budget, as the prototype's budget cell: the figure, then a meter that turns red over budget. */
+export function budgetCell(used: number, budget: number): HTMLElement {
+  const over = used > budget;
+  const pct = budget > 0 ? Math.min(100, (used / budget) * 100) : 0;
   return h(
-    'div.lab-empty',
-    null,
-    icon(iconName),
-    h('div.lab-empty-title', null, title),
-    text ? h('div.lab-empty-text', null, text) : null,
+    'div.lab-budget',
+    { class: over ? 'is-over' : null },
+    h('span.num', null, `${fmtNumber(used, 2)} of ${fmtNumber(budget)}`),
+    h('div.lab-meter', { class: over ? 'is-over' : null }, h('i', { style: `width:${pct.toFixed(1)}%` })),
   );
+}
+
+/** The prototype's `h.btn`: `button.btn` (`.primary`, `.ghost`, `.danger`, `.sm`) with a lucide icon and a label. */
+export function labButton(
+  label: string,
+  onClick: (ev: MouseEvent) => void,
+  opts: { kind?: 'primary' | 'ghost' | 'danger'; sm?: boolean; icon?: LucideName; title?: string; disabled?: boolean } = {},
+): HTMLButtonElement {
+  const classes = ['btn', opts.kind ?? '', opts.sm ? 'sm' : '', label ? '' : 'icon-only'].filter(Boolean).join(' ');
+  const b = h(
+    'button',
+    { class: classes, type: 'button', title: opts.title ?? null, 'aria-label': label ? null : (opts.title ?? null), disabled: !!opts.disabled },
+    opts.icon ? lu(opts.icon, opts.sm ? 14 : 15) : null,
+    label ? h('span', null, label) : null,
+  );
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+/** A segmented control (`div.seg`): each option is a button, the chosen one is `aria-pressed`. */
+export function seg(options: [string, string][], current: string, onPick: (value: string) => void): HTMLElement {
+  const group = h(
+    'div.seg',
+    { role: 'group' },
+    options.map(([value, label]) => {
+      const b = h('button', { type: 'button', 'aria-pressed': value === current ? 'true' : 'false' }, label);
+      b.addEventListener('click', () => onPick(value));
+      return b;
+    }),
+  );
+  return group;
 }

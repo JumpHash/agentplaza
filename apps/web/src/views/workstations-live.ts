@@ -5,8 +5,9 @@
 // the messages, the input mapping) are in workstations-model.ts.
 
 import { type InputAction, type InputButton, type StationView, type Takeover } from '../api';
-import { badge, button, field, select, toast } from '../ui/components';
+import { badge, field, select, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
+import { btn } from './workstations-ui';
 import {
   actionFrame,
   buttonAction,
@@ -100,31 +101,29 @@ export function liveView(initial: StationView, nameOf: (cid: number) => string):
     LIVE_SCALES.map((s) => ({ value: String(s), label: `${Math.round(s * 100)}%` })),
     String(view.scale),
   );
-  const chip = h('span.ws-chips');
-  const startButton = button('Start live view', () => (running ? stop('off') : start()), { kind: 'primary' });
-  const takeButton = button('Take over', () => takeOver());
+  const chip = h('span');
+  const startButton = btn('Start live view', () => (running ? stop('off') : start()), { kind: 'primary' });
+  const takeButton = btn('Take over', () => takeOver(), { kind: 'ghost' });
   const banner = h('div.ws-banner', { hidden: true });
-  const canvas = h('canvas.ws-canvas', { 'aria-label': 'The screen of this workstation', role: 'img', hidden: true });
-  const placeholder = h('p.ws-placeholder');
-  const hint = h('p.faint.ws-live-hint');
+  // The owner's log while they hold the screen: what was sent to the station, newest first.
+  const sentList = h('ol.ws-sent', { id: 'ws-sent' });
+  const sentLog: string[] = [];
+  const canvas = h('canvas', { 'aria-label': 'The screen of this workstation', role: 'img' });
+  const pictureBox = h('div.ws-stage-pic', { hidden: true }, canvas);
+  const placeholder = h('span');
+  const hint = h('p.hint');
   const context = canvas.getContext('2d');
 
   const controls = h(
-    'div.ws-live-controls',
+    'div.ws-live-bar',
     null,
     field('Session', sessionSelect),
     field('Frames a second', fpsSelect),
     field('Size', scaleSelect),
-    h('div.ws-live-buttons', null, startButton, takeButton),
+    h('div.ws-cluster', null, chip, startButton, takeButton),
   );
-  const el = h(
-    'div.ws-live',
-    null,
-    h('div.ws-live-bar', null, controls, chip),
-    banner,
-    h('div.ws-stage', null, canvas, placeholder),
-    hint,
-  );
+  const stage = h('div.ws-stage', null, pictureBox, placeholder);
+  const el = h('div', null, controls, banner, stage, hint);
 
   // ---- rendering ------------------------------------------------------------------------------------------------
 
@@ -150,18 +149,23 @@ export function liveView(initial: StationView, nameOf: (cid: number) => string):
     replace(chip, badge(chipInfo.label, chipInfo.tone, true));
     const canStart = station.online && !station.revoked;
     startButton.textContent = running ? 'Stop' : 'Start live view';
+    startButton.className = running ? 'btn ghost' : 'btn primary';
     startButton.disabled = !running && !canStart;
     takeButton.hidden = taken !== null;
     takeButton.disabled = !canStart || phase !== 'live' || sessionNo === null;
     sessionSelect.disabled = taken !== null;
     fpsSelect.disabled = taken !== null;
     scaleSelect.disabled = taken !== null;
-    el.classList.toggle('is-taken', taken !== null);
+    stage.classList.toggle('is-taken', taken !== null);
     if (taken) {
       replace(
         banner,
-        h('span', null, takeoverBanner(taken), ' ', h('span.faint', null, 'Press Escape twice to give the screen back.')),
-        button('Give back', () => giveBack(), { kind: 'primary' }),
+        h('b', null, 'You have control'),
+        h('div', null, takeoverBanner(taken)),
+        h('div.muted', null, 'Press Escape twice to give the screen back.'),
+        h('div.muted', null, 'Sent to the station'),
+        sentList,
+        btn('Release', () => giveBack(), { kind: 'primary' }),
       );
       banner.hidden = false;
     } else {
@@ -169,10 +173,12 @@ export function liveView(initial: StationView, nameOf: (cid: number) => string):
       replace(banner);
     }
     const showPicture = frameSize !== null && (phase === 'live' || (phase === 'reconnecting' && running));
-    canvas.hidden = !showPicture;
+    pictureBox.hidden = !showPicture;
     placeholder.hidden = showPicture;
     placeholder.textContent = placeholderText();
-    hint.textContent = phase === 'live' && !taken && sessionNo !== null ? 'Take over to type and click into the station.' : '';
+    const tip = phase === 'live' && !taken && sessionNo !== null ? 'Take over to type and click into the station.' : '';
+    hint.textContent = tip;
+    hint.hidden = !tip;
   }
 
   // ---- the picture ----------------------------------------------------------------------------------------------
@@ -204,7 +210,7 @@ export function liveView(initial: StationView, nameOf: (cid: number) => string):
       picture.close();
       frameSize = { w: f.w, h: f.h };
       // The page changes only with the first picture; the frames after it are drawn without a redraw of the page.
-      if (canvas.hidden) render();
+      if (pictureBox.hidden) render();
     } catch {
       // A frame the browser cannot decode: the next one is drawn.
     } finally {
@@ -343,6 +349,8 @@ export function liveView(initial: StationView, nameOf: (cid: number) => string):
       if (!msg) return;
       if (msg.t === 'taken') {
         taken = msg.policy;
+        sentLog.length = 0;
+        logSent('Took over the screen');
         render();
       } else if (msg.t === 'given_back') {
         closeControl();
@@ -388,9 +396,26 @@ export function liveView(initial: StationView, nameOf: (cid: number) => string):
     held.clear();
   }
 
-  /** Sends an owner action when the owner holds the session. */
+  /** Sends an owner action when the owner holds the session, and logs it in the banner. */
   function act(action: InputAction): void {
-    if (taken && control) send(control, actionFrame(action));
+    if (!taken || !control) return;
+    send(control, actionFrame(action));
+    logSent(describe(action));
+  }
+
+  function logSent(text: string): void {
+    sentLog.unshift(text);
+    sentLog.length = Math.min(sentLog.length, 12);
+    sentList.replaceChildren(...sentLog.map((t) => h('li', null, t)));
+  }
+
+  /** An owner action in words, as the banner's log shows it. */
+  function describe(action: InputAction): string {
+    const a = action as { action: string; x?: number; y?: number; button?: string };
+    if (a.action === 'move') return `Pointer moved to ${a.x}, ${a.y}`;
+    if (a.action === 'click') return `${a.button} button click at ${a.x}, ${a.y}`;
+    if (a.action === 'down' || a.action === 'up') return `${a.button} button ${a.action === 'down' ? 'down' : 'up'}`;
+    return `${a.action} sent`;
   }
 
   /** The pointer's frame point for a mouse event, or null before a picture has a size. */

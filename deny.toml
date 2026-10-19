@@ -35,6 +35,29 @@ allow = [
 ]
 confidence-threshold = 0.9
 
+# MPL-2.0 is file-level copyleft: these crates are used unmodified from crates.io, so their sources stay available
+# there. They come with the desktop app's webview (wry parses HTML with cssparser and selectors on Linux) and with
+# `dirs` (option-ext). Allowed for these crates only, not in general.
+[[licenses.exceptions]]
+crate = "cssparser"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "cssparser-macros"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "dtoa-short"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "selectors"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+crate = "option-ext"
+allow = ["MPL-2.0"]
+
 [licenses.private]
 # The workspace's own crates are not published.
 ignore = true

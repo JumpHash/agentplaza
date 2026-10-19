@@ -22,6 +22,7 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::Color;
 use serde_json::{Value, json};
 
+use super::context_bar;
 use super::floor::FloorView;
 use super::onboarding::{self, DepsKey, Facts, Onboarding, Stage, Step, TOUR};
 use super::scope;
@@ -37,8 +38,12 @@ use crate::ctx::{Client, Config, seg};
 mod chat;
 #[path = "machines.rs"]
 mod machines;
+#[path = "providers.rs"]
+mod providers;
 #[path = "workstations.rs"]
 mod workstations;
+
+use providers::Action as ProvidersAction;
 
 const FRAME: Duration = Duration::from_millis(50);
 const POLL_EVERY: Duration = Duration::from_secs(3);
@@ -63,10 +68,11 @@ pub enum Tab {
     Workstations,
     Workspace,
     Chat,
+    Providers,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 12] = [
+    pub const ALL: [Tab; 13] = [
         Tab::Floor,
         Tab::Overview,
         Tab::Agents,
@@ -79,15 +85,18 @@ impl Tab {
         Tab::Workspace,
         Tab::Workstations,
         Tab::Chat,
+        Tab::Providers,
     ];
 
-    /// The tab a key shows: 1 to 9, then 0 for the tenth, `w` for the Workstations and `c` for the Chat.
+    /// The tab a key shows: 1 to 9, then 0 for the tenth, `w` for the Workstations, `c` for the Chat and `m` for the
+    /// Providers (the models).
     pub fn from_key(key: char) -> Option<Tab> {
         match key {
             '1'..='9' => Tab::ALL.get(usize::from(key as u8 - b'1')).copied(),
             '0' => Tab::ALL.get(9).copied(),
             'w' => Some(Tab::Workstations),
             'c' => Some(Tab::Chat),
+            'm' => Some(Tab::Providers),
             _ => None,
         }
     }
@@ -98,7 +107,8 @@ impl Tab {
             i @ 0..=8 => char::from(b'1' + i as u8),
             9 => '0',
             10 => 'w',
-            _ => 'c',
+            11 => 'c',
+            _ => 'm',
         }
     }
 
@@ -116,6 +126,7 @@ impl Tab {
             Tab::Workstations => "Workstations",
             Tab::Workspace => "Workspace",
             Tab::Chat => "Chat",
+            Tab::Providers => "Providers",
         }
     }
 
@@ -134,6 +145,7 @@ impl Tab {
             // The workspace reads the roster on every poll; its other lists come on the events.
             Tab::Workspace => "/v1/agents",
             Tab::Chat => chat::PATH,
+            Tab::Providers => providers::PATH,
         }
     }
 
@@ -271,6 +283,8 @@ enum Msg {
     Workspace(Got),
     /// A conversation the Chat tab read, by its id.
     Conversation(String, Result<Value, String>),
+    /// The engines' update dry run the Providers tab asked for.
+    Plan(Result<Value, String>),
 }
 
 pub struct App {
@@ -310,6 +324,8 @@ pub struct App {
     pub chat: chat::ChatTab,
     /// A message to the orchestrator being written in the footer (the Chat tab's `t` and `n`).
     pub compose: Option<chat::Compose>,
+    /// The Providers tab's state: the selection, the search, the update plan and the add form.
+    pub providers: providers::Screen,
     /// A read of the projects is under way, and whether another was asked for meanwhile.
     projects_reading: bool,
     projects_again: bool,
@@ -358,6 +374,7 @@ impl App {
             scope: None,
             chat: chat::ChatTab::default(),
             compose: None,
+            providers: providers::Screen::default(),
             projects_reading: false,
             projects_again: false,
             rx,
@@ -544,6 +561,7 @@ impl App {
             Tab::Workstations => self.array("/v1/stations").len(),
             Tab::Workspace => 0,
             Tab::Chat => self.array(chat::PATH).len(),
+            Tab::Providers => 0,
         }
     }
 
@@ -644,6 +662,10 @@ impl App {
                         let _ = self.watch.send(Tab::Workstations.path());
                         let _ = self.station_watch.send(self.station_watched.clone());
                     }
+                    // The Providers tab reads its other endpoints again when a provider or an engine changes.
+                    if self.tab == Tab::Providers && providers::is_change(&kind) {
+                        self.fetch_providers();
+                    }
                     let effects = self.ws.on_event(&kind, &data);
                     self.on_workspace(effects);
                 }
@@ -654,11 +676,23 @@ impl App {
                 }
                 Msg::Conversation(_, Ok(view)) => self.chat.on_view(view),
                 Msg::Conversation(id, Err(e)) => self.notice = Some(format!("{id}: {e}")),
+                Msg::Plan(result) => {
+                    if let Some(note) = self.providers.on_plan(result) {
+                        self.notice = Some(note);
+                    }
+                }
                 Msg::Done(label, result) => {
+                    if self.tab == Tab::Providers {
+                        self.providers
+                            .on_done(&label, result.as_ref().map(|_| ()).map_err(Clone::clone));
+                    }
                     self.notice = Some(match result {
                         Ok(_) => format!("{label}: done"),
                         Err(e) => format!("{label}: {e}"),
                     });
+                    if self.tab == Tab::Providers {
+                        self.fetch_providers();
+                    }
                     let _ = self.watch.send(self.tab.path());
                     let effects = self.ws.refresh_board();
                     self.on_workspace(effects);
@@ -745,11 +779,39 @@ impl App {
     fn on_workspace(&mut self, effects: Vec<Effect>) {
         if self.tab == Tab::Workspace {
             self.execute(effects);
+        } else {
+            // The context bar of the Chat tab's conversation is kept current by the same events.
+            let context: Vec<Effect> = effects
+                .into_iter()
+                .filter(|e| matches!(e, Effect::Context(_)))
+                .collect();
+            self.execute(context);
         }
     }
 
     pub fn tick(&mut self, dt: f32) {
         self.floor.tick(dt);
+        let effects = self.ws.poll(dt, self.shown_owner());
+        self.execute(effects);
+    }
+
+    /// The chat on screen whose context the context bar shows: the Workspace's selected agent, or the Chat tab's
+    /// conversation.
+    fn shown_owner(&self) -> Option<context_bar::Owner> {
+        match self.tab {
+            Tab::Workspace => self.ws.selected_cid().map(context_bar::Owner::Agent),
+            Tab::Chat => chat::selected(self).map(|(owner, _)| owner),
+            _ => None,
+        }
+    }
+
+    /// Runs a context or model request on its own thread; the answer comes back as `Msg::Workspace`.
+    fn context_ask(&self, ask: context_bar::Ask) {
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::Workspace(context_bar::answer(&client, ask)));
+        });
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
@@ -780,6 +842,9 @@ impl App {
             Tab::Workstations => workstations::render(frame, body, self),
             Tab::Workspace => workspace_view::render(frame, body, &mut self.ws, self.palette),
             Tab::Chat => chat::render(frame, body, self),
+            Tab::Providers => {
+                providers::render(frame, body, &self.providers, &self.data, self.palette);
+            }
         }
         if let Some(ob) = &self.onboarding {
             ob.draw(frame, body, self.palette, self.client.base());
@@ -831,6 +896,22 @@ impl App {
             }
             return false;
         }
+        if self.tab == Tab::Providers
+            && let Some(action) = self.providers.on_key(key, &self.data)
+        {
+            self.providers_act(action);
+            return false;
+        }
+        if self.tab == Tab::Chat
+            && let Some(ws_key) = workspace_key(key)
+        {
+            // The context bar's `i` and `M` (and the picker's keys while it is open) on the conversation.
+            let shown = chat::selected(self);
+            if let Some(effects) = self.ws.context_key(ws_key, shown) {
+                self.execute(effects);
+                return false;
+            }
+        }
         if self.tab == Tab::Workspace
             && let Some(ws_key) = workspace_key(key)
             && let Some(effects) = self.ws.key(ws_key)
@@ -847,6 +928,7 @@ impl App {
             }
             KeyCode::Char('w') => self.select_tab(Tab::Workstations),
             KeyCode::Char('c') => self.select_tab(Tab::Chat),
+            KeyCode::Char('m') => self.select_tab(Tab::Providers),
             KeyCode::Char('p') => self.step_scope(1),
             KeyCode::Char('P') => self.step_scope(-1),
             KeyCode::Char('n') => self.start_compose(true),
@@ -894,6 +976,44 @@ impl App {
         if tab == Tab::Workspace {
             let effects = self.ws.enter();
             self.execute(effects);
+        }
+        if tab == Tab::Providers {
+            self.fetch_providers();
+        }
+    }
+
+    /// Does what the Providers tab's key asked: a hub call on a thread (its notice follows), the update dry run, a
+    /// refresh, or a line for the footer.
+    fn providers_act(&mut self, action: ProvidersAction) {
+        match action {
+            ProvidersAction::None => {}
+            ProvidersAction::Note(text) => self.notice = Some(text),
+            ProvidersAction::Run { label, calls } => {
+                self.run_job(label, move |c| providers::run_calls(c, &calls));
+            }
+            ProvidersAction::Plan => {
+                let client = self.client.clone();
+                let tx = self.tx.clone();
+                thread::spawn(move || {
+                    let _ = tx.send(Msg::Plan(providers::dry_run(&client)));
+                });
+            }
+            ProvidersAction::Refresh => {
+                self.fetch_providers();
+                let _ = self.watch.send(providers::PATH);
+                self.notice = Some("refreshing".to_string());
+            }
+        }
+    }
+
+    /// Reads what the Providers tab shows besides the poller's endpoint: each one on its own thread, as `Fetched`.
+    fn fetch_providers(&self) {
+        for path in providers::READS {
+            let client = self.client.clone();
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                let _ = tx.send(Msg::Fetched(path, client.get(path)));
+            });
         }
     }
 
@@ -1248,6 +1368,7 @@ impl App {
                 }
                 Effect::Export { project } => self.export(project),
                 Effect::AskStop(cid) => self.confirm = Some(Confirm::CancelWork(cid)),
+                Effect::Context(ask) => self.context_ask(ask),
                 Effect::Notice(text) => self.notice = Some(text),
             }
         }
@@ -1611,11 +1732,12 @@ mod tests {
 
     #[test]
     fn tabs_cycle_both_ways() {
-        assert_eq!(Tab::ALL.len(), 12);
-        assert_eq!(Tab::Floor.prev(), Tab::Chat);
+        assert_eq!(Tab::ALL.len(), 13);
+        assert_eq!(Tab::Floor.prev(), Tab::Providers);
         assert_eq!(Tab::Workspace.next(), Tab::Workstations);
         assert_eq!(Tab::Workstations.next(), Tab::Chat);
-        assert_eq!(Tab::Chat.next(), Tab::Floor);
+        assert_eq!(Tab::Chat.next(), Tab::Providers);
+        assert_eq!(Tab::Providers.next(), Tab::Floor);
         assert_eq!(Tab::Machines.next(), Tab::Workspace);
         assert_eq!(Tab::Nodes.next(), Tab::Machines);
         assert_eq!(Tab::Workstations.path(), "/v1/stations");
@@ -1738,6 +1860,9 @@ mod tests {
             assert_eq!(Tab::from_key(tab.key()), Some(tab), "{tab:?}");
         }
         assert_eq!(Tab::Chat.key(), 'c');
+        assert_eq!(Tab::Providers.key(), 'm');
+        assert_eq!(Tab::from_key('m'), Some(Tab::Providers));
+        assert_eq!(Tab::Providers.path(), "/v1/providers");
         assert_eq!(Tab::Workstations.key(), 'w');
         assert_eq!(Tab::Chat.path(), "/v1/owner/conversations");
     }

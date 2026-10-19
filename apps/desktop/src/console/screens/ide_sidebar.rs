@@ -7,12 +7,13 @@
 
 // The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
 use super::ide::*;
+use super::ide_chrome;
 use crate::console::Ctx;
 use apz_ide::WorkspaceId;
 use iced::Task;
-use iced::font::{Font, Style as FontStyle, Weight};
+use iced::font::{Font, Weight};
 use iced::widget::{Space, Stack, button, column, container, row, text, text_input, tooltip};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Theme};
 use std::str::FromStr;
 
 use super::Id;
@@ -53,11 +54,7 @@ fn matching(st: &State) -> Vec<AgentRow> {
 
 /// The sidebar: search, the groups, and the footer.
 pub fn view(st: &State) -> Element<'_, Msg> {
-    let search = text_input("Search agents and repos", &st.sidebar_query)
-        .on_input(Msg::SidebarQuery)
-        .style(theme::input)
-        .size(13.0)
-        .padding(6);
+    let p = theme::palette();
     let agents = matching(st);
     let repos: Vec<(String, String)> = st
         .workspaces
@@ -78,7 +75,7 @@ pub fn view(st: &State) -> Element<'_, Msg> {
     };
     let unread = super::board::unread(&st.board, st.board_seen_ms);
 
-    let mut list = column![].spacing(6);
+    let mut list = column![].spacing(2);
     for row in conversation_rows(st) {
         list = list.push(row);
     }
@@ -90,7 +87,7 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         list = list.push(ui::faint(if st.project.is_some() {
             "Nobody works on this project yet: add agents from the bench in its Team tab."
         } else {
-            "Nothing yet. Start with a conversation: + New conversation, below."
+            "Nothing yet. Start with a conversation: the pen above."
         }));
     }
     let selected_cid = match st.ide.workspace {
@@ -125,33 +122,245 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         }
     }
 
-    let foot = |label: &'static str, msg: Msg| {
-        button(
-            row![
-                ui::icon("plus", 14.0, theme::palette().ink_2),
-                ui::sans(label, 12.5, theme::palette().ink)
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        )
-        .on_press(msg)
-        .width(Length::Fill)
-        .padding([7, 10])
-        .style(theme::register_row(false))
+    // The head (the web's `.inav-top`): the mark, the brand (the project in project mode), New conversation, and the
+    // hide of the navigator.
+    let brand = match &st.project {
+        Some(project) => scope::title(project).to_string(),
+        None => "AgentPlaza".to_string(),
     };
-    let footer = column![
-        foot("New conversation", Msg::NewProject),
-        foot("New agent", Msg::NewAgent)
-    ]
-    .spacing(4);
+    let top = container(
+        row![
+            ui::hive::<Msg>(22.0),
+            ui::sans(brand, theme::TYPE_UI, p.ink)
+                .font(theme::SANS_SEMIBOLD)
+                .width(Length::Fill),
+            ide_chrome::tool_btn("square-pen", Msg::NewProject, false),
+            ide_chrome::tool_btn("panel-left", Msg::ToggleLeft, false),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fixed(48.0))
+    .width(Length::Fill)
+    .padding(Padding {
+        top: 0.0,
+        right: 8.0,
+        bottom: 0.0,
+        left: 16.0,
+    })
+    .align_y(Alignment::Center);
 
-    let mut col = column![search].spacing(10).height(Length::Fill);
+    // The search, Needs you (the approvals on the right panel) and the Console (the way back).
+    let needs = st.panels.held.len() as u32;
+    let needs_end: Option<Element<'static, Msg>> = (needs > 0).then(|| ui::count_hot(needs));
+    let search = container(
+        row![
+            ui::icon("search", 16.0, p.ink_3),
+            text_input("Search", &st.sidebar_query)
+                .on_input(Msg::SidebarQuery)
+                .style(search_style)
+                .size(theme::TYPE_UI)
+                .padding(0.0),
+            kbd("/"),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fixed(32.0))
+    .width(Length::Fill)
+    .padding(Padding {
+        top: 0.0,
+        right: 8.0,
+        bottom: 0.0,
+        left: 8.0,
+    })
+    .align_y(Alignment::Center);
+    let acts = column![
+        search,
+        nav_row(
+            "circle-dot",
+            "Needs you",
+            needs_end,
+            Msg::Right(RightTab::Approvals)
+        ),
+        nav_row("layout-dashboard", "Console", Some(kbd("Esc")), Msg::Back),
+    ]
+    .spacing(1);
+
+    let working = st.roster.iter().filter(|a| a.status == "working").count();
+    let hub = row![
+        ui::dot::<Msg>(p.ok),
+        ui::sans(
+            if working > 0 {
+                format!("{working} working")
+            } else {
+                "Idle".to_string()
+            },
+            theme::TYPE_META,
+            p.ink_3,
+        ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    let foot = container(
+        row![
+            hub,
+            Space::new().width(Length::Fill),
+            ide_chrome::tool_btn("user-plus", Msg::NewAgent, false),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(Padding {
+        top: 8.0,
+        right: 8.0,
+        bottom: 8.0,
+        left: 16.0,
+    });
+
+    let head_text = if st.project.is_some() {
+        "Project"
+    } else {
+        "By project"
+    };
+    let list_head = container(ui::label(head_text))
+        .width(Length::Fill)
+        .padding(Padding {
+            top: 12.0,
+            right: 8.0,
+            bottom: 4.0,
+            left: 16.0,
+        });
+
+    let mut col = column![top, ide_chrome::rule_strip()].height(Length::Fill);
+    col = col.push(container(acts).padding(Padding {
+        top: 8.0,
+        right: 8.0,
+        bottom: 4.0,
+        left: 8.0,
+    }));
     if let Some(project) = &st.project {
         col = col.push(project_head(project));
     }
-    col.push(ui::scroll(list).height(Length::Fill))
-        .push(footer)
+    col.push(list_head)
+        .push(
+            container(ui::scroll(list).height(Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(Padding {
+                    top: 0.0,
+                    right: 8.0,
+                    bottom: 8.0,
+                    left: 8.0,
+                }),
+        )
+        .push(ide_chrome::rule_strip())
+        .push(foot)
         .into()
+}
+
+/// A small key cap (the web's `kbd`): mono, in a rule.
+fn kbd<'a>(key: &str) -> Element<'a, Msg> {
+    let p = theme::palette();
+    container(ui::mono(key.to_string(), 10.0, p.ink_3))
+        .padding(Padding {
+            top: 0.0,
+            right: 5.0,
+            bottom: 0.0,
+            left: 5.0,
+        })
+        .style(move |_: &Theme| container::Style {
+            border: Border {
+                color: p.rule,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The search field's box: no border of its own, the placeholder and the typed text in the sidebar's inks.
+fn search_style(_: &Theme, _status: text_input::Status) -> text_input::Style {
+    let p = theme::palette();
+    text_input::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+        icon: p.ink_3,
+        placeholder: p.ink_2,
+        value: p.ink,
+        selection: p.signal_soft,
+    }
+}
+
+/// A navigator line (the web's `.inav-r`): its icon, its label, and an end (a count or a key).
+fn nav_row<'a>(
+    icon: &str,
+    label: &str,
+    end: Option<Element<'a, Msg>>,
+    msg: Msg,
+) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let mut line = row![
+        ui::icon(icon, 16.0, p.ink_3),
+        ui::sans(label.to_string(), theme::TYPE_UI, p.ink_2).width(Length::Fill),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+    if let Some(end) = end {
+        line = line.push(end);
+    }
+    button(line)
+        .width(Length::Fill)
+        .height(Length::Fixed(32.0))
+        .padding(Padding {
+            top: 0.0,
+            right: 8.0,
+            bottom: 0.0,
+            left: 8.0,
+        })
+        .on_press(msg)
+        .style(nav_style)
+        .into()
+}
+
+/// The style of an agent's row (the web's `.ide-row`): the signal tint on the one shown, the hover tint under the pointer.
+fn row_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_: &Theme, status: button::Status| {
+        let p = theme::palette();
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let background = if selected {
+            Some(p.signal_soft)
+        } else if hovered {
+            Some(p.hover)
+        } else {
+            None
+        };
+        button::Style {
+            background: background.map(Into::into),
+            text_color: p.ink,
+            border: Border {
+                radius: 8.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+}
+
+/// The style of a navigator line: the hover tint, the ink at rest, rounded as the web's.
+fn nav_style(_: &Theme, status: button::Status) -> button::Style {
+    let p = theme::palette();
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: hovered.then_some(p.hover).map(Into::into),
+        text_color: if hovered { p.ink } else { p.ink_2 },
+        border: Border {
+            radius: 8.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 /// In project mode: the project's title, and the way to its tasks, board, work and settings in the console.
@@ -170,15 +379,24 @@ fn project_head(project: &str) -> Element<'static, Msg> {
         ),
     ]
     .spacing(12);
-    container(
-        column![
-            ui::sans(scope::title(project), 14.0, theme::palette().ink),
-            links
-        ]
-        .spacing(6),
-    )
-    .padding([4, 6])
-    .width(Length::Fill)
+    column![
+        container(
+            column![
+                ui::sans(scope::title(project), theme::TYPE_UI, theme::palette().ink)
+                    .font(theme::SANS_SEMIBOLD),
+                links
+            ]
+            .spacing(4),
+        )
+        .padding(Padding {
+            top: 8.0,
+            right: 16.0,
+            bottom: 12.0,
+            left: 16.0,
+        })
+        .width(Length::Fill),
+        ide_chrome::rule_strip(),
+    ]
     .into()
 }
 
@@ -205,7 +423,15 @@ fn conversation_rows(st: &State) -> Vec<Element<'static, Msg>> {
         return Vec::new();
     }
     let open = st.conversation.as_ref().map(|c| c.id.as_str());
-    let mut rows: Vec<Element<'static, Msg>> = vec![ui::label("Conversations").into()];
+    let heading = container(ui::label("Conversations"))
+        .width(Length::Fill)
+        .padding(Padding {
+            top: 12.0,
+            right: 8.0,
+            bottom: 4.0,
+            left: 8.0,
+        });
+    let mut rows: Vec<Element<'static, Msg>> = vec![heading.into()];
     for c in shown {
         let id = c["id"].as_str().unwrap_or("").to_string();
         let pending = c["pending"].as_u64().unwrap_or(0) > 0;
@@ -240,8 +466,8 @@ fn conversation_rows(st: &State) -> Vec<Element<'static, Msg>> {
             button(body)
                 .on_press(Msg::OpenConversation(id))
                 .width(Length::Fill)
-                .padding([5, 8])
-                .style(theme::register_row(selected))
+                .padding(8.0)
+                .style(row_style(selected))
                 .into(),
         );
     }
@@ -259,30 +485,37 @@ fn last_of(st: &State, cid: u64, selected: Option<u64>) -> Option<String> {
 
 /// A group's header: its disclosure, its title and its count. A press folds the group.
 fn group_head(st: &State, group: &Group) -> Element<'static, Msg> {
+    let p = theme::palette();
     let open = !st.collapsed.contains(&group.key);
     let marker = if open { "▾" } else { "▸" };
-    let title = text(group.title.clone())
-        .font(Font {
-            weight: Weight::Semibold,
-            ..theme::SANS
-        })
-        .size(14.0)
-        .color(theme::palette().ink);
-    button(
+    let head = button(
         row![
-            ui::mono(marker, 11.0, theme::palette().ink_3),
-            title,
-            Space::new().width(Length::Fill),
-            ui::mono(group.count().to_string(), 11.0, theme::palette().ink_2),
+            ui::mono(marker, 11.0, p.ink_3),
+            ui::sans(group.title.clone(), theme::TYPE_UI, p.ink_2).width(Length::Fill),
+            ui::mono(group.count().to_string(), 11.0, p.ink_3),
         ]
-        .spacing(6)
+        .spacing(8)
         .align_y(Alignment::Center),
     )
     .on_press(Msg::ToggleGroup(group.key.clone()))
     .width(Length::Fill)
-    .padding([4, 6])
-    .style(theme::register_row(false))
-    .into()
+    .padding(Padding {
+        top: 8.0,
+        right: 8.0,
+        bottom: 8.0,
+        left: 8.0,
+    })
+    .style(theme::register_row(false));
+    // The group's head sits a step below the rows above it (the web's `.ide-grp` margin).
+    container(head)
+        .width(Length::Fill)
+        .padding(Padding {
+            top: 8.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
+        .into()
 }
 
 /// The status dot: a filled accent circle while working, a hollow one when idle, and a glyph for the other states.
@@ -362,11 +595,8 @@ fn agent_row(
         struck(agent.name.clone())
     } else {
         text(agent.name.clone())
-            .font(Font {
-                weight: Weight::Medium,
-                ..theme::SANS
-            })
-            .size(14.0)
+            .font(theme::SANS)
+            .size(theme::TYPE_UI)
             .color(theme::palette().ink)
             .into()
     };
@@ -394,21 +624,17 @@ fn agent_row(
     }
     let mut col = column![top].spacing(2);
     if let Some(task) = agent.task.as_deref() {
-        let italic = Font {
-            style: FontStyle::Italic,
-            ..theme::SANS
-        };
         col = col.push(
             text(ui::ellipsize(task, 44))
-                .font(italic)
-                .size(12.0)
-                .color(theme::palette().ink_2),
+                .font(theme::SANS)
+                .size(11.5)
+                .color(theme::palette().ink_3),
         );
     }
     let body = button(col)
         .width(Length::Fill)
-        .padding([6, 8])
-        .style(theme::register_row(selected))
+        .padding(8.0)
+        .style(row_style(selected))
         .on_press_maybe(listed.map(Msg::Pick));
     tooltip(body, hover_card(agent, last), tooltip::Position::Right).into()
 }

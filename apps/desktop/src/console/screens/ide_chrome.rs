@@ -5,7 +5,7 @@
 //! are drawn with (the panel sizes and which panels are folded), which the desktop settings remember.
 
 use apz_ide::state::Base;
-use iced::widget::{Space, container, mouse_area, row};
+use iced::widget::{Space, button, column, container, mouse_area, row, tooltip};
 use iced::{Alignment, Border, Element, Length, Theme, mouse};
 use serde_json::{Value, json};
 
@@ -299,116 +299,184 @@ pub fn overlay<'a>(panel: Element<'a, Msg>, edge: Edge) -> Element<'a, Msg> {
     .into()
 }
 
-/// The top bar: the mark, the breadcrumb (project / agent or repo / branch), the state badge and the changed count;
-/// then the git actions (Save; Commit and Open PR, drawn until the git flow is wired), the command palette's key,
-/// the right panel's fold, the theme switch and the way back to the console.
-pub fn header(st: &State, plaza: Plaza) -> Element<'_, Msg> {
-    let p = theme::palette();
-    let on_workspace = st.ide.workspace.is_some();
-    let (state_label, tone) = ide::state_badge(st, plaza.held);
-    let mut start = row![
-        ui::btn("", Some("panel-left"), Kind::Ghost, Some(Msg::ToggleLeft)),
-        ui::hive(20.0)
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-    // The chrome is Inter in sentence case; only the branch name is code, so it alone is Martian Mono.
-    if on_workspace {
-        let (project, name, branch) = ide::crumbs(st);
-        start = start.push(ui::sans(project, TYPE_META, p.ink_2));
-        start = start.push(ui::sans("/", TYPE_META, p.ink_3));
-        start = start.push(ui::sans(name, TYPE_UI, p.ink));
-        start = start.push(ui::sans("/", TYPE_META, p.ink_3));
-        start = start.push(ui::mono(branch, TYPE_META, p.ink_2));
+/// A 32 px icon button, as the web's `.iconbtn`: the icon in ink-2, the hover tint behind it. `on` keeps the tint
+/// (a toggle that is shown).
+pub fn tool_btn<'a>(icon: &str, msg: Msg, on: bool) -> Element<'a, Msg> {
+    let ink = if on {
+        theme::palette().ink
     } else {
-        start = start.push(ui::sans("IDE", TYPE_UI, p.ink));
-    }
-    start = start.push(ui::badge(state_label, tone));
-    if let Some(changes) = &st.changes {
-        start = start.push(ui::sans(
-            format!("{} changed", changes.files.len()),
-            TYPE_BADGE,
-            p.ink_2,
-        ));
-    }
-
-    let dirty = st
-        .ide
-        .active
-        .as_ref()
-        .and_then(|path| st.tabs.get(path))
-        .is_some_and(|tab| tab.buffer.dirty);
-    let save_kind = if dirty {
-        Kind::Primary
-    } else {
-        Kind::Secondary
+        theme::palette().ink_2
     };
+    let radius = theme::skin().radius;
+    button(
+        container(ui::icon(icon, 16.0, ink))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(32.0))
+    .height(Length::Fixed(32.0))
+    .padding(0)
+    .on_press(msg)
+    .style(move |_: &Theme, status: button::Status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: (on || hovered)
+                .then_some(theme::palette().hover)
+                .map(Into::into),
+            text_color: ink,
+            border: Border {
+                radius: radius.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    })
+    .into()
+}
+
+/// A dock tab (the web's `.ide-dtab`): its icon, and its label only while it is the one shown; the others name
+/// themselves on hover. The shown tab takes the hover tint.
+pub fn dock_tab<'a, M: Clone + 'a>(
+    icon: &str,
+    label: &'static str,
+    count: Option<String>,
+    on: bool,
+    msg: M,
+) -> Element<'a, M> {
+    let ink = if on {
+        theme::palette().ink
+    } else {
+        theme::palette().ink_3
+    };
+    let mut line = row![ui::icon(icon, 15.0, ink)]
+        .spacing(6)
+        .align_y(Alignment::Center);
+    if on {
+        line = line.push(
+            iced::widget::text(label)
+                .font(theme::SANS_MEDIUM)
+                .size(TYPE_UI)
+                .color(ink),
+        );
+    }
+    if let Some(count) = count.filter(|c| !c.is_empty()) {
+        line = line.push(ui::mono(count, TYPE_BADGE, theme::palette().ink_3));
+    }
+    let radius = theme::skin().radius;
+    let tab = button(container(line).center_y(Length::Fill))
+        .height(Length::Fixed(30.0))
+        .padding([0, 10])
+        .on_press(msg)
+        .style(move |_: &Theme, status: button::Status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            let p = theme::palette();
+            button::Style {
+                background: (on || hovered).then_some(p.hover).map(Into::into),
+                text_color: if on || hovered { p.ink } else { p.ink_3 },
+                border: Border {
+                    radius: radius.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+    if on {
+        return tab.into();
+    }
+    tooltip(
+        tab,
+        container(iced::widget::text(label).size(TYPE_BADGE))
+            .padding([3, 6])
+            .style(|_: &Theme| container::Style {
+                background: Some(theme::palette().raised.into()),
+                border: Border {
+                    color: theme::palette().rule,
+                    width: 1.0,
+                    radius: theme::skin().radius.into(),
+                },
+                ..Default::default()
+            }),
+        tooltip::Position::Bottom,
+    )
+    .into()
+}
+
+/// The centre's breadcrumb: the project, the agent or repo, and the base, the last one bold (the web's `.ide-crumb`).
+fn crumb<'a>(st: &State) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let parts: Vec<String> = if st.ide.workspace.is_some() {
+        let (project, name, base) = ide::crumbs(st);
+        vec![project, name, base]
+    } else {
+        vec!["IDE".to_string()]
+    };
+    let last = parts.len().saturating_sub(1);
+    let mut line = row![].spacing(4).align_y(Alignment::Center);
+    for (i, part) in parts.into_iter().enumerate() {
+        if i > 0 {
+            line = line.push(ui::sans("/", TYPE_META, p.ink_3));
+        }
+        let text = ui::ellipsize(&part, 40);
+        line = line.push(if i == last {
+            ui::sans(text, TYPE_UI, p.ink).font(theme::SANS_SEMIBOLD)
+        } else {
+            ui::sans(text, TYPE_META, p.ink_2)
+        });
+    }
+    line.into()
+}
+
+/// The top bar of the centre (the web's `.ide-top`): the navigator's toggle while the navigator is hidden, the crumb,
+/// the state, then the theme switch, the way back to the console, and the right panel's toggle. The git actions and the
+/// Save sit with the views that use them (the editor's and the diff's), not here.
+pub fn header(st: &State, plaza: Plaza) -> Element<'_, Msg> {
+    let (state_label, tone) = ide::state_badge(st, plaza.held);
+    let side_docked = st.layout.left_open && !st.left_is_drawer();
+    let right_docked = st.layout.right_open && !st.right_is_sheet();
     let (theme_label, theme_icon) = if theme::is_light() {
         ("Dark theme", "moon")
     } else {
         ("Light theme", "sun")
     };
-    // Commit and Open PR are the hooks the git flow plugs into; until it does, they are drawn and not pressed. In a
-    // narrow window they leave the bar, which has no room for them beside the Save and the panel toggles.
-    let narrow = st.width > 0.0 && st.width < ide::RIGHT_SHEET_BELOW;
-    let commit: Element<'_, Msg> = if narrow {
-        Space::new().width(Length::Fixed(0.0)).into()
-    } else {
-        ui::btn("Commit", Some("commit"), Kind::Secondary, None)
-    };
-    let open_pr: Element<'_, Msg> = if narrow {
-        Space::new().width(Length::Fixed(0.0)).into()
-    } else {
-        ui::btn("Open PR", Some("pull"), Kind::Secondary, None)
-    };
+    let mut start = row![].spacing(8).align_y(Alignment::Center);
+    if !side_docked {
+        start = start.push(tool_btn("panel-left", Msg::ToggleLeft, false));
+    }
+    start = start.push(crumb(st));
+    start = start.push(ui::badge(state_label, tone));
     let end = row![
-        ui::btn(
-            "Save",
-            Some("check"),
-            save_kind,
-            (dirty && ide::writable(st)).then_some(Msg::Save)
-        ),
-        commit,
-        open_pr,
-        ui::btn(
-            "Go to Ctrl+K",
-            Some("search"),
-            Kind::Ghost,
-            Some(Msg::PaletteOpen)
-        ),
-        ui::btn("", Some("panel-open"), Kind::Ghost, Some(Msg::ToggleRight)),
         ui::btn(
             theme_label,
             Some(theme_icon),
             Kind::Ghost,
             Some(Msg::Shell(shell::Msg::ToggleTheme))
         ),
-        ui::btn(
-            "Console",
-            Some("overview"),
-            Kind::Secondary,
-            Some(Msg::Back)
-        ),
+        ui::btn("Console", None, Kind::Secondary, Some(Msg::Back)),
+        tool_btn("panel-open", Msg::ToggleRight, right_docked),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-
-    container(
+    let bar = container(
         row![start, Space::new().width(Length::Fill), end]
-            .spacing(16)
+            .spacing(8)
             .align_y(Alignment::Center),
     )
-    .padding([10, 16])
+    .padding([8, 12])
+    .height(Length::Fixed(48.0))
     .width(Length::Fill)
     .style(|_: &Theme| container::Style {
-        border: Border {
-            color: theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
+        background: Some(theme::palette().sheet.into()),
         ..Default::default()
-    })
-    .into()
+    });
+    column![bar, rule_strip()].into()
+}
+
+/// A one-pixel rule across the full width (the web's `border-bottom` or `border-top` of a bar).
+pub fn rule_strip<'a>() -> Element<'a, Msg> {
+    container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(rule_line)
+        .into()
 }
 
 /// The strip under the header while the plaza is held (STOP ALL): what is held, and Resume, which asks
@@ -482,8 +550,8 @@ fn rule_line(_: &Theme) -> container::Style {
     }
 }
 
-/// The status bar: the workspace and its base, the live link, then the active editor's cursor and
-/// language, and the count of unsaved files.
+/// The status bar under the centre (the web's `.ide-status`, in mono): the live link, the workspace and its base on the
+/// left; the cursor, the language and the unsaved count on the right.
 pub fn status_bar(st: &State, live: bool) -> Element<'_, Msg> {
     let p = theme::palette();
     let workspace = st
@@ -495,16 +563,20 @@ pub fn status_bar(st: &State, live: bool) -> Element<'_, Msg> {
     let link = row![
         container(
             Space::new()
-                .width(Length::Fixed(8.0))
-                .height(Length::Fixed(8.0))
+                .width(Length::Fixed(6.0))
+                .height(Length::Fixed(6.0))
         )
         .style(move |_: &Theme| container::Style {
             background: Some(link_tone.into()),
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
             ..Default::default()
         }),
-        ui::sans(shell::live_word(live), TYPE_BADGE, p.ink_2),
+        ui::mono(shell::live_word(live), TYPE_BADGE, p.ink_3),
     ]
-    .spacing(6)
+    .spacing(4)
     .align_y(Alignment::Center);
     // A workstation has no diff, so no base to compare with.
     let base = if has_diff(st.ide.workspace.as_ref()) {
@@ -512,45 +584,39 @@ pub fn status_bar(st: &State, live: bool) -> Element<'_, Msg> {
     } else {
         String::new()
     };
-    let mut bar = row![
-        ui::mono(workspace, TYPE_BADGE, p.ink_2),
-        ui::sans(base, TYPE_BADGE, p.ink_3),
-        link,
-        Space::new().width(Length::Fill),
-    ]
-    .spacing(18)
-    .align_y(Alignment::Center);
+    let mut group = row![].spacing(16).align_y(Alignment::Center);
     if let Some(path) = st.ide.active.as_deref()
         && let Some(tab) = st.tabs.get(path)
     {
         let at = tab.content.cursor().position;
-        bar = bar.push(ui::mono(
+        group = group.push(ui::mono(
             format!("Ln {}, Col {}", at.line + 1, at.column + 1),
             TYPE_BADGE,
-            p.ink_2,
+            p.ink_3,
         ));
-        bar = bar.push(ui::sans(language_of(path), TYPE_BADGE, p.ink_2));
+        group = group.push(ui::mono(language_of(path), TYPE_BADGE, p.ink_3));
     }
     let dirty = st.tabs.values().filter(|tab| tab.buffer.dirty).count();
-    let (dirty_text, dirty_ink) = if dirty == 0 {
-        ("all saved".to_string(), p.ink_3)
-    } else {
-        (format!("{dirty} unsaved"), p.signal)
-    };
-    bar = bar.push(ui::sans(dirty_text, TYPE_BADGE, dirty_ink));
-    container(bar)
+    if dirty > 0 {
+        group = group.push(ui::mono(format!("{dirty} unsaved"), TYPE_BADGE, p.ink_3));
+    }
+    let bar = row![
+        ui::mono(workspace, TYPE_BADGE, p.ink_3),
+        ui::mono(base, TYPE_BADGE, p.ink_3),
+        link,
+        Space::new().width(Length::Fill),
+        group,
+    ]
+    .spacing(16)
+    .align_y(Alignment::Center);
+    let strip = container(bar)
         .padding([4, 12])
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
             background: Some(theme::palette().sheet.into()),
-            border: Border {
-                color: theme::palette().rule,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
             ..Default::default()
-        })
-        .into()
+        });
+    column![rule_strip(), strip].into()
 }
 
 #[cfg(test)]

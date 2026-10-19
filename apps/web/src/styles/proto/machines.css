@@ -1,0 +1,161 @@
+/* The Machines screen (machines.ts, machine.ts, machine-list.ts, machine-view.ts, floor.ts): the prototype's Loom rules, scoped to the page. */
+.page-machines .mch-head {display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:24px}
+.page-machines .mch-head-l {min-width:0}
+.page-machines .mt-actions {display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.page-machines .mt-switch {display:inline-flex;gap:4px}
+.page-machines .mt-back {display:inline-block;margin-bottom:8px;font-size:var(--fs-sm);color:var(--ink-3);text-decoration:none}
+.page-machines .mt-back:hover {color:var(--ink)}
+.page-machines .mt-faint {color:var(--ink-3);font-size:var(--fs-sm);margin:4px 0}
+.page-machines .mt-num {font-family:var(--font-mono);font-size:var(--fs-sm);white-space:nowrap}
+.page-machines .mt-mono {font-family:var(--font-mono);font-size:var(--fs-sm)}
+.page-machines .mt-cap {margin:16px 0 8px;font-size:var(--fs-xs);color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em}
+.page-machines .mt-link {font-size:var(--fs-sm)}
+.page-machines .mt-stage {border:1px solid var(--rule);border-radius:var(--radius);background:var(--sheet-2);padding:16px;min-width:0}
+.page-machines .mt-bar {position:relative;height:8px;border-radius:var(--radius);background:var(--sheet-2);overflow:hidden}
+.page-machines .mt-bar i {position:absolute;top:0;bottom:0;left:0;background:var(--signal)}
+.page-machines .mt-meter {display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:8px;align-items:center;font-size:var(--fs-sm);margin:4px 0}
+.page-machines .mt-spark {display:block;width:100%;height:48px}
+.page-machines .mt-spark.tall {height:56px}
+.page-machines .mt-spark polyline {fill:none;stroke:var(--ink-2);stroke-width:1.5;vector-effect:non-scaling-stroke}
+.page-machines .mt-spark line {stroke:var(--rule-strong);stroke-width:1;vector-effect:non-scaling-stroke}
+.page-machines .mt-tally {display:grid;gap:4px;min-width:0;border-top:1px solid var(--rule);padding-top:8px}
+.page-machines .mt-fig {font-family:var(--font-mono);font-size:var(--fs)}
+.page-machines .mt-fig.long {font-size:var(--fs-sm)}
+.page-machines .mt-live {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:8px}
+.page-machines .mt-detail {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:24px;padding:0 16px 16px}
+.page-machines .mt-dcol {min-width:0}
+.page-machines .mt-sentence {margin:0 0 16px;color:var(--ink-2);font-size:var(--fs-sm)}
+.page-machines .mt-tech {margin-top:16px}
+.page-machines .mt-serialtxt {width:100%;margin:8px 0 0;padding:8px;border-radius:var(--radius);background:var(--sheet);font-family:var(--font-mono);font-size:var(--fs-xs);white-space:pre-wrap;overflow:auto}
+.page-machines .mt-stack {display:flex;height:16px;border-radius:var(--radius);overflow:hidden;background:var(--sheet-2)}
+.page-machines .mt-stack>i {display:block;height:100%}
+.page-machines .mt-legend {display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:8px;font-size:var(--fs-sm);color:var(--ink-2)}
+.page-machines .mt-legend i {display:inline-block;width:8px;height:8px;border-radius:var(--radius);margin-right:4px;vertical-align:middle}
+.page-machines .mt-s1 {background:var(--signal)}
+.page-machines .mt-s2 {background:var(--info)}
+.page-machines .mt-s3 {background:var(--ink-3)}
+.page-machines .mt-s4 {background:var(--rule)}
+.page-machines .mt-tbl {font-size:var(--fs-sm)}
+.page-machines .mt-tbl td .mt-bar {margin-top:4px;width:96px}
+.page-machines .mt-runrow {cursor:pointer}
+.page-machines .mt-runrow:hover {background:var(--hover)}
+.page-machines .mt-runrow:focus-visible {outline:2px solid var(--signal);outline-offset:-2px}
+.page-machines .mt-rundetail td {background:var(--sheet-2)}
+.page-machines .mt-vms {display:grid;gap:8px;padding:8px 0}
+.page-machines .mt-vm {display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:var(--fs-sm)}
+.page-machines .mt-sortbtn {background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer}
+.page-machines .mt-res-total td {font-weight:600}
+.page-machines .mt-topo {display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start;padding:16px;border-bottom:1px solid var(--rule)}
+.page-machines .mt-plane {flex:0 0 200px;min-width:0;padding:16px;border:1px solid var(--rule-strong);border-radius:var(--radius-lg);background:var(--sheet)}
+.page-machines .mt-chips {display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.page-machines .mt-trows {flex:1 1 360px;min-width:0;display:grid;gap:16px}
+.page-machines .mt-trow {display:flex;align-items:center;min-width:0}
+.page-machines .mt-wire {position:relative;flex:1 1 24px;min-width:24px;border-top:2px solid var(--rule-strong)}
+.page-machines .mt-wire.live {border-top-color:var(--signal)}
+.page-machines .mt-wire span {position:absolute;left:50%;top:-24px;transform:translateX(-50%);font-size:var(--fs-xs);color:var(--ink-3);white-space:nowrap}
+.page-machines .mt-block {flex:0 0 200px;min-width:0;display:grid;gap:4px;padding:12px;border:1px solid var(--rule-strong);border-radius:var(--radius);background:var(--sheet);cursor:pointer;position:relative}
+.page-machines .mt-block.selected {border-color:var(--signal);background:var(--signal-soft)}
+.page-machines .mt-block strong {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-machines .mt-mark {position:absolute;right:12px;top:12px;width:8px;height:8px;border-radius:50%;background:var(--rule-strong)}
+.page-machines .mt-mark.live {background:var(--ok)}
+.page-machines .mt-mark.down {background:var(--crit)}
+.page-machines .mt-cards {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+.page-machines .mt-cards>.mt-wide {grid-column:1 / -1}
+.page-machines .mt-cards .card-b {gap:16px}
+.page-machines .mt-cards .card-b>* {margin:0}
+.page-machines .mt-vrow {display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--rule);min-width:0;font-size:var(--fs-sm)}
+.page-machines .mt-vrow:first-child {border-top:0}
+.page-machines .mt-grow {flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-machines .mt-gpu {padding:8px 0;border-top:1px solid var(--rule);min-width:0}
+.page-machines .f3d {position:relative;height:clamp(380px,60vh,580px);border:1px solid var(--rule);border-radius:var(--radius-lg);overflow:hidden;isolation:isolate; background:radial-gradient(120% 95% at 50% 0%,var(--raised) 0%,var(--sheet-2) 100%)}
+.page-machines .f3d.f3d-m {height:clamp(300px,46vh,440px)}
+.page-machines .f3d-ctl {position:absolute;right:12px;bottom:12px;display:flex;gap:2px;pointer-events:auto;background:color-mix(in srgb,var(--raised) 86%,transparent);border:1px solid var(--rule);border-radius:10px;padding:3px}
+.page-machines .f3d-ctl .btn[aria-pressed="true"] {color:var(--ink);background:var(--hover)}
+.page-machines .mt-views {margin-left:auto}
+@media (max-width:899px) {
+  .page-machines .mt-detail {grid-template-columns:minmax(0,1fr);padding:0 16px 16px}
+  .page-machines .mt-live {grid-template-columns:repeat(2,minmax(0,1fr))}
+  .page-machines .mt-cards {grid-template-columns:minmax(0,1fr)}
+  .page-machines .mt-cards>.mt-wide {grid-column:auto}
+  .page-machines .mt-topo {flex-direction:column}
+  .page-machines .mt-plane {flex:none;width:100%}
+  .page-machines .mt-trows {flex:none;width:100%}
+  .page-machines .mt-block {flex:1 1 auto;width:100%}
+}
+.page-machines .f3d-fallback{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:16px}
+.page-machines .f3d-fallback>svg{width:auto;height:72%;max-width:90%}
+/* The engine's stage (engine-mount.ts sets its position inline, relative): it fills the 3D box, the canvas fills it. */
+.page-machines .f3d>.floor-stage{width:100%;height:100%;flex:none;border:0;border-radius:0;background:transparent}
+.page-machines .f3d canvas.mv-engine{position:absolute;inset:0;display:block;width:100%;height:100%;cursor:grab;touch-action:none;outline:none}
+.page-machines .f3d canvas.mv-engine:active{cursor:grabbing}
+.page-machines .f3d>.empty{position:absolute;inset:0;justify-content:center}
+/* The engine's legend: the prototype's key, bottom-left of the stage. */
+.page-machines .f3d .floor-legend{left:12px;bottom:12px;gap:14px;flex-wrap:wrap;max-width:calc(100% - 210px);padding:8px 10px;border:1px solid var(--rule);border-radius:10px;background:color-mix(in srgb,var(--raised) 86%,transparent);font:500 10.5px/1 var(--font-mono);color:var(--ink-3);letter-spacing:.02em}
+.page-machines .f3d .floor-legend span{gap:6px}
+.page-machines .f3d .floor-key{width:9px;height:9px;border-radius:50%}
+.page-machines .f3d .floor-status{left:12px;bottom:12px}
+/* The engine's popup card: the prototype's card. */
+.page-machines .floor-card.machine-card{border:1px solid var(--rule-strong);border-radius:var(--radius-lg);background:var(--raised);box-shadow:var(--shadow-pop)}
+.page-machines .machine-facts{grid-template-columns:max-content minmax(0,1fr);font:400 var(--fs-sm)/1.45 var(--font)}
+.page-machines .machine-facts dt{color:var(--ink-3)}
+.page-machines .machine-facts dd{margin:0}
+.page-machines .machine-card .floor-card-head strong{font:600 13px/1.3 var(--font)}
+.page-machines .machine-agent-names a{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
+/* The grid: the frame is the prototype's 3D box (f3d), its reset control bottom-right. */
+.page-machines .f3d-fleet{margin:0}
+.page-machines .f3d-ctl{position:absolute;right:12px;bottom:12px;z-index:4;display:flex;gap:2px;pointer-events:auto;background:color-mix(in srgb,var(--raised) 86%,transparent);border:1px solid var(--rule);border-radius:10px;padding:3px}
+.page-machines .f3d-ctl[hidden]{display:none}
+/* The list: the prototype's rows (picture, head, facts, bars), one open panel at a time. */
+.page-machines .mlist{position:relative;min-width:0}
+.page-machines .mlist-rows{display:block;min-width:0}
+.page-machines .mlist-item{scroll-margin-top:calc(var(--topbar-h,0px) + 16px)}
+.page-machines .mlist-summary{outline-offset:-2px}
+.page-machines .mlist-pic{position:relative;display:flex;align-items:center;justify-content:center}
+.page-machines .mlist-pic>img,.page-machines .mlist-pic>svg,.page-machines .mlist-pic>.device-model{display:block;width:100%;height:100%;margin:0;object-fit:contain}
+.page-machines .mlist-unknown{display:grid;place-items:center;width:56px;height:56px;color:var(--ink-3)}
+.page-machines .mlist-unknown svg{width:100%;height:100%}
+.page-machines .mlist-tail{display:flex;flex-wrap:wrap;gap:8px;padding:0 16px 16px}
+.page-machines .mlist-tail[hidden]{display:none}
+.page-machines .mlist-panel{overflow:hidden;min-width:0}
+.page-machines .mlist-panel-inner{min-width:0}
+.page-machines .mlist-detail-main{min-width:0}
+.page-machines .mlist-stage-slot{position:relative;width:100%;aspect-ratio:640 / 300;padding:0;display:flex;align-items:center;justify-content:center;background:var(--sheet-2);overflow:hidden}
+.page-machines .mlist-stage-slot>svg,.page-machines .mlist-stage-slot>.device-model,.page-machines .mlist-stage-slot>.mlist-unknown{width:70%;height:70%;max-width:none;margin:0}
+.page-machines .mlist-stage-col{display:grid;gap:8px;min-width:0;align-content:start}
+.page-machines .mlist-engine-canvas{outline:none}
+.page-machines .mlist-machine{display:grid;gap:0;min-width:0}
+.page-machines .mlist-empty:empty{display:none}
+.page-machines .mlist-open{font-size:var(--fs-sm)}
+.page-machines .mlist-station-pic img{max-width:100%}
+.page-machines .machine-views{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.page-machines .machine-views figure{margin:0;display:grid;gap:6px;min-width:0;padding:6px;border:1px solid var(--rule);border-radius:6px}
+.page-machines .machine-views canvas{display:block;width:100%;max-width:160px;height:auto;aspect-ratio:4 / 3}
+.page-machines .machine-views figcaption{font:600 10px/1 var(--font);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+.page-machines .machine-views-caption{grid-column:1 / -1;margin:0;font:400 var(--fs-sm)/1.4 var(--font);color:var(--ink-3)}
+@media (max-width:899px){
+  .page-machines .mt-detail{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:720px){
+  .page-machines .mlist-summary{flex-direction:column}
+  .page-machines .mlist-pic{flex:none;width:100%;max-width:160px}
+  .page-machines .machine-views{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+.page-machines [hidden]{display:none!important}
+.page.page-machines{gap:0}
+.page-machines .mlist{border-top:1px solid var(--rule)}
+.page-machines .mlist-item{border-bottom:1px solid var(--rule)}
+.page-machines .mlist-summary{display:flex;gap:16px;padding:16px;min-width:0;cursor:pointer}
+.page-machines .mlist-summary:hover{background:var(--hover)}
+.page-machines .mlist-summary:focus-visible{outline:2px solid var(--signal);outline-offset:-2px}
+.page-machines .mlist-pic{flex:0 0 160px;width:160px;height:120px;border:1px solid var(--rule);border-radius:var(--radius);background:var(--sheet-2);overflow:hidden}
+.page-machines .mlist-body{flex:1 1 auto;min-width:0}
+.page-machines .mlist-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
+.page-machines .mlist-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-machines .mlist-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 16px;margin:8px 0 0;font-size:var(--fs-sm)}
+.page-machines .mlist-facts dt{color:var(--ink-3)}
+.page-machines .mlist-facts dd{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-machines .mlist-bars{display:grid;gap:4px;margin-top:8px}
+@media (max-width:720px){
+  .page-machines .mlist-summary{flex-direction:column}
+  .page-machines .mlist-pic{flex:none;width:100%;max-width:160px}
+}

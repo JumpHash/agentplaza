@@ -1,0 +1,21 @@
+[package]
+name = "apz-artifact"
+description = "Compiles the TypeScript, TSX and JSX scripts of an HTML artifact to plain JavaScript on the hub, with oxc. Vendored library imports become reads of the globals the artifact's pinned libraries define, and anything else is refused with its line and column."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-view = { path = "../apz-view" }
+oxc_allocator = "0.154.0"
+oxc_ast = "0.154.0"
+oxc_codegen = "0.154.0"
+oxc_diagnostics = "0.154.0"
+oxc_parser = "0.154.0"
+oxc_semantic = "0.154.0"
+oxc_span = "0.154.0"
+oxc_transformer = "0.154.0"
+
+[lints]
+workspace = true

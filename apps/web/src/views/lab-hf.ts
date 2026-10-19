@@ -1,18 +1,29 @@
-// The Hugging Face panel on the Models tab (contract: docs/design/foundry.md, "Hugging Face"): the
-// owner's token (its state only, never its value), a search with filters and sorting, a detail
-// drawer per model (files, sizes against the cap, what it can be imported as), and the import queue
-// with live progress frames, cancel and resume. Every route is owner-only. Terms are never accepted
-// here: a gated model links to its page on huggingface.co.
+// The Hugging Face panel on the Models tab, in the prototype's layout (contract: docs/design/foundry.md,
+// "Hugging Face"): three cards, the owner's token (its state only, never its value), a search with
+// filters and sorting, and the import queue with live progress frames, cancel and resume. A model
+// opens a wide dialog with its files, its sizes against the cap and what it can be imported as. Every
+// route is owner-only. Terms are never accepted here: a gated model links to its page on huggingface.co.
 
-import '../styles/lab-hf.css';
 import { on } from '../store';
-import { button, input, select } from '../ui/components';
+import { badge, card, modal, select, table as componentTable, type Column, type Tone } from '../ui/components';
 import { h } from '../ui/dom';
-import { errorText, fmtNumber, fmtSize, fmtTime, labRequest, pollEvery } from './lab-common';
+import { agoText, errorText, fmtNumber, fmtSize, labButton, labRequest, pollEvery } from './lab-common';
 
 const POLL_MS = 5_000;
 const GIB = 1024 ** 3;
-const LIBRARIES = ['any', 'onnx', 'safetensors', 'transformers', 'gguf'];
+const TASKS: [string, string][] = [
+  ['any', 'Any task'],
+  ['text-generation', 'text-generation'],
+  ['text-classification', 'text-classification'],
+  ['feature-extraction', 'feature-extraction'],
+];
+const LIBRARIES: [string, string][] = [
+  ['any', 'Any library'],
+  ['onnx', 'onnx'],
+  ['safetensors', 'safetensors'],
+  ['transformers', 'transformers'],
+  ['gguf', 'gguf'],
+];
 const SORTS: { value: string; label: string }[] = [
   { value: 'downloads', label: 'Downloads' },
   { value: 'likes', label: 'Likes' },
@@ -46,7 +57,7 @@ interface HfFrame { kind: 'hf_import'; import: number; id: string; file: string;
 type SortKey = 'downloads' | 'likes' | 'updated' | 'license' | 'gated';
 
 const ACTIVE = new Set(['queued', 'downloading', 'verifying', 'registering']);
-const STATE_TONE: Record<string, string> = { queued: 'muted', downloading: 'info', verifying: 'info', registering: 'info', done: 'ok', failed: 'danger', cancelled: 'muted', interrupted: 'warn' };
+const IMPORT_TONE: Record<string, Tone> = { queued: 'muted', downloading: 'info', verifying: 'info', registering: 'info', done: 'ok', failed: 'danger', cancelled: 'muted', interrupted: 'warn' };
 
 /** A model id as a path: its slash stays a slash, every segment encoded. */
 const modelPath = (id: string): string => id.split('/').map(encodeURIComponent).join('/');
@@ -61,26 +72,17 @@ export function defaultFiles(files: HfFile[], paths: string[]): HfFile[] {
 
 const sum = (files: HfFile[]): number => files.reduce((n, f) => n + f.size, 0);
 
-/** A date from the hub as `2026-10-13 14:05`, or a dash. */
-const dateOf = (iso: string | null): string => (iso ? fmtTime(Date.parse(iso)) : '—');
+/** A date from the hub, as the prototype's relative time, or a dash. */
+const dateOf = (iso: string | null): string => (iso ? agoText(Date.parse(iso)) : '—');
 
-/** A value with a label above it, as the Lab's definition lists. */
+/** A definition list (the prototype's `h.kv`). */
 function kv(pairs: [string, Node | string][]): HTMLElement {
-  return h('dl.lab-kv', null, pairs.flatMap(([label, value]) => [h('dt', null, label), h('dd', null, value)]));
+  return h(
+    'dl.kv',
+    null,
+    pairs.map(([label, value]) => h('div', null, h('dt', null, label), h('dd', null, value))),
+  );
 }
-
-/** An external link that opens in a new tab and carries no referrer. */
-const extLink = (url: string, text: string): HTMLElement => h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, text);
-
-/** A model id as a button that opens its drawer. */
-const idButton = (id: string, open: (id: string) => void): HTMLElement => {
-  const b = h('button.lab-linkbtn', { type: 'button' }, id);
-  b.addEventListener('click', () => open(id));
-  return b;
-};
-
-/** The state badge of an import, as the models list's badges. */
-const stateChip = (state: string): HTMLElement => h('span.lab-badge', { class: STATE_TONE[state] ?? 'muted' }, state);
 
 /** The panel: returns its element and the function that stops it. `changed` runs when a registration may have changed the registry. */
 export function hfPanel(changed: () => void): { el: HTMLElement; stop: () => void } {
@@ -88,31 +90,32 @@ export function hfPanel(changed: () => void): { el: HTMLElement; stop: () => voi
   let statusError = '';
   let tokenError = '';
   let tokenBusy = false;
-  let query = { search: '', task: '', library: 'any', sort: 'downloads' };
+  let query = { search: '', task: 'any', library: 'any', sort: 'downloads' };
   let items: HfItem[] = [];
   let next: string | null = null;
   let searchError = '';
   let searched = false;
-  let sortKey: SortKey = 'downloads';
+  let sortKey: SortKey | null = null;
   let sortAsc = false;
-  let detail: HfDetail | null = null;
-  let detailError = '';
+  let detailClose: (() => void) | null = null;
   let importError = '';
   let imports: ImportRecord[] = [];
   let importsError = '';
+  let known = new Map<number, string>();
 
-  const el = h('div.lab-hf');
+  const el = h('div.lab2-form');
 
   const draw = (): void => {
-    el.replaceChildren(...[tokenBlock(), searchBlock(), detail ? drawer(detail) : null, importsBlock()].filter((n): n is HTMLElement => n !== null));
+    el.replaceChildren(tokenCard(), searchCard(), importsCard());
   };
 
   // ---- Token -------------------------------------------------------------
 
-  function tokenBlock(): HTMLElement {
+  function tokenCard(): HTMLElement {
     const set = status?.hf_token_set === true;
-    const value = input({ type: 'password', autocomplete: 'new-password', spellcheck: false, placeholder: 'Token value' });
-    const save = button('Save token', () => {
+    const value = h('input.input', { type: 'password', id: 'lab-hf-token', autocomplete: 'off', placeholder: 'Access token', 'aria-label': 'Access token' });
+    value.style.cssText = 'flex:1 1 220px;min-width:0';
+    const save = labButton('Save', () => {
       const v = value.value.trim();
       if (!v) {
         tokenError = 'Paste the token first.';
@@ -133,64 +136,55 @@ export function hfPanel(changed: () => void): { el: HTMLElement; stop: () => voi
           tokenBusy = false;
           draw();
         });
-    }, { kind: 'primary', size: 'sm', disabled: tokenBusy });
-    const remove = set
-      ? button('Remove token', () => {
-          labRequest<unknown>('DELETE', '/v1/foundry/hf/token')
-            .then(() => refreshStatus())
-            .catch((err: unknown) => {
-              tokenError = errorText(err);
-              draw();
-            });
-        }, { kind: 'danger', size: 'sm' })
-      : null;
-    return h(
-      'div.lab-hf-block',
+    }, { kind: 'primary', sm: true });
+    save.disabled = tokenBusy;
+    const remove = labButton('Remove', () => {
+      labRequest<unknown>('DELETE', '/v1/foundry/hf/token')
+        .then(() => refreshStatus())
+        .catch((err: unknown) => {
+          tokenError = errorText(err);
+          draw();
+        });
+    }, { kind: 'danger', sm: true });
+    remove.disabled = !set;
+    const state = status === null ? badge('token unknown', 'muted') : set ? badge('token set', 'ok') : badge('token not set', 'warn');
+    const facts = status
+      ? `${fmtNumber(status.hf_max_gb)} GB max per import · ${status.free_bytes === null ? 'unknown' : fmtSize(status.free_bytes)} free on disk`
+      : statusError || 'Reading the token state';
+    const body = h(
+      'div',
       null,
-      h('h4.lab-section-title', null, 'Hugging Face token'),
-      h(
-        'div.lab-row',
-        null,
-        h('span.lab-badge', { class: status === null ? 'muted' : set ? 'ok' : 'muted' }, status === null ? 'Token state unknown' : set ? 'Token set' : 'Token not set'),
-        status
-          ? h('span.lab-muted', null, `Max import ${fmtNumber(status.hf_max_gb)} GB · free disk ${status.free_bytes === null ? 'unknown' : fmtSize(status.free_bytes)}`)
-          : h('span.lab-muted', null, statusError || 'Reading the token state'),
-      ),
-      h(
-        'div.lab-row',
-        null,
-        value,
-        save,
-        remove,
-      ),
-      h('p.lab-muted', null, 'The token is stored on this machine and never shown back. Create one at ', extLink('https://huggingface.co/settings/tokens', 'huggingface.co/settings/tokens'), '.'),
-      tokenError ? h('p.lab-error', { role: 'alert' }, tokenError) : null,
+      h('div.lab2-row', { style: 'justify-content:flex-start' }, state, h('span.lab2-note', null, facts)),
+      h('div.lab2-row', { style: 'justify-content:flex-start;margin-top:8px' }, value, save, remove),
+      h('div.lab2-err', { id: 'lab-hf-token-note', role: 'alert' }, tokenError),
     );
+    return card('Hugging Face token', body);
   }
 
   // ---- Search ------------------------------------------------------------
 
-  function searchBlock(): HTMLElement {
-    const search = input({ placeholder: 'Search models', value: query.search, spellcheck: false });
-    const task = input({ placeholder: 'Task, e.g. text-classification', value: query.task, spellcheck: false });
-    const library = select(LIBRARIES.map((l) => ({ value: l, label: l === 'any' ? 'Any library' : l })), query.library);
+  function searchCard(): HTMLElement {
+    const search = h('input.input', { type: 'search', id: 'lab-hf-q', value: query.search, placeholder: 'Search models or authors', 'aria-label': 'Search models', spellcheck: 'false' });
+    search.style.cssText = 'flex:1 1 220px;min-width:0';
+    const task = select(TASKS.map(([value, label]) => ({ value, label })), query.task);
+    task.setAttribute('aria-label', 'Task');
+    const library = select(LIBRARIES.map(([value, label]) => ({ value, label })), query.library);
+    library.setAttribute('aria-label', 'Library');
     const sort = select(SORTS, query.sort);
+    sort.setAttribute('aria-label', 'Sort');
     const run = (): void => {
-      query = { search: search.value.trim(), task: task.value.trim(), library: library.value, sort: sort.value };
+      query = { search: search.value.trim(), task: task.value, library: library.value, sort: sort.value };
       items = [];
       next = null;
+      sortKey = null;
       void loadPage(true);
     };
-    const form = h(
-      'form.lab-row',
-      { onsubmit: (e: Event) => { e.preventDefault(); run(); } },
-      search,
-      task,
-      library,
-      sort,
-      button('Search', run, { kind: 'primary', size: 'sm', icon: 'search' }),
-    );
-    return h('div.lab-hf-block', null, h('h4.lab-section-title', null, 'Search'), form, resultsTable(), searchError ? h('p.lab-error', { role: 'alert' }, searchError) : null);
+    search.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') run();
+    });
+    const bar = h('div.lab2-row', { style: 'justify-content:flex-start' }, search, task, library, sort, labButton('Search', run, { kind: 'primary', icon: 'search' }));
+    const body = h('div.lab2-form', null, bar, resultsBlock(), searchError ? h('p.lab2-err', { role: 'alert' }, searchError) : null);
+    return card('Search Hugging Face', body);
   }
 
   function sortValue(item: HfItem, key: SortKey): number | string {
@@ -203,65 +197,74 @@ export function hfPanel(changed: () => void): { el: HTMLElement; stop: () => voi
     }
   }
 
-  function sortHead(label: string, key: SortKey): HTMLElement {
-    const mark = sortKey === key ? (sortAsc ? ' ▲' : ' ▼') : '';
-    const b = h('button.lab-linkbtn', { type: 'button' }, label + mark);
-    b.addEventListener('click', () => {
-      sortAsc = sortKey === key ? !sortAsc : false;
-      sortKey = key;
-      draw();
-    });
-    return h('th', null, b);
-  }
+  const SORT_COLS: [string, string, SortKey | null][] = [
+    ['id', 'Model', null],
+    ['task', 'Task', null],
+    ['library', 'Library', null],
+    ['downloads', 'Downloads', 'downloads'],
+    ['likes', 'Likes', 'likes'],
+    ['last_modified', 'Updated', 'updated'],
+    ['license', 'License', 'license'],
+    ['gated', 'Access', 'gated'],
+  ];
 
-  function resultsTable(): HTMLElement {
-    if (!searched) return h('p.lab-muted', null, 'Search the Hub, or leave the box empty for the most downloaded models.');
-    if (items.length === 0) return h('p.lab-muted', null, 'No models match.');
-    const sorted = items.slice().sort((a, b) => {
-      const x = sortValue(a, sortKey);
-      const y = sortValue(b, sortKey);
-      const order = x < y ? -1 : x > y ? 1 : 0;
-      return sortAsc ? order : -order;
-    });
-    const rows = sorted.map((m) =>
-      h(
+  function resultsBlock(): HTMLElement {
+    if (!searched) return h('p.lab2-note', null, 'Search the Hub, or leave the box empty for the most downloaded models.');
+    if (items.length === 0) return h('p.lab2-note', null, 'No models match.');
+    const sorted = sortKey
+      ? items.slice().sort((a, b) => {
+          const x = sortValue(a, sortKey as SortKey);
+          const y = sortValue(b, sortKey as SortKey);
+          const order = x < y ? -1 : x > y ? 1 : 0;
+          return sortAsc ? order : -order;
+        })
+      : items;
+    const head = h(
+      'tr',
+      null,
+      SORT_COLS.map(([key, label, sortable]) => {
+        if (!sortable) return h('th', null, label);
+        const mark = sortKey === sortable ? (sortAsc ? ' ↑' : ' ↓') : '';
+        const b = h('button.lab2-sortbtn', { type: 'button', 'aria-sort': sortKey === sortable ? (sortAsc ? 'ascending' : 'descending') : 'none' }, label + mark);
+        b.addEventListener('click', () => {
+          if (sortKey === sortable) sortAsc = !sortAsc;
+          else {
+            sortKey = sortable;
+            sortAsc = ['id', 'task', 'library', 'license'].includes(key);
+          }
+          draw();
+        });
+        return h('th', null, b);
+      }),
+    );
+    const rows = sorted.map((m) => {
+      const tr = h(
         'tr',
-        { 'data-link': m.id },
-        h('td', null, idButton(m.id, openDetail), h('div.lab-muted', null, m.author)),
+        { class: 'clickable' },
+        h('td', null, h('strong', null, m.id), h('div.lab2-note', null, m.author)),
         h('td', null, m.task ?? '—'),
         h('td', null, m.library ?? '—'),
-        h('td.num', null, fmtNumber(m.downloads)),
-        h('td.num', null, fmtNumber(m.likes)),
+        h('td', { class: 'num' }, fmtNumber(m.downloads)),
+        h('td', { class: 'num' }, fmtNumber(m.likes)),
         h('td', null, dateOf(m.last_modified)),
         h('td', null, m.license ?? '—'),
-        h('td', null, isGated(m.gated) ? h('span.lab-badge', { class: 'warn' }, 'gated') : h('span.lab-muted', null, 'open')),
-      ),
-    );
+        h('td', null, isGated(m.gated) ? badge('gated', 'warn') : badge('open', 'muted')),
+      );
+      tr.addEventListener('click', () => openDetail(m.id));
+      return tr;
+    });
     return h(
-      'div.lab-stack-tight',
+      'div.lab2-form',
       null,
-      h(
-        'div.lab-table-wrap',
-        null,
-        h(
-          'table.lab-table.lab-hf-table',
-          null,
-          h(
-            'thead',
-            null,
-            h('tr', null, h('th', null, 'Model'), h('th', null, 'Task'), h('th', null, 'Library'), sortHead('Downloads', 'downloads'), sortHead('Likes', 'likes'), sortHead('Updated', 'updated'), sortHead('License', 'license'), sortHead('Access', 'gated')),
-          ),
-          h('tbody', null, rows),
-        ),
-      ),
-      next ? button('Load more', () => void loadPage(false), { size: 'sm' }) : null,
+      h('div.tbl-wrap', null, h('table.tbl', null, h('thead', null, head), h('tbody', null, rows))),
+      next ? h('div.lab2-row', { style: 'justify-content:center' }, labButton('Load more', () => void loadPage(false), { kind: 'ghost' })) : null,
     );
   }
 
   async function loadPage(first: boolean): Promise<void> {
     const params = new URLSearchParams({ sort: query.sort, limit: '30' });
     if (query.search) params.set('search', query.search);
-    if (query.task) params.set('task', query.task);
+    if (query.task !== 'any') params.set('task', query.task);
     if (query.library !== 'any') params.set('library', query.library);
     if (!first && next) params.set('cursor', next);
     try {
@@ -276,146 +279,123 @@ export function hfPanel(changed: () => void): { el: HTMLElement; stop: () => voi
     draw();
   }
 
-  // ---- Drawer ------------------------------------------------------------
+  // ---- Detail dialog -----------------------------------------------------
 
   function openDetail(id: string): void {
-    detail = null;
-    detailError = '';
     importError = '';
     labRequest<HfDetail>('GET', `/v1/foundry/hf/models/${modelPath(id)}`)
-      .then((d) => {
-        detail = d;
-        draw();
-      })
+      .then((d) => showDetail(d))
       .catch((err: unknown) => {
-        detailError = errorText(err);
+        searchError = errorText(err);
         draw();
       });
   }
 
-  function drawer(d: HfDetail): HTMLElement {
-    const close = button('', () => {
-      detail = null;
-      draw();
-    }, { kind: 'ghost', icon: 'x', title: 'Close' });
+  function showDetail(d: HfDetail): void {
+    detailClose?.();
     const capGb = status?.hf_max_gb ?? 0;
     const cap = capGb * GIB;
     const baseSize = sum(defaultFiles(d.files, d.import_files.base));
     const servableSize = sum(defaultFiles(d.files, d.import_files.servable));
     const gated = isGated(d.gated);
-    const sizes = [
-      ['Base set', fmtSize(baseSize), baseSize > cap],
-      ['Servable set', fmtSize(servableSize), servableSize > cap],
-    ] as const;
-    const fileRows = d.files.map((f) => [f.path, fmtSize(f.size), f.lfs ? 'LFS' : 'git']);
-    return h(
-      'section.lab-card.lab-hf-drawer',
+    const note = h('p.lab2-err', { role: 'alert' }, importError);
+    const body = h(
+      'div.lab2-form',
       null,
-      h(
-        'header.lab-card-head',
-        null,
-        h('h3', null, extLink(d.url, d.id)),
-        close,
-      ),
-      h(
-        'div.lab-card-body',
-        null,
-        h('div.lab-stack-tight', null,
-          gated
-            ? h(
-                'p.lab-error',
-                null,
-                'Gated: this model needs its terms accepted on its Hub page. Accept them there yourself; this console never accepts terms for you. ',
-                extLink(d.url, 'Open its page on huggingface.co'),
-              )
-            : null,
-          kv([
-            ['Author', d.author],
-            ['Revision', h('span.lab-mono', null, d.sha.slice(0, 12))],
-            ['Task', d.task ?? '—'],
-            ['Library', d.library ?? '—'],
-            ['License', d.license ?? '—'],
-            ['Downloads', fmtNumber(d.downloads)],
-            ['Likes', fmtNumber(d.likes)],
-            ['Updated', dateOf(d.last_modified)],
-            ['Servable', d.importable.servable ? 'yes' : `no: ${d.importable.servable_reason ?? 'not a servable model'}`],
-            ['Base', d.importable.base ? 'yes' : `no: ${d.importable.base_reason ?? 'not a base model'}`],
-          ]),
-          d.summary ? h('p.lab-note', null, d.summary) : null,
-          h('h4.lab-section-title', null, 'Default selections against the cap'),
-          h('div.lab-row', null, ...sizes.map(([label, size, over]) =>
-            h('span', { class: over ? 'lab-error' : 'lab-mono' }, `${label}: ${size}${over ? ' (over the cap)' : ''}`),
-          )),
-          h('span.lab-muted', null, `Cap: ${fmtNumber(capGb)} GB`),
-          h('h4.lab-section-title', null, `Files (${fmtNumber(d.files.length)})`),
-          d.files.length === 0 ? h('p.lab-muted', null, 'No files listed.') : dataTable(['File', 'Size', 'Storage'], fileRows),
-          h('div.lab-row', null,
-            button('Import as base', () => startImport(d, 'base'), { kind: 'primary', size: 'sm', icon: 'plus', disabled: busyImport() }),
-            button('Import as servable', () => startImport(d, 'servable'), { size: 'sm', icon: 'plus', disabled: busyImport() }),
+      gated ? h('p.lab2-err', null, 'Gated: accept the terms on huggingface.co yourself before you import.') : null,
+      kv([
+        ['Revision', h('span.mono', null, d.sha.slice(0, 12))],
+        ['Servable', d.importable.servable ? 'Yes' : d.importable.servable_reason ?? 'No ONNX file in the repo.'],
+        ['Base', d.importable.base ? 'Yes' : d.importable.base_reason ?? 'No safetensors weights in the repo.'],
+        ['Default base set', h('span', { class: baseSize > cap ? 'lab2-over' : '' }, `${fmtSize(baseSize)} of ${fmtSize(cap)} cap`)],
+        ['Default servable set', h('span', { class: servableSize > cap ? 'lab2-over' : '' }, `${fmtSize(servableSize)} of ${fmtSize(cap)} cap`)],
+      ]),
+      d.files.length === 0
+        ? h('p.lab2-note', null, 'No files.')
+        : h(
+            'div.tbl-wrap',
+            null,
+            componentTable(
+              [
+                { label: 'File', cell: (f: HfFile) => h('span.mono', null, f.path) },
+                { label: 'Size', cell: (f: HfFile) => fmtSize(f.size) },
+                { label: 'Storage', cell: (f: HfFile) => (f.lfs ? 'LFS' : 'git') },
+              ] as Column<HfFile>[],
+              d.files,
+            ),
           ),
-          importError ? h('p.lab-error', { role: 'alert' }, importError) : null,
-          detailError ? h('p.lab-error', { role: 'alert' }, detailError) : null,
-        ),
-      ),
+      d.summary ? h('p.lab2-note', null, d.summary) : null,
+      note,
     );
+    const importAs = (as: 'base' | 'servable'): void => startImport(d, as);
+    const foot = h(
+      'div.lab-actions',
+      null,
+      labButton('Import as base', () => importAs('base'), { kind: 'ghost' }),
+      labButton('Import as servable', () => importAs('servable'), { kind: 'primary' }),
+    );
+    detailClose = modal(d.id, h('div', null, body, foot));
   }
-
-  const busyImport = (): boolean => false;
 
   function startImport(d: HfDetail, as: 'base' | 'servable'): void {
     importError = '';
     labRequest<{ import: ImportRecord }>('POST', '/v1/foundry/hf/import', { id: d.id, revision: d.sha, as })
-      .then(() => refreshImports())
+      .then(() => {
+        detailClose?.();
+        detailClose = null;
+        return refreshImports();
+      })
       .catch((err: unknown) => {
         importError = errorText(err);
-        draw();
+        const box = document.querySelector('.sheet .lab2-err[role="alert"]');
+        if (box) box.textContent = importError;
       });
   }
 
   // ---- Imports -----------------------------------------------------------
 
-  function importsBlock(): HTMLElement {
-    const head = h('h4.lab-section-title', null, `Imports (${fmtNumber(imports.length)})`);
-    if (imports.length === 0) {
-      return h('div.lab-hf-block', null, head, h('p.lab-muted', null, 'No imports yet.'), importsError ? h('p.lab-error', { role: 'alert' }, importsError) : null);
-    }
-    const rows = imports.map((r) => {
-      const percent = r.total > 0 ? r.bytes / r.total : 0;
-      const bar = h('div.lab-meter.signal', { role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': 1, 'aria-valuenow': percent }, h('span', { style: `width:${Math.min(1, percent) * 100}%` }));
-      const action = ACTIVE.has(r.state)
-        ? button('Cancel', () => cancelImport(r.n), { size: 'sm', kind: 'danger' })
-        : button('Remove', () => cancelImport(r.n), { size: 'sm' });
-      const resume = r.state === 'interrupted' ? button('Resume', () => resumeImport(r), { size: 'sm', kind: 'primary' }) : null;
-      const model = r.model_id ? h('a', { href: `#/lab/models/${encodeURIComponent(r.model_id)}` }, r.model_id) : h('span.lab-muted', null, r.id);
-      return h(
-        'tr',
-        null,
-        h('td.num', null, `#${r.n}`),
-        h('td', null, model, h('div.lab-muted', null, r.id)),
-        h('td.lab-nowrap', null, r.as),
-        h('td', null, stateChip(r.state), r.reason ? h('div.lab-muted', null, r.reason) : null, r.error ? h('div.lab-error', null, r.error) : null),
-        h('td', null, bar, h('span.lab-mono', null, `${fmtSize(r.bytes)} of ${fmtSize(r.total)}`)),
-        h('td', null, fmtTime(r.updated_ms)),
-        h('td', null, h('div.lab-row', null, resume, action)),
-      );
-    });
-    return h(
-      'div.lab-hf-block',
-      null,
-      head,
-      h('div.lab-table-wrap', null, h('table.lab-table', null,
-        h('thead', null, h('tr', null, ['No.', 'Model', 'As', 'State', 'Progress', 'Updated', ''].map((t) => h('th', null, t)))),
-        h('tbody', null, rows),
-      )),
-      importsError ? h('p.lab-error', { role: 'alert' }, importsError) : null,
-    );
+  function importActions(r: ImportRecord): HTMLElement {
+    const wrap = h('div.lab-row', null);
+    if (r.state === 'interrupted') wrap.append(labButton('Resume', () => resumeImport(r), { kind: 'ghost', sm: true }));
+    if (ACTIVE.has(r.state)) wrap.append(labButton('Cancel', () => cancelImport(r.n), { kind: 'ghost', sm: true }));
+    else wrap.append(labButton('Remove', () => cancelImport(r.n), { kind: 'ghost', sm: true }));
+    return wrap;
   }
 
-  function dataTable(heads: string[], rows: string[][]): HTMLElement {
-    return h('div.lab-table-wrap', null, h('table.lab-table', null,
-      h('thead', null, h('tr', null, heads.map((t) => h('th', null, t)))),
-      h('tbody', null, rows.map((cells) => h('tr', null, cells.map((c) => h('td.lab-wrap', null, c))))),
-    ));
+  function importsCard(): HTMLElement {
+    let body: Node;
+    if (imports.length === 0) {
+      body = h('p.lab2-note', null, 'No imports yet.');
+    } else {
+      body = h(
+        'div.tbl-wrap',
+        null,
+        h(
+          'table.tbl',
+          null,
+          h('thead', null, h('tr', null, ['No.', 'Model', 'As', 'State', 'Reason or error', 'Bytes', 'Updated', ''].map((t) => h('th', null, t)))),
+          h(
+            'tbody',
+            null,
+            imports.map((r) =>
+              h(
+                'tr',
+                null,
+                h('td', { class: 'num' }, String(r.n)),
+                h('td', { class: 'mono' }, r.id),
+                h('td', null, r.as),
+                h('td', null, badge(r.state, IMPORT_TONE[r.state] ?? 'muted')),
+                h('td', null, r.error ?? r.reason ?? '—'),
+                h('td', { class: 'num' }, `${fmtSize(r.bytes)} of ${fmtSize(r.total)}`),
+                h('td', null, agoText(r.updated_ms)),
+                h('td', null, importActions(r)),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return card('Import queue', h('div', null, body, importsError ? h('p.lab2-err', { role: 'alert' }, importsError) : null));
   }
 
   function cancelImport(n: number): void {
@@ -448,7 +428,6 @@ export function hfPanel(changed: () => void): { el: HTMLElement; stop: () => voi
     draw();
   }
 
-  let known = new Map<number, string>();
   async function refreshImports(): Promise<void> {
     try {
       const list = await labRequest<{ imports: ImportRecord[] }>('GET', '/v1/foundry/hf/imports');
@@ -498,13 +477,14 @@ export function hfPanel(changed: () => void): { el: HTMLElement; stop: () => voi
     void refreshStatus();
     void refreshImports();
   });
-  // The first draw shows the section before the first answers arrive.
+  // The first draw shows the panel before the first answers arrive.
   draw();
   return {
     el,
     stop: () => {
       unsubscribe();
       stopPolling();
+      detailClose?.();
     },
   };
 }

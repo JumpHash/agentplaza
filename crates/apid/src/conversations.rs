@@ -75,6 +75,10 @@ pub struct Conversation {
     pub updated_ms: u64,
     #[serde(default)]
     pub archived: bool,
+    /// The model this conversation's orchestrator turns run on (`<provider>/<model>[@effort]`); None: the
+    /// orchestrator's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// The project it set up, once there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
@@ -169,6 +173,7 @@ impl Store {
             created_ms: now,
             updated_ms: now,
             archived: false,
+            model: None,
             project: None,
             draft: None,
             draft_seen: 0,
@@ -305,6 +310,7 @@ fn summary(conversation: &Conversation) -> Value {
         "created_ms": conversation.created_ms,
         "updated_ms": conversation.updated_ms,
         "archived": conversation.archived,
+        "model": conversation.model,
         "project": conversation.project,
         "draft": conversation.draft.as_ref().map(|d| json!({"revision": d.revision, "title": d.title})),
         "messages": conversation.messages.len(),
@@ -658,6 +664,16 @@ struct PatchBody {
     title: Option<String>,
     #[serde(default)]
     archived: Option<bool>,
+    /// `Some(None)` (JSON null) goes back to the orchestrator's model.
+    #[serde(default, deserialize_with = "some_or_null")]
+    model: Option<Option<String>>,
+}
+
+/// A present field as `Some`, JSON null included (as `Some(None)`); an absent one stays `None`.
+fn some_or_null<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Ok(Some(Option::<String>::deserialize(d)?))
 }
 
 /// Body: `{title?, archived?}`.
@@ -673,9 +689,20 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         }
         other => other.map(str::to_string),
     };
+    // A conversation's model is held to the orchestrator's policy, as the gateway holds every call.
+    if let Some(Some(model)) = &body.model
+        && let Err(e) = app
+            .settings
+            .allowed(crate::settings::Tier::Orchestrator, model)
+    {
+        return Response::error(400, &e);
+    }
     let result = app.conversations.update(p.get("id"), |c| {
         if let Some(title) = title {
             c.title = title;
+        }
+        if let Some(model) = body.model.clone() {
+            c.model = model.filter(|m| !m.trim().is_empty());
         }
         if let Some(archived) = body.archived {
             c.archived = archived;
@@ -849,6 +876,7 @@ mod tests {
                 created_ms: n,
                 updated_ms: n,
                 archived: n == 7,
+                model: None,
                 project: None,
                 draft: None,
                 draft_seen: 0,

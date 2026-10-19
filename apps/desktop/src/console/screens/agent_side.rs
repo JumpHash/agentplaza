@@ -2,14 +2,15 @@
 //! reasoning effort (the model picker), harness limits and loops, permissions. Also the memory
 //! library the page's Memory tab shows (`memory.ts`): the notes, a find box, and a reader.
 
-use iced::widget::{Space, button, column, container, row, text_input};
-use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
+use iced::widget::{Space, button, column, container, row, text, text_input};
+use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::agent::ago;
 use crate::console::picker::{self, Choice, Picker, PickerMsg};
 use crate::console::{Ctx, client, rich, ui};
+use crate::theme::{MONO_MEDIUM, SANS, SANS_MEDIUM, SANS_SEMIBOLD, TYPE_ITEM, TYPE_META};
 
 /// The reasoning efforts a model name can pin (`provider/model@effort`).
 const EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -158,6 +159,8 @@ pub enum SideMsg {
     Refresh,
     Agent(Result<Value, String>),
     Catalogue(Result<(Value, Value), String>),
+    /// The owner's favourites after a star in the picker.
+    Favourited(Result<Vec<String>, String>),
     Picker(PickerMsg),
     ModelSaved(Result<Value, String>),
     PermissionLoaded(Result<String, String>),
@@ -194,6 +197,8 @@ pub enum SideMsg {
     /// A rich-content click or load in the note being read.
     Rich(rich::Ev),
     ToggleGraph,
+    /// Shows the graph (true) or the list (false): the web's Graph and List buttons.
+    SetGraph(bool),
     MemoryTick(Result<u64, String>),
     Graph(super::memory_graph::Msg),
 }
@@ -232,6 +237,7 @@ pub fn load(side: &mut Side, cid: u64, ctx: &Ctx) -> Task<SideMsg> {
         };
         side.loop_every = "30".into();
         side.loop_max = "0".into();
+        side.graph_on = true;
     }
     side.error = None;
     let mut tasks = vec![
@@ -272,8 +278,19 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             rebuild(side);
             Task::none()
         }
+        SideMsg::Favourited(Ok(favourites)) => {
+            picker::mark_favourites(&mut side.models, &favourites);
+            picker::sync(&mut side.picker, &side.models);
+            rebuild(side);
+            Task::none()
+        }
+        SideMsg::Favourited(Err(e)) => {
+            side.error = Some(e);
+            Task::none()
+        }
         SideMsg::Catalogue(Ok((models, settings))) => {
             side.models = models;
+            picker::sync(&mut side.picker, &side.models);
             side.policy_orchestrator = strings(&settings["model_policy"]["orchestrator"]);
             side.policy_worker = strings(&settings["model_policy"]["worker"]);
             side.catalogue_loaded = true;
@@ -287,6 +304,13 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
         SideMsg::Picker(m) => {
             picker::update(&mut side.picker, &m);
             match m {
+                PickerMsg::Favourite(id) => {
+                    let c = ctx.client.clone();
+                    crate::console::client::task(
+                        move || picker::save_favourite(&c, &id),
+                        SideMsg::Favourited,
+                    )
+                }
                 PickerMsg::Pick(id) => {
                     let value = with_effort(&id, &side.effort);
                     side.choice = id;
@@ -597,6 +621,10 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             side.graph_on = !side.graph_on;
             Task::none()
         }
+        SideMsg::SetGraph(on) => {
+            side.graph_on = on;
+            Task::none()
+        }
         SideMsg::Graph(super::memory_graph::Msg::Open(slug)) => fetch_note(ctx, cid, slug),
         SideMsg::Graph(super::memory_graph::Msg::Drag { slug, x, y }) => {
             side.graph.hold(&slug, x, y);
@@ -641,7 +669,8 @@ fn prefetch_reading(side: &mut Side, ctx: &Ctx) -> Task<SideMsg> {
     rich::prefetch(&mut side.cards, &ctx.client, &rctx, &[body.as_str()]).map(SideMsg::Rich)
 }
 
-/// The side column.
+/// The side column (the web's `aside.ag-side`, minus the conduct and checkpoint cards the page draws): the model, the
+/// harness and the permissions, 12 apart.
 pub fn view<'a>(side: &'a Side, _ctx: &'a Ctx) -> Element<'a, SideMsg> {
     let mut parts: Vec<Element<'a, SideMsg>> = Vec::new();
     if let Some(e) = &side.error {
@@ -653,10 +682,44 @@ pub fn view<'a>(side: &'a Side, _ctx: &'a Ctx) -> Element<'a, SideMsg> {
     parts.push(model_card(side));
     parts.push(harness_card(side));
     parts.push(permission_card(side));
-    column(parts).spacing(16).into()
+    column(parts).spacing(GAP).into()
 }
 
 // ---- Views ----
+
+/// The gap between the blocks of a card and between the side's cards (the web's `--gap`).
+const GAP: f32 = 12.0;
+
+/// A block heading inside a card (the web's `h4`): sans semibold at the item size, in ink.
+fn sub_head<'a>(title: &str) -> Element<'a, SideMsg> {
+    text(title.to_string())
+        .font(SANS_SEMIBOLD)
+        .size(TYPE_ITEM)
+        .color(crate::theme::palette().ink)
+        .into()
+}
+
+/// A field's label (the web's `.field-l`): sans medium at 12.5 in ink-2.
+fn field_label<'a>(label: &str) -> Element<'a, SideMsg> {
+    text(label.to_string())
+        .font(SANS_MEDIUM)
+        .size(12.5)
+        .color(crate::theme::palette().ink_2)
+        .into()
+}
+
+/// A labelled control (the web's `.field`): the label, the control and an optional hint under it.
+fn labelled<'a>(
+    label: &str,
+    control: Element<'a, SideMsg>,
+    hint: Option<&str>,
+) -> Element<'a, SideMsg> {
+    let mut items = vec![field_label(label), control];
+    if let Some(hint) = hint {
+        items.push(ui::faint(hint.to_string()).into());
+    }
+    column(items).spacing(5).width(Length::Fill).into()
+}
 
 fn model_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     let source = match side.model_source.as_str() {
@@ -666,10 +729,14 @@ fn model_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
         _ => "default",
     };
     let current = row![
-        ui::sans(side.model.clone(), 12.0, crate::theme::palette().ink),
+        text(side.model.clone())
+            .font(MONO_MEDIUM)
+            .size(TYPE_ITEM)
+            .color(crate::theme::palette().ink),
         ui::faint(source)
     ]
-    .spacing(8);
+    .spacing(8)
+    .align_y(Alignment::Center);
     let choose = picker::view(
         &side.picker,
         &side.choices,
@@ -679,8 +746,8 @@ fn model_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     );
     ui::card(
         "Model",
-        column![current, ui::label("Change model"), choose]
-            .spacing(8)
+        column![current, labelled("Change model", choose, None)]
+            .spacing(GAP)
             .into(),
     )
 }
@@ -689,23 +756,28 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     let working = side.working;
     let go = |m: SideMsg| working.then_some(m);
 
+    // Limits: three fields across, then Save limits at the right (the web's `.ag-grid3` and `.cluster`).
     let limits = column![
-        field(
-            "Turns per work item",
-            "default",
-            &side.turns,
-            SideMsg::TurnsIn
-        ),
-        field(
-            "Compress at (KB)",
-            "default",
-            &side.compress,
-            SideMsg::CompressIn
-        ),
-        field("Keep recent turns", "default", &side.keep, SideMsg::KeepIn),
+        sub_head("Limits"),
+        row![
+            field(
+                "Turns per work item",
+                "default",
+                &side.turns,
+                SideMsg::TurnsIn
+            ),
+            field(
+                "Compress at (KB)",
+                "default",
+                &side.compress,
+                SideMsg::CompressIn
+            ),
+            field("Keep recent turns", "default", &side.keep, SideMsg::KeepIn),
+        ]
+        .spacing(GAP),
         row![
             Space::new().width(Length::Fill),
-            ui::btn(
+            ui::btn_sm(
                 "Save limits",
                 None,
                 ui::Kind::Primary,
@@ -713,9 +785,10 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
             )
         ],
     ]
-    .spacing(10);
+    .spacing(GAP);
 
-    let mut running: Vec<Element<'a, SideMsg>> = Vec::new();
+    // Running work: enabled only while the agent is working.
+    let mut running: Vec<Element<'a, SideMsg>> = vec![sub_head("Running work")];
     if !working {
         running.push(ui::faint("Available while the agent is working.").into());
     }
@@ -742,76 +815,41 @@ fn harness_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
             text_input("Steer the current work…", &side.steer)
                 .on_input(SideMsg::SteerIn)
                 .on_submit(SideMsg::Steer)
-                .style(crate::theme::input),
-            ui::btn("Steer", None, ui::Kind::Primary, go(SideMsg::Steer)),
+                .style(crate::theme::input)
+                .width(Length::Fill),
+            ui::btn_sm("Steer", None, ui::Kind::Primary, go(SideMsg::Steer)),
         ]
         .spacing(8)
+        .align_y(Alignment::Center)
         .into(),
     );
 
-    let loops: Vec<Element<'a, SideMsg>> = side.loops.iter().map(loop_row).collect();
-    let loop_list: Element<'a, SideMsg> = if side.loops.is_empty() {
-        ui::faint("No loops for this agent.").into()
-    } else {
-        column(loops).spacing(10).into()
-    };
-
-    let new_loop = column![
-        text_input("What the agent should do on each run…", &side.loop_prompt)
-            .on_input(SideMsg::LoopPrompt)
-            .on_submit(SideMsg::StartLoop)
-            .style(crate::theme::input),
-        row![
-            field(
-                "Every (minutes)",
-                "30",
-                &side.loop_every,
-                SideMsg::LoopEvery
-            ),
-            field(
-                "Max runs",
-                "0 = until the agent says LOOP DONE",
-                &side.loop_max,
-                SideMsg::LoopMax
-            ),
-        ]
-        .spacing(8),
-        ui::btn(
-            "Start loop",
-            None,
-            ui::Kind::Primary,
-            Some(SideMsg::StartLoop)
-        ),
-    ]
-    .spacing(8);
-
-    // The web opens the new loop in a dialog from the Loops head; here it opens in place.
-    let loops_head = row![
-        ui::label("Loops"),
-        Space::new().width(Length::Fill),
+    // Loops: this agent's, newest first, each under a hairline; the new one opens in its dialog.
+    let mut loops: Vec<Element<'a, SideMsg>> = vec![
+        sub_head("Loops"),
         ui::btn(
             "New loop",
             None,
             ui::Kind::Secondary,
-            Some(SideMsg::ToggleNewLoop)
+            Some(SideMsg::ToggleNewLoop),
         ),
-    ]
-    .align_y(Alignment::Center);
-    let mut loop_block: Vec<Element<'a, SideMsg>> = vec![loops_head.into(), loop_list];
-    if side.new_loop {
-        loop_block.push(new_loop.into());
+    ];
+    if side.loops.is_empty() {
+        loops.push(ui::faint("No loops for this agent.").into());
+    }
+    for l in &side.loops {
+        loops.push(ui::hairline());
+        loops.push(loop_row(l));
     }
 
     ui::card(
         "Harness",
         column![
-            ui::label("Limits"),
             limits,
-            ui::label("Running work"),
             column(running).spacing(8),
-            column(loop_block).spacing(10),
+            column(loops).spacing(GAP)
         ]
-        .spacing(12)
+        .spacing(GAP)
         .into(),
     )
 }
@@ -822,51 +860,54 @@ fn permission_card<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     } else if side.permission.is_none() {
         ui::faint("Loading…").into()
     } else {
-        // One full-width choice per mode, its hint under its name (the web's `.perm-option`).
         let items: Vec<Element<'a, SideMsg>> = PERMISSIONS
             .into_iter()
             .map(|(mode, label, hint)| {
                 let active = side.permission.as_deref() == Some(mode);
-                let body = column![
-                    ui::sans(label.to_string(), 12.0, crate::theme::palette().ink),
-                    ui::faint(hint)
-                ]
-                .spacing(2)
-                .width(Length::Fill);
-                button(body)
-                    .padding([8, 10])
-                    .width(Length::Fill)
-                    .style(move |_: &Theme, _: button::Status| button::Style {
-                        background: Some(
-                            if active {
-                                Color {
-                                    a: 0.08,
-                                    ..crate::theme::palette().signal
-                                }
-                            } else {
-                                crate::theme::palette().sheet
-                            }
-                            .into(),
-                        ),
-                        text_color: crate::theme::palette().ink,
-                        border: Border {
-                            color: if active {
-                                crate::theme::palette().signal
-                            } else {
-                                crate::theme::palette().rule
-                            },
-                            width: if active { 2.0 } else { 1.0 },
-                            radius: 0.0.into(),
-                        },
-                        ..Default::default()
-                    })
-                    .on_press(SideMsg::ChoosePermission(mode.to_string()))
-                    .into()
+                choice(
+                    label,
+                    hint,
+                    active,
+                    SideMsg::ChoosePermission(mode.to_string()),
+                )
             })
             .collect();
-        column(items).spacing(6).into()
+        column(items).spacing(GAP).into()
     };
     ui::card("Permissions", body)
+}
+
+/// One permission mode as the web's `.ag-choice`: a full-width bordered button, its name over its hint, the chosen
+/// one tinted in signal.
+fn choice<'a>(name: &str, hint: &str, active: bool, msg: SideMsg) -> Element<'a, SideMsg> {
+    let p = crate::theme::palette();
+    let body = column![
+        text(name.to_string())
+            .font(SANS_SEMIBOLD)
+            .size(TYPE_ITEM)
+            .color(p.ink),
+        text(hint.to_string())
+            .font(SANS)
+            .size(TYPE_ITEM)
+            .color(p.ink_3),
+    ]
+    .spacing(4)
+    .width(Length::Fill);
+    button(body)
+        .padding(12)
+        .width(Length::Fill)
+        .style(move |_: &Theme, _: button::Status| button::Style {
+            background: Some(if active { p.signal_soft } else { p.sheet }.into()),
+            text_color: p.ink,
+            border: Border {
+                color: if active { p.signal } else { p.rule },
+                width: 1.0,
+                radius: crate::theme::skin().radius.into(),
+            },
+            ..Default::default()
+        })
+        .on_press(msg)
+        .into()
 }
 
 /// A `memory` event from the hub: the notes reload once the burst has settled (250 ms, as the web), so a run of
@@ -904,81 +945,217 @@ fn slugify(text: &str) -> String {
     out.trim_end_matches('-').chars().take(60).collect()
 }
 
-/// The Memory tab: the notes with a find box, the chosen one read beside them (`memory.ts`, as a
-/// list where the web draws a graph).
+/// The Memory tab (`memory.ts`): a card with the note count and the find box, then Graph or List, and the chosen note
+/// read beside the graph (or under the table).
 pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
-    if !side.memory_loaded {
-        return ui::loading();
-    }
-    if side.notes.is_empty() {
-        return ui::empty(
-            "memory",
-            "No memories yet",
-            "Notes the agent writes appear here, linked like a little brain.",
-        );
-    }
-    let count = format!(
-        "{} {}",
-        side.notes.len(),
-        if side.notes.len() == 1 {
-            "note"
-        } else {
-            "notes"
-        }
-    );
+    let count = if side.memory_loaded {
+        let n = side.notes.len();
+        format!("{n} {}", if n == 1 { "note" } else { "notes" })
+    } else {
+        String::new()
+    };
     let find = text_input("Find a note…", &side.search)
         .on_input(SideMsg::Search)
         .on_submit(SideMsg::SearchSubmit)
         .style(crate::theme::input)
-        .width(Length::Fixed(240.0));
-    let toggle = ui::btn(
-        if side.graph_on { "List" } else { "Graph" },
-        None,
-        ui::Kind::Ghost,
-        Some(SideMsg::ToggleGraph),
-    );
-    let head = row![
-        ui::faint(count),
-        Space::new().width(Length::Fill),
-        toggle,
-        find
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center);
-    if side.graph_on {
-        let q = side.search.trim().to_lowercase();
-        return column![
-            head,
-            super::memory_graph::view(&side.graph, q, side.graph_kb.as_deref()).map(SideMsg::Graph)
-        ]
-        .spacing(12)
-        .into();
-    }
+        .width(Length::Fixed(208.0));
+    let head = row![muted(count), find]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    let body: Element<'a, SideMsg> = if !side.memory_loaded {
+        muted("Loading memory…")
+    } else if side.notes.is_empty() {
+        ui::empty(
+            "brain",
+            "No memories yet",
+            "Notes the agent writes appear here, linked like a little brain.",
+        )
+    } else {
+        memory_body(side)
+    };
+    container(column![head, body].spacing(GAP))
+        .padding(16)
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
+}
 
+/// The Graph and List choices and what they show for the find text.
+fn memory_body<'a>(side: &'a Side) -> Element<'a, SideMsg> {
     let q = side.search.trim().to_lowercase();
-    let rows: Vec<Element<'a, SideMsg>> = side
+    let toolbar = row![
+        ui::btn_sm(
+            "Graph",
+            None,
+            ui::Kind::Ghost,
+            Some(SideMsg::SetGraph(true))
+        ),
+        ui::btn_sm(
+            "List",
+            None,
+            ui::Kind::Ghost,
+            Some(SideMsg::SetGraph(false))
+        ),
+    ]
+    .spacing(4);
+    let mut matched: Vec<&Note> = side
         .notes
         .iter()
         .filter(|n| q.is_empty() || n.title.to_lowercase().contains(&q))
-        .map(|n| note_row(n, side.reading.as_ref().is_some_and(|r| r.slug == n.slug)))
         .collect();
-    let list =
-        ui::scroll(column(rows).spacing(10).width(Length::Fill)).height(Length::Fixed(480.0));
-    let reader: Element<'a, SideMsg> = match &side.reading {
+    matched.sort_by_key(|n| std::cmp::Reverse(n.updated_ms));
+    if matched.is_empty() {
+        return column![toolbar, muted("No notes match.")]
+            .spacing(GAP)
+            .into();
+    }
+    let open = side.reading.as_ref().map(|n| n.slug.as_str());
+    if side.graph_on {
+        let graph = super::memory_graph::view(&side.graph, q, side.graph_kb.as_deref(), open)
+            .map(SideMsg::Graph);
+        let left = column![graph, ui::faint(GRAPH_HINT)]
+            .spacing(8)
+            .width(Length::FillPortion(13));
+        let right = container(reader(side)).width(Length::FillPortion(10));
+        column![toolbar, row![left, right].spacing(GAP)]
+            .spacing(GAP)
+            .into()
+    } else {
+        column![toolbar, note_table(&matched, open), reader(side)]
+            .spacing(GAP)
+            .into()
+    }
+}
+
+const GRAPH_HINT: &str =
+    "Click a note to read it. Solid lines are links; dashed lines join notes that share a tag.";
+
+/// A line of secondary text at the item size (the web's `.muted`).
+fn muted<'a>(content: impl Into<String>) -> Element<'a, SideMsg> {
+    text(content.into())
+        .font(SANS)
+        .size(TYPE_ITEM)
+        .color(crate::theme::palette().ink_3)
+        .into()
+}
+
+/// The open note, or the prompt to pick one.
+fn reader<'a>(side: &'a Side) -> Element<'a, SideMsg> {
+    match &side.reading {
         Some(doc) => {
             let rctx = rich::context(&side.cards, None, None);
             reader_view(doc, &side.notes, &rctx, &side.cards)
         }
-        None => ui::faint("Choose a note to read it.").into(),
-    };
-    let panes = row![
-        container(list).width(Length::Fixed(260.0)),
-        container(ui::scroll(reader).height(Length::Fixed(480.0))).width(Length::Fill),
-    ]
-    .spacing(24);
-    column![head, panes].spacing(12).into()
+        None => muted("Pick a note to read it."),
+    }
 }
 
+/// One cell of a table: padded 9 by 12, its first and last cells flush with the card's text.
+fn cell<'a>(
+    content: Element<'a, SideMsg>,
+    portion: u16,
+    first: bool,
+    last: bool,
+) -> Element<'a, SideMsg> {
+    container(content)
+        .padding(Padding {
+            top: 9.0,
+            right: if last { 0.0 } else { 12.0 },
+            bottom: 9.0,
+            left: if first { 0.0 } else { 12.0 },
+        })
+        .width(Length::FillPortion(portion))
+        .into()
+}
+
+/// The List view as the web's `.tbl`: the labels over a strong rule, a ruled row per note, the open one tinted, a click
+/// opening it.
+fn note_table<'a>(notes: &[&'a Note], open: Option<&str>) -> Element<'a, SideMsg> {
+    let p = crate::theme::palette();
+    let label = |s: &str, portion: u16, first: bool, last: bool| {
+        cell(
+            text(s.to_string())
+                .font(SANS_MEDIUM)
+                .size(TYPE_META)
+                .color(p.ink_3)
+                .into(),
+            portion,
+            first,
+            last,
+        )
+    };
+    let head = row![
+        label("Title", 4, true, false),
+        label("Kind", 2, false, false),
+        label("Tags", 3, false, false),
+        label("Updated", 2, false, true),
+    ];
+    let mut lines: Vec<Element<'a, SideMsg>> = vec![
+        head.into(),
+        container(Space::new().height(1.0))
+            .width(Length::Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().rule_strong.into()),
+                ..Default::default()
+            })
+            .into(),
+    ];
+    for n in notes {
+        let tags: Vec<Element<'a, SideMsg>> = n
+            .tags
+            .iter()
+            .map(|t| ui::badge(&format!("#{t}"), ui::Tone::Muted))
+            .collect();
+        let content = row![
+            cell(
+                text(n.title.clone())
+                    .font(SANS)
+                    .size(TYPE_ITEM)
+                    .color(p.ink)
+                    .into(),
+                4,
+                true,
+                false,
+            ),
+            cell(ui::badge(&n.kind, kind_tone(&n.kind)), 2, false, false),
+            cell(ui::chip_row(tags), 3, false, false),
+            cell(ui::faint(ago(n.updated_ms)).into(), 2, false, true),
+        ]
+        .align_y(Alignment::Center);
+        let is_open = open == Some(n.slug.as_str());
+        lines.push(
+            button(content)
+                .padding(0)
+                .width(Length::Fill)
+                .style(move |_: &Theme, status: button::Status| {
+                    let hovered =
+                        matches!(status, button::Status::Hovered | button::Status::Pressed);
+                    button::Style {
+                        background: (hovered || is_open)
+                            .then(|| crate::theme::palette().hover.into()),
+                        text_color: crate::theme::palette().ink,
+                        border: Border::default(),
+                        ..Default::default()
+                    }
+                })
+                .on_press(SideMsg::OpenNote(n.slug.clone()))
+                .into(),
+        );
+        lines.push(ui::hairline());
+    }
+    column(lines).width(Length::Fill).into()
+}
+
+/// The tone a note's kind is drawn in (the web's `KIND_T`).
+fn kind_tone(kind: &str) -> ui::Tone {
+    match kind {
+        "person" => ui::Tone::Signal,
+        "journal" => ui::Tone::Warn,
+        _ => ui::Tone::Info,
+    }
+}
+
+/// A loop as the web's `.ag-row`: the prompt, its state and runs, the last summary, and Stop while it runs.
 fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
     let tone = match l.state.as_str() {
         "running" => ui::Tone::Info,
@@ -990,148 +1167,194 @@ fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
     } else {
         "∞".to_string()
     };
-    let mut meta = row![
-        ui::badge(&l.state, tone),
-        ui::faint(format!("every {} min", l.every_secs / 60)),
-        ui::faint(format!("runs {}/{}", l.runs, max)),
-    ]
-    .spacing(8);
+    let mut meta = format!("every {} min · runs {}/{}", l.every_secs / 60, l.runs, max);
     if let Some(at) = l.last_work {
-        meta = meta.push(ui::faint(format!("last {}", ago(at))));
+        meta.push_str(&format!(" · last {}", ago(at)));
     }
+    let mut lines: Vec<Element<'a, SideMsg>> = vec![
+        text(clip(&l.prompt, 80))
+            .font(SANS)
+            .size(TYPE_ITEM)
+            .color(crate::theme::palette().ink)
+            .into(),
+        row![ui::badge(&l.state, tone), ui::faint(meta)]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+    ];
+    if let Some(summary) = &l.last_summary {
+        lines.push(ui::faint(clip(summary, 120)).into());
+    }
+    let mut line = row![column(lines).spacing(4).width(Length::Fill)]
+        .spacing(8)
+        .align_y(Alignment::Start);
     if l.state == "running" {
-        meta = meta.push(ui::btn(
+        line = line.push(ui::btn_sm(
             "Stop",
             None,
             ui::Kind::Danger,
             Some(SideMsg::StopLoop(l.id.clone())),
         ));
     }
-    let mut items: Vec<Element<'a, SideMsg>> = vec![
-        ui::sans(clip(&l.prompt, 80), 12.0, crate::theme::palette().ink).into(),
-        meta.into(),
-    ];
-    if let Some(summary) = &l.last_summary {
-        items.push(ui::faint(clip(summary, 120)).into());
-    }
-    column(items).spacing(4).into()
+    container(line)
+        .padding(Padding {
+            top: 8.0,
+            right: 0.0,
+            bottom: 8.0,
+            left: 0.0,
+        })
+        .width(Length::Fill)
+        .into()
 }
 
-fn note_row<'a>(n: &'a Note, open: bool) -> Element<'a, SideMsg> {
-    let tone = match n.kind.as_str() {
-        "person" => ui::Tone::Signal,
-        "journal" => ui::Tone::Warn,
-        _ => ui::Tone::Info,
-    };
-    let kind = if open {
-        ui::Kind::Primary
-    } else {
-        ui::Kind::Ghost
-    };
-    let tags = n
-        .tags
-        .iter()
-        .map(|t| format!("#{t}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    column![
-        row![
-            ui::badge(&n.kind, tone),
-            ui::btn(
-                &n.title,
-                None,
-                kind,
-                Some(SideMsg::OpenNote(n.slug.clone()))
-            )
-        ]
-        .spacing(8),
-        ui::faint(tags),
-    ]
-    .spacing(2)
-    .into()
-}
-
-/// One note open: its kind and tags, its title, the stamp (when it was updated and by which work),
-/// its body, and the notes that link to it.
+/// One note open: its kind, title and stamp (when it was updated and by which work), its tags as chips, its body, and
+/// the notes that link to it (the web's `.mem-read`).
 fn reader_view<'a>(
     doc: &'a Note,
     notes: &'a [Note],
     rctx: &rich::RichCtx,
-    cards: &rich::Cards,
+    cards: &'a rich::Cards,
 ) -> Element<'a, SideMsg> {
-    let tone = match doc.kind.as_str() {
-        "person" => ui::Tone::Signal,
-        "journal" => ui::Tone::Warn,
-        _ => ui::Tone::Info,
-    };
-    let tags = doc
-        .tags
-        .iter()
-        .map(|t| format!("#{t}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut stamp = vec![format!("Updated {}", ago(doc.updated_ms))];
+    let mut stamp = format!("Updated {}", ago(doc.updated_ms));
     if let Some(p) = &doc.provenance {
         if let Some(task) = &p.task {
-            stamp.push(format!("task {task}"));
+            stamp.push_str(&format!(" · task {task}"));
         }
         if let Some(work) = p.work {
-            stamp.push(format!("work #{work}"));
+            stamp.push_str(&format!(" · work #{work}"));
         }
     }
     let mut items: Vec<Element<'a, SideMsg>> = vec![
-        row![ui::badge(&doc.kind, tone), ui::faint(tags)]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into(),
-        ui::sans(doc.title.clone(), 18.0, crate::theme::palette().ink).into(),
-        ui::faint(stamp.join(" · ")).into(),
-        rich::view(&doc.body, rctx, cards, &on_rich),
+        row![
+            ui::badge(&doc.kind, kind_tone(&doc.kind)),
+            text(doc.title.clone())
+                .font(SANS_SEMIBOLD)
+                .size(TYPE_ITEM)
+                .color(crate::theme::palette().ink),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into(),
+        ui::faint(stamp).into(),
     ];
+    if !doc.tags.is_empty() {
+        let tags: Vec<Element<'a, SideMsg>> = doc
+            .tags
+            .iter()
+            .map(|t| ui::badge(&format!("#{t}"), ui::Tone::Muted))
+            .collect();
+        items.push(ui::chip_row(tags));
+    }
+    items.push(rich::view(&doc.body, rctx, cards, &on_rich));
     if !doc.backlinks.is_empty() {
-        // Each backlink opens its note; one that names no note yet reads as a missing chip.
+        // Each backlink opens its note; one that names no note yet reads as a plain chip.
         let chips: Vec<Element<'a, SideMsg>> = doc
             .backlinks
             .iter()
-            .map(|b| -> Element<'a, SideMsg> {
-                match resolve_ref(notes, b) {
-                    Some(n) => ui::btn(
-                        &n.title,
-                        None,
-                        ui::Kind::Ghost,
-                        Some(SideMsg::OpenNote(n.slug.clone())),
-                    ),
-                    None => ui::faint(format!("{b} (missing)")).into(),
-                }
+            .map(|b| match resolve_ref(notes, b) {
+                Some(n) => link_chip(&n.title, n.slug.clone()),
+                None => ui::badge(b, ui::Tone::Muted),
             })
             .collect();
         items.push(
-            column![
-                ui::label("Linked from"),
-                iced::widget::Row::with_children(chips).spacing(6)
-            ]
-            .spacing(4)
-            .into(),
+            column![sub_head("Linked from"), ui::chip_row(chips)]
+                .spacing(8)
+                .into(),
         );
     }
-    column(items).spacing(10).into()
+    column(items).spacing(8).into()
 }
 
-/// A labelled limit field; the placeholder says the plaza default applies when it is blank.
+/// A note's title as a chip that opens the note (the web's `.chip.t-info` button).
+fn link_chip<'a>(title: &str, slug: String) -> Element<'a, SideMsg> {
+    let ink = crate::theme::palette().ink;
+    button(ui::badge(title, ui::Tone::Info))
+        .padding(0)
+        .style(move |_: &Theme, _: button::Status| button::Style {
+            background: None,
+            text_color: ink,
+            border: Border::default(),
+            ..Default::default()
+        })
+        .on_press(SideMsg::OpenNote(slug))
+        .into()
+}
+
+/// A labelled limit field: a label over an input, the placeholder saying the plaza default applies when it is blank.
 fn field<'a>(
-    label: &'static str,
+    label: &str,
     placeholder: &'static str,
     value: &'a str,
     on_input: fn(String) -> SideMsg,
 ) -> Element<'a, SideMsg> {
-    column![
-        ui::label(label),
+    labelled(
+        label,
         text_input(placeholder, value)
             .on_input(on_input)
             .style(crate::theme::input)
+            .width(Length::Fill)
+            .into(),
+        None,
+    )
+}
+
+/// The New loop dialog (the web's `modal('New loop')`): the prompt, the minutes between runs and the most runs (0 until
+/// the agent says LOOP DONE), with Start loop at the foot of the body. `None` while it is closed; the page lays it over
+/// its screen with `ui::with_modal`.
+pub fn dialog<'a>(side: &'a Side) -> Option<Element<'a, SideMsg>> {
+    if !side.new_loop {
+        return None;
+    }
+    let prompt = labelled(
+        "Prompt",
+        text_input("What the agent should do on each run…", &side.loop_prompt)
+            .on_input(SideMsg::LoopPrompt)
+            .on_submit(SideMsg::StartLoop)
+            .style(crate::theme::input)
+            .width(Length::Fill)
+            .into(),
+        None,
+    );
+    let every = labelled(
+        "Every (minutes)",
+        text_input("30", &side.loop_every)
+            .on_input(SideMsg::LoopEvery)
+            .style(crate::theme::input)
+            .width(Length::Fill)
+            .into(),
+        None,
+    );
+    let max = labelled(
+        "Max runs",
+        text_input("0", &side.loop_max)
+            .on_input(SideMsg::LoopMax)
+            .style(crate::theme::input)
+            .width(Length::Fill)
+            .into(),
+        Some("0 = until the agent says LOOP DONE"),
+    );
+    let body = column![
+        prompt,
+        every,
+        max,
+        row![
+            Space::new().width(Length::Fill),
+            ui::btn_sm(
+                "Start loop",
+                None,
+                ui::Kind::Primary,
+                Some(SideMsg::StartLoop)
+            ),
+        ],
     ]
-    .spacing(4)
-    .into()
+    .spacing(GAP);
+    Some(ui::modal(
+        "New loop",
+        body.into(),
+        Vec::new(),
+        SideMsg::ToggleNewLoop,
+        460.0,
+    ))
 }
 
 // ---- Model and effort helpers (`agent-detail.ts`) ----

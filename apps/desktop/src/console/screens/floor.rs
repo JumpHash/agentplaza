@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use glam::Vec3;
 use iced::widget::{Space, column, container, opaque, pin, row, shader, stack};
-use iced::{Alignment, Border, Color, Element, Length, Point, Shadow, Subscription, Task, Theme};
+use iced::{Alignment, Border, Color, Element, Length, Point, Subscription, Task, Theme};
 use serde_json::Value;
 
 use super::Id;
@@ -238,10 +238,10 @@ fn floor_msg(action: Action) -> Msg {
     }
 }
 
-/// The grid's header action: the view's reset.
+/// The grid's reset control, bottom-right of the 3D box (the web's `.f3d-ctl`).
 pub fn reset_button<'a>() -> Element<'a, Msg> {
-    ui::btn(
-        "Reset view",
+    ui::btn_sm(
+        "Reset",
         Some("refresh"),
         ui::Kind::Secondary,
         Some(Msg::ResetView),
@@ -276,6 +276,21 @@ pub fn body<'a>(state: &'a State) -> Element<'a, Msg> {
             .into(),
     );
 
+    // The reset control floats over the stage, bottom-right, in the overlay pill.
+    layers.push(
+        container(
+            container(reset_button())
+                .padding(3)
+                .style(|_: &Theme| pill_style()),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::End)
+        .align_y(Alignment::End)
+        .padding(12)
+        .into(),
+    );
+
     let stage = container(stack(layers))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -283,7 +298,7 @@ pub fn body<'a>(state: &'a State) -> Element<'a, Msg> {
             border: Border {
                 color: crate::theme::palette().rule,
                 width: 1.0,
-                radius: 0.0.into(),
+                radius: crate::theme::skin().radius_lg.into(),
             },
             ..Default::default()
         });
@@ -420,33 +435,41 @@ fn legend<'a>(palette: &Palette) -> Element<'a, Msg> {
     .spacing(14)
     .align_y(Alignment::Center);
     container(body)
-        .padding([6, 10])
-        .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().sheet.into()),
-            border: Border {
-                color: crate::theme::palette().ink,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
+        .padding([8, 10])
+        .style(|_: &Theme| pill_style())
         .into()
+}
+
+/// The overlay pill of the stage (the web's `.f3d-ctl` and legend): raised, ruled, rounded, a little see-through.
+fn pill_style() -> container::Style {
+    let p = crate::theme::palette();
+    container::Style {
+        background: Some(
+            Color {
+                a: 0.86,
+                ..p.raised
+            }
+            .into(),
+        ),
+        border: Border {
+            color: p.rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
+        ..Default::default()
+    }
 }
 
 fn key<'a>(colour: Color, name: &str) -> Element<'a, Msg> {
     let swatch =
-        container(Space::new().width(10.0).height(10.0)).style(move |_: &Theme| container::Style {
+        container(Space::new().width(9.0).height(9.0)).style(move |_: &Theme| container::Style {
             background: Some(colour.into()),
-            border: Border {
-                color: crate::theme::palette().ink,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
+            border: Border::default().rounded(4.5),
             ..Default::default()
         });
     row![
         swatch,
-        ui::sans(name.to_string(), 10.5, crate::theme::palette().ink)
+        ui::mono(name.to_string(), 10.5, crate::theme::palette().ink_3)
     ]
     .spacing(6)
     .align_y(Alignment::Center)
@@ -470,9 +493,9 @@ fn role_tag<'a>(role: &str, hue: f32) -> Element<'a, Msg> {
     .padding([1, 5])
     .style(|_: &Theme| container::Style {
         border: Border {
-            color: crate::theme::palette().ink,
+            color: crate::theme::palette().rule_strong,
             width: 1.0,
-            radius: 0.0.into(),
+            radius: crate::theme::skin().radius_sm.into(),
         },
         ..Default::default()
     })
@@ -495,26 +518,17 @@ fn status_tone(status: &str) -> ui::Tone {
     }
 }
 
-/// The print look shared by the popup and the legend: sheet, 1px ink border, a hard shadow.
+/// The card look of the popup (the web's `.floor-card.machine-card`): raised, ruled, rounded, with the card's pop shadow.
 fn boxed_style(highlighted: bool) -> container::Style {
+    let p = crate::theme::palette();
     container::Style {
-        background: Some(crate::theme::palette().sheet.into()),
+        background: Some(p.raised.into()),
         border: Border {
-            color: if highlighted {
-                crate::theme::palette().signal
-            } else {
-                crate::theme::palette().ink
-            },
+            color: if highlighted { p.signal } else { p.rule_strong },
             width: 1.0,
-            radius: 0.0.into(),
+            radius: crate::theme::skin().radius_lg.into(),
         },
-        // The print shadow (2px 2px 0 ink). iced drops the text of a box whose shadow has exactly
-        // zero blur, so a hair of blur keeps it crisp and the text drawn.
-        shadow: Shadow {
-            color: crate::theme::palette().ink,
-            offset: iced::Vector::new(2.0, 2.0),
-            blur_radius: 0.6,
-        },
+        shadow: crate::theme::skin().shadow_pop,
         ..Default::default()
     }
 }

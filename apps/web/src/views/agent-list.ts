@@ -6,28 +6,16 @@ import { api, type Agent, type AgentStatus, type WorkKind } from '../api';
 import { go, href } from '../router';
 import { inScope, liveProjects, onBench, projects, projectTitle, scope } from '../scope';
 import { agents, refreshAgents } from '../store';
-import {
-  attempt,
-  badge,
-  button,
-  card,
-  clip,
-  compact,
-  dot,
-  empty,
-  select,
-  table,
-  type Column,
-  type Tone,
-} from '../ui/components';
+import { attempt, badge, button, card, clip, compact, dot, empty, select, table, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { avatar } from './agent-profile';
 import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
-import '../styles/agents.css';
 
 const STATUS_TONE: Record<AgentStatus, Tone> = { working: 'info', idle: 'ok', offline: 'muted', asleep: 'muted', dozing: 'muted' };
 const WORK_TONE: Record<WorkKind, Tone> = { task: 'accent', chat: 'info', message: 'muted', motion: 'warn' };
+/** The badge a model's source earns on the roster: the agent's own, its project's, or its role's. */
+const SOURCE: Partial<Record<Agent['model_source'], [string, Tone]>> = { agent: ['own', 'info'], project: ['project', 'accent'], role: ['role', 'muted'] };
 
 /**
  * The status pill: the dot in the status's tone, and a word for the states the dot alone does not tell apart
@@ -52,10 +40,32 @@ function pillWord(a: Agent): HTMLElement | null {
 
 /** Where an agent works, as the roster says it: its project (a link), the bench, or every project (the orchestrator). */
 export function projectCell(a: Agent): HTMLElement {
-  if (a.project) return h('a.truncate', { href: href('projects', a.project), title: a.held ?? undefined }, projectTitle(a.project));
-  if (a.tier === 'orchestrator') return h('span.faint', { style: 'white-space: nowrap' }, 'Every project');
+  if (a.project) return h('a.ag-clip', { href: href('projects', a.project), title: a.held ?? undefined }, projectTitle(a.project));
+  if (a.tier === 'orchestrator') return h('span.muted', null, 'Every project');
   if (onBench(a)) return badge('Bench', 'muted');
-  return h('span.faint', null, '—');
+  return h('span.muted', null, '—');
+}
+
+/** The agent's name, role and robot: its status dot and word on the name line. */
+function agentCell(a: Agent, size: number): HTMLElement {
+  return h(
+    'div.ag-agent',
+    null,
+    avatar(a, size),
+    h('div.ag-who', null, h('div.ag-name', null, dot(statusPill(a.status).tone), ' ', agentName(a), ' ', pillWord(a)), h('div.ag-role', null, roleLabel(a.role))),
+  );
+}
+
+/** The model as the roster shows it: the id in mono, then the orchestrator and source badges. */
+function modelCell(a: Agent): HTMLElement {
+  const source = SOURCE[a.model_source];
+  return h(
+    'div.ag-mdl',
+    null,
+    h('span.ag-model', { title: a.model }, a.model),
+    a.tier === 'orchestrator' ? badge('orchestrator', 'accent') : null,
+    source ? badge(source[0], source[1]) : null,
+  );
 }
 
 export function mountAgentList(root: HTMLElement): Cleanup {
@@ -87,48 +97,29 @@ export function mountAgentList(root: HTMLElement): Cleanup {
   });
 
   const columns: Column<Agent>[] = [
-    {
-      label: 'Agent',
-      cell: (a) =>
-        h(
-          'div.row.agent-cell',
-          null,
-          avatar(a, 40),
-          h('div', null, h('div.row', null, dot(statusPill(a.status).tone), h('strong.truncate', null, agentName(a)), pillWord(a)), h('div.faint.truncate', null, roleLabel(a.role))),
-        ),
-    },
+    { label: 'Agent', cell: (a) => agentCell(a, 30) },
     // Under All projects, where each agent works; under a project, all of them work on it.
     ...(inProject ? [] : [{ label: 'Project', cell: (a: Agent) => projectCell(a) }]),
-    {
-      label: 'Model',
-      cell: (a) =>
-        h(
-          'div.row.agent-model',
-          null,
-          h('span.mono.truncate', null, a.model),
-          a.tier === 'orchestrator' ? badge('orchestrator', 'accent') : null,
-          a.model_source !== 'default' ? badge(a.model_source === 'agent' ? 'own' : a.model_source) : null,
-        ),
-    },
+    { label: 'Model', cell: modelCell },
     {
       label: 'Work',
       cell: (a) =>
         a.work
-          ? h('div.row.agent-work', null, badge(a.work.kind, WORK_TONE[a.work.kind]), h('span.truncate', null, clip(a.work.prompt, 56)))
-          : h('span.faint', null, '—'),
+          ? h('span.ag-work', { title: a.work.prompt }, badge(a.work.kind, WORK_TONE[a.work.kind]), h('span.ag-work-t', null, clip(a.work.prompt, 90)))
+          : h('span.muted', null, '—'),
     },
     { label: 'Tokens', num: true, cell: (a) => compact(a.usage.input_tokens + a.usage.output_tokens) },
-    { label: '', width: '1%', cell: (a) => actions(a) },
+    { label: '', cell: (a) => actions(a) },
   ];
 
   root.append(
     h(
-      'div.view-head',
+      'header.view-head',
       null,
-      h('h1', null, 'Agents', inProject ? h('span.faint', null, ` · ${projectTitle(inProject)}`) : null),
-      h('div.row.agent-filters', null, roleSel, statusSel, spawnHead),
+      h('div', null, h('h1', null, 'Agents', inProject ? h('span.view-sub', null, ` · ${projectTitle(inProject)}`) : null)),
+      h('div.ag-head-actions', null, roleSel, statusSel, spawnHead),
     ),
-    card(null, body, { flush: true }),
+    card('Agents', body, { flush: true }),
     ...(inProject ? [bench] : []),
   );
 
@@ -137,7 +128,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
 
   function actions(a: Agent): HTMLElement {
     return h(
-      'div.row.agent-actions',
+      'div.cluster.ag-acts',
       null,
       // Under its project, an agent can go back to the bench (its work there stops).
       inProject && a.project === inProject
@@ -186,6 +177,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
     const live = liveProjects(projects.get());
     if (!live.length) return null;
     const sel = select([{ value: '', label: 'Put on…' }, ...live.map((p) => ({ value: p.id, label: p.title }))], '');
+    sel.setAttribute('aria-label', 'Put on a project');
     sel.addEventListener('click', (ev) => ev.stopPropagation());
     sel.addEventListener('change', () => {
       if (!sel.value) return;
@@ -199,28 +191,24 @@ export function mountAgentList(root: HTMLElement): Cleanup {
   function drawBench(list: Agent[]): void {
     if (!inProject) return;
     const waiting = list.filter(onBench);
-    const rows = waiting.map((a) =>
-      h(
-        'div.row.bench-row',
-        null,
-        avatar(a, 28),
-        h('div', { style: 'flex: 1; min-width: 0' }, h('strong.truncate', null, agentName(a)), h('div.faint.truncate', null, roleLabel(a.role))),
-        pillWord(a),
-        button('Add to project', () => void attempt(() => api.addMember(inProject, a.cid), `${agentName(a)} joined ${projectTitle(inProject)}`).then(() => void refreshAgents()), {
-          size: 'sm',
-          icon: 'plus',
-        }),
-      ),
-    );
-    replace(
-      bench,
-      card(
-        'The bench',
-        waiting.length
-          ? h('div.stack', null, h('p.faint', null, 'Agents on no project do nothing and sleep. Add one to give it this project’s work.'), ...rows)
-          : h('p.faint', null, 'Nobody is on the bench: every agent works on a project.'),
-      ),
-    );
+    const benchCols: Column<Agent>[] = [
+      { label: 'Agent', cell: (a) => agentCell(a, 28) },
+      { label: 'Model', cell: modelCell },
+      {
+        label: '',
+        cell: (a) =>
+          button('Add to project', () => void attempt(() => api.addMember(inProject, a.cid), `${agentName(a)} joined ${projectTitle(inProject)}`).then(() => void refreshAgents()), {
+            size: 'sm',
+            icon: 'plus',
+          }),
+      },
+    ];
+    const content = waiting.length
+      ? [h('p.hint', null, 'Agents on no project do nothing and sleep. Add one to give it this project’s work.'), h('div.tbl-wrap', null, table(benchCols, waiting, undefined, (a) => `bench-${a.cid}`))]
+      : [h('p.hint', null, 'Nobody is on the bench: every agent works on a project.')];
+    const next = card('The bench', content);
+    next.classList.add('ag-bench');
+    replace(bench, next);
   }
 
   function render(all: Agent[]): void {
@@ -245,7 +233,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
       replace(body, empty('search', 'No agents match', 'Clear the filters to see the roster.', button('Clear filters', clearFilters, { kind: 'ghost' })));
       return;
     }
-    replace(body, h('div.table-scroll', null, table(columns, rows, (a) => go('agents', a.cid), (a) => `ag-${a.cid}`)));
+    replace(body, h('div.tbl-wrap', null, table(columns, rows, (a) => go('agents', a.cid), (a) => `ag-${a.cid}`)));
   }
 
   function syncRoles(list: Agent[]): void {

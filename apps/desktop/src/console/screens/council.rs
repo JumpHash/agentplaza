@@ -4,14 +4,13 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{Space, column, container, row, text_input};
-use iced::{Alignment, Element, Length, Padding, Task, Theme};
+use iced::widget::{Space, column, container, pick_list, row, text, text_editor};
+use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
 use crate::console::{Ctx, client, roles, ui};
-use crate::theme::{self};
 
 /// A motion as the hub reports it (`GET /v1/motions`).
 #[derive(Debug, Clone, Deserialize)]
@@ -131,7 +130,7 @@ pub struct State {
     pub error: Option<String>,
     /// The open decision form, if any.
     pub pending: Option<Pending>,
-    pub reason: String,
+    pub reason: text_editor::Content,
     /// A decision is on its way to the hub.
     pub busy: bool,
     pub decide_error: Option<String>,
@@ -149,7 +148,7 @@ pub enum Msg {
     Loaded(Result<Envelope, String>),
     /// Open the decision form for a motion.
     Open(String, Verdict),
-    Reason(String),
+    Reason(text_editor::Action),
     Cancel,
     Submit,
     Decided(Result<Value, String>),
@@ -214,12 +213,12 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Open(id, verdict) => {
             state.pending = Some(Pending { id, verdict });
-            state.reason.clear();
+            state.reason = text_editor::Content::new();
             state.decide_error = None;
             Task::none()
         }
-        Msg::Reason(reason) => {
-            state.reason = reason;
+        Msg::Reason(action) => {
+            state.reason.perform(action);
             Task::none()
         }
         Msg::Cancel => {
@@ -240,7 +239,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             state.busy = true;
             state.decide_error = None;
-            let body = decide_body(pending.verdict, &state.reason);
+            let body = decide_body(pending.verdict, &state.reason.text());
             let path = format!("/v1/motions/{}/decide", pending.id);
             let client = ctx.client.clone();
             client::task(move || client.post::<Value>(&path, &body), Msg::Decided)
@@ -248,7 +247,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Decided(Ok(_)) => {
             state.busy = false;
             state.pending = None;
-            state.reason.clear();
+            state.reason = text_editor::Content::new();
             load(state, ctx)
         }
         Msg::Decided(Err(error)) => {
@@ -259,7 +258,36 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// One state the list can be narrowed to; the first choice is every state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateChoice {
+    value: Option<String>,
+    label: String,
+}
+
+impl std::fmt::Display for StateChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+    // The state filter sits in the head, as the web's `State` select does.
+    let options: Vec<StateChoice> = std::iter::once(StateChoice {
+        value: None,
+        label: "All states".to_string(),
+    })
+    .chain(STATES.iter().map(|s| StateChoice {
+        value: Some((*s).to_string()),
+        label: s.replace('_', " "),
+    }))
+    .collect();
+    let selected = options.iter().find(|c| c.value == state.filter).cloned();
+    let filter = pick_list(options, selected, |c: StateChoice| Msg::Filter(c.value))
+        .style(crate::theme::pick_list)
+        .width(Length::Fixed(140.0));
+    let head = ui::view_head("Council", vec![filter.into()]);
+
     let body: Element<'a, Msg> = match (&state.error, &state.motions) {
         (Some(error), _) => ui::empty("alert", "Council unreachable", error),
         (None, None) => ui::loading(),
@@ -273,54 +301,68 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
                 .iter()
                 .filter(|m| state.filter.as_deref().is_none_or(|f| m.state == f))
                 .collect();
-            let list: Element<'a, Msg> = if shown.is_empty() {
+            if shown.is_empty() {
                 ui::empty(
                     "council",
                     "No motions in this state",
                     "Pick another state to see the rest.",
                 )
             } else {
-                column(
-                    shown
-                        .into_iter()
-                        .map(|m| motion_card(m, state))
-                        .collect::<Vec<_>>(),
-                )
-                .spacing(14)
-                .width(Length::Fill)
-                .into()
-            };
-            column![filter_row(state.filter.as_deref()), list]
-                .spacing(14)
-                .width(Length::Fill)
-                .into()
+                column(shown.into_iter().map(motion_card).collect::<Vec<_>>())
+                    .spacing(12)
+                    .width(Length::Fill)
+                    .into()
+            }
         }
     };
-    ui::sheet(ui::view_head("Council", vec![]), body)
+    // The owner's decision is a dialog over the screen, as the web opens its `modal()`.
+    let dialog = state.pending.as_ref().and_then(|pending| {
+        let motion = state
+            .motions
+            .as_ref()?
+            .iter()
+            .find(|m| m.id == pending.id)?;
+        Some(decide_dialog(state, pending, motion))
+    });
+    ui::with_modal(ui::sheet(head, body), dialog)
 }
 
-/// The state filter: an "All" chip, then one chip per state; the chosen one is filled.
-fn filter_row<'a>(active: Option<&str>) -> Element<'a, Msg> {
-    let all = filter_chip("All", None, active);
-    let states = STATES
-        .iter()
-        .copied()
-        .map(|s| filter_chip(&s.replace('_', " "), Some(s), active));
-    ui::chip_row(std::iter::once(all).chain(states).collect())
-}
-
-fn filter_chip<'a>(label: &str, value: Option<&str>, active: Option<&str>) -> Element<'a, Msg> {
-    let kind = if value == active {
-        ui::Kind::Primary
-    } else {
-        ui::Kind::Secondary
+/// The decision dialog (the web's `decide()`): the motion, the reason, and Cancel with the verdict button.
+fn decide_dialog<'a>(state: &'a State, pending: &Pending, motion: &'a Motion) -> Element<'a, Msg> {
+    let verdict = pending.verdict;
+    let title = match verdict {
+        Verdict::Approve => "Approve motion",
+        Verdict::Reject => "Reject motion",
     };
-    ui::btn_sm(
-        label,
+    let reason = text_editor(&state.reason)
+        .style(crate::theme::editor)
+        .placeholder("Reason")
+        .height(Length::Fixed(96.0))
+        .padding(8.0)
+        .on_action(Msg::Reason);
+    let mut body = column![
+        ui::faint(motion.text.clone()),
+        text("Reason")
+            .size(12.0)
+            .color(crate::theme::palette().ink_3),
+        reason,
+    ]
+    .spacing(8)
+    .width(Length::Fill);
+    if let Some(error) = &state.decide_error {
+        body = body.push(ui::error_line(error));
+    }
+    let submit = ui::btn_sm(
+        verdict.verb(),
         None,
-        kind,
-        Some(Msg::Filter(value.map(str::to_string))),
-    )
+        verdict.kind(),
+        (!state.busy).then_some(Msg::Submit),
+    );
+    let foot = vec![
+        ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
+        submit,
+    ];
+    ui::modal(title, body.into(), foot, Msg::Cancel, 460.0)
 }
 
 /// Whether a motion waits for the owner's decision (the web's `needsOwner`).
@@ -354,103 +396,158 @@ fn ago(ms: f64) -> String {
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as f64)
-        .unwrap_or(0.0);
-    let s = ((now - ms) / 1000.0).round().max(0.0) as u64;
-    match s {
-        0..=4 => "just now".to_string(),
-        5..=59 => format!("{s}s ago"),
-        60..=3599 => format!("{}m ago", s / 60),
-        3600..=86399 => format!("{}h ago", s / 3600),
-        _ => format!("{}d ago", s / 86400),
+        .map_or(ms, |d| d.as_millis() as f64);
+    let s = ((now - ms) / 1000.0).round().max(0.0);
+    if s < 45.0 {
+        "just now".to_string()
+    } else if s < 3600.0 {
+        format!("{} min ago", (s / 60.0).round().max(1.0))
+    } else if s < 86400.0 {
+        format!("{} h ago", (s / 3600.0).round())
+    } else {
+        format!("{} d ago", (s / 86400.0).round())
     }
 }
 
-/// The tally bar: yes, no, abstain, then the seats not yet voted, each as its share of the seats.
-fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
-    let rest = t.seats.saturating_sub(t.yes + t.no + t.abstain);
-    let mut bar = row![].width(Length::Fill).height(Length::Fixed(8.0));
-    for (n, colour) in [
-        (t.yes, crate::theme::palette().ok),
-        (t.no, crate::theme::palette().crit),
-        (t.abstain, crate::theme::palette().ink_3),
-        (rest, crate::theme::palette().rule_faint),
-    ] {
-        if n > 0 {
-            bar = bar.push(
-                container(Space::new())
-                    .width(Length::FillPortion(n as u16))
-                    .height(Length::Fill)
-                    .style(move |_: &Theme| container::Style {
-                        background: Some(colour.into()),
-                        ..Default::default()
-                    }),
-            );
-        }
+/// A card's surface for a motion (the web's `.cn-card`): the sheet, ruled, the skin's large radius, no shadow.
+fn card_surface(_: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(crate::theme::palette().ink),
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
+        ..container::Style::default()
     }
-    container(bar)
-        .width(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().rule_faint.into()),
+}
+
+/// A part of the tally bar: `portion` thousandths of its width, filled in `colour`.
+fn tally_part<'a>(portion: u16, colour: Color) -> Element<'a, Msg> {
+    container(Space::new().width(Length::Fill).height(Length::Fill))
+        .width(Length::FillPortion(portion))
+        .height(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(colour.into()),
             ..Default::default()
         })
         .into()
 }
 
+/// The tally bar (the web's `.cn-tally`): yes, no, abstain, each as its share of the seats, on the rule's track.
+fn tally_bar<'a>(t: &Tally) -> Element<'a, Msg> {
+    let share = |n: u32| -> u16 {
+        if t.seats == 0 {
+            0
+        } else {
+            ((n as f32 / t.seats as f32) * 1000.0).round().min(1000.0) as u16
+        }
+    };
+    let parts = [
+        (share(t.yes), crate::theme::palette().ok),
+        (share(t.no), crate::theme::palette().crit),
+        (share(t.abstain), crate::theme::palette().ink_3),
+    ];
+    let used: u16 = parts.iter().map(|(n, _)| *n).sum::<u16>().min(1000);
+    let mut bar = row![].width(Length::Fill).height(Length::Fill);
+    for (n, colour) in parts {
+        if n > 0 {
+            bar = bar.push(tally_part(n, colour));
+        }
+    }
+    if used < 1000 {
+        bar = bar.push(
+            Space::new()
+                .width(Length::FillPortion(1000 - used))
+                .height(Length::Fill),
+        );
+    }
+    container(bar)
+        .width(Length::Fill)
+        .height(Length::Fixed(12.0))
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule.into()),
+            border: Border {
+                radius: 6.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// One seat's vote (the web's `.cn-vote`): the seat's role, the vote as a chip, the reason; above a rule.
 fn vote_row<'a>(v: &Vote) -> Element<'a, Msg> {
-    row![
-        ui::faint(roles::label(&v.seat)),
+    let line = row![
+        container(ui::faint(roles::label(&v.seat))).width(Length::Fixed(160.0)),
         ui::badge(&v.vote, vote_tone(&v.vote)),
-        container(ui::faint(v.reason.clone())).width(Length::Fill),
+        container(ui::sans(
+            v.reason.clone(),
+            12.5,
+            crate::theme::palette().ink,
+        ))
+        .width(Length::Fill),
     ]
-    .spacing(12)
+    .spacing(8)
     .width(Length::Fill)
-    .align_y(Alignment::Center)
+    .align_y(Alignment::Center);
+    column![
+        ui::hairline(),
+        container(line).padding([8.0, 0.0]).width(Length::Fill),
+    ]
     .into()
 }
 
-fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
+fn motion_card<'a>(m: &Motion) -> Element<'a, Msg> {
     let t = &m.tally;
+    let p = crate::theme::palette();
     let head = row![
         ui::badge(&m.kind, ui::Tone::Signal),
         ui::badge(&m.state, state_tone(&m.state)),
         Space::new().width(Length::Fill),
         ui::faint(ago(m.created_at)),
     ]
-    .spacing(10)
+    .spacing(8)
     .align_y(Alignment::Center);
 
     let mut stack = column![
-        container(ui::prose(m.text.clone())).max_width(620),
+        head,
+        text(m.text.clone())
+            .font(crate::theme::SANS_SEMIBOLD)
+            .size(14.0)
+            .color(p.ink)
+            .width(Length::Fill),
         tally_bar(t),
-        ui::faint(format!(
-            "{} yes · {} no · {} abstain · {}/{}",
-            t.yes, t.no, t.abstain, t.voted, t.seats
-        )),
+        ui::sans(
+            format!(
+                "{} yes · {} no · {} abstain · {}/{}",
+                t.yes, t.no, t.abstain, t.voted, t.seats
+            ),
+            12.5,
+            p.ink_2,
+        ),
         ui::faint(format!("Quorum: {}", m.quorum.rule)),
     ]
-    .spacing(12)
+    .spacing(8)
     .width(Length::Fill);
 
     if !m.votes.is_empty() {
-        stack = stack.push(
-            column(m.votes.iter().map(vote_row).collect::<Vec<_>>())
-                .spacing(6)
-                .width(Length::Fill),
-        );
+        stack = stack
+            .push(column(m.votes.iter().map(vote_row).collect::<Vec<_>>()).width(Length::Fill));
     }
 
     if needs_owner(&m.state) {
         stack = stack.push(
             row![
                 Space::new().width(Length::Fill),
-                ui::btn(
+                ui::btn_sm(
                     "Reject",
                     Some("x"),
                     ui::Kind::Danger,
                     Some(Msg::Open(m.id.clone(), Verdict::Reject))
                 ),
-                ui::btn(
+                ui::btn_sm(
                     "Approve",
                     Some("check"),
                     ui::Kind::Primary,
@@ -460,52 +557,13 @@ fn motion_card<'a>(m: &Motion, state: &'a State) -> Element<'a, Msg> {
             .spacing(8)
             .align_y(Alignment::Center),
         );
-        if let Some(pending) = state.pending.as_ref().filter(|p| p.id == m.id) {
-            let input = text_input("Reason", &state.reason)
-                .on_input(Msg::Reason)
-                .on_submit(Msg::Submit)
-                .style(theme::input);
-            let submit = ui::btn(
-                pending.verdict.verb(),
-                None,
-                pending.verdict.kind(),
-                (!state.busy).then_some(Msg::Submit),
-            );
-            let mut form = column![
-                ui::label(&format!("{} motion", pending.verdict.verb())),
-                input,
-                row![
-                    Space::new().width(Length::Fill),
-                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel)),
-                    submit
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            ]
-            .spacing(10)
-            .width(Length::Fill);
-            if let Some(error) = &state.decide_error {
-                form = form.push(ui::error_line(error));
-            }
-            stack = stack.push(form);
-        }
     }
 
-    container(column![
-        container(head)
-            .padding(Padding {
-                top: 12.0,
-                right: 16.0,
-                bottom: 10.0,
-                left: 16.0
-            })
-            .width(Length::Fill),
-        ui::hairline(),
-        container(stack).padding(16).width(Length::Fill),
-    ])
-    .width(Length::Fill)
-    .style(ui::frame(None, crate::theme::palette().rule))
-    .into()
+    container(stack)
+        .padding(16)
+        .width(Length::Fill)
+        .style(card_surface)
+        .into()
 }
 
 pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {

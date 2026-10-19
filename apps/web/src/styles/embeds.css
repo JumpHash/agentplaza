@@ -2,20 +2,7 @@
    corners are the 6px and 8px of the chips and cards. A state is a tone (ui/embed-model.ts) and the tone colours the
    chip's border and icon, or a badge: the label of a chip is always the text colour. */
 
-/* A merged pull request has no token of its own in tokens.css; it is the one colour added here, light and dark. The
-   hover card's shadow is the one more depth the register needs on a sheet over a sheet (light) or a dark panel. */
-:root {
-  --merged: #7a4fd0;
-  --embed-shadow: 0 6px 18px rgb(21 25 22 / 0.16);
-}
-:root:not([data-theme="light"]) {
-  --merged: #b68cff;
-  --embed-shadow: 0 8px 24px rgb(0 0 0 / 0.6);
-}
-:root[data-theme="dark"] {
-  --merged: #b68cff;
-  --embed-shadow: 0 8px 24px rgb(0 0 0 / 0.6);
-}
+/* A merged pull request takes the review tone. */
 
 /* ---- Chips --------------------------------------------------------------------------------------------------------- */
 
@@ -87,7 +74,7 @@ button.embed-chip:hover {
   --chip-state: var(--crit);
 }
 .embed-chip[data-tone="merged"] {
-  --chip-state: var(--merged);
+  --chip-state: var(--review);
 }
 .embed-chip[data-tone="neutral"] {
   --chip-state: var(--ink-2);
@@ -262,7 +249,7 @@ button.embed-chip:hover {
   border-radius: 8px;
   background: var(--sheet);
   color: var(--ink);
-  box-shadow: var(--embed-shadow), var(--shadow-pop);
+  box-shadow: var(--shadow-pop);
   font: 400 13px/1.45 var(--font);
   overflow-wrap: anywhere;
   animation: embed-in 120ms ease-out;
@@ -355,8 +342,8 @@ button.embed-chip:hover {
   border-color: var(--crit);
 }
 .embed-state[data-tone="merged"] {
-  color: var(--merged);
-  border-color: var(--merged);
+  color: var(--review);
+  border-color: var(--review);
 }
 .embed-add {
   color: var(--ok);

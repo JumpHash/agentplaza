@@ -8,19 +8,17 @@ use std::fmt;
 use iced::font::Weight;
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, Stack, button, column, container, pick_list, row, text, tooltip};
-use iced::{Alignment, Background, Border, Color, Element, Font, Length, Task, Theme};
+use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding, Task, Theme};
 use serde_json::Value;
 
 use super::Id;
 use super::project_team;
 use super::wizard::{self, WizardMsg};
 use crate::console::engine::roles::{agent_hue, role_hue};
-use crate::console::ui::Kind;
+use crate::console::ui::{Kind, Tone};
 use crate::console::{Ctx, client, render_card, scope, ui};
 use crate::theme::{self};
 
-/// The web's `info` tone on the dark ground.
-const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
 /// The table's head labels and the badges: mono, semibold / medium.
 const SANS_MEDIUM: Font = Font {
     weight: Weight::Medium,
@@ -32,7 +30,7 @@ const SANS_SEMIBOLD: Font = Font {
 };
 /// Table cells are 14px serif, as the web's `.table`.
 const CELL: f32 = 14.0;
-const ACTIONS_WIDTH: f32 = 150.0;
+const ACTIONS_WIDTH: f32 = 220.0;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -423,29 +421,53 @@ fn spawn_button<'a>(scope: Option<&str>) -> Element<'a, Msg> {
     )
 }
 
-/// The bench beside a project's agents: who could join it, each with Add to project.
+/// The bench beside a project's agents, as the web's card: who could join it, each with Add to project.
 fn bench_card<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
-    let waiting: Vec<&Value> = state.raw.iter().filter(|a| scope::on_bench(a)).collect();
-    let mut lines: Vec<Element<'a, Msg>> = Vec::new();
-    if waiting.is_empty() {
-        lines.push(ui::faint("Nobody is on the bench: every agent works on a project.").into());
+    let waiting: Vec<AgentRow> = state
+        .raw
+        .iter()
+        .filter(|a| scope::on_bench(a))
+        .filter_map(parse)
+        .collect();
+    let body: Element<'a, Msg> = if waiting.is_empty() {
+        ui::faint("Nobody is on the bench: every agent works on a project.").into()
     } else {
-        lines.push(ui::faint("Agents on no project do nothing and sleep. Add one to give it this project's work.").into());
-        for a in waiting {
-            let cid = a["cid"].as_u64().unwrap_or(0);
-            lines.push(project_team::agent_row(
-                a,
-                Some(ui::btn_sm(
-                    "Add to project",
-                    Some("plus"),
-                    Kind::Secondary,
-                    Some(Msg::Join(cid, project.to_string())),
-                )),
-                None,
-            ));
+        let cols = [
+            Col::flex(3, false),
+            Col::flex(3, false),
+            Col::fixed(ACTIONS_WIDTH, true),
+        ];
+        let labels = vec![head_cell("Agent"), head_cell("Model"), head_cell("")];
+        let n = waiting.len();
+        let mut lines: Vec<Element<'a, Msg>> = Vec::new();
+        for (slot, a) in waiting.iter().enumerate() {
+            lines.push(bench_row(a, project, slot, &cols));
+            if slot + 1 < n {
+                lines.push(rule(crate::theme::palette().rule));
+            }
         }
-    }
-    ui::card("The bench", column(lines).spacing(10).into())
+        column![
+            ui::faint(
+                "Agents on no project do nothing and sleep. Add one to give it this project's work."
+            ),
+            head_row(&cols, labels, 0.0),
+            column(lines).width(Length::Fill),
+        ]
+        .spacing(8)
+        .into()
+    };
+    ui::card("The bench", body)
+}
+
+/// A bench row: the agent, its model, and Add to project.
+fn bench_row<'a>(a: &AgentRow, project: &str, slot: usize, cols: &[Col]) -> Element<'a, Msg> {
+    let add = ui::btn_sm::<Msg>(
+        "Add to project",
+        Some("plus"),
+        Kind::Secondary,
+        Some(Msg::Join(a.cid, project.to_string())),
+    );
+    grid_row(cols, vec![agent_cell(a, slot), model_cell(a), add], 0.0)
 }
 
 /// An agent's name from the roster, for the lines a move shows.
@@ -497,19 +519,37 @@ fn head<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
     )
 }
 
-/// The web's `.select`: a transparent field with an ink rule, the handle in ink-2.
-fn select_style(_: &Theme, _: pick_list::Status) -> pick_list::Style {
+/// The web's `.select`: a raised field with a strong rule, the handle in ink-2, the skin's radius.
+fn select_style(_: &Theme, _status: pick_list::Status) -> pick_list::Style {
+    let p = crate::theme::palette();
     pick_list::Style {
-        text_color: crate::theme::palette().ink,
-        placeholder_color: crate::theme::palette().ink_3,
-        handle_color: crate::theme::palette().ink_2,
-        background: Background::Color(Color::TRANSPARENT),
+        text_color: p.ink,
+        placeholder_color: p.ink_3,
+        handle_color: p.ink_2,
+        background: Background::Color(p.raised),
         border: Border {
-            color: crate::theme::palette().ink,
+            color: p.rule_strong,
             width: 1.0,
-            radius: 0.0.into(),
+            radius: crate::theme::skin().radius.into(),
         },
     }
+}
+
+/// The page's card: the title in the card head, the body flush to the card's edges.
+fn flush_card<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    let top = container(row![
+        ui::card_title(title),
+        Space::new().width(Length::Fill)
+    ])
+    .padding([8, 16])
+    .height(Length::Shrink)
+    .width(Length::Fill)
+    .center_y(Length::Fixed(44.0));
+    container(column![top, rule(crate::theme::palette().rule), body])
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .clip(true)
+        .into()
 }
 
 fn list<'a>(state: &'a State, scope: Option<&'a str>) -> Element<'a, Msg> {
@@ -520,9 +560,9 @@ fn list<'a>(state: &'a State, scope: Option<&'a str>) -> Element<'a, Msg> {
     if let Some(n) = &state.note {
         parts.push(ui::faint(n.clone()).into());
     }
-    match &state.agents {
-        None => parts.push(ui::loading()),
-        Some(all) if all.is_empty() => parts.push(match scope {
+    let body: Element<'a, Msg> = match &state.agents {
+        None => container(ui::loading()).padding(16).into(),
+        Some(all) if all.is_empty() => match scope {
             Some(_) => empty(
                 "agents",
                 "Nobody works on this project yet",
@@ -535,7 +575,7 @@ fn list<'a>(state: &'a State, scope: Option<&'a str>) -> Element<'a, Msg> {
                 "Spawn agents to fill the roster.",
                 Some(spawn_button(scope)),
             ),
-        }),
+        },
         Some(all) => {
             let rows: Vec<&AgentRow> = all
                 .iter()
@@ -545,7 +585,7 @@ fn list<'a>(state: &'a State, scope: Option<&'a str>) -> Element<'a, Msg> {
                 })
                 .collect();
             if rows.is_empty() {
-                parts.push(empty(
+                empty(
                     "search",
                     "No agents match",
                     "Clear the filters to see the roster.",
@@ -555,108 +595,154 @@ fn list<'a>(state: &'a State, scope: Option<&'a str>) -> Element<'a, Msg> {
                         Kind::Ghost,
                         Some(Msg::ClearFilters),
                     )),
-                ));
+                )
             } else {
-                parts.push(table(rows, state, scope));
+                table(rows, state, scope)
             }
         }
-    }
+    };
+    parts.push(flush_card("Agents", body));
     column(parts).spacing(12).into()
 }
 
-/// The roster as the web's table: head labels over an ink rule, a faint rule between rows, the
-/// whole framed by a 1px rule.
+/// One column of a table: its share of the row (or a fixed width), and whether its text sits at the right.
+#[derive(Debug, Clone, Copy)]
+struct Col {
+    portion: u16,
+    width: Option<f32>,
+    right: bool,
+}
+
+impl Col {
+    fn flex(portion: u16, right: bool) -> Col {
+        Col {
+            portion,
+            width: None,
+            right,
+        }
+    }
+
+    fn fixed(width: f32, right: bool) -> Col {
+        Col {
+            portion: 0,
+            width: Some(width),
+            right,
+        }
+    }
+}
+
+/// The inset of a table cell's text, as the web's `.tbl td`; the first and last cells take `edge` at the card's side.
+const CELL_PAD: f32 = 12.0;
+
+/// One table row: its cells in `cols`, each at its share, the outer two inset by `edge`.
+fn grid_row<'a>(cols: &[Col], cells: Vec<Element<'a, Msg>>, edge: f32) -> Element<'a, Msg> {
+    let last = cols.len().saturating_sub(1);
+    let row_cells: Vec<Element<'a, Msg>> = cols
+        .iter()
+        .zip(cells)
+        .enumerate()
+        .map(|(i, (col, cell))| {
+            let padding = Padding {
+                top: 0.0,
+                right: if i == last { edge } else { CELL_PAD },
+                bottom: 0.0,
+                left: if i == 0 { edge } else { CELL_PAD },
+            };
+            let c = container(cell)
+                .padding(padding)
+                .clip(true)
+                .align_x(if col.right {
+                    Alignment::End
+                } else {
+                    Alignment::Start
+                });
+            let c = match col.width {
+                Some(w) => c.width(Length::Fixed(w)),
+                None => c.width(Length::FillPortion(col.portion)),
+            };
+            c.into()
+        })
+        .collect();
+    iced::widget::Row::with_children(row_cells)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .into()
+}
+
+/// The table head: the labels in the label voice, over a strong rule (the caller draws it).
+fn head_row<'a>(cols: &[Col], head: Vec<Element<'a, Msg>>, edge: f32) -> Element<'a, Msg> {
+    container(grid_row(cols, head, edge))
+        .padding([8, 0])
+        .width(Length::Fill)
+        .into()
+}
+
+/// A head label: the label voice, or nothing for a column that has no head.
+fn head_cell<'a>(label: &str) -> Element<'a, Msg> {
+    if label.is_empty() {
+        Space::new().into()
+    } else {
+        ui::label(label).into()
+    }
+}
+
+/// The roster as the web's table: the head over a strong rule, a rule between rows, inside the card.
 fn table<'a>(
     rows: Vec<&'a AgentRow>,
     state: &'a State,
     scope: Option<&'a str>,
 ) -> Element<'a, Msg> {
     // Under All projects, where each agent works (a column taken from Work); under a project, all of them work on it.
-    let mut cells = vec![cell(3, head_label("Agent"), false)];
+    let mut spec: Vec<(Col, &str)> = vec![(Col::flex(3, false), "Agent")];
     if scope.is_none() {
-        cells.push(cell(3, head_label("Project"), false));
+        spec.push((Col::flex(3, false), "Project"));
     }
-    cells.push(cell(3, head_label("Model"), false));
-    cells.push(cell(work_portion(scope), head_label("Work"), false));
-    cells.push(cell(1, head_label("Tokens"), true));
-    cells.push(
-        container(Space::new())
-            .width(Length::Fixed(ACTIONS_WIDTH))
-            .into(),
-    );
-    let header = iced::widget::Row::with_children(cells).align_y(Alignment::Center);
+    spec.push((Col::flex(3, false), "Model"));
+    spec.push((Col::flex(work_portion(scope), false), "Work"));
+    spec.push((Col::flex(1, true), "Tokens"));
+    spec.push((Col::fixed(ACTIONS_WIDTH, true), ""));
+    let cols: Vec<Col> = spec.iter().map(|(c, _)| *c).collect();
+    let labels: Vec<Element<'a, Msg>> = spec.iter().map(|(_, l)| head_cell(l)).collect();
     let mut lines: Vec<Element<'a, Msg>> = vec![
-        container(header)
-            .padding([12, 0])
-            .width(Length::Fill)
-            .into(),
-        rule(crate::theme::palette().ink),
+        head_row(&cols, labels, EDGE),
+        rule(crate::theme::palette().rule_strong),
     ];
     let live = scope::picks(&state.projects);
+    let n = rows.len();
     for (slot, a) in rows.into_iter().enumerate() {
-        lines.push(row_view(a, slot, state, scope, &live));
-        lines.push(rule(crate::theme::palette().rule_faint));
+        lines.push(row_view(a, slot, state, scope, &cols, &live));
+        if slot + 1 < n {
+            lines.push(rule(crate::theme::palette().rule));
+        }
     }
-    container(ui::scroll(column(lines).width(Length::Fill)).width(Length::Fill))
-        .style(|_: &Theme| container::Style {
-            border: Border {
-                color: crate::theme::palette().rule,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
+    ui::scroll(column(lines).width(Length::Fill))
         .width(Length::Fill)
         .into()
 }
 
-fn head_label<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_string())
-        .font(ui::SANS_SEMIBOLD)
-        .size(10.5)
-        .color(crate::theme::palette().ink_3)
-        .wrapping(Wrapping::None)
-        .into()
-}
-
-/// A table cell at `portion` of the row, its text at the web's 14px inset; `right` aligns it.
-fn cell<'a>(portion: u16, content: Element<'a, Msg>, right: bool) -> Element<'a, Msg> {
-    container(content)
-        .padding([0, 14])
-        .width(Length::FillPortion(portion))
-        .align_x(if right {
-            Alignment::End
-        } else {
-            Alignment::Start
-        })
-        // A long prompt ends at its column (the web truncates it), not over the tokens and the actions.
-        .clip(true)
-        .into()
-}
+/// The card's side inset for a flush table (the web's `.card .tbl td:first-child` padding).
+const EDGE: f32 = 16.0;
 
 fn row_view<'a>(
     a: &'a AgentRow,
     slot: usize,
     state: &'a State,
     scope: Option<&'a str>,
+    cols: &[Col],
     live: &[scope::Pick],
 ) -> Element<'a, Msg> {
-    let mut cells = vec![cell(3, agent_cell(a, slot), false)];
+    let mut cells = vec![agent_cell(a, slot)];
     if scope.is_none() {
-        cells.push(cell(3, project_cell(a, state, live), false));
+        cells.push(project_cell(a, state));
     }
-    cells.push(cell(3, model_cell(a), false));
-    cells.push(cell(work_portion(scope), work_cell(a), false));
-    cells.push(cell(1, tokens_cell(a.tokens), true));
-    cells.push(
-        container(actions(a, scope))
-            .padding([0, 14])
-            .width(Length::Fixed(ACTIONS_WIDTH))
-            .align_x(Alignment::End)
-            .into(),
-    );
-    let line = iced::widget::Row::with_children(cells).align_y(Alignment::Center);
-    button(container(line).padding([11, 0]).width(Length::Fill))
+    cells.push(model_cell(a));
+    cells.push(work_cell(a));
+    cells.push(tokens_cell(a.tokens));
+    cells.push(actions(a, scope, live));
+    let line = container(grid_row(cols, cells, EDGE))
+        .padding([9, 0])
+        .width(Length::Fill);
+    button(line)
         .on_press(Msg::Go(Id::Agent(a.cid)))
         .style(row_style)
         .padding(0)
@@ -691,10 +777,10 @@ fn rule<'a>(color: Color) -> Element<'a, Msg> {
         .into()
 }
 
-/// The web's avatar (`avatar(a, 40)`): the agent's robot on its hue, the initial tile under it where the GPU cannot draw.
-const AVATAR: f32 = 40.0;
+/// The web's roster avatar (`avatar(a, 30)`): the agent's robot on its hue, the initial tile under it where the GPU cannot draw.
+const AVATAR: f32 = 30.0;
 
-fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
+fn agent_cell<'a>(a: &AgentRow, slot: usize) -> Element<'a, Msg> {
     let initial = name(a)
         .chars()
         .next()
@@ -702,20 +788,20 @@ fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
         .unwrap_or_default();
     let tile = container(
         text(initial)
-            .font(ui::SANS_SEMIBOLD)
-            .size(15.0)
-            .color(crate::theme::palette().ink),
+            .font(SANS_SEMIBOLD)
+            .size(12.0)
+            .color(crate::theme::palette().ink_2),
     )
     .width(Length::Fixed(AVATAR))
     .height(Length::Fixed(AVATAR))
     .align_x(Alignment::Center)
     .align_y(Alignment::Center)
     .style(|_: &Theme| container::Style {
-        background: Some(Background::Color(crate::theme::palette().sheet)),
+        background: Some(Background::Color(crate::theme::palette().sheet_2)),
         border: Border {
-            color: crate::theme::palette().ink,
+            color: crate::theme::palette().rule,
             width: 1.0,
-            radius: 0.0.into(),
+            radius: (AVATAR / 2.0).into(),
         },
         ..Default::default()
     });
@@ -738,36 +824,49 @@ fn agent_cell<'a>(a: &'a AgentRow, slot: usize) -> Element<'a, Msg> {
     let portrait = iced::widget::stack(layers)
         .width(Length::Fixed(AVATAR))
         .height(Length::Fixed(AVATAR));
-    let name_line = row![
-        dot(status_tone(&a.status)),
+    // The name line: the status dot, the name, and the word for a napping agent (the dot alone does not tell asleep).
+    let mut name_line = row![
+        ui::dot::<Msg>(status_tone(&a.status)),
         text(name(a))
-            .font(SANS_SEMIBOLD)
-            .size(15.0)
+            .font(SANS_MEDIUM)
+            .size(CELL)
             .color(crate::theme::palette().ink)
             .wrapping(Wrapping::None),
     ]
-    .spacing(8)
+    .spacing(7)
     .align_y(Alignment::Center);
+    if let Some(word) = sleep_word(&a.status) {
+        name_line = name_line.push(ui::badge::<Msg>(word, Tone::Muted));
+    }
     row![
         portrait,
         column![
             name_line,
             text(a.role_label.clone())
                 .font(theme::SANS)
-                .size(CELL)
+                .size(12.0)
                 .color(crate::theme::palette().ink_3)
                 .wrapping(Wrapping::None)
         ]
-        .spacing(2),
+        .spacing(1),
     ]
-    .spacing(12)
+    .spacing(10)
     .align_y(Alignment::Center)
     .into()
 }
 
-/// Where an agent works: its project (to its page), every project (the orchestrator), or the bench with a Put on…
-/// picker of the live projects.
-fn project_cell<'a>(a: &'a AgentRow, state: &'a State, live: &[scope::Pick]) -> Element<'a, Msg> {
+/// The word a napping status carries: asleep, or dozing as "asleep (light)"; none for the others.
+fn sleep_word(status: &str) -> Option<&'static str> {
+    match status {
+        "asleep" => Some("Asleep"),
+        "dozing" => Some("Asleep (light)"),
+        _ => None,
+    }
+}
+
+/// Where an agent works: its project (to its page), every project (the orchestrator), or the bench (a badge; its
+/// Put on… picker is in the actions).
+fn project_cell<'a>(a: &AgentRow, state: &State) -> Element<'a, Msg> {
     let quiet = |s: &str| {
         text(s.to_string())
             .font(theme::SANS)
@@ -794,44 +893,25 @@ fn project_cell<'a>(a: &'a AgentRow, state: &'a State, live: &[scope::Pick]) -> 
     if !a.bench {
         return quiet("—").into();
     }
-    // The bench, and under it the picker that puts the agent on a live project.
-    let mut cell = column![badge("Bench", crate::theme::palette().ink_2, false)].spacing(6);
-    if !live.is_empty() {
-        let cid = a.cid;
-        cell = cell.push(
-            pick_list(live.to_vec(), None::<scope::Pick>, move |c: scope::Pick| {
-                Msg::Join(cid, c.id)
-            })
-            .placeholder("Put on…")
-            .style(select_style)
-            .text_size(12.5)
-            .font(theme::SANS)
-            .padding([3, 8]),
-        );
-    }
-    cell.into()
+    ui::badge::<Msg>("Bench", Tone::Muted)
 }
 
 /// The model, and under it where it comes from (its own, its project's, its role's) and the orchestrator's mark: the
 /// model ids are long, so the marks get a line of their own rather than being cut off.
-fn model_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
+fn model_cell<'a>(a: &AgentRow) -> Element<'a, Msg> {
     let mut marks = row![].spacing(8).align_y(Alignment::Center);
     if a.orchestrator {
-        marks = marks.push(badge("orchestrator", crate::theme::palette().signal, true));
+        marks = marks.push(ui::badge::<Msg>("orchestrator", Tone::Signal));
     }
     if a.model_source != "default" {
-        let label = match a.model_source.as_str() {
-            "agent" => "own",
-            "project" => "project",
-            _ => "role",
+        let (label, tone) = match a.model_source.as_str() {
+            "agent" => ("own", Tone::Info),
+            "project" => ("project", Tone::Signal),
+            _ => ("role", Tone::Muted),
         };
-        marks = marks.push(badge(label, crate::theme::palette().ink_2, false));
+        marks = marks.push(ui::badge::<Msg>(label, tone));
     }
-    let model = text(a.model.clone())
-        .font(theme::SANS)
-        .size(12.5)
-        .color(crate::theme::palette().ink)
-        .wrapping(Wrapping::None);
+    let model = ui::mono(a.model.clone(), 12.5, crate::theme::palette().ink);
     if a.orchestrator || a.model_source != "default" {
         column![model, marks].spacing(4).into()
     } else {
@@ -839,22 +919,19 @@ fn model_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
     }
 }
 
-fn work_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
+fn work_cell<'a>(a: &AgentRow) -> Element<'a, Msg> {
     match &a.work {
-        Some((kind, prompt)) => {
-            let (color, mark) = work_tone(kind);
-            row![
-                badge(kind, color, mark),
-                text(ui_clip(prompt, 56))
-                    .font(theme::SANS)
-                    .size(CELL)
-                    .color(crate::theme::palette().ink)
-                    .wrapping(Wrapping::None),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into()
-        }
+        Some((kind, prompt)) => row![
+            ui::badge::<Msg>(kind, work_tone(kind)),
+            text(ui_clip(prompt, 90))
+                .font(theme::SANS)
+                .size(CELL)
+                .color(crate::theme::palette().ink)
+                .wrapping(Wrapping::None),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into(),
         None => text("—")
             .font(theme::SANS)
             .size(CELL)
@@ -865,25 +942,17 @@ fn work_cell<'a>(a: &'a AgentRow) -> Element<'a, Msg> {
 
 fn tokens_cell<'a>(tokens: u64) -> Element<'a, Msg> {
     text(compact(tokens))
-        .font(SANS_MEDIUM)
-        .size(12.5)
+        .font(theme::SANS)
+        .size(CELL)
         .color(crate::theme::palette().ink)
         .into()
 }
 
-/// The row's own actions: chat with the agent, cancel its work while it works, under its project send it back to
-/// the bench, stop its session.
-fn actions<'a>(a: &'a AgentRow, scope: Option<&str>) -> Element<'a, Msg> {
+/// The row's own actions, as the web: under its project send it back to the bench; on the bench under All projects,
+/// the Put on… picker of the live projects; then chat, cancel its work while it works, and stop its session.
+fn actions<'a>(a: &AgentRow, scope: Option<&str>, live: &[scope::Pick]) -> Element<'a, Msg> {
     let cid = a.cid;
-    let mut buttons = row![icon_button(
-        "conversations",
-        "Chat",
-        Msg::Go(Id::Agent(cid))
-    )]
-    .spacing(4);
-    if a.status == "working" {
-        buttons = buttons.push(icon_button("ban", "Cancel work", Msg::Cancel(cid)));
-    }
+    let mut buttons = row![].spacing(4).align_y(Alignment::Center);
     if let Some(project) = scope
         && a.project.as_deref() == Some(project)
     {
@@ -893,10 +962,34 @@ fn actions<'a>(a: &'a AgentRow, scope: Option<&str>) -> Element<'a, Msg> {
             Msg::Leave(cid, project.to_string()),
         ));
     }
+    if scope.is_none() && a.bench && !live.is_empty() {
+        buttons = buttons.push(join_picker(cid, live));
+    }
+    buttons = buttons.push(icon_button(
+        "conversations",
+        "Chat",
+        Msg::Go(Id::Agent(cid)),
+    ));
+    if a.status == "working" {
+        buttons = buttons.push(icon_button("ban", "Cancel work", Msg::Cancel(cid)));
+    }
     buttons
         .push(icon_button("stop", "Stop session", Msg::Stop(cid)))
-        .align_y(Alignment::Center)
         .into()
+}
+
+/// The Put on… picker that puts bench agent `cid` on a live project.
+fn join_picker<'a>(cid: u64, live: &[scope::Pick]) -> Element<'a, Msg> {
+    pick_list(live.to_vec(), None::<scope::Pick>, move |c: scope::Pick| {
+        Msg::Join(cid, c.id)
+    })
+    .placeholder("Put on…")
+    .style(select_style)
+    .text_size(12.5)
+    .font(theme::SANS)
+    .padding([3, 8])
+    .width(Length::Fixed(124.0))
+    .into()
 }
 
 /// The web's small ghost icon button (28px), with its title as a tooltip.
@@ -916,7 +1009,7 @@ fn icon_button<'a>(icon_name: &str, tip: &str, on_press: Msg) -> Element<'a, Msg
             background: matches!(status, button::Status::Hovered | button::Status::Pressed)
                 .then_some(Background::Color(crate::theme::palette().hover)),
             text_color: crate::theme::palette().ink,
-            border: Border::default(),
+            border: Border::default().rounded(crate::theme::skin().radius),
             ..Default::default()
         });
     tooltip(
@@ -927,7 +1020,7 @@ fn icon_button<'a>(icon_name: &str, tip: &str, on_press: Msg) -> Element<'a, Msg
     .into()
 }
 
-/// The web's empty state: an icon, a bold mono line, a faint serif sentence, an optional action.
+/// The web's empty state: an icon, the title in ink 500, the faint sentence, an optional action; centred.
 fn empty<'a>(
     icon_name: &str,
     title: &str,
@@ -935,94 +1028,44 @@ fn empty<'a>(
     action: Option<Element<'a, Msg>>,
 ) -> Element<'a, Msg> {
     let mut body = column![
-        ui::icon::<Msg>(icon_name, 16.0, crate::theme::palette().ink_3),
+        ui::icon::<Msg>(icon_name, 22.0, crate::theme::palette().ink_3),
         text(title.to_string())
-            .font(Font {
-                weight: Weight::Bold,
-                ..theme::SANS
-            })
-            .size(13.0)
+            .font(SANS_MEDIUM)
+            .size(theme::TYPE_ITEM)
             .color(crate::theme::palette().ink),
         text(sentence.to_string())
             .font(theme::SANS)
-            .size(14.0)
+            .size(theme::TYPE_ITEM)
             .color(crate::theme::palette().ink_3),
     ]
-    .spacing(10)
+    .spacing(6)
     .align_x(Alignment::Center);
     if let Some(a) = action {
         body = body.push(a);
     }
     container(body)
-        .padding([40, 16])
+        .padding([44, 16])
         .width(Length::Fill)
         .align_x(Alignment::Center)
         .into()
 }
 
-/// A dot for the status: filled for ok and info (a working agent), outlined otherwise.
-fn dot<'a>(tone: Color) -> Element<'a, Msg> {
-    container(
-        Space::new()
-            .width(Length::Fixed(8.0))
-            .height(Length::Fixed(8.0)),
-    )
-    .style(move |_: &Theme| container::Style {
-        background: Some(Background::Color(tone)),
-        border: Border {
-            color: tone,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    })
-    .into()
-}
-
-/// The web's badge: a square marker in the tone (filled, outlined or with a line through it), then
-/// the uppercase mono label.
-fn badge<'a>(label: &str, color: Color, filled: bool) -> Element<'a, Msg> {
-    let mark = container(
-        Space::new()
-            .width(Length::Fixed(8.0))
-            .height(Length::Fixed(8.0)),
-    )
-    .style(move |_: &Theme| container::Style {
-        background: filled.then_some(Background::Color(color)),
-        border: Border {
-            color,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    });
-    row![
-        mark,
-        text(label.to_string())
-            .font(SANS_MEDIUM)
-            .size(10.5)
-            .color(color)
-    ]
-    .spacing(7)
-    .align_y(Alignment::Center)
-    .into()
-}
-
+/// The status dot's tone: working is info, idle is ok, the rest are muted (offline, asleep, dozing).
 fn status_tone(status: &str) -> Color {
     match status {
-        "working" => INFO,
+        "working" => crate::theme::palette().info,
         "idle" => crate::theme::palette().ok,
         _ => crate::theme::palette().ink_3,
     }
 }
 
-/// The badge colour and whether its marker is filled, for a work kind.
-fn work_tone(kind: &str) -> (Color, bool) {
+/// The badge tone for a work kind, as the web draws it.
+fn work_tone(kind: &str) -> Tone {
     match kind {
-        "task" => (crate::theme::palette().signal, true),
-        "chat" => (INFO, false),
-        "motion" => (crate::theme::palette().warn, false),
-        _ => (crate::theme::palette().ink_2, false),
+        "task" => Tone::Signal,
+        "chat" => Tone::Info,
+        "motion" => Tone::Warn,
+        _ => Tone::Muted,
     }
 }
 

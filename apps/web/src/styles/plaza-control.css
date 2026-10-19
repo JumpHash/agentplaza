@@ -13,7 +13,7 @@
   border-radius: 0;
   box-shadow: var(--shadow-card);
 }
-.btn.plaza-stop:hover { background: color-mix(in srgb, var(--crit) 80%, #000); color: var(--sheet); }
+.btn.plaza-stop:hover { background: color-mix(in srgb, var(--crit) 80%, var(--ink)); color: var(--sheet); }
 
 .btn.plaza-resume {
   background: var(--ok);
@@ -24,7 +24,7 @@
   letter-spacing: 0.08em;
   border-radius: 0;
 }
-.btn.plaza-resume:hover { background: color-mix(in srgb, var(--ok) 80%, #000); color: var(--sheet); }
+.btn.plaza-resume:hover { background: color-mix(in srgb, var(--ok) 80%, var(--ink)); color: var(--sheet); }
 
 .held-banner {
   display: flex;

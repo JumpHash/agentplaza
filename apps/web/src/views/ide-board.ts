@@ -1,10 +1,10 @@
-// The Board tab of the IDE's right panel: the agents' shared posts, newest first.
-// For a project it shows the posts whose task is one of the project's tasks; with
-// no project it shows them all. Each post carries its comments and a reply box
-// (a reply is a comment on the post). The panel loads on its first show and
+// The Board tab of the IDE's right panel: the agents' shared posts, newest first. The markup is the prototype's board
+// (loom: m-ide-more's Board): a head with the count and the project, the owner's Pause and Export, the posts with their
+// comments and a reply box under each, and the message box at the foot.
+// For a project it shows the posts whose task is one of the project's tasks; with no project it shows them all. Each
+// post carries its comments and a reply box (a reply is a comment on the post). The panel loads on its first show and
 // refreshes every 15 seconds while it is shown; a board event refreshes it sooner.
 
-import css from '../styles/ide-board.css';
 import { api, type BoardComment, type BoardPost, type Project } from '../api';
 import { roleLabel } from '../roles';
 import { on } from '../store';
@@ -15,7 +15,6 @@ import { renderMarkdown } from '../ui/markdown';
 import { authorHue, mentionsOf } from '../ide/view';
 import { boardOwnerBar, composer as ownerComposer } from '../board/owner';
 
-const STYLE_ID = 'apz-ide-board-style';
 const REFRESH_MS = 15_000;
 const DEBOUNCE_MS = 300;
 const REPLY_MAX = 1000;
@@ -27,9 +26,8 @@ export interface BoardPanel {
 }
 
 export function boardPanel(opts: { project: Project | null; onCount(n: number): void; embeds: () => EmbedContext }): BoardPanel {
-  injectStyle();
-  const count = h('span.ide-board-count', null);
-  const feed = h('div.ide-board-feed', null);
+  const count = h('span.muted', null);
+  const feed = h('div.idem-feed', null);
   // The owner's controls: Pause/Resume and Export for this project's board, the paused banner, and the
   // composer at the foot. A project's board is the hub's view of its posts (its own, and its tasks').
   const owner = boardOwnerBar({ project: () => opts.project?.id, onChanged: () => void load() });
@@ -40,16 +38,12 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
     onPosted: () => void load(),
   });
   const el = h(
-    'section.ide-board',
+    'section.idem-panel',
     { 'aria-label': 'Board' },
-    h(
-      'header.ide-board-head',
-      null,
-      h('div.ide-board-title', null, h('h2', null, 'Board'), count),
-      h('p.ide-board-project', null, opts.project?.title ?? 'All projects'),
-      h('p.ide-board-note', null, 'Replies are comments on a post.'),
-      owner.actions,
-    ),
+    h('div.idem-panel-h', null, h('span.idem-h', null, 'Board'), count),
+    h('div.view-sub', null, opts.project?.title ?? 'All projects'),
+    h('div.view-sub', null, 'Replies are comments on a post.'),
+    h('div.idem-owner', null, owner.actions),
     owner.banner,
     feed,
     h('div.board-owner-dock', null, post.el),
@@ -88,7 +82,7 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
       return replace(feed, empty('board', 'No posts for this project yet', 'Agents post here when they share work.'));
     }
     replace(feed, list.map(postCard));
-    for (const ta of feed.querySelectorAll<HTMLTextAreaElement>('.ide-board-reply-text')) {
+    for (const ta of feed.querySelectorAll<HTMLTextAreaElement>('textarea[data-post]')) {
       grow(ta);
       if (caret && ta.dataset.post === typingPost) {
         ta.focus();
@@ -138,7 +132,7 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
         .finally(() => {
           pending.delete(id);
           if (!alive) return;
-          for (const chip of feed.querySelectorAll<HTMLElement>('.ide-board-chip')) {
+          for (const chip of feed.querySelectorAll<HTMLElement>('[data-file]')) {
             if (chip.dataset.file === id) chip.textContent = names.get(id) ?? id;
           }
         });
@@ -149,9 +143,9 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
   const attachments = (ids: string[] | undefined): HTMLElement | null =>
     ids && ids.length
       ? h(
-          'div.ide-board-files',
+          'div.idem-attach',
           null,
-          ids.map((id) => h('span.ide-board-chip', { 'data-file': id, title: id }, fileLabel(id))),
+          ids.map((id) => h('span.chip', { 'data-file': id, title: id }, fileLabel(id))),
         )
       : null;
 
@@ -166,21 +160,18 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
 
   const commentRow = (c: BoardComment): HTMLElement =>
     h(
-      'li.ide-board-comment',
+      'li',
       { 'data-key': c.id },
-      h(
-        'div.ide-board-comment-by',
-        null,
-        h('span.ide-board-comment-author', null, c.agent_cid === null ? 'You (owner)' : c.author || `#${c.agent_cid}`),
-        h('time.ide-board-time', null, ago(c.created_at)),
-      ),
-      richText('ide-board-comment-body', c.body),
+      h('strong', null, c.agent_cid === null ? 'You (owner)' : c.author || `#${c.agent_cid}`),
+      ' ',
+      h('span.muted', null, ago(c.created_at)),
+      richText('idem-body', c.body),
       attachments(c.attachments),
     );
 
   // The reply box under a post. A reply is posted as a comment on the post.
   const composer = (p: BoardPost): HTMLElement => {
-    const ta = h('textarea.ide-board-reply-text', {
+    const ta = h('textarea', {
       rows: 1,
       maxlength: REPLY_MAX,
       placeholder: 'Reply to this post (@all for everyone)',
@@ -227,34 +218,34 @@ export function boardPanel(opts: { project: Project | null; onCount(n: number): 
       }
     });
     send.disabled = !ta.value.trim() || sending.has(p.id);
-    return h('div.ide-board-composer', null, ta, h('div.ide-board-composer-foot', null, send));
+    return h('div.idem-reply', null, ta, send);
   };
 
   const postCard = (p: BoardPost): HTMLElement => {
     const author = p.owner ? 'Owner' : `${roleLabel(p.role)} #${p.agent_cid}`;
     const subject = p.subject.trim();
     const body = p.body.trim();
-    const bar = h('span.ide-board-bar', { 'aria-hidden': 'true' });
-    bar.classList.add(`ide-board-hue-${authorHue(author)}`);
+    const bar = h('span.idem-bar-c', { 'aria-hidden': 'true' });
+    bar.classList.add(`idem-hue-${authorHue(author)}`);
     const comments = [...(p.comments ?? [])].sort(byTime);
     return h(
-      'article.ide-board-post',
+      'article.idem-post',
       { 'data-key': p.id },
       bar,
       h(
-        'div.ide-board-main',
+        'div.idem-post-b',
         null,
         h(
-          'div.ide-board-by',
+          'div.idem-by',
           null,
-          h('span.ide-board-author', null, author),
-          p.mentions?.length ? h('span.board-mentions', null, p.mentions.map((m) => `@${m}`).join(' ')) : null,
-          h('time.ide-board-time', null, ago(p.created_at)),
+          h('span', null, author),
+          p.mentions?.length ? p.mentions.map((m) => h('span.idem-mention', null, `@${m}`)) : null,
+          h('time', null, ago(p.created_at)),
         ),
-        h('h3.ide-board-subject', null, p.subject),
-        body && body !== subject ? richText('ide-board-body', body) : null,
+        subject ? h('h3', null, p.subject) : null,
+        body && body !== subject ? richText('idem-body', body) : null,
         attachments(p.attachments),
-        comments.length ? h('ol.ide-board-comments', null, comments.map(commentRow)) : null,
+        comments.length ? h('ol.idem-comments', null, comments.map(commentRow)) : null,
         composer(p),
       ),
     );
@@ -307,16 +298,8 @@ function markMentions(root: HTMLElement, text: string): void {
     const frag = document.createDocumentFragment();
     parts.forEach((part, i) => {
       if (!part) return;
-      frag.append(i % 2 ? h('span.mention', null, part) : part);
+      frag.append(i % 2 ? h('span.idem-mention', null, part) : part);
     });
     node.replaceWith(frag);
   }
-}
-
-function injectStyle(): void {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = css;
-  document.head.append(style);
 }

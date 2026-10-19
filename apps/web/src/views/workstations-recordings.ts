@@ -6,7 +6,7 @@
 
 import { api, ApiError, type Agent, type RecordingDefaults, type StationRecording, type StationRecordingDetail, type StationRecordingEvent, type StationView } from '../api';
 import { go, href } from '../router';
-import { ago, attempt, badge, button, card, empty, field, input, modal, select, table, toast, type Column } from '../ui/components';
+import { attempt, badge, card, field, input, select, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import {
   activeAction,
@@ -26,20 +26,19 @@ import {
   type Section,
 } from './workstations-model';
 import type { Cleanup } from './index';
+import { ago, btn, check, dialog, empty, muted, kv, ptable, type PCol } from './workstations-ui';
 
 const PAGE = 20;
 const REFRESH_MS = 10_000;
 /** The actions the detail holds (the newest); a longer record shows that it is cut. */
 const DETAIL_EVENTS = 1000;
 
-const dateText = (ms: number): string => new Date(ms).toLocaleString();
-
 /** A recording's state as a chip: open while its lease runs. */
-function stateBadge(rec: StationRecording): HTMLElement {
-  return rec.ended_ms === null ? badge('Recording', 'ok', true) : badge('Ended', 'muted');
+function stateBadge(rec: { ended_ms: number | null }): HTMLElement {
+  return rec.ended_ms === null ? badge('Recording', 'ok', true) : badge('Ended', 'muted', true);
 }
 
-function takeoverBadge(rec: StationRecording): HTMLElement | null {
+function takeoverBadge(rec: { takeover: boolean }): HTMLElement | null {
   return rec.takeover ? badge('Owner took over', 'warn') : null;
 }
 
@@ -52,21 +51,16 @@ export function recordingsCard(stationId: string, nameOf: (cid: number) => strin
   let hasMore = false;
   let loadingMore = false;
   const body = h('div', null, empty('clock', 'Loading…'));
-  const more = button('Show older', () => void loadOlder(), { kind: 'ghost' });
+  const more = btn('Show older', () => void loadOlder(), { kind: 'ghost' });
   more.hidden = true;
 
-  const open = (rec: StationRecording): void => go('workstations', stationId, 'recordings', rec.id);
-
   const confirmDelete = (rec: StationRecording): void => {
-    const pane = h(
-      'div.stack',
-      null,
+    const close = dialog(
+      'Delete this recording?',
       h('p', null, 'Its frames and actions are deleted. This cannot be undone.'),
-      h(
-        'div.ws-buttons',
-        null,
-        button('Cancel', () => close()),
-        button(
+      [
+        btn('Cancel', () => close(), { kind: 'ghost' }),
+        btn(
           'Delete',
           () => {
             close();
@@ -74,9 +68,8 @@ export function recordingsCard(stationId: string, nameOf: (cid: number) => strin
           },
           { kind: 'danger' },
         ),
-      ),
+      ],
     );
-    const close = modal('Delete this recording?', pane);
   };
 
   const remove = async (rec: StationRecording): Promise<void> => {
@@ -86,26 +79,27 @@ export function recordingsCard(stationId: string, nameOf: (cid: number) => strin
     render();
   };
 
-  const columns = (): Column<StationRecording>[] => [
-    { label: 'Started', cell: (r) => h('span', { title: dateText(r.started_ms) }, ago(r.started_ms)) },
+  const columns: PCol<StationRecording>[] = [
+    {
+      label: 'Started',
+      cell: (r) => h('a', { href: href('workstations', stationId, 'recordings', r.id), title: new Date(r.started_ms).toLocaleString() }, ago(r.started_ms)),
+    },
     { label: 'Length', cell: (r) => clockText(recordingSpan(r, null)) },
-    { label: 'Frames', cell: (r) => String(r.frames), num: true },
-    { label: 'Actions', cell: (r) => String(r.actions), num: true },
-    { label: 'Size', cell: (r) => bytesText(r.bytes), num: true },
+    { label: 'Frames', cls: 'num', cell: (r) => String(r.frames) },
+    { label: 'Actions', cls: 'num', cell: (r) => String(r.actions) },
+    { label: 'Size', cls: 'num', cell: (r) => bytesText(r.bytes) },
     { label: 'Agent', cell: (r) => nameOf(r.agent) },
     {
       label: 'State',
-      cell: (r) => h('span', null, stateBadge(r), takeoverBadge(r)),
+      cell: (r) => [stateBadge(r), ...(takeoverBadge(r) ? [' ', takeoverBadge(r) as HTMLElement] : [])],
     },
     {
       label: '',
+      cls: 'num',
       cell: (r) =>
-        button('Delete', (ev) => {
-          ev.stopPropagation();
-          confirmDelete(r);
-        }, {
+        btn('Delete', () => confirmDelete(r), {
           kind: 'danger',
-          size: 'sm',
+          sm: true,
           disabled: r.ended_ms === null,
           title: r.ended_ms === null ? 'An open recording is deleted once its lease ends.' : 'Delete this recording',
         }),
@@ -122,7 +116,7 @@ export function recordingsCard(stationId: string, nameOf: (cid: number) => strin
       replace(body, empty('clock', 'No recordings yet', 'A lease on a workstation that records leaves a recording here.'));
       return;
     }
-    replace(body, h('div.ws-scroll', null, table(columns(), rows, (r) => open(r), (r) => r.id)), h('div.ws-buttons', null, more));
+    replace(body, ptable(columns, rows), h('div.ws-cluster', null, more));
     more.hidden = !hasMore;
   };
 
@@ -181,12 +175,12 @@ export function recordingDefaultsCard(): Section {
   let baseline = '';
   const record = h('input', { type: 'checkbox' });
   const takeovers = h('input', { type: 'checkbox' });
-  const retention = input({ type: 'number', min: RETENTION_DAYS.min, max: RETENTION_DAYS.max, step: 1, inputmode: 'numeric', 'aria-label': 'Keep recordings for, in days' });
+  const retention = input({ type: 'number', min: RETENTION_DAYS.min, max: RETENTION_DAYS.max, step: 1, inputmode: 'numeric', id: 'ws-rd-days', 'aria-label': 'Keep recordings for, in days' });
   const fps = select(
     Array.from({ length: DEFAULT_FPS.max - DEFAULT_FPS.min + 1 }, (_, i) => ({ value: String(DEFAULT_FPS.min + i), label: String(DEFAULT_FPS.min + i) })),
   );
-  const problem = h('p.error-text');
-  const saveButton = button('Save defaults', () => void save(), { kind: 'primary' });
+  const problem = h('div.ws-problem');
+  const saveButton = btn('Save defaults', () => void save(), { kind: 'primary' });
 
   const read = (): DefaultsForm => ({
     record: record.checked,
@@ -222,18 +216,18 @@ export function recordingDefaultsCard(): Section {
   const el = card(
     'Recording defaults',
     h(
-      'div.stack',
+      'div.ws-stack',
       null,
-      h('p.faint', null, 'For the workstations that join from now on. Each workstation keeps its own settings after that.'),
+      muted('For the workstations that join from now on. Each workstation keeps its own settings after that.'),
       h(
         'div.ws-form',
         null,
-        h('label.ws-check', null, record, h('span', null, 'Record screen sessions')),
-        h('label.ws-check', null, takeovers, h('span', null, "Record the owner's takeovers too")),
+        check(record, 'Record screen sessions'),
+        check(takeovers, "Record the owner's takeovers too"),
         field('Keep recordings for (days)', retention, `${RETENTION_DAYS.min} to ${RETENTION_DAYS.max}. Older recordings are deleted.`),
         field('Frames per second', fps, `${DEFAULT_FPS.min} to ${DEFAULT_FPS.max}. What a recording keeps.`),
       ),
-      h('div.ws-buttons', null, saveButton),
+      h('div.ws-cluster', null, saveButton),
       problem,
     ),
   );
@@ -277,46 +271,61 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
   let tickTimer: ReturnType<typeof setInterval> | undefined;
   let reloadTimer: ReturnType<typeof setInterval> | undefined;
 
-  const back = h('a.ws-back', { href: href('workstations', stationId) }, 'Back to the workstation');
+  const back = h('a.ws-back', { href: href('workstations', stationId) }, 'All workstations');
   const title = h('h1');
-  const chipBox = h('span.ws-chips');
-  const actionsBox = h('div.ws-actions');
-  const stageBody = h('div');
-  const listBody = h('div');
+  const chipRow = h('div.ws-chips-l');
+  const actionsBox = h('div.page-actions');
   const detailsBody = h('div');
-
-  root.append(
-    h('div.view-head.ws-head', null, h('div.ws-heading', null, back, h('div.ws-title', null, title, chipBox)), actionsBox),
-    h('div.ws-playback', null, card('Playback', stageBody), card('Actions', listBody, { flush: true })),
-    card('Details', detailsBody),
-  );
+  const listBody = h('div');
 
   // ---- the stage: the frame, the controls ----
-  const frame = h('img.ws-frame', { alt: 'A frame of the recorded screen' });
-  const noFrames = h('p.faint');
-  const play = button('Play', () => toggle(), { kind: 'primary' });
-  const scrub = h('input', { type: 'range', min: 0, max: 0, step: 1, value: 0, 'aria-label': 'Position in the recording' });
-  const speedSelect = select(
-    PLAYBACK_SPEEDS.map((s) => ({ value: String(s), label: `${s}×` })),
-    '1',
-  );
-  const clock = h('span.ws-clock');
-  const frameLabel = h('span.faint');
-  replace(
-    stageBody,
-    h('div.ws-frame-box', null, frame, noFrames),
-    h('div.ws-play', null, play, scrub, speedSelect, clock),
-    frameLabel,
-  );
+  const frame = h('img', { alt: 'A frame of the recorded screen' });
+  const screen = h('div.ws-rec-screen', null, frame);
+  const noFrames = h('div.ws-stage');
+  const frameLine = h('p.muted');
+  const play = btn('Play', () => toggle(), { kind: 'primary', sm: true });
+  const speedBox = h('div.seg', { role: 'group', 'aria-label': 'Speed' });
+  const scrub = h('input.ws-rec-range', { type: 'range', min: 0, max: 0, step: 100, value: 0, 'aria-label': 'Playback position', id: 'ws-rp-range' });
+  const clock = h('span.ws-rec-clock');
+  const playerBody = h('div.ws-rec-player', null, screen, noFrames, frameLine, h('div.ws-rec-bar', null, play, speedBox, scrub, clock));
 
-  const listBox = h('div.ws-actions-list');
+  const paintSpeed = (): void => {
+    replace(
+      speedBox,
+      PLAYBACK_SPEEDS.map((x) => {
+        const on = x === speed;
+        const b = btn(`${x}x`, () => {
+          speed = x;
+          paintSpeed();
+        }, { kind: on ? 'primary' : 'ghost', sm: true });
+        b.setAttribute('aria-pressed', String(on));
+        return b;
+      }),
+    );
+  };
+  paintSpeed();
+
   const listItems: HTMLElement[] = [];
+  const listBox = h('div.ws-rec-acts');
+
+  root.append(
+    back,
+    h('header.page-head', null, h('div.page-head-row', null, title, h('span.sp'), actionsBox)),
+    chipRow,
+    h(
+      'div.ws-stack',
+      null,
+      card('Playback', playerBody),
+      card('Actions', listBody, { flush: true }),
+      card('Details', detailsBody),
+    ),
+  );
   replace(listBody, listBox);
 
   const paintList = (): void => {
     const current = activeAction(events, startMs, pos);
     listItems.forEach((item, i) => {
-      item.classList.toggle('is-current', i === current);
+      item.classList.toggle('on', i === current);
     });
     const row = listItems[current];
     if (row && playing) {
@@ -340,10 +349,11 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
       shownSeq = seq;
       frame.src = api.stationRecordingFrameUrl(detail.id, seq);
     }
-    frame.hidden = frames === 0;
+    screen.hidden = frames === 0;
     noFrames.hidden = frames > 0;
-    noFrames.textContent = detail ? (detail.ended_ms === null && frames === 0 ? 'Waiting for the first frame.' : 'No frames were kept: the actions only.') : '';
-    frameLabel.textContent = frames > 0 ? `Frame ${seq} of ${frames}, at ${clockText(frameTime(seq, times))}` : '';
+    replace(noFrames, detail ? (detail.ended_ms === null && frames === 0 ? 'Waiting for the first frame.' : 'No frames were kept: the actions only.') : '');
+    frameLine.hidden = frames === 0;
+    frameLine.textContent = frames > 0 ? `Frame ${seq} of ${frames}, at ${clockText(frameTime(seq, times))}` : '';
     paintList();
   };
 
@@ -381,9 +391,6 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
     pos = Number(scrub.value);
     paint();
   });
-  speedSelect.addEventListener('change', () => {
-    speed = Number(speedSelect.value);
-  });
 
   /** The actions as rows: their time into the recording, their words; a click jumps to one. */
   const renderList = (): void => {
@@ -393,43 +400,43 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
       return;
     }
     if (!events.length) {
-      replace(listBox, empty('clock', 'No actions', 'Nothing was asked of the screen during this recording.'));
+      replace(listBox, empty('clock', 'No actions yet'));
       return;
     }
     const rows = events.map((ev) => {
       const item = h(
-        'button.ws-action',
-        { type: 'button', class: ev.ok ? '' : 'is-refused' },
-        h('span.ws-action-time', null, clockText(ev.at_ms - startMs)),
-        h('span.ws-action-text', null, actionText(ev)),
+        'div.ws-rec-act',
+        { role: 'button', tabindex: 0 },
+        h('span.ws-mono.muted', null, clockText(ev.at_ms - startMs)),
+        h('span.clip', null, actionText(ev)),
         ev.ok ? null : badge('refused', 'danger'),
       );
-      item.addEventListener('click', () => {
+      const jump = (): void => {
         stopPlaying();
         pos = Math.max(0, Math.min(spanMs, ev.at_ms - startMs));
         paint();
+      };
+      item.addEventListener('click', jump);
+      item.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          jump();
+        }
       });
       listItems.push(item);
       return item;
     });
-    replace(
-      listBox,
-      detail.events.length >= DETAIL_EVENTS ? h('p.faint', null, `The newest ${DETAIL_EVENTS} actions are shown.`) : null,
-      rows,
-    );
+    replace(listBox, rows, detail.events.length >= DETAIL_EVENTS ? h('p.hint', null, `The newest ${DETAIL_EVENTS} actions are shown.`) : null);
   };
 
   // ---- the details, the header, the delete ----
   const confirmDelete = (): void => {
-    const pane = h(
-      'div.stack',
-      null,
+    const close = dialog(
+      'Delete this recording?',
       h('p', null, 'Its frames and actions are deleted. This cannot be undone.'),
-      h(
-        'div.ws-buttons',
-        null,
-        button('Cancel', () => close()),
-        button(
+      [
+        btn('Cancel', () => close(), { kind: 'ghost' }),
+        btn(
           'Delete',
           () => {
             close();
@@ -437,9 +444,8 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
           },
           { kind: 'danger' },
         ),
-      ),
+      ],
     );
-    const close = modal('Delete this recording?', pane);
   };
 
   const remove = async (): Promise<void> => {
@@ -450,17 +456,17 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
   const renderHeader = (): void => {
     if (!detail) {
       replace(title, 'Recording');
-      replace(chipBox);
+      replace(chipRow);
       replace(actionsBox);
       return;
     }
     const stationName = station?.name ?? stationId;
     replace(title, `Recording of ${stationName}`);
-    replace(chipBox, stateBadge(detail), takeoverBadge(detail));
+    replace(chipRow, stateBadge(detail), takeoverBadge(detail));
     const open = detail.ended_ms === null;
     replace(
       actionsBox,
-      button('Delete', () => confirmDelete(), {
+      btn('Delete', () => confirmDelete(), {
         kind: 'danger',
         disabled: open,
         title: open ? 'An open recording cannot be deleted until its lease ends.' : 'Delete this recording',
@@ -470,24 +476,26 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
 
   const renderDetails = (): void => {
     if (!detail) {
-      replace(detailsBody, failed || missing ? empty('alert', missing ? 'No such recording.' : 'Could not load this recording.') : h('p.faint', null, 'Loading…'));
+      replace(detailsBody, failed || missing ? empty('alert', missing ? 'No such recording.' : 'Could not load this recording.') : muted('Loading…'));
       return;
     }
-    const pairs: [string, Node | string][] = [
-      ['Workstation', station ? h('a', { href: href('workstations', stationId) }, station.name) : stationId],
-      ['Agent', names.get(detail.agent) ?? `agent ${detail.agent}`],
-      ['Task', detail.task ?? '—'],
-      ['Lease', detail.lease],
-      ['Started', `${dateText(detail.started_ms)} (${ago(detail.started_ms)})`],
-      ['Ended', detail.ended_ms === null ? 'Still recording' : dateText(detail.ended_ms)],
-      ['Length', clockText(spanMs)],
-      ['Frames', String(detail.frames)],
-      ['Actions', String(detail.actions)],
-      ['Size', bytesText(detail.bytes)],
-      ['Picture', detail.width && detail.height ? `${detail.width}×${detail.height}` : '—'],
-      ['Owner took over', detail.takeover ? 'Yes, during this recording' : 'No'],
-    ];
-    replace(detailsBody, h('dl.node-facts', null, pairs.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])));
+    replace(
+      detailsBody,
+      kv([
+        ['Workstation', station ? h('a', { href: href('workstations', stationId) }, station.name) : stationId],
+        ['Agent', names.get(detail.agent) ?? `agent ${detail.agent}`],
+        ['Task', detail.task ?? '—'],
+        ['Lease', detail.lease],
+        ['Started', ago(detail.started_ms)],
+        ['Ended', detail.ended_ms === null ? 'Still recording' : ago(detail.ended_ms)],
+        ['Length', clockText(spanMs)],
+        ['Frames', String(detail.frames)],
+        ['Actions', String(detail.actions)],
+        ['Size', bytesText(detail.bytes)],
+        ['Picture', detail.width && detail.height ? `${detail.width}×${detail.height}` : '—'],
+        ['Owner took over', detail.takeover ? 'Yes' : 'No'],
+      ]),
+    );
   };
 
   /** The record as the hub holds it. An open recording is read again now and then, so its actions and frames grow. */

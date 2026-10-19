@@ -14,6 +14,7 @@ use serde_json::json;
 
 use super::wizard::WizardMsg;
 use super::{Id, ide, project_environments, project_maintenance, project_settings, project_team};
+use crate::console::shell::pmono;
 use crate::console::{Ctx, client, events, ui};
 
 /// The document types a system viewer shows as plain content; any other file is not opened.
@@ -132,14 +133,6 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
-        Tab::Plan,
-        Tab::Maintenance,
-        Tab::Environments,
-        Tab::Team,
-        Tab::Settings,
-    ];
-
     /// A tab by its name (`plan`, `maintenance`, `environments`, `team`, `settings`), as the web's route names it.
     pub fn named(name: &str) -> Option<Tab> {
         match name.trim() {
@@ -149,16 +142,6 @@ impl Tab {
             "team" => Some(Tab::Team),
             "settings" => Some(Tab::Settings),
             _ => None,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Tab::Plan => "Plan",
-            Tab::Maintenance => "Maintenance",
-            Tab::Environments => "Environments",
-            Tab::Team => "Team",
-            Tab::Settings => "Settings",
         }
     }
 }
@@ -193,6 +176,8 @@ pub struct State {
     pub tab: Tab,
     /// The Archive confirmation is open.
     pub confirm_archive: bool,
+    /// The More menu (send back, archive) is open.
+    pub more: bool,
     pub team: project_team::State,
     pub settings: project_settings::State,
     pub maintenance: project_maintenance::State,
@@ -235,6 +220,8 @@ pub enum Msg {
     Pause,
     Resume,
     /// Archive: asked (OpenArchive), then done or not.
+    /// Opens or shuts the More menu on the page.
+    ToggleMore,
     OpenArchive,
     Archive,
     CancelArchive,
@@ -328,7 +315,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 move |r| Msg::Acted(r, done),
             )
         }
+        Msg::ToggleMore => {
+            state.more = !state.more;
+            Task::none()
+        }
         Msg::OpenArchive => {
+            state.more = false;
             state.confirm_archive = true;
             Task::none()
         }
@@ -538,6 +530,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::OpenSendBack => {
+            state.more = false;
             let Some(p) = state.detail.as_ref() else {
                 return Task::none();
             };
@@ -720,151 +713,67 @@ fn link<'a>(label_text: &str, msg: Msg) -> Element<'a, Msg> {
     .into()
 }
 
-/// The eight stage boxes (10px squares, 1px rule edges): earlier stages filled in ink-3, the current
-/// one in signal, later ones hollow; the stage name beside them.
+/// A stage's bar colour: the done ones are ok at 70%, the current one is signal, the rest are rule-strong.
+fn stage_fill(i: usize, idx: usize) -> Color {
+    let p = crate::theme::palette();
+    if i < idx {
+        Color { a: 0.7, ..p.ok }
+    } else if i == idx {
+        p.signal
+    } else {
+        p.rule_strong
+    }
+}
+
+/// The eight stage bars on a list row (the web's `.pj-track`): thin, rounded, the same width each.
 fn track<'a>(stage: &str) -> Element<'a, Msg> {
     let idx = stage_index(stage);
-    let segs = row(STAGES.iter().enumerate().map(|(i, _)| {
-        let (fill, edge) = if i == idx {
-            (
-                crate::theme::palette().signal,
-                crate::theme::palette().signal,
-            )
-        } else if i < idx {
-            (crate::theme::palette().ink_3, crate::theme::palette().ink_3)
-        } else {
-            (Color::TRANSPARENT, crate::theme::palette().rule)
-        };
-        container(Space::new().width(8.0).height(8.0))
+    row(STAGES.iter().enumerate().map(|(i, _)| {
+        container(Space::new().width(Length::Fill).height(4.0))
+            .width(Length::Fill)
             .style(move |_: &Theme| container::Style {
-                background: Some(fill.into()),
-                border: Border {
-                    color: edge,
-                    width: 1.0,
-                    radius: 0.0.into(),
-                },
+                background: Some(stage_fill(i, idx).into()),
+                border: Border::default().rounded(2.0),
                 ..Default::default()
             })
             .into()
     }))
-    .spacing(3);
-    row![
-        segs,
-        text(label(stage))
-            .font(theme::SANS)
-            .size(12.0)
-            .color(crate::theme::palette().ink_2)
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center)
+    .spacing(4)
+    .width(Length::Fill)
     .into()
 }
 
-/// The pipeline on the detail page: a ruled strip of eight cells. Done steps are ticked, the current
-/// one is highlighted (sheet ground, signal underline, semibold), later ones faint.
+/// The pipeline on the detail page (the web's `.pj-pipe`): eight steps, each a bar over its name. The done ones are
+/// ticked, the current one is ink and semibold, the later ones faint.
 fn pipeline<'a>(stage: &str) -> Element<'a, Msg> {
     let idx = stage_index(stage);
-    let mut items: Vec<Element<'a, Msg>> = Vec::new();
-    for (i, s) in STAGES.iter().enumerate() {
-        if i > 0 {
-            items.push(
-                container(Space::new().width(1.0).height(Length::Fill))
-                    .style(|_: &Theme| container::Style {
-                        background: Some(crate::theme::palette().rule.into()),
-                        ..Default::default()
-                    })
-                    .into(),
-            );
-        }
+    row(STAGES.iter().enumerate().map(|(i, s)| {
+        let p = crate::theme::palette();
         let current = i == idx;
-        let (mark, filled, fg) = if i < idx {
-            (
-                "✓".to_string(),
-                Some(crate::theme::palette().ink),
-                crate::theme::palette().ink,
-            )
+        let (ink, font) = if i < idx {
+            (p.ink_2, theme::SANS)
         } else if current {
-            (
-                (i + 1).to_string(),
-                Some(crate::theme::palette().signal),
-                crate::theme::palette().ink,
-            )
+            (p.ink, SEMIBOLD)
         } else {
-            ((i + 1).to_string(), None, crate::theme::palette().ink_3)
+            (p.ink_3, theme::SANS)
         };
-        let edge = if i < idx {
-            crate::theme::palette().ink
-        } else if current {
-            crate::theme::palette().signal
-        } else {
-            fg
-        };
-        let mark_box = container(ui::sans(
-            mark,
-            11.0,
-            if filled.is_some() {
-                crate::theme::palette().paper
-            } else {
-                fg
-            },
-        ))
-        .width(20.0)
-        .height(20.0)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .style(move |_: &Theme| container::Style {
-            background: filled.map(Into::into),
-            border: Border {
-                color: edge,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        });
-        let name = text(label(s))
-            .font(if current { SEMIBOLD } else { theme::SANS })
-            .size(12.0)
-            .color(fg);
-        let underline = if current {
-            crate::theme::palette().signal
-        } else {
-            Color::TRANSPARENT
-        };
-        let cell = column![
-            column![mark_box, name].spacing(6).padding([10, 8]),
-            container(Space::new().height(3.0))
-                .width(Length::Fill)
-                .style(move |_: &Theme| container::Style {
-                    background: Some(underline.into()),
-                    ..Default::default()
-                }),
-        ]
-        .width(Length::Fill);
-        items.push(
-            container(cell)
-                .width(Length::Fill)
-                .style(move |_: &Theme| container::Style {
-                    background: if current {
-                        Some(crate::theme::palette().sheet.into())
-                    } else {
-                        None
-                    },
-                    ..Default::default()
-                })
-                .into(),
-        );
-    }
-    container(row(items))
-        .width(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            border: Border {
-                color: crate::theme::palette().rule,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
+        let mut name = row![].spacing(4).align_y(Alignment::Center);
+        if i < idx {
+            name = name.push(ui::icon("check", 11.0, p.ok));
+        }
+        name = name.push(text(label(s)).font(font).size(12.0).color(ink));
+        let bar = container(Space::new().width(Length::Fill).height(4.0))
+            .width(Length::Fill)
+            .style(move |_: &Theme| container::Style {
+                background: Some(stage_fill(i, idx).into()),
+                border: Border::default().rounded(2.0),
+                ..Default::default()
+            });
+        column![bar, name].spacing(6).width(Length::Fill).into()
+    }))
+    .spacing(8)
+    .width(Length::Fill)
+    .into()
 }
 
 // ---- the list ------------------------------------------------------------------------
@@ -891,15 +800,19 @@ fn files_text(n: usize) -> String {
     }
 }
 
+/// One project on the list (the web's `.pj-row`): a bordered card, its title and badges over the stage bars, the
+/// stage's name and the counts, and the update time at the right.
 fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
+    let ink_2 = crate::theme::palette().ink_2;
+    let ink_3 = crate::theme::palette().ink_3;
     // A project that is over is listed after the live ones, its title faint.
     let title = if p.live() {
-        semibold(p.title.as_str(), 15.0)
+        semibold(p.title.as_str(), 14.0)
     } else {
-        semibold(p.title.as_str(), 15.0).color(crate::theme::palette().ink_3)
+        semibold(p.title.as_str(), 14.0).color(ink_3)
     };
     let mut head = row![title, ui::badge(&p.kind, ui::Tone::Muted)]
-        .spacing(10)
+        .spacing(8)
         .align_y(Alignment::Center);
     if let Some(b) = life_badge(p) {
         head = head.push(b);
@@ -907,6 +820,7 @@ fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
     let main = column![
         head,
         track(&p.stage),
+        ui::sans(label(&p.stage), 13.0, ink_2),
         ui::sans(
             format!(
                 "rev {} · {} docs · {} critiques · {} tasks",
@@ -916,40 +830,45 @@ fn row_item<'a>(p: &'a Project) -> Element<'a, Msg> {
                 p.tasks.len()
             ),
             12.0,
-            crate::theme::palette().ink_3
+            ink_3
         ),
     ]
-    .spacing(6)
+    .spacing(8)
     .width(Length::Fill);
-    let side = column![ui::sans(
+    let side = container(ui::sans(
         format!("updated {}", ago(p.updated_ms)),
         12.0,
-        crate::theme::palette().ink_3
-    )]
+        ink_3,
+    ))
+    .width(144.0)
     .align_x(Alignment::End);
-    let entry = button(row![main, side].spacing(16).align_y(Alignment::Center))
+    button(row![main, side].spacing(16).align_y(Alignment::Start))
         .on_press(Msg::Open(p.id.clone()))
-        .padding([14, 4])
+        .padding(16)
         .width(Length::Fill)
-        .style(theme::register_row(false));
-    // Each row is closed by a rule (the web's `.pj-row` border-bottom).
-    column![
-        entry,
-        container(Space::new().height(1.0))
-            .width(Length::Fill)
-            .style(|_: &Theme| container::Style {
-                background: Some(crate::theme::palette().rule.into()),
+        .style(move |_: &Theme, status: button::Status| {
+            let p = crate::theme::palette();
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: Some(if hovered { p.hover } else { p.sheet }.into()),
+                text_color: p.ink,
+                border: Border {
+                    color: p.rule,
+                    width: 1.0,
+                    radius: crate::theme::skin().radius_lg.into(),
+                },
                 ..Default::default()
-            })
-    ]
-    .into()
+            }
+        })
+        .into()
 }
 
 fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
-    let mut body: Vec<Element<'a, Msg>> = vec![container(
-        ui::prose("Agents work on one project at a time. Talk a new one through with the orchestrator, or open one yourself.").color(crate::theme::palette().ink_2),
+    let mut body: Vec<Element<'a, Msg>> = vec![ui::sans(
+        "Agents work on one project at a time. Talk a new one through with the orchestrator, or open one yourself.",
+        13.0,
+        crate::theme::palette().ink_3,
     )
-    .max_width(620)
     .into()];
     if let Some(e) = &state.error {
         body.push(ui::error_line(e));
@@ -958,7 +877,7 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
         None => body.push(ui::loading()),
         Some(list) if list.is_empty() => {
             body.push(ui::empty(
-                "projects",
+                "commit",
                 "No projects yet.",
                 "Start one in a conversation with the orchestrator: it drafts the tasks, the team and the budget, and you start it.",
             ));
@@ -970,20 +889,10 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
             );
         }
         Some(list) => {
-            // The web's `.pj-list` ruled register: a rule above the rows, one under each.
-            body.push(
-                container(Space::new().height(1.0))
-                    .width(Length::Fill)
-                    .style(|_: &Theme| container::Style {
-                        background: Some(crate::theme::palette().rule.into()),
-                        ..Default::default()
-                    })
-                    .into(),
-            );
             // The live projects first, newest first; the ones that are over after them.
             let mut ordered: Vec<&Project> = list.iter().collect();
             ordered.sort_by_key(|p| (!p.live(), std::cmp::Reverse(p.created_ms)));
-            body.push(column(ordered.into_iter().map(row_item)).spacing(0).into());
+            body.push(column(ordered.into_iter().map(row_item)).spacing(8).into());
         }
     }
     ui::sheet(
@@ -1019,6 +928,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     let idx = stage_index(&p.stage);
 
     let live = p.live();
+    let p_ink_2 = crate::theme::palette().ink_2;
     let mut badges: Vec<Element<'a, Msg>> = vec![
         ui::badge(&p.kind, ui::Tone::Muted),
         ui::badge(&label(&p.stage), ui::Tone::Signal),
@@ -1031,72 +941,100 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     }
 
     let mut body: Vec<Element<'a, Msg>> = vec![
-        link("← All projects", Msg::Back),
-        ui::prose(p.goal.as_str()).into(),
+        container(ui::prose(p.goal.as_str()).color(p_ink_2))
+            .max_width(720.0)
+            .into(),
         pipeline(&p.stage),
     ];
 
-    let mut actions: Vec<Element<'a, Msg>> = Vec::new();
+    // The page's actions (the web's `.pj-actions`): the common ones at the left, Approve and Resume at the right
+    // end, and More (send back, archive) behind a menu.
+    let mut out: Vec<Element<'a, Msg>> = vec![ui::btn_sm(
+        "Open in Work",
+        Some("commit"),
+        ui::Kind::Secondary,
+        Some(Msg::Go(Id::WorkOn(p.id.clone()))),
+    )];
+    if let Some(repo) = &p.repo {
+        out.push(ui::btn_sm(
+            "Open repo",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::OpenRepo(repo.clone())),
+        ));
+    }
+    if live && !p.paused {
+        out.push(ui::btn_sm(
+            "Pause",
+            Some("pause"),
+            ui::Kind::Secondary,
+            Some(Msg::Pause),
+        ));
+    }
+    if !p.archived {
+        out.push(ui::btn_sm(
+            if p.in_maintenance() {
+                "Mode: Maintenance"
+            } else {
+                "Mode: Build"
+            },
+            Some("chevron-down"),
+            ui::Kind::Secondary,
+            Some(Msg::OpenMode),
+        ));
+    }
+    let mut end: Vec<Element<'a, Msg>> = Vec::new();
+    if live {
+        end.push(ui::btn_sm(
+            "More",
+            Some("ellipsis"),
+            ui::Kind::Secondary,
+            Some(Msg::ToggleMore),
+        ));
+    }
     if APPROVABLE.contains(&p.stage.as_str()) {
-        actions.push(ui::btn(
+        end.push(ui::btn_sm(
             "Approve plan",
             None,
             ui::Kind::Primary,
             Some(Msg::OpenApprove),
         ));
     }
-    if idx > 0 && live {
-        actions.push(ui::btn(
-            "Send back…",
-            None,
-            ui::Kind::Secondary,
-            Some(Msg::OpenSendBack),
-        ));
-    }
-    // The project as one flow: its plan, its tasks in the order they run, delivery.
-    actions.push(ui::btn(
-        "Open in Work",
-        Some("commit"),
-        ui::Kind::Secondary,
-        Some(Msg::Go(Id::WorkOn(p.id.clone()))),
-    ));
-    if !p.archived {
-        actions.push(ui::btn(
-            if p.in_maintenance() {
-                "Mode: Maintenance"
-            } else {
-                "Mode: Build"
-            },
-            None,
-            ui::Kind::Secondary,
-            Some(Msg::OpenMode),
-        ));
-    }
-    if live && !p.paused {
-        actions.push(ui::btn(
-            "Pause",
-            None,
-            ui::Kind::Secondary,
-            Some(Msg::Pause),
-        ));
-    }
     if live && p.paused {
-        actions.push(ui::btn(
+        end.push(ui::btn_sm(
             "Resume",
-            None,
+            Some("play"),
             ui::Kind::Primary,
             Some(Msg::Resume),
         ));
     }
-    if live {
-        actions.push(ui::btn(
+    body.push(
+        row![
+            container(row(out).spacing(8).wrap()).width(Length::Fill),
+            row(end).spacing(8).align_y(Alignment::Center),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    if state.more && live {
+        let mut items: Vec<Element<'a, Msg>> = Vec::new();
+        if idx > 0 {
+            items.push(ui::btn_sm(
+                "Send back…",
+                Some("undo-2"),
+                ui::Kind::Secondary,
+                Some(Msg::OpenSendBack),
+            ));
+        }
+        items.push(ui::btn_sm(
             "Archive…",
-            None,
-            ui::Kind::Ghost,
+            Some("archive"),
+            ui::Kind::Secondary,
             Some(Msg::OpenArchive),
         ));
+        body.push(ui::card("More", row(items).spacing(8).wrap().into()));
     }
-    body.push(row(actions).spacing(8).wrap().into());
     if state.confirm_archive {
         body.push(ui::card(
             "Archive project?",
@@ -1112,7 +1050,6 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             .into(),
         ));
     }
-
     if state.choose_mode {
         let current = if p.in_maintenance() {
             "maintenance"
@@ -1222,8 +1159,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         body.push(ui::faint(n).into());
     }
 
-    let tabs: Vec<(Tab, &str)> = Tab::ALL.iter().map(|t| (*t, t.label())).collect();
-    body.push(ui::tabs(&tabs, state.tab, Msg::Tab));
+    body.push(tab_bar(p, state.tab));
     match state.tab {
         Tab::Team => {
             body.push(project_team::view(&state.team, &p.id, live).map(Msg::Team));
@@ -1288,79 +1224,178 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     page(p, badges, body)
 }
 
-/// A project's page: its title and badges over the body.
+/// The page's tabs (the web's `.pj-tabs`): the ones drawn here, and the console's own Work, Tasks and Weft screens for the
+/// project. Selected: ink with a signal rule under it; the rest faint.
+fn tab_bar<'a>(p: &'a Project, tab: Tab) -> Element<'a, Msg> {
+    let items: [(&str, Msg, bool); 8] = [
+        ("Plan", Msg::Tab(Tab::Plan), tab == Tab::Plan),
+        ("Work", Msg::Go(Id::WorkOn(p.id.clone())), false),
+        ("Tasks", Msg::Go(Id::Tasks), false),
+        ("Weft", Msg::Go(Id::History), false),
+        (
+            "Maintenance",
+            Msg::Tab(Tab::Maintenance),
+            tab == Tab::Maintenance,
+        ),
+        (
+            "Environments",
+            Msg::Tab(Tab::Environments),
+            tab == Tab::Environments,
+        ),
+        ("Team", Msg::Tab(Tab::Team), tab == Tab::Team),
+        ("Settings", Msg::Tab(Tab::Settings), tab == Tab::Settings),
+    ];
+    let cells = items.into_iter().map(|(name, msg, on)| {
+        let ink = if on {
+            crate::theme::palette().ink
+        } else {
+            crate::theme::palette().ink_3
+        };
+        let cell = column![
+            container(ui::sans(name, 13.0, ink))
+                .height(34.0)
+                .align_y(Alignment::Center),
+            container(Space::new().width(Length::Fill).height(2.0))
+                .width(Length::Fill)
+                .style(move |_: &Theme| container::Style {
+                    background: on.then(|| crate::theme::palette().action.into()),
+                    ..Default::default()
+                }),
+        ];
+        button(cell)
+            .padding(0)
+            .style(|_: &Theme, _| button::Style {
+                background: None,
+                ..Default::default()
+            })
+            .on_press(msg)
+            .into()
+    });
+    column![row(cells).spacing(22), ui::hairline(),].into()
+}
+
+/// A project's page: the back link, its monogram, title and badges over the body (the web's `.pj-top`).
 fn page<'a>(
     p: &'a Project,
     badges: Vec<Element<'a, Msg>>,
     body: Vec<Element<'a, Msg>>,
 ) -> Element<'a, Msg> {
-    ui::sheet(ui::view_head(&p.title, badges), scrolled(body))
+    let back = button(ui::sans(
+        "← All projects",
+        12.0,
+        crate::theme::palette().ink_3,
+    ))
+    .padding(0)
+    .style(|_: &Theme, _| button::Style {
+        background: None,
+        ..Default::default()
+    })
+    .on_press(Msg::Back);
+    let top = row![
+        pmono(&p.id, &p.title, 40.0),
+        column![
+            semibold(p.title.as_str(), 23.0),
+            row(badges).spacing(8).align_y(Alignment::Center).wrap(),
+        ]
+        .spacing(4)
+        .width(Length::Fill),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    ui::sheet(column![back, top].spacing(4).into(), scrolled(body))
 }
 
+/// A row of a ruled list (the web's `.pj-docrow + .pj-docrow`): a rule above it, unless it is the first.
+fn ruled<'a>(first: bool, content: Element<'a, Msg>) -> Element<'a, Msg> {
+    if first {
+        content
+    } else {
+        column![ui::hairline(), content].into()
+    }
+}
+
+/// The documents in stage order (the web's `docsInOrder`), as ruled rows; the empty state is the web's.
 fn docs_body<'a>(p: &'a Project) -> Element<'a, Msg> {
     if p.docs.is_empty() {
-        return ui::faint("No documents yet.").into();
+        return ui::empty(
+            "file-text",
+            "No documents yet",
+            "The brief and the proposal appear here once the orchestrator drafts them.",
+        );
     }
-    // Group by kind, in the order the kinds first appear; then order the groups by stage.
-    let mut groups: Vec<(&'a str, Vec<&'a Doc>)> = Vec::new();
-    for d in &p.docs {
-        match groups.iter().position(|(k, _)| *k == d.kind) {
-            Some(i) => groups[i].1.push(d),
-            None => groups.push((d.kind.as_str(), vec![d])),
-        }
-    }
-    groups.sort_by_key(|(k, _)| rank(k));
-    column(groups.into_iter().map(|(kind, docs)| -> Element<'a, Msg> {
-        let items = column(docs.into_iter().map(doc_item)).spacing(16);
-        column![ui::label(&label(kind)), items].spacing(10).into()
-    }))
-    .spacing(24)
+    let mut docs: Vec<&'a Doc> = p.docs.iter().collect();
+    docs.sort_by_key(|d| rank(&d.kind));
+    column(
+        docs.into_iter()
+            .enumerate()
+            .map(|(i, d)| ruled(i == 0, doc_item(d))),
+    )
     .into()
 }
 
+/// One document (the web's `.pj-docrow`): its icon, its name and kind, who and when, its summary, and the Open
+/// button; a repository path sits under it in mono.
 fn doc_item<'a>(d: &'a Doc) -> Element<'a, Msg> {
-    let mut col = column![
-        row![
-            semibold(d.title.as_str(), 15.0),
-            ui::badge(&d.kind, ui::Tone::Muted)
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center),
-        ui::sans(
-            format!("by {} · {}", d.by, ago(d.at_ms)),
-            12.0,
-            crate::theme::palette().ink_3
-        ),
-    ]
-    .spacing(6);
-    if !d.summary.is_empty() {
-        col = col.push(ui::markdown(&d.summary));
-    }
-    if let Some(id) = &d.file {
-        col = col.push(link("Open", Msg::OpenFile(id.clone())));
-    }
-    if let Some(path) = &d.repo_path {
+    let p = crate::theme::palette();
+    let where_ = d.repo_path.as_ref().map(|path| {
         let commit = d
             .commit
             .as_deref()
             .map(|c| format!(" @ {}", c.get(..7).unwrap_or(c)))
             .unwrap_or_default();
-        col = col.push(ui::mono(
-            format!("{path}{commit}"),
-            12.0,
-            crate::theme::palette().ink_2,
+        format!("{path}{commit}")
+    });
+    let icon_box = container(ui::icon("file-text", 16.0, p.ink_3))
+        .padding(8)
+        .style(move |_: &Theme| container::Style {
+            background: Some(crate::theme::palette().sheet_2.into()),
+            border: Border::default().rounded(crate::theme::skin().radius),
+            ..Default::default()
+        });
+    let mut main = column![
+        row![
+            semibold(d.title.as_str(), 14.0),
+            ui::badge(&d.kind, ui::Tone::Muted)
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        ui::sans(format!("by {} · {}", d.by, ago(d.at_ms)), 12.0, p.ink_3),
+    ]
+    .spacing(4)
+    .width(Length::Fill);
+    if !d.summary.is_empty() {
+        main = main.push(ui::sans(d.summary.as_str(), 13.0, p.ink_2));
+    }
+    if let Some(w) = where_ {
+        main = main.push(ui::mono(w, 12.0, p.ink_3));
+    }
+    let mut line = row![icon_box, main].spacing(12).align_y(Alignment::Center);
+    if let Some(id) = &d.file {
+        line = line.push(ui::btn_sm(
+            "Open",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::OpenFile(id.clone())),
         ));
     }
-    col.into()
+    container(line).padding([12, 0]).width(Length::Fill).into()
 }
 
 fn critiques_body<'a>(p: &'a Project) -> Element<'a, Msg> {
     if p.critiques.is_empty() {
-        return ui::faint("No critiques yet.").into();
+        return ui::empty(
+            "messages-square",
+            "No critiques yet",
+            "The critiques appear here once agents review the proposal.",
+        );
     }
-    column(p.critiques.iter().map(critique_item))
-        .spacing(16)
-        .into()
+    column(
+        p.critiques
+            .iter()
+            .enumerate()
+            .map(|(i, c)| ruled(i == 0, critique_item(c))),
+    )
+    .into()
 }
 
 fn critique_item<'a>(c: &'a Critique) -> Element<'a, Msg> {
@@ -1371,7 +1406,7 @@ fn critique_item<'a>(c: &'a Critique) -> Element<'a, Msg> {
     };
     let head = row![
         ui::badge(&c.verdict, tone),
-        ui::prose(format!("by {}", c.by)),
+        semibold(format!("by {}", c.by), 13.0),
         ui::sans(
             format!("revision {}", c.revision),
             12.0,
@@ -1379,13 +1414,13 @@ fn critique_item<'a>(c: &'a Critique) -> Element<'a, Msg> {
         ),
         ui::sans(ago(c.at_ms), 12.0, crate::theme::palette().ink_3),
     ]
-    .spacing(10)
+    .spacing(8)
     .align_y(Alignment::Center);
-    let mut col = column![head].spacing(6);
+    let mut col = column![head].spacing(8);
     if !c.text.is_empty() {
         col = col.push(ui::markdown(&c.text));
     }
-    col.into()
+    container(col).padding([12, 0]).width(Length::Fill).into()
 }
 
 fn tasks_body<'a>(p: &'a Project) -> Element<'a, Msg> {
@@ -1393,18 +1428,28 @@ fn tasks_body<'a>(p: &'a Project) -> Element<'a, Msg> {
         return ui::faint("No tasks yet.").into();
     }
     column![
-        column(
-            p.tasks
-                .iter()
-                .map(|t| link(t, Msg::Go(Id::Task(t.clone())))),
-        )
-        .spacing(8),
+        column(p.tasks.iter().enumerate().map(|(i, t)| {
+            ruled(
+                i == 0,
+                container(
+                    row![
+                        ui::mono(t.as_str(), 12.0, crate::theme::palette().ink_3),
+                        link(t, Msg::Go(Id::Task(t.clone()))),
+                    ]
+                    .spacing(12)
+                    .align_y(Alignment::Center),
+                )
+                .padding([10, 0])
+                .width(Length::Fill)
+                .into(),
+            )
+        })),
         link(
             "See them in the order they run, in Work",
             Msg::Go(Id::WorkOn(p.id.clone()))
         ),
     ]
-    .spacing(12)
+    .spacing(8)
     .into()
 }
 
@@ -1414,7 +1459,16 @@ fn history_body<'a>(p: &'a Project) -> Element<'a, Msg> {
     }
     let mut events: Vec<&'a Event> = p.history.iter().collect();
     events.sort_by_key(|e| e.at_ms);
-    column(events.into_iter().map(event_row)).spacing(8).into()
+    column(events.into_iter().enumerate().map(|(i, e)| {
+        ruled(
+            i == 0,
+            container(event_row(e))
+                .padding([8, 0])
+                .width(Length::Fill)
+                .into(),
+        )
+    }))
+    .into()
 }
 
 fn event_row<'a>(e: &'a Event) -> Element<'a, Msg> {

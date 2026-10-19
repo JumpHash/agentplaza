@@ -6,13 +6,19 @@
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-use iced::widget::{Space, column, container, image, row, text, text_input};
-use iced::{Element, Fill, Font, Length, Task, font};
+use iced::widget::{
+    Space, button, column, container, image, pick_list, responsive, row, stack, text, text_input,
+};
+use iced::{
+    Alignment, Background, Border, Color, Element, Fill, Font, Length, Shadow, Size, Task, Theme,
+    font,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{Ctx, client, events, ui};
+use super::artifact::Sharing;
+use crate::console::{Ctx, client, events, share, ui};
 use crate::theme;
 
 /// Serif semibold: a card's title (the web's `.prov-title h3`).
@@ -99,8 +105,8 @@ impl Scope {
 
     fn intro(self) -> &'static str {
         match self {
-            Scope::Deliverable => "What the agents hand in. Stored in the plaza's object store.",
-            Scope::Shared => "Files the agents share with each other and on the board.",
+            Scope::Deliverable => "Files agents hand in when their work is finished.",
+            Scope::Shared => "Files the owner shares with the plaza.",
         }
     }
 }
@@ -222,9 +228,13 @@ pub struct State {
     tools: Vec<LibraryTool>,
     query: String,
     filter: Option<Group>,
+    /// The type select picks the artifacts: the grid lists them instead of the files.
+    artifacts_on: bool,
     open: Option<String>,
     preview: Preview,
     confirm_delete: bool,
+    /// The delete dialog's title, "Delete <name>?", set when the owner asks.
+    delete_title: String,
     tool_open: Option<ToolRef>,
     tool_view: Option<ToolFileView>,
     tool_action: Option<ToolAction>,
@@ -233,6 +243,11 @@ pub struct State {
     selected: Option<String>,
     /// The file the arrow keys picked, as its index in the list the screen shows (see `visible`).
     kbd: Option<usize>,
+    /// The artifacts the Artifacts group lists.
+    artifacts: Vec<apz_view::artifact::Summary>,
+    artifact_error: Option<String>,
+    /// The Share dialog, while it is open over the screen.
+    share: Option<Sharing>,
 }
 
 #[derive(Debug, Clone)]
@@ -241,9 +256,11 @@ pub enum Msg {
     Go(Id),
     Files(Result<Vec<Deliverable>, String>),
     Tools(Result<Vec<LibraryTool>, String>),
+    /// The artifacts the agents made (the Artifacts group), newest first.
+    Artifacts(Result<Vec<apz_view::artifact::Summary>, String>),
     Scope(Scope),
     Query(String),
-    Filter(Option<Group>),
+    Type(Choice),
     Open(String),
     Close,
     PreviewLoaded(String, Result<Vec<u8>, String>),
@@ -270,6 +287,10 @@ pub enum Msg {
     Played(Result<String, String>),
     /// A hub event: a file was handed in, shared or removed, so the list reloads.
     Event(events::Event),
+    /// The file detail's Share press: opens the share dialog for the file, by its id and name.
+    ShareOpen(String, String),
+    /// A message from the share dialog.
+    Share(share::Msg),
 }
 
 /// The navigation this message asks for, if any.
@@ -293,7 +314,12 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         move || tools_client.get::<Vec<LibraryTool>>("/v1/library"),
         Msg::Tools,
     );
-    Task::batch([files, tools])
+    let artifacts_client = ctx.client.clone();
+    let artifacts = client::task(
+        move || artifacts_client.get::<Vec<apz_view::artifact::Summary>>("/v1/artifacts"),
+        Msg::Artifacts,
+    );
+    Task::batch([files, tools, artifacts])
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -319,6 +345,15 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.tool_error = Some(e);
             Task::none()
         }
+        Msg::Artifacts(Ok(artifacts)) => {
+            state.artifacts = artifacts;
+            state.artifact_error = None;
+            Task::none()
+        }
+        Msg::Artifacts(Err(e)) => {
+            state.artifact_error = Some(e);
+            Task::none()
+        }
         Msg::Scope(scope) => {
             state.scope = scope;
             state.open = None;
@@ -332,8 +367,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.kbd = None;
             Task::none()
         }
-        Msg::Filter(filter) => {
-            state.filter = filter;
+        Msg::Type(choice) => {
+            state.artifacts_on = choice == Choice::Artifacts;
+            state.filter = match choice {
+                Choice::Group(group) => Some(group),
+                _ => None,
+            };
             state.kbd = None;
             Task::none()
         }
@@ -373,6 +412,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.error = Some(e);
             Task::none()
         }
+        Msg::ShareOpen(id, name) => {
+            let (dialog, task) = share::open(&ctx.client, "file", &id, &name, None);
+            state.share = Some(Sharing(dialog));
+            task.map(Msg::Share)
+        }
+        Msg::Share(msg) => {
+            let Some(sharing) = state.share.as_mut() else {
+                return Task::none();
+            };
+            let (task, closed) = share::update(&mut sharing.0, msg);
+            if closed {
+                state.share = None;
+            }
+            task.map(Msg::Share)
+        }
         Msg::Open(id) => open(state, id, ctx),
         Msg::Close => {
             state.open = None;
@@ -394,6 +448,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::AskDelete => {
+            let name = state
+                .open
+                .as_deref()
+                .and_then(|id| state.files.iter().find(|d| d.id == id))
+                .map(|d| {
+                    if d.title.is_empty() {
+                        d.name.as_str()
+                    } else {
+                        d.title.as_str()
+                    }
+                })
+                .unwrap_or_default()
+                .to_string();
+            state.delete_title = format!("Delete {name}?");
             state.confirm_delete = true;
             Task::none()
         }
@@ -494,7 +562,76 @@ pub fn subscription(ctx: &Ctx) -> iced::Subscription<Msg> {
     iced::Subscription::batch([keys, events::subscription(&ctx.client).map(Msg::Event)])
 }
 
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+/// The type filter's choices: every type, one group, or the artifacts the agents made (the web's type select).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    All,
+    Group(Group),
+    Artifacts,
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Choice::All => "All",
+            Choice::Group(g) => g.label(),
+            Choice::Artifacts => "Artifacts",
+        })
+    }
+}
+
+/// A tile is at least this wide, with this gap between tiles (the web's `.lib-grid`).
+const TILE_MIN: f32 = 200.0;
+const TILE_GAP: f32 = 12.0;
+/// The open file's panel beside the grid (the web's `.lib-cols.has-sel`).
+const ASIDE_WIDTH: f32 = 380.0;
+/// A tile's preview height (the web's `.lib-card-thumb`).
+const THUMB_HEIGHT: f32 = 96.0;
+/// The controls' text size (the search and the type select).
+const CONTROL: f32 = 13.0;
+
+/// The screen: the library's page, with the Share dialog stacked over it while it is open.
+pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
+    let page = ui::with_modal(page(state, ctx), delete_dialog(state));
+    match &state.share {
+        Some(sharing) => {
+            iced::widget::stack([page, share::view(&sharing.0).map(Msg::Share)]).into()
+        }
+        None => page,
+    }
+}
+
+/// The delete dialog over the screen while the owner has asked to delete the open file (the web's confirm): what it
+/// removes, and Cancel and Delete in the foot.
+fn delete_dialog(state: &State) -> Option<Element<'_, Msg>> {
+    if !state.confirm_delete || state.artifacts_on {
+        return None;
+    }
+    let d = state
+        .open
+        .as_deref()
+        .and_then(|id| state.files.iter().find(|f| f.id == id))?;
+    let body = ui::faint("Removes the file from the plaza's object store. This cannot be undone.");
+    Some(ui::modal(
+        state.delete_title.as_str(),
+        body.into(),
+        vec![
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelDelete)),
+            ui::btn(
+                "Delete",
+                None,
+                ui::Kind::Primary,
+                Some(Msg::Delete(d.id.clone())),
+            ),
+        ],
+        Msg::CancelDelete,
+        440.0,
+    ))
+}
+
+/// The library's page, as the web's Library: the head, the Deliverables and Shared tabs over their intro, the search
+/// and the type filter, the grid of tiles and, beside it, the open file's panel. The agent tools follow the grid.
+fn page<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(e) = &state.error {
         items.push(ui::error_line(e));
@@ -502,23 +639,169 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     if let Some(n) = &state.notice {
         items.push(ui::faint(n.as_str()).into());
     }
-    let open = state
-        .open
-        .as_deref()
-        .and_then(|id| state.files.iter().find(|d| d.id == id));
-    match open {
-        Some(d) => items.push(detail(state, d)),
-        None => list(state, &mut items),
-    }
+    let open = if state.artifacts_on {
+        None
+    } else {
+        state
+            .open
+            .as_deref()
+            .and_then(|id| state.files.iter().find(|d| d.id == id))
+    };
+    let main = column![
+        scope_tabs(state),
+        ui::faint(state.scope.intro()),
+        filters(state),
+        grid(state),
+    ]
+    .spacing(12)
+    .width(Fill);
+    let body: Element<'a, Msg> = match open {
+        Some(d) => row![
+            container(main).width(Fill),
+            container(aside(state, d)).width(Length::Fixed(ASIDE_WIDTH)),
+        ]
+        .spacing(16)
+        .align_y(Alignment::Start)
+        .into(),
+        None => main.into(),
+    };
+    items.push(body);
+    tools(state, &mut items);
     ui::sheet(
-        ui::view_head("Library", vec![]),
+        ui::view_head_with_intro(
+            "Library",
+            "Files agents hand in, and the files the owner shares.",
+            Vec::new(),
+        ),
         ui::scroll(column(items).spacing(16).width(Fill)).into(),
     )
 }
 
-// ---- Files ----------------------------------------------------------------------------------
+/// The Deliverables and Shared tabs; the count of the tab on show follows its name.
+fn scope_tabs<'a>(state: &'a State) -> Element<'a, Msg> {
+    let count = state.files.len();
+    let deliverables = if state.scope == Scope::Deliverable {
+        format!("{} {count}", Scope::Deliverable.label())
+    } else {
+        Scope::Deliverable.label().to_string()
+    };
+    let shared = if state.scope == Scope::Shared {
+        format!("{} {count}", Scope::Shared.label())
+    } else {
+        Scope::Shared.label().to_string()
+    };
+    ui::tabs(
+        &[
+            (Scope::Deliverable, deliverables.as_str()),
+            (Scope::Shared, shared.as_str()),
+        ],
+        state.scope,
+        Msg::Scope,
+    )
+}
 
-/// Opens a file: loads its preview if the type has one, else says so.
+/// The search (by title or name) and the type select, on one line.
+fn filters<'a>(state: &'a State) -> Element<'a, Msg> {
+    let search = text_input("Search by title or name", &state.query)
+        .on_input(Msg::Query)
+        .style(theme::input)
+        .padding(8)
+        .width(Fill);
+    let mut options: Vec<Choice> = vec![Choice::All];
+    options.extend(Group::ALL.into_iter().map(Choice::Group));
+    options.push(Choice::Artifacts);
+    let picked = if state.artifacts_on {
+        Choice::Artifacts
+    } else {
+        state.filter.map_or(Choice::All, Choice::Group)
+    };
+    let kind = pick_list(options, Some(picked), Msg::Type)
+        .style(select_style)
+        .text_size(CONTROL)
+        .font(theme::SANS)
+        .width(Length::Fixed(120.0));
+    row![search, kind]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// The web's `.select`: a transparent field with an ink rule, the handle in ink-2.
+fn select_style(_: &Theme, _: pick_list::Status) -> pick_list::Style {
+    let p = crate::theme::palette();
+    pick_list::Style {
+        text_color: p.ink,
+        placeholder_color: p.ink_3,
+        handle_color: p.ink_2,
+        background: Background::Color(p.raised),
+        border: Border {
+            color: p.rule_strong,
+            width: 1.0,
+            radius: crate::theme::skin().radius.into(),
+        },
+    }
+}
+
+/// The grid: the files the tab and the filter leave, or the artifacts; as many tiles a row as the width takes.
+/// The empty states are the web's: nothing handed in, no artifacts yet, or nothing matches the search.
+fn grid<'a>(state: &'a State) -> Element<'a, Msg> {
+    if state.artifacts_on {
+        if state.artifacts.is_empty() {
+            return ui::empty(
+                "library",
+                "No artifacts yet",
+                "Agents make them with artifact_create.",
+            );
+        }
+    } else if state.files.is_empty() {
+        return ui::empty(
+            "library",
+            "Nothing handed in yet.",
+            "Agents deliver finished work with deliver_file.",
+        );
+    }
+    responsive(move |size: Size| -> Element<'a, Msg> {
+        let cells = if state.artifacts_on {
+            artifact_tiles(state)
+        } else {
+            file_tiles(state)
+        };
+        if cells.is_empty() {
+            return ui::empty("search", "Nothing matches that search.", "");
+        }
+        let per_row = ((size.width + TILE_GAP) / (TILE_MIN + TILE_GAP))
+            .floor()
+            .max(1.0) as usize;
+        let mut rows = column(Vec::<Element<'a, Msg>>::new())
+            .spacing(TILE_GAP)
+            .width(Fill);
+        let mut line = row(Vec::<Element<'a, Msg>>::new())
+            .spacing(TILE_GAP)
+            .width(Fill);
+        let mut n = 0;
+        for cell in cells {
+            line = line.push(container(cell).width(Fill));
+            n += 1;
+            if n == per_row {
+                rows = rows.push(line);
+                line = row(Vec::<Element<'a, Msg>>::new())
+                    .spacing(TILE_GAP)
+                    .width(Fill);
+                n = 0;
+            }
+        }
+        if n > 0 {
+            while n < per_row {
+                line = line.push(Space::new().width(Fill));
+                n += 1;
+            }
+            rows = rows.push(line);
+        }
+        rows.into()
+    })
+    .into()
+}
+
 fn open(state: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
     state.selected = Some(id.clone());
     let video = state
@@ -715,65 +998,8 @@ fn delete(id: String, ctx: &Ctx) -> Task<Msg> {
     client::task(move || client.delete(&path).map(|_| id), Msg::Deleted)
 }
 
-fn list<'a>(state: &'a State, items: &mut Vec<Element<'a, Msg>>) {
-    let tabs: Vec<Element<'a, Msg>> = [Scope::Deliverable, Scope::Shared]
-        .into_iter()
-        .map(|scope| {
-            ui::btn(
-                scope.label(),
-                None,
-                kind_for(state.scope == scope),
-                Some(Msg::Scope(scope)),
-            )
-        })
-        .collect();
-    items.push(row(tabs).spacing(8).into());
-    items.push(ui::faint(state.scope.intro()).into());
-
-    let search = text_input("Search by title or name", &state.query)
-        .on_input(Msg::Query)
-        .style(theme::input)
-        .padding(8);
-    let mut filters: Vec<Element<'a, Msg>> = vec![ui::btn(
-        "All",
-        None,
-        kind_for(state.filter.is_none()),
-        Some(Msg::Filter(None)),
-    )];
-    for group in Group::ALL {
-        filters.push(ui::btn(
-            group.label(),
-            None,
-            kind_for(state.filter == Some(group)),
-            Some(Msg::Filter(Some(group))),
-        ));
-    }
-    items.push(column![search, row(filters).spacing(6)].spacing(8).into());
-
-    if state.files.is_empty() {
-        items.push(ui::empty(
-            "board",
-            "Nothing handed in yet",
-            "Agents deliver finished work with deliver_file.",
-        ));
-    } else {
-        let shown_files = visible(state);
-        if shown_files.is_empty() {
-            items.push(ui::faint("Nothing matches that search.").into());
-        }
-        for (row_no, chunk) in shown_files.chunks(3).enumerate() {
-            let mut cells: Vec<Element<'a, Msg>> = chunk
-                .iter()
-                .enumerate()
-                .map(|(col, d)| card(d, state.kbd == Some(row_no * 3 + col)))
-                .collect();
-            while cells.len() < 3 {
-                cells.push(Space::new().width(Fill).into());
-            }
-            items.push(row(cells).spacing(12).into());
-        }
-    }
-
+/// The agent tools, below the grid: the ones waiting for the owner's review, then the library's.
+fn tools<'a>(state: &'a State, items: &mut Vec<Element<'a, Msg>>) {
     items.push(ui::label("Agent tools").into());
     if let Some(e) = &state.tool_error {
         items.push(ui::error_line(e));
@@ -821,157 +1047,322 @@ fn clamp_kbd(state: &mut State) {
     state.kbd = clamp(state.kbd, len);
 }
 
-/// One file's card: its tile (the monogram of its extension), title, name, and who and when. A card the
-/// keyboard has picked takes the same selected-row style as a picked row.
-fn card<'a>(d: &'a Deliverable, picked: bool) -> Element<'a, Msg> {
+/// A tile's tint, as the web's thumbnail colours: information, review, ok, warning, or the neutral one.
+#[derive(Debug, Clone, Copy)]
+enum Tint {
+    Info,
+    Review,
+    Ok,
+    Warn,
+    Neutral,
+}
+
+impl Tint {
+    /// The tint's ground and ink.
+    fn colours(self) -> (Color, Color) {
+        let p = crate::theme::palette();
+        match self {
+            Tint::Info => (p.info_soft, p.info),
+            Tint::Review => (p.review_soft, p.review),
+            Tint::Ok => (p.ok_soft, p.ok),
+            Tint::Warn => (p.warn_soft, p.warn),
+            Tint::Neutral => (p.sheet_2, p.ink_3),
+        }
+    }
+}
+
+/// The glyph and tint of a file's tile, by its extension (the web's `THUMB`); the rest get the neutral file tile.
+fn glyph_for(name: &str, group: Group) -> (&'static str, Tint) {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "md" | "txt" => ("file-text", Tint::Info),
+        "json" => ("braces", Tint::Review),
+        "png" | "jpg" | "jpeg" | "svg" => ("image", Tint::Ok),
+        "csv" => ("sheet", Tint::Warn),
+        _ if group == Group::Video => ("play", Tint::Neutral),
+        _ => ("file", Tint::Neutral),
+    }
+}
+
+/// A tile's preview box: the tint's ground, its content centred, and an optional tag at the top right (the store).
+fn thumb_box<'a>(tint: Tint, content: Element<'a, Msg>, tag: Option<&str>) -> Element<'a, Msg> {
+    let (ground, _) = tint.colours();
+    let body = container(content)
+        .center(Fill)
+        .height(Length::Fixed(THUMB_HEIGHT))
+        .style(move |_: &Theme| container::Style {
+            background: Some(ground.into()),
+            border: Border::default().rounded(crate::theme::skin().radius),
+            ..Default::default()
+        });
+    match tag {
+        Some(tag) => stack(vec![
+            body.into(),
+            container(ui::badge(tag, ui::Tone::Muted))
+                .padding(8)
+                .width(Fill)
+                .align_x(Alignment::End)
+                .into(),
+        ])
+        .into(),
+        None => body.into(),
+    }
+}
+
+/// The border and hover of a tile: the web's `.lib-tile`, its signal border when it is the open or the picked one.
+fn tile_style(on: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_: &Theme, status: button::Status| {
+        let p = crate::theme::palette();
+        let skin = crate::theme::skin();
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(p.raised.into()),
+            text_color: p.ink,
+            border: Border {
+                color: if on { p.signal } else { p.rule },
+                width: 1.0,
+                radius: skin.radius_lg.into(),
+            },
+            shadow: if hovered {
+                skin.shadow_card
+            } else {
+                Shadow::default()
+            },
+            snap: true,
+        }
+    }
+}
+
+/// The tiles of the files the tab and the filter leave, in the list's order; the open one and the arrow keys' pick
+/// carry the signal border.
+fn file_tiles<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
+    visible(state)
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| {
+            tile(
+                d,
+                state.open.as_deref() == Some(d.id.as_str()),
+                state.kbd == Some(i),
+            )
+        })
+        .collect()
+}
+
+/// One file's tile, as the web's `.lib-tile`: its preview with the store tag, the title, the name, who and when, and
+/// the size with its task and audience.
+fn tile<'a>(d: &'a Deliverable, open: bool, picked: bool) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
     let title = if d.title.is_empty() {
         d.name.as_str()
     } else {
         d.title.as_str()
     };
-    let mut body: Vec<Element<'a, Msg>> = vec![
-        container(ui::faint(d.store.as_str())).into(),
-        container(ui::sans(
-            if Group::of(&d.content_type) == Group::Video {
-                "▶".to_string()
-            } else {
-                monogram(&d.name)
-            },
-            20.0,
-            crate::theme::palette().ink_2,
-        ))
-        .padding(12)
-        .width(Fill)
+    let (glyph, tint) = glyph_for(&d.name, Group::of(&d.content_type));
+    let thumb = thumb_box(
+        tint,
+        column![
+            ui::icon(glyph, 28.0, tint.colours().1),
+            ui::mono(monogram(&d.name), 11.0, tint.colours().1),
+        ]
+        .spacing(6)
+        .align_x(Alignment::Center)
         .into(),
+        Some(d.store.as_str()),
+    );
+    let mut size_line = human_size(d.size);
+    if let Some(task) = &d.task {
+        size_line = format!("{size_line} · {task}");
+    }
+    if d.kind == "shared" && d.audience == "private" {
+        size_line = format!("{size_line} · private · {} agents", d.allowed.len());
+    }
+    let body = column![
+        thumb,
         text(title)
             .font(SEMIBOLD)
-            .size(15.0)
-            .color(crate::theme::palette().ink)
-            .into(),
-        ui::sans(d.name.as_str(), 11.0, crate::theme::palette().ink_3).into(),
-        ui::faint(format!(
-            "by {} · {} · {}",
-            d.author,
-            ago(d.created_ms),
-            human_size(d.size)
-        ))
-        .into(),
-    ];
-    if d.kind == "shared" && d.audience == "private" {
-        body.push(ui::faint(format!("private · {} agents", d.allowed.len())).into());
-    }
-    if let Some(task) = &d.task {
-        body.push(ui::sans(task.as_str(), 11.0, crate::theme::palette().ink_3).into());
-    }
-    button_card(body, Msg::Open(d.id.clone()), picked)
-}
-
-fn button_card<'a>(body: Vec<Element<'a, Msg>>, on_press: Msg, picked: bool) -> Element<'a, Msg> {
-    iced::widget::button(column(body).spacing(6).width(Fill))
-        .on_press(on_press)
-        .style(theme::register_row(picked))
-        .padding(12)
+            .size(13.5)
+            .color(p.ink)
+            .wrapping(text::Wrapping::None),
+        ui::mono(d.name.as_str(), 12.0, p.ink_3),
+        ui::faint(format!("by {} · {}", d.author, ago(d.created_ms))),
+        ui::faint(size_line),
+    ]
+    .spacing(8)
+    .width(Fill);
+    button(body)
+        .on_press(Msg::Open(d.id.clone()))
+        .style(tile_style(open || picked))
+        .padding(10)
         .width(Fill)
         .into()
 }
 
-/// The open file, in place of the list: its preview, facts, description, Save and Delete.
-fn detail<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
+/// The artifacts' tiles, filtered by the search, as the web's artifact tiles.
+fn artifact_tiles<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
+    let q = state.query.trim().to_lowercase();
+    state
+        .artifacts
+        .iter()
+        .filter(|s| {
+            q.is_empty()
+                || s.title.to_lowercase().contains(&q)
+                || s.kind.to_lowercase().contains(&q)
+        })
+        .map(artifact_tile)
+        .collect()
+}
+
+/// One artifact's tile: its kind in the box, the title, the kind's chip, who and when, the version and Shared, and
+/// the project. A press opens the artifact on its own screen.
+fn artifact_tile<'a>(s: &'a apz_view::artifact::Summary) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let abbr: String = s.kind.chars().take(4).collect::<String>().to_uppercase();
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        thumb_box(Tint::Neutral, ui::mono(abbr, 11.0, p.ink_2).into(), None),
+        text(s.title.as_str())
+            .font(SEMIBOLD)
+            .size(13.5)
+            .color(p.ink)
+            .wrapping(text::Wrapping::None)
+            .into(),
+        ui::badge(s.kind.as_str(), ui::Tone::Muted),
+        ui::faint(format!("by {} · {}", s.author, ago(s.updated_ms as i64))).into(),
+        ui::faint(format!(
+            "v{}{}",
+            s.latest,
+            if s.shared { " · Shared" } else { "" }
+        ))
+        .into(),
+    ];
+    if let Some(project) = &s.project {
+        body.push(ui::mono(project.as_str(), 12.0, p.ink_3).into());
+    }
+    button(column(body).spacing(8).width(Fill))
+        .on_press(Msg::Go(Id::Artifact(s.id.clone())))
+        .style(tile_style(false))
+        .padding(10)
+        .width(Fill)
+        .into()
+}
+
+/// The open file's panel, beside the grid as the web's `.lib-det`: its name and a close, then the preview, the
+/// description, the facts and the actions (Share, Delete, Download; a delete asks first).
+fn aside<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
     let title = if d.title.is_empty() {
         d.name.as_str()
     } else {
         d.title.as_str()
     };
-    let preview: Element<'a, Msg> = match &state.preview {
+    let head = container(
+        row![
+            text(title)
+                .font(SEMIBOLD)
+                .size(13.5)
+                .color(p.ink)
+                .width(Fill)
+                .wrapping(text::Wrapping::None),
+            ui::btn_sm("", Some("x"), ui::Kind::Ghost, Some(Msg::Close)),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .padding([8, 16])
+    .width(Fill)
+    .center_y(Length::Fixed(44.0));
+    let mut body: Vec<Element<'a, Msg>> = vec![preview_block(state)];
+    if let Some(desc) = &d.description {
+        body.push(ui::faint(desc.as_str()).into());
+    }
+    body.push(facts(d));
+    body.push(file_actions(d));
+    container(column![
+        head,
+        ui::hairline(),
+        container(column(body).spacing(12)).padding(16).width(Fill),
+    ])
+    .width(Fill)
+    .style(ui::card_style)
+    .into()
+}
+
+/// The open file's preview, by its kind (the state's `Preview`).
+fn preview_block(state: &State) -> Element<'_, Msg> {
+    let p = crate::theme::palette();
+    let skin = crate::theme::skin();
+    let id = state.open.clone().unwrap_or_default();
+    match &state.preview {
         Preview::Idle => ui::faint("").into(),
         Preview::Loading => ui::loading(),
-        Preview::Image(handle) => image(handle.clone()).width(Fill).into(),
-        Preview::Text(s) => container(ui::sans(s.as_str(), 12.0, crate::theme::palette().ink))
+        Preview::Image(handle) => image(handle.clone())
+            .width(Fill)
+            .height(Length::Fixed(360.0))
+            .into(),
+        Preview::Text(s) => container(ui::scroll(ui::mono(s.as_str(), 12.0, p.ink_2)))
             .padding(12)
             .width(Fill)
+            .max_height(320.0)
+            .style(move |_: &Theme| container::Style {
+                background: Some(p.sheet_2.into()),
+                border: Border::default().rounded(skin.radius),
+                ..Default::default()
+            })
             .into(),
         Preview::Markdown(s) => ui::markdown(s),
         Preview::Note(s) => ui::faint(s.as_str()).into(),
         Preview::Video => column![
-            container(ui::sans("▶", 40.0, crate::theme::palette().ink_2))
+            container(ui::sans("▶", 40.0, p.ink_2))
                 .padding(24)
                 .width(Fill),
-            ui::btn(
-                "Play",
-                None,
-                ui::Kind::Primary,
-                Some(Msg::Play(d.id.clone()))
-            ),
+            ui::btn("Play", None, ui::Kind::Primary, Some(Msg::Play(id))),
         ]
         .spacing(12)
         .into(),
         Preview::Pdf => column![
-            container(ui::sans("PDF", 40.0, crate::theme::palette().ink_2))
+            container(ui::sans("PDF", 40.0, p.ink_2))
                 .padding(24)
                 .width(Fill),
-            ui::btn(
-                "Open",
-                None,
-                ui::Kind::Primary,
-                Some(Msg::Play(d.id.clone()))
-            ),
+            ui::btn("Open", None, ui::Kind::Primary, Some(Msg::Play(id))),
         ]
         .spacing(12)
         .into(),
-    };
-    let mut body: Vec<Element<'a, Msg>> = vec![preview, facts(d)];
-    if let Some(desc) = &d.description {
-        body.push(ui::faint(desc.as_str()).into());
     }
-    body.push(file_actions(state, d));
-    column![
-        ui::btn(
-            "Back to the library",
+}
+
+/// The file's actions, right-aligned: Share and Delete (ghost), Download (primary). A delete asks first, in the
+/// delete dialog (see `delete_dialog`).
+fn file_actions<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
+    row![
+        Space::new().width(Fill),
+        ui::btn_sm(
+            "Share",
             None,
             ui::Kind::Ghost,
-            Some(Msg::Close)
+            Some(Msg::ShareOpen(d.id.clone(), d.name.clone()))
         ),
-        ui::card(title, column(body).spacing(12).into()),
+        ui::btn_sm("Delete", None, ui::Kind::Ghost, Some(Msg::AskDelete)),
+        ui::btn_sm(
+            "Download",
+            None,
+            ui::Kind::Primary,
+            Some(Msg::Save(d.id.clone()))
+        ),
     ]
-    .spacing(12)
+    .spacing(8)
+    .align_y(Alignment::Center)
     .into()
 }
 
-fn file_actions<'a>(state: &'a State, d: &'a Deliverable) -> Element<'a, Msg> {
-    if state.confirm_delete {
-        column![
-            ui::faint("Removes the file from the plaza's object store. This cannot be undone."),
-            row![
-                Space::new().width(Fill),
-                ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelDelete)),
-                ui::btn(
-                    "Delete",
-                    None,
-                    ui::Kind::Primary,
-                    Some(Msg::Delete(d.id.clone()))
-                ),
-            ]
-            .spacing(8),
-        ]
-        .spacing(8)
-        .into()
-    } else {
-        row![
-            Space::new().width(Fill),
-            ui::btn("Delete", None, ui::Kind::Ghost, Some(Msg::AskDelete)),
-            ui::btn(
-                "Download",
-                None,
-                ui::Kind::Primary,
-                Some(Msg::Save(d.id.clone()))
-            ),
-        ]
-        .spacing(8)
-        .into()
-    }
-}
-
 fn facts<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
+    let audience = if d.audience == "private" {
+        format!("{} · {} agents", d.audience, d.allowed.len())
+    } else {
+        d.audience.clone()
+    };
     let mut rows: Vec<Element<'a, Msg>> = vec![
         fact("Name", d.name.clone(), true),
         fact("Content type", d.content_type.clone(), true),
@@ -984,6 +1375,7 @@ fn facts<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
         fact("Handed in by", d.author.clone(), false),
         fact("When", when(d.created_ms), false),
         fact("Store", d.store.clone(), false),
+        fact("Audience", audience, false),
     ];
     if let Some(task) = &d.task {
         rows.push(fact("Task", task.clone(), true));
@@ -1191,14 +1583,6 @@ fn review(client: client::Client, tool: ToolRef, approve: bool, note: Option<Str
 
 // ---- Helpers --------------------------------------------------------------------------------
 
-fn kind_for(on: bool) -> ui::Kind {
-    if on {
-        ui::Kind::Primary
-    } else {
-        ui::Kind::Ghost
-    }
-}
-
 /// The row an arrow key picks: the first row on a press with none picked, else one row down or up,
 /// held to the first and the last. None when there are no rows.
 fn step(cur: Option<usize>, len: usize, down: bool) -> Option<usize> {
@@ -1284,7 +1668,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn ago(ms: i64) -> String {
+pub fn ago(ms: i64) -> String {
     let s = ((now_ms() - ms) / 1000).max(0);
     if s < 60 {
         "just now".into()
@@ -1348,7 +1732,7 @@ fn fetch_bytes(client: &client::Client, path: &str) -> Result<Vec<u8>, String> {
 /// Writes a download to ~/Downloads under the file's own name (never a path from the name). A download
 /// never overwrites: when the name is taken, the first free one of `name (1).ext`, `name (2).ext`, …
 /// is used.
-fn save_download(name: &str, bytes: &[u8]) -> Result<String, String> {
+pub fn save_download(name: &str, bytes: &[u8]) -> Result<String, String> {
     let dir = apz_os::dirs::home()
         .ok_or_else(|| "the home directory is not set".to_string())?
         .join("Downloads");

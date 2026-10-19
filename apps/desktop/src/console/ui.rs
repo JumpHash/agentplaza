@@ -1,15 +1,14 @@
-//! The console's design kit, in the web console's language (`apps/web/DESIGN.md`): paper and
-//! sheets, ink rules, the orange signal for the owner's hand, square corners, mono for titles,
-//! labels and figures, serif for prose. Screens build from these, never from raw colours.
+//! The console's design kit, drawn as the Loom and Graphite consoles draw it (`apps/web/src/styles/proto/base.css`):
+//! the page on the panel, raised cards with the skin's radius and a card head, soft chips, 30px buttons with the
+//! skin's action colour, underline tabs, segmented controls. Screens build from these, never from raw colours.
 
 use iced::font::Weight;
+use iced::widget::text::LineHeight;
 use iced::widget::{Space, button, column, container, rich_text, row, scrollable, span, svg, text};
-use iced::{Alignment, Border, Color, Element, Font, Length, Padding, Theme};
+use iced::{Alignment, Border, Color, Element, Font, Length, Padding, Shadow, Theme};
 
-pub use crate::theme::{INK, INK_2, INK_3, PAPER, RULE, RULE_FAINT, SHEET, SIGNAL};
 use crate::theme::{
-    MONO, READING, SANS, TYPE_BADGE, TYPE_CODE, TYPE_ITEM, TYPE_META, TYPE_PAGE, TYPE_PROSE,
-    TYPE_SECTION, TYPE_UI,
+    MONO, READING, SANS, TYPE_BADGE, TYPE_CODE, TYPE_ITEM, TYPE_META, TYPE_PROSE, TYPE_UI,
 };
 pub use crate::theme::{SANS_BOLD, SANS_ITALIC, SANS_MEDIUM, SANS_SEMIBOLD};
 
@@ -75,11 +74,13 @@ pub fn faint<'a>(content: impl text::IntoFragment<'a>) -> text::Text<'a> {
         .color(crate::theme::palette().ink_3)
 }
 
-/// A field label (the web's `.stat .label` and `.kv dt`): Inter 600 at the badge size, in ink-3, as written.
+/// A field label (the web's `.stat-l`, `.kv dt`, `.tbl th`): the skin's label voice (mono capitals at 11px in Loom,
+/// sans 12px in Graphite), in ink-3.
 pub fn label<'a>(content: &str) -> text::Text<'a> {
-    text(content.to_string())
-        .font(SANS_SEMIBOLD)
-        .size(TYPE_BADGE)
+    let sk = crate::theme::skin();
+    text(sk.label_text(content))
+        .font(sk.label_font())
+        .size(if sk.label_mono { sk.label_size } else { 12.0 })
         .color(crate::theme::palette().ink_3)
 }
 
@@ -122,42 +123,43 @@ pub fn hive<'a, M: 'a>(size: f32) -> Element<'a, M> {
 }
 
 /// The marks are drawn in the light theme's ink (`#121613`), which vanishes on this app's dark paper: that ink
-/// becomes the theme's INK. Multi-colour marks keep their own colours (they never use that exact ink).
+/// becomes the theme's crate::theme::palette().ink. Multi-colour marks keep their own colours (they never use that exact ink).
 fn on_dark(svg: &str) -> String {
-    svg.replace("#121613", "#e3e8f4")
+    // Marks drawn in near-black ink are lightened on the dark palette only; the light palette keeps them as drawn.
+    if crate::theme::is_light() {
+        svg.to_string()
+    } else {
+        svg.replace("#121613", "#e3e8f4")
+    }
 }
 
 /// The hive's SVG (the console's geometry; the landing page, JumpHash/agentplaza-landing, draws the same).
 const HIVE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M21.20 7.85L18.60 12.35L13.40 12.35L10.80 7.85L13.40 3.35L18.60 3.35Z" fill="none" stroke="#121613" stroke-width="2.1" stroke-linejoin="miter"/><path d="M11.76 24.20L9.16 28.70L3.96 28.70L1.36 24.20L3.96 19.70L9.16 19.70Z" fill="none" stroke="#121613" stroke-width="2.1" stroke-linejoin="miter"/><path d="M30.64 24.20L28.04 28.70L22.84 28.70L20.24 24.20L22.84 19.70L28.04 19.70Z" fill="none" stroke="#121613" stroke-width="2.1" stroke-linejoin="miter"/><path class="core" fill="#e8590c" d="M21.60 18.75L18.80 23.60L13.20 23.60L10.40 18.75L13.20 13.90L18.80 13.90Z"/></svg>"##;
 
-/// A screen's sheet: the page's one bordered surface, uniform padding, full width.
+/// A screen's page, as the web's `.page`: centred at most 1120 wide, padded 32 (56 below), its parts 20 apart.
 pub fn sheet<'a, M: 'a>(head: Element<'a, M>, body: Element<'a, M>) -> Element<'a, M> {
-    container(column![head, body].spacing(22))
-        .padding(Padding {
-            top: 0.0,
-            right: 28.0,
-            bottom: 28.0,
-            left: 28.0,
-        })
-        .width(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().sheet.into()),
-            border: Border {
-                color: crate::theme::palette().rule,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
+    container(
+        container(column![head, body].spacing(20))
+            .max_width(1120.0)
+            .width(Length::Fill)
+            .padding(Padding {
+                top: 32.0,
+                right: 32.0,
+                bottom: 56.0,
+                left: 32.0,
+            }),
+    )
+    .width(Length::Fill)
+    .align_x(Alignment::Center)
+    .into()
 }
 
-/// A sheet's head: the title (uppercase mono) left, actions right, a 2px ink rule under it.
+/// A page head, as the web's `.page-head`: the title (600 at 23px) left, the actions right; no rule under it.
 pub fn view_head<'a, M: 'a>(title: &str, actions: Vec<Element<'a, M>>) -> Element<'a, M> {
     head_line(title, None, actions)
 }
 
-/// A sheet's head with an intro line under the title, in serif ink-2: the web's `.view-head` with a lede.
+/// A page head with its lede under the title, in ink-2 at the prose size: the web's `.page-head` with `.lede`.
 pub fn view_head_with_intro<'a, M: 'a>(
     title: &str,
     intro: &str,
@@ -166,117 +168,124 @@ pub fn view_head_with_intro<'a, M: 'a>(
     head_line(title, Some(intro), actions)
 }
 
+/// The page title's size (the web's `--fs-h1`).
+pub const TYPE_H1: f32 = 23.0;
+
 fn head_line<'a, M: 'a>(
     title: &str,
     intro: Option<&str>,
     actions: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
-    let mut heading = column![
+    let mut line = row![
         text(title.to_string())
             .font(SANS_SEMIBOLD)
-            .size(TYPE_PAGE)
+            .size(TYPE_H1)
+            .line_height(LineHeight::Relative(1.25))
             .color(crate::theme::palette().ink)
     ]
-    .spacing(6);
+    .align_y(Alignment::Center)
+    .spacing(12);
+    line = line.push(Space::new().width(Length::Fill));
+    if !actions.is_empty() {
+        line = line.push(row(actions).spacing(8).align_y(Alignment::Center));
+    }
+    let mut head = column![line].spacing(6);
     if let Some(intro) = intro {
-        heading = heading.push(
+        head = head.push(
             text(intro.to_string())
                 .font(SANS)
-                .size(TYPE_UI)
-                .color(crate::theme::palette().ink_2),
+                .size(TYPE_PROSE)
+                .line_height(READING)
+                .color(crate::theme::palette().ink_2)
+                .width(Length::Fixed(620.0)),
         );
     }
-    let mut line = row![heading].align_y(Alignment::End).spacing(16);
-    line = line.push(Space::new().width(Length::Fill));
-    for action in actions {
-        line = line.push(action);
-    }
-    column![
-        container(line).padding(Padding {
-            top: 24.0,
-            right: 0.0,
-            bottom: 14.0,
-            left: 0.0
-        }),
-        container(Space::new().height(2.0))
-            .width(Length::Fill)
-            .style(|_: &Theme| container::Style {
-                background: Some(crate::theme::palette().ink.into()),
-                ..Default::default()
-            }),
-    ]
-    .into()
+    head.into()
 }
 
-/// A card: a ruled section of the sheet. Its mono head (600, 11.5px, ink, caps) sits over a rule;
-/// the body is padded 16, as the web's `.card-head` and `.card-body`.
+/// A card, as the web's `.card`: raised, ruled, the skin's large radius and card shadow; its head (`.card-h`, at least
+/// 44 tall, the title in the skin's label voice) over a rule, the body padded 16.
 pub fn card<'a, M: 'a>(title: &str, body: Element<'a, M>) -> Element<'a, M> {
-    let head = container(
-        text(title.to_string())
-            .font(SANS_SEMIBOLD)
-            .size(TYPE_SECTION)
-            .color(crate::theme::palette().ink),
-    )
-    .padding(Padding {
-        top: 12.0,
-        right: 16.0,
-        bottom: 10.0,
-        left: 16.0,
-    })
-    .width(Length::Fill);
-    let under_head = container(Space::new().height(1.0))
+    card_with(title, Vec::new(), body)
+}
+
+/// A card with actions at the right of its head.
+pub fn card_with<'a, M: 'a>(
+    title: &str,
+    actions: Vec<Element<'a, M>>,
+    body: Element<'a, M>,
+) -> Element<'a, M> {
+    let mut head = row![card_title(title)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    head = head.push(Space::new().width(Length::Fill));
+    for a in actions {
+        head = head.push(a);
+    }
+    let head = container(head)
+        .padding([8, 16])
+        .height(Length::Shrink)
         .width(Length::Fill)
+        .center_y(Length::Fixed(44.0))
         .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().rule.into()),
+            border: Border::default(),
             ..Default::default()
         });
     container(column![
         head,
-        under_head,
+        rule_line(),
         container(body).padding(16).width(Length::Fill)
     ])
     .width(Length::Fill)
-    .style(|_: &Theme| container::Style {
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    })
+    .style(card_style)
     .into()
 }
 
-/// A badge's marker and label colours, and whether the marker is filled. As the web's `.badge`:
-/// ok, danger and signal are filled squares; warn, info and neutral are hollow.
-fn badge_marker(tone: Tone) -> (Color, Color, bool) {
+/// A card's own surface: the web's `.card` (raised, ruled, the skin's large radius, its card shadow).
+pub fn card_style(_: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(crate::theme::palette().ink),
+        background: Some(crate::theme::palette().raised.into()),
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
+        shadow: crate::theme::skin().shadow_card,
+        snap: true,
+    }
+}
+
+/// A card head's title (`.card-h h3`): mono capitals at 11px in Loom, sans 12.5px in Graphite, ink-3.
+pub fn card_title<'a>(title: &str) -> text::Text<'a> {
+    let sk = crate::theme::skin();
+    text(sk.label_text(title))
+        .font(sk.label_font())
+        .size(if sk.label_mono { sk.label_size } else { 12.5 })
+        .color(crate::theme::palette().ink_3)
+}
+
+/// A 1px rule across.
+fn rule_line<'a, M: 'a>() -> Element<'a, M> {
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A chip's text and soft ground in a tone, as the web's `.chip.t-<tone>`.
+fn chip_colors(tone: Tone) -> (Color, Color) {
+    let p = crate::theme::palette();
     match tone {
-        Tone::Muted => (
-            crate::theme::palette().ink_3,
-            crate::theme::palette().ink_2,
-            false,
-        ),
-        Tone::Info => (
-            crate::theme::palette().info,
-            crate::theme::palette().info,
-            false,
-        ),
-        Tone::Ok => (crate::theme::palette().ok, crate::theme::palette().ok, true),
-        Tone::Warn => (
-            crate::theme::palette().warn,
-            crate::theme::palette().warn,
-            false,
-        ),
-        Tone::Danger => (
-            crate::theme::palette().crit,
-            crate::theme::palette().crit,
-            true,
-        ),
-        Tone::Signal => (
-            crate::theme::palette().signal,
-            crate::theme::palette().signal_ink,
-            true,
-        ),
+        Tone::Muted => (p.ink_3, p.hover),
+        Tone::Info => (p.info, p.info_soft),
+        Tone::Ok => (p.ok, p.ok_soft),
+        Tone::Warn => (p.warn, p.warn_soft),
+        Tone::Danger => (p.crit, p.crit_soft),
+        Tone::Signal => (p.signal_ink, p.signal_soft),
     }
 }
 
@@ -288,31 +297,59 @@ pub fn trains_badge<'a, M: 'a>() -> Element<'a, M> {
     badge("WARNING: trains on your data", Tone::Warn)
 }
 
-/// A badge: a small square marker in the tone, then the label in mono caps. Not a bordered pill.
+/// A badge, as the web's `.chip.t-<tone>`: the tone's text on its soft ground, 500 at 11px, radius 6.
 pub fn badge<'a, M: 'a>(content: &str, tone: Tone) -> Element<'a, M> {
-    let (marker, ink, filled) = badge_marker(tone);
-    let square = container(Space::new())
-        .width(Length::Fixed(8.0))
-        .height(Length::Fixed(8.0))
-        .style(move |_: &Theme| container::Style {
-            background: if filled { Some(marker.into()) } else { None },
-            border: Border {
-                color: marker,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        });
-    row![
-        square,
+    let (ink, ground) = chip_colors(tone);
+    let loom = crate::theme::skin().label_mono;
+    container(
         text(content.to_string())
-            .font(SANS_SEMIBOLD)
+            .font(SANS_MEDIUM)
             .size(TYPE_BADGE)
-            .color(ink)
-    ]
-    .spacing(7)
-    .align_y(Alignment::Center)
+            .color(ink),
+    )
+    .padding(if loom { [4, 7] } else { [3, 6] })
+    .style(move |_: &Theme| container::Style {
+        background: Some(ground.into()),
+        border: Border::default().rounded(6.0),
+        ..Default::default()
+    })
     .into()
+}
+
+/// A badge led by a dot in the tone (the web's `.chip` with `<i class="dot">`).
+pub fn badge_dot<'a, M: 'a>(content: &str, tone: Tone) -> Element<'a, M> {
+    let (ink, ground) = chip_colors(tone);
+    container(
+        row![
+            dot(ink),
+            text(content.to_string())
+                .font(SANS_MEDIUM)
+                .size(TYPE_BADGE)
+                .color(ink)
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center),
+    )
+    .padding([3, 6])
+    .style(move |_: &Theme| container::Style {
+        background: Some(ground.into()),
+        border: Border::default().rounded(6.0),
+        ..Default::default()
+    })
+    .into()
+}
+
+/// A 7px dot in `color` (the web's `.dot`).
+pub fn dot<'a, M: 'a>(color: Color) -> Element<'a, M> {
+    container(Space::new())
+        .width(Length::Fixed(7.0))
+        .height(Length::Fixed(7.0))
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            border: Border::default().rounded(4.0),
+            ..Default::default()
+        })
+        .into()
 }
 
 /// Button kinds, as on the web console.
@@ -330,7 +367,7 @@ pub enum Kind {
     DangerOutline,
 }
 
-/// A mono uppercase button with an optional leading icon.
+/// A button with an optional leading icon, as the web's `.btn`: 30 tall, radius 8, 500 at 13px.
 pub fn btn<'a, M: Clone + 'a>(
     label_text: &str,
     icon_name: Option<&str>,
@@ -350,7 +387,7 @@ pub fn btn_sm<'a, M: Clone + 'a>(
     sized_btn(label_text, icon_name, kind, on_press, BTN_SM)
 }
 
-/// The button both sizes share; `size` sets the icon, the label and the padding.
+/// The button both sizes share; `size` sets the icon, the label, the height and the radius.
 fn sized_btn<'a, M: Clone + 'a>(
     label_text: &str,
     icon_name: Option<&str>,
@@ -358,101 +395,83 @@ fn sized_btn<'a, M: Clone + 'a>(
     on_press: Option<M>,
     size: BtnSize,
 ) -> Element<'a, M> {
-    // A button with nothing to do is drawn as the web's `.btn:disabled`: ink at 40% on the sheet, whatever its kind.
-    let disabled_ink = Color {
-        a: 0.4,
-        ..crate::theme::palette().ink
+    let p = crate::theme::palette();
+    let action_ink = crate::theme::skin().action_ink;
+    // The primary is the skin's action: ink in Loom, the signal fill in Graphite.
+    let (primary_fill, on_primary) = if action_ink {
+        (p.action, p.on_action)
+    } else {
+        (p.signal_fill, p.on_signal)
     };
     let fg = match kind {
-        _ if on_press.is_none() => disabled_ink,
-        Kind::Primary => crate::theme::palette().on_signal,
-        Kind::Danger => Color::WHITE,
-        Kind::DangerOutline => crate::theme::palette().crit,
-        _ => crate::theme::palette().ink,
+        Kind::Primary => on_primary,
+        Kind::Danger => p.on_hue,
+        Kind::DangerOutline => p.crit,
+        Kind::Ghost => p.ink_2,
+        Kind::Secondary => p.ink,
     };
-    let mut inner = row![].spacing(6).align_y(Alignment::Center);
+    let mut inner = row![].spacing(size.gap).align_y(Alignment::Center);
     if let Some(name) = icon_name {
         inner = inner.push(icon(name, size.icon, fg));
     }
-    // The label sets no colour of its own: it takes the button style's text_color, so the hover ink reaches it.
-    inner = inner.push(
-        text(label_text.to_string())
-            .font(SANS_MEDIUM)
-            .size(size.text),
-    );
-    let b = button(inner)
-        .padding(size.padding)
+    if !label_text.is_empty() {
+        // The label sets no colour of its own: it takes the button style's text_color, so the hover ink reaches it.
+        inner = inner.push(
+            text(label_text.to_string())
+                .font(SANS_MEDIUM)
+                .size(size.text),
+        );
+    }
+    let b = button(container(inner).center_y(Length::Fill))
+        .padding([0.0, size.padding[1]])
+        .height(Length::Fixed(size.height))
         .style(move |_: &Theme, status: button::Status| {
-            if status == button::Status::Disabled {
-                return button::Style {
-                    background: (kind != Kind::Ghost).then(|| crate::theme::palette().sheet.into()),
-                    text_color: disabled_ink,
-                    border: Border {
-                        color: if kind == Kind::Ghost {
-                            Color::TRANSPARENT
-                        } else {
-                            disabled_ink
-                        },
-                        width: 1.0,
-                        radius: 0.0.into(),
-                    },
-                    ..Default::default()
-                };
-            }
+            let p = crate::theme::palette();
+            let disabled = status == button::Status::Disabled;
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            let (bg, border) = match kind {
-                Kind::Primary => (
-                    Some(if hovered {
-                        crate::theme::palette().signal_ink
+            let (bg, border, ink) = match kind {
+                Kind::Primary => {
+                    let fill = if hovered {
+                        Color {
+                            a: 0.88,
+                            ..primary_fill
+                        }
                     } else {
-                        crate::theme::palette().signal
-                    }),
-                    crate::theme::palette().signal,
-                ),
-                Kind::Danger => (
-                    Some(crate::theme::palette().crit),
-                    crate::theme::palette().ink,
-                ),
+                        primary_fill
+                    };
+                    (Some(fill), fill, on_primary)
+                }
+                Kind::Danger => (Some(p.crit), p.crit, p.on_hue),
                 Kind::DangerOutline => (
-                    if hovered {
-                        Some(Color {
-                            a: 0.12,
-                            ..crate::theme::palette().crit
-                        })
-                    } else {
-                        None
-                    },
-                    crate::theme::palette().crit,
+                    Some(if hovered { p.crit_soft } else { p.raised }),
+                    Color { a: 0.35, ..p.crit },
+                    p.crit,
                 ),
                 Kind::Secondary => (
-                    if hovered {
-                        Some(crate::theme::palette().hover)
-                    } else {
-                        None
-                    },
-                    crate::theme::palette().ink,
+                    Some(if hovered { p.hover } else { p.raised }),
+                    p.rule_strong,
+                    p.ink,
                 ),
                 Kind::Ghost => (
-                    if hovered {
-                        Some(crate::theme::palette().hover)
-                    } else {
-                        None
-                    },
+                    hovered.then_some(p.hover),
                     Color::TRANSPARENT,
+                    if hovered { p.ink } else { p.ink_2 },
                 ),
             };
-            // A primary goes white on hover, over the signal-ink fill; otherwise it keeps the dark ink.
-            let text_color = match kind {
-                Kind::Primary if hovered => Color::WHITE,
-                _ => fg,
+            let fade = |c: Color| {
+                if disabled {
+                    Color { a: c.a * 0.5, ..c }
+                } else {
+                    c
+                }
             };
             button::Style {
-                background: bg.map(Into::into),
-                text_color,
+                background: bg.map(|c| fade(c).into()),
+                text_color: fade(ink),
                 border: Border {
-                    color: border,
+                    color: fade(border),
                     width: 1.0,
-                    radius: 0.0.into(),
+                    radius: size.radius.into(),
                 },
                 ..Default::default()
             }
@@ -514,11 +533,8 @@ pub fn text_link<'a, M: Clone + 'a>(label_text: &str, msg: M) -> Element<'a, M> 
         .into()
 }
 
-/// The height of a segmented control's cells, and of the rule between them.
-const SEG_HEIGHT: f32 = 28.0;
-
-/// A segmented control, as the web's range control: a ruled strip of mono caps cells, the chosen one
-/// printed in ink. Each option pairs a value with its label; a press sends `on_select(value)`.
+/// A segmented control, as the web's `.seg`: a soft well (radius 9, 2px inset) of cells; the chosen one is raised.
+/// Each option pairs a value with its label; a press sends `on_select(value)`.
 pub fn seg<'a, T, M>(
     options: &[(T, &str)],
     selected: T,
@@ -529,68 +545,52 @@ where
     M: Clone + 'a,
 {
     let mut strip: Vec<Element<'a, M>> = Vec::new();
-    for (i, (value, name)) in options.iter().enumerate() {
-        if i > 0 {
-            strip.push(
-                container(Space::new())
-                    .width(Length::Fixed(1.0))
-                    .height(Length::Fixed(SEG_HEIGHT))
-                    .style(|_: &Theme| container::Style {
-                        background: Some(crate::theme::palette().rule.into()),
-                        ..Default::default()
-                    })
-                    .into(),
-            );
-        }
+    for (value, name) in options.iter() {
         let on = *value == selected;
-        let cell = button(text(name.to_string()).font(SANS_MEDIUM).size(TYPE_META))
-            .padding([6, 11])
-            .height(Length::Fixed(SEG_HEIGHT))
+        let cell = button(text(name.to_string()).font(SANS).size(12.5))
+            .padding([5, 10])
             .style(move |_: &Theme, status: button::Status| {
+                let p = crate::theme::palette();
                 let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-                let (background, text_color) = if on {
-                    (
-                        Some(crate::theme::palette().ink),
-                        crate::theme::palette().paper,
-                    )
-                } else if hovered {
-                    (
-                        Some(crate::theme::palette().hover),
-                        crate::theme::palette().ink,
-                    )
-                } else {
-                    (None, crate::theme::palette().ink_2)
-                };
                 button::Style {
-                    background: background.map(Into::into),
-                    text_color,
-                    border: Border::default(),
-                    ..Default::default()
+                    background: on.then(|| p.raised.into()),
+                    text_color: if on || hovered { p.ink } else { p.ink_2 },
+                    border: Border::default().rounded(7.0),
+                    shadow: if on {
+                        Shadow {
+                            color: Color {
+                                a: 0.12,
+                                ..Color::BLACK
+                            },
+                            offset: iced::Vector::new(0.0, 1.0),
+                            blur_radius: 2.0,
+                        }
+                    } else {
+                        Shadow::default()
+                    },
+                    snap: true,
                 }
             })
             .on_press(on_select(*value));
         strip.push(cell.into());
     }
-    // Options that do not fit wrap to another line inside the box, as the web's `.mx-seg` (flex-wrap).
     container(
         iced::widget::Row::with_children(strip)
+            .spacing(2)
             .align_y(Alignment::Center)
             .wrap(),
     )
+    .padding(2)
     .style(|_: &Theme| container::Style {
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
+        background: Some(crate::theme::palette().hover.into()),
+        border: Border::default().rounded(9.0),
         ..Default::default()
     })
     .into()
 }
 
-/// Underline tabs, as the web's `.tabs`: mono caps, ink-3 until the pointer or the choice reaches
-/// them; the chosen tab is underlined in signal, and a rule runs under the strip. A press sends
-/// `on_select(value)`.
+/// Underline tabs, as the web's `.tabs`: 500 at 13px, ink-3 until the pointer or the choice reaches them; the chosen
+/// tab is ink with a 2px ink rule under it, and a rule runs under the strip. A press sends `on_select(value)`.
 pub fn tabs<'a, T, M>(
     options: &[(T, &str)],
     selected: T,
@@ -603,23 +603,16 @@ where
     let mut strip = row![].spacing(22);
     for (value, name) in options.iter() {
         let on = *value == selected;
-        let bar = if on {
-            crate::theme::palette().signal
-        } else {
-            Color::TRANSPARENT
-        };
         // The text carries no colour of its own: it takes the button's state colour.
+        // As wide as its label, as the web's tabs are: the underline is measured, not stretched.
+        let wide = super::screens::metrics::measure::width(name, SANS_MEDIUM, TYPE_UI);
         let body = column![
-            container(text(name.to_string()).font(SANS_SEMIBOLD).size(TYPE_UI)).padding(Padding {
-                top: 10.0,
-                right: 0.0,
-                bottom: 8.0,
-                left: 0.0,
-            }),
+            container(text(name.to_string()).font(SANS_MEDIUM).size(TYPE_UI))
+                .center_y(Length::Fixed(34.0)),
             container(Space::new().height(2.0))
-                .width(Length::Fill)
+                .width(Length::Fixed(wide))
                 .style(move |_: &Theme| container::Style {
-                    background: Some(bar.into()),
+                    background: on.then(|| crate::theme::palette().action.into()),
                     ..Default::default()
                 }),
         ];
@@ -641,36 +634,27 @@ where
             .on_press(on_select(*value));
         strip = strip.push(cell);
     }
-    column![
-        strip,
-        container(Space::new().height(1.0))
-            .width(Length::Fill)
-            .style(|_: &Theme| container::Style {
-                background: Some(crate::theme::palette().rule.into()),
-                ..Default::default()
-            }),
-    ]
-    .into()
+    column![strip, rule_line()].into()
 }
 
-/// An empty state, as the web's `.empty`: a small icon, a bold mono line, a faint serif sentence; centred.
+/// An empty state, as the web's `.empty`: the icon at 22, the title in ink 500, the sentence in ink-3; centred.
 pub fn empty<'a, M: 'a>(icon_name: &str, title: &str, sentence: &str) -> Element<'a, M> {
     container(
         column![
-            icon(icon_name, 16.0, crate::theme::palette().ink_3),
+            icon(icon_name, 22.0, crate::theme::palette().ink_3),
             text(title.to_string())
-                .font(SANS_SEMIBOLD)
+                .font(SANS_MEDIUM)
                 .size(TYPE_ITEM)
                 .color(crate::theme::palette().ink),
             text(sentence.to_string())
                 .font(SANS)
-                .size(TYPE_UI)
+                .size(TYPE_ITEM)
                 .color(crate::theme::palette().ink_3),
         ]
-        .spacing(10)
+        .spacing(6)
         .align_x(Alignment::Center),
     )
-    .padding([40, 16])
+    .padding([44, 16])
     .width(Length::Fill)
     .align_x(Alignment::Center)
     .into()
@@ -1147,17 +1131,26 @@ struct BtnSize {
     icon: f32,
     text: f32,
     padding: [f32; 2],
+    height: f32,
+    radius: f32,
+    gap: f32,
 }
 
 const BTN: BtnSize = BtnSize {
-    icon: 14.0,
+    icon: 15.0,
     text: TYPE_UI,
-    padding: [7.0, 12.0],
+    padding: [0.0, 11.0],
+    height: 30.0,
+    radius: 8.0,
+    gap: 7.0,
 };
 const BTN_SM: BtnSize = BtnSize {
-    icon: 12.0,
-    text: TYPE_META,
-    padding: [4.0, 8.0],
+    icon: 14.0,
+    text: 12.5,
+    padding: [0.0, 9.0],
+    height: 26.0,
+    radius: 7.0,
+    gap: 5.0,
 };
 
 /// Lays cards out in rows of three equal columns; a short last row keeps the same column widths.
@@ -1199,9 +1192,116 @@ pub fn frame(fill: Option<Color>, edge: Color) -> impl Fn(&Theme) -> container::
         border: Border {
             color: edge,
             width: 1.0,
-            radius: 0.0.into(),
+            radius: crate::theme::skin().radius.into(),
         },
         ..Default::default()
+    }
+}
+
+/// The web's dialog (`modal()` in `ui/components.ts`: `.scrim > .sheet` with `.sheet-h`, `.sheet-b` and
+/// `footer.sheet-f`): a sheet `width` wide over the scrim, its title and close button at the head, the body
+/// scrolling, and the buttons right-aligned in the foot. Draw it over a screen with [`with_modal`].
+pub fn modal<'a, M: Clone + 'a>(
+    title: &'a str,
+    body: Element<'a, M>,
+    foot: Vec<Element<'a, M>>,
+    on_close: M,
+    width: f32,
+) -> Element<'a, M> {
+    let p = crate::theme::palette();
+    let on_close_scrim = on_close.clone();
+    let head = container(
+        row![
+            text(title)
+                .font(SANS_SEMIBOLD)
+                .size(15.0)
+                .color(p.ink)
+                .width(Length::Fill),
+            btn_sm("", Some("x"), Kind::Ghost, Some(on_close)),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding {
+        top: 14.0,
+        right: 12.0,
+        bottom: 6.0,
+        left: 20.0,
+    });
+    // The body scrolls within what the sheet leaves it, so the foot's buttons always show.
+    let body_max = if foot.is_empty() {
+        MODAL_MAX - 60.0
+    } else {
+        MODAL_MAX - 124.0
+    };
+    let mut sheet = column![
+        head,
+        container(
+            scroll(container(body).padding(Padding {
+                top: 6.0,
+                right: 20.0,
+                bottom: 16.0,
+                left: 20.0,
+            }))
+            .height(Length::Shrink),
+        )
+        .max_height(body_max),
+    ];
+    if !foot.is_empty() {
+        let line = container(Space::new().height(1.0))
+            .width(Length::Fill)
+            .style(move |_: &Theme| container::Style {
+                background: Some(crate::theme::palette().rule.into()),
+                ..Default::default()
+            });
+        sheet = sheet.push(line).push(
+            container(
+                row![Space::new().width(Length::Fill)]
+                    .extend(foot)
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+            )
+            .padding(Padding {
+                top: 12.0,
+                right: 16.0,
+                bottom: 12.0,
+                left: 16.0,
+            }),
+        );
+    }
+    let sheet = container(sheet)
+        .width(Length::Fixed(width))
+        .max_height(MODAL_MAX)
+        .style(crate::theme::pop);
+    // A press on the scrim closes the dialog, as on the web; the sheet itself takes its own presses.
+    let scrim = iced::widget::mouse_area(
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(crate::theme::scrim),
+    )
+    .on_press(on_close_scrim);
+    iced::widget::stack![
+        scrim,
+        container(iced::widget::opaque(sheet))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center(Length::Fill),
+    ]
+    .into()
+}
+
+/// The tallest a dialog's sheet gets.
+const MODAL_MAX: f32 = 760.0;
+
+/// A screen with an optional dialog over it.
+pub fn with_modal<'a, M: 'a>(
+    base: Element<'a, M>,
+    dialog: Option<Element<'a, M>>,
+) -> Element<'a, M> {
+    match dialog {
+        Some(dialog) => iced::widget::stack![base, dialog].into(),
+        None => base,
     }
 }
 
@@ -1315,29 +1415,32 @@ fn commas(digits: &str) -> String {
     out
 }
 
-/// A sidebar section heading: Inter 600 at the badge size, in ink-3 (the web's `.nav-section`).
+/// A sidebar section heading (the web's `.sec`): the skin's label voice in ink-3.
 pub fn section<'a>(content: &str) -> text::Text<'a> {
-    text(content.to_string())
-        .font(SANS_SEMIBOLD)
-        .size(TYPE_BADGE)
-        .color(INK_3)
+    label(content)
 }
 
-/// A sidebar count: a ruled box with Inter 600 at the badge size in ink-2 (the web's `.nav a .count`).
+/// A sidebar count (the web's `.count`): 500 at 11px in ink-3; `hot` (waiting on the owner) on the signal fill.
 pub fn count<'a, M: 'a>(n: u32) -> Element<'a, M> {
+    text(n.to_string())
+        .font(SANS_MEDIUM)
+        .size(TYPE_BADGE)
+        .color(crate::theme::palette().ink_3)
+        .into()
+}
+
+/// A count that needs the owner (`.count.hot`): on-signal on the signal fill, rounded.
+pub fn count_hot<'a, M: 'a>(n: u32) -> Element<'a, M> {
     container(
         text(n.to_string())
-            .font(SANS_SEMIBOLD)
+            .font(SANS_MEDIUM)
             .size(TYPE_BADGE)
-            .color(INK_2),
+            .color(crate::theme::palette().on_signal),
     )
-    .padding([1, 6])
+    .padding([3, 6])
     .style(|_: &Theme| container::Style {
-        border: Border {
-            color: RULE,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
+        background: Some(crate::theme::palette().signal_fill.into()),
+        border: Border::default().rounded(9.0),
         ..Default::default()
     })
     .into()
@@ -1376,11 +1479,11 @@ fn bar_style(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
         ),
     };
     let thumb = if dragged {
-        INK_2
+        crate::theme::palette().ink_2
     } else if hot {
-        INK_3
+        crate::theme::palette().ink_3
     } else {
-        RULE
+        crate::theme::palette().rule
     };
     let rail = scrollable::Rail {
         background: None,

@@ -553,7 +553,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
             page.push(
                 row![
                     column![
-                        ui::sans(title, 15.0, ui::INK),
+                        ui::sans(title, 15.0, crate::theme::palette().ink),
                         ui::faint(format!("{} · {status}", hub.url))
                     ]
                     .spacing(4),
@@ -574,6 +574,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     page.push(ui::label("Hub URL").into());
     page.push(
         text_input("https://hub.example:7700", &state.url)
+            .style(crate::theme::input)
             .on_input(Msg::Url)
             .on_submit(Msg::Check)
             .into(),
@@ -581,6 +582,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     page.push(ui::label("Certificate pin (for a hub with its own certificate)").into());
     page.push(
         text_input("64 hex digits", &state.pin)
+            .style(crate::theme::input)
             .on_input(Msg::Pin)
             .on_submit(Msg::Check)
             .into(),
@@ -626,6 +628,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     page.push(ui::label("Owner token").into());
     page.push(
         text_input("owner token", &state.token)
+            .style(crate::theme::input)
             .on_input(Msg::Token)
             .on_submit(Msg::Connect)
             .secure(true)
@@ -696,7 +699,7 @@ fn identity_card(
         None => "no certificate fingerprint".to_string(),
     };
     let mut card: Vec<Element<'static, Msg>> = vec![
-        ui::sans(name, 16.0, ui::INK).into(),
+        ui::sans(name, 16.0, crate::theme::palette().ink).into(),
         ui::faint(format!(
             "{} · version {} · {} nodes",
             identity.url, identity.version, identity.nodes

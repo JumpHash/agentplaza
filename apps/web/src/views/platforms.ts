@@ -3,7 +3,7 @@
 // authorizations grouped by host with their grants panel open under one of them, and a connect dialog. The list is
 // read on load and on each `platform` event; a flow the owner starts is polled until it ends.
 
-import '../styles/platforms.css';
+import '../styles/proto/settings-b.css';
 import { weft } from '../api-weft';
 import {
   platforms,
@@ -20,8 +20,9 @@ import {
   type PlatformConnection,
 } from '../api-platforms';
 import { on } from '../store';
-import { attempt, badge, button, card, empty, field, input, modal, select, toast } from '../ui/components';
-import { h, icon, replace } from '../ui/dom';
+import { attempt, badge, card, field, input, select, toast } from '../ui/components';
+import { h, lu, replace } from '../ui/dom';
+import { btn, dialog, emptyBox, pageHead } from './mcp-common';
 import {
   GITLAB_SCOPES,
   KIND_LABEL,
@@ -91,6 +92,14 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
   return (document.scrollingElement as HTMLElement | null) ?? null;
 }
 
+/** A sheet whose buttons close it: `foot` gets the function that closes it. Returns that function. */
+function sheet(title: string, body: Node[], foot: (done: () => void) => Node[]): () => void {
+  let closer: () => void = () => undefined;
+  const done = (): void => closer();
+  closer = dialog(title, body, foot(done));
+  return done;
+}
+
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let alive = true;
   let data: PlatformList | undefined;
@@ -109,11 +118,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let connectClose: (() => void) | undefined;
   /** Non-secret inputs as typed, so a redraw keeps them. Secrets are never kept. */
   const drafts: Record<string, string> = {};
-  /** Whether the owner opened "Add a platform" (it starts open only while nothing is authorized). */
+  /** Whether the owner opened "Add a platform" (it starts closed, as the prototype has it). */
   let addOpen: boolean | null = null;
-
-  const body = h('div.plat', null);
-  root.append(h('div.view-head', null, h('h1', null, 'Git platforms')), body);
 
   const defaultHost = (kind: PlatformKind): string => data?.kinds.find((k) => k.kind === kind)?.default_host ?? FALLBACK_HOST[kind];
   /** The host a card acts on: what is typed, or the kind's default when nothing is. */
@@ -125,12 +131,13 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     if (!alive) return;
     panelEl = null;
     blocks.clear();
+    const head = pageHead('Git platforms');
     if (failure !== undefined) {
-      replace(body, empty('alert', 'The platforms could not load', failure, button('Try again', () => void load(), { kind: 'primary' })));
+      replace(root, head, emptyBox('triangle-alert', 'The platforms could not load', failure, btn('Try again', () => void load(), { kind: 'primary' })));
       return;
     }
     if (!data) {
-      replace(body, h('p.plat-faint', null, 'Loading…'));
+      replace(root, head, h('p.plat-muted', null, 'Loading…'));
       return;
     }
     const d = data;
@@ -139,11 +146,12 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     // A redraw keeps the reader where they were.
     const scroller = scrollParent(root);
     const top = scroller?.scrollTop ?? 0;
-    // Baseline first: what is authorized, then the way to add more (folded away once something is).
+    // The head, the top line, what is authorized, then the way to add more (folded away once something is).
     replace(
-      body,
+      root,
+      head,
       h('p.plat-line', null, stateLine({ authorizations: d.integrations.length, connected, needsYou })),
-      d.integrations.length > 0 ? listSection(d) : null,
+      d.integrations.length > 0 ? authSection(d) : null,
       addSection(d.integrations.length === 0),
     );
     renderPanel();
@@ -177,10 +185,10 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   // ---- Add cards -----------------------------------------------------------------
 
-  function addSection(first: boolean): HTMLElement {
-    const cards = h('div.plat-add', null, KIND_ORDER.map((kind) => addCard(kind)));
-    if (first) return h('section.plat-add-section', null, h('h2.plat-h', null, 'Add'), cards);
-    const fold = h('details.plat-add-section', { open: addOpen === true }, h('summary.plat-h', null, 'Add a platform'), cards) as HTMLDetailsElement;
+  function addSection(first: boolean): Node | Node[] {
+    const cards = h('div.plat-grid', null, KIND_ORDER.map((kind) => addCard(kind)));
+    if (first) return [h('h2.plat-sec', null, 'Add'), cards];
+    const fold = h('details.plat-add', { open: addOpen === true }, h('summary', null, 'Add a platform'), cards) as HTMLDetailsElement;
     fold.addEventListener('toggle', () => {
       addOpen = fold.open;
     });
@@ -188,23 +196,15 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   }
 
   function addCard(kind: PlatformKind): HTMLElement {
-    const hostInput = input({ type: 'text', value: drafts[`host:${kind}`] ?? defaultHost(kind), autocomplete: 'off', spellcheck: 'false', placeholder: defaultHost(kind) });
+    const hostInput = input({ type: 'text', value: drafts[`host:${kind}`] ?? defaultHost(kind), autocomplete: 'off', spellcheck: 'false', placeholder: defaultHost(kind), 'aria-label': 'Host' });
     hostInput.addEventListener('input', () => {
       drafts[`host:${kind}`] = hostInput.value;
       renderBlock(kind);
     });
-    const slot = h('div.stack', null);
+    const slot = h('div.plat-stack', null);
     blocks.set(kind, slot);
     renderBlock(kind);
-    return card(h('h3', null, KIND_LABEL[kind]), [
-      h(
-        'div.stack',
-        null,
-        field('Host', hostInput, 'Change it only for a self-hosted instance.'),
-        slot,
-        tokenBlock(kind),
-      ),
-    ]);
+    return card(KIND_LABEL[kind], h('div.plat-stack', null, field('Host', hostInput, 'Change it only for a self-hosted instance.'), slot, tokenBlock(kind)));
   }
 
   /** The part of a card that depends on its host: the GitHub App, or the OAuth app and sign-in. */
@@ -214,69 +214,62 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     replace(slot, kind === 'github' ? githubBlock(data, hostOf(kind)) : oauthBlock(data, kind, hostOf(kind)));
   }
 
-  function githubBlock(d: PlatformList, host: string): HTMLElement {
+  function githubBlock(d: PlatformList, host: string): (HTMLElement | null)[] {
     const app = registrationFor(d.registrations, 'github', host);
     if (app?.app) {
       const { html_url: url, name, owner } = app.app;
-      return h(
-        'div.stack',
-        null,
-        h('p.plat-faint', null, "The plaza's App: ", h('a', { href: url, target: '_blank', rel: 'noopener' }, name), ` · owned by ${owner}`),
-        button('Install on an account or organisation', () => void installGitHub(app.id), { kind: 'primary', icon: 'plus' }),
+      return [
+        h('p.plat-muted', null, "The plaza's App: ", h('a', { href: url, target: '_blank', rel: 'noopener' }, name), ` · owned by ${owner}`),
+        h('div.plat-row', null, btn('Install on an account or organisation', () => void installGitHub(app.id), { kind: 'primary', icon: 'plus' })),
         waitingLine('github'),
-      );
+      ];
     }
-    const orgInput = input({ type: 'text', value: drafts['org:github'] ?? '', autocomplete: 'off', spellcheck: 'false', placeholder: 'optional' });
+    const orgInput = input({ type: 'text', value: drafts['org:github'] ?? '', autocomplete: 'off', spellcheck: 'false', placeholder: 'optional', 'aria-label': 'Organisation that owns it' });
     orgInput.addEventListener('input', () => {
       drafts['org:github'] = orgInput.value;
     });
-    return h(
-      'div.stack',
-      null,
+    return [
       field('Organisation that owns it', orgInput, 'Leave empty to own the App yourself.'),
-      button('Create the GitHub App', () => void createGitHubApp(host, orgInput.value), { kind: 'primary', icon: 'plus' }),
+      h('div.plat-row', null, btn('Create the GitHub App', () => void createGitHubApp(host, orgInput.value), { kind: 'primary', icon: 'plus' })),
       waitingLine('github'),
-    );
+    ];
   }
 
-  function oauthBlock(d: PlatformList, kind: PlatformKind, host: string): HTMLElement {
+  function oauthBlock(d: PlatformList, kind: PlatformKind, host: string): (HTMLElement | null)[] {
     const label = KIND_LABEL[kind];
     const reg = registrationFor(d.registrations, kind, host);
     if (reg) {
-      return h(
-        'div.stack',
-        null,
-        h('p.plat-faint', null, `The app on ${hostName(host)} is registered (client ID ${reg.client_id}).`),
-        button('Sign in', () => void startFlow(kind, label, () => platforms.authorize(reg.id)), { kind: 'primary', icon: 'key' }),
+      return [
+        h('p.plat-muted', null, `The app on ${hostName(host)} is registered (client ID ${reg.client_id}).`),
+        h('div.plat-row', null, btn('Sign in', () => void startFlow(kind, label, () => platforms.authorize(reg.id)), { kind: 'primary', icon: 'key' })),
         waitingLine(kind),
-      );
+      ];
     }
-    const clientInput = input({ type: 'text', value: drafts[`client_id:${kind}`] ?? '', autocomplete: 'off', spellcheck: 'false' });
+    const clientInput = input({ type: 'text', value: drafts[`client_id:${kind}`] ?? '', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Client ID' });
     clientInput.addEventListener('input', () => {
       drafts[`client_id:${kind}`] = clientInput.value;
     });
-    const secretInput = input({ type: 'password', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off' });
-    return h(
-      'div.stack',
-      null,
-      h('p.plat-faint', null, `Register an OAuth application on ${hostName(host)} with this redirect URI:`),
-      h('div.plat-code', null, h('code', null, d.callback), button('Copy', () => void attempt(() => navigator.clipboard.writeText(d.callback), 'Copied'), { kind: 'ghost', size: 'sm' })),
-      kind === 'gitlab' ? h('p.plat-faint', null, `Scopes: ${GITLAB_SCOPES}.`) : null,
+    const secretInput = input({ type: 'password', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', 'aria-label': 'Client secret' });
+    return [
+      h('p.plat-muted', null, `Register an OAuth application on ${hostName(host)} with this redirect URI:`),
+      h('div.plat-row', null, h('code.plat-code', null, d.callback), btn('Copy', () => void attempt(() => navigator.clipboard.writeText(d.callback), 'Copied'), { kind: 'ghost', sm: true })),
+      kind === 'gitlab' ? h('p.plat-muted', null, `Scopes: ${GITLAB_SCOPES}.`) : null,
       field('Client ID', clientInput),
       field('Client secret', secretInput),
-      button('Save the app', () => void registerApp(kind, host, clientInput, secretInput), { kind: 'primary' }),
-    );
+      h('div.plat-row', null, btn('Save the app', () => void registerApp(kind, host, clientInput, secretInput), { kind: 'primary' })),
+    ];
   }
 
   /** "Use a token": a token, its level, and the target when the level is not the owner's account. */
   function tokenBlock(kind: PlatformKind): HTMLElement {
-    const tokenInput = input({ type: 'password', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off' });
+    const tokenInput = input({ type: 'password', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', 'aria-label': 'Token' });
     const levelSelect = select(
       LEVELS.map((l) => ({ value: l, label: levelLabel(l, kind) })),
       drafts[`level:${kind}`] ?? 'user',
     );
+    levelSelect.setAttribute('aria-label', 'Level');
     const first = levelSelect.value as PlatformLevel;
-    const targetInput = input({ type: 'text', value: drafts[`target:${kind}`] ?? '', autocomplete: 'off', spellcheck: 'false', placeholder: targetPlaceholder(first, kind) });
+    const targetInput = input({ type: 'text', value: drafts[`target:${kind}`] ?? '', autocomplete: 'off', spellcheck: 'false', placeholder: targetPlaceholder(first, kind), 'aria-label': 'Target' });
     targetInput.addEventListener('input', () => {
       drafts[`target:${kind}`] = targetInput.value;
     });
@@ -289,17 +282,17 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       targetInput.placeholder = targetPlaceholder(next, kind);
     });
     return h(
-      'details.plat-token',
+      'details.plat-disc',
       null,
       h('summary', null, 'Use a token'),
       h(
-        'div.stack',
+        'div.plat-stack',
         null,
-        h('p.plat-faint', null, 'A personal, group or project token. It is kept in the vault and never shown again.'),
+        h('p.plat-muted', null, 'A personal, group or project token. It is kept in the vault and never shown again.'),
         field('Token', tokenInput),
         field('Level', levelSelect),
         targetField,
-        h('div.plat-actions', null, button('Authorize', () => void authorizeWithToken(kind, tokenInput, levelSelect, targetInput), { kind: 'primary' })),
+        h('div.plat-row', null, btn('Authorize', () => void authorizeWithToken(kind, tokenInput, levelSelect, targetInput), { kind: 'primary' })),
       ),
     );
   }
@@ -407,68 +400,56 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     const w = waiting;
     if (!w || w.kind !== kind) return null;
     return h(
-      'div.plat-wait',
+      'p.plat-wait',
       null,
-      h('span', null, `Waiting for ${w.label}…`),
+      `Waiting for ${w.label}… `,
       h('a', { href: w.go, target: '_blank', rel: 'noopener' }, 'Open the page'),
-      w.blocked ? h('span.plat-faint', null, 'The browser blocked the new tab.') : null,
-      button('Cancel', cancelFlow, { kind: 'ghost', size: 'sm' }),
+      w.blocked ? h('span.plat-muted', null, ' The browser blocked the new tab.') : null,
+      ' ',
+      btn('Cancel', cancelFlow, { kind: 'ghost', sm: true }),
     );
   }
 
   // ---- Authorizations -----------------------------------------------------------------
 
-  function listSection(d: PlatformList): HTMLElement {
-    return h(
-      'section.plat-list-section',
-      null,
-      h('h2.plat-h', null, 'Authorizations'),
-      groupByHost(d.integrations).map((g) => hostGroup(g)),
-    );
+  function authSection(d: PlatformList): Node[] {
+    return [h('h2.plat-sec', null, 'Authorizations'), ...groupByHost(d.integrations).map((g) => hostGroup(g))];
   }
 
   function hostGroup(g: HostGroup): HTMLElement {
     return h(
-      'div.stack.plat-host',
+      'div.plat-grp-wrap',
       null,
-      h('h3.plat-host-head', null, g.label, h('span.plat-faint', null, ` ${hostName(g.host)}`)),
-      g.items.map((i) => authCard(i)),
+      h('h3.plat-grp', null, g.label, h('span.plat-grp-sub', null, hostName(g.host))),
+      h('div.plat-grid', null, g.items.map((i) => authCard(i))),
     );
   }
 
   function authCard(i: PlatformIntegration): HTMLElement {
-    const rows: (HTMLElement | null)[] = [];
-    rows.push(h('div.plat-badges', null, badge(KIND_LABEL[i.kind]), badge(levelLabel(i.level, i.kind)), badge(viaLabel(i.via))));
     const who = identityLine(i.identity, i.host);
-    rows.push(h('p', { class: who.warn ? 'plat-warn' : 'plat-faint' }, who.text));
     const selection = repositorySelectionLabel(i.repository_selection);
-    if (selection) {
-      rows.push(
-        h(
-          'p',
-          null,
-          selection,
-          i.manage_url ? ' · ' : null,
-          i.manage_url ? h('a', { href: i.manage_url, target: '_blank', rel: 'noopener' }, 'Change on GitHub') : null,
-        ),
-      );
-    }
-    if (i.error) rows.push(h('p.plat-warn', null, icon('alert'), ` ${i.error}`));
     const granted = hasGrants(i.grants);
-    rows.push(
+    const panelSlot = panel?.id === i.id ? h('div.plat-ns-panel.plat-stack', null) : null;
+    if (panelSlot) panelEl = panelSlot;
+    return card(
+      accountText(i),
       h(
-        'div.plat-actions',
+        'div.plat-stack',
         null,
-        button('Choose what the plaza may use', () => openPanel(i), { kind: granted ? undefined : 'primary' }),
-        button('Sync', () => void sync(i), { icon: 'refresh', size: 'sm' }),
-        button('Remove', () => confirmRemove(i), { kind: 'danger', size: 'sm' }),
+        h('div.plat-row', null, badge(KIND_LABEL[i.kind]), badge(levelLabel(i.level, i.kind)), badge(viaLabel(i.via))),
+        h('p', { class: who.warn ? 'plat-warn' : 'plat-muted' }, who.text),
+        selection ? h('p.plat-muted', null, selection, i.manage_url ? ' · ' : null, i.manage_url ? h('a', { href: i.manage_url, target: '_blank', rel: 'noopener' }, 'Change on GitHub') : null) : null,
+        i.error ? h('p.plat-warn', null, lu('triangle-alert', 16), ` ${i.error}`) : null,
+        h(
+          'div.plat-row',
+          null,
+          btn('Choose what the plaza may use', () => openPanel(i), { kind: granted ? undefined : 'primary', sm: true }),
+          btn('Sync', () => void sync(i), { icon: 'refresh-cw', sm: true }),
+          btn('Remove', () => confirmRemove(i), { kind: 'danger', sm: true }),
+        ),
+        panelSlot,
       ),
     );
-    if (panel?.id === i.id) {
-      panelEl = h('div.plat-panel', null);
-      rows.push(panelEl);
-    }
-    return card(h('h3', null, accountText(i)), rows.filter((r): r is HTMLElement => r !== null));
   }
 
   async function sync(i: PlatformIntegration): Promise<void> {
@@ -477,26 +458,20 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   }
 
   function confirmRemove(i: PlatformIntegration): void {
-    const close = modal(
+    sheet(
       `Remove ${accountText(i)}?`,
-      h(
-        'div.plat-confirm',
-        null,
-        h('p', null, 'The plaza forgets this authorization and its tokens. Nothing changes on the platform itself.'),
-        h(
-          'div.plat-actions',
-          null,
-          button('Cancel', () => close()),
-          button(
-            'Remove',
-            () => {
-              close();
-              void remove(i);
-            },
-            { kind: 'danger' },
-          ),
+      [h('p', null, 'The plaza forgets this authorization and its tokens. Nothing changes on the platform itself.')],
+      (done) => [
+        btn('Cancel', done, { kind: 'ghost' }),
+        btn(
+          'Remove',
+          () => {
+            done();
+            void remove(i);
+          },
+          { kind: 'danger' },
         ),
-      ),
+      ],
     );
   }
 
@@ -577,26 +552,17 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     replace(el, panelBody(p, i));
   }
 
-  function panelBody(p: Panel, i: PlatformIntegration): HTMLElement {
-    const head = h(
-      'div.plat-panel-head',
-      null,
-      h('h4', null, 'Choose what the plaza may use'),
-      button('Done', closePanel, { kind: 'ghost', size: 'sm' }),
-    );
-    if (!p.namespaces) {
-      return h('div.stack', null, head, p.error ? h('p.error-text', { role: 'alert' }, p.error) : h('p.plat-faint', null, 'Loading…'));
-    }
+  function panelBody(p: Panel, i: PlatformIntegration): (Node | null)[] {
+    const head = h('div.plat-row', null, h('h4', { style: 'margin:0;flex:1 1 auto' }, 'Choose what the plaza may use'), btn('Done', closePanel, { kind: 'ghost', sm: true }));
+    if (!p.namespaces) return [head, p.error ? h('p.plat-err', { role: 'alert' }, p.error) : h('p.plat-muted', null, 'Loading…')];
     const namespaces = p.namespaces;
-    return h(
-      'div.stack',
-      null,
+    return [
       head,
-      p.error ? h('p.error-text', { role: 'alert' }, p.error) : null,
-      namespaces.length === 0 ? h('p.plat-faint', null, 'This authorization reaches no namespace.') : null,
-      namespaces.map((ns) => namespaceRow(p, i, ns)),
-      h('div.plat-actions', null, button('Save', () => void savePanel(p), { kind: 'primary', disabled: p.saving })),
-    );
+      p.error ? h('p.plat-err', { role: 'alert' }, p.error) : null,
+      namespaces.length === 0 ? h('p.plat-muted', null, 'This authorization reaches no namespace.') : null,
+      ...namespaces.map((ns) => namespaceRow(p, i, ns)),
+      namespaces.length > 0 ? h('div.plat-row', null, btn('Save', () => void savePanel(p), { kind: 'primary', disabled: p.saving })) : null,
+    ];
   }
 
   function namespaceRow(p: Panel, i: PlatformIntegration, ns: PlatformNamespace): HTMLElement {
@@ -612,27 +578,23 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       'div.plat-ns',
       null,
       h(
-        'div.plat-ns-head',
+        'div.plat-row',
         null,
-        h('label.plat-check', null, all, h('span', null, 'All repositories')),
-        h('span.plat-ns-name', null, ns.name),
-        h('span.plat-faint', null, namespaceLabel(ns.kind)),
-        button(open ? 'Hide repositories' : 'Show repositories', () => toggleNamespace(p, ns.name), { kind: 'ghost', size: 'sm' }),
+        h('label.check', null, all, ' All repositories'),
+        h('span.plat-repo-name', null, ns.name),
+        badge(namespaceLabel(ns.kind)),
+        btn(open ? 'Hide repositories' : 'Show repositories', () => toggleNamespace(p, ns.name), { kind: 'ghost', sm: true }),
       ),
       open ? repoList(p, i, ns.name) : null,
     );
   }
 
-  function repoList(p: Panel, i: PlatformIntegration, ns: string): HTMLElement {
+  function repoList(p: Panel, i: PlatformIntegration, ns: string): Node[] | HTMLElement {
     const entry = p.expanded.get(ns);
-    if (!entry || entry.repos === null) return h('p.plat-faint', null, entry?.error ?? 'Loading repositories…');
-    if (entry.repos.length === 0) return h('p.plat-faint', null, 'No repositories in this namespace.');
+    if (!entry || entry.repos === null) return h('p.plat-muted', null, entry?.error ?? 'Loading repositories…');
+    if (entry.repos.length === 0) return h('p.plat-muted', null, 'No repositories in this namespace.');
     const allOn = p.draft[ns]?.all === true;
-    return h(
-      'ul.plat-repos',
-      null,
-      entry.repos.map((r) => repoRow(p, i, ns, r, allOn)),
-    );
+    return entry.repos.map((r) => repoRow(p, i, ns, r, allOn));
   }
 
   function repoRow(p: Panel, i: PlatformIntegration, ns: string, r: PlatformRepo, allOn: boolean): HTMLElement {
@@ -645,38 +607,27 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       renderPanel();
     });
     return h(
-      'li.plat-repo',
+      'div.plat-repo',
       null,
       h(
-        'div.plat-repo-main',
+        'div.plat-row',
         null,
-        h('label.plat-check', null, box, h('span.plat-mono', null, r.name)),
+        h('label.check', null, box, h('span.plat-repo-name', null, r.name)),
         r.private ? badge('Private') : null,
-        r.can_push ? null : h('span.plat-faint', null, "Can't push"),
+        r.can_push ? null : h('span.plat-muted', null, "Can't push"),
       ),
-      repoConnections(i, r, drafted || allOn),
+      h('div', null, repoConnections(i, r, drafted || allOn)),
     );
   }
 
   /** A granted repository shows its connections, or offers to connect it. */
-  function repoConnections(i: PlatformIntegration, r: PlatformRepo, chosen: boolean): HTMLElement | null {
-    if (!r.granted) return chosen ? h('p.plat-faint', null, 'Save to connect it to a project.') : null;
+  function repoConnections(i: PlatformIntegration, r: PlatformRepo, chosen: boolean): Node[] | HTMLElement | null {
+    if (!r.granted) return chosen ? h('span.plat-muted', null, 'Save to connect it to a project.') : null;
     if (r.connections.length > 0) {
-      return h(
-        'div.plat-conns',
-        null,
-        r.connections.map((c) =>
-          h(
-            'div.plat-conn',
-            null,
-            h('span', null, connectionText(c)),
-            button('Disconnect', () => void disconnect(i, c), { kind: 'ghost', size: 'sm' }),
-          ),
-        ),
-      );
+      return r.connections.map((c) => h('div.plat-row', null, h('span', null, connectionText(c)), btn('Disconnect', () => void disconnect(i, c), { kind: 'ghost', sm: true })));
     }
-    if (!r.can_push) return h('p.plat-faint', null, 'This authorization cannot push to it, so it cannot connect.');
-    return h('div.plat-conns', null, button('Connect to a project', () => openConnect(i, r), { size: 'sm' }));
+    if (!r.can_push) return h('span.plat-muted', null, 'This authorization cannot push to it, so it cannot connect.');
+    return btn('Connect to a project', () => openConnect(i, r), { sm: true });
   }
 
   async function disconnect(i: PlatformIntegration, c: PlatformConnection): Promise<void> {
@@ -686,35 +637,36 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   // ---- Connect dialog -------------------------------------------------------------------
 
+  /** Opens the connect dialog: the projects are read first, then the form (or the reason there is no form). */
   function openConnect(i: PlatformIntegration, r: PlatformRepo): void {
-    connectClose?.();
-    const host = h('div.plat-connect', null, h('p.plat-faint', null, 'Loading projects…'));
-    connectClose = modal('Connect to a project', host, () => {
-      connectClose = undefined;
-    });
     void platforms.projects().then(
       (list) => {
         if (!alive) return;
-        replace(host, connectForm(i, r, list.filter((p) => !p.archived), host));
+        connectClose?.();
+        connectClose = connectForm(i, r, list.filter((p) => !p.archived));
       },
-      (err: unknown) => replace(host, h('p.error-text', { role: 'alert' }, message(err))),
+      (err: unknown) => {
+        if (!alive) return;
+        connectClose?.();
+        connectClose = sheet('Connect to a project', [h('p.plat-err', { role: 'alert' }, message(err))], (done) => [btn('Close', done, { kind: 'ghost' })]);
+      },
     );
   }
 
-  function connectForm(i: PlatformIntegration, r: PlatformRepo, projects: PlatformProject[], host: HTMLElement): HTMLElement {
-    const done = () => connectClose?.();
+  function connectForm(i: PlatformIntegration, r: PlatformRepo, projects: PlatformProject[]): () => void {
     if (projects.length === 0) {
-      return h('div.plat-connect', null, h('p', null, 'There is no project to connect to yet.'), h('div.plat-actions', null, button('Close', done)));
+      return sheet('Connect to a project', [h('p', null, 'There is no project to connect to yet.')], (done) => [btn('Close', done, { kind: 'ghost' })]);
     }
     const project = select(projects.map((p) => ({ value: p.id, label: p.title || p.id })));
+    project.setAttribute('aria-label', 'Project');
     const signer = input({ type: 'checkbox' });
     signer.checked = true;
     const pusher = input({ type: 'checkbox' });
     const identity = identityLine(i.identity, i.host);
     const who = i.identity.login || i.account.login || hostName(i.host);
-    const error = h('p.error-text', { role: 'alert' });
+    const error = h('p.plat-err', { role: 'alert' });
     let busy = false;
-    const connectBtn = button('Connect', () => void submit(), { kind: 'primary' });
+    const connectBtn = btn('Connect', () => void submit(), { kind: 'primary' });
     const submit = async (): Promise<void> => {
       if (busy) return;
       busy = true;
@@ -723,7 +675,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       try {
         const res: ConnectResult = await platforms.connect(i.id, { repo: r.full_name, project: project.value, sign: signer.checked, export: pusher.checked });
         const said = connectResultText(res);
-        replace(host, h('div.plat-connect', null, h('p', { class: said.warn ? 'plat-warn' : null }, said.text), h('div.plat-actions', null, button('Close', done, { kind: 'primary' }))));
+        close();
+        connectClose = sheet('Connect to a project', [h('p', { class: said.warn ? 'plat-warn' : null }, said.text)], (close) => [btn('Close', close, { kind: 'primary' })]);
         await load();
       } catch (err) {
         error.textContent = message(err);
@@ -731,17 +684,19 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
         connectBtn.disabled = false;
       }
     };
-    return h(
-      'div.stack.plat-connect',
-      null,
-      h('p', null, `Connect ${r.full_name}. Work that lands in the project exports to it.`),
-      field('Project', project),
-      h('label.plat-check', null, signer, h('span', null, `Register the hub's signing key on ${who} (exports show as Verified)`)),
-      h('label.plat-check', null, pusher, h('span', null, 'Push now')),
-      h('p', { class: identity.warn ? 'plat-warn' : 'plat-faint' }, identity.text),
-      error,
-      h('div.plat-actions', null, button('Cancel', done, { kind: 'ghost' }), connectBtn),
+    const close = sheet(
+      'Connect to a project',
+      [
+        h('p', null, `Connect ${r.full_name}. Work that lands in the project exports to it.`),
+        field('Project', project),
+        h('label.check', null, signer, ` Register the hub's signing key on ${who} (exports show as Verified)`),
+        h('label.check', null, pusher, ' Push now'),
+        h('p', { class: identity.warn ? 'plat-warn' : 'plat-muted' }, identity.text),
+        error,
+      ],
+      (closeFn) => [btn('Cancel', closeFn, { kind: 'ghost' }), connectBtn],
     );
+    return close;
   }
 
   // ---- Start -------------------------------------------------------------------------

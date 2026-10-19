@@ -29,10 +29,11 @@ use iced::futures::channel::mpsc;
 use iced::keyboard;
 use iced::mouse;
 use iced::widget::canvas::{self, Canvas};
-use iced::widget::{button, column, row, text};
+use iced::widget::{Space, button, column, container, row, text};
 use iced::{Color, Element, Length, Pixels, Point, Rectangle, Size, Subscription, Task};
 use serde_json::{Value, json};
 
+use crate::console::ui::{self, Kind};
 use crate::theme::{self, MONO, Palette};
 
 /// The subprotocol the hub's terminal socket is asked for.
@@ -1285,28 +1286,54 @@ impl TerminalTabs {
 
     /// The tab strip above the active terminal.
     pub fn view(&self) -> Element<'_, TabsMsg> {
-        let mut strip = row![].spacing(6);
-        for index in 0..self.tabs.len() {
-            let label = if index == self.active {
-                format!("[TERM {}]", index + 1)
-            } else {
-                format!("TERM {}", index + 1)
-            };
-            strip = strip
-                .push(button(text(label).font(MONO).size(11)).on_press(TabsMsg::Select(index)))
-                .push(button(text("X").font(MONO).size(11)).on_press(TabsMsg::Close(index)));
-        }
+        let p = theme::palette();
+        // The tabs: "Terminal 1", "Terminal 2" …, the open one underlined; New terminal and Kill sit beside them, the
+        // web's terminal strip.
+        let labels: Vec<(usize, String)> = (0..self.tabs.len())
+            .map(|index| (index, format!("Terminal {}", index + 1)))
+            .collect();
+        let options: Vec<(usize, &str)> = labels
+            .iter()
+            .map(|(index, label)| (*index, label.as_str()))
+            .collect();
+        let mut head = row![ui::tabs(&options, self.active, TabsMsg::Select)]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+        head = head.push(Space::new().width(Length::Fill));
         if self.tabs.len() < MAX_TABS {
-            strip = strip.push(button(text("+").font(MONO).size(11)).on_press(TabsMsg::Add));
+            head = head.push(ui::btn_sm(
+                "+ New terminal",
+                None,
+                Kind::Secondary,
+                Some(TabsMsg::Add),
+            ));
         }
+        head = head.push(ui::btn_sm(
+            "Kill",
+            None,
+            Kind::DangerOutline,
+            (!self.tabs.is_empty()).then_some(TabsMsg::Close(self.active)),
+        ));
         let body: Element<'_, TabsMsg> = match self.tabs.get(self.active) {
             Some(tab) => {
                 let slot = tab.slot;
                 tab.view().map(move |msg| TabsMsg::Tab(slot, msg))
             }
-            None => text("No terminal").font(MONO).size(12).into(),
+            None => ui::faint("No terminal").into(),
         };
-        column![strip, body].spacing(6).into()
+        let frame = container(body)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(p.sheet.into()),
+                border: iced::Border {
+                    color: p.rule,
+                    width: 1.0,
+                    radius: theme::skin().radius.into(),
+                },
+                ..Default::default()
+            });
+        column![head, frame].spacing(10).height(Length::Fill).into()
     }
 }
 
@@ -1335,49 +1362,25 @@ fn cell_at(screen: &vt::Screen, point: Point) -> Pos {
     }
 }
 
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color {
-        r: a.r + (b.r - a.r) * t,
-        g: a.g + (b.g - a.g) * t,
-        b: a.b + (b.b - a.b) * t,
-        a: a.a,
-    }
-}
-
-/// One of the six ANSI hues, from the theme's roles.
-fn hue(n: u8, p: &Palette) -> Color {
+/// A palette entry: the 16 ANSI colours from the theme's ANSI tokens; the 6x6x6 cube and the greys are the fixed xterm values.
+fn indexed(n: u8, p: &Palette) -> Color {
     match n {
-        1 => p.crit,
-        2 => p.ok,
-        3 => p.warn,
-        4 => p.info,
-        5 => mix(p.crit, p.info, 0.5),
-        6 => mix(p.info, p.ok, 0.5),
-        _ => p.ink_2,
-    }
-}
-
-/// A palette entry: the 16 ANSI colours from the theme's roles, the 6x6x6 cube and the greys exactly.
-/// `bg` picks the black and bright-black entries' background roles (the page and the rule).
-fn indexed(n: u8, p: &Palette, bg: bool) -> Color {
-    match n {
-        0 => {
-            if bg {
-                p.paper
-            } else {
-                p.ink_3
-            }
-        }
-        1..=7 => hue(n, p),
-        8 => {
-            if bg {
-                p.rule
-            } else {
-                p.ink_3
-            }
-        }
-        9..=14 => mix(hue(n - 8, p), p.ink, 0.25),
-        15 => p.ink,
+        0 => p.ansi_0,
+        1 => p.ansi_1,
+        2 => p.ansi_2,
+        3 => p.ansi_3,
+        4 => p.ansi_4,
+        5 => p.ansi_5,
+        6 => p.ansi_6,
+        7 => p.ansi_7,
+        8 => p.ansi_8,
+        9 => p.ansi_9,
+        10 => p.ansi_10,
+        11 => p.ansi_11,
+        12 => p.ansi_12,
+        13 => p.ansi_13,
+        14 => p.ansi_14,
+        15 => p.ansi_15,
         16..=231 => {
             const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
             let i = usize::from(n - 16);
@@ -1393,13 +1396,13 @@ fn indexed(n: u8, p: &Palette, bg: bool) -> Color {
 /// A cell's foreground and background, with the inverse attribute applied and the defaults resolved.
 fn colors(style: vt::Style, p: &Palette) -> (Color, Color) {
     let fg = match style.fg {
-        vt::Color::Default => p.ink,
-        vt::Color::Indexed(n) => indexed(n, p, false),
+        vt::Color::Default => p.term_fg,
+        vt::Color::Indexed(n) => indexed(n, p),
         vt::Color::Rgb(r, g, b) => Color::from_rgb8(r, g, b),
     };
     let bg = match style.bg {
-        vt::Color::Default => p.paper,
-        vt::Color::Indexed(n) => indexed(n, p, true),
+        vt::Color::Default => p.term_bg,
+        vt::Color::Indexed(n) => indexed(n, p),
         vt::Color::Rgb(r, g, b) => Color::from_rgb8(r, g, b),
     };
     if style.inverse { (bg, fg) } else { (fg, bg) }
@@ -1632,7 +1635,7 @@ impl canvas::Program<Msg> for Surface<'_> {
             let mut run: Option<Run> = None;
             for col in 0..screen.cols() {
                 let c = row.cells.get(col).copied().unwrap_or_default();
-                let (fg, bg) = colors(c.style, &p);
+                let (fg, bg) = colors(c.style, p);
                 let x = PAD + col as f32 * CELL_W;
                 if bg != p.paper {
                     frame.fill_rectangle(Point::new(x, top), cell, bg);

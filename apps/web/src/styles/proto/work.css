@@ -1,0 +1,121 @@
+/* The Work and Tasks screens (the Loom and Graphite prototype's m-work.js), with the console's token names.
+   Generated from the prototype's rules; keep the selectors in step with views/work.ts and views/tasks.ts. */
+    .wk-strip { display: flex; gap: 32px; overflow-x: auto; border-bottom: 1px solid var(--rule); }
+    .wk-page { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+    .wk-tab { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; min-width: 180px; max-width: 260px; border-bottom: 2px solid transparent; color: var(--ink-2); text-decoration: none; }
+    .wk-tab[aria-current="page"] { border-bottom: 2px solid var(--signal); color: var(--ink); }
+    .wk-tab b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wk-tab small { color: var(--ink-3); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wk-flow { display: flex; gap: 3px; flex-wrap: wrap; align-items: center; }
+    .wk-sq { width: 9px; height: 9px; border-radius: 2px; background: var(--rule-strong); display: inline-block; }
+    .wk-sq.done { background: var(--ok); } .wk-sq.current { background: var(--signal); } .wk-sq.you { background: var(--signal); outline: 2px solid var(--signal-soft); }
+    .wk-sq.task.ended { background: var(--ink-3); } .wk-sq.task.run { background: var(--info); } .wk-sq.task.need { background: var(--signal); }
+    .wk-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); }
+    .wk-body.with-drawer { grid-template-columns: minmax(0, 1fr) 320px; }
+    .wk-scroll { overflow-x: auto; overflow-y: auto; border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--sheet); padding: 16px; }
+    .wk-map { position: relative; }
+    .wk-map svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; max-width: none; }
+    .wk-route { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; }
+    .wk-route.dash { stroke-dasharray: 4 4; stroke: var(--ink-3); }
+    .wk-route.dim { opacity: .35; }
+    .wk-arrow { fill: var(--rule-strong); }
+    .wk-card, .wk-plan-card, .wk-delivery { position: absolute; box-sizing: border-box; text-align: left; font: inherit; color: var(--ink); background: var(--raised); border: 1px solid var(--rule); border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 4px; overflow: hidden; text-decoration: none; cursor: pointer; }
+    .wk-card:hover, .wk-plan-card:hover { background: var(--hover); }
+    .wk-card[aria-pressed="true"] { border-color: var(--signal); box-shadow: 0 0 0 1px var(--signal); }
+    .wk-card.ended .wk-card-title { opacity: .78; }
+    .wk-card.s-accent { border-color: var(--signal); }
+    .wk-id, .wk-role { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-3); display: flex; justify-content: space-between; gap: 8px; }
+    .wk-card-title { font-weight: 600; line-height: 1.35; flex: none; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .wk-line { color: var(--ink-2); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wk-plan-card.done .wk-pt::before { content: "\2713  "; }
+    .wk-plan-card.you { border-color: var(--signal); }
+    .wk-plan-card .wk-pt, .wk-delivery .wk-pt { font-weight: 600; }
+    .wk-col { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+    .wk-cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--gap); }
+    .wk-cols > div { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .wk-ch { display: flex; justify-content: space-between; color: var(--ink-2); font-size: var(--fs-sm); padding-bottom: 4px; border-bottom: 1px solid var(--rule); }
+    .wk-cols .wk-card { position: relative; left: auto; top: auto; width: auto; height: auto; }
+    .wk-none, .wk-note { color: var(--ink-3); font-size: var(--fs-sm); }
+    .wk-plan { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--gap); }
+    .wk-plan > section { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding-top: 8px; }
+    .wk-plan > section.p-current { border-color: var(--signal); }
+    .wk-plan > section.p-done { border-color: var(--ok); }
+    .wk-doc { border: 1px solid var(--rule); border-radius: var(--radius); padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; background: var(--sheet-2); min-width: 0; }
+    .wk-doc .wk-k { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-3); }
+    .wk-drawer { border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--sheet); padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; align-self: start; }
+    .wk-drawer ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+    .wk-drawer li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; font-size: var(--fs-sm); color: var(--ink-2); }
+    .wk-drawer li > span:first-child { color: var(--ink-3); font-family: var(--font-mono); }
+    .wk-drawer .wk-dt { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+    .wk-faded { opacity: .35; }
+    @media (max-width: 900px) {
+      .wk-body.with-drawer { grid-template-columns: minmax(0, 1fr); }
+      .wk-cols, .wk-plan { grid-template-columns: minmax(0, 1fr); }
+      .wk-tab { min-width: 140px; }
+    }
+  App.style(`.wk-link { background: none; border: 0; padding: 0; font: inherit; color:var(--signal-ink); cursor: pointer; text-align: left; }
+    .wk-top { display: flex; justify-content: flex-end; }`);
+    .tk-page { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+    .tk-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--gap); }
+    .tk-summary .stat-v { font-variant-numeric: tabular-nums; }
+    .tk-waits { color: var(--ink-2); font-size: var(--fs-sm); margin: 0; }
+    .tk-top { display: flex; justify-content: flex-end; gap: var(--gap); align-items: center; flex-wrap: wrap; }
+    .tk-board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--gap); align-items: start; }
+    .tk-lane { display: flex; flex-direction: column; gap: 8px; min-width: 0; background: var(--sheet-2); border-radius: var(--radius-lg); padding: 12px 16px; min-height: 240px; }
+    .tk-lane-h { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+    .tk-lane-h .n { margin-left: auto; color: var(--ink-3); font-weight: 400; }
+    .task-card { display: flex; flex-direction: column; gap: 6px; padding: 12px; background: var(--raised); border: 1px solid var(--rule); border-radius: var(--radius); color: var(--ink); min-width: 0; position: relative; overflow: hidden; cursor: pointer; }
+    .task-card:hover { background: var(--hover); }
+    .task-card:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+    .task-top, .task-who, .task-foot { display: flex; gap: 8px; align-items: center; font-size: var(--fs-sm); color: var(--ink-2); min-width: 0; flex-wrap: wrap; }
+    .task-id { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-3); }
+    .task-title { font-weight: 600; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .task-act { color: var(--ink-2); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+    .task-chip { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--rule-strong); color: var(--ink-2); text-decoration: none; }
+    .task-chip.fail { border-color: var(--crit); color: var(--crit); }
+    .tk-empty { color: var(--ink-3); font-size: var(--fs-sm); margin: 0; }
+    .tk-cols { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--gap); align-items: start; }
+    .tk-stack { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+    .tk-block { border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--sheet); padding: 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .tk-block p { margin: 0; }
+    .tk-block p + p { margin-top: 8px; }
+    .tk-facts { gap: 12px; }
+    .tk-fact { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .tk-fact .tk-fv { overflow-wrap: anywhere; }
+    .tk-label { font-size: var(--fs-xs); color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em; }
+    .tk-tl { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-sm); }
+    .tk-tl li { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; min-width: 0; }
+    .tk-tl time { font-family: var(--font-mono); color: var(--ink-3); }
+    .tk-tl .k-error { color: var(--crit); }
+    .tk-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .tk-new { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); }
+    .tk-new .wide { grid-column: 1 / -1; }
+    .task-card { touch-action: none; user-select: none; }
+    .task-card.is-src { background: var(--sheet-2); border: 1px dashed var(--rule-strong); box-shadow: none; }
+    .task-card.is-src > * { visibility: hidden; }
+    .task-card .task-menu-btn { margin-left: auto; width: 26px; height: 26px; padding: 0; }
+    .task-card.fx-in { animation: tk-fade-in .6s var(--ease-out) both; }
+    .task-card.fx-flash { animation: tk-flash 1.2s var(--ease-out); }
+    @keyframes tk-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    @keyframes tk-flash { 0%, 100% { box-shadow: none; } 25% { box-shadow: 0 0 0 2px var(--signal); } }
+    .tk-lane { transition: background .15s, opacity .15s; }
+    .tk-lane.drop-ok { background: var(--signal-soft); }
+    .tk-lane.drop-no { opacity: .55; cursor: not-allowed; }
+    .tk-drop-strip { display: none; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border: 1px dashed var(--signal); border-radius: var(--radius-lg); background: var(--signal-soft); font-size: var(--fs-sm); color: var(--ink-2); }
+    .tk-drop-strip.on { display: flex; }
+    .tk-drop-p { padding: 4px 12px; border: 1px solid var(--rule-strong); border-radius: 999px; background: var(--raised); color: var(--ink); }
+    .tk-drop-p.over { border-color: var(--signal); background: var(--signal); color: var(--on-action); }
+    .tk-ghost { position: fixed; z-index: 1000; margin: 0; pointer-events: none; transform: scale(1.03); box-shadow: var(--shadow-pop); opacity: .96; transition: transform .15s, box-shadow .15s; }
+    .tk-ghost.back { transform: none; box-shadow: none; opacity: 1; transition: left .25s var(--ease-out), top .25s var(--ease-out), transform .25s var(--ease-out), box-shadow .25s, opacity .25s; }
+    .tk-pop { position: fixed; z-index: 1001; min-width: 200px; max-width: 280px; display: flex; flex-direction: column; gap: 2px; padding: 8px; background: var(--raised); border: 1px solid var(--rule); border-radius: var(--radius); box-shadow: var(--shadow-pop); }
+    .tk-pop > b { padding: 4px 8px; font-size: var(--fs-xs); font-weight: 500; color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em; }
+    .tk-pop button { text-align: left; padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--ink); font: inherit; cursor: pointer; }
+    .tk-pop button:hover, .tk-pop button:focus-visible { background: var(--hover); outline: none; }
+    .tk-pop .tk-pop-note { padding: 6px 8px; color: var(--ink-3); font-size: var(--fs-sm); }
+    .wk-undo { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 1002; display: flex; align-items: center; gap: 16px; max-width: calc(100vw - 32px); padding: 10px 14px; border-radius: var(--radius); background: var(--action); color: var(--on-action); box-shadow: var(--shadow-pop); font-size: var(--fs-sm); }
+    .wk-undo button { padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
+    @media (prefers-reduced-motion: reduce) { .task-card.fx-in, .task-card.fx-flash { animation: none; } }
+    @media (max-width: 900px) {
+      .tk-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .tk-board, .tk-cols, .tk-new { grid-template-columns: minmax(0, 1fr); }
+    }

@@ -10,6 +10,13 @@ publish = false
 apz-metrics = { path = "../apz-metrics" }
 serde.workspace = true
 serde_json.workspace = true
+# The PNG export of a panel: tiny-skia rasterises, ab_glyph outlines the embedded Geist faces.
+ab_glyph = { version = "0.2", optional = true }
+apz-theme = { path = "../apz-theme", optional = true }
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "png-format"], optional = true }
+
+[features]
+raster = ["dep:tiny-skia", "dep:ab_glyph", "dep:apz-theme"]
 
 [lints]
 workspace = true

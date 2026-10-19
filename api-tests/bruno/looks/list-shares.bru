@@ -1,0 +1,16 @@
+meta {
+  name: List the share links
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/shares
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

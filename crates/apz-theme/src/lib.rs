@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 
 pub mod appearance;
+pub mod backdrop;
 pub mod background;
 pub mod builtin;
 pub mod color;
@@ -25,6 +26,7 @@ pub mod generate;
 pub mod skin;
 pub mod tokens;
 pub mod vscode;
+pub mod vsix;
 
 use std::collections::BTreeMap;
 
@@ -121,7 +123,8 @@ fn palettes_empty(p: &Palettes) -> bool {
 impl ThemeFile {
     /// Parses and validates a theme file.
     pub fn parse(text: &str) -> Result<ThemeFile, String> {
-        let file: ThemeFile = serde_json::from_str(text).map_err(|e| format!("not a theme file: {e}"))?;
+        let file: ThemeFile =
+            serde_json::from_str(text).map_err(|e| format!("not a theme file: {e}"))?;
         let problems = file.problems();
         if problems.is_empty() {
             Ok(file)
@@ -134,11 +137,17 @@ impl ThemeFile {
     pub fn problems(&self) -> Vec<String> {
         let mut out = vec![];
         if self.schema != SCHEMA {
-            out.push(format!("schema {} is not supported (this build reads {SCHEMA})", self.schema));
+            out.push(format!(
+                "schema {} is not supported (this build reads {SCHEMA})",
+                self.schema
+            ));
         }
         if self.id.is_empty()
             || self.id.len() > 64
-            || !self.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            || !self
+                .id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         {
             out.push("id must be 1–64 characters of a–z, 0–9 and -".into());
         }
@@ -193,7 +202,10 @@ pub struct Tokens(pub BTreeMap<String, Rgba>);
 impl Tokens {
     /// The token's colour; magenta for a name that is not there, so a mistake shows.
     pub fn get(&self, name: &str) -> Rgba {
-        self.0.get(name).copied().unwrap_or(Rgba::rgb(1.0, 0.0, 1.0))
+        self.0
+            .get(name)
+            .copied()
+            .unwrap_or(Rgba::rgb(1.0, 0.0, 1.0))
     }
 
     pub fn set(&mut self, name: &str, c: Rgba) {
@@ -232,7 +244,13 @@ pub struct Report {
 impl Report {
     /// "41 colours taken, 19 derived, 3 adjusted for contrast".
     pub fn summary(&self) -> String {
-        let plural = |n: usize, one: &str, many: &str| if n == 1 { one.to_string() } else { many.to_string() };
+        let plural = |n: usize, one: &str, many: &str| {
+            if n == 1 {
+                one.to_string()
+            } else {
+                many.to_string()
+            }
+        };
         format!(
             "{} {} taken, {} derived, {} adjusted for contrast",
             self.taken,
@@ -272,11 +290,15 @@ pub fn resolve(file: &ThemeFile, skin: &Skin, mode: Mode) -> Resolved {
             given.insert(name.clone(), c);
         }
     }
-    let taken = given.keys().filter(|k| !derive::SKIN_TOKENS.contains(&k.as_str())).count();
+    let taken = given
+        .keys()
+        .filter(|k| !derive::SKIN_TOKENS.contains(&k.as_str()))
+        .count();
     let mut toks = derive::derive(&given, skin, mode);
     for (name, value) in file.overrides.get(mode).into_iter().flatten() {
         if let (true, Some(c)) = (tokens::is_token(name), Rgba::parse(value)) {
-            toks.set(name, c.over(toks.get("paper")));
+            let kept = derive::KEEP_ALPHA.contains(&name.as_str());
+            toks.set(name, if kept { c } else { c.over(toks.get("paper")) });
         }
     }
     let (adjusted, failing) = contrast_pass(&mut toks);
@@ -329,7 +351,9 @@ pub fn contrast_pass(toks: &mut Tokens) -> (Vec<Adjusted>, Vec<Adjusted>) {
 fn worst_ground(fg: Rgba, on: &[&str], toks: &Tokens) -> (String, f32) {
     on.iter()
         .map(|g| ((*g).to_string(), fg.quantized().contrast(toks.get(g))))
-        .fold((String::new(), f32::INFINITY), |a, b| if b.1 < a.1 { b } else { a })
+        .fold((String::new(), f32::INFINITY), |a, b| {
+            if b.1 < a.1 { b } else { a }
+        })
 }
 
 /// Every check that fails on `toks` as they stand.

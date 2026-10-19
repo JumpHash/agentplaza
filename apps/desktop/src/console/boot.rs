@@ -605,6 +605,7 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
             page.push(ui::label("Bind address").into());
             page.push(
                 text_input("0.0.0.0", &state.bind)
+                    .style(crate::theme::input)
                     .on_input(Msg::Bind)
                     .on_submit(Msg::Go)
                     .into(),
@@ -617,6 +618,7 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
             page.push(ui::prose("On the hub, open Nodes and press “Add a node”: it shows a one-time join code (apzj1.…), valid for an hour. Paste it here. The code names the hub, so this machine connects to that hub and trusts only its certificate.").into());
             page.push(
                 text_input("apzj1.…", &state.join_token)
+                    .style(crate::theme::input)
                     .on_input(Msg::JoinToken)
                     .on_submit(Msg::Go)
                     .into(),

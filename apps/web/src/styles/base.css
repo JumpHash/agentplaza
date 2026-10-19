@@ -94,15 +94,15 @@ code, pre, .mono { font-family: var(--font-mono); font-size: 13px; }
 /* Printed buttons: square, ink-bordered, a hard offset shadow. */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-  min-height: 36px; padding: 0 14px; border: 1px solid var(--ink); border-radius: 0;
+  min-height: 36px; padding: 0 14px; border: 1px solid var(--ink); border-radius: var(--radius);
   background: var(--sheet); color: var(--ink); box-shadow: var(--shadow-card);
   font: 600 13px/1.2 var(--font); cursor: pointer; white-space: nowrap; text-decoration: none;
 }
 .btn:hover { background: var(--ink); color: var(--sheet); }
 .btn:active { transform: translate(2px, 2px); box-shadow: none; }
-.btn.primary { background: var(--signal); border-color: var(--signal); color: #120800; }
-.btn.primary:hover { background: var(--signal-ink); color: #fff; }
-.btn.danger { color: var(--crit); border-color: var(--crit); box-shadow: 2px 2px 0 var(--crit); }
+.btn.primary { background: var(--signal); border-color: var(--signal); color: var(--on-signal); }
+.btn.primary:hover { background: var(--signal-ink); color: var(--on-signal); }
+.btn.danger { color: var(--crit); border-color: var(--crit); box-shadow: var(--shadow-card); }
 .btn.danger:hover { background: var(--crit); color: var(--sheet); }
 .btn.ghost { border-color: transparent; box-shadow: none; background: transparent; color: var(--ink-2); }
 .btn.ghost:hover { color: var(--ink); background: var(--hover); }
@@ -154,7 +154,7 @@ code, pre, .mono { font-family: var(--font-mono); font-size: 13px; }
 .field > span { font: 400 11px var(--font); color: var(--ink-3); letter-spacing: 0.01em; }
 .field .hint { font: italic 13px var(--font); color: var(--ink-3); text-transform: none; letter-spacing: 0; }
 .input, .select, .textarea {
-  width: 100%; padding: 6px 0 7px; border: 0; border-bottom: 1px solid var(--ink); border-radius: 0;
+  width: 100%; padding: 6px 0 7px; border: 0; border-bottom: 1px solid var(--ink); border-radius: var(--radius);
   background: transparent; color: var(--ink); font: var(--type-ui); font-weight: 400;
 }
 .select { cursor: pointer; }
@@ -189,14 +189,14 @@ input[type="checkbox"] { accent-color: var(--signal); }
 .logo .mono-mark { font: 700 13px var(--font); letter-spacing: -0.02em; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--paper) 70%, transparent); display: grid; place-items: center; padding: 24px; }
-.modal { width: min(620px, 100%); max-height: calc(100vh - 48px); overflow: auto; background: var(--sheet); border: 1px solid var(--ink); box-shadow: 6px 6px 0 var(--rule-strong); }
+.modal { width: min(620px, 100%); max-height: calc(100vh - 48px); overflow: auto; background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--shadow-pop); }
 .modal .card-head { position: sticky; top: 0; background: var(--sheet); border-bottom: 2px solid var(--ink); padding: 16px 18px 12px; }
 .modal .card-head h2 { font: 700 18px/1.1 var(--font); letter-spacing: -0.01em; }
 .modal .card-body { padding: 18px; }
 
 .toast-host { position: fixed; right: 24px; bottom: 24px; z-index: 60; display: flex; flex-direction: column; gap: 10px; }
 .toast { padding: 10px 14px; background: var(--sheet); border: 1px solid var(--ink); box-shadow: var(--shadow-card); font: 13px var(--font); max-width: 420px; }
-.toast.error { border-color: var(--crit); color: var(--crit); box-shadow: 2px 2px 0 var(--crit); }
+.toast.error { border-color: var(--crit); color: var(--crit); box-shadow: var(--shadow-card); }
 
 /* Particulars: label ........ value. */
 .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 16px; }

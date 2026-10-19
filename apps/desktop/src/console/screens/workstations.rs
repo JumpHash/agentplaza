@@ -11,8 +11,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use apz_http::client::request;
-use iced::widget::{Space, checkbox, column, container, image, pick_list, row, text_input};
-use iced::{Alignment, Border, ContentFit, Element, Length, Subscription, Task, Theme};
+use iced::alignment::{Horizontal, Vertical};
+use iced::widget::{Space, checkbox, column, container, image, pick_list, row, text, text_input};
+use iced::{
+    Alignment, Border, Color, ContentFit, Element, Length, Padding, Subscription, Task, Theme,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -37,8 +40,6 @@ const RECORD_FPS: (u64, u64) = (1, 5);
 const RATE_MAX: u64 = 1_000_000;
 /// How often the list's thumbnails are taken again, while the list is shown.
 const THUMB_EVERY: Duration = Duration::from_secs(10);
-const THUMB_W: f32 = 96.0;
-const THUMB_H: f32 = 54.0;
 const WORK_FOLDER_MAX: usize = 512;
 /// The audit rows a page asks for.
 const AUDIT_ROWS: u64 = 50;
@@ -1080,12 +1081,121 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     }
 }
 
+// ---- The web's card and table, in the Settings screens' own terms ----
+
+/// The card's rule across, in the palette's rule colour.
+fn rule<'a>(color: Color) -> Element<'a, Msg> {
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The web's `.card.flush`: the title in the card head over a rule, the body flush to the card's edges.
+fn flush_card<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    let top = container(row![
+        ui::card_title(title),
+        Space::new().width(Length::Fill)
+    ])
+    .padding([8, 16])
+    .height(Length::Shrink)
+    .width(Length::Fill)
+    .center_y(Length::Fixed(44.0));
+    container(column![top, rule(crate::theme::palette().rule), body])
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .clip(true)
+        .into()
+}
+
+/// The rows one under another, a rule between each pair (the web's `.card.flush .row`).
+fn stacked<'a>(rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    for (i, line) in rows.into_iter().enumerate() {
+        if i > 0 {
+            parts.push(rule(crate::theme::palette().rule));
+        }
+        parts.push(line);
+    }
+    column(parts).width(Length::Fill).into()
+}
+
+/// A column of a table: its head, its share of the row (None: as wide as its content), and whether it reads right.
+#[derive(Clone, Copy)]
+struct Col {
+    head: &'static str,
+    share: Option<u16>,
+    right: bool,
+}
+
+/// One cell: the first and last columns sit at the card's edges (`edge`), the others carry 12 either side.
+fn tcell<'a>(
+    cols: &[Col],
+    i: usize,
+    content: Element<'a, Msg>,
+    edge: f32,
+    pad_y: f32,
+) -> Element<'a, Msg> {
+    let col = cols[i];
+    let left = if i == 0 { edge } else { 12.0 };
+    let right = if i + 1 == cols.len() { edge } else { 12.0 };
+    let inner = container(content)
+        .padding(Padding {
+            top: pad_y,
+            right,
+            bottom: pad_y,
+            left,
+        })
+        .align_x(if col.right {
+            Horizontal::Right
+        } else {
+            Horizontal::Left
+        })
+        .align_y(Vertical::Center);
+    match col.share {
+        Some(share) => inner.width(Length::FillPortion(share)).into(),
+        None => inner.width(Length::Shrink).into(),
+    }
+}
+
+/// The web's `.tbl`: the head in the label voice over a strong rule, a row per item with a rule between.
+fn tbl<'a>(edge: f32, cols: &[Col], rows: Vec<Vec<Element<'a, Msg>>>) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let heads: Vec<Element<'a, Msg>> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| tcell(cols, i, ui::label(c.head).into(), edge, 8.0))
+        .collect();
+    let mut lines: Vec<Element<'a, Msg>> =
+        vec![row(heads).width(Length::Fill).into(), rule(p.rule_strong)];
+    for (n, cells) in rows.into_iter().enumerate() {
+        if n > 0 {
+            lines.push(rule(p.rule));
+        }
+        let line: Vec<Element<'a, Msg>> = cells
+            .into_iter()
+            .enumerate()
+            .map(|(i, content)| tcell(cols, i, content, edge, 9.0))
+            .collect();
+        lines.push(
+            row(line)
+                .width(Length::Fill)
+                .align_y(Alignment::Center)
+                .into(),
+        );
+    }
+    column(lines).width(Length::Fill).into()
+}
+
 // ---- The list: the workstations and the join codes ----
 
 fn list_page<'a>(state: &'a State, mut parts: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
     let head = ui::view_head_with_intro(
         "Workstations",
-        "Machines that agents operate through the hub: their screen, shell, files and every program installed there.",
+        "The machines agents work on through this hub. A workstation gives its screen to agents one lease at a time, and you can take it over at any moment.",
         vec![
             ui::btn("New VM", None, ui::Kind::Secondary, Some(Msg::OpenNewVm)),
             ui::btn(
@@ -1096,17 +1206,17 @@ fn list_page<'a>(state: &'a State, mut parts: Vec<Element<'a, Msg>>) -> Element<
             ),
         ],
     );
-    parts.push(ui::card("Workstations", stations_view(state)));
+    parts.push(flush_card("Workstations", stations_view(state)));
     parts.push(ui::card(
         "Workstation VMs",
         vms::vms_view(&state.vms, &state.nodes),
     ));
-    parts.push(ui::card("Join codes", codes_view(state)));
+    parts.push(flush_card("Join codes", codes_view(state)));
     parts.push(ui::card(
         "Recording defaults",
         rec::defaults_view(&state.rec).map(Msg::Rec),
     ));
-    ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
+    ui::sheet(head, column(parts).spacing(16).width(Length::Fill).into())
 }
 
 fn stations_view(state: &State) -> Element<'_, Msg> {
@@ -1121,14 +1231,7 @@ fn stations_view(state: &State) -> Element<'_, Msg> {
         Load::Ready(list) => {
             let mut sorted: Vec<&Station> = list.iter().collect();
             sorted.sort_by_key(|a| a.name.to_lowercase());
-            table(
-                &[
-                    (3, "Name"),
-                    (3, "GPUs"),
-                    (2, "State"),
-                    (2, "Leases"),
-                    (2, "Last seen"),
-                ],
+            stacked(
                 sorted
                     .into_iter()
                     .map(|s| station_row(s, state.thumbs.get(&s.id)))
@@ -1138,63 +1241,81 @@ fn stations_view(state: &State) -> Element<'_, Msg> {
     }
 }
 
+/// One workstation as the web's `.ws-row`: the picture box, the name, its summary and its leases, the chips at the
+/// right. The rows sit under rules in the flush card.
 fn station_row<'a>(s: &'a Station, thumb: Option<&'a image::Handle>) -> Element<'a, Msg> {
     let (status, tone) = status_chip(&s.status);
     let (holding, waiting) = lease_counts(&s.leases);
-    let mut badges: Vec<Element<'_, Msg>> = vec![ui::badge(&status, tone)];
+    let mut chips: Vec<Element<'a, Msg>> = vec![ui::badge(&status, tone)];
     if let Some(text) = account_badge(&s.facts.account) {
-        badges.push(ui::badge(&text, ui::Tone::Warn));
+        chips.push(ui::badge(&text, ui::Tone::Warn));
     }
-    let gpus: Element<'_, Msg> = if s.facts.gpus.is_empty() {
-        ui::faint("no GPU").into()
-    } else {
-        column(
-            s.facts
-                .gpus
-                .iter()
-                .map(|g| mono_text(gpu_line(g)))
-                .collect::<Vec<_>>(),
-        )
-        .spacing(4)
+    let info = column![
+        ui::text_link(&s.name, Msg::Select(s.id.clone())),
+        ui::faint(station_summary(&s.facts)),
+        ui::faint(format!(
+            "{holding} active · {waiting} queued · seen {}",
+            ago(s.last_seen_ms)
+        )),
+    ]
+    .spacing(4)
+    .width(Length::Fill);
+    row![
+        picture_box(s, thumb),
+        info,
+        row(chips).spacing(8).align_y(Alignment::Center),
+    ]
+    .spacing(16)
+    .align_y(Alignment::Start)
+    .padding(16)
+    .width(Length::Fill)
+    .into()
+}
+
+/// A station's picture box, 120 by 72: the screen as it was last taken, or the OS and why there is none.
+fn picture_box<'a>(s: &'a Station, thumb: Option<&'a image::Handle>) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let radius = crate::theme::skin().radius;
+    let (fill, inner): (Color, Element<'a, Msg>) = match thumb {
+        Some(handle) => (
+            p.raised,
+            image(handle.clone())
+                .content_fit(ContentFit::Contain)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+        ),
+        None => {
+            let note = if s.revoked {
+                "Revoked"
+            } else if s.status == "online" {
+                "No screen open"
+            } else {
+                "Offline"
+            };
+            (
+                p.sheet_2,
+                column![ui::faint(os_text(&s.facts)), ui::faint(note)]
+                    .align_x(Alignment::Center)
+                    .into(),
+            )
+        }
+    };
+    container(inner)
+        .width(Length::Fixed(120.0))
+        .height(Length::Fixed(72.0))
+        .padding(4)
+        .center_x(Length::Fixed(120.0))
+        .center_y(Length::Fixed(72.0))
+        .style(move |_: &Theme| container::Style {
+            background: Some(fill.into()),
+            border: Border {
+                radius: radius.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
         .into()
-    };
-    let picture: Element<'a, Msg> = match thumb {
-        Some(handle) => image(handle.clone())
-            .content_fit(ContentFit::Cover)
-            .width(Length::Fixed(THUMB_W))
-            .height(Length::Fixed(THUMB_H))
-            .into(),
-        None => container(
-            Space::new()
-                .width(Length::Fixed(THUMB_W))
-                .height(Length::Fixed(THUMB_H)),
-        )
-        .style(ui::frame(Some(theme::SUBSTRATE), theme::RULE))
-        .into(),
-    };
-    cells(vec![
-        (
-            3,
-            row![
-                picture,
-                column![
-                    ui::link(&s.name, Msg::Select(s.id.clone()), false),
-                    ui::faint(station_summary(&s.facts))
-                ]
-                .spacing(2)
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into(),
-        ),
-        (3, gpus),
-        (2, column(badges).spacing(6).into()),
-        (
-            2,
-            ui::faint(format!("{holding} active · {waiting} queued")).into(),
-        ),
-        (2, ui::faint(ago(s.last_seen_ms)).into()),
-    ])
 }
 
 fn codes_view(state: &State) -> Element<'_, Msg> {
@@ -1209,22 +1330,47 @@ fn codes_view(state: &State) -> Element<'_, Msg> {
         Load::Ready(list) => {
             let mut sorted: Vec<&Code> = list.iter().collect();
             sorted.sort_by_key(|a| std::cmp::Reverse(a.created_ms));
-            table(
-                &[
-                    (3, "Label"),
-                    (2, "ID"),
-                    (2, "Created"),
-                    (2, "Expires"),
-                    (3, "State"),
-                    (1, ""),
-                ],
-                sorted.into_iter().map(code_row).collect(),
-            )
+            let cols = [
+                Col {
+                    head: "Label",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "ID",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Created",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Expires",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "State",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "",
+                    share: None,
+                    right: true,
+                },
+            ];
+            tbl(16.0, &cols, sorted.into_iter().map(code_row).collect())
         }
     }
 }
 
-fn code_row(c: &Code) -> Element<'_, Msg> {
+/// A join code's row: its label (bold), its id in mono, when it was made and when it ends, its state, and Revoke
+/// while it is active.
+fn code_row(c: &Code) -> Vec<Element<'_, Msg>> {
+    let p = crate::theme::palette();
     let (label, tone) = code_chip(&c.state);
     let state_cell: Element<'_, Msg> = match &c.used_by {
         Some(by) => row![ui::badge(&label, tone), ui::faint(format!(" by {by}"))]
@@ -1242,29 +1388,30 @@ fn code_row(c: &Code) -> Element<'_, Msg> {
     let action: Element<'_, Msg> = if active {
         ui::btn_sm(
             "Revoke",
-            None,
+            Some("trash"),
             ui::Kind::Danger,
             Some(Msg::RevokeCode(c.id.clone())),
         )
     } else {
-        Space::new().width(Length::Fill).into()
+        Space::new().width(Length::Shrink).into()
     };
     let label_text = if c.label.is_empty() {
         "no label".to_string()
     } else {
         c.label.clone()
     };
-    cells(vec![
-        (3, mono_text(label_text)),
-        (
-            2,
-            ui::mono(c.id.clone(), 11.0, theme::palette().ink_3).into(),
-        ),
-        (2, ui::faint(ago(c.created_ms)).into()),
-        (2, mono_text(expires)),
-        (3, state_cell),
-        (1, action),
-    ])
+    vec![
+        text(label_text)
+            .font(crate::theme::SANS_SEMIBOLD)
+            .size(13.0)
+            .color(p.ink)
+            .into(),
+        ui::mono(c.id.clone(), 11.0, p.ink_3).into(),
+        ui::faint(ago(c.created_ms)).into(),
+        ui::sans(expires, 13.0, p.ink_2).into(),
+        state_cell,
+        action,
+    ]
 }
 
 // ---- One workstation's page ----
@@ -1274,21 +1421,25 @@ fn station_page<'a>(
     s: &'a Station,
     mut parts: Vec<Element<'a, Msg>>,
 ) -> Element<'a, Msg> {
-    let head = ui::view_head_with_intro(&s.name, &station_summary(&s.facts), station_actions(s));
+    let head = column![
+        ui::link("All workstations", Msg::Deselect, false),
+        ui::view_head(&s.name, station_actions(s)),
+    ]
+    .spacing(8)
+    .into();
     let mut chips: Vec<Element<'a, Msg>> = vec![];
     let (status, tone) = status_chip(&s.status);
     chips.push(ui::badge(&status, tone));
     if let Some(text) = account_badge(&s.facts.account) {
         chips.push(ui::badge(&text, ui::Tone::Warn));
     }
-    parts.insert(0, ui::link("All workstations", Msg::Deselect, false));
     parts.push(ui::chip_row(chips));
+    parts.push(ui::card("Facts", facts_view(s)));
     parts.push(ui::card(
         "Live view",
         live::view(&state.live, s).map(Msg::Live),
     ));
-    parts.push(ui::card("Facts", facts_view(s)));
-    parts.push(ui::card("Leases", leases_view(state, s)));
+    parts.push(flush_card("Leases", leases_view(state, s)));
     parts.push(ui::card(
         "Work folder",
         files::view(&state.files).map(Msg::Files),
@@ -1298,7 +1449,7 @@ fn station_page<'a>(
         rec::station_view(&state.rec, &state.names).map(Msg::Rec),
     ));
     parts.push(ui::card("Settings", settings_view(state, s)));
-    parts.push(ui::card("Audit", audit_view(state)));
+    parts.push(flush_card("Audit", audit_view(state)));
     ui::sheet(head, column(parts).spacing(16).width(Length::Fill).into())
 }
 
@@ -1389,44 +1540,63 @@ fn leases_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
             "An agent holds a lease while it works here. Leases show up as agents start.",
         );
     }
-    let rows: Vec<Element<'a, Msg>> = s
+    let cols = [
+        Col {
+            head: "Agent",
+            share: Some(3),
+            right: false,
+        },
+        Col {
+            head: "Task",
+            share: Some(3),
+            right: false,
+        },
+        Col {
+            head: "Kind",
+            share: Some(2),
+            right: false,
+        },
+        Col {
+            head: "State",
+            share: Some(2),
+            right: false,
+        },
+        Col {
+            head: "Started",
+            share: Some(2),
+            right: false,
+        },
+        Col {
+            head: "",
+            share: None,
+            right: true,
+        },
+    ];
+    let rows: Vec<Vec<Element<'a, Msg>>> = s
         .leases
         .iter()
         .map(|l| {
             let (label, tone) = lease_chip(l);
-            let task = match &l.task {
+            let task: Element<'a, Msg> = match &l.task {
                 Some(task) if !task.is_empty() => mono_text(task.clone()),
                 _ => ui::faint("—").into(),
             };
-            cells(vec![
-                (3, mono_text(agent_name(state, l.agent))),
-                (3, task),
-                (2, ui::faint(lease_kind_label(&l.kind)).into()),
-                (2, ui::badge(&label, tone)),
-                (2, ui::faint(ago(l.started_ms)).into()),
-                (
-                    2,
-                    ui::btn_sm(
-                        "Release",
-                        None,
-                        ui::Kind::Danger,
-                        Some(Msg::AskRelease(l.id.clone())),
-                    ),
+            vec![
+                mono_text(agent_name(state, l.agent)),
+                task,
+                ui::faint(lease_kind_label(&l.kind)).into(),
+                ui::badge(&label, tone),
+                ui::faint(ago(l.started_ms)).into(),
+                ui::btn_sm(
+                    "Release",
+                    None,
+                    ui::Kind::Danger,
+                    Some(Msg::AskRelease(l.id.clone())),
                 ),
-            ])
+            ]
         })
         .collect();
-    table(
-        &[
-            (3, "Agent"),
-            (3, "Task"),
-            (2, "Kind"),
-            (2, "State"),
-            (2, "Started"),
-            (2, ""),
-        ],
-        rows,
-    )
+    tbl(16.0, &cols, rows)
 }
 
 fn settings_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
@@ -1509,10 +1679,7 @@ fn settings_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
     );
     let mut body: Vec<Element<'a, Msg>> = vec![
         field("Takeover policy", policy.into(), takeover_text(f.takeover)),
-        row![record, takeovers]
-            .spacing(24)
-            .align_y(Alignment::Center)
-            .into(),
+        column![record, takeovers].spacing(8).into(),
         row![
             field(
                 "Keep recordings for (days)",
@@ -1538,7 +1705,7 @@ fn settings_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
             folder.into(),
             "Under the agent's OS account. It syncs with the hub both ways.",
         ),
-        field("Hourly rate", rate.into(), &rate_hint),
+        field("Rate, credits an hour", rate.into(), &rate_hint),
         snapshot.into(),
         row![save].into(),
     ];
@@ -1553,23 +1720,46 @@ fn audit_view(state: &State) -> Element<'_, Msg> {
         Load::Pending => ui::loading(),
         Load::Failed => ui::empty("alert", "Could not load the audit.", ""),
         Load::Ready(rows) if rows.is_empty() => ui::empty("clock", "No events yet", ""),
-        Load::Ready(rows) => table(
-            &[(2, "When"), (3, "Event"), (3, "Agent"), (2, "By")],
-            rows.iter()
+        Load::Ready(rows) => {
+            let cols = [
+                Col {
+                    head: "When",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Event",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "Agent",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "By",
+                    share: Some(2),
+                    right: false,
+                },
+            ];
+            let body: Vec<Vec<Element<'_, Msg>>> = rows
+                .iter()
                 .map(|r| {
                     let agent = r
                         .agent
                         .map(|cid| agent_name(state, cid))
                         .unwrap_or_else(|| "—".to_string());
-                    cells(vec![
-                        (2, ui::faint(ago(r.at_ms)).into()),
-                        (3, mono_text(audit_label(&r.kind))),
-                        (3, mono_text(agent)),
-                        (2, mono_text(r.actor.clone())),
-                    ])
+                    vec![
+                        ui::faint(ago(r.at_ms)).into(),
+                        mono_text(audit_label(&r.kind)),
+                        mono_text(agent),
+                        mono_text(r.actor.clone()),
+                    ]
                 })
-                .collect(),
-        ),
+                .collect();
+            tbl(16.0, &cols, body)
+        }
     }
 }
 

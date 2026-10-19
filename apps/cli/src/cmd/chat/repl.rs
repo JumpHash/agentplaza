@@ -21,6 +21,7 @@ use super::{
 };
 use crate::ctx::{self, Ctx};
 use crate::rich;
+use crate::tui::context_bar::{self, Context, Owner};
 
 /// The messages printed when a conversation opens; `/history` prints all of them.
 const OPENING_MESSAGES: usize = 20;
@@ -37,7 +38,9 @@ const PROMPT: &str = "› ";
 /// What `/help` prints.
 const HELP: &str = "Type a message and press Enter: it goes to the orchestrator. /draft shows the project draft, \
 /start starts it at the revision shown, /history prints the whole conversation, /rename TITLE renames it, /archive \
-and /unarchive put it away and back, /quit (or Ctrl-D) leaves. Begin a message with // to send one that starts with /.";
+and /unarchive put it away and back, /model provider/model[@effort]|default sets the model it runs at (max, high, \
+medium or low for the effort), /context prints how full its context is, /quit (or Ctrl-D) leaves. Begin a message \
+with // to send one that starts with /.";
 /// What a command says before there is a conversation.
 const NO_CONVERSATION: &str = "No conversation yet: your first message opens one.";
 
@@ -53,6 +56,10 @@ enum Input {
     Rename(String),
     /// Archive (true) or unarchive (false) the conversation.
     Archive(bool),
+    /// The model the conversation runs at: `provider/model[@effort]`, or `default` (the argument as typed).
+    Model(String),
+    /// The conversation's context: how full it is, and its breakdown.
+    Context,
     Help,
     Quit,
     /// A blank line.
@@ -83,6 +90,8 @@ fn parse_line(line: &str) -> Input {
         "rename" => Input::Rename(rest.trim().to_string()),
         "archive" => Input::Archive(true),
         "unarchive" => Input::Archive(false),
+        "model" => Input::Model(rest.trim().to_string()),
+        "context" => Input::Context,
         "help" | "?" => Input::Help,
         "quit" | "exit" | "q" => Input::Quit,
         other => Input::Unknown(other.to_string()),
@@ -358,6 +367,8 @@ impl<'a> Repl<'a> {
                 "Archived: it takes no new messages until you /unarchive it.",
             ),
             Input::Archive(false) => self.patch(json!({ "archived": false }), "Unarchived."),
+            Input::Model(text) => self.model(&text),
+            Input::Context => self.context(),
             Input::Help => self.note(HELP),
             Input::Unknown(command) => {
                 self.note(&format!(
@@ -725,6 +736,30 @@ impl<'a> Repl<'a> {
         self.block(&lines);
     }
 
+    /// `/model`: sets the conversation's model (`default` clears it), then says what it is now.
+    fn model(&mut self, text: &str) {
+        let body = match model_body(text) {
+            Ok(body) => body,
+            Err(e) => return self.note(&e),
+        };
+        let now = body["model"].as_str().unwrap_or("the default").to_string();
+        self.patch(body, &format!("Model: {now}."));
+    }
+
+    /// `/context`: how full the conversation's context is, and what fills it (the tool calls, the parts).
+    fn context(&mut self) {
+        let Some(id) = self.id() else {
+            return self.note(NO_CONVERSATION);
+        };
+        match self.ctx.client.get(&Owner::Conversation(id).context_path()) {
+            Ok(answer) => match context_block(&answer) {
+                Some(lines) => self.block(&lines),
+                None => self.note("The hub's answer has no context in it."),
+            },
+            Err(e) => self.note(&e),
+        }
+    }
+
     /// `/rename`, `/archive` and `/unarchive`: changes the conversation, then says `done`.
     fn patch(&mut self, body: Value, done: &str) {
         let Some(id) = self.id() else {
@@ -738,6 +773,19 @@ impl<'a> Repl<'a> {
             Err(e) => self.note(&e),
         }
     }
+}
+
+/// The body of `/model`: `{model}` with the entry (`provider/model[@effort]`), or null for `default`.
+fn model_body(text: &str) -> Result<Value, String> {
+    Ok(json!({ "model": context_bar::model_entry(text)? }))
+}
+
+/// The lines `/context` prints: the bar's text, then the breakdown. None when the answer has no `used`.
+fn context_block(answer: &Value) -> Option<Vec<String>> {
+    let context = Context::parse(answer)?;
+    let mut lines = vec![format!("context {}", context_bar::bar_text(&context))];
+    lines.extend(context_bar::plain(&context));
+    Some(lines)
 }
 
 #[cfg(test)]
@@ -783,5 +831,52 @@ mod tests {
         // The agents' direct messages are `conversation` events, which the chat leaves alone.
         assert!(wanted(r#"{"event":"conversation","data":{}}"#, 3).is_none());
         assert!(wanted("not json", 3).is_none());
+    }
+
+    #[test]
+    fn model_and_context_are_commands_and_model_keeps_its_argument() {
+        assert_eq!(
+            parse_line("/model anthropic/claude-sonnet-4-5@high"),
+            Input::Model("anthropic/claude-sonnet-4-5@high".into())
+        );
+        assert_eq!(parse_line("/model default"), Input::Model("default".into()));
+        assert_eq!(parse_line("/model"), Input::Model(String::new()));
+        assert_eq!(parse_line("/context"), Input::Context);
+    }
+
+    #[test]
+    fn model_sends_the_entry_with_its_effort_or_null_for_the_default() {
+        assert_eq!(
+            model_body("anthropic/claude-sonnet-4-5@max").unwrap(),
+            json!({"model": "anthropic/claude-sonnet-4-5@max"})
+        );
+        assert_eq!(model_body("default").unwrap(), json!({"model": null}));
+        assert!(model_body("").unwrap_err().starts_with("usage: /model"));
+        assert!(model_body("sonnet").unwrap_err().contains("provider/model"));
+    }
+
+    #[test]
+    fn context_prints_the_bar_then_the_breakdown() {
+        let answer = json!({
+            "cid": 3, "work": 9, "model": "anthropic/claude-sonnet-4-5", "window": 200000,
+            "used": 41200, "output": 300,
+            "parts": [{"part": "system", "tokens": 2000}, {"part": "history", "tokens": 39200}],
+            "tools": [{"tool": "bash", "calls": 12, "errors": 2, "result_tokens": 9000}],
+            "calls": 7, "compactions": 1, "updated_ms": 5
+        });
+        let lines = context_block(&answer).expect("a context");
+        assert_eq!(lines[0], "context 41.2k / 200k · 21%");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("history") && l.contains("95%"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("bash") && l.contains("2 errors"))
+        );
+        assert_eq!(lines.last().unwrap(), "7 model calls · 1 compactions");
+        assert!(context_block(&json!({"cid": 3})).is_none());
     }
 }

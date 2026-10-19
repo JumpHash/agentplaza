@@ -136,10 +136,54 @@ fn parse_link(text: &str, open: usize) -> Option<(usize, &str, &str)> {
 
 /// The reference a markdown target names: an http(s) URL, a hub route or a workspace path.
 fn target_ref(target: &str, ctx: &Ctx) -> Option<Ref> {
+    if let Some(r) = artifact_url(target, ctx) {
+        return Some(r);
+    }
     if strip_scheme(target).is_some() {
         return classify_url(target, ctx);
     }
-    local_ref(target, ctx)
+    artifact_word(target).or_else(|| local_ref(target, ctx))
+}
+
+/// An artifact id: 8 to 40 characters of lowercase ASCII letters, digits and hyphens.
+fn valid_artifact_id(id: &str) -> bool {
+    (8..=40).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// `artifact:<id>` or `artifact:<id>@<n>`, as one whole word. A bad id or version is None, so the word stays text.
+fn artifact_word(word: &str) -> Option<Ref> {
+    let rest = word.strip_prefix("artifact:")?;
+    let (id, version) = match rest.split_once('@') {
+        Some((id, digits)) => (id, Some(all_digits(digits)?)),
+        None => (rest, None),
+    };
+    valid_artifact_id(id).then(|| Ref::Artifact {
+        id: id.to_string(),
+        version,
+    })
+}
+
+/// A hub artifact link: `https://<hub host>/artifact/<id>` or `https://agentplaza.io/artifact/<id>`, with an
+/// optional query or fragment. It has no version. The host compares case-insensitively; the path does not.
+fn artifact_url(url: &str, ctx: &Ctx) -> Option<Ref> {
+    let rest = strip_scheme(url)?;
+    let (host, path) = rest.split_once('/')?;
+    let is_hub = ctx
+        .hub_host
+        .as_deref()
+        .is_some_and(|hub| host.eq_ignore_ascii_case(hub));
+    if !is_hub && !host.eq_ignore_ascii_case("agentplaza.io") {
+        return None;
+    }
+    let segment = path.strip_prefix("artifact/")?;
+    let id = &segment[..segment.find(['?', '#']).unwrap_or(segment.len())];
+    valid_artifact_id(id).then(|| Ref::Artifact {
+        id: id.to_string(),
+        version: None,
+    })
 }
 
 /// Bare http(s) URLs. Trailing punctuation is text (the web renderer's rule).
@@ -160,7 +204,8 @@ fn url_spans(text: &str, ctx: &Ctx) -> Vec<Span> {
         {
             stop -= 1;
         }
-        if let Some(r) = classify_url(&text[start..stop], ctx) {
+        let url = &text[start..stop];
+        if let Some(r) = artifact_url(url, ctx).or_else(|| classify_url(url, ctx)) {
             push_text(&mut out, &text[plain_from..start]);
             out.push(Span::Ref {
                 raw: text[start..stop].to_string(),
@@ -248,6 +293,9 @@ fn word_spans(text: &str, ctx: &Ctx) -> Vec<Span> {
 fn single_word(word: &str, ctx: &Ctx) -> Option<Ref> {
     if let Some(number) = hash_number(word) {
         return ctx.project.as_ref().map(|_| Ref::Task { number });
+    }
+    if let Some(r) = artifact_word(word) {
+        return Some(r);
     }
     if let Some(name) = word.strip_prefix('@') {
         if name.eq_ignore_ascii_case("all") {

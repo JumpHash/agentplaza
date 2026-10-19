@@ -1,7 +1,8 @@
-// The New job form (on `#/lab/jobs`). It builds the job document the Lab's apid takes, field by field
-// in the order the desktop shows them. "Preview plan" is the dry run; "Submit" unlocks only for the
-// exact document the preview was made from, and asks for a confirm before it posts to the fleet.
-// The document is built the same way on the desktop (`screens/lab_jobs.rs`): same keys, same order.
+// The New job form (on `#/lab/jobs`), in the prototype's layout: a card of fields in a grid (recipe,
+// datasets, search space, budget, device counts and memory, the device pin, the mode, machines, CPU,
+// train overrides), then "Preview plan" and the plan zone. "Submit job" unlocks only for the exact
+// document the preview was made from, and asks for a confirm before it posts to the fleet. The
+// document is built the same way on the desktop (`screens/lab_jobs.rs`): same keys, same order.
 
 import {
   JobDispatchError,
@@ -19,15 +20,19 @@ import {
   type Recipe,
 } from '../api';
 import { href } from '../router';
-import { button, input, select, textarea, toast } from '../ui/components';
+import { field, input, select, textarea, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
-import { errorText, fmtNumber, pollEvery } from './lab-common';
+import { errorText, fmtNumber, labButton, pollEvery } from './lab-common';
 import { planDiagram } from './lab-jobs-plan';
 
 /** The backends a device pin may name, in the planner's order. */
 export const BACKENDS = ['cuda', 'rocm', 'xpu', 'mps', 'cpu'] as const;
+const PINS: { value: string; label: string }[] = [
+  { value: 'any', label: 'Any' },
+  ...BACKENDS.map((b) => ({ value: b, label: b })),
+];
 const MODES: { value: string; label: string }[] = [
-  { value: '', label: 'Auto (the planner chooses)' },
+  { value: '', label: 'Auto' },
   { value: 'single', label: 'single' },
   { value: 'tight', label: 'tight' },
   { value: 'loose', label: 'loose' },
@@ -174,19 +179,17 @@ function toggle(list: string[], id: string, on: boolean): void {
   if (!on && at >= 0) list.splice(at, 1);
 }
 
-function check(label: string, checked: boolean, onChange: (on: boolean) => void, meta?: (Node | null)[]): HTMLLabelElement {
-  const box = h('input', { type: 'checkbox' });
-  box.checked = checked;
-  box.addEventListener('change', () => onChange(box.checked));
-  return h('label.lab-jobs-check', null, box, h('span.lab-jobs-check-name', null, label), meta ?? null);
+/** The prototype's `label.lab-check`: a box, then its text and any notes. */
+function check(box: HTMLInputElement, children: (Node | string | null)[]): HTMLLabelElement {
+  return h('label.lab-check', null, box, h('span', null, ...children));
 }
 
-function field(label: string, control: Node, hint?: string): HTMLLabelElement {
-  return h('label.lab-jobs-field', null, h('span.lab-jobs-label', null, label), control, hint ? h('span.lab-muted', null, hint) : null);
-}
+/** A grid cell holding one field (the prototype's `div.lab-field`). */
+const cell = (child: Node, wide = false): HTMLElement => h('div.lab-field', { class: wide ? 'lab-wide' : null }, child);
 
+/** A labelled group of checks or controls that is not one input (the prototype's `span.field-l` plus body). */
 function group(label: string, body: Node, hint?: string): HTMLElement {
-  return h('div.lab-jobs-field', null, h('span.lab-jobs-label', null, label), body, hint ? h('span.lab-muted', null, hint) : null);
+  return h('div.lab-field.lab-wide', null, h('span.field-l', null, label), body, hint ? h('small.hint', null, hint) : null);
 }
 
 export interface JobForm {
@@ -214,33 +217,22 @@ export function jobForm(onSubmitted: (id: string) => void): JobForm {
 
   // Fixed controls: built once, so a poll never takes the focus away.
   const recipeSel = select([{ value: '', label: 'Choose a vetted recipe' }], '');
-  const recipeHint = h('span.lab-muted');
-  const datasetBox = h('div.lab-jobs-checks');
-  const searchArea = textarea({ rows: 4, placeholder: '{"lr": [0.001, 0.01]}\nor one key: value per line', spellcheck: 'false' });
-  const budgetIn = input({ type: 'number', min: '0', step: 'any', placeholder: 'e.g. 1.5', inputmode: 'decimal' });
-  const minDevIn = input({ type: 'number', min: '1', step: '1', inputmode: 'numeric' });
-  const maxDevIn = input({ type: 'number', min: '1', step: '1', inputmode: 'numeric' });
-  const minMemIn = input({ type: 'number', min: '1', step: '1', inputmode: 'numeric', placeholder: 'MiB' });
-  const backendBoxes = BACKENDS.map((name) => {
-    const box = h('input', { type: 'checkbox' });
-    box.addEventListener('change', () => {
-      toggle(v.backends, name, box.checked);
-      sync();
-    });
-    return { name, box, label: h('label.lab-jobs-check', null, box, h('span.lab-jobs-check-name', null, name)) };
-  });
-  const backendRow = h('div.lab-jobs-inline', null, backendBoxes.map((b) => b.label));
+  const recipeHint = h('small.hint');
+  const datasetBox = h('div.lab-checks');
+  const searchArea = textarea({ rows: 4, 'aria-label': 'Search space', spellcheck: 'false' });
+  const budgetIn = input({ type: 'number', min: '0', step: '0.1', 'aria-label': 'Budget (GPU-h)' });
+  const minDevIn = input({ type: 'number', min: '1', step: '1', 'aria-label': 'Min devices' });
+  const maxDevIn = input({ type: 'number', min: '1', step: '1', 'aria-label': 'Max devices' });
+  const minMemIn = input({ type: 'number', min: '0', step: '1', 'aria-label': 'Min memory (MiB)' });
+  const pinSel = select(PINS, 'any');
   const modeSel = select(MODES, '');
-  const machineBox = h('div.lab-jobs-checks');
-  const allowCpu = h('input', { type: 'checkbox' });
-  const trainArea = textarea({ rows: 3, placeholder: '{"steps": 500}', spellcheck: 'false' });
-  const optionsError = h('p.lab-error');
+  const machineBox = h('div.lab-checks.lab-checks-row');
+  const allowCpu = h('input', { type: 'checkbox', id: 'lab-f-allowCpu' });
+  const trainArea = textarea({ rows: 2, spellcheck: 'false', 'aria-label': 'Train overrides' });
+  const optionsError = h('p.lab-err', { role: 'alert' });
   const errorBox = h('div');
-  const previewBox = h('div.lab-jobs-preview');
-  const confirmBox = h('div');
-  const submitBox = h('div');
-  const previewBtn = button('Preview plan', () => void runPreview(), { kind: 'primary' });
-  const submitBtn = button('Submit', () => askSubmit(), { title: 'Preview the plan first' });
+  const planBox = h('div', { id: 'lab-plan-zone' });
+  const previewBtn = labButton('Preview plan', () => void runPreview(), { kind: 'ghost', icon: 'eye' });
 
   const bindText = (el: HTMLInputElement | HTMLTextAreaElement, write: (value: string) => void): void => {
     el.addEventListener('input', () => {
@@ -258,6 +250,10 @@ export function jobForm(onSubmitted: (id: string) => void): JobForm {
   bindText(maxDevIn, (s) => (v.maxDevices = s));
   bindText(minMemIn, (s) => (v.minMemory = s));
   bindText(trainArea, (s) => (v.train = s));
+  pinSel.addEventListener('change', () => {
+    v.backends = pinSel.value === 'any' ? [] : [pinSel.value];
+    sync();
+  });
   modeSel.addEventListener('change', () => {
     v.mode = modeSel.value;
     sync();
@@ -271,111 +267,111 @@ export function jobForm(onSubmitted: (id: string) => void): JobForm {
     const { doc } = buildDocument(v);
     return doc ? JSON.stringify(doc) : null;
   };
-  const isFresh = (): boolean => {
-    const key = currentKey();
-    return key !== null && preview !== null && preview.key === key;
-  };
 
   function renderOptions(): void {
     const vetted = recipes.filter(isVetted);
     if (v.recipe && !vetted.some((r) => r.id === v.recipe)) v.recipe = '';
     const current = v.recipe;
-    recipeSel.replaceChildren(
-      ...[new Option('Choose a vetted recipe', ''), ...vetted.map((r) => new Option(`${r.id} · ${r.name}`, r.id))],
-    );
+    recipeSel.replaceChildren(...[new Option('Choose a vetted recipe', ''), ...vetted.map((r) => new Option(r.name, r.id))]);
     recipeSel.value = current;
-    const unvetted = recipes.filter((r) => !isVetted(r));
+    const unvetted = recipes.filter((r) => !isVetted(r)).map((r) => r.id);
     recipeHint.textContent = vetted.length
       ? unvetted.length
-        ? `Not vetted, so not selectable: ${unvetted.map((r) => r.id).join(', ')}.`
+        ? `Not listed until vetted: ${unvetted.join(', ')}. Vet ${unvetted.length === 1 ? 'it' : 'them'} under Recipes.`
         : ''
-      : 'No vetted recipe yet. The owner vets one on the Recipes tab.';
+      : 'No vetted recipe yet. Vet one under Recipes.';
 
     replace(
       datasetBox,
       datasets.length
-        ? datasets.map((d) =>
-            check(
-              d.name,
-              v.datasets.includes(d.id),
-              (on) => {
-                toggle(v.datasets, d.id, on);
-                sync();
-              },
-              [
-                h('span.lab-mono.lab-muted', null, d.id),
-                h('span.lab-muted', null, `${d.kind} · ${fmtNumber(d.rows)} rows`),
-                d.frozen_rows > 0 ? h('span.lab-badge.accent', null, `frozen ${fmtNumber(d.frozen_rows)}`) : null,
-              ],
-            ),
-          )
-        : h('p.lab-muted', null, 'No datasets yet. Make one on the Datasets tab.'),
+        ? datasets.map((d) => {
+            const box = h('input', { type: 'checkbox' });
+            box.checked = v.datasets.includes(d.id);
+            box.addEventListener('change', () => {
+              toggle(v.datasets, d.id, box.checked);
+              sync();
+            });
+            return check(box, [
+              h('span.mono', null, d.name),
+              ' ',
+              h('span.lab-note', null, `${d.id} · ${d.kind} · ${fmtNumber(d.rows)} rows`),
+              d.frozen_rows > 0 ? ' ' : null,
+              d.frozen_rows > 0 ? h('span.chip.t-info', null, 'frozen') : null,
+            ]);
+          })
+        : h('p.lab-note', null, 'No datasets yet. Make one on the Datasets tab.'),
     );
     replace(
       machineBox,
       machines.length
-        ? machines.map((m) =>
-            check(
-              m.id,
-              v.machines.includes(m.id),
-              (on) => {
-                toggle(v.machines, m.id, on);
-                sync();
-              },
-              [
-                h('span.lab-muted', null, `${m.devices.length} device${m.devices.length === 1 ? '' : 's'}`),
-                h('span.lab-badge', { class: m.online ? 'ok' : 'muted' }, m.online ? 'online' : 'offline'),
-              ],
-            ),
-          )
-        : h('p.lab-muted', null, 'No machines report devices.'),
+        ? machines.map((m) => {
+            const box = h('input', { type: 'checkbox' });
+            box.checked = v.machines.includes(m.id);
+            box.addEventListener('change', () => {
+              toggle(v.machines, m.id, box.checked);
+              sync();
+            });
+            return check(box, [h('span.mono', null, m.id), m.online ? null : h('span.lab-note', null, ' offline')]);
+          })
+        : h('p.lab-note', null, 'No machines report devices.'),
     );
-    for (const { name, box } of backendBoxes) box.checked = v.backends.includes(name);
+    pinSel.value = v.backends[0] ?? 'any';
     allowCpu.checked = v.allowCpu;
   }
 
-  function previewNode(doc: JobDocument | null, key: string | null, fresh: boolean): Node {
-    if (previewing) return h('p.lab-muted', null, 'Planning the job…');
-    if (previewError && key !== null && previewError.key === key) return h('p.lab-error', null, previewError.message);
-    if (preview && fresh) return planDiagram(preview.plan);
-    if (preview) return h('p.lab-muted', null, 'The inputs changed since the last preview. Preview again before you submit.');
-    if (!doc) return h('p.lab-muted', null, 'Fill in the form, then preview the plan. The plan shows where the job would run.');
-    return h('p.lab-muted', null, 'Preview the plan to see where the job would run. Submit unlocks after a preview of these inputs.');
+  /** The plan zone: the preview state, then the plan's key-value list and the submit actions. */
+  function planZone(doc: JobDocument | null, key: string | null, fresh: boolean): Node[] {
+    if (previewing) return [h('p.lab-note', null, 'Planning the job…')];
+    if (previewError && key !== null && previewError.key === key) return [h('p.lab-err', { role: 'alert' }, previewError.message)];
+    if (!preview) {
+      return [h('p.lab-note', null, doc ? 'Preview the plan to see where the job would run. Submit unlocks for the previewed plan only.' : 'Fill in the form, then preview the plan. The plan shows where the job would run.')];
+    }
+    const out: Node[] = [];
+    if (!fresh) out.push(h('p.lab-note', null, 'The form changed since this preview. Preview it again to submit.'));
+    out.push(planDiagram(preview.plan));
+    if (submitError) out.push(submitNode());
+    if (confirming && fresh && doc) out.push(confirmNode(doc));
+    else
+      out.push(
+        h(
+          'div.lab-actions',
+          null,
+          labButton('Submit job', () => askSubmit(), { kind: 'primary', disabled: !fresh || submitting }),
+        ),
+      );
+    return out;
   }
 
   function confirmNode(doc: JobDocument): Node {
-    const datasetsCount = doc.datasets.length;
+    const n = doc.datasets.length;
     return h(
-      'div.lab-jobs-confirm',
+      'div.lab-confirm',
       null,
+      h('p', null, `Submit ${doc.recipe} on ${n} dataset${n === 1 ? '' : 's'} with a budget of ${doc.budget_gpu_hours} GPU-hours? The job is queued and dispatches to the fleet now.`),
       h(
-        'p',
+        'div.lab-actions',
         null,
-        `Submit ${doc.recipe} on ${datasetsCount} dataset${datasetsCount === 1 ? '' : 's'} with a budget of ${doc.budget_gpu_hours} GPU-hours? The job dispatches to the owner's GPU machines now.`,
-      ),
-      h(
-        'div.lab-row',
-        null,
-        button('Confirm submit', () => void confirmSubmit(), { kind: 'primary' }),
-        button('Cancel', () => {
+        labButton('Keep editing', () => {
           confirming = false;
           sync();
-        }),
+        }, { kind: 'ghost' }),
+        labButton('Submit job', () => void confirmSubmit(), { kind: 'primary', disabled: submitting }),
       ),
     );
   }
 
-  function submitNode(): Node | null {
-    if (!submitError) return null;
-    if (submitError.jobId) {
+  function submitNode(): Node {
+    const err = submitError;
+    if (!err) return h('span');
+    if (err.jobId) {
       return h(
-        'div.lab-error',
-        null,
-        h('p', null, `The job was recorded as failed: ${submitError.message}`),
-        h('a.lab-mono', { href: href('lab', 'jobs', submitError.jobId) }, `Open job ${submitError.jobId}`),
+        'div.lab-err',
+        { role: 'alert' },
+        h('p', null, `The job was recorded as failed: ${err.message}`),
+        h('a.mono', { href: href('lab', 'jobs', err.jobId) }, `Open job ${err.jobId}`),
       );
     }
-    return h('p.lab-error', null, submitError.message);
+    return h('p.lab-err', { role: 'alert' }, err.message);
   }
 
   function sync(): void {
@@ -383,15 +379,9 @@ export function jobForm(onSubmitted: (id: string) => void): JobForm {
     const key = doc ? JSON.stringify(doc) : null;
     const fresh = key !== null && preview !== null && preview.key === key;
     if (confirming && !fresh) confirming = false;
-    replace(errorBox, attempted && errors.length ? h('ul.lab-jobs-errors', null, errors.map((e) => h('li', null, e))) : null);
-    replace(previewBox, previewNode(doc, key, fresh));
+    replace(errorBox, attempted && errors.length ? h('ul.lab-errors', { role: 'alert' }, errors.map((e) => h('li', null, e))) : null);
     previewBtn.disabled = previewing || submitting;
-    previewBtn.textContent = previewing ? 'Previewing' : 'Preview plan';
-    submitBtn.disabled = !fresh || previewing || submitting;
-    submitBtn.title = fresh ? '' : 'Preview the plan for these inputs first';
-    submitBtn.textContent = submitting ? 'Submitting' : 'Submit';
-    replace(confirmBox, confirming && doc ? confirmNode(doc) : null);
-    replace(submitBox, submitNode());
+    replace(planBox, planZone(doc, key, fresh));
   }
 
   async function runPreview(): Promise<void> {
@@ -425,7 +415,9 @@ export function jobForm(onSubmitted: (id: string) => void): JobForm {
   }
 
   function askSubmit(): void {
-    if (!isFresh()) return;
+    const { doc } = buildDocument(v);
+    const key = doc ? JSON.stringify(doc) : null;
+    if (key === null || preview === null || preview.key !== key) return;
     confirming = true;
     submitError = null;
     sync();
@@ -433,7 +425,8 @@ export function jobForm(onSubmitted: (id: string) => void): JobForm {
 
   async function confirmSubmit(): Promise<void> {
     const { doc } = buildDocument(v);
-    if (!doc || !isFresh()) {
+    const key = doc ? JSON.stringify(doc) : null;
+    if (!doc || key === null || preview === null || preview.key !== key) {
       confirming = false;
       sync();
       return;
@@ -472,46 +465,34 @@ export function jobForm(onSubmitted: (id: string) => void): JobForm {
     sync();
   }
 
-  // The layout: each field once, the two actions, then the three result areas.
+  const recipeField = h('label.field', null, h('span.field-l', null, 'Recipe'), recipeSel, recipeHint);
   const el = h(
-    'section.lab-card.lab-jobs-form-card',
-    null,
-    h('div.lab-card-head', null, h('h3', null, 'New job')),
+    'section.card.lab-newjob',
+    { id: 'lab-new-job' },
+    h('header.card-h', null, h('h3', null, 'New job')),
     h(
-      'div.lab-card-body',
+      'div.card-b',
       null,
+      errorBox,
       h(
-        'div.lab-jobs-form',
+        'div.lab-form',
         null,
-        field('Recipe', recipeSel, undefined),
-        h('div.lab-jobs-hint', null, recipeHint),
-        group('Datasets', datasetBox, 'Pick one or more. A frozen count is the rows the dataset has frozen.'),
-        group('Search space', searchArea, 'Optional. A JSON object, or one key: value per line.'),
-        h(
-          'div.lab-jobs-pair',
-          null,
-          field('Budget (GPU-hours)', budgetIn, 'The job stops once it has used this much GPU time.'),
-          field('Min devices', minDevIn, 'Optional. Whole number, 1 or more.'),
-          field('Max devices', maxDevIn, 'Optional. Defaults to the min.'),
-          field('Min memory (MiB)', minMemIn, 'Optional. Each device must have at least this much.'),
-        ),
-        h(
-          'fieldset.lab-jobs-pin',
-          null,
-          h('legend', null, 'Device pin (optional)'),
-          group('Backends', backendRow, 'None picked means any backend the planner allows.'),
-          group('Mode', modeSel, 'Auto lets the planner choose between single, tight and loose.'),
-          group('Machines', machineBox, 'None picked means any machine.'),
-          h('label.lab-jobs-check', null, allowCpu, h('span.lab-jobs-check-name', null, 'Allow CPU devices')),
-        ),
-        group('Train overrides', trainArea, 'Optional. A JSON object, such as {"steps": 500}. Empty keeps the recipe defaults.'),
-        optionsError,
-        errorBox,
-        h('div.lab-row.lab-jobs-actions', null, previewBtn, submitBtn),
-        previewBox,
-        confirmBox,
-        submitBox,
+        cell(recipeField),
+        group('Datasets', datasetBox),
+        group('Search space', searchArea, 'JSON, or one key: value per line.'),
+        cell(field('Budget (GPU-h)', budgetIn)),
+        cell(field('Min devices', minDevIn)),
+        cell(field('Max devices', maxDevIn)),
+        cell(field('Min memory (MiB)', minMemIn)),
+        cell(field('Device pin', pinSel)),
+        cell(field('Mode', modeSel)),
+        group('Machines', machineBox),
+        cell(h('div', null, h('label.lab-check', null, allowCpu, h('span', null, 'Allow CPU')))),
+        group('Train overrides', trainArea, 'JSON object, optional.'),
       ),
+      optionsError,
+      h('div.lab-actions', null, previewBtn),
+      planBox,
     ),
   );
 
@@ -526,4 +507,3 @@ export function jobForm(onSubmitted: (id: string) => void): JobForm {
     },
   };
 }
-

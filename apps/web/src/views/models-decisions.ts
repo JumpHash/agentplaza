@@ -2,7 +2,7 @@
 // and a Try-it form that asks one typed question of it.
 
 import { api, type DecisionAnswer, type DecisionDefault, type DecisionQuestion, type ModelInfo } from '../api';
-import { attempt, button, card, field, input, select, textarea, toast } from '../ui/components';
+import { attempt, button, field, input, select, textarea, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { choicesFrom, modelPicker } from '../ui/model-picker';
 
@@ -17,35 +17,33 @@ const split = (text: string): string[] => text.split(',').map((s) => s.trim()).f
 
 /** One labelled probability bar. */
 function bar(label: string, p: number): HTMLElement {
-  const fill = h('span.dec-fill');
+  const fill = h('span');
   fill.style.width = pct(p);
-  return h('div.dec-row', null, h('span.dec-label', null, label), h('span.dec-track', null, fill), h('span.dec-pct.mono', null, pct(p)));
+  return h('div.dec-bar', null, h('span', null, label), h('span.dec-bar-t', null, fill), h('span.prov-faint.num', null, pct(p)));
 }
 
 /** One answer from the plaza's response: a probability, a chosen value with its options, a scored level, or a refusal. */
 function answerView(a: DecisionAnswer): HTMLElement {
   const key = { 'data-key': `answer-${a.name}` };
   if (a.type === 'refusal') {
-    return h('div.dec-answer', key, h('strong', null, a.name), h('p.dec-refusal', null, 'Refused: the model declined to answer this question.'));
+    return h('div.dec-ans', key, h('p', null, h('strong', null, a.name)), h('p.prov-faint', null, 'Refused: the model declined to answer this question.'));
   }
   if (a.type === 'predicate') {
-    return h('div.dec-answer', key, h('strong', null, a.name), bar('Probability', a.probability));
+    return h('div.dec-ans', key, h('p', null, h('strong', null, a.name), ' · Probability'), bar('Probability', a.probability));
   }
   if (a.type === 'choice') {
     return h(
-      'div.dec-answer',
+      'div.dec-ans',
       key,
-      h('strong', null, a.name),
-      h('p.dec-verdict', null, `Chose ${a.choice}`, h('span.faint', null, ` · confidence ${pct(a.confidence)}`)),
-      ...a.probabilities.map((p) => bar(p.value, p.probability)),
+      h('p', null, h('strong', null, a.name), ` · Chose ${a.choice} `, h('span.prov-faint', null, `· confidence ${pct(a.confidence)}`)),
+      ...a.probabilities.map((p) => bar(String(p.value), p.probability)),
     );
   }
   const level = a.probabilities.find((p) => p.value === Math.round(a.score));
   return h(
-    'div.dec-answer',
+    'div.dec-ans',
     key,
-    h('strong', null, a.name),
-    h('p.dec-verdict', null, `Score ${a.score.toFixed(2)}${level ? ` · ${level.label}` : ''}`, h('span.faint', null, ` · confidence ${pct(a.confidence)}`)),
+    h('p', null, h('strong', null, a.name), ` · Score ${a.score.toFixed(2)}${level ? ` · ${level.label}` : ''} `, h('span.prov-faint', null, `· confidence ${pct(a.confidence)}`)),
     ...a.probabilities.map((p) => bar(p.label, p.probability)),
   );
 }
@@ -53,7 +51,7 @@ function answerView(a: DecisionAnswer): HTMLElement {
 export function decisionPanel(): DecisionPanel {
   let models: ModelInfo[] = [];
   let current: DecisionDefault = { provider: null, model: null };
-  const pickerSlot = h('div.dec-picker');
+  const pickerSlot = h('div');
 
   const choose = async (value: string): Promise<void> => {
     // Split on the first slash only: the model part of an id can hold slashes too.
@@ -69,7 +67,7 @@ export function decisionPanel(): DecisionPanel {
 
   const draw = (): void => {
     if (!models.length) {
-      replace(pickerSlot, h('p.faint', null, 'No decision models yet. Add a decision provider below.'));
+      replace(pickerSlot, h('p.prov-faint', null, 'No decision models yet. Add a decision provider below.'));
       return;
     }
     const values = models.map((m) => `${m.provider}/${m.id}`);
@@ -129,7 +127,7 @@ export function decisionPanel(): DecisionPanel {
     return { type: 'predicate', name: 'question', instructions: instr };
   };
 
-  const result = h('div.dec-result');
+  const result = h('div.mdl-result');
   const ask = button(
     'Ask',
     async () => {
@@ -152,35 +150,33 @@ export function decisionPanel(): DecisionPanel {
       const res = await attempt(() => api.askDecision({ provider, model, input: body, questions: [q] }));
       ask.disabled = false;
       if (!res) return;
-      replace(
-        result,
-        h('p.faint.mono', null, `${res.model} · ${res.usage.input_tokens} input tokens`),
-        ...res.answers.map(answerView),
-      );
+      replace(result, h('p.prov-faint.mono', null, `${res.model} · ${res.usage.input_tokens} input tokens`), ...res.answers.map(answerView));
     },
     { kind: 'primary' },
   );
 
   const el = h(
-    'div.dec-panel',
+    'div.dec',
     null,
-    card('Decision model', [
-      h('p.faint', null, 'The model the plaza decides with. Agents ask it through the plaza; they never chat with it.'),
+    h(
+      'section.dec-sec',
+      null,
+      h('h4.dec-h', null, 'Decision model'),
+      h('p.hint', null, 'The model the plaza decides with. Only decision models are offered here.'),
       pickerSlot,
-    ]),
-    card('Try it', [
-      h(
-        'div.dec-form',
-        null,
-        field('Input', text),
-        field('Question type', kind),
-        field('Instructions', instructions),
-        choicesField,
-        levelsField,
-        h('div.dec-actions', null, ask),
-      ),
+    ),
+    h(
+      'section.dec-sec',
+      null,
+      h('h4.dec-h', null, 'Try it'),
+      field('Input', text),
+      field('Question type', kind),
+      field('Instructions', instructions),
+      choicesField,
+      levelsField,
+      h('div.prov-line', null, ask),
       result,
-    ]),
+    ),
   );
 
   void load();

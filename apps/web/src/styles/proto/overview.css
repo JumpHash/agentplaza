@@ -1,0 +1,134 @@
+/* The Overview and Approvals screens' rules, from the prototype's m-overview.js (renamed to the console's tokens). */
+
+.ov-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-top:16px}
+.ov-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin-top:16px;align-items:start}
+.ov-full{margin-top:16px}
+.ov-card{min-width:0;overflow:hidden}
+.ov-cardh{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 16px;min-height:48px;border-bottom:1px solid var(--rule);min-width:0}
+.ov-h{margin:0;font-size:var(--fs-sm);font-weight:600;color:var(--ink)}
+.ov-body{padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.ov-body.flush{padding:0;display:block}
+.ov-titlerow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.ov-line{margin:0;font-size:var(--fs-sm);color:var(--ink-3);overflow-wrap:anywhere}
+.ov-grow{flex:1 1 auto;min-width:0}
+.ov-min{min-width:0;display:flex;flex-direction:column;gap:4px}
+.ov-clip{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.ov-strong{font-weight:600;color:var(--ink)}
+.ov-agent{color:var(--ink);font-weight:600;text-decoration:none}
+.ov-agent:hover{text-decoration:underline}
+.ov-composer{display:flex;flex-direction:column;gap:8px;min-width:0}
+.ov-text{width:100%;box-sizing:border-box;resize:vertical}
+.ov-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ov-hint{font-size:var(--fs-xs)}
+.ov-chips{display:flex;flex-wrap:wrap;gap:8px}
+.ov-chip{display:inline-flex;align-items:center;gap:8px;max-width:100%;min-width:0;padding:4px 8px;border:1px solid var(--rule);border-radius:var(--radius);font-size:var(--fs-sm)}
+.ov-chip-bad{border-color:var(--crit);color:var(--crit)}
+.ov-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px}
+.ov-x{background:none;border:0;color:inherit;cursor:pointer;padding:0;display:inline-flex}
+.ov-row{display:flex;align-items:center;gap:12px;padding:12px 16px;border-top:1px solid var(--rule);color:var(--ink);text-decoration:none;min-width:0}
+.ov-row:hover{background:var(--hover)}
+.ov-feed{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.ov-feed li{display:flex;gap:12px;min-width:0;align-items:baseline}
+.ov-time{flex:0 0 auto;width:72px;font-size:var(--fs-xs);white-space:nowrap}
+.ov-feedmain{min-width:0;overflow-wrap:anywhere;font-size:var(--fs-sm)}
+.ov-fleet{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;padding:16px}
+.ov-tile{display:flex;align-items:center;gap:8px;min-width:0;padding:12px;text-align:left;border:1px solid var(--rule);border-radius:var(--radius);background:var(--sheet-2);color:var(--ink);cursor:pointer;font:inherit}
+.ov-tile:hover{background:var(--hover)}
+.ap-list{display:flex;flex-direction:column;gap:12px;min-width:0}
+.ap-sub{margin:24px 0 8px;font-size:var(--fs-sm);font-weight:600;color:var(--ink-2)}
+.ap-card{display:flex;flex-direction:column;gap:12px;padding:16px;min-width:0}
+.ap-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.ap-age{margin-left:auto;white-space:nowrap;font-size:var(--fs-sm)}
+.ap-title{margin:0;font-size:var(--fs-prose);font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+.ap-agent{font-weight:600;color:var(--ink);text-decoration:none;overflow-wrap:anywhere}
+.ap-agent:hover{text-decoration:underline}
+.ap-verdict,.ap-needs,.ap-by,.ap-foot,.ap-meta{margin:0;color:var(--ink-2);overflow-wrap:anywhere;font-size:var(--fs-sm)}
+.ap-meta{color:var(--ink-3)}
+.ap-chips{display:flex;flex-wrap:wrap;gap:8px}
+.ap-chip{display:inline-flex;align-items:center;gap:8px;max-width:100%;padding:4px 8px;border:1px solid var(--rule);border-radius:var(--radius);font-size:var(--fs-sm);overflow-wrap:anywhere}
+.ap-pre{margin:0;padding:12px;background:var(--sheet-2);border-radius:var(--radius);font-family:var(--font-mono);font-size:var(--fs-sm);white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto}
+.ap-tool{font-family:var(--font-mono);font-size:var(--fs-sm);padding:0 4px;border:1px solid var(--rule);border-radius:var(--radius)}
+.ap-reason{width:100%;box-sizing:border-box;resize:vertical}
+.ap-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.ap-quote{margin:0;padding:8px 12px;background:var(--sheet-2);border-radius:8px;color:var(--ink-2);overflow-wrap:anywhere}
+.ap-md{color:var(--ink-2);overflow-wrap:anywhere;white-space:pre-wrap;font-size:var(--fs-prose)}
+.ap-panel{border-top:1px solid var(--rule);padding-top:12px;min-width:0;overflow:auto}
+.ap-row{display:flex;align-items:center;gap:12px;padding:12px 16px;border-top:1px solid var(--rule);flex-wrap:wrap;min-width:0}
+.ap-row-main{flex:1 1 200px;min-width:0;display:flex;flex-direction:column;gap:4px;overflow-wrap:anywhere}
+.ap-row-tool{font-family:var(--font-mono);font-size:var(--fs-sm);overflow-wrap:anywhere}
+.ap-none{margin:0;padding:16px}
+.ap-disc{margin-top:16px}
+.ap-disc summary{cursor:pointer;padding:8px 0;color:var(--ink-2);font-size:var(--fs-sm)}
+.ap-empty{min-width:0}
+/* The first round's home: a calm column with the orchestrator's composer, then the plaza's figures and cards. */
+.home{max-width:820px;margin:0 auto;padding:7vh 28px 48px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.home-h{font:600 26px/1.2 var(--font-display);letter-spacing:-.02em;text-align:center;margin:0}
+.home-sub{text-align:center;color:var(--ink-3);font-size:var(--fs-sm);margin:-8px 0 8px}
+.home .composer textarea{min-height:72px}
+/* The three ways in are one card of rows, so the separators run straight and the text starts where the composer's does. */
+.home-ways{display:flex;flex-direction:column;border:1px solid var(--rule);border-radius:var(--radius-lg);background:var(--raised);box-shadow:var(--shadow-card);overflow:hidden}
+.home-ways button{display:flex;align-items:center;gap:12px;min-height:44px;padding:10px 16px;border-radius:0;color:var(--ink-2);border-bottom:1px solid var(--rule);text-align:left}
+.home-ways button:last-child{border-bottom:0}
+.home-ways button:hover{background:var(--hover);color:var(--ink)}
+.home-ways small{margin-left:auto;color:var(--ink-3);font-size:var(--fs-xs)}
+.home-ways .hw-go{display:inline-flex;flex:0 0 auto;margin-left:6px;color:var(--ink-3);transition:transform .18s var(--ease)}
+.home-ways button:hover .hw-go{transform:translateX(2px);color:var(--ink-2)}
+.home .ov-stats{margin-top:0}
+.home .stat-v{display:block;min-width:0;height:26px;line-height:26px;font-size:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.home .stat-v.ov-model{display:block;max-width:100%;height:26px;line-height:26px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:15px}
+.home .ov-cols{margin-top:0}
+.home .ov-full{margin-top:0}
+.ov-chips{padding:0 12px}
+.ov-wait{display:flex;flex-direction:column}
+.ov-wait a{display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--rule);min-width:0}
+.ov-wait a:first-child{border-top:0}
+.ov-wait a:hover{background:var(--hover)}
+.ov-wait .lab{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ov-wait small{color:var(--ink-3);font-size:12px;white-space:nowrap}
+/* The first round's inbox: the waiting list on the left, the chosen card on the right. */
+.inbox{display:grid;grid-template-columns:minmax(280px,380px) minmax(0,1fr);flex:1;min-height:0}
+.inbox-list{border-right:1px solid var(--rule);overflow:auto;padding:24px 8px 8px;display:flex;flex-direction:column;gap:2px;min-height:0}
+.ibx{display:grid;grid-template-columns:30px minmax(0,1fr);gap:10px;padding:10px;border-radius:10px;width:100%;text-align:left;align-items:center}
+.ibx:hover{background:var(--hover)}
+.ibx[aria-current="page"]{background:var(--press)}
+.ibx .ii{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:var(--hover);color:var(--ink-2)}
+.ibx .k-review,.ibd-ico.k-review{background:var(--review-soft);color:var(--review)} .ibx .k-tool,.ibd-ico.k-tool{background:var(--warn-soft);color:var(--warn)}
+.ibx .k-deploy,.ibd-ico.k-deploy{background:var(--crit-soft);color:var(--crit)} .ibx .k-payment,.ibd-ico.k-payment{background:var(--info-soft);color:var(--info)}
+.ibx .k-sanction,.ibd-ico.k-sanction{background:var(--crit-soft);color:var(--crit)} .ibx .k-proposal,.ibd-ico.k-proposal{background:var(--signal-soft);color:var(--signal-ink)}
+.ibx b{font-weight:500;display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ibx small{display:flex;gap:6px;min-width:0;color:var(--ink-3);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden}
+.ibx small>*{flex:0 0 auto}
+.ibx small>.ibx-pj{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ibx-sec{font:500 10.5px/1.2 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--ink-3);padding:12px 10px 4px}
+.ibx-sec:first-child{padding-top:0}
+.ibx-dec{margin-top:8px}
+.ibx-dec summary{cursor:pointer;list-style:none;padding:10px;color:var(--ink-3);font-size:12px;display:flex;align-items:center;gap:6px}
+.ibx-dec summary::-webkit-details-marker{display:none}
+.ibx-dec .ap-row{border-top:1px solid var(--rule);padding:10px}
+.inbox-detail{overflow:auto;min-width:0;min-height:0;display:flex;flex-direction:column}
+.inbox-detail .col{padding-top:24px;flex:1 0 auto;display:flex;flex-direction:column;min-width:0}
+.inbox-detail .ap-card{border:0;box-shadow:none;background:none;padding:0;flex:0 0 auto;overflow:visible}
+.inbox-detail .ap-actions{justify-content:flex-start}
+.ibd-head{display:flex;align-items:flex-start;gap:12px;min-width:0}
+.ibd-ico{width:36px;height:36px;flex:0 0 auto;border-radius:10px;display:grid;place-items:center;background:var(--hover);color:var(--ink-2)}
+.ibd-titles{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:6px}
+.inbox-detail .ibd-title{margin:0;font:600 20px/1.25 var(--font-display);letter-spacing:-.015em;color:var(--ink);overflow-wrap:anywhere}
+.ibd-chips{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
+.ibd-head>.ap-age{flex:0 0 auto;padding-top:6px;white-space:nowrap}
+.ibd-body{display:flex;flex-direction:column;gap:12px;min-width:0}
+.ibd-body>*{max-width:68ch}
+.ibd-body>.ap-panel,.ibd-body>.ap-pre{max-width:none}
+.ibd-foot{position:sticky;bottom:0;z-index:1;margin-top:auto;display:flex;flex-direction:column;gap:8px;padding:12px 0;background:var(--panel);border-top:1px solid var(--rule)}
+.ibd-foot .ap-actions{justify-content:flex-end}
+.inbox-empty{display:grid;place-items:center;flex:1}
+@media (max-width: 860px){
+  .home{padding:24px 16px 32px}
+  .inbox{grid-template-columns:minmax(0,1fr);overflow:auto}
+  .inbox-list{border-right:0;border-bottom:1px solid var(--rule);max-height:42vh}
+  .inbox-detail{overflow:visible}
+}
+@media (max-width: 899px){
+  .ov-stats,.ov-cols{grid-template-columns:minmax(0,1fr)}
+  .ap-age{margin-left:0}
+  .ap-actions{justify-content:flex-start}
+}

@@ -89,7 +89,7 @@ function drawWorkstation(p: Element, active: boolean): number {
 
 /** Single-board computer: green board, CPU die, GPIO header, USB and ethernet. */
 function drawEdge(p: Element, active: boolean): number {
-  const green = '#5a9a78';
+  const green = 'var(--ok)';
   box(p, 10, 30, 70, 40, 'var(--sheet)', { stroke: green });
   const holes: [number, number][] = [[14, 34], [76, 34], [14, 66], [76, 66]];
   holes.forEach(([cx, cy]) => {
@@ -172,7 +172,7 @@ function drawGpu(p: Element, riserX: number): void {
   box(g, 86, 36, 28, 24);
   add(g, 'circle', { cx: 98, cy: 46, r: 6 });
   add(g, 'circle', { cx: 98, cy: 46, r: 1.5 });
-  box(g, 90, 56, 20, 3, 'var(--gold, #c9a227)', { stroke: 'none' });
+  box(g, 90, 56, 20, 3, 'var(--warn)', { stroke: 'none' });
 }
 
 /** An SVG drawing (viewBox 0 0 120 90) of a machine of `look`. */

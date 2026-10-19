@@ -352,15 +352,18 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     let mut page: Vec<Element<'_, Msg>> = vec![
         ui::label("Hub address").into(),
         text_input("https://hub.example:7443", &state.hub)
+            .style(crate::theme::input)
             .on_input(Msg::Hub)
             .into(),
         ui::label("Join code").into(),
         ui::faint("On the hub, open Workstations and make a join code: it is shown once.").into(),
         text_input("join code", &state.code)
+            .style(crate::theme::input)
             .on_input(Msg::Code)
             .into(),
         ui::label("Name").into(),
         text_input("this machine's name", &state.name)
+            .style(crate::theme::input)
             .on_input(Msg::Name)
             .into(),
         ui::label("The account the agents work in").into(),
@@ -377,6 +380,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
         Pick::Agent => {
             page.push(
                 text_input(account::DEFAULT_AGENT_USER, &state.agent_user)
+                    .style(crate::theme::input)
                     .on_input(Msg::AgentUser)
                     .into(),
             );
@@ -399,6 +403,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
             "64 hex digits, for a hub with its own certificate",
             &state.pin,
         )
+        .style(crate::theme::input)
         .on_input(Msg::Pin)
         .into(),
     );
@@ -411,6 +416,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     if state.also_node {
         page.push(
             text_input("apzj1.…", &state.node_code)
+                .style(crate::theme::input)
                 .on_input(Msg::NodeCode)
                 .into(),
         );

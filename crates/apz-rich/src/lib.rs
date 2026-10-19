@@ -31,6 +31,9 @@
 //!   a branch name with a `/` is read as the ref. The fragment `#L10` or `#L10-L20` gives the line.
 //! - Hub library links: `/v1/files/<id>` (a deliverable) and `/v1/library/<name>/<version>` (a library tool),
 //!   relative or on `ctx.hub_host`.
+//! - Artifacts: `artifact:<id>` or `artifact:<id>@<n>` in text and in markdown link targets, where the id is 8 to 40
+//!   characters of `[a-z0-9-]`. Hub links `https://<hub host>/artifact/<id>` and `https://agentplaza.io/artifact/<id>`
+//!   are artifacts too, with no version. Trailing punctuation is not part of the id.
 
 mod classify;
 mod url;
@@ -96,6 +99,7 @@ pub enum Span {
 /// | `path` | `{"kind":"path","path":"src/main.rs","line":42,"dir":false}` | path, line, dir |
 /// | `library` | `{"kind":"library","id":"d1f2"}` (a deliverable, `/v1/files/d1f2`) | id |
 /// | `library_tool` | `{"kind":"library_tool","name":"search","version":3}` (`/v1/library/search/3`) | name, version |
+/// | `artifact` | `{"kind":"artifact","id":"a7k2m9qp","version":3}` (`artifact:a7k2m9qp@3`) | id, version |
 /// | `image` | `{"kind":"image","url":"https://x/a.png"}` | url |
 /// | `video` | `{"kind":"video","url":"https://x/a.mp4"}` | url |
 /// | `html` | `{"kind":"html","url":"https://x/a.html"}` | url |
@@ -164,6 +168,11 @@ pub enum Ref {
         name: String,
         version: u32,
     },
+    /// A hub artifact, written as `artifact:<id>` or `artifact:<id>@<n>`, or as a hub `/artifact/<id>` link.
+    Artifact {
+        id: String,
+        version: Option<u32>,
+    },
     Image {
         url: String,
     },
@@ -228,6 +237,10 @@ pub fn label(r: &Ref) -> String {
         }
         Ref::Library { id } => format!("file {id}"),
         Ref::LibraryTool { name, version } => format!("{name} v{version}"),
+        Ref::Artifact { id, version } => match version {
+            Some(version) => format!("artifact {id}@{version}"),
+            None => format!("artifact {id}"),
+        },
         Ref::Image { url } | Ref::Video { url } | Ref::Html { url } => {
             let path = url::strip_query(url);
             path.rsplit('/')

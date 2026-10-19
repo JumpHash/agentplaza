@@ -9,9 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_skill::{Entry, find_skills, write_zip};
 use iced::widget::{
-    button, checkbox, column, container, pick_list, row, text, text_editor, text_input,
+    Space, button, checkbox, column, container, pick_list, row, text, text_editor, text_input,
 };
-use iced::{Element, Length, Subscription, Task};
+use iced::{Alignment, Background, Border, Color, Element, Length, Subscription, Task, Theme};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -804,12 +804,33 @@ fn ago(ms: i64) -> String {
     }
 }
 
+/// The Skills' intro under the head (the web's wording).
+const INTRO: &str = "The skills your agents can read: a SKILL.md with the files it needs, checked and scored on every version.";
+
+/// The table's columns, by their share of the width: select, skill, bindings, live, score, source, updated, open.
+const COLUMNS: [u16; 8] = [1, 4, 3, 2, 2, 2, 2, 1];
+
+/// The controls' text size (the search and the selects).
+const CONTROL: f32 = 13.0;
+
+impl std::fmt::Display for SourceFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SourceFilter::All => "All sources",
+            SourceFilter::Built => "Built in",
+            SourceFilter::Upload => "Uploaded",
+            SourceFilter::Github => "GitHub",
+        })
+    }
+}
+
 pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     if let Some(ed) = st.editor.as_ref() {
         return skill_editor::view(ed, ctx).map(Msg::Editor);
     }
-    let head = ui::view_head(
+    let head = ui::view_head_with_intro(
         "Skills",
+        INTRO,
         vec![
             ui::btn(
                 if st.form == Form::New {
@@ -817,7 +838,7 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
                 } else {
                     "New skill"
                 },
-                None,
+                Some("plus"),
                 ui::Kind::Primary,
                 Some(Msg::Form(Form::New)),
             ),
@@ -833,41 +854,50 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
                 ui::Kind::Secondary,
                 Some(Msg::Form(Form::Github)),
             ),
-            ui::btn(
-                "Export selected",
-                None,
-                ui::Kind::Secondary,
-                (!st.selected.is_empty()).then_some(Msg::ExportSelected),
-            ),
         ],
     );
     let sources = [
-        (SourceFilter::All, "All"),
-        (SourceFilter::Built, "Built in"),
-        (SourceFilter::Upload, "Uploaded"),
-        (SourceFilter::Github, "GitHub"),
+        SourceFilter::All,
+        SourceFilter::Built,
+        SourceFilter::Upload,
+        SourceFilter::Github,
     ];
     let choice = if st.binding.is_empty() {
         ANY.to_string()
     } else {
         st.binding.clone()
     };
-    let toolbar = row![
-        ui::seg(&sources, st.filter_source, Msg::Filter),
-        pick_list(binding_options(st), Some(choice), Msg::Binding),
-        ui::seg(
-            &[(false, "Hide archived"), (true, "Show archived")],
-            st.show_archived,
-            Msg::Archived
-        ),
-    ]
-    .spacing(12);
     let search = text_input("Search id, name, title, description or tags", &st.query)
         .on_input(Msg::Query)
         .padding(8)
-        .style(crate::theme::input);
+        .style(crate::theme::input)
+        .width(Length::Fill);
+    let bar = row![
+        search,
+        pick_list(sources.to_vec(), Some(st.filter_source), Msg::Filter)
+            .style(select_style)
+            .text_size(CONTROL)
+            .font(crate::theme::SANS)
+            .width(Length::Fixed(160.0)),
+        pick_list(binding_options(st), Some(choice), Msg::Binding)
+            .style(select_style)
+            .text_size(CONTROL)
+            .font(crate::theme::SANS)
+            .width(Length::Fixed(200.0)),
+        checkbox(st.show_archived)
+            .label("Show archived")
+            .on_toggle(Msg::Archived),
+        ui::btn(
+            "Export selected",
+            None,
+            ui::Kind::Secondary,
+            (!st.selected.is_empty()).then_some(Msg::ExportSelected),
+        ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
 
-    let mut page = column![head, toolbar, search].spacing(14);
+    let mut page = column![bar].spacing(12);
     match st.form {
         Form::Closed => {}
         Form::New => page = page.push(new_form(st)),
@@ -898,99 +928,182 @@ pub fn view<'a>(st: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         );
     }
 
+    let shown = visible(st);
     if !st.loading && st.error.is_none() {
         if st.skills.is_empty() {
             page = page.push(ui::empty(
                 "wrench",
                 "No skills yet",
-                "The skill library holds the SKILL.md folders that the plaza's agents read. Create one, import a zip or a folder, or take one from GitHub.",
+                "The library holds the skills your agents can read: a SKILL.md with the files it needs, checked and scored on every version. Start with New skill, or bring existing skills in with Import or From GitHub.",
             ));
-        } else if visible(st).is_empty() {
+        } else if shown.is_empty() {
             page = page.push(
                 column![
-                    ui::empty(
-                        "wrench",
-                        "Nothing matches",
-                        "Try another source or binding, or clear the search."
-                    ),
+                    ui::empty("search", "No skills match these filters.", ""),
                     ui::btn_sm(
                         "Clear filters",
                         None,
-                        ui::Kind::Secondary,
+                        ui::Kind::Ghost,
                         Some(Msg::ClearFilters)
                     ),
                 ]
                 .spacing(12),
             );
+        } else {
+            page = page.push(table(st, &shown));
         }
     }
 
-    let mut list = column![].spacing(10);
-    for s in visible(st) {
-        list = list.push(row_card(s, st.selected.contains(&s.id)));
-    }
-    page = page.push(list);
-
-    ui::scroll(page.padding(16)).width(Length::Fill).into()
+    ui::sheet(head, ui::scroll(page).width(Length::Fill).into())
 }
 
-fn row_card(s: &Summary, selected: bool) -> Element<'_, Msg> {
-    let muted = crate::theme::palette().ink_3;
-    let mut badges: Vec<Element<'_, Msg>> = Vec::new();
-    if s.bindings.is_empty() {
-        badges.push(ui::badge(NOT_BOUND, ui::Tone::Muted));
-    } else {
-        for b in &s.bindings {
-            badges.push(ui::badge(&binding_label(b), ui::Tone::Info));
-        }
+/// The web's `.select` as a pick list (the same look as the Agents screen's).
+fn select_style(_: &Theme, _: pick_list::Status) -> pick_list::Style {
+    let p = crate::theme::palette();
+    pick_list::Style {
+        text_color: p.ink,
+        placeholder_color: p.ink_3,
+        handle_color: p.ink_2,
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border {
+            color: p.ink,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
     }
-    match s.active_version {
-        Some(v) => badges.push(ui::badge(&format!("v{v} live"), ui::Tone::Ok)),
-        None => badges.push(ui::badge(
-            &format!("Unpublished, latest v{}", s.latest_version),
-            ui::Tone::Warn,
-        )),
-    }
-    if let Some(score) = s.score {
-        badges.push(ui::badge(&format!("score {score:.0}"), score_tone(score)));
-    }
-    if let Some(best) = s.best_version
-        && Some(best) != s.active_version
-    {
-        badges.push(ui::badge(&format!("best: v{best}"), ui::Tone::Muted));
-    }
-    badges.push(ui::badge(&source_label(&s.source), ui::Tone::Muted));
-    if s.archived_ms.is_some() {
-        badges.push(ui::badge("Archived", ui::Tone::Muted));
-    }
+}
 
+/// The skills as the web's table: a head row in the label voice, then a row per skill: its tick for export, the title
+/// (a press opens it), its name, description and tags, its bindings, live version, score, source, age and Open.
+fn table<'a>(st: &'a State, rows: &[&'a Summary]) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let heads = [
+        "", "Skill", "Bindings", "Live", "Score", "Source", "Updated", "",
+    ];
+    let head = row(heads
+        .iter()
+        .zip(COLUMNS)
+        .map(|(name, portion)| {
+            container(ui::label(name))
+                .width(Length::FillPortion(portion))
+                .into()
+        })
+        .collect::<Vec<Element<'a, Msg>>>());
     let mut body = column![
-        button(text(s.title.as_str()).size(16.0))
+        container(head).padding([9, 12]).width(Length::Fill),
+        container(Space::new().height(1.0))
+            .width(Length::Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().rule_strong.into()),
+                ..Default::default()
+            }),
+    ];
+    for &s in rows {
+        let id = s.id.clone();
+        let mut title = column![
+            button(
+                text(if s.title.is_empty() {
+                    s.name.as_str()
+                } else {
+                    s.title.as_str()
+                })
+                .font(crate::theme::SANS_SEMIBOLD)
+                .size(14.0)
+                .color(p.ink)
+            )
             .on_press(Msg::Open(s.id.clone()))
-            .style(button::text),
-        ui::sans(s.name.as_str(), 12.0, muted),
-        row(badges).spacing(6),
-    ]
-    .spacing(8);
-    if !s.description.is_empty() {
-        body = body.push(text(ui::ellipsize(&s.description, 200)).size(14.0));
+            .style(button::text)
+            .padding(0),
+            ui::mono(s.name.as_str(), 11.0, p.ink_3),
+        ]
+        .spacing(4);
+        if !s.description.is_empty() {
+            title = title.push(ui::faint(ui::ellipsize(&s.description, 200)));
+        }
+        let mut tags: Vec<Element<'a, Msg>> = Vec::new();
+        if s.archived_ms.is_some() {
+            tags.push(ui::badge("Archived", ui::Tone::Muted));
+        }
+        tags.extend(s.tags.iter().map(|t| ui::badge(t, ui::Tone::Muted)));
+        if !tags.is_empty() {
+            title = title.push(ui::chip_row(tags));
+        }
+        let bindings: Element<'a, Msg> = if s.bindings.is_empty() {
+            ui::faint("Unbound").into()
+        } else {
+            ui::chip_row(
+                s.bindings
+                    .iter()
+                    .map(|b| ui::badge(&binding_label(b), ui::Tone::Info))
+                    .collect(),
+            )
+        };
+        let live: Element<'a, Msg> = match s.active_version {
+            Some(v) => text(format!("v{v}")).size(13.0).color(p.ink).into(),
+            None => ui::faint("Unpublished").into(),
+        };
+        let mut score = column![].spacing(4);
+        match s.score {
+            Some(v) => score = score.push(ui::badge(&format!("{v:.0}"), score_tone(v))),
+            None => score = score.push(ui::faint("—")),
+        }
+        if let Some(best) = s.best_version
+            && Some(best) != s.active_version
+        {
+            score = score.push(ui::faint(format!("best: v{best}")));
+        }
+        let cells: Vec<Element<'a, Msg>> = vec![
+            container(
+                checkbox(st.selected.contains(&s.id))
+                    .on_toggle(move |on| Msg::Select(id.clone(), on)),
+            )
+            .width(Length::FillPortion(COLUMNS[0]))
+            .into(),
+            container(title)
+                .width(Length::FillPortion(COLUMNS[1]))
+                .into(),
+            container(bindings)
+                .width(Length::FillPortion(COLUMNS[2]))
+                .into(),
+            container(live)
+                .width(Length::FillPortion(COLUMNS[3]))
+                .into(),
+            container(score)
+                .width(Length::FillPortion(COLUMNS[4]))
+                .into(),
+            container(ui::faint(source_label(&s.source)))
+                .width(Length::FillPortion(COLUMNS[5]))
+                .into(),
+            container(ui::faint(ago(s.updated_ms)))
+                .width(Length::FillPortion(COLUMNS[6]))
+                .into(),
+            container(ui::btn_sm(
+                "Open",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Open(s.id.clone())),
+            ))
+            .width(Length::FillPortion(COLUMNS[7]))
+            .into(),
+        ];
+        body = body.push(
+            container(row(cells).spacing(0).align_y(Alignment::Center))
+                .padding([9, 12])
+                .width(Length::Fill),
+        );
+        body = body.push(
+            container(Space::new().height(1.0))
+                .width(Length::Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(crate::theme::palette().rule.into()),
+                    ..Default::default()
+                }),
+        );
     }
-    if !s.tags.is_empty() {
-        body = body.push(text(s.tags.join(" · ")).size(12.0).color(muted));
-    }
-    body = body.push(
-        text(format!("updated {}", ago(s.updated_ms)))
-            .size(12.0)
-            .color(muted),
-    );
-    let id = s.id.clone();
-    let card = ui::card(&s.name, body.into());
-    row![
-        checkbox(selected).on_toggle(move |on| Msg::Select(id.clone(), on)),
-        container(card).width(Length::Fill),
-    ]
-    .spacing(12)
-    .into()
+    container(body)
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
 }
 
 /// A form field: its label above its input.
@@ -1053,6 +1166,7 @@ fn new_form(st: &State) -> Element<'_, Msg> {
         field(
             "SKILL.md",
             text_editor(&st.new_body)
+                .style(crate::theme::editor)
                 .on_action(Msg::NewBody)
                 .padding(8)
                 .height(Length::Fixed(260.0))

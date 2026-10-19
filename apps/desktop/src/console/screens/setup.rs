@@ -2,13 +2,13 @@
 //! (the hub, the node, the model keys, and this machine's requirements from the first-run checks),
 //! and the guided setup and the tour again.
 
-use iced::widget::{Space, column, row};
-use iced::{Alignment, Element, Length, Task};
+use iced::widget::{Space, column, container, row, text};
+use iced::{Alignment, Element, Length, Task, Theme};
 use serde_json::Value;
 
 use super::Id;
 use crate::console::onboard::{self, Status};
-use crate::console::setup::Check;
+use crate::console::setup::{Check, State as Readiness};
 use crate::console::ui::{self, Kind, Tone};
 use crate::console::{Ctx, client};
 
@@ -111,55 +111,49 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
+/// The web's Setup page: the lede, the summary with "Run checks again", the Checks card (the hub's rows, then this
+/// machine's), and the Onboarding card.
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let head = ui::view_head(
-        onboard::copy_text("setup.title"),
-        vec![ui::btn(
-            onboard::copy_text("setup.check_again"),
-            None,
-            Kind::Ghost,
-            Some(Msg::Check),
-        )],
+    let head = ui::view_head("Setup", Vec::new());
+    let lede = ui::prose(
+        "What the plaza needs before agents can run. The checks ask this hub; the last rows are checked by the AgentPlaza app on this machine.",
     );
-    let intro = ui::faint(onboard::copy_text("setup.intro"));
-    let rows = onboard::rows(state.status.as_ref(), state.local.as_deref())
-        .into_iter()
-        .map(|r| {
-            row![
-                ui::sans(r.label, 12.0, ui::INK_2),
-                Space::new().width(Length::Fill),
-                ui::badge(&r.detail, r.tone)
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .into()
-        });
-    let checks = column(rows).spacing(10);
-    let guided = row![
-        ui::btn(
-            onboard::copy_text("replay.setup"),
-            None,
-            Kind::Primary,
-            Some(Msg::Wizard)
-        ),
-        ui::btn(
-            onboard::copy_text("replay.tour"),
-            None,
-            Kind::Secondary,
-            Some(Msg::Tour)
-        ),
+    let rows = check_rows(state);
+    let checking = state.status.is_none()
+        || state.local.is_none()
+        || rows.iter().any(|r| r.tone == Tone::Muted);
+    let failures = rows.iter().filter(|r| r.tone == Tone::Danger).count();
+    let items = rows.iter().filter(|r| r.tone == Tone::Warn).count();
+    let summary = if checking {
+        "Checking...".to_string()
+    } else {
+        format!(
+            "{}, {} to set up",
+            plural(failures, "failure"),
+            plural(items, "item")
+        )
+    };
+    let bar = row![
+        ui::faint(summary),
+        Space::new().width(Length::Fill),
+        ui::btn("Run checks again", None, Kind::Secondary, Some(Msg::Check)),
     ]
-    .spacing(8);
+    .spacing(16)
+    .align_y(Alignment::Center);
+    let lines: Vec<Element<'a, Msg>> = rows.into_iter().map(check_line).collect();
+    let checks = flush_card("Checks", stacked(lines));
+    let onboarding = ui::card(
+        "Onboarding",
+        row![
+            ui::btn("Set up AgentPlaza", None, Kind::Primary, Some(Msg::Wizard)),
+            ui::btn("Take the tour", None, Kind::Secondary, Some(Msg::Tour)),
+        ]
+        .spacing(8)
+        .into(),
+    );
     ui::sheet(
         head,
-        column![
-            intro,
-            ui::card("Hub checks", hub_card(state)),
-            ui::card(onboard::copy_text("wizard.steps.3.title"), checks.into()),
-            guided
-        ]
-        .spacing(16)
-        .into(),
+        column![lede, bar, checks, onboarding].spacing(16).into(),
     )
 }
 
@@ -624,42 +618,89 @@ fn status_word(tone: Tone) -> &'static str {
     }
 }
 
-/// The hub checks card: a summary of the failures and the items to set up, then a row per check.
-fn hub_card<'a>(state: &State) -> Element<'a, Msg> {
-    let rows = hub_checks(state);
-    let failures = rows.iter().filter(|r| r.tone == Tone::Danger).count();
-    let items = rows.iter().filter(|r| r.tone == Tone::Warn).count();
-    let summary = format!(
-        "{failures} {}, {items} {} to set up",
-        if failures == 1 { "failure" } else { "failures" },
-        if items == 1 { "item" } else { "items" },
-    );
-    let lines: Vec<Element<'a, Msg>> = rows.into_iter().map(check_line).collect();
-    column![ui::faint(summary), column(lines).spacing(10)]
-        .spacing(14)
+/// Every check in the web's order: the hub's rows, then this machine's (the desktop's own, read from the local
+/// requirements; a required one that is not there is a failure).
+fn check_rows(state: &State) -> Vec<CheckRow> {
+    let mut rows = hub_checks(state);
+    if let Some(local) = state.local.as_deref() {
+        rows.extend(local.iter().map(local_row));
+    }
+    rows
+}
+
+fn local_row(c: &Check) -> CheckRow {
+    let tone = match c.state {
+        Readiness::Ok => Tone::Ok,
+        Readiness::Warning => Tone::Warn,
+        Readiness::Missing | Readiness::Blocked if c.required => Tone::Danger,
+        Readiness::Missing | Readiness::Blocked => Tone::Warn,
+    };
+    check(c.label, tone, c.detail.clone(), None)
+}
+
+/// The web's `.card.flush`: the title in the card head over a rule, the body flush to the card's edges.
+fn flush_card<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    let top = container(row![
+        ui::card_title(title),
+        Space::new().width(Length::Fill)
+    ])
+    .padding([8, 16])
+    .height(Length::Shrink)
+    .width(Length::Fill)
+    .center_y(Length::Fixed(44.0));
+    container(column![top, rule(), body])
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .clip(true)
         .into()
 }
 
-fn check_line<'a>(item: CheckRow) -> Element<'a, Msg> {
-    let fix: Element<'a, Msg> = match item.fix {
-        Some((label, id)) if matches!(item.tone, Tone::Warn | Tone::Danger) => {
-            ui::link(label, Msg::Go(id), false)
+/// A 1px rule across, in the palette's rule colour.
+fn rule<'a>() -> Element<'a, Msg> {
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The rows one under another, a rule between each pair (the web's `.card.flush .row`).
+fn stacked<'a>(rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    for (i, line) in rows.into_iter().enumerate() {
+        if i > 0 {
+            parts.push(rule());
         }
-        _ => Space::new().into(),
-    };
-    row![
-        column![
-            ui::sans(item.label, 12.0, ui::INK_2),
-            ui::faint(item.detail)
-        ]
+        parts.push(line);
+    }
+    column(parts).width(Length::Fill).into()
+}
+
+/// A check's row, as the web's `.setup-row`: the name in semibold, what was found under it, the fix when the
+/// check is not OK, and the status on the right.
+fn check_line<'a>(item: CheckRow) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let name = text(item.label)
+        .font(crate::theme::SANS_SEMIBOLD)
+        .size(13.0)
+        .color(p.ink);
+    let mut left = column![name, ui::faint(item.detail)]
         .spacing(4)
-        .width(Length::Fill),
-        ui::badge(status_word(item.tone), item.tone),
-        fix,
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center)
-    .into()
+        .width(Length::Fill);
+    if let Some((label, id)) = item
+        .fix
+        .filter(|_| matches!(item.tone, Tone::Warn | Tone::Danger))
+    {
+        left = left.push(ui::text_link(label, Msg::Go(id)));
+    }
+    row![left, ui::badge(status_word(item.tone), item.tone)]
+        .spacing(16)
+        .align_y(Alignment::Start)
+        .padding(16)
+        .width(Length::Fill)
+        .into()
 }
 
 /// The web's `plural`: "1 agent", "2 agents".

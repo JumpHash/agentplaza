@@ -5,8 +5,9 @@
 
 use std::time::{Duration, Instant};
 
-use iced::widget::{column, row, text_input};
-use iced::{Alignment, Element, Length, Subscription, Task};
+use iced::alignment::{Horizontal, Vertical};
+use iced::widget::{Space, column, container, row, text, text_input};
+use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -63,10 +64,6 @@ pub struct Sandbox {
     #[serde(rename = "memoryMB")]
     pub memory_mb: u64,
     pub cid: Option<u64>,
-    #[serde(rename = "allowInternetAccess")]
-    pub allow_internet_access: bool,
-    #[serde(rename = "autoPause")]
-    pub auto_pause: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -132,53 +129,12 @@ pub fn setup_text(hub: &str, key: &str) -> String {
     )
 }
 
-/// A sandbox's facts under its id: its template, the agent it runs for, and its network and pause settings.
-pub fn sandbox_facts(sandbox: &Sandbox) -> String {
-    let mut parts = vec![sandbox.template_id.clone()];
-    if let Some(cid) = sandbox.cid {
-        parts.push(format!("agent {cid}"));
-    }
-    if sandbox.auto_pause {
-        parts.push("auto-pause".to_string());
-    }
-    parts.push(
-        if sandbox.allow_internet_access {
-            "internet on"
-        } else {
-            "no internet"
-        }
-        .to_string(),
-    );
-    parts.join(" · ")
-}
-
-/// The badge for a sandbox's state: its words and its tone.
-pub fn state_badge(state: &str) -> (String, ui::Tone) {
-    let tone = match state {
-        "running" => ui::Tone::Ok,
-        "paused" => ui::Tone::Warn,
-        _ => ui::Tone::Muted,
-    };
-    (state.to_string(), tone)
-}
-
 /// An RFC 3339 instant as `YYYY-MM-DD HH:MM` (UTC, as the hub writes it); the text as given when it is not one.
 pub fn short_time(rfc3339: &str) -> String {
     match rfc3339.get(..16) {
         Some(head) if head.as_bytes().get(10) == Some(&b'T') => head.replace('T', " "),
         _ => rfc3339.to_string(),
     }
-}
-
-/// The badge for a build's status: its words and its tone.
-pub fn build_badge(status: &str) -> (String, ui::Tone) {
-    let tone = match status {
-        "ready" => ui::Tone::Ok,
-        "building" | "waiting" => ui::Tone::Warn,
-        "error" => ui::Tone::Danger,
-        _ => ui::Tone::Muted,
-    };
-    (status.to_string(), tone)
 }
 
 /// The tags of a template's ready builds, each once, in the order the builds list them.
@@ -497,386 +453,618 @@ fn gate(busy: bool, msg: Msg) -> Option<Msg> {
     if busy { None } else { Some(msg) }
 }
 
-/// The screen. `hub` is the hub's base URL, which the setup lines name.
+/// The screen, as the web's E2B API page: the keys (with the key just made, and the form for a new one), the setup
+/// an SDK client reads, then the sandboxes and the templates. `hub` is the hub's base URL, which the setup lines name.
 pub fn view<'a>(state: &'a State, hub: &str) -> Element<'a, Msg> {
-    let mut parts: Vec<Element<'a, Msg>> = vec![
-        ui::faint("Keys let an E2B SDK create and drive sandboxes on this hub. The sandboxes below are the ones running now.")
-            .into(),
-    ];
+    let head = ui::view_head("E2B API", Vec::new());
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(error) = &state.error {
         parts.push(ui::error_line(error));
     }
     if let Some(notice) = &state.notice {
         parts.push(ui::faint(notice.clone()).into());
     }
-    if let Some(made) = &state.issued {
-        parts.push(ui::card("New key", issued_view(made, hub)));
-    }
     parts.push(ui::card("Keys", keys_card(state)));
-    parts.push(ui::card("Sandboxes", sandboxes_view(state)));
-    parts.push(ui::card("Templates", templates_view(state)));
-    let head = ui::view_head("E2B API", vec![]);
-    ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
+    parts.push(ui::card("Setup for SDK clients", setup_view(state, hub)));
+    parts.push(flush_card("Sandboxes", sandboxes_body(state)));
+    parts.push(flush_card("Templates", templates_body(state)));
+    ui::sheet(head, column(parts).spacing(16).width(Length::Fill).into())
 }
 
-/// The key just made: the key with its copy, the warning that it is shown once, and the SDK setup lines.
-fn issued_view<'a>(made: &Issued, hub: &str) -> Element<'a, Msg> {
-    column![
-        ui::faint(format!("Key for {}", made.label)),
-        ui::faint(
-            "Shown once. Copy it now: the hub keeps only its hash, so it cannot be shown again."
-        )
-        .color(crate::theme::palette().warn),
-        copy_box(&made.key),
-        ui::label("Point an E2B SDK at this hub"),
-        copy_box(&setup_text(hub, &made.key)),
-        ui::btn("Close", None, ui::Kind::Secondary, Some(Msg::DismissKey)),
+/// The Keys card: the table of keys (with the revoke confirmation under it when one is asked), the key just made,
+/// and the form for a new key.
+fn keys_card(state: &State) -> Element<'_, Msg> {
+    let p = crate::theme::palette();
+    let mut parts: Vec<Element<'_, Msg>> = Vec::new();
+    match &state.keys {
+        Load::Pending => parts.push(ui::loading()),
+        Load::Failed => parts.push(ui::empty("alert", "Could not load the keys", "")),
+        Load::Ready(list) if list.is_empty() => parts.push(ui::empty(
+            "key",
+            "No keys",
+            "Make a key below for an SDK client.",
+        )),
+        Load::Ready(list) => {
+            let cols = [
+                Col {
+                    head: "Label",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "Created",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "",
+                    share: None,
+                    right: true,
+                },
+            ];
+            let rows: Vec<Vec<Element<'_, Msg>>> = list
+                .iter()
+                .map(|k| {
+                    let label = if k.label.is_empty() {
+                        "(no label)".to_string()
+                    } else {
+                        k.label.clone()
+                    };
+                    vec![
+                        ui::sans(label, 13.0, p.ink).into(),
+                        ui::faint(agent::ago(k.created_ms)).into(),
+                        ui::btn_sm(
+                            "Revoke",
+                            Some("trash"),
+                            ui::Kind::Danger,
+                            gate(state.busy, Msg::AskRevoke(k.id.clone())),
+                        ),
+                    ]
+                })
+                .collect();
+            parts.push(table(0.0, &cols, rows));
+            if let Some(key) = state
+                .confirm_revoke
+                .as_deref()
+                .and_then(|id| list.iter().find(|k| k.id == id))
+            {
+                parts.push(confirm(
+                    &format!("Revoke {}", key.label),
+                    ui::faint("Clients that use this key stop working. This cannot be undone.")
+                        .into(),
+                    Msg::CancelRevoke,
+                    "Revoke",
+                    gate(state.busy, Msg::Revoke(key.id.clone())),
+                ));
+            }
+        }
+    }
+    if let Some(made) = &state.issued {
+        parts.push(reveal_box(made));
+    }
+    let form = row![
+        text("New key")
+            .font(crate::theme::SANS_SEMIBOLD)
+            .size(13.0)
+            .color(p.ink),
+        column![
+            ui::label("Label"),
+            text_input("laptop-sdk", &state.label)
+                .on_input(Msg::Label)
+                .on_submit(Msg::Create)
+                .padding(8.0)
+                .style(crate::theme::input)
+                .width(Length::Fill),
+            ui::faint("What this client is, such as ci or laptop-sdk."),
+        ]
+        .spacing(6)
+        .width(Length::Fill),
+        ui::btn(
+            "Create key",
+            Some("plus"),
+            ui::Kind::Primary,
+            gate(state.busy, Msg::Create),
+        ),
     ]
-    .spacing(10)
+    .spacing(16)
+    .align_y(Alignment::End);
+    parts.push(form.into());
+    column(parts).spacing(16).width(Length::Fill).into()
+}
+
+/// The key just made, shown once: its label, the key in a box with Copy and Hide. Hide drops it from the page.
+fn reveal_box<'a>(made: &Issued) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let fill = p.signal_soft;
+    let radius = crate::theme::skin().radius;
+    container(
+        column![
+            ui::sans(format!("Key for {}", made.label), 13.0, p.ink),
+            env_box(made.key.clone()),
+            row![
+                ui::btn_sm(
+                    "Copy key",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::Copy(made.key.clone()))
+                ),
+                ui::btn_sm("Hide", None, ui::Kind::Ghost, Some(Msg::DismissKey)),
+            ]
+            .spacing(8),
+        ]
+        .spacing(12),
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .style(move |_: &Theme| container::Style {
+        background: Some(fill.into()),
+        border: Border {
+            radius: radius.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// The mono box the web's `.e2b-env` draws: the text on the sheet's second ground, broken where it does not fit.
+fn env_box<'a>(value: String) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let fill = p.sheet_2;
+    let radius = crate::theme::skin().radius;
+    container(ui::mono(value, 12.0, p.ink).wrapping(text::Wrapping::Glyph))
+        .padding(Padding {
+            top: 8.0,
+            right: 12.0,
+            bottom: 8.0,
+            left: 12.0,
+        })
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(fill.into()),
+            border: Border {
+                radius: radius.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The setup an SDK client reads: the three lines with the key (or its placeholder), a Copy, and the note on the key.
+fn setup_view<'a>(state: &'a State, hub: &str) -> Element<'a, Msg> {
+    let key = state
+        .issued
+        .as_ref()
+        .map_or("<your key>", |made| made.key.as_str());
+    let setup = setup_text(hub, key);
+    let note = if state.issued.is_some() {
+        "The key above is in this setup. It lives only on this screen, so copy it into the client before you leave."
+    } else {
+        "Put a key in E2B_API_KEY. Make one above; it is shown once."
+    };
+    column![
+        env_box(setup.clone()),
+        ui::faint("E2B_SANDBOX_URL is the hub machine's own local sandbox gateway, so it is the same on every client that runs there. Use it as written."),
+        row![ui::btn_sm("Copy", None, ui::Kind::Ghost, Some(Msg::Copy(setup)))],
+        ui::faint(note),
+    ]
+    .spacing(12)
     .width(Length::Fill)
     .into()
 }
 
-/// A value to copy: its text, and a Copy button beside it.
-fn copy_box<'a>(value: &str) -> Element<'a, Msg> {
-    row![
-        ui::mono(value.to_string(), 12.0, crate::theme::palette().ink).width(Length::Fill),
-        ui::btn_sm(
-            "Copy",
-            None,
-            ui::Kind::Ghost,
-            Some(Msg::Copy(value.to_string()))
-        ),
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-fn keys_card(state: &State) -> Element<'_, Msg> {
-    let form = row![
-        text_input("ci-runner", &state.label)
-            .on_input(Msg::Label)
-            .on_submit(Msg::Create)
-            .padding(8.0)
-            .style(crate::theme::input)
-            .width(Length::Fill),
-        ui::btn(
-            "Create key",
-            None,
-            ui::Kind::Primary,
-            gate(state.busy, Msg::Create)
-        ),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    let list: Element<'_, Msg> = match &state.keys {
-        Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load the keys.", ""),
-        Load::Ready(list) if list.is_empty() => ui::empty(
-            "key",
-            "No keys yet",
-            "Make one above, then point an E2B SDK at this hub with it.",
-        ),
-        Load::Ready(list) => column(
-            list.iter()
-                .map(|key| key_row(state, key))
-                .collect::<Vec<_>>(),
-        )
-        .spacing(14)
-        .width(Length::Fill)
-        .into(),
-    };
-    ui::card(
-        "Keys",
-        column![
-            form,
-            ui::faint("The label names the key here. Revoking a key ends the SDK calls that use it at once."),
-            list,
-        ]
-        .spacing(14)
-        .width(Length::Fill)
-        .into(),
-    )
-}
-
-fn key_row<'a>(state: &State, key: &Key) -> Element<'a, Msg> {
-    let label = if key.label.is_empty() {
-        "(no label)".to_string()
-    } else {
-        key.label.clone()
-    };
-    let facts = format!("{} · created {}", key.id, agent::ago(key.created_ms));
-    let action: Element<'a, Msg> = if state.confirm_revoke.as_deref() == Some(key.id.as_str()) {
-        let confirm: Vec<Element<'a, Msg>> = vec![
-            ui::faint(format!(
-                "Revoke {label}? SDK calls that use it stop at once. This cannot be undone."
-            ))
-            .into(),
-            ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelRevoke)),
-            ui::btn_sm(
-                "Revoke",
-                None,
-                ui::Kind::Danger,
-                gate(state.busy, Msg::Revoke(key.id.clone())),
-            ),
-        ];
-        row(confirm).spacing(10).align_y(Alignment::Center).into()
-    } else {
-        ui::btn_sm(
-            "Revoke",
-            None,
-            ui::Kind::Danger,
-            gate(state.busy, Msg::AskRevoke(key.id.clone())),
-        )
-    };
-    column![
-        row![
-            ui::mono(label, 12.0, crate::theme::palette().ink),
-            ui::faint(facts),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center),
-        action,
-    ]
-    .spacing(8)
-    .into()
-}
-
-/// The sandboxes table, or its empty or failed state.
-fn sandboxes_view(state: &State) -> Element<'_, Msg> {
+/// The sandboxes' table (or its empty or failed state), with the end confirmation above it when one is asked.
+fn sandboxes_body(state: &State) -> Element<'_, Msg> {
+    let p = crate::theme::palette();
     match &state.sandboxes {
         Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load the sandboxes.", ""),
+        Load::Failed => ui::empty("alert", "Could not load the sandboxes", ""),
         Load::Ready(list) if list.is_empty() => ui::empty(
-            "square-code",
-            "No sandboxes running",
-            "The sandboxes an SDK creates on this hub are listed here.",
+            "harness",
+            "No sandboxes",
+            "The gateway runs none right now. A client that makes one shows it here.",
         ),
-        Load::Ready(list) => table(
-            &[
-                (3, "Sandbox"),
-                (2, "State"),
-                (2, "Resources"),
-                (2, "Started"),
-                (2, "Ends"),
-                (3, ""),
-            ],
-            list.iter()
-                .map(|sandbox| sandbox_row(state, sandbox))
-                .collect(),
-        ),
+        Load::Ready(list) => {
+            let cols = [
+                Col {
+                    head: "Sandbox",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "Template",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "State",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Started",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Ends",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "CPU",
+                    share: Some(1),
+                    right: false,
+                },
+                Col {
+                    head: "Memory",
+                    share: Some(1),
+                    right: false,
+                },
+                Col {
+                    head: "CID",
+                    share: Some(1),
+                    right: false,
+                },
+                Col {
+                    head: "",
+                    share: None,
+                    right: true,
+                },
+            ];
+            let rows: Vec<Vec<Element<'_, Msg>>> = list
+                .iter()
+                .map(|s| {
+                    let tone = if s.state == "running" {
+                        ui::Tone::Ok
+                    } else {
+                        ui::Tone::Muted
+                    };
+                    vec![
+                        ui::mono(s.sandbox_id.clone(), 12.0, p.ink).into(),
+                        ui::sans(s.template_id.clone(), 13.0, p.ink_2).into(),
+                        ui::badge(&s.state, tone),
+                        ui::faint(short_time(&s.started_at)).into(),
+                        ui::faint(short_time(&s.end_at)).into(),
+                        ui::sans(format!("{} vCPU", s.cpu_count), 13.0, p.ink_2).into(),
+                        ui::sans(memory_text(s.memory_mb), 13.0, p.ink_2).into(),
+                        ui::sans(
+                            s.cid.map_or("—".to_string(), |cid| cid.to_string()),
+                            13.0,
+                            p.ink_2,
+                        )
+                        .into(),
+                        sandbox_actions(state, s),
+                    ]
+                })
+                .collect();
+            let mut parts: Vec<Element<'_, Msg>> = Vec::new();
+            if let Some(s) = state
+                .confirm_end
+                .as_deref()
+                .and_then(|id| list.iter().find(|s| s.sandbox_id == id))
+            {
+                parts.push(
+                    container(confirm(
+                        "End this sandbox",
+                        column![
+                            ui::faint("Ends the sandbox. Whatever it holds is lost, and it cannot be resumed."),
+                            ui::mono(s.sandbox_id.clone(), 12.0, p.ink_2),
+                        ]
+                        .spacing(8)
+                        .into(),
+                        Msg::CancelEnd,
+                        "End",
+                        gate(state.busy, Msg::End(s.sandbox_id.clone())),
+                    ))
+                    .padding(16)
+                    .width(Length::Fill)
+                    .into(),
+                );
+            }
+            parts.push(table(16.0, &cols, rows));
+            column(parts).width(Length::Fill).into()
+        }
     }
 }
 
-fn sandbox_row<'a>(state: &State, sandbox: &Sandbox) -> Element<'a, Msg> {
-    let (label, tone) = state_badge(&sandbox.state);
-    cells(vec![
-        (
-            3,
-            column![
-                ui::mono(
-                    sandbox.sandbox_id.clone(),
-                    12.0,
-                    crate::theme::palette().ink
-                ),
-                ui::faint(sandbox_facts(sandbox)),
-            ]
-            .spacing(2)
-            .into(),
-        ),
-        (2, ui::badge(&label, tone)),
-        (
-            2,
-            ui::sans(
-                format!("{} CPU · {} MB", sandbox.cpu_count, sandbox.memory_mb),
-                12.0,
-                crate::theme::palette().ink,
-            )
-            .into(),
-        ),
-        (2, ui::faint(short_time(&sandbox.started_at)).into()),
-        (2, ui::faint(short_time(&sandbox.end_at)).into()),
-        (3, sandbox_actions(state, sandbox)),
-    ])
-}
-
+/// A sandbox's actions: a running one pauses, a paused one resumes, and either can be ended.
 fn sandbox_actions<'a>(state: &State, sandbox: &Sandbox) -> Element<'a, Msg> {
     let id = sandbox.sandbox_id.clone();
-    if state.confirm_end.as_deref() == Some(id.as_str()) {
-        let confirm: Vec<Element<'a, Msg>> = vec![
-            ui::faint("End it? It stops at once and cannot be resumed.").into(),
-            ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelEnd)),
-            ui::btn_sm(
-                "End",
-                None,
-                ui::Kind::Danger,
-                gate(state.busy, Msg::End(id)),
-            ),
-        ];
-        return row(confirm).spacing(8).align_y(Alignment::Center).into();
-    }
     let mut buttons: Vec<Element<'a, Msg>> = Vec::new();
     match sandbox.state.as_str() {
         "running" => buttons.push(ui::btn_sm(
             "Pause",
             None,
-            ui::Kind::Secondary,
+            ui::Kind::Ghost,
             gate(state.busy, Msg::Pause(id.clone())),
         )),
         "paused" => buttons.push(ui::btn_sm(
             "Resume",
-            None,
-            ui::Kind::Secondary,
+            Some("play"),
+            ui::Kind::Ghost,
             gate(state.busy, Msg::Resume(id.clone())),
         )),
         _ => {}
     }
     buttons.push(ui::btn_sm(
         "End",
-        None,
+        Some("stop"),
         ui::Kind::Danger,
         gate(state.busy, Msg::AskEnd(id)),
     ));
     row(buttons).spacing(8).align_y(Alignment::Center).into()
 }
 
-/// The templates table, or its empty or failed state.
-fn templates_view(state: &State) -> Element<'_, Msg> {
+/// The templates' table (or its empty or failed state), with the delete confirmation above it when one is asked.
+fn templates_body(state: &State) -> Element<'_, Msg> {
+    let p = crate::theme::palette();
     match &state.templates {
         Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load the templates.", ""),
+        Load::Failed => ui::empty("alert", "Could not load the templates", ""),
         Load::Ready(list) if list.is_empty() => ui::empty(
-            "square-code",
-            "No templates yet",
-            "Templates are built with the E2B SDK's Template.build, then listed here.",
+            "harness",
+            "No templates",
+            "Templates are built with the E2B SDK's Template.build.",
         ),
-        Load::Ready(list) => table(
-            &[
-                (3, "Template"),
-                (3, "Newest build"),
-                (2, "Tags"),
-                (2, "Resources"),
-                (2, "Updated"),
-                (2, ""),
-            ],
-            list.iter()
-                .map(|template| template_row(state, template))
-                .collect(),
-        ),
-    }
-}
-
-fn template_row<'a>(state: &State, template: &Template) -> Element<'a, Msg> {
-    let name = if template.name.is_empty() {
-        "(no name)".to_string()
-    } else {
-        template.name.clone()
-    };
-    let newest = template.builds.first();
-    let build: Element<'a, Msg> = match newest {
-        None => ui::faint("No build yet").into(),
-        Some(build) => {
-            let (label, tone) = build_badge(&build.status);
-            let mut parts: Vec<Element<'a, Msg>> = vec![ui::badge(&label, tone)];
-            if let Some(reason) = build.reason.as_ref().filter(|_| build.status == "error") {
-                let text = if reason.step.is_empty() {
-                    reason.message.clone()
-                } else {
-                    format!("{}: {}", reason.step, reason.message)
-                };
-                parts.push(ui::faint(text).into());
+        Load::Ready(list) => {
+            let cols = [
+                Col {
+                    head: "Template",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "Build",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Tags",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Size",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Updated",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Failure",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "",
+                    share: None,
+                    right: true,
+                },
+            ];
+            let rows: Vec<Vec<Element<'_, Msg>>> = list
+                .iter()
+                .map(|t| {
+                    let name = if t.name.is_empty() {
+                        "(no name)".to_string()
+                    } else {
+                        t.name.clone()
+                    };
+                    let latest = t.builds.first();
+                    let build: Element<'_, Msg> = match latest {
+                        Some(b) => ui::badge(&b.status, build_tone(&b.status)),
+                        None => ui::faint("—").into(),
+                    };
+                    let size = latest.map_or("—".to_string(), |b| {
+                        format!("{} vCPU, {}", b.cpu_count, memory_text(b.memory_mb))
+                    });
+                    let failure =
+                        latest
+                            .filter(|b| b.status == "error")
+                            .map_or("—".to_string(), |b| {
+                                b.reason
+                                    .as_ref()
+                                    .map_or("The build failed.".to_string(), |r| r.message.clone())
+                            });
+                    let tags = ready_tags(&t.builds);
+                    let tag_text = if tags.is_empty() {
+                        "—".to_string()
+                    } else {
+                        tags.join(", ")
+                    };
+                    vec![
+                        row![
+                            ui::sans(name, 13.0, p.ink),
+                            ui::mono(short_id(&t.template_id), 12.0, p.ink_3),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .into(),
+                        build,
+                        ui::sans(tag_text, 13.0, p.ink_2).into(),
+                        ui::sans(size, 13.0, p.ink_2).into(),
+                        ui::faint(short_time(&t.updated_at)).into(),
+                        ui::faint(failure).into(),
+                        ui::btn_sm(
+                            "Delete",
+                            Some("trash"),
+                            ui::Kind::Danger,
+                            gate(state.busy, Msg::AskDeleteTemplate(t.template_id.clone())),
+                        ),
+                    ]
+                })
+                .collect();
+            let mut parts: Vec<Element<'_, Msg>> = Vec::new();
+            if let Some(t) = state
+                .confirm_delete_template
+                .as_deref()
+                .and_then(|id| list.iter().find(|t| t.template_id == id))
+            {
+                parts.push(
+                    container(confirm(
+                        &format!("Delete {}", t.name),
+                        column![
+                            ui::faint("Deletes the template and all its builds. This cannot be undone. A build that is running, or one that starts from it, blocks the delete until it finishes."),
+                            ui::mono(t.template_id.clone(), 12.0, p.ink_2),
+                        ]
+                        .spacing(8)
+                        .into(),
+                        Msg::CancelDeleteTemplate,
+                        "Delete",
+                        gate(state.busy, Msg::DeleteTemplate(t.template_id.clone())),
+                    ))
+                    .padding(16)
+                    .width(Length::Fill)
+                    .into(),
+                );
             }
-            column(parts).spacing(4).into()
+            parts.push(table(16.0, &cols, rows));
+            column(parts).width(Length::Fill).into()
         }
-    };
-    let resources: Element<'a, Msg> = match newest {
-        Some(build) => ui::sans(
-            format!("{} CPU · {} MB", build.cpu_count, build.memory_mb),
-            12.0,
-            crate::theme::palette().ink,
-        )
-        .into(),
-        None => ui::faint("none").into(),
-    };
-    let tags = ready_tags(&template.builds);
-    let tag_text = if tags.is_empty() {
-        "none".to_string()
-    } else {
-        tags.join(", ")
-    };
-    cells(vec![
-        (
-            3,
-            column![
-                ui::mono(name, 12.0, crate::theme::palette().ink),
-                ui::faint(short_id(&template.template_id)),
-            ]
-            .spacing(2)
-            .into(),
-        ),
-        (3, build),
-        (2, ui::faint(tag_text).into()),
-        (2, resources),
-        (2, ui::faint(short_time(&template.updated_at)).into()),
-        (2, template_actions(state, &template.template_id)),
-    ])
+    }
 }
 
-/// A template's Delete button, which asks first: the confirm line with its Cancel and Delete.
-fn template_actions<'a>(state: &State, template_id: &str) -> Element<'a, Msg> {
-    let id = template_id.to_string();
-    if state.confirm_delete_template.as_deref() == Some(id.as_str()) {
-        let confirm: Vec<Element<'a, Msg>> = vec![
-            ui::faint("Delete it? This cannot be undone.").into(),
-            ui::btn_sm(
-                "Cancel",
-                None,
-                ui::Kind::Ghost,
-                Some(Msg::CancelDeleteTemplate),
-            ),
-            ui::btn_sm(
-                "Delete",
-                None,
-                ui::Kind::Danger,
-                gate(state.busy, Msg::DeleteTemplate(id)),
-            ),
-        ];
-        return row(confirm).spacing(8).align_y(Alignment::Center).into();
+/// A build's badge tone, as the web's: waiting is quiet, building is info, ready is ok, error is danger.
+fn build_tone(status: &str) -> ui::Tone {
+    match status {
+        "ready" => ui::Tone::Ok,
+        "building" => ui::Tone::Info,
+        "error" => ui::Tone::Danger,
+        _ => ui::Tone::Muted,
     }
-    ui::btn_sm(
-        "Delete",
-        None,
-        ui::Kind::Danger,
-        gate(state.busy, Msg::AskDeleteTemplate(id)),
+}
+
+/// A confirmation as the web's dialog: a card with its text and Cancel, and the action in danger.
+fn confirm<'a>(
+    title: &str,
+    body: Element<'a, Msg>,
+    cancel: Msg,
+    action_label: &str,
+    action: Option<Msg>,
+) -> Element<'a, Msg> {
+    ui::card(
+        title,
+        column![
+            body,
+            row![
+                Space::new().width(Length::Fill),
+                ui::btn("Cancel", None, ui::Kind::Ghost, Some(cancel)),
+                ui::btn(action_label, None, ui::Kind::Danger, action),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(12)
+        .into(),
     )
 }
 
-/// A table: a mono header row, then the rows, each under a hairline. Columns are proportional.
-fn table<'a>(head: &[(u16, &str)], rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let heads: Vec<(u16, Element<'a, Msg>)> = head
-        .iter()
-        .map(|(portion, label)| (*portion, ui::label(label).into()))
-        .collect();
-    let mut lines: Vec<Element<'a, Msg>> = vec![cells(heads), ui::hairline()];
-    for line in rows {
-        lines.push(line);
-        lines.push(ui::hairline());
+/// A memory size as the web's table reads it: MB below a gibibyte, GB from there (one decimal).
+fn memory_text(mb: u64) -> String {
+    if mb >= 1024 {
+        format!("{:.1} GB", mb as f64 / 1024.0)
+    } else {
+        format!("{mb} MB")
     }
-    column(lines).width(Length::Fill).into()
 }
 
-/// One table row: its cells in proportional columns.
-fn cells<'a>(parts: Vec<(u16, Element<'a, Msg>)>) -> Element<'a, Msg> {
-    let laid: Vec<Element<'a, Msg>> = parts
-        .into_iter()
-        .map(|(portion, cell)| {
-            iced::widget::container(cell)
-                .width(Length::FillPortion(portion))
-                .into()
+/// The card's rule across, in the palette's rule colour.
+fn rule<'a>(color: Color) -> Element<'a, Msg> {
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            ..Default::default()
         })
+        .into()
+}
+
+/// The web's `.card.flush`: the title in the card head over a rule, the body flush to the card's edges.
+fn flush_card<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    let top = container(row![
+        ui::card_title(title),
+        Space::new().width(Length::Fill)
+    ])
+    .padding([8, 16])
+    .height(Length::Shrink)
+    .width(Length::Fill)
+    .center_y(Length::Fixed(44.0));
+    container(column![top, rule(crate::theme::palette().rule), body])
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .clip(true)
+        .into()
+}
+
+/// A column of a table: its head, its share of the row (None: as wide as its content), and whether it reads right.
+#[derive(Clone, Copy)]
+struct Col {
+    head: &'static str,
+    share: Option<u16>,
+    right: bool,
+}
+
+/// One cell: the first and last columns sit at the card's edges (`edge`), the others carry 12 either side.
+fn cell<'a>(
+    cols: &[Col],
+    i: usize,
+    content: Element<'a, Msg>,
+    edge: f32,
+    pad_y: f32,
+) -> Element<'a, Msg> {
+    let col = cols[i];
+    let left = if i == 0 { edge } else { 12.0 };
+    let right = if i + 1 == cols.len() { edge } else { 12.0 };
+    let inner = container(content)
+        .padding(Padding {
+            top: pad_y,
+            right,
+            bottom: pad_y,
+            left,
+        })
+        .align_x(if col.right {
+            Horizontal::Right
+        } else {
+            Horizontal::Left
+        })
+        .align_y(Vertical::Center);
+    match col.share {
+        Some(share) => inner.width(Length::FillPortion(share)).into(),
+        None => inner.width(Length::Shrink).into(),
+    }
+}
+
+/// The web's `.tbl`: the head in the label voice over a strong rule, a row per item with a rule between.
+fn table<'a>(edge: f32, cols: &[Col], rows: Vec<Vec<Element<'a, Msg>>>) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let heads: Vec<Element<'a, Msg>> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| cell(cols, i, ui::label(c.head).into(), edge, 8.0))
         .collect();
-    row(laid).spacing(12).align_y(Alignment::Center).into()
+    let mut lines: Vec<Element<'a, Msg>> =
+        vec![row(heads).width(Length::Fill).into(), rule(p.rule_strong)];
+    for (n, cells) in rows.into_iter().enumerate() {
+        if n > 0 {
+            lines.push(rule(p.rule));
+        }
+        let line: Vec<Element<'a, Msg>> = cells
+            .into_iter()
+            .enumerate()
+            .map(|(i, content)| cell(cols, i, content, edge, 9.0))
+            .collect();
+        lines.push(
+            row(line)
+                .width(Length::Fill)
+                .align_y(Alignment::Center)
+                .into(),
+        );
+    }
+    column(lines).width(Length::Fill).into()
 }
 
 #[cfg(test)]
@@ -920,8 +1108,6 @@ mod tests {
             assert_eq!(sandbox.cpu_count, 2);
             assert_eq!(sandbox.memory_mb, 512);
             assert_eq!(sandbox.cid, Some(7));
-            assert!(sandbox.auto_pause);
-            assert!(!sandbox.allow_internet_access);
         }
         {
             // e2b_sandbox_without_a_cid_still_parses

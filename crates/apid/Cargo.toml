@@ -23,6 +23,9 @@ apz-station = { path = "../apz-station" }
 apz-rich = { path = "../apz-rich" }
 # The metrics core and the Metrics view model (docs/architecture.md, "Metrics").
 apz-metrics-view = { path = "../apz-metrics-view" }
+apz-theme = { path = "../apz-theme" }
+apz-view = { path = "../apz-view", features = ["raster"] }
+apz-artifact = { path = "../apz-artifact" }
 serde.workspace = true
 serde_json.workspace = true
 # The API's OpenAPI spec (openapi.rs): the routes' request and response schemas.
@@ -42,6 +45,10 @@ hmac.workspace = true
 zeroize.workspace = true
 secrecy.workspace = true
 base64.workspace = true
+# The relay client's socket to agentplaza.io (shares/relay.rs): TLS through rustls with the Mozilla roots.
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+# The relay's signatures (shares/relay.rs), matching crates/apz-trust.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 flate2 = "1.1"
 # The egress CA and its leaf certificates (egress_inject.rs). Already in the lock as apz-http's dev-dependency.
 rcgen = "0.13"

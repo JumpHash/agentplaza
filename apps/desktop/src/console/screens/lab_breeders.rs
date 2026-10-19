@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use iced::widget::{Space, column, container, row, text};
+use iced::widget::{Space, column, container, row};
 use iced::{Element, Length, Task};
 use serde::Deserialize;
 use serde_json::Value;
@@ -15,11 +15,10 @@ use serde_json::Value;
 use super::Id;
 use super::lab::{self, Section};
 use super::lab_common;
-use super::lab_models;
+
 use crate::console::Ctx;
 use crate::console::client::{self, Client};
-use crate::console::ui::{self, Tone};
-use crate::theme::SANS;
+use crate::console::ui::{self, Kind, Tone};
 
 /// The per-job GPU-hour cap when the laws cannot be read: S-006c permits a breeder's job up to
 /// 8 GPU-hours (S-006d refuses more).
@@ -351,45 +350,43 @@ fn clip(text: &str, max: usize) -> String {
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = match &state.breeders {
         None => match state.error.as_deref() {
-            Some(err) => ui::empty("alert", "Breeders unreachable", err),
-            None => ui::loading(),
+            Some(err) => lab_common::err(err),
+            None => lab_common::note("Loading breeders"),
         },
         Some(list) if list.is_empty() => lab_common::empty(
+            "bot",
             "No breeders yet.",
-            "A breeder is an agent with the breeder role; create one from Agents.",
+            Some("A breeder is an agent with the breeder role; create one from Agents."),
+            None,
         ),
         Some(list) => {
             let jobs: usize = list.iter().map(|b| b.jobs.len()).sum();
             let used: f64 = list.iter().map(|b| b.used).sum();
             let summary = format!(
-                "{} {} · {} {} · {} used",
+                "{} breeders · {} jobs · {} used",
                 lab_common::count(list.len() as u64),
-                if list.len() == 1 {
-                    "breeder"
-                } else {
-                    "breeders"
-                },
                 lab_common::count(jobs as u64),
-                if jobs == 1 { "job" } else { "jobs" },
                 lab_common::gpu_hours(used),
             );
-            let mut parts: Vec<Element<'a, Msg>> =
-                vec![ui::view_head("Breeders", vec![ui::faint(summary).into()])];
+            let mut parts: Vec<Element<'a, Msg>> = vec![lab_common::note(summary)];
             if let Some(err) = state.error.as_deref() {
-                parts.push(ui::error_line(err));
+                parts.push(lab_common::err(err));
             }
-            let mut cards = column(Vec::<Element<'a, Msg>>::new()).spacing(22);
-            for b in list {
-                cards = cards.push(breeder_card(b));
-            }
-            parts.push(cards.into());
-            column(parts).spacing(22).into()
+            parts.push(grid(list.iter().map(breeder_card).collect(), BREEDER_COLS));
+            parts.push(jobs_card(list));
+            parts.push(calls_card(list));
+            column(parts).spacing(16).width(Length::Fill).into()
         }
     };
-    lab::frame(Section::Breeders, body, Msg::Go)
+    lab::frame(
+        Section::Breeders,
+        ui::scroll(body).height(Length::Fill).into(),
+        Msg::Go,
+    )
 }
 
-/// One breeder: its name (linked) and status, the budget use, its jobs and its recent Foundry calls.
+/// One breeder's card, as the web's: its name and status, its role and CID, then the GPU-hours used,
+/// the jobs and the per-job cap; a transcript that cannot be read is noted on it.
 fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
     let a = &b.agent;
     let name = if a.name.trim().is_empty() {
@@ -397,142 +394,166 @@ fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
     } else {
         a.name.clone()
     };
-    let budget = column![
-        row![
-            text("GPU-HOURS USED".to_string())
-                .font(SANS)
-                .size(11.0)
-                .color(crate::theme::palette().ink_3),
-            Space::new().width(Length::Fill),
-            text(lab_common::gpu_hours(b.used))
-                .font(SANS)
-                .size(12.0)
-                .color(crate::theme::palette().ink_2),
-        ]
-        .align_y(iced::Alignment::Center),
-        ui::faint(format!(
-            "per-job cap {} GPU-h (S-006c)",
-            lab_common::number(b.cap, 0)
-        )),
-    ]
-    .spacing(8);
-    let job_rows: Vec<Vec<Element<'a, Msg>>> = b
-        .jobs
-        .iter()
-        .map(|j| {
-            vec![
-                cell(ui::link(
-                    &j.id,
-                    Msg::Go(Id::LabJobDetail(j.id.clone())),
-                    true,
-                )),
-                cell(ui::badge(&j.status, job_tone(&j.status))),
-                cell(lab_models::value(j.recipe.clone())),
-                cell(lab_models::value(lab_common::gpu_hours(j.gpu_hours))),
-                cell(lab_models::value(lab_common::time(j.created_ms))),
-            ]
-        })
-        .collect();
-    let call_rows: Vec<Vec<Element<'a, Msg>>> = b
-        .calls
-        .iter()
-        .map(|c| {
-            let result = if c.result.is_empty() {
-                if c.refused {
-                    "refused".to_string()
-                } else {
-                    "—".to_string()
-                }
-            } else {
-                clip(&c.result, 140)
-            };
-            vec![
-                cell(lab_models::value(lab_common::time(c.at_ms))),
-                cell(lab_models::value(c.name.clone())),
-                cell(lab_models::value(if c.detail.is_empty() {
-                    "—".to_string()
-                } else {
-                    clip(&c.detail, 48)
-                })),
-                cell(
-                    text(result)
-                        .font(SANS)
-                        .size(12.0)
-                        .width(Length::Fill)
-                        .color(if c.refused {
-                            crate::theme::palette().crit
-                        } else {
-                            crate::theme::palette().ink_2
-                        }),
-                ),
-            ]
-        })
-        .collect();
     let mut body: Vec<Element<'a, Msg>> = vec![
         row![
-            ui::link(&name, Msg::Go(Id::Agent(a.cid)), true),
-            ui::badge(&a.status, status_tone(&a.status))
+            ui::badge(&a.status, status_tone(&a.status)),
+            lab_common::note(format!("breeder · CID {}", a.cid)),
         ]
-        .spacing(14)
+        .spacing(8)
         .align_y(iced::Alignment::Center)
         .into(),
-        budget.into(),
+        kv_line("GPU-h used", lab_common::gpu_hours(b.used)),
+        kv_line("Jobs", lab_common::count(b.jobs.len() as u64)),
+        kv_line(
+            "Per-job cap",
+            format!("{} GPU-h", lab_common::number(b.cap, 0)),
+        ),
     ];
     if !b.note.is_empty() {
-        body.push(ui::error_line(&b.note));
+        body.push(lab_common::err(&b.note));
     }
-    body.push(section_title(&format!(
-        "Jobs ({})",
-        lab_common::count(b.jobs.len() as u64)
-    )));
-    body.push(table(
-        &["Job", "Status", "Recipe", "GPU-h", "Created"],
-        job_rows,
-        "No jobs yet.",
-    ));
-    body.push(section_title("Recent Foundry calls"));
-    body.push(table(
-        &["Time", "Tool", "Input", "Result"],
-        call_rows,
-        "No Foundry tool calls yet.",
-    ));
-    ui::card("Breeder", column(body).spacing(14).into())
+    ui::card_with(
+        &name,
+        vec![ui::btn_sm(
+            "Agent page",
+            None,
+            Kind::Ghost,
+            Some(Msg::Go(Id::Agent(a.cid))),
+        )],
+        column(body).spacing(10).width(Length::Fill).into(),
+    )
 }
 
-fn section_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_string())
-        .font(SANS)
-        .size(11.0)
-        .color(crate::theme::palette().ink_3)
-        .into()
+/// A label in a fixed column beside its value, as the web's `dl.kv`.
+fn kv_line<'a>(label: &str, value: String) -> Element<'a, Msg> {
+    row![
+        container(lab_common::note(label.to_string())).width(Length::Fixed(120.0)),
+        ui::sans(value, 13.0, crate::theme::palette().ink),
+    ]
+    .spacing(12)
+    .align_y(iced::Alignment::Center)
+    .into()
 }
 
-/// A table of cells with an equal share per column; `none` stands in for no rows.
-fn table<'a>(heads: &[&str], rows: Vec<Vec<Element<'a, Msg>>>, none: &str) -> Element<'a, Msg> {
-    if rows.is_empty() {
-        return ui::faint(none.to_string()).into();
+/// A grid of cards, `cols` to a row (the web's `.lab2-grid`).
+fn grid<'a>(cards: Vec<Element<'a, Msg>>, cols: usize) -> Element<'a, Msg> {
+    let mut rows: Vec<Element<'a, Msg>> = Vec::new();
+    let mut cards = cards.into_iter().peekable();
+    while cards.peek().is_some() {
+        let mut cells: Vec<Element<'a, Msg>> = Vec::new();
+        for _ in 0..cols {
+            match cards.next() {
+                Some(card) => cells.push(container(card).width(Length::FillPortion(1)).into()),
+                None => cells.push(Space::new().width(Length::FillPortion(1)).into()),
+            }
+        }
+        rows.push(row(cells).spacing(12).width(Length::Fill).into());
     }
-    let head = row(heads
+    column(rows).spacing(12).width(Length::Fill).into()
+}
+
+/// Every breeder's jobs in one table: each row opens its job.
+fn jobs_card<'a>(breeders: &'a [Breeder]) -> Element<'a, Msg> {
+    let jobs: Vec<&JobRow> = breeders.iter().flat_map(|b| b.jobs.iter()).collect();
+    let body: Element<'a, Msg> = if jobs.is_empty() {
+        lab_common::note("No jobs yet.")
+    } else {
+        let cols = [
+            lab_common::col("Job", 2, false),
+            lab_common::col("Status", 2, false),
+            lab_common::col("Recipe", 3, false),
+            lab_common::col("GPU-h", 2, true),
+            lab_common::col("Created", 3, false),
+        ];
+        let now = lab_common::now_ms();
+        let rows: Vec<lab_common::Row<'a, Msg>> = jobs
+            .iter()
+            .map(|j| lab_common::Row {
+                cells: vec![
+                    lab_common::cell(j.id.clone(), true),
+                    ui::badge(&j.status, job_tone(&j.status)),
+                    lab_common::cell(j.recipe.clone(), true),
+                    lab_common::cell(format!("{:.2}", j.gpu_hours), false),
+                    lab_common::cell(lab_common::ago_text(j.created_ms, now), false),
+                ],
+                on_press: Some(Msg::Go(Id::LabJobDetail(j.id.clone()))),
+            })
+            .collect();
+        lab_common::table(&cols, rows)
+    };
+    ui::card("Jobs", body)
+}
+
+/// Each breeder's recent Foundry calls, newest first, read from its transcript.
+fn calls_card<'a>(breeders: &'a [Breeder]) -> Element<'a, Msg> {
+    let parts: Vec<Element<'a, Msg>> = breeders
         .iter()
-        .map(|h| {
-            cell(
-                text(h.to_string())
-                    .font(SANS)
-                    .size(11.0)
-                    .color(crate::theme::palette().ink_3),
-            )
+        .map(|b| {
+            if !b.note.is_empty() && b.calls.is_empty() {
+                return lab_common::note(b.note.clone());
+            }
+            if b.calls.is_empty() {
+                return lab_common::note("No Foundry calls yet.");
+            }
+            let cols = [
+                lab_common::col("Time", 2, false),
+                lab_common::col("Tool", 2, false),
+                lab_common::col("Input", 4, false),
+                lab_common::col("Result", 5, false),
+            ];
+            let now = lab_common::now_ms();
+            let rows: Vec<lab_common::Row<'a, Msg>> = b
+                .calls
+                .iter()
+                .map(|c| {
+                    let input = if c.detail.is_empty() {
+                        "—".to_string()
+                    } else {
+                        clip(&c.detail, 80)
+                    };
+                    let result: Element<'a, Msg> = if c.refused {
+                        let tail = if c.result.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                ": {}",
+                                clip(
+                                    &c.result.split_whitespace().collect::<Vec<_>>().join(" "),
+                                    140
+                                )
+                            )
+                        };
+                        ui::sans(format!("Refused{tail}"), 13.0, crate::theme::palette().crit)
+                            .into()
+                    } else if c.result.is_empty() {
+                        lab_common::cell("—", false)
+                    } else {
+                        lab_common::cell(
+                            clip(
+                                &c.result.split_whitespace().collect::<Vec<_>>().join(" "),
+                                140,
+                            ),
+                            false,
+                        )
+                    };
+                    lab_common::Row {
+                        cells: vec![
+                            lab_common::cell(lab_common::ago_text(c.at_ms, now), false),
+                            lab_common::cell(c.name.clone(), true),
+                            lab_common::cell(input, true),
+                            result,
+                        ],
+                        on_press: None,
+                    }
+                })
+                .collect();
+            lab_common::table(&cols, rows)
         })
-        .collect::<Vec<_>>())
-    .spacing(10);
-    let mut lines = column![head].spacing(8);
-    for cells in rows {
-        lines = lines.push(row(cells).spacing(10));
-    }
-    lines.into()
-}
-
-fn cell<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content).width(Length::FillPortion(1)).into()
+        .collect();
+    ui::card(
+        "Recent Foundry calls",
+        column(parts).spacing(12).width(Length::Fill).into(),
+    )
 }
 
 fn job_tone(status: &str) -> Tone {
@@ -552,3 +573,6 @@ fn status_tone(status: &str) -> Tone {
         _ => Tone::Muted,
     }
 }
+
+/// Cards per row in the breeders grid, as the web's `lab2-grid` at the console's width.
+const BREEDER_COLS: usize = 3;

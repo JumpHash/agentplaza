@@ -1,0 +1,33 @@
+/* The artifact screen (a detail page: page head, then the artifact's Metrics cards) and the inline embed and chip a
+   message shows for an artifact. The parts are the prototype's; this file lays them out. */
+
+.artifact-screen { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.artifact-screen .page-head { gap: 8px; }
+.artifact-screen .page-actions { gap: 6px; }
+.artifact-screen .lede { margin: 0; font-size: var(--fs-sm); color: var(--ink-3); }
+.artifact-screen .lede:empty { display: none; }
+.artifact-meta { gap: 8px; }
+.artifact-meta .hint { font-size: var(--fs-xs); }
+.artifact-version { width: auto; max-width: 240px; }
+.artifact-body { min-width: 0; }
+
+.artifact-export { position: relative; }
+.artifact-export > summary { list-style: none; cursor: pointer; }
+.artifact-export > summary::-webkit-details-marker { display: none; }
+.artifact-export-list {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 240px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.artifact-export-list .hint { padding: 8px 10px; }
+
+.artifact-embed {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px 14px;
+  border: 1px solid var(--rule); border-radius: var(--radius-lg); background: var(--raised);
+}
+.artifact-embed-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.artifact-embed-head h3 { margin: 0; font: 600 14px/1.3 var(--font); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-embed-foot { justify-content: flex-end; }
+
+.artifact-chip { max-width: 100%; cursor: pointer; }
+.artifact-chip:disabled { opacity: .6; cursor: default; }
+.artifact-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

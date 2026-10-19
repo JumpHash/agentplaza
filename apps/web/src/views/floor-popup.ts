@@ -105,7 +105,7 @@ export function machineCard(
 /** The role as a square tag, striped in the district's colour as on the robot's label. */
 export function roleTag(role: string, hue: number): HTMLElement {
   const t = h('span.floor-tag', null, roleLabel(role));
-  t.style.borderLeftColor = `hsl(${hue} 55% 34%)`;
+  t.style.borderLeftColor = `var(--hue-${Math.floor((((hue % 360) + 360) % 360) / 60)})`;
   return t;
 }
 

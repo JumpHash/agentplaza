@@ -1,0 +1,33 @@
+meta {
+  name: Save a valid custom theme
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/appearance/themes/my-theme
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "schema": 1,
+    "id": "my-theme",
+    "name": "My theme",
+    "skin": "loom",
+    "palette": {
+      "light": {
+        "paper": "#f6f4ee",
+        "ink": "#1b1a17",
+        "signal": "#d0602c"
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.themes.length: eq 1
+}

@@ -1,12 +1,12 @@
 // MCP wizard steps 3 (Test) and 4 (Tools). The shell (mcp-wizard.ts) owns navigation and persistence:
 // step 3 saves the draft itself when it has not been saved yet, step 4 leaves persisting to Next.
-import '../styles/mcp-wizard-test.css';
+import '../styles/proto/settings-b.css';
 import { api, mcpApi } from '../api';
-import type { McpLogLine, McpProbeTool, McpRisk, McpTestResult, McpToolRow } from '../api';
-import { attempt, badge, button, clip, field, select, table } from '../ui/components';
-import type { Column, Tone } from '../ui/components';
+import type { McpProbeTool, McpRisk, McpTestResult, McpToolRow } from '../api';
+import { attempt, badge, clip, field, select } from '../ui/components';
+import type { Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
-import { RISKS } from './mcp-common';
+import { RISKS, btn, tbl } from './mcp-common';
 import type { WizardCtx } from './mcp-wizard';
 
 const RISK_TONE: Record<McpRisk, Tone> = { read: 'ok', write: 'warn', irreversible: 'danger' };
@@ -20,61 +20,57 @@ async function nodeChoices(): Promise<{ value: string; label: string }[]> {
   ];
 }
 
+/** Several nodes in a row, separated by a space. */
+function joined(nodes: Node[]): DocumentFragment {
+  const f = document.createDocumentFragment();
+  nodes.forEach((n, i) => {
+    if (i) f.append(' ');
+    f.append(n);
+  });
+  return f;
+}
+
 /** Hint chips for the annotations a tool advertises. Only boolean hints are shown. */
-function hintChips(annotations: unknown): HTMLElement[] {
+function hintChips(annotations: unknown): Node[] {
   const a = (annotations ?? {}) as Record<string, unknown>;
   return (['readOnlyHint', 'destructiveHint'] as const)
     .filter((k) => typeof a[k] === 'boolean')
-    .map((k) => h('span.chip', { title: k }, `${k}: ${a[k] ? 'true' : 'false'}`));
+    .map((k) => h('span.mcp-chip', { title: k }, `${k}: ${a[k] ? 'true' : 'false'}`));
 }
 
-/** The stderr tail as mono lines. Lines are already redacted by the hub. */
-function stderrBlock(lines: McpLogLine[]): HTMLElement | null {
-  if (!lines.length) return null;
-  return h(
-    'pre.wz-log',
-    {},
-    lines.map((l) => h('div', { class: l.stream === 'stderr' ? 'err' : '' }, l.line)),
+function toolsTable(tools: McpProbeTool[]): HTMLElement {
+  return tbl<McpProbeTool>(
+    [
+      {
+        label: 'Tool',
+        cell: (t) => joined([h('strong', null, t.name), h('span.mono.muted', null, t.agent_name)]),
+      },
+      { label: 'Description', cell: (t) => clip(t.description, 140) },
+      { label: 'Annotations', cell: (t) => joined(hintChips(t.annotations)) },
+      { label: 'Risk', cell: (t) => badge(t.risk, RISK_TONE[t.risk]) },
+    ],
+    tools,
+    (t) => t.name,
   );
 }
 
-function toolsTable(tools: McpProbeTool[], names: Map<string, string>): HTMLElement {
-  const columns: Column<McpProbeTool>[] = [
-    {
-      label: 'Tool',
-      cell: (t) =>
-        h('div.wz-tool-name', {}, h('strong', {}, t.name.replace(/_/g, '_\u200b')), names.has(t.name) ? h('span.mono.muted', {}, names.get(t.name) ?? '') : null),
-    },
-    { label: 'Description', cell: (t) => clip(t.description, 140) },
-    { label: 'Annotations', cell: (t) => h('div.wz-chips', {}, hintChips(t.annotations)) },
-    { label: 'Risk', cell: (t) => badge(t.risk, RISK_TONE[t.risk]) },
-  ];
-  return h('div.wz-scroll', {}, table(columns, tools));
-}
-
-function resultView(res: McpTestResult, names: Map<string, string>): HTMLElement {
+/** The result under the Run button: a failure with its error and stderr tail, or the tools the server reports. */
+function resultView(res: McpTestResult): (Node | null)[] {
   if (!res.ok) {
-    return h(
-      'div.wz-test-result',
-      {},
-      badge('Test failed', 'danger', true),
-      h('p.wz-test-error', {}, res.error ?? 'The server did not start.'),
-      stderrBlock(res.stderr ?? []),
-    );
+    const stderr = res.stderr ?? [];
+    return [
+      badge('Test failed', 'danger'),
+      h('p.mcpwz-err', null, res.error || 'The server did not start.'),
+      stderr.length ? h('pre.mcp-pre.mono', null, stderr.map((l) => l.line).join('\n')) : null,
+    ];
   }
   const info = res.server_info;
   const tools = res.tools ?? [];
-  return h(
-    'div.wz-test-result',
-    {},
-    h(
-      'div.wz-test-head',
-      {},
-      badge('Test passed', 'ok', true),
-      info ? h('span.muted', {}, `${info.name} ${info.version} · protocol ${info.protocol}`) : null,
-    ),
-    tools.length ? toolsTable(tools, names) : h('p.muted', {}, 'The server reports no tools.'),
-  );
+  return [
+    badge('Test passed', 'ok'),
+    info ? h('p.muted', null, `${info.name} ${info.version} · protocol ${info.protocol}`) : null,
+    tools.length ? toolsTable(tools) : h('p.muted', null, 'The server reports no tools.'),
+  ];
 }
 
 /** Step 3: run the server once on a node and show what it reports. */
@@ -83,54 +79,61 @@ export function step3Test(ctx: WizardCtx): HTMLElement {
   let running = false;
   let ran = false;
 
-  const nodeSlot = h('div.wz-node-slot', {}, select([{ value: 'n0', label: 'This hub' }], 'n0'));
-  const resultBox = h('div.wz-test-box', {});
-
-  const runBtn = button('Run test', () => void run(), { kind: 'primary' });
+  const sel = select([{ value: 'n0', label: 'This hub' }], 'n0');
+  sel.setAttribute('aria-label', 'Node');
+  sel.addEventListener('change', () => {
+    node = sel.value;
+  });
+  const resultBox = h('div.mcpwz-res');
+  const runBtn = btn('Run test', () => void run(), { kind: 'primary' });
+  const setRunLabel = (text: string): void => {
+    const label = runBtn.querySelector('span');
+    if (label) label.textContent = text;
+  };
 
   async function run(): Promise<void> {
     if (running) return;
     running = true;
     runBtn.disabled = true;
-    runBtn.textContent = 'Testing';
-    replace(resultBox, h('p.muted', {}, 'Testing the server. This can take a minute.'));
+    setRunLabel('Testing');
+    replace(resultBox, h('p.muted', null, 'Testing the server. This can take a minute.'));
     try {
       if (!ctx.state.saved && !(await ctx.persist())) {
-        replace(resultBox, h('p.muted', {}, 'The server is not saved yet. Fix the field named above, then run the test again.'));
+        replace(resultBox, h('p.mcpwz-err', null, 'The server is not saved yet. Fix the field named above, then run the test again.'));
         return;
       }
       const id = ctx.state.draft.id;
       const res = await attempt(() => mcpApi.testServer(id, node));
       if (!res) {
-        replace(resultBox, h('p.muted', {}, 'The test did not finish. Try again.'));
+        replace(resultBox, h('p.mcpwz-err', null, 'The test did not finish. Try again.'));
         return;
       }
       // The probe carries each tool's agent name; step 4 reads the same list when the test passed.
       ctx.state.probe = res.ok ? (res.tools ?? []) : null;
-      const names = new Map((res.tools ?? []).map((t) => [t.name, t.agent_name] as const));
       ran = true;
-      replace(resultBox, resultView(res, names));
+      replace(resultBox, resultView(res));
     } finally {
       running = false;
       runBtn.disabled = false;
-      runBtn.textContent = ran ? 'Run test again' : 'Run test';
+      setRunLabel(ran ? 'Run test again' : 'Run test');
     }
   }
 
   void nodeChoices().then((choices) => {
-    const sel = select(choices, node);
-    sel.addEventListener('change', () => {
-      node = sel.value;
-    });
-    replace(nodeSlot, sel);
+    replace(
+      sel,
+      choices.map((c) => h('option', { value: c.value }, c.label)),
+    );
+    sel.value = node;
   });
 
+  // The body is the shell's `.mcpwz-body` column, so its children are spaced the same way.
   return h(
-    'div.wz-test',
-    {},
-    h('p.muted', {}, 'Run the server once to check that it starts and lists its tools. Unsaved changes are saved first.'),
-    field('Node', nodeSlot, 'The node that runs the test.'),
-    h('div.wz-test-actions', {}, runBtn),
+    'div.mcpwz-body',
+    null,
+    h('p.muted', null, 'Run the server once to check that it starts and lists its tools. Unsaved changes are saved first.'),
+    field('Node', sel, 'The node that runs the test.'),
+    h('div.mcpwz-row', null, runBtn),
     resultBox,
   );
 }
@@ -146,30 +149,18 @@ function autoRiskOf(row: McpToolRow): McpRisk {
 /** Step 4: pick the tools agents may call, and each tool's risk. The shell persists on Next. */
 export function step4Tools(ctx: WizardCtx): HTMLElement {
   const id = ctx.state.draft.id;
-  const body = h('div.wz-tools-body', {}, h('p.muted', {}, 'Loading tools'));
+  const body = h('div.mcpwz-body', null, h('p.muted', null, 'Loading tools'));
   // The hub's own risk for each tool that had no override when this step opened.
   const autoRisk = new Map<string, McpRisk>();
 
   const draw = (rows: McpToolRow[]): void => {
-    if (!rows.length) {
-      replace(
-        body,
-        h(
-          'p.wz-note',
-          {},
-          ctx.state.probe ? 'The server reports no tools.' : 'Run the test in step 3 first. Tools appear once the server has run.',
-        ),
-      );
-      return;
-    }
     const tools = ctx.state.draft.tools;
     const allow = tools.allow;
     const allAll = allow === 'all';
     const picked = new Set<string>(allow === 'all' ? [] : allow);
 
-    const radio = (value: 'all' | 'pick', text: string): HTMLElement => {
-      const r = h('input', { type: 'radio', name: 'mcp-tools-allow', value });
-      r.checked = (value === 'all') === allAll;
+    const allowRadio = (value: 'all' | 'pick', text: string): HTMLLabelElement => {
+      const r = h('input', { type: 'radio', name: 'mcpwz-allow', value, checked: value === 'all' ? allAll : !allAll });
       r.addEventListener('change', () => {
         if (value === 'all') {
           ctx.state.draft.tools.allow = 'all';
@@ -178,20 +169,30 @@ export function step4Tools(ctx: WizardCtx): HTMLElement {
         }
         draw(rows);
       });
-      return h('label.wz-radio', {}, r, text);
+      return h('label.check', null, r, h('span', null, text));
     };
+    const radios = h('div.mcpwz-row', null, allowRadio('all', 'Allow all tools'), allowRadio('pick', 'Pick tools'));
 
-    const list = rows.map((row) => {
+    if (!rows.length) {
+      replace(
+        body,
+        radios,
+        h('p.muted', null, ctx.state.probe ? 'The server reports no tools.' : 'Run the test in step 3 first. Tools appear once the server has run.'),
+      );
+      return;
+    }
+
+    const toolRow = (row: McpToolRow): HTMLElement => {
       const override = tools.risk[row.name];
       const auto = autoRisk.get(row.name) ?? autoRiskOf(row);
 
-      const check = h('input', { type: 'checkbox', disabled: allAll });
-      check.checked = allAll || picked.has(row.name);
-      check.addEventListener('change', () => {
+      const pickBox = h('input', { type: 'checkbox', disabled: allAll });
+      pickBox.checked = allAll || picked.has(row.name);
+      pickBox.addEventListener('change', () => {
         const cur = ctx.state.draft.tools.allow;
         if (cur === 'all') return;
         const next = new Set(cur);
-        if (check.checked) next.add(row.name);
+        if (pickBox.checked) next.add(row.name);
         else next.delete(row.name);
         ctx.state.draft.tools.allow = [...next];
       });
@@ -208,34 +209,19 @@ export function step4Tools(ctx: WizardCtx): HTMLElement {
       });
 
       return h(
-        'div.wz-tool-row',
-        {},
-        h(
-          'label.wz-tool-pick',
-          {},
-          check,
-          h(
-            'span.wz-tool-text',
-            {},
-            h('strong', {}, row.name),
-            h('span.mono.muted', {}, row.tool),
-            row.description ? h('span.muted.wz-tool-desc', {}, clip(row.description, 140)) : null,
-          ),
-        ),
+        'div.mcpwz-tool',
+        null,
+        h('label.check', null, pickBox, ' ', h('strong', null, row.name), ' ', h('span.mono.muted', null, row.tool)),
+        h('p.muted', null, clip(row.description || '', 140)),
         risk,
       );
-    });
+    };
 
     replace(
       body,
-      h(
-        'div.wz-radios',
-        {},
-        radio('all', 'Allow all tools'),
-        radio('pick', 'Pick tools'),
-      ),
-      h('p.wz-note', {}, 'Risk sets how a call is treated. Auto uses the risk the hub derives from each tool\'s hints.'),
-      h('div.wz-tool-list', {}, list),
+      radios,
+      h('p.muted', null, "Risk sets how a call is treated. Auto uses the risk the hub derives from each tool's hints."),
+      rows.map(toolRow),
     );
   };
 

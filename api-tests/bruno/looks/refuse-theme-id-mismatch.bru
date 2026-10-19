@@ -1,0 +1,32 @@
+meta {
+  name: Refuse a theme whose body id differs from the URL
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/appearance/themes/other
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "schema": 1,
+    "id": "mismatch",
+    "name": "My theme",
+    "skin": "loom",
+    "palette": {
+      "light": {
+        "paper": "#f6f4ee",
+        "ink": "#1b1a17",
+        "signal": "#d0602c"
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

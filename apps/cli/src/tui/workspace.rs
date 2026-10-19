@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
+use super::context_bar::{self, Ask, Context, Owner, Picker, Stroke as PickerStroke};
+
 /// Below this many columns the tab shows one pane at a time.
 pub const NARROW_BELOW: u16 = 120;
 /// The most characters a composer holds: the hub's limit for a chat text.
@@ -659,6 +661,18 @@ pub enum Got {
         cid: u64,
         result: Result<Value, String>,
     },
+    /// A chat's context (`GET .../context`), by its owner.
+    Context {
+        owner: Owner,
+        result: Result<Value, String>,
+    },
+    /// The model list (`GET /v1/models`) the picker reads.
+    Models(Result<Value, String>),
+    /// A model choice the hub took or refused (`PATCH`), for the chat it was made for.
+    Saved {
+        owner: Owner,
+        result: Result<Value, String>,
+    },
 }
 
 /// Work the app does for the tab: a fetch, a request to the agents list, a write to the hub, or a notice.
@@ -684,6 +698,8 @@ pub enum Effect {
     },
     /// Stop the agent's work, after a confirm.
     AskStop(u64),
+    /// A request for the context bar or the model picker (see `context_bar::Ask`).
+    Context(Ask),
     Notice(String),
 }
 
@@ -715,6 +731,14 @@ pub struct Workspace {
     /// The filter while it is typed (it applies as it is typed).
     pub filtering: Option<String>,
     pub composer: Option<Composer>,
+    /// Each chat's context as the hub last answered it, by its owner (the agent's, or the conversation's).
+    pub contexts: HashMap<Owner, Context>,
+    /// Seconds since each chat's context was asked for, for the chat on screen (absent: never asked).
+    pub context_since: HashMap<Owner, f32>,
+    /// Whether the breakdown panel is open (`i`).
+    pub breakdown: bool,
+    /// The model and effort picker (`M`), open until Esc or a save.
+    pub picker: Option<Picker>,
 }
 
 impl Workspace {
@@ -723,9 +747,76 @@ impl Workspace {
         self.agents = listed(value, "agents");
     }
 
-    /// Whether a composer or the filter is taking the keys (the app's own keys wait for it).
+    /// Whether a composer, the filter or the picker is taking the keys (the app's own keys wait for it).
     pub fn captures_keys(&self) -> bool {
-        self.filtering.is_some() || self.composer.is_some()
+        self.filtering.is_some() || self.composer.is_some() || self.picker.is_some()
+    }
+
+    /// The model the roster lists for an agent, as the picker opens with it.
+    fn agent_model(&self, cid: u64) -> Option<String> {
+        context_bar::model_of(agent_of(&self.agents, cid).and_then(|a| a.get("model")))
+    }
+
+    /// Asks for the context of the chat on screen, once it has not been asked for in the last `EVERY` seconds (or never).
+    /// `dt` is the seconds since the last frame.
+    pub fn poll(&mut self, dt: f32, shown: Option<Owner>) -> Vec<Effect> {
+        let Some(owner) = shown else {
+            return Vec::new();
+        };
+        let elapsed = match self.context_since.get_mut(&owner) {
+            Some(since) => {
+                *since += dt;
+                *since
+            }
+            None => f32::INFINITY,
+        };
+        if elapsed < context_bar::EVERY {
+            return Vec::new();
+        }
+        self.context_since.insert(owner.clone(), 0.0);
+        vec![Effect::Context(Ask::Fetch(owner))]
+    }
+
+    /// The breakdown's `i` and the picker's `M` for the chat on screen (`shown`: its owner and its model), and the keys of
+    /// an open picker. None for the other keys, which the app's own keys then take.
+    pub fn context_key(
+        &mut self,
+        key: Key,
+        shown: Option<(Owner, Option<String>)>,
+    ) -> Option<Vec<Effect>> {
+        if self.picker.is_some() {
+            return Some(self.picker_key(key));
+        }
+        match key {
+            Key::Char('i') => {
+                self.breakdown = !self.breakdown;
+                Some(Vec::new())
+            }
+            Key::Char('M') => Some(match shown {
+                Some((owner, model)) => {
+                    self.picker = Some(Picker::open(owner, model.as_deref()));
+                    vec![Effect::Context(Ask::Models)]
+                }
+                None => vec![Effect::Notice("no chat to pick a model for".to_string())],
+            }),
+            _ => None,
+        }
+    }
+
+    fn picker_key(&mut self, key: Key) -> Vec<Effect> {
+        let Some(picker) = self.picker.as_mut() else {
+            return Vec::new();
+        };
+        match picker.key(key) {
+            PickerStroke::Keep => Vec::new(),
+            PickerStroke::Close => {
+                self.picker = None;
+                Vec::new()
+            }
+            PickerStroke::Save { owner, model } => {
+                vec![Effect::Context(Ask::Save { owner, model })]
+            }
+        }
     }
 
     fn active_filter(&self) -> &str {
@@ -863,6 +954,51 @@ impl Workspace {
                     self.outcomes.insert(cid, outcome);
                 }
             }
+            Got::Context {
+                owner,
+                result: Ok(value),
+            } => match Context::parse(&value) {
+                Some(context) => {
+                    self.contexts.insert(owner, context);
+                }
+                None => {
+                    return vec![Effect::Notice(
+                        "context: the hub's answer has no used".to_string(),
+                    )];
+                }
+            },
+            Got::Context {
+                result: Err(error), ..
+            } => return vec![Effect::Notice(format!("context: {error}"))],
+            Got::Models(Ok(value)) => {
+                if let Some(picker) = self.picker.as_mut() {
+                    picker.load(&value);
+                }
+            }
+            Got::Models(Err(error)) => {
+                if let Some(picker) = self.picker.as_mut() {
+                    picker.fail(&error);
+                }
+            }
+            Got::Saved {
+                owner,
+                result: Ok(_),
+            } => {
+                let mut effects = vec![Effect::Notice("model saved".to_string())];
+                if self.picker.as_ref().is_some_and(|p| p.owner == owner) {
+                    self.picker = None;
+                }
+                self.context_since.insert(owner.clone(), 0.0);
+                effects.push(Effect::Context(Ask::Fetch(owner)));
+                return effects;
+            }
+            Got::Saved {
+                owner,
+                result: Err(error),
+            } => match self.picker.as_mut().filter(|p| p.owner == owner) {
+                Some(picker) => picker.note = Some(error),
+                None => return vec![Effect::Notice(format!("model: {error}"))],
+            },
             Got::Projects(Err(error)) => return vec![Effect::Notice(format!("projects: {error}"))],
             Got::Tasks(Err(error)) => return vec![Effect::Notice(format!("tasks: {error}"))],
             Got::Board {
@@ -915,6 +1051,29 @@ impl Workspace {
                 vec![Effect::Agents]
             }
             "agent" => vec![Effect::Agents],
+            "context" => {
+                // The events come once a second an agent at most: each chat of that agent (or of the orchestrator it
+                // is) is read again.
+                let Some(cid) = data.get("cid").and_then(Value::as_u64) else {
+                    return Vec::new();
+                };
+                let owners: Vec<Owner> = self
+                    .contexts
+                    .iter()
+                    .filter(|(owner, context)| match owner {
+                        Owner::Agent(own) => *own == cid,
+                        Owner::Conversation(_) => context.cid == cid,
+                    })
+                    .map(|(owner, _)| owner.clone())
+                    .collect();
+                owners
+                    .into_iter()
+                    .map(|owner| {
+                        self.context_since.insert(owner.clone(), 0.0);
+                        Effect::Context(Ask::Fetch(owner))
+                    })
+                    .collect()
+            }
             "project" => vec![Effect::Fetch(Want::Projects)],
             "task" => vec![Effect::Fetch(Want::Tasks)],
             "board" | "board_paused" => self.refresh_board(),
@@ -931,6 +1090,12 @@ impl Workspace {
             let stroke = composer.key(key);
             return Some(self.stroke(stroke));
         }
+        if self.picker.is_some() || matches!(key, Key::Char('i' | 'M')) {
+            let shown = self
+                .selected_cid()
+                .map(|cid| (Owner::Agent(cid), self.agent_model(cid)));
+            return self.context_key(key, shown);
+        }
         let effects = match key {
             Key::Tab => {
                 self.focus = self.focus.next();
@@ -945,7 +1110,7 @@ impl Workspace {
                 self.filtering = Some(self.filter.clone());
                 self.sync()
             }
-            Key::Char('i') => match self.selected_cid() {
+            Key::Char('t') => match self.selected_cid() {
                 Some(cid) => {
                     self.composer = Some(Composer::new(Target::Steer(cid)));
                     Vec::new()
@@ -1255,6 +1420,171 @@ mod tests {
         assert_eq!(
             ws.on_event("board", &json!({})),
             vec![Effect::Fetch(Want::Board(None))]
+        );
+    }
+
+    fn model_listing() -> Value {
+        json!({"models": [
+            {"provider": "anthropic", "id": "claude-a", "favourite": true, "context": 200000},
+            {"provider": "openai", "id": "gpt-x", "favourite": false, "context": 128000},
+        ]})
+    }
+
+    fn context_answer(cid: u64, used: u64) -> Value {
+        json!({"cid": cid, "work": 9, "model": "anthropic/claude-a", "window": 200000, "used": used,
+            "parts": [{"part": "system", "tokens": used}], "tools": [], "calls": 1, "compactions": 0})
+    }
+
+    #[test]
+    fn i_opens_the_breakdown_and_t_writes_the_steer_note() {
+        let mut ws = Workspace {
+            agents: vec![agent(1, "Ada", "idle", None)],
+            ..Workspace::default()
+        };
+        ws.sync();
+        assert_eq!(ws.key(Key::Char('i')), Some(Vec::new()));
+        assert!(ws.breakdown);
+        ws.key(Key::Char('i'));
+        assert!(!ws.breakdown, "i toggles it");
+        ws.key(Key::Char('t'));
+        assert_eq!(
+            ws.composer.as_ref().map(|c| c.target.clone()),
+            Some(Target::Steer(1))
+        );
+    }
+
+    #[test]
+    fn m_opens_the_picker_asks_for_the_models_and_a_save_closes_it() {
+        let mut ws = Workspace {
+            agents: vec![agent(1, "Ada", "idle", None)],
+            ..Workspace::default()
+        };
+        ws.sync();
+        let effects = ws.key(Key::Char('M')).unwrap_or_default();
+        assert_eq!(effects, vec![Effect::Context(Ask::Models)]);
+        assert!(ws.captures_keys(), "the picker takes the keys");
+        assert_eq!(
+            ws.key(Key::Char('q')),
+            Some(Vec::new()),
+            "q does not quit under the picker"
+        );
+        let got = ws.receive(Got::Models(Ok(model_listing())));
+        assert!(got.is_empty());
+        ws.key(Key::Down);
+        let save = ws.key(Key::Enter).unwrap_or_default();
+        assert_eq!(
+            save,
+            vec![Effect::Context(Ask::Save {
+                owner: Owner::Agent(1),
+                model: Some("anthropic/claude-a".into()),
+            })]
+        );
+        let done = ws.receive(Got::Saved {
+            owner: Owner::Agent(1),
+            result: Ok(json!({})),
+        });
+        assert!(ws.picker.is_none(), "a saved choice closes the picker");
+        assert_eq!(done[0], Effect::Notice("model saved".to_string()));
+        assert_eq!(done[1], Effect::Context(Ask::Fetch(Owner::Agent(1))));
+    }
+
+    #[test]
+    fn a_refused_model_keeps_the_picker_open_with_the_hubs_message() {
+        let mut ws = Workspace {
+            agents: vec![agent(1, "Ada", "idle", None)],
+            ..Workspace::default()
+        };
+        ws.sync();
+        ws.key(Key::Char('M'));
+        ws.receive(Got::Models(Ok(model_listing())));
+        ws.receive(Got::Saved {
+            owner: Owner::Agent(1),
+            result: Err("the tier policy does not allow openai/gpt-x".into()),
+        });
+        let picker = ws.picker.as_ref().expect("still open");
+        assert_eq!(
+            picker.note.as_deref(),
+            Some("the tier policy does not allow openai/gpt-x")
+        );
+    }
+
+    #[test]
+    fn a_failed_model_list_offers_the_default_and_says_why() {
+        let mut ws = Workspace {
+            agents: vec![agent(1, "Ada", "idle", None)],
+            ..Workspace::default()
+        };
+        ws.sync();
+        ws.key(Key::Char('M'));
+        ws.receive(Got::Models(Err("HTTP 503".into())));
+        let picker = ws.picker.as_ref().unwrap();
+        assert_eq!(picker.chosen(), Some(None));
+        assert_eq!(picker.note.as_deref(), Some("models: HTTP 503"));
+    }
+
+    #[test]
+    fn a_context_event_asks_for_the_chats_of_its_agent_and_the_context_is_kept() {
+        let mut ws = Workspace::default();
+        assert!(
+            ws.receive(Got::Context {
+                owner: Owner::Agent(1),
+                result: Ok(context_answer(1, 41_200))
+            })
+            .is_empty()
+        );
+        assert_eq!(ws.contexts[&Owner::Agent(1)].used, 41_200);
+        let effects = ws.on_event(
+            "context",
+            &json!({"cid": 1, "work": 9, "used": 1, "window": 200000}),
+        );
+        assert_eq!(effects, vec![Effect::Context(Ask::Fetch(Owner::Agent(1)))]);
+        assert!(
+            ws.on_event("context", &json!({"cid": 2})).is_empty(),
+            "another agent's"
+        );
+        let failed = ws.receive(Got::Context {
+            owner: Owner::Agent(1),
+            result: Err("HTTP 404".into()),
+        });
+        assert_eq!(
+            failed,
+            vec![Effect::Notice("context: HTTP 404".to_string())]
+        );
+    }
+
+    #[test]
+    fn the_shown_chats_context_is_asked_for_at_once_and_then_every_ten_seconds() {
+        let mut ws = Workspace::default();
+        let shown = Some(Owner::Agent(1));
+        assert_eq!(
+            ws.poll(0.5, shown.clone()),
+            vec![Effect::Context(Ask::Fetch(Owner::Agent(1)))],
+            "a chat never asked for is asked for now"
+        );
+        assert!(ws.poll(5.0, shown.clone()).is_empty());
+        assert!(
+            ws.poll(4.0, shown.clone()).is_empty(),
+            "nine and a half seconds is not ten"
+        );
+        assert_eq!(
+            ws.poll(1.0, shown.clone()),
+            vec![Effect::Context(Ask::Fetch(Owner::Agent(1)))]
+        );
+        assert!(
+            ws.poll(30.0, None).is_empty(),
+            "nothing on screen, nothing asked"
+        );
+    }
+
+    #[test]
+    fn a_chat_with_no_picker_open_leaves_the_other_keys_to_the_app() {
+        let mut ws = Workspace::default();
+        assert_eq!(ws.context_key(Key::Char('x'), None), None);
+        assert_eq!(
+            ws.context_key(Key::Char('M'), None),
+            Some(vec![Effect::Notice(
+                "no chat to pick a model for".to_string()
+            )])
         );
     }
 }

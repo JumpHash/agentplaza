@@ -66,8 +66,12 @@ export function applyLayout(c: IdeCtx): void {
   frame.right.el.hidden = !L.rightOpen && !c.mid;
   frame.right.el.classList.toggle('open', sheet);
   frame.scrim.classList.toggle('show', drawer || sheet);
-  frame.sideToggle.setAttribute('aria-pressed', String(leftShows(L, c.sheets, c.narrow)));
+  // The top bar's navigator button shows only while the navigator is hidden: the navigator's own head hides it.
+  const sideShown = leftShows(L, c.sheets, c.narrow);
+  frame.sideToggle.hidden = sideShown;
+  frame.sideToggle.setAttribute('aria-pressed', String(sideShown));
   frame.rightToggle.setAttribute('aria-pressed', String(rightShows(L, c.sheets, c.mid)));
+  frame.rightToggle.classList.toggle('on', rightShows(L, c.sheets, c.mid));
 }
 
 export function saveLayout(c: IdeCtx): void {

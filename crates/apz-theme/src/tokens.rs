@@ -57,22 +57,59 @@ use Group::*;
 pub const TOKENS: &[Token] = &[
     t("paper", Ground, "The page behind everything"),
     t("paper-side", Ground, "The sidebar and side panels"),
-    t("sheet", Ground, "Cards, panels and dialogs laid on the page"),
-    t("sheet-2", Ground, "A recessed area: code blocks, wells, table heads"),
+    t(
+        "panel",
+        Ground,
+        "The main column's ground under the ambient layer",
+    ),
+    t(
+        "sheet",
+        Ground,
+        "Cards, panels and dialogs laid on the page",
+    ),
+    t(
+        "raised",
+        Ground,
+        "Raised surfaces: popovers, the composer, inputs",
+    ),
+    t(
+        "sheet-2",
+        Ground,
+        "A recessed area: code blocks, wells, table heads",
+    ),
     t("hover", Ground, "A row under the pointer"),
     t("press", Ground, "A pressed or selected row"),
     t("pattern", Ground, "The background pattern's dots and lines"),
+    t("amb-1", Ground, "The background's first colour field"),
+    t("amb-2", Ground, "The background's second colour field"),
+    t("amb-3", Ground, "The background's third colour field"),
     t("rule", Lines, "Hairlines between rows and around cards"),
-    t("rule-strong", Lines, "Stronger borders: inputs, focused cards"),
+    t(
+        "rule-strong",
+        Lines,
+        "Stronger borders: inputs, focused cards",
+    ),
     t("rule-faint", Lines, "The faintest separators"),
     t("ink", Text, "Body text and titles"),
     t("ink-2", Text, "Secondary text"),
     t("ink-3", Text, "Meta text: labels, times, hints"),
-    t("signal", Accent, "You: the owner's colour, for dots and marks"),
-    t("signal-fill", Accent, "Filled controls in the owner's colour"),
+    t(
+        "signal",
+        Accent,
+        "You: the owner's colour, for dots and marks",
+    ),
+    t(
+        "signal-fill",
+        Accent,
+        "Filled controls in the owner's colour",
+    ),
     t("signal-ink", Accent, "Text and links in the owner's colour"),
     t("on-signal", Accent, "Text on a signal fill"),
-    t("signal-soft", Accent, "A soft signal tint behind chips and selections"),
+    t(
+        "signal-soft",
+        Accent,
+        "A soft signal tint behind chips and selections",
+    ),
     t("action", Action, "Primary buttons"),
     t("on-action", Action, "Text on a primary button"),
     t("ok", States, "Finished well"),
@@ -137,6 +174,8 @@ pub const TOKENS: &[Token] = &[
     t("toast-bg", Overlay, "A toast's ground"),
     t("toast-fg", Overlay, "A toast's text"),
     t("scrim", Overlay, "The veil behind a dialog"),
+    t("amb-lit", Overlay, "The pointer light's weave lines"),
+    t("amb-line", Overlay, "Faint background ornament lines"),
 ];
 
 /// The token with this name.
@@ -166,54 +205,246 @@ const GROUNDS: &[&str] = &["paper", "paper-side", "sheet", "sheet-2", "hover"];
 /// The contrast rules, in the order the pass applies them. A token adjusted by an earlier rule is checked again by
 /// later rules that name it.
 pub const CHECKS: &[Check] = &[
-    Check { fg: "ink", on: &["paper", "paper-side", "sheet", "sheet-2", "hover", "press"], min: TEXT },
-    Check { fg: "ink-2", on: GROUNDS, min: TEXT },
-    Check { fg: "ink-3", on: GROUNDS, min: TEXT },
-    Check { fg: "signal-ink", on: &["paper", "sheet", "hover", "signal-soft"], min: TEXT },
-    Check { fg: "signal", on: &["paper", "sheet"], min: MARK },
-    Check { fg: "on-signal", on: &["signal-fill"], min: TEXT },
-    Check { fg: "on-action", on: &["action"], min: TEXT },
-    Check { fg: "ok", on: &["paper", "sheet", "ok-soft"], min: TEXT },
-    Check { fg: "warn", on: &["paper", "sheet", "warn-soft"], min: TEXT },
-    Check { fg: "crit", on: &["paper", "sheet", "crit-soft"], min: TEXT },
-    Check { fg: "info", on: &["paper", "sheet", "info-soft"], min: TEXT },
-    Check { fg: "review", on: &["paper", "sheet", "review-soft"], min: TEXT },
-    Check { fg: "add-fg", on: &["add-bg"], min: TEXT },
-    Check { fg: "del-fg", on: &["del-bg"], min: TEXT },
-    Check { fg: "syn-keyword", on: &["sheet", "sheet-2"], min: TEXT },
-    Check { fg: "syn-string", on: &["sheet", "sheet-2"], min: TEXT },
-    Check { fg: "syn-type", on: &["sheet", "sheet-2"], min: TEXT },
-    Check { fg: "syn-number", on: &["sheet", "sheet-2"], min: TEXT },
-    Check { fg: "syn-comment", on: &["sheet", "sheet-2"], min: TEXT },
-    Check { fg: "syn-function", on: &["sheet", "sheet-2"], min: TEXT },
-    Check { fg: "syn-variable", on: &["sheet", "sheet-2"], min: TEXT },
-    Check { fg: "term-fg", on: &["term-bg"], min: TEXT },
-    Check { fg: "ansi-1", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-2", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-3", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-4", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-5", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-6", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-9", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-10", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-11", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-12", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-13", on: &["term-bg"], min: MARK },
-    Check { fg: "ansi-14", on: &["term-bg"], min: MARK },
-    Check { fg: "chart-1", on: &["sheet"], min: MARK },
-    Check { fg: "chart-2", on: &["sheet"], min: MARK },
-    Check { fg: "chart-3", on: &["sheet"], min: MARK },
-    Check { fg: "chart-4", on: &["sheet"], min: MARK },
-    Check { fg: "chart-5", on: &["sheet"], min: MARK },
-    Check { fg: "chart-6", on: &["sheet"], min: MARK },
-    Check { fg: "chart-axis", on: &["sheet"], min: TEXT },
-    Check { fg: "hue-0", on: &["on-hue"], min: MARK },
-    Check { fg: "hue-1", on: &["on-hue"], min: MARK },
-    Check { fg: "hue-2", on: &["on-hue"], min: MARK },
-    Check { fg: "hue-3", on: &["on-hue"], min: MARK },
-    Check { fg: "hue-4", on: &["on-hue"], min: MARK },
-    Check { fg: "hue-5", on: &["on-hue"], min: MARK },
-    Check { fg: "toast-fg", on: &["toast-bg"], min: TEXT },
+    Check {
+        fg: "ink",
+        on: &["paper", "paper-side", "sheet", "sheet-2", "hover", "press"],
+        min: TEXT,
+    },
+    Check {
+        fg: "ink-2",
+        on: GROUNDS,
+        min: TEXT,
+    },
+    Check {
+        fg: "ink-3",
+        on: GROUNDS,
+        min: TEXT,
+    },
+    Check {
+        fg: "signal-ink",
+        on: &["paper", "sheet", "hover", "signal-soft"],
+        min: TEXT,
+    },
+    Check {
+        fg: "signal",
+        on: &["paper", "sheet"],
+        min: MARK,
+    },
+    Check {
+        fg: "on-signal",
+        on: &["signal-fill"],
+        min: TEXT,
+    },
+    Check {
+        fg: "on-action",
+        on: &["action"],
+        min: TEXT,
+    },
+    Check {
+        fg: "ok",
+        on: &["paper", "sheet", "ok-soft"],
+        min: TEXT,
+    },
+    Check {
+        fg: "warn",
+        on: &["paper", "sheet", "warn-soft"],
+        min: TEXT,
+    },
+    Check {
+        fg: "crit",
+        on: &["paper", "sheet", "crit-soft"],
+        min: TEXT,
+    },
+    Check {
+        fg: "info",
+        on: &["paper", "sheet", "info-soft"],
+        min: TEXT,
+    },
+    Check {
+        fg: "review",
+        on: &["paper", "sheet", "review-soft"],
+        min: TEXT,
+    },
+    Check {
+        fg: "add-fg",
+        on: &["add-bg"],
+        min: TEXT,
+    },
+    Check {
+        fg: "del-fg",
+        on: &["del-bg"],
+        min: TEXT,
+    },
+    Check {
+        fg: "syn-keyword",
+        on: &["sheet", "sheet-2"],
+        min: TEXT,
+    },
+    Check {
+        fg: "syn-string",
+        on: &["sheet", "sheet-2"],
+        min: TEXT,
+    },
+    Check {
+        fg: "syn-type",
+        on: &["sheet", "sheet-2"],
+        min: TEXT,
+    },
+    Check {
+        fg: "syn-number",
+        on: &["sheet", "sheet-2"],
+        min: TEXT,
+    },
+    Check {
+        fg: "syn-comment",
+        on: &["sheet", "sheet-2"],
+        min: TEXT,
+    },
+    Check {
+        fg: "syn-function",
+        on: &["sheet", "sheet-2"],
+        min: TEXT,
+    },
+    Check {
+        fg: "syn-variable",
+        on: &["sheet", "sheet-2"],
+        min: TEXT,
+    },
+    Check {
+        fg: "term-fg",
+        on: &["term-bg"],
+        min: TEXT,
+    },
+    Check {
+        fg: "ansi-1",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-2",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-3",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-4",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-5",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-6",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-9",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-10",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-11",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-12",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-13",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "ansi-14",
+        on: &["term-bg"],
+        min: MARK,
+    },
+    Check {
+        fg: "chart-1",
+        on: &["sheet"],
+        min: MARK,
+    },
+    Check {
+        fg: "chart-2",
+        on: &["sheet"],
+        min: MARK,
+    },
+    Check {
+        fg: "chart-3",
+        on: &["sheet"],
+        min: MARK,
+    },
+    Check {
+        fg: "chart-4",
+        on: &["sheet"],
+        min: MARK,
+    },
+    Check {
+        fg: "chart-5",
+        on: &["sheet"],
+        min: MARK,
+    },
+    Check {
+        fg: "chart-6",
+        on: &["sheet"],
+        min: MARK,
+    },
+    Check {
+        fg: "chart-axis",
+        on: &["sheet"],
+        min: TEXT,
+    },
+    Check {
+        fg: "hue-0",
+        on: &["on-hue"],
+        min: MARK,
+    },
+    Check {
+        fg: "hue-1",
+        on: &["on-hue"],
+        min: MARK,
+    },
+    Check {
+        fg: "hue-2",
+        on: &["on-hue"],
+        min: MARK,
+    },
+    Check {
+        fg: "hue-3",
+        on: &["on-hue"],
+        min: MARK,
+    },
+    Check {
+        fg: "hue-4",
+        on: &["on-hue"],
+        min: MARK,
+    },
+    Check {
+        fg: "hue-5",
+        on: &["on-hue"],
+        min: MARK,
+    },
+    Check {
+        fg: "toast-fg",
+        on: &["toast-bg"],
+        min: TEXT,
+    },
 ];
 
 #[cfg(test)]
@@ -225,7 +456,11 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for t in TOKENS {
             assert!(seen.insert(t.name), "duplicate {}", t.name);
-            assert!(t.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+            assert!(
+                t.name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            );
         }
     }
 

@@ -3,7 +3,8 @@
 //! the grouped tabs with the alerts badge, and the grid of panels by span (twelfths), as the web's `.mx-view`.
 
 use iced::widget::{
-    Space, button, column, container, pick_list, responsive, row, stack, text, text_input,
+    Space, button, column, container, pick_list, responsive, row, scrollable, stack, text,
+    text_input,
 };
 use iced::{Alignment, Border, Color, Element, Length, Padding, Size, Theme};
 
@@ -17,7 +18,12 @@ use crate::theme::{SANS_MEDIUM, SANS_SEMIBOLD, TYPE_BADGE, TYPE_META, TYPE_PAGE,
 
 pub fn screen<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let _ = ctx;
-    let mut layers: Vec<Element<'a, Msg>> = vec![ui::sheet(head(state), body(state))];
+    // The page scrolls itself, so the overlays below it are laid over the window's height, not the page's.
+    let page: Element<'a, Msg> = ui::scroll(ui::sheet(head(state), body(state)))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
+    let mut layers: Vec<Element<'a, Msg>> = vec![page];
     if let Some(overlay) = &state.overlay {
         layers.push(overlays::layer(state, overlay));
     }
@@ -213,19 +219,29 @@ fn controls<'a>(state: &'a State) -> Element<'a, Msg> {
     .text_size(TYPE_UI)
     .style(crate::theme::pick_list);
 
+    // The web's controls: Annotations is the primary button while it is on; the export and the settings are icons.
     let annotations = ui::btn_sm(
         "Annotations",
         None,
-        ui::Kind::Ghost,
+        if state.annotations {
+            ui::Kind::Primary
+        } else {
+            ui::Kind::Ghost
+        },
         Some(Msg::ToggleAnnotations),
     );
     let export = ui::btn_sm(
-        "Export",
-        None,
+        "",
+        Some("download"),
         ui::Kind::Ghost,
         Some(Msg::ExportCsv(String::new())),
     );
-    let settings = ui::btn_sm("Settings", None, ui::Kind::Ghost, Some(Msg::OpenSettings));
+    let settings = ui::btn_sm(
+        "",
+        Some("settings"),
+        ui::Kind::Ghost,
+        Some(Msg::OpenSettings),
+    );
 
     let items: Vec<Element<'a, Msg>> = vec![
         find,
@@ -245,7 +261,8 @@ fn controls<'a>(state: &'a State) -> Element<'a, Msg> {
 /// chips and the collection level.
 fn tier<'a>(state: &'a State) -> Element<'a, Msg> {
     let pal = crate::theme::palette();
-    let meta = |content: String| ui::sans(content, TYPE_META, pal.ink_3);
+    // The web's `.mt-tierline`: one mono line of text, the chips aside.
+    let meta = |content: String| ui::mono(content, TYPE_META, pal.ink_3);
     let mut items: Vec<Element<'a, Msg>> = Vec::new();
     let end = match &state.view {
         Some(view) if state.q.shift != 0 => format!("ending {}", clock(view.to_ms)),
@@ -254,11 +271,7 @@ fn tier<'a>(state: &'a State) -> Element<'a, Msg> {
     items.push(meta(end).into());
     if let Some(view) = &state.view {
         items.push(meta("· reading".to_string()).into());
-        items.push(
-            ui::sans(view.tier.clone(), TYPE_META, pal.ink_2)
-                .font(SANS_MEDIUM)
-                .into(),
-        );
+        items.push(ui::mono(view.tier.clone(), TYPE_META, pal.ink_2).into());
         items.push(
             meta(format!(
                 ", {} points per series · {}",
@@ -300,13 +313,9 @@ fn tier<'a>(state: &'a State) -> Element<'a, Msg> {
                 .align_y(Alignment::Center),
             ));
         }
-        items.push(chip(ui::sans(
-            format!("level: {}", view.level),
-            TYPE_BADGE,
-            pal.signal_ink,
-        )));
+        items.push(meta(format!("level: {}", view.level)).into());
         if view.stepped_down {
-            items.push(chip(ui::sans("stepped down", TYPE_BADGE, pal.signal_ink)));
+            items.push(meta("stepped down".to_string()).into());
         }
     }
     row(items).spacing(6).align_y(Alignment::Center).into()
@@ -483,14 +492,11 @@ fn find_scope<'s>(scopes: &'s [ScopeNode], id: &str) -> Option<&'s ScopeNode> {
     scopes.iter().find(|node| node.id == id)
 }
 
-/// One row of the tree: a 3 px signal bar when current, the indent by depth, a status dot, the label and the tag.
+/// One row of the tree, as the web's `.mt-node`: the indent by depth, a status dot, the label and the mono tag; the
+/// current row is tinted.
 fn tree_row<'a>(node: &'a ScopeNode, current: bool) -> Element<'a, Msg> {
     let pal = crate::theme::palette();
-    let (bar, hover, rule) = if current {
-        (pal.signal, pal.hover, pal.rule)
-    } else {
-        (Color::TRANSPARENT, pal.hover, pal.rule)
-    };
+    let hover = pal.hover;
     let ink = if current { pal.ink } else { pal.ink_2 };
     let indent = f32::from(node.depth) * 10.0;
     let dot: Element<'a, Msg> = match node.status {
@@ -514,27 +520,10 @@ fn tree_row<'a>(node: &'a ScopeNode, current: bool) -> Element<'a, Msg> {
     let tag: Element<'a, Msg> = if node.tag.is_empty() {
         Space::new().into()
     } else {
-        container(ui::sans(node.tag.clone(), TYPE_BADGE, pal.ink_3))
-            .padding(Padding::from([0.0, 4.0]))
-            .style(move |_: &Theme| container::Style {
-                border: Border {
-                    color: rule,
-                    width: 1.0,
-                    radius: 0.0.into(),
-                },
-                ..Default::default()
-            })
-            .into()
+        ui::mono(node.tag.clone(), 11.0, pal.ink_3).into()
     };
     let content = row![
-        container(Space::new())
-            .width(Length::Fixed(3.0))
-            .height(Length::Fixed(20.0))
-            .style(move |_: &Theme| container::Style {
-                background: Some(bar.into()),
-                ..Default::default()
-            }),
-        Space::new().width(Length::Fixed(9.0 + indent)),
+        Space::new().width(Length::Fixed(8.0 + indent)),
         dot,
         ui::sans(node.label.trim().to_string(), TYPE_UI, ink),
         Space::new().width(Length::Fill),
@@ -546,7 +535,7 @@ fn tree_row<'a>(node: &'a ScopeNode, current: bool) -> Element<'a, Msg> {
         .width(Length::Fill)
         .padding(Padding {
             top: 4.0,
-            right: 12.0,
+            right: 8.0,
             bottom: 4.0,
             left: 0.0,
         })
@@ -556,7 +545,10 @@ fn tree_row<'a>(node: &'a ScopeNode, current: bool) -> Element<'a, Msg> {
             button::Style {
                 background: if lit { Some(hover.into()) } else { None },
                 text_color: ink,
-                border: Border::default(),
+                border: Border {
+                    radius: crate::theme::skin().radius.into(),
+                    ..Border::default()
+                },
                 ..Default::default()
             }
         })
@@ -596,27 +588,47 @@ fn main_column<'a>(view: &'a View, state: &'a State, gap: f32) -> Element<'a, Ms
 /// alerts count in crit.
 fn tabs<'a>(view: &'a View, state: &'a State) -> Element<'a, Msg> {
     let pal = crate::theme::palette();
-    let (ink, ink_2, ink_3, signal, crit, sheet_ink) = (
-        pal.ink, pal.ink_2, pal.ink_3, pal.signal, pal.crit, pal.sheet,
-    );
+    let (ink, ink_2, ink_3, crit, sheet_ink) = (pal.ink, pal.ink_2, pal.ink_3, pal.crit, pal.sheet);
     let mut cells: Vec<Element<'a, Msg>> = Vec::new();
     let mut group: Option<&str> = None;
     for tab in &view.tabs {
         if group != Some(tab.group.as_str()) {
+            // The web's `.mt-tg.mt-sep`: a 1 px rule before every group but the first.
+            if group.is_some() {
+                let rule = crate::theme::palette().rule;
+                cells.push(
+                    row![
+                        Space::new().width(Length::Fixed(6.0)),
+                        column![
+                            Space::new().height(Length::Fixed(9.0)),
+                            container(
+                                Space::new()
+                                    .width(Length::Fixed(1.0))
+                                    .height(Length::Fixed(14.0))
+                            )
+                            .style(move |_: &Theme| container::Style {
+                                background: Some(rule.into()),
+                                ..Default::default()
+                            }),
+                        ],
+                    ]
+                    .into(),
+                );
+            }
             group = Some(tab.group.as_str());
             let label = if tab.group.is_empty() {
                 "·".to_string()
             } else {
                 tab.group.to_uppercase()
             };
-            // The label sits on the tabs' text line: the tab's top padding (8) plus half the difference in line height.
+            // The web's `.mt-tg`: mono caps at 10 px, on the tabs' text line.
             cells.push(
-                container(ui::sans(label, TYPE_BADGE, ink_3).font(SANS_MEDIUM))
+                container(ui::mono(label, 10.0, ink_3))
                     .padding(Padding {
                         top: 9.0,
-                        right: 4.0,
+                        right: 6.0,
                         bottom: 0.0,
-                        left: 12.0,
+                        left: 6.0,
                     })
                     .into(),
             );
@@ -648,7 +660,8 @@ fn tabs<'a>(view: &'a View, state: &'a State) -> Element<'a, Msg> {
                 }),
             );
         }
-        let underline_color = if selected { signal } else { Color::TRANSPARENT };
+        // The web's `.tab[aria-selected]`: the selected tab's underline is the ink, not the signal.
+        let underline_color = if selected { ink } else { Color::TRANSPARENT };
         let underline = container(Space::new())
             .width(Length::Fill)
             .height(Length::Fixed(2.0))
@@ -679,7 +692,13 @@ fn tabs<'a>(view: &'a View, state: &'a State) -> Element<'a, Msg> {
                 .into(),
         );
     }
-    let tab_row: Element<'a, Msg> = row(cells).wrap().vertical_spacing(4).into();
+    // One line that scrolls sideways, as the web's `.mt-tabs` (nowrap, overflow-x). Its bar has no width, so the
+    // strip shows no scrollbar, as the web's does not.
+    let tab_row: Element<'a, Msg> = scrollable(row(cells).spacing(4.0).align_y(Alignment::Center))
+        .direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::new().width(0.0).scroller_width(0.0),
+        ))
+        .into();
     column![tab_row, ui::hairline::<Msg>()].into()
 }
 

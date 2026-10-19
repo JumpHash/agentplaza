@@ -1,0 +1,22 @@
+/* The New project dialog, from the prototype's m-newproject.js (renamed to the console's tokens). */
+
+.np-root{display:flex;flex-direction:column;gap:24px}
+.np-sec{display:flex;flex-direction:column;gap:12px;padding-bottom:24px;border-bottom:1px solid var(--rule)}
+.np-sec:last-child{padding-bottom:0;border-bottom:0}
+.np-h{margin:0;font-family:var(--font-display);font-size:var(--fs-h2);font-weight:600}
+.np-p,.np-muted{margin:0;font-size:var(--fs-sm);color:var(--ink-3)}
+.np-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.np-foot{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+.np-zone{display:flex;flex-direction:column;gap:8px;padding:16px;border:1px dashed var(--rule-strong);border-radius:var(--radius);font-size:var(--fs-sm);color:var(--ink-2)}
+.np-zone.drop-over,.np-root textarea.drop-over{border-color:var(--signal);background:var(--signal-soft)}
+.np-sum{min-width:0;font-size:var(--fs-xs);color:var(--ink-3);overflow-wrap:anywhere}
+.np-chips{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
+.np-chip{display:flex;align-items:center;gap:8px;min-width:0;font-size:var(--fs-sm)}
+.np-chip-n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono)}
+.np-envs{display:flex;flex-direction:column;gap:8px}
+.np-env{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,2fr) auto;align-items:center;gap:8px}
+.np-link{color:var(--signal-ink)}
+/* The groups only hold their fields in a row; the section lays the fields out, as the prototype's does. */
+.np-group{display:contents}
+.np-group[hidden]{display:none}
+@media (max-width:899px){.np-env{grid-template-columns:minmax(0,1fr)}}

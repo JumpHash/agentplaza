@@ -53,7 +53,7 @@ const RETENTION: { key: keyof MetricsSettings['retention']; label: string; unit:
 ];
 
 let uid = 0;
-const nextId = (): string => `mx-dlg-${++uid}`;
+const nextId = (): string => `mt-dlg-${++uid}`;
 
 /** The scope tree nodes a rule or a budget can name, as select options. */
 function scopeOptions(scopes: ScopeNode[]): Option[] {
@@ -66,22 +66,22 @@ function withValue(options: Option[], value: string | undefined): Option[] {
   return [...options, { value, label: value }];
 }
 
-/** A grid row: the label (for `labelled`, else for `control`) and the control. */
-function row(text: string, control: HTMLElement, labelled: HTMLElement = control): HTMLElement {
+/** A form field: its label (for `labelled`, else for `control`) and the control. */
+function field(text: string, control: HTMLElement, labelled: HTMLElement = control): HTMLElement {
   if (!labelled.id) labelled.id = nextId();
-  return h('div.mx-row', null, h('label', { for: labelled.id }, text), control);
+  return h('div.field', null, h('label.field-l', { for: labelled.id }, text), control);
 }
 
 /** A checkbox with its text; `box` is the control to read and set. */
 function checkbox(text: string, on: boolean): { label: HTMLLabelElement; box: HTMLInputElement } {
   const box = h('input', { type: 'checkbox' });
   box.checked = on;
-  return { label: h('label.mx-check', null, box, h('span', null, text)), box };
+  return { label: h('label.check', null, box, text), box };
 }
 
 /** The error line of a dialog; hidden until a check or a save fails. */
 function errorLine(): { el: HTMLElement; show(text: string): void; clear(): void } {
-  const el = h('div.mx-flag.mx-crit', { role: 'alert', hidden: true });
+  const el = h('div.mt-err', { role: 'alert', hidden: true });
   return {
     el,
     show(text: string): void {
@@ -144,7 +144,8 @@ export function ruleDialog(catalog: MetricDef[], scopes: ScopeNode[], scope: str
     ],
     rule?.cmp ?? 'gt',
   );
-  const threshold = input({ type: 'number', step: 'any', value: rule ? String(rule.threshold) : '90' });
+  cmp.setAttribute('aria-label', 'Condition');
+  const threshold = input({ type: 'number', step: 'any', value: rule ? String(rule.threshold) : '90', class: 'mt-num', 'aria-label': 'Threshold' });
   const forBox = select(withValue(FOR_CHOICES, rule ? String(rule.for_ms) : undefined), rule ? String(rule.for_ms) : '300000');
   const severity = select(
     [
@@ -215,17 +216,17 @@ export function ruleDialog(catalog: MetricDef[], scopes: ScopeNode[], scope: str
   };
 
   const body = h(
-    'div.mx-form',
+    'div.mt-form',
     null,
-    row('Name', name),
-    row('Metric', metric),
-    row('Aggregation', agg),
-    row('Scope', scopeBox),
-    row('Condition', h('div.mx-inline', null, cmp, threshold), cmp),
-    row('For', forBox),
-    row('Severity', severity),
-    h('div.mx-row', null, h('label', null, 'Notify'), h('div.mx-checks', null, notifyConsole.label, notifyDesktop.label, notifyBoard.label)),
-    h('p.mx-sub', null, "Rules run on the hub's in-memory aggregates as points arrive, so they cost no database queries."),
+    field('Name', name),
+    field('Metric', metric),
+    field('Aggregation', agg),
+    field('Scope', scopeBox),
+    h('div.field', null, h('span.field-l', null, 'Condition'), h('div.mt-row2', null, cmp, threshold)),
+    field('For', forBox),
+    field('Severity', severity),
+    h('div.field', null, h('span.field-l', null, 'Notify'), h('div.mt-row2', null, notifyConsole.label, notifyDesktop.label, notifyBoard.label)),
+    h('div.hint', null, "Rules run on the hub's in-memory aggregates as points arrive, so they cost no database queries."),
     err.el,
   );
 
@@ -248,42 +249,39 @@ export function settingsDialog(current: MetricsSettings, scopes: ScopeNode[], sa
   const levels = LEVELS.map((l) => {
     const box = h('input', { type: 'radio', name: radioGroup, value: l.value });
     box.checked = current.level === l.value;
-    return { value: l.value, box, label: h('label.mx-radio', null, box, h('span', null, l.label), h('span.mx-hint', null, l.text)) };
+    return { value: l.value, box, label: h('label.mt-radio', null, box, h('b', null, l.label), h('span.mt-hint', null, l.text)) };
   });
 
   // Retention.
   const retention = RETENTION.map((r) => {
-    const box = input({ type: 'number', min: 1, step: 1, value: current.retention[r.key] });
-    return { key: r.key, label: r.label, box, row: row(r.label, h('div.mx-inline', null, box, h('span.mx-unit', null, r.unit)), box) };
+    const box = input({ type: 'number', min: 1, step: 1, value: current.retention[r.key], class: 'mt-num', id: nextId(), 'aria-label': r.label });
+    return { key: r.key, label: r.label, box, row: h('div.field', null, h('label.field-l', { for: box.id }, r.label), h('div.mt-row2', null, box, h('span.muted', null, r.unit))) };
   });
 
   // Budgets: the monthly budget, and one daily cap per scope.
   const choices = scopeOptions(scopes);
-  const monthly = input({ type: 'number', min: 0, step: 'any', value: current.monthly_budget_usd ?? '' });
+  const monthly = input({ type: 'number', min: 0, step: 'any', value: current.monthly_budget_usd ?? '', class: 'mt-num', id: nextId() });
   const caps: { scope: HTMLSelectElement; usd: HTMLInputElement }[] = [];
-  const capList = h('div.mx-caps', null);
+  const capList = h('div.mt-form', null);
   const addCap = (scopeValue: string, usd: number | string): void => {
     const scopeBox = select(withValue(choices, scopeValue), scopeValue);
-    const usdBox = input({ type: 'number', min: 0, step: 'any', value: usd, 'aria-label': 'Daily cap in USD' });
+    scopeBox.setAttribute('aria-label', 'Daily cap scope');
+    const usdBox = input({ type: 'number', min: 0, step: 'any', value: usd, class: 'mt-num', 'aria-label': 'Daily cap in USD' });
     const cap = { scope: scopeBox, usd: usdBox };
     const line = h(
-      'div.mx-row',
+      'div.mt-cap',
       null,
       scopeBox,
-      h(
-        'div.mx-inline',
-        null,
-        usdBox,
-        h('span.mx-unit', null, 'USD'),
-        button(
-          'Remove',
-          () => {
-            const at = caps.indexOf(cap);
-            if (at >= 0) caps.splice(at, 1);
-            line.remove();
-          },
-          { kind: 'ghost', size: 'sm' },
-        ),
+      usdBox,
+      h('span.muted', null, 'USD'),
+      button(
+        'Remove',
+        () => {
+          const at = caps.indexOf(cap);
+          if (at >= 0) caps.splice(at, 1);
+          line.remove();
+        },
+        { kind: 'ghost', size: 'sm' },
       ),
     );
     caps.push(cap);
@@ -312,7 +310,7 @@ export function settingsDialog(current: MetricsSettings, scopes: ScopeNode[], sa
   // Outside endpoints: both off until the owner turns them on.
   const openmetrics = checkbox('/metrics for an outside scraper, with its own token', current.outside.openmetrics);
   const otlp = checkbox('OTLP export', current.outside.otlp);
-  const otlpUrl = input({ type: 'text', placeholder: 'https://collector.example.com:4318', value: current.outside.otlp_url });
+  const otlpUrl = input({ type: 'text', placeholder: 'https://collector.example.com:4318', value: current.outside.otlp_url, id: nextId() });
   const otlpConfirm = checkbox('send kept traces to this collector', current.outside.otlp_confirmed);
   const syncOtlp = (): void => {
     otlpUrl.disabled = !otlp.box.checked;
@@ -321,31 +319,23 @@ export function settingsDialog(current: MetricsSettings, scopes: ScopeNode[], sa
   otlp.box.addEventListener('change', syncOtlp);
   syncOtlp();
 
-  const section = (title: string, ...children: Node[]): HTMLElement => h('section.mx-sec', null, h('h3', null, title), ...children);
-
   const body = h(
-    'div.mx-form',
+    'div.mt-form',
     null,
-    section('Collection level', h('div.mx-radios', null, levels.map((l) => l.label))),
-    section('Retention', ...retention.map((r) => r.row)),
-    section(
-      'Budgets',
-      row('Monthly budget', h('div.mx-inline', null, monthly, h('span.mx-unit', null, 'USD')), monthly),
-      h(
-        'div.mx-row',
-        null,
-        h('label', null, 'Daily caps'),
-        h('div.mx-stack', null, capList, h('div', null, addButton), h('p.mx-sub', null, 'Laws enforce caps; Metrics only reports them.')),
-      ),
-    ),
-    section('Forecast basis', row('Basis', basis)),
-    section(
-      'Outside endpoints',
-      openmetrics.label,
-      otlp.label,
-      row('Collector URL', otlpUrl),
-      otlpConfirm.label,
-    ),
+    h('h3', null, 'Collection level'),
+    levels.map((l) => l.label),
+    h('h3', null, 'Retention'),
+    retention.map((r) => r.row),
+    h('h3', null, 'Budgets'),
+    field('Monthly budget', h('div.mt-row2', null, monthly, h('span.muted', null, 'USD')), monthly),
+    h('div.field', null, h('span.field-l', null, 'Daily caps'), capList, h('div.mt-row2', null, addButton), h('div.hint', null, 'Laws enforce caps; Metrics only reports them.')),
+    h('h3', null, 'Forecast basis'),
+    field('Basis', basis),
+    h('h3', null, 'Outside endpoints'),
+    openmetrics.label,
+    otlp.label,
+    field('Collector URL', otlpUrl),
+    otlpConfirm.label,
     err.el,
   );
 
@@ -362,7 +352,10 @@ export function settingsDialog(current: MetricsSettings, scopes: ScopeNode[], sa
       { kind: 'ghost', size: 'sm' },
     );
     body.replaceChildren(
-      section('OpenMetrics token', h('p.mx-sub', null, 'Copy it now; it is not shown again.'), h('div.mx-token', null, token), copy),
+      h('h3', null, 'OpenMetrics token'),
+      h('div.mt-hint', null, 'Copy it now; it is not shown again.'),
+      h('div.mt-token', null, token),
+      h('div.cluster', null, copy),
     );
     const saveBtn = [...d.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save settings');
     if (saveBtn) saveBtn.textContent = 'Done';

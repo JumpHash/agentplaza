@@ -2,8 +2,9 @@
 // newer write from the agent shows the conflict, and Reload or Keep mine settles it), and the tab strip and banners.
 import { ApiError, ideApi } from '../api';
 import { applyBuffer, openBuffer } from '../ide/model';
+import moreCss from '../styles/proto/ide-more.css';
 import { button, modal, toast } from '../ui/components';
-import { h, replace } from '../ui/dom';
+import { h, lu, replace } from '../ui/dom';
 import { stateFor } from './ide-editor';
 import { checkOpen, refreshChanges } from './ide-data';
 import { message, type IdeCtx, type Tab } from './ide-ctx';
@@ -71,6 +72,17 @@ export async function closeTab(c: IdeCtx, path: string): Promise<void> {
   c.act.renderAll();
 }
 
+/** The prototype's IDE rules (styles/proto/ide-more.css), inserted once per page. */
+const MORE_STYLE_ID = 'apz-ide-more-style';
+function ensureMoreStyle(): void {
+  if (document.getElementById(MORE_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = MORE_STYLE_ID;
+  style.textContent = moreCss;
+  document.head.append(style);
+}
+
+/** The discard sheet: the prototype's confirm, with Keep editing and Discard in the sheet's foot. */
 function confirmDiscard(path: string): Promise<boolean> {
   return new Promise((resolve) => {
     let answered = false;
@@ -82,13 +94,9 @@ function confirmDiscard(path: string): Promise<boolean> {
     };
     const close = modal(
       'Discard your edits?',
-      h(
-        'div',
-        null,
-        h('p', null, `${path} has unsaved changes. Closing the tab drops them.`),
-        h('div.actions', null, button('Discard', () => answer(true), { kind: 'danger' }), button('Keep editing', () => answer(false), { kind: 'ghost' })),
-      ),
+      h('p.idem-body', null, `${path} has unsaved changes. Closing the tab drops them.`),
       () => answer(false),
+      [button('Keep editing', () => answer(false), { kind: 'ghost' }), button('Discard', () => answer(true), { kind: 'danger' })],
     );
   });
 }
@@ -182,21 +190,24 @@ export function openFromChanges(c: IdeCtx, path: string): void {
 
 /** The tab strip: one tab per open file, with its dirty and conflict marks. */
 export function renderTabs(c: IdeCtx): void {
+  ensureMoreStyle();
+  // The strip is the console's tab bar (ide.ts makes it, with its layout class); the prototype's tab look comes with ided-tabs.
+  c.dom.tabBar.classList.add('ided-tabs');
   const items = (c.state?.open ?? []).map((path) => {
     const t = c.tabsByPath.get(path);
     const name = path.slice(path.lastIndexOf('/') + 1);
     const on = path === c.state?.active;
     return h(
-      'div.ide-tab',
+      'div.ided-tab',
       { class: on ? 'on' : '', role: 'tab', 'aria-selected': on ? 'true' : 'false', title: path },
       h(
-        'button.ide-tab-name',
+        'button.ided-tab-name',
         { type: 'button', onclick: () => activate(c, path) },
-        t?.buf.conflict != null ? h('span.ide-conflict-mark', { title: 'Conflict' }, '!') : null,
-        t?.buf.dirty ? h('span.ide-dirty', { title: 'Unsaved changes' }, '●') : null,
-        name,
+        t?.buf.dirty ? h('span.ided-dirty', { title: 'Unsaved changes' }) : null,
+        t?.buf.conflict != null ? h('span.ided-conflict', { title: 'Conflict' }, '!') : null,
+        h('span', null, name),
       ),
-      h('button.ide-tab-x', { type: 'button', title: `Close ${name}`, 'aria-label': `Close ${name}`, onclick: () => void closeTab(c, path) }, '×'),
+      h('button.ided-tab-x', { type: 'button', title: `Close ${name}`, 'aria-label': `Close ${name}`, onclick: () => void closeTab(c, path) }, lu('x', 14)),
     );
   });
   replace(c.dom.tabBar, items);
@@ -204,22 +215,23 @@ export function renderTabs(c: IdeCtx): void {
 
 /** The banners over the editor: a conflict on the active file, a read-only workspace, and the agent working in it. */
 export function renderBanners(c: IdeCtx): void {
+  ensureMoreStyle();
   const active = c.state?.active ?? null;
   const t = active !== null ? c.tabsByPath.get(active) : undefined;
   const rows: Node[] = [];
   if (active !== null && t?.buf.conflict != null) {
     rows.push(
       h(
-        'div.ide-banner.conflict',
+        'div.ided-banner.conflict',
         { role: 'alert' },
         h('span', null, `${active} changed on the agent's side while you had unsaved edits. Reload replaces your edits with that copy.`),
-        h('span.spacer'),
+        h('span.sp'),
         button('Reload', () => void reloadTab(c, active), { size: 'sm' }),
         button('Keep mine', () => void keepMine(c, active), { kind: 'primary', size: 'sm' }),
       ),
     );
   }
-  if (c.ws && !c.ws.writable) rows.push(h('div.ide-banner', null, 'This workspace is read-only.'));
-  if (c.agentWorking && c.cid !== null) rows.push(h('div.ide-banner', null, 'The agent is working in this workspace. A save over its newer write shows a conflict.'));
+  if (c.ws && !c.ws.writable) rows.push(h('div.ided-banner', null, 'This workspace is read-only.'));
+  if (c.agentWorking && c.cid !== null) rows.push(h('div.ided-banner', null, 'The agent is working in this workspace. A save over its newer write shows a conflict.'));
   replace(c.dom.banners, rows);
 }

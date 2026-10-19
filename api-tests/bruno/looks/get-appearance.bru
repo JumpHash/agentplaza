@@ -1,0 +1,17 @@
+meta {
+  name: Read the appearance (the default look)
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/appearance
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.choice.theme: eq loom-clay
+}

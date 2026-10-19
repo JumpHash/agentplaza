@@ -373,6 +373,228 @@ fn optional_str<'a>(input: &'a Value, key: &str) -> Result<Option<&'a str>, Stri
     }
 }
 
+/// The most bytes an artifact's blob holds: 256 MiB, the hub's own cap.
+const MAX_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+
+/// `artifact_create`: sends a spec to the hub, which checks it and stores it as the artifact's first version.
+///
+/// Input: `title`, `panels` (an array of panels), and optionally `sub` and `project`. Returns the ref
+/// `artifact:<id>` to put in the reply; a refusal carries the hub's problems list.
+pub fn artifact_create(_workspace: &Workspace, input: &Value) -> Result<String, String> {
+    let mut body = json!({"spec": artifact_spec(input)?});
+    if let Some(project) = optional_str(input, "project")? {
+        body["project"] = json!(project);
+    }
+    let bytes = body.to_string().into_bytes();
+    let (status, reply) = put(
+        "/artifacts",
+        "application/json",
+        bytes.len() as u64,
+        |stream| write_bytes(stream, &bytes),
+    )?;
+    let value = artifact_reply(status, &reply)?;
+    let id = value["id"]
+        .as_str()
+        .ok_or_else(|| format!("the hub's reply has no id: {}", excerpt(&reply)))?;
+    let kind = value["kind"].as_str().unwrap_or("artifact");
+    let title = value["title"].as_str().unwrap_or("untitled");
+    Ok(format!(
+        "made the {kind} \"{title}\": ref artifact:{id}. Put artifact:{id} in your message where the artifact should appear."
+    ))
+}
+
+/// `artifact_update`: sends a new version of one of the agent's artifacts, in the same shape as `artifact_create`.
+///
+/// Input: `id` (the artifact's id, from its ref), `title`, `panels`, and optionally `sub`.
+pub fn artifact_update(_workspace: &Workspace, input: &Value) -> Result<String, String> {
+    let id = str_field(input, "id")?;
+    if !artifact_id_ok(id) {
+        return Err(invalid(format!("{id:?} is not an artifact id")));
+    }
+    let bytes = json!({"spec": artifact_spec(input)?})
+        .to_string()
+        .into_bytes();
+    let (status, reply) = put(
+        &format!("/artifacts/{id}"),
+        "application/json",
+        bytes.len() as u64,
+        |stream| write_bytes(stream, &bytes),
+    )?;
+    let value = artifact_reply(status, &reply)?;
+    let version = value["version"].as_u64().unwrap_or(0);
+    Ok(format!(
+        "updated artifact:{id} to version {version}: ref artifact:{id}@{version}"
+    ))
+}
+
+/// `artifact_attach_data`: stores a workspace file or a text as a blob of the agent's artifact store, and returns
+/// the blob's id for a spec to refer to as `{"blob": {"id": ...}}`.
+///
+/// Input: `content_type` (a media type such as `text/csv`), and either `path` (a file in the workspace, at most
+/// 256 MiB) or `text`.
+pub fn artifact_attach_data(workspace: &Workspace, input: &Value) -> Result<String, String> {
+    let content_type = str_field(input, "content_type")?;
+    if !content_type.contains('/') || content_type.len() > 120 {
+        return Err(invalid(
+            "\"content_type\" must be a media type such as text/csv",
+        ));
+    }
+    let target = format!(
+        "/artifacts/blobs?content_type={}",
+        encode_query(content_type)
+    );
+    let (status, reply) = match (optional_str(input, "path")?, optional_str(input, "text")?) {
+        (Some(rel), None) => {
+            let file = workspace_file(workspace, rel)?;
+            let size = fs::metadata(&file)
+                .map_err(|err| format!("cannot read {rel:?}: {err}"))?
+                .len();
+            if size > MAX_BLOB_BYTES {
+                return Err(invalid(format!(
+                    "{rel:?} is {size} bytes; a blob is at most 256 MiB"
+                )));
+            }
+            put(&target, content_type, size, |stream| {
+                send_file(stream, &file, size)
+            })?
+        }
+        (None, Some(text)) => {
+            let bytes = text.as_bytes();
+            put(&target, content_type, bytes.len() as u64, |stream| {
+                write_bytes(stream, bytes)
+            })?
+        }
+        _ => {
+            return Err(invalid(
+                "give either \"path\" or \"text\", not both or neither",
+            ));
+        }
+    };
+    let value = artifact_reply(status, &reply)?;
+    let blob = &value["blob"];
+    let id = blob["id"]
+        .as_str()
+        .ok_or_else(|| format!("the hub's reply has no blob id: {}", excerpt(&reply)))?;
+    let size = blob["bytes"].as_u64().unwrap_or(0);
+    Ok(format!(
+        "attached blob {id} ({content_type}, {size} bytes): refer to it as {{\"blob\": {{\"id\": \"{id}\"}}}}"
+    ))
+}
+
+/// `artifact_share_request`: asks the owner to share one of the agent's artifacts. The hub queues an approval for the
+/// owner and replies with its id; the agent never receives the link, only the decision reaches its transcript.
+///
+/// Input: `id` (the artifact's id, from its ref) and `reason`, and optionally `expires_in_days`, `allow_download` and
+/// `version`.
+pub fn artifact_share_request(_workspace: &Workspace, input: &Value) -> Result<String, String> {
+    let id = str_field(input, "id")?;
+    if !artifact_id_ok(id) {
+        return Err(invalid(format!("{id:?} is not an artifact id")));
+    }
+    let reason = str_field(input, "reason")?;
+    if reason.trim().is_empty() {
+        return Err(invalid("\"reason\" must not be empty"));
+    }
+    let mut body = json!({"reason": reason});
+    for key in ["expires_in_days", "allow_download", "version"] {
+        if let Some(value) = input.get(key).filter(|value| !value.is_null()) {
+            body[key] = value.clone();
+        }
+    }
+    let bytes = body.to_string().into_bytes();
+    let (status, reply) = request(
+        "POST",
+        &format!("/artifacts/{id}/share"),
+        "application/json",
+        bytes.len() as u64,
+        |stream| write_bytes(stream, &bytes),
+    )?;
+    let value = artifact_reply(status, &reply)?;
+    let approval = value["approval"].as_str().unwrap_or("pending");
+    Ok(format!(
+        "asked the owner to share artifact:{id} (request {approval}, pending in Approvals). The owner decides; the link is never sent to you."
+    ))
+}
+
+/// The spec an artifact call sends: `title`, `panels` (an array, checked by the hub), and optionally `sub`.
+fn artifact_spec(input: &Value) -> Result<Value, String> {
+    let title = str_field(input, "title")?;
+    if title.trim().is_empty() {
+        return Err(invalid("\"title\" must not be empty"));
+    }
+    let panels = input
+        .get("panels")
+        .filter(|panels| panels.is_array())
+        .ok_or_else(|| invalid("\"panels\" must be an array of panels"))?;
+    let mut spec = json!({"title": title, "panels": panels});
+    if let Some(sub) = optional_str(input, "sub")? {
+        spec["sub"] = json!(sub);
+    }
+    Ok(spec)
+}
+
+/// True for an artifact id the hub could have issued: letters, digits, `-` and `_`, at most 64 characters.
+fn artifact_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// The hub's reply to an artifact call as JSON. A refusal is an error that carries the hub's reply whole, its
+/// problems list included, so the model can fix the spec.
+fn artifact_reply(status: u16, body: &[u8]) -> Result<Value, String> {
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "the hub refused it (HTTP {status}): {}",
+            String::from_utf8_lossy(body)
+        ));
+    }
+    serde_json::from_slice(body)
+        .map_err(|err| format!("the hub's reply is not JSON ({err}): {}", excerpt(body)))
+}
+
+/// Sends one PUT to `target` (a path under plaza.gateway) through the egress proxy: the head, then the body that
+/// `send` writes. Returns the reply's status and body.
+fn put(
+    target: &str,
+    content_type: &str,
+    size: u64,
+    send: impl FnOnce(&mut TcpStream) -> Result<(), String>,
+) -> Result<(u16, Vec<u8>), String> {
+    request("PUT", target, content_type, size, send)
+}
+
+/// Sends one request with `method` to `target` (a path under plaza.gateway) through the egress proxy: the head, then
+/// the body that `send` writes. Returns the reply's status and body.
+fn request(
+    method: &str,
+    target: &str,
+    content_type: &str,
+    size: u64,
+    send: impl FnOnce(&mut TcpStream) -> Result<(), String>,
+) -> Result<(u16, Vec<u8>), String> {
+    let mut stream = connect(PROXY_ADDR)?;
+    let head = format!(
+        "{method} http://plaza.gateway{target} HTTP/1.1\r\nHost: plaza.gateway\r\nContent-Type: {content_type}\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(head.as_bytes())
+        .map_err(|err| format!("cannot send to the egress proxy: {err}"))?;
+    send(&mut stream)?;
+    let reply = read_reply(stream)?;
+    let (status, body) = parse_reply(&reply)?;
+    Ok((status, body.to_vec()))
+}
+
+/// Writes `bytes` to the proxy connection as the body of a request.
+fn write_bytes(stream: &mut TcpStream, bytes: &[u8]) -> Result<(), String> {
+    stream
+        .write_all(bytes)
+        .map_err(|err| format!("cannot send to the egress proxy: {err}"))
+}
+
 /// `tool_package`: reads the tool's directory and returns its bundle as JSON (apid files it
 /// in the library when the call is reported).
 ///

@@ -1,10 +1,10 @@
 // The Add secret dialog, shared by the Vault screen and the MCP wizard's inline creation.
-import '../styles/vault-form.css';
 import { api, vaultApi } from '../api';
 import type { NodeView, VaultConsumer, VaultEntry, VaultKind, VaultScope } from '../api';
-import { badge, button, field, input, modal, select, toast } from '../ui/components';
+import { badge, button, field, input, select, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { THIS_HUB, VAULT_NAME_RE, bindingLabel, errorText, nodeName } from './vault-common';
+import { check, dialog, dim, errLine, fieldset, nodeHeading, radio } from './vault-ui';
 
 export interface SecretPrefill {
   /** Pre-fills the name (upper-case env style). `lockName` keeps it read-only. */
@@ -35,11 +35,17 @@ interface BindingItem {
 
 /** Opens the dialog. `onSaved` gets the created entry; the value is never passed on. */
 export function addSecretDialog(prefill: SecretPrefill, onSaved: (entry: VaultEntry) => void): void {
-  const host = h('div.vf', null, h('p.vf-muted', null, 'Loading nodes and consumers...'));
-  const close = modal('Add secret', host);
+  const slot = h('div.vlt-form', null, dim('Loading nodes and consumers...'));
+  let close: () => void = () => {};
+  const cancel = () => button('Cancel', () => close(), { kind: 'ghost' });
+  close = dialog('Add secret', [slot], [cancel()]);
   void Promise.all([api.nodes(), vaultApi.consumers()]).then(
-    ([nodes, consumers]) => replace(host, buildForm(prefill, nodes, consumers, close, onSaved)),
-    (err: unknown) => replace(host, h('p.error-text', { role: 'alert' }, errorText(err))),
+    ([nodes, consumers]) => {
+      const form = buildForm(prefill, nodes, consumers, () => close(), onSaved);
+      replace(slot, form.body);
+      slot.closest('.sheet')?.querySelector('footer.sheet-f')?.replaceChildren(...form.foot);
+    },
+    (err: unknown) => replace(slot, h('div.vlt-err', { role: 'alert' }, errorText(err))),
   );
 }
 
@@ -49,7 +55,7 @@ function buildForm(
   consumers: VaultConsumer[],
   done: () => void,
   onSaved: (entry: VaultEntry) => void,
-): HTMLElement {
+): { body: HTMLElement; foot: HTMLElement[] } {
   const nodeChoices = [
     { id: THIS_HUB, name: 'This hub' },
     ...nodes
@@ -57,9 +63,9 @@ function buildForm(
       .map((n) => ({ id: n.id, name: nodeName(n.id, nodes) })),
   ];
 
-  const nameErr = h('p.error-text', { role: 'alert' });
-  const scopeErr = h('p.error-text', { role: 'alert' });
-  const errorBox = h('p.error-text', { role: 'alert' });
+  const nameErr = errLine();
+  const scopeErr = errLine();
+  const errorBox = errLine();
 
   const nameInput = input({
     type: 'text',
@@ -69,6 +75,7 @@ function buildForm(
     maxlength: 64,
     placeholder: 'API_KEY',
     readonly: !!prefill.lockName,
+    class: 'mono',
   });
   const kindSelect = select(KINDS, prefill.kind ?? 'api_key');
   const labelInput = input({ type: 'text', value: prefill.label ?? '', autocomplete: 'off', maxlength: 120 });
@@ -77,28 +84,22 @@ function buildForm(
   // Scope: plaza, or a set of nodes.
   const group = `vf-scope-${Math.random().toString(36).slice(2, 10)}`;
   const specific = (prefill.nodes?.length ?? 0) > 0;
-  const plazaRadio = h('input', { type: 'radio', name: group, value: 'plaza' });
-  const nodesRadio = h('input', { type: 'radio', name: group, value: 'nodes' });
-  plazaRadio.checked = !specific;
-  nodesRadio.checked = specific;
+  const plaza = radio(group, 'plaza', !specific, 'Plaza (every node)');
+  const nodesPick = radio(group, 'nodes', specific, 'Specific nodes');
   const nodeBoxes = new Map<string, HTMLInputElement>();
-  const nodeList = h(
-    'div.vf-list',
-    null,
-    nodeChoices.map((n) => {
-      const box = h('input', { type: 'checkbox' });
-      box.checked = !!prefill.nodes?.includes(n.id);
-      nodeBoxes.set(n.id, box);
-      return h('label.vf-check', null, box, h('span', null, nodeName(n.id, nodes)));
-    }),
-  );
+  const nodeRows = nodeChoices.map((n) => {
+    const box = check(!!prefill.nodes?.includes(n.id), nodeHeading(n.id, n.name), n.id);
+    nodeBoxes.set(n.id, box.input);
+    return box.row;
+  });
+  const nodeList = h('div', null, ...nodeRows);
   nodeList.hidden = !specific;
   const syncScope = () => {
-    nodeList.hidden = !nodesRadio.checked;
+    nodeList.hidden = !nodesPick.input.checked;
     scopeErr.textContent = '';
   };
-  plazaRadio.addEventListener('change', syncScope);
-  nodesRadio.addEventListener('change', syncScope);
+  plaza.input.addEventListener('change', syncScope);
+  nodesPick.input.addEventListener('change', syncScope);
 
   // Bindings: the consumers, suggested ones first. Ticks live in `checked`, so a re-sort keeps them.
   const checked = new Map<string, boolean>();
@@ -111,7 +112,7 @@ function buildForm(
   for (const b of prefill.bindings ?? []) {
     if (!items.some((i) => i.binding === b)) items.push({ binding: b, label: bindingLabel(b, consumers), wants: '' });
   }
-  const bindingList = h('div.vf-list', null);
+  const bindingList = h('div', null);
   const renderBindings = () => {
     const name = nameInput.value.trim();
     const suggested = (i: BindingItem) => name !== '' && i.wants === name;
@@ -119,18 +120,21 @@ function buildForm(
     replace(
       bindingList,
       ordered.length === 0
-        ? h('p.vf-muted', null, 'Nothing asks for a secret yet. You can bind it later.')
+        ? dim('Nothing asks for a secret yet. You can bind it later.')
         : ordered.map((item) => {
-            const box = h('input', { type: 'checkbox' });
-            box.checked = checked.get(item.binding) ?? false;
-            box.addEventListener('change', () => checked.set(item.binding, box.checked));
-            return h(
-              'label.vf-check',
-              null,
-              box,
-              h('span.vf-grow', null, h('span', null, item.label), item.wants ? h('span.vf-mono', null, item.wants) : null),
-              suggested(item) ? badge('suggested', 'accent') : null,
+            const box = check(
+              checked.get(item.binding) ?? false,
+              h(
+                'span',
+                null,
+                item.label,
+                suggested(item) ? ' ' : null,
+                suggested(item) ? badge('suggested', 'accent') : null,
+                item.wants ? h('span.vlt-sub.mono', null, ` wants ${item.wants}`) : null,
+              ),
             );
+            box.input.addEventListener('change', () => checked.set(item.binding, box.input.checked));
+            return box.row;
           }),
     );
   };
@@ -158,7 +162,7 @@ function buildForm(
       return;
     }
     let scope: VaultScope = { kind: 'plaza' };
-    if (nodesRadio.checked) {
+    if (nodesPick.input.checked) {
       const nodeIds = Array.from(nodeBoxes)
         .filter(([, box]) => box.checked)
         .map(([id]) => id);
@@ -204,31 +208,17 @@ function buildForm(
   const saveBtn = button('Save secret', () => void save(), { kind: 'primary' });
   const cancelBtn = button('Cancel', () => done(), { kind: 'ghost' });
 
-  return h(
-    'div.vf',
+  const body = h(
+    'div.vlt-form',
     null,
     field('Name', nameInput, NAME_HINT),
     nameErr,
     field('Kind', kindSelect),
     field('Label', labelInput, 'Optional. Shown in lists.'),
     field('Value', valueInput, 'Never shown again. It is cleared on save, so type it again after an error.'),
-    h(
-      'fieldset.vf-group',
-      null,
-      h('legend', null, 'Scope'),
-      h('label.vf-check', null, plazaRadio, h('span', null, 'Plaza (every node)')),
-      h('label.vf-check', null, nodesRadio, h('span', null, 'Specific nodes')),
-      nodeList,
-      scopeErr,
-    ),
-    h(
-      'fieldset.vf-group',
-      null,
-      h('legend', null, 'Bindings'),
-      h('p.vf-muted', null, 'Consumers that may resolve this secret.'),
-      bindingList,
-    ),
+    fieldset('Scope', [plaza.row, nodesPick.row, nodeList, scopeErr]),
+    fieldset('Bindings', [h('p.vlt-sub', null, 'Consumers that may resolve this secret.'), bindingList]),
     errorBox,
-    h('div.vf-actions', null, cancelBtn, saveBtn),
   );
+  return { body, foot: [cancelBtn, saveBtn] };
 }

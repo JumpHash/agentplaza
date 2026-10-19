@@ -16,7 +16,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
 use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, pick_list, row, text, text_editor, text_input};
+use iced::widget::{
+    Space, button, column, container, pick_list, row, text, text_editor, text_input,
+};
 use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -639,12 +641,14 @@ fn agent_names(list: &Value) -> HashMap<u64, String> {
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let options = author_options(state);
     let selected = options.iter().find(|a| a.cid == state.author).cloned();
-    let picker =
-        pick_list(options, selected, |a: Author| Msg::Author(a.cid)).width(Length::Fixed(200.0));
+    let picker = pick_list(options, selected, |a: Author| Msg::Author(a.cid))
+        .style(crate::theme::pick_list)
+        .width(Length::Fixed(150.0));
     let search = text_input("Search subject or body", &state.query)
+        .style(crate::theme::input)
         .on_input(Msg::Query)
         .padding(6.0)
-        .width(Length::Fixed(260.0));
+        .width(Length::Fixed(210.0));
     let head = ui::view_head(
         &scope::heading("Board", ctx.project.as_deref()),
         vec![picker.into(), search.into(), pause_bar(state.paused)],
@@ -683,7 +687,6 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         }
         for (no, p) in shown {
             feed.push(entry(state, no, p, false));
-            feed.push(ui::hairline());
         }
     }
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
@@ -694,27 +697,39 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         parts.push(ui::faint(notice.clone()).into());
     }
     parts.push(
-        ui::scroll(column(feed).width(Length::Fill).max_width(760.0))
+        ui::scroll(column(feed).spacing(12).width(Length::Fill))
             .height(Length::Fill)
             .into(),
     );
+    // The owner's post box sits in a dock at the foot, as the web's `.bd-dock`.
     parts.push(
         container(composer_view(&state.compose, &state.mentionable))
             .width(Length::Fill)
-            .padding(Padding {
-                top: 8.0,
-                right: 10.0,
-                bottom: 10.0,
-                left: 10.0,
-            })
+            .padding(16)
+            .style(card_surface)
             .into(),
     );
-    ui::sheet(head, column(parts).height(Length::Fill).into())
+    ui::sheet(head, column(parts).spacing(12).height(Length::Fill).into())
+}
+
+/// A card's surface for a post, a comment dock: the sheet, ruled, the skin's large radius, no shadow (the web's
+/// `.bd-post`, `.bd-dock`).
+fn card_surface(_: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(crate::theme::palette().ink),
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
+        ..container::Style::default()
+    }
 }
 
 /// Pause/Resume and Export for the board. Reusable: the IDE's board panel shows the same bar.
 pub fn pause_bar<'a>(paused: bool) -> Element<'a, Msg> {
-    let pause = ui::btn(
+    let pause = ui::btn_sm(
         if paused {
             "Resume board"
         } else {
@@ -724,21 +739,38 @@ pub fn pause_bar<'a>(paused: bool) -> Element<'a, Msg> {
         ui::Kind::Secondary,
         Some(Msg::Pause),
     );
-    let export = ui::btn("Export", None, ui::Kind::Secondary, Some(Msg::Export));
+    let export = ui::btn_sm("Export", None, ui::Kind::Ghost, Some(Msg::Export));
     row![pause, export]
         .spacing(8)
         .align_y(Alignment::Center)
         .into()
 }
 
-/// The banner a paused board shows: posts are kept, their mentions wait for the resume.
+/// The banner a paused board shows: posts are kept, their mentions wait for the resume (the web's `.bd-banner`).
 pub fn paused_banner<'a>() -> Element<'a, Msg> {
-    let warn = crate::theme::palette().warn;
-    container(text("Paused. Posts are saved, but their mentions are not delivered to agents until the board resumes.").size(13.0).color(warn))
-        .width(Length::Fill)
-        .padding(Padding { top: 6.0, right: 10.0, bottom: 6.0, left: 10.0 })
-        .style(move |_: &Theme| container::Style { border: Border { color: warn, width: 1.0, radius: 0.0.into() }, ..Default::default() })
-        .into()
+    container(
+        ui::sans(
+            "Paused. Posts are saved, but their mentions are not delivered to agents until the board resumes.",
+            12.5,
+            crate::theme::palette().ink_2,
+        ),
+    )
+    .width(Length::Fill)
+    .padding(Padding {
+        top: 10.0,
+        right: 12.0,
+        bottom: 10.0,
+        left: 12.0,
+    })
+    .style(|_: &Theme| container::Style {
+        background: Some(crate::theme::palette().warn_soft.into()),
+        border: Border {
+            radius: crate::theme::skin().radius.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
 }
 
 /// The owner's post box: the `@name` suggestions for the word being typed, an `@all` chip, the text
@@ -756,9 +788,10 @@ pub fn composer_view<'a>(compose: &'a Composer, mentionable: &[String]) -> Eleme
         None => Vec::new(),
     };
     let input = text_editor(&compose.content)
+        .style(crate::theme::editor)
         .placeholder("Message the team… (@ to mention)")
         .padding(6.0)
-        .height(Length::Fixed(96.0))
+        .height(Length::Fixed(64.0))
         .key_binding(|kp| {
             let enter = kp.key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter);
             if enter && (kp.modifiers.control() || kp.modifiers.command()) {
@@ -777,20 +810,22 @@ pub fn composer_view<'a>(compose: &'a Composer, mentionable: &[String]) -> Eleme
         ui::Kind::Primary,
         can_send.then_some(Msg::ComposeSend),
     );
-    column![
-        row![all, ui::chip_row(suggestions)]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        input,
+    let mut dock: Vec<Element<'a, Msg>> = Vec::new();
+    if !suggestions.is_empty() {
+        dock.push(ui::chip_row(suggestions));
+    }
+    dock.push(input.into());
+    dock.push(
         row![
+            all,
             container(ui::faint(format!("{len}/{POST_MAX}"))).width(Length::Fill),
             send
         ]
         .spacing(8)
-        .align_y(Alignment::Center),
-    ]
-    .spacing(8)
-    .into()
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    column(dock).spacing(8).into()
 }
 
 /// The `@partial` the text ends with, without its `@`, when the last word is one.
@@ -860,72 +895,60 @@ fn author_options(state: &State) -> Vec<Author> {
     out
 }
 
-/// One post: its number, the by-line (author link, role, count, Reply), subject, body, files, thread, time. In the
-/// IDE's panel (`panel`) there is no number column, the by-line wraps, and the body takes the panel's whole width.
+/// One post as a card (the web's `.bd-post`): the number, the by-line (author, role, mentions, task, comment
+/// count, time), the subject, the clamped body, its files, its thread, and the Reply foot with the composer
+/// under it. In the IDE's panel (`panel`) the same card, its by-line wrapping.
 fn entry<'a>(state: &'a State, no: usize, p: &'a Post, panel: bool) -> Element<'a, Msg> {
+    let p_ = crate::theme::palette();
     // The owner's own post names the owner (it has no agent to open); an agent's opens the agent.
     let name: Element<'a, Msg> = if p.owner {
-        text("Owner")
-            .font(SANS_SEMIBOLD)
-            .size(14.5)
-            .color(crate::theme::palette().ink)
-            .into()
+        ui::sans("Owner", 12.5, p_.ink).into()
     } else {
-        button(
-            text(state.name_of(p.agent_cid))
-                .font(SANS_SEMIBOLD)
-                .size(14.5)
-                .color(crate::theme::palette().ink),
-        )
-        .padding(0.0)
-        .style(|_: &Theme, _| button::Style {
-            text_color: crate::theme::palette().ink,
-            ..Default::default()
-        })
-        .on_press(Msg::Go(Id::Agent(p.agent_cid)))
-        .into()
+        button(ui::sans(state.name_of(p.agent_cid), 12.5, p_.ink))
+            .padding(0.0)
+            .style(|_: &Theme, _| button::Style {
+                text_color: crate::theme::palette().ink,
+                ..Default::default()
+            })
+            .on_press(Msg::Go(Id::Agent(p.agent_cid)))
+            .into()
     };
-    let mut by_parts: Vec<Element<'a, Msg>> = vec![name];
+    let mut top: Vec<Element<'a, Msg>> =
+        vec![ui::mono(format!("p{no}"), 11.5, p_.ink_3).into(), name];
     if !p.owner {
-        by_parts.push(ui::label(&role_label(&p.role)).into());
+        top.push(ui::sans(role_label(&p.role), 12.5, p_.ink_3).into());
     }
-    by_parts.push(ui::label(&count_label(p.comments.len())).into());
-    if !p.mentions.is_empty() {
-        let names = p
-            .mentions
-            .iter()
-            .map(|m| format!("@{m}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        by_parts.push(ui::mono(names, 11.0, crate::theme::palette().signal).into());
+    for m in &p.mentions {
+        let tone = if m == "all" {
+            ui::Tone::Signal
+        } else {
+            ui::Tone::Muted
+        };
+        top.push(ui::badge(&format!("@{m}"), tone));
     }
     if let Some(task) = p.task.as_deref().filter(|t| !t.is_empty()) {
-        by_parts.push(task_link(task));
+        top.push(task_link(task));
     }
-    by_parts.push(ui::btn(
-        "Reply",
-        None,
-        ui::Kind::Ghost,
-        Some(Msg::ToggleReply(p.id.clone())),
-    ));
-    // The by-line wraps in the panel, where it is narrow; the screen's one line is the same row.
+    top.push(ui::sans(count_label(p.comments.len()), 12.5, p_.ink_2).into());
+    top.push(Space::new().width(Length::Fill).into());
+    top.push(ui::sans(ago(p.created_at), 12.5, p_.ink_3).into());
     let by: Element<'a, Msg> = if panel {
-        row(by_parts)
-            .spacing(10)
+        row(top)
+            .spacing(8)
             .align_y(Alignment::Center)
             .wrap()
             .vertical_spacing(6)
             .into()
     } else {
-        row(by_parts).spacing(10).align_y(Alignment::Center).into()
+        row(top).spacing(8).align_y(Alignment::Center).into()
     };
 
     let mut matter: Vec<Element<'a, Msg>> = vec![
         by,
         text(p.subject.clone())
             .font(SANS_SEMIBOLD)
-            .size(16.0)
-            .color(crate::theme::palette().ink)
+            .size(15.0)
+            .color(p_.ink)
             .into(),
     ];
     if let Some(body) = body(state, p) {
@@ -937,67 +960,37 @@ fn entry<'a>(state: &'a State, no: usize, p: &'a Post, panel: bool) -> Element<'
     if let Some(thread) = thread(state, p) {
         matter.push(thread);
     }
-    let when = ui::sans(ago(p.created_at), 11.0, crate::theme::palette().ink_3);
-    if panel {
-        return row![
-            column(matter).spacing(6).width(Length::Fill),
-            container(when).padding(Padding {
-                top: 2.0,
-                right: 0.0,
-                bottom: 0.0,
-                left: 0.0
-            }),
-        ]
-        .spacing(12)
-        .padding(Padding {
-            top: 12.0,
-            right: 4.0,
-            bottom: 12.0,
-            left: 4.0,
-        })
-        .align_y(Alignment::Start)
-        .into();
+    matter.push(
+        row![ui::btn_sm(
+            "Reply",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::ToggleReply(p.id.clone())),
+        )]
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    if state.composing.contains(&p.id) {
+        matter.push(composer(state, p));
     }
-    // The web's grid: the post number (56px, right-aligned), the matter, then the time at the far end.
-    let number = container(ui::sans(
-        format!("p{no}"),
-        11.0,
-        crate::theme::palette().ink_3,
-    ))
-    .width(Length::Fixed(56.0))
-    .align_x(Alignment::End);
-    row![
-        number,
-        column(matter).spacing(6).width(Length::Fill),
-        container(when).padding(Padding {
-            top: 2.0,
-            right: 0.0,
-            bottom: 0.0,
-            left: 0.0
-        }),
-    ]
-    .spacing(16)
-    .padding(Padding {
-        top: 14.0,
-        right: 10.0,
-        bottom: 14.0,
-        left: 10.0,
-    })
-    .align_y(Alignment::Start)
-    .into()
+    container(column(matter).spacing(8).width(Length::Fill))
+        .padding(16)
+        .width(Length::Fill)
+        .style(card_surface)
+        .into()
 }
 
 /// The task a post is about, as a link to it on the Tasks screen.
 fn task_link<'a>(task: &str) -> Element<'a, Msg> {
     // One line, always: a task's name is a chip, and a narrow panel wraps the by-line rather than the chip.
     button(
-        ui::sans(format!("task {task}"), 11.0, crate::theme::palette().signal)
+        ui::sans(format!("Task {task}"), 12.5, crate::theme::palette().ink_2)
             .wrapping(Wrapping::None),
     )
     .padding(0.0)
     .style(|_: &Theme, _| button::Style {
         background: None,
-        text_color: crate::theme::palette().signal,
+        text_color: crate::theme::palette().ink_2,
         ..Default::default()
     })
     .on_press(Msg::Go(Id::Task(task.to_string())))
@@ -1021,7 +1014,7 @@ fn body<'a>(state: &'a State, p: &'a Post) -> Option<Element<'a, Msg>> {
     let mut col: Vec<Element<'a, Msg>> = vec![rich::view(&shown, &rctx, &state.cards, &on_rich)];
     if clamped {
         let label = if open { "Show less" } else { "Show more" };
-        col.push(ui::btn(
+        col.push(ui::btn_sm(
             label,
             None,
             ui::Kind::Ghost,
@@ -1066,37 +1059,23 @@ fn file_chip<'a>(state: &State, id: &str) -> Element<'a, Msg> {
             } else {
                 ""
             };
-            container(ui::sans(
-                format!("{kind}{name}  {}", size_of(meta.size)),
-                12.0,
-                crate::theme::palette().ink_2,
-            ))
-            .padding(Padding {
-                top: 2.0,
-                right: 6.0,
-                bottom: 2.0,
-                left: 6.0,
-            })
-            .style(|_: &Theme| container::Style {
-                border: Border {
-                    color: crate::theme::palette().rule,
-                    width: 1.0,
-                    radius: 0.0.into(),
-                },
-                ..Default::default()
-            })
-            .into()
+            let label = format!("{name} · {}", size_of(meta.size));
+            if meta.content_type.starts_with("image/") || meta.content_type.starts_with("video/") {
+                // Pictures and videos draw their name and size under them (the web's caption).
+                ui::faint(format!("{kind}{label}")).into()
+            } else {
+                ui::badge(&label, ui::Tone::Muted)
+            }
         }
-        None if state.missing.contains(id) => ui::faint("file unavailable").into(),
+        None if state.missing.contains(id) => ui::badge("File unavailable", ui::Tone::Muted),
         None => ui::faint("file …").into(),
     }
 }
 
-/// The thread under a post: its last comments (or all, on request), then the composer when open.
-/// None when there is nothing to show.
+/// The thread under a post (the web's `.bd-thread`): its last comments, or all of them on request, above a rule.
+/// None when there are no comments.
 fn thread<'a>(state: &'a State, p: &'a Post) -> Option<Element<'a, Msg>> {
-    let composing = state.composing.contains(&p.id);
-    if p.comments.is_empty() && !composing {
+    if p.comments.is_empty() {
         return None;
     }
     let mut all: Vec<&'a Comment> = p.comments.iter().collect();
@@ -1109,7 +1088,7 @@ fn thread<'a>(state: &'a State, p: &'a Post) -> Option<Element<'a, Msg>> {
         } else {
             format!("Show all {} comments", all.len())
         };
-        col.push(ui::btn(
+        col.push(ui::btn_sm(
             &label,
             None,
             ui::Kind::Ghost,
@@ -1124,13 +1103,18 @@ fn thread<'a>(state: &'a State, p: &'a Post) -> Option<Element<'a, Msg>> {
     for c in shown.iter().copied() {
         col.push(comment_row(state, c));
     }
-    if composing {
-        col.push(composer(state, p));
-    }
-    Some(column(col).spacing(10).into())
+    Some(
+        column![
+            ui::hairline(),
+            container(column(col).spacing(8).width(Length::Fill)).width(Length::Fill),
+        ]
+        .spacing(12)
+        .into(),
+    )
 }
 
-/// A comment: the author's initial, name (the owner's own is marked), time, body and files.
+/// A comment (the web's `.bd-c`): the author's initial in a round chip (the owner's own in the signal's soft
+/// ground), the name and time, the body and its files.
 fn comment_row<'a>(state: &'a State, c: &'a Comment) -> Element<'a, Msg> {
     let name = match c.agent_cid {
         None => "You (owner)".to_string(),
@@ -1145,31 +1129,51 @@ fn comment_row<'a>(state: &'a State, c: &'a Comment) -> Element<'a, Msg> {
         .next()
         .map(|ch| ch.to_uppercase().to_string())
         .unwrap_or_else(|| "?".to_string());
-    let colour = if c.agent_cid.is_none() {
-        crate::theme::palette().signal
-    } else {
-        crate::theme::palette().ink
-    };
+    let owner = c.agent_cid.is_none();
+    let chip = container(ui::sans(initial, 12.0, crate::theme::palette().ink_2))
+        .width(Length::Fixed(24.0))
+        .height(Length::Fixed(24.0))
+        .center_x(Length::Fixed(24.0))
+        .center_y(Length::Fixed(24.0))
+        .style(move |_: &Theme| container::Style {
+            background: Some(
+                if owner {
+                    crate::theme::palette().signal_soft
+                } else {
+                    crate::theme::palette().sheet_2
+                }
+                .into(),
+            ),
+            border: Border {
+                radius: 12.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
     let rctx = rich::context(&state.cards, None, None);
     let mut main: Vec<Element<'a, Msg>> = vec![
-        row![ui::sans(name, 12.0, colour), ui::faint(ago(c.created_at))]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .into(),
+        row![
+            text(name)
+                .font(SANS_SEMIBOLD)
+                .size(12.5)
+                .color(crate::theme::palette().ink),
+            ui::faint(ago(c.created_at))
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into(),
         rich::view(&c.body, &rctx, &state.cards, &on_rich),
     ];
     if let Some(files) = attachments(state, &c.attachments) {
         main.push(files);
     }
-    row![
-        ui::sans(initial, 12.0, crate::theme::palette().ink_2),
-        column(main).spacing(4).width(Length::Fill)
-    ]
-    .spacing(10)
-    .into()
+    row![chip, column(main).spacing(4).width(Length::Fill)]
+        .spacing(8)
+        .align_y(Alignment::Start)
+        .into()
 }
 
-/// The owner's reply composer. Its draft lives in the state, so a redraw never loses it.
+/// The owner's reply composer (the web's `.bd-reply`). Its draft lives in the state, so a redraw never loses it.
 /// Ctrl/Cmd+Enter sends (Enter adds a line); the Send button is off while the text is empty,
 /// too long, or on its way.
 fn composer<'a>(state: &'a State, p: &'a Post) -> Element<'a, Msg> {
@@ -1182,6 +1186,7 @@ fn composer<'a>(state: &'a State, p: &'a Post) -> Element<'a, Msg> {
     let typed_id = p.id.clone();
     let send_id = p.id.clone();
     let input = text_editor(editor_content)
+        .style(crate::theme::editor)
         .placeholder("Reply as the owner. Ctrl+Enter sends.")
         .padding(6.0)
         .height(Length::Fixed(96.0))
@@ -1195,13 +1200,13 @@ fn composer<'a>(state: &'a State, p: &'a Post) -> Element<'a, Msg> {
         })
         .on_action(move |a| Msg::Edit(typed_id.clone(), a));
     let meter = ui::faint(format!("{len}/{REPLY_MAX}"));
-    let cancel = ui::btn(
+    let cancel = ui::btn_sm(
         "Cancel",
         None,
         ui::Kind::Ghost,
         Some(Msg::Cancel(p.id.clone())),
     );
-    let send = ui::btn(
+    let send = ui::btn_sm(
         "Send",
         None,
         ui::Kind::Primary,
@@ -1245,13 +1250,15 @@ fn ago(ms: f64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(ms, |d| d.as_millis() as f64);
-    let s = ((now - ms) / 1000.0).round().max(0.0) as u64;
-    match s {
-        0..=4 => "just now".to_string(),
-        5..=59 => format!("{s}s ago"),
-        60..=3599 => format!("{}m ago", s / 60),
-        3600..=86399 => format!("{}h ago", s / 3600),
-        _ => format!("{}d ago", s / 86400),
+    let s = ((now - ms) / 1000.0).round().max(0.0);
+    if s < 45.0 {
+        "just now".to_string()
+    } else if s < 3600.0 {
+        format!("{} min ago", (s / 60.0).round().max(1.0))
+    } else if s < 86400.0 {
+        format!("{} h ago", (s / 3600.0).round())
+    } else {
+        format!("{} d ago", (s / 86400.0).round())
     }
 }
 

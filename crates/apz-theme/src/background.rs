@@ -58,12 +58,18 @@ pub struct Background {
     pub fields: Vec<String>,
     /// How strongly the fields show, 0..=1.
     pub strength: f32,
+    /// The strength on a dark palette, when it differs (the Loom and Graphite skins' `--amb-k` per mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strength_dark: Option<f32>,
     pub motion: Motion,
     /// The pattern lights under the pointer.
     pub pointer: bool,
     pub ornament: Ornament,
     /// Film grain, 0..=0.08.
     pub grain: f32,
+    /// The grain on a dark palette, when it differs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grain_dark: Option<f32>,
     pub scope: Scope,
 }
 
@@ -76,10 +82,12 @@ impl Default for Background {
             scale: 22.0,
             fields: vec![],
             strength: 0.0,
+            strength_dark: None,
             motion: Motion::Still,
             pointer: false,
             ornament: Ornament::None,
             grain: 0.0,
+            grain_dark: None,
             scope: Scope::Pages,
         }
     }
@@ -104,10 +112,12 @@ fn preset(
         scale,
         fields: fields.iter().map(|f| (*f).to_string()).collect(),
         strength,
+        strength_dark: None,
         motion,
         pointer,
         ornament,
         grain,
+        grain_dark: None,
         scope: Scope::Pages,
     }
 }
@@ -118,11 +128,76 @@ pub fn presets() -> Vec<Background> {
     use Ornament as O;
     use Pattern as P;
     vec![
-        preset("loom-paper", "Paper", P::Dots, 22.0, &["signal", "warn", "info"], 0.8, Slow, true, O::Threads, 0.045),
-        preset("loom-linen", "Linen", P::Weave, 22.0, &["signal"], 0.45, Still, false, O::None, 0.03),
-        preset("graphite-grid", "Grid", P::Grid, 32.0, &["signal", "review", "info"], 0.55, Slow, true, O::Orbits, 0.03),
-        preset("graphite-blueprint", "Blueprint", P::Blueprint, 24.0, &["info"], 0.3, Still, true, O::None, 0.0),
-        preset("contours", "Contours", P::Contours, 48.0, &["signal", "info"], 0.4, Slow, false, O::None, 0.02),
+        // Loom's Paper and Graphite's Grid are the prototype's atmospheres: its colour fields (`--amb-1..3`) at its
+        // strengths (`--amb-k`, light and dark) and its grain.
+        Background {
+            strength_dark: Some(0.62),
+            grain_dark: Some(0.05),
+            ..preset(
+                "loom-paper",
+                "Paper",
+                P::Dots,
+                22.0,
+                &["amb-1", "amb-2", "amb-3"],
+                0.8,
+                Slow,
+                true,
+                O::Threads,
+                0.045,
+            )
+        },
+        preset(
+            "loom-linen",
+            "Linen",
+            P::Weave,
+            22.0,
+            &["signal"],
+            0.45,
+            Still,
+            false,
+            O::None,
+            0.03,
+        ),
+        Background {
+            strength_dark: Some(0.62),
+            grain_dark: Some(0.05),
+            ..preset(
+                "graphite-grid",
+                "Grid",
+                P::Grid,
+                32.0,
+                &["amb-1", "amb-2", "amb-3"],
+                0.55,
+                Slow,
+                true,
+                O::Orbits,
+                0.03,
+            )
+        },
+        preset(
+            "graphite-blueprint",
+            "Blueprint",
+            P::Blueprint,
+            24.0,
+            &["info"],
+            0.3,
+            Still,
+            true,
+            O::None,
+            0.0,
+        ),
+        preset(
+            "contours",
+            "Contours",
+            P::Contours,
+            48.0,
+            &["signal", "info"],
+            0.4,
+            Slow,
+            false,
+            O::None,
+            0.02,
+        ),
         Background::default(),
     ]
 }
@@ -141,16 +216,24 @@ impl Background {
         }
         for f in &self.fields {
             if !crate::tokens::is_token(f) && Rgba::parse(f).is_none() {
-                out.push(format!("background field {f:?} is neither a token nor a colour"));
+                out.push(format!(
+                    "background field {f:?} is neither a token nor a colour"
+                ));
             }
         }
         if !(4.0..=256.0).contains(&self.scale) {
             out.push("background scale must be 4–256 px".into());
         }
-        if !(0.0..=1.0).contains(&self.strength) {
+        if !(0.0..=1.0).contains(&self.strength)
+            || self
+                .strength_dark
+                .is_some_and(|s| !(0.0..=1.0).contains(&s))
+        {
             out.push("background strength must be 0–1".into());
         }
-        if !(0.0..=0.08).contains(&self.grain) {
+        if !(0.0..=0.08).contains(&self.grain)
+            || self.grain_dark.is_some_and(|g| !(0.0..=0.08).contains(&g))
+        {
             out.push("background grain must be 0–0.08".into());
         }
         out
@@ -158,7 +241,7 @@ impl Background {
 
     /// The field colours, resolved against a palette (opaque). Missing fields are the ground.
     pub fn field_colors(&self, tokens: &Tokens) -> [Rgba; 3] {
-        let ground = tokens.get("paper");
+        let ground = tokens.get("panel");
         let pick = |i: usize| {
             self.fields
                 .get(i)

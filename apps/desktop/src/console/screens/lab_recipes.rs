@@ -16,8 +16,8 @@ use crate::console::lab_api::{self, Recipe};
 use crate::console::ui::{self, Kind, Tone};
 use crate::theme::{self};
 
-/// Cards per row in the recipe grid, as the web's `minmax(340px, 1fr)` at the console's width.
-const GRID_COLS: usize = 2;
+/// Cards per row in the recipe grid, as the web's `minmax(280px, 1fr)` at the console's width.
+const GRID_COLS: usize = 3;
 const COMMIT_HINT: &str =
     "Seven to 64 hex characters of the commit, or dev-... for a local-dev pin.";
 
@@ -215,28 +215,24 @@ fn short_commit(commit: &str) -> String {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let count = match &state.recipes {
-        Some(list) => format!("{} registered", list.len()),
-        None => String::new(),
-    };
-    let actions: Vec<Element<'a, Msg>> = vec![ui::faint(count).into()];
-    let mut parts: Vec<Element<'a, Msg>> = vec![ui::view_head("Recipes", actions)];
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(note) = &state.notice {
-        parts.push(ui::faint(note.clone()).into());
+        parts.push(lab_common::note(note.clone()));
     }
     if let Some(e) = &state.error {
-        parts.push(ui::error_line(e));
+        parts.push(lab_common::err(e));
     }
     match &state.recipes {
-        Some(list) if list.is_empty() => parts.push(ui::empty(
-            "file",
+        Some(list) if list.is_empty() => parts.push(lab_common::empty(
+            "flask-conical",
             "No recipes registered",
-            "Recipes come from trainer/recipes; a recipe must be vetted at a commit before a job can use it.",
+            None,
+            None,
         )),
         Some(list) => parts.push(grid(list.iter().map(recipe_card).collect(), GRID_COLS)),
         None => {}
     }
-    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(22).width(Length::Fill))
+    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(16).width(Length::Fill))
         .height(Length::Fill)
         .into();
     let framed = lab::frame(Section::Recipes, page, Msg::Go);
@@ -246,7 +242,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     }
 }
 
-/// The cards of a grid, `cols` to a row; a short last row keeps its width with empty cells.
+/// The cards of a grid, `cols` to a row (the web's `.lab2-grid`, 12 apart); a short last row keeps its width.
 fn grid<'a>(cards: Vec<Element<'a, Msg>>, cols: usize) -> Element<'a, Msg> {
     let mut rows: Vec<Element<'a, Msg>> = Vec::new();
     let mut cards = cards.into_iter().peekable();
@@ -258,72 +254,101 @@ fn grid<'a>(cards: Vec<Element<'a, Msg>>, cols: usize) -> Element<'a, Msg> {
                 None => cells.push(Space::new().width(Length::FillPortion(1)).into()),
             }
         }
-        rows.push(row(cells).spacing(22).into());
+        rows.push(row(cells).spacing(12).width(Length::Fill).into());
     }
-    column(rows).spacing(22).width(Length::Fill).into()
+    column(rows).spacing(12).width(Length::Fill).into()
 }
 
-/// One recipe: its name, its local-dev badge, its facts, its schema, and the Vet action.
+/// One recipe, as the web's card: its name on the head with the Vet action, a local-dev badge, then
+/// its facts in two columns (the schema across both).
 fn recipe_card<'a>(r: &'a Recipe) -> Element<'a, Msg> {
-    let facts: Vec<Element<'a, Msg>> = vec![
-        fact(
-            "Id",
-            ui::mono(r.id.clone(), 12.0, crate::theme::palette().ink),
+    let repo = if r.repo.is_empty() {
+        "—".to_string()
+    } else {
+        r.repo.clone()
+    };
+    let facts: Vec<(bool, Element<'a, Msg>)> = vec![
+        (false, fact("Id", lab_common::cell(r.id.clone(), true))),
+        (false, fact("Repo", lab_common::cell(repo, true))),
+        (
+            false,
+            fact("Commit", lab_common::cell(short_commit(&r.commit), true)),
         ),
-        fact(
-            "Repo",
-            ui::mono(r.repo.clone(), 12.0, crate::theme::palette().ink_2),
+        (false, fact("Vet", vet_line(r))),
+        (
+            true,
+            fact("Schema", column(schema_block(&r.schema)).spacing(8).into()),
         ),
-        fact(
-            "Commit",
-            ui::mono(short_commit(&r.commit), 12.0, crate::theme::palette().ink),
-        ),
-        fact("Vetted", vetted(r)),
     ];
+    let mut grid_rows: Vec<Element<'a, Msg>> = Vec::new();
+    let mut pair: Vec<Element<'a, Msg>> = Vec::new();
+    for (wide, f) in facts {
+        if wide {
+            if !pair.is_empty() {
+                grid_rows.push(two_up(std::mem::take(&mut pair)));
+            }
+            grid_rows.push(f);
+        } else {
+            pair.push(f);
+            if pair.len() == 2 {
+                grid_rows.push(two_up(std::mem::take(&mut pair)));
+            }
+        }
+    }
+    if !pair.is_empty() {
+        grid_rows.push(two_up(pair));
+    }
     let mut body: Vec<Element<'a, Msg>> = Vec::new();
     if r.local_dev {
-        body.push(ui::badge("local dev", Tone::Signal));
+        body.push(ui::badge("local dev", Tone::Info));
     }
-    body.push(column(facts).spacing(8).into());
-    body.extend(schema_block(&r.schema));
-    body.push(
-        row![
-            Space::new().width(Length::Fill),
-            ui::btn(
-                "Vet",
-                Some("check"),
-                Kind::Secondary,
-                Some(Msg::OpenVet(r.clone()))
-            ),
-        ]
-        .align_y(Alignment::Center)
-        .into(),
-    );
-    ui::card(&r.name, column(body).spacing(16).into())
+    body.push(column(grid_rows).spacing(12).width(Length::Fill).into());
+    ui::card_with(
+        &r.name,
+        vec![ui::btn_sm(
+            "Vet",
+            Some("check"),
+            Kind::Ghost,
+            Some(Msg::OpenVet(r.clone())),
+        )],
+        column(body).spacing(12).width(Length::Fill).into(),
+    )
 }
 
-/// A label in a fixed left column over its value, as the web's definition list.
-fn fact<'a>(label: &str, value: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    row![
-        container(ui::label(label)).width(Length::Fixed(84.0)),
-        container(value.into()).width(Length::Fill)
-    ]
-    .spacing(10)
-    .align_y(Alignment::Start)
-    .into()
+/// A two-column row of facts, each taking half the width.
+fn two_up<'a>(facts: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let mut cells: Vec<Element<'a, Msg>> = facts
+        .into_iter()
+        .map(|f| container(f).width(Length::FillPortion(1)).into())
+        .collect();
+    while cells.len() < 2 {
+        cells.push(Space::new().width(Length::FillPortion(1)).into());
+    }
+    row(cells).spacing(16).width(Length::Fill).into()
 }
 
-/// The vet state: a badge, then who vetted it and when.
-fn vetted<'a>(r: &Recipe) -> Element<'a, Msg> {
+/// A fact as the web's `.lab2-fact`: its label in the small mono caps over its value.
+fn fact<'a>(label: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
+    column![ui::label(label), value]
+        .spacing(4)
+        .width(Length::Fill)
+        .into()
+}
+
+/// The vet state, as the web's: a warning badge while not vetted, else who vetted it and how long ago.
+fn vet_line<'a>(r: &Recipe) -> Element<'a, Msg> {
     match r.vetted_ms {
         None | Some(0) => ui::badge("not vetted", Tone::Warn),
         Some(ms) => {
             let by = r.vetted_by.as_deref().unwrap_or("unknown");
             row![
-                ui::badge("vetted", Tone::Ok),
-                ui::faint(format!("by {by} {}", lab_common::ago(ms)))
+                ui::sans(
+                    format!("vetted by {by} "),
+                    13.0,
+                    crate::theme::palette().ink
+                ),
+                lab_common::note(lab_common::ago_text(ms, lab_common::now_ms())),
             ]
-            .spacing(8)
             .align_y(Alignment::Center)
             .into()
         }

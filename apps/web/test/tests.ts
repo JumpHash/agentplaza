@@ -56,7 +56,7 @@ import { checkpointsKey, treeKey, type TreeKeyInput } from '../src/views/ide-ren
 import type { Entry as TreeEntry } from '../src/ide/types';
 import { format, nice, timeLabel } from '../src/metrics/format';
 import type { Unit } from '../src/metrics/model';
-import formatGolden from '../../../crates/apz-metrics-view/tests/format_golden.json';
+import formatGolden from '../../../crates/apz-view/tests/format_golden.json';
 import { splitTreemap } from '../src/metrics/figures';
 import type { TreeItem } from '../src/metrics/model';
 import { bandPath, bucketStarts, stackedPaths, thin, xLabelIndexes } from '../src/metrics/charts';
@@ -105,7 +105,8 @@ eq(href('work', 'pr7'), '#/p/pr7/work/pr7', 'links carry the scope of the route 
 setLinkScope(null);
 eq(href('work'), '#/work', 'and none under All projects');
 eq(href('tasks', 't 1'), '#/tasks/t%201', 'href encodes params');
-eq(ago(1000, 31_000), '30s ago', 'ago seconds');
+eq(ago(1000, 31_000), 'just now', 'ago seconds');
+eq(ago(1000, 4 * 60_000 + 1000), '4 min ago', 'ago minutes');
 eq(clip('abcdef', 4), 'abc…', 'clip');
 eq(compact(12_345), '12k', 'compact thousands');
 // A stat value with letters is text (a model id keeps its size class); figures and the dash placeholder are not.
@@ -479,8 +480,9 @@ sectionEnd('mcp wizard helper tests: ok');
 eq(moveStep(0, -1, 4), 0, 'wizard: Back stops at the first step');
 eq(moveStep(3, 1, 4), 3, 'wizard: Next stops at the last step');
 eq(moveStep(1, 1, 8), 2, 'tour: Next moves one step');
-eq(WIZARD_STEPS.length <= 5, true, 'wizard: at most five steps');
-eq(WIZARD_STEPS[2]?.id, 'deps', 'wizard: the dependencies step is third, after the hub');
+eq(WIZARD_STEPS.length <= 6, true, 'wizard: at most six steps');
+eq(WIZARD_STEPS[1]?.id, 'look', 'wizard: the look is chosen second, right after the welcome');
+eq(WIZARD_STEPS[3]?.id, 'deps', 'wizard: the dependencies step comes after the hub');
 eq(TOUR_STEPS.length >= 6 && TOUR_STEPS.length <= 8, true, 'tour: six to eight steps');
 eq(fill('{n} of {m} providers have a key', { n: 1, m: 3 }), '1 of 3 providers have a key', 'copy: placeholders fill');
 eq(fill('{n} of {m}', { n: 2 }), '2 of {m}', 'copy: a missing value stays visible');
@@ -2042,3 +2044,12 @@ import './attachments-tests';
 import './new-project-tests';
 import './environments-tests';
 import './maintenance-tests';
+import './chat-tools-tests';
+
+// The web console's code highlighter (src/view/highlight.ts) against the golden vectors the Rust twin also checks.
+import { spans as highlightSpans } from '../src/view/highlight';
+import highlightGolden from '../../../crates/apz-view/tests/highlight_golden.json';
+type HighlightCase = { language: string; text: string; spans: unknown };
+const highlightCases = (Array.isArray(highlightGolden) ? highlightGolden : (highlightGolden as unknown as { cases: HighlightCase[] }).cases) as HighlightCase[];
+for (const c of highlightCases) eq(JSON.stringify(highlightSpans(c.language, c.text)), JSON.stringify(c.spans), 'highlight ' + c.language);
+sectionEnd('highlight tests: ok');

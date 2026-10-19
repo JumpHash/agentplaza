@@ -32,7 +32,11 @@ impl Rgba {
 
     /// From 8-bit channels.
     pub fn rgb8(r: u8, g: u8, b: u8) -> Rgba {
-        Rgba::rgb(f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0)
+        Rgba::rgb(
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+        )
     }
 
     /// Parses `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb(r g b)`, `rgb(r, g, b)` and `rgba(r, g, b, a)`
@@ -54,25 +58,30 @@ impl Rgba {
         if parts.len() != 3 && parts.len() != 4 {
             return None;
         }
+        // A channel or alpha that is not a finite number (`nan`, `inf`) is refused, so no colour holds a NaN.
         let channel = |p: &str| -> Option<f32> {
-            if let Some(pct) = p.strip_suffix('%') {
-                pct.parse::<f32>().ok().map(|v| (v / 100.0).clamp(0.0, 1.0))
-            } else {
-                p.parse::<f32>().ok().map(|v| (v / 255.0).clamp(0.0, 1.0))
-            }
+            let v = match p.strip_suffix('%') {
+                Some(pct) => pct.parse::<f32>().ok()? / 100.0,
+                None => p.parse::<f32>().ok()? / 255.0,
+            };
+            v.is_finite().then(|| v.clamp(0.0, 1.0))
         };
         let alpha = |p: &str| -> Option<f32> {
-            if let Some(pct) = p.strip_suffix('%') {
-                pct.parse::<f32>().ok().map(|v| (v / 100.0).clamp(0.0, 1.0))
-            } else {
-                p.parse::<f32>().ok().map(|v| v.clamp(0.0, 1.0))
-            }
+            let v = match p.strip_suffix('%') {
+                Some(pct) => pct.parse::<f32>().ok()? / 100.0,
+                None => p.parse::<f32>().ok()?,
+            };
+            v.is_finite().then(|| v.clamp(0.0, 1.0))
         };
         Some(Rgba {
             r: channel(parts[0])?,
             g: channel(parts[1])?,
             b: channel(parts[2])?,
-            a: if parts.len() == 4 { alpha(parts[3])? } else { 1.0 },
+            a: if parts.len() == 4 {
+                alpha(parts[3])?
+            } else {
+                1.0
+            },
         })
     }
 
@@ -237,11 +246,21 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
     let (r, g, b, a) = match hex.len() {
         3 | 4 => {
             let d = |i| digit(i, 1).map(|v| v * 17);
-            (d(0)?, d(1)?, d(2)?, if hex.len() == 4 { d(3)? } else { 255 })
+            (
+                d(0)?,
+                d(1)?,
+                d(2)?,
+                if hex.len() == 4 { d(3)? } else { 255 },
+            )
         }
         6 | 8 => {
             let d = |i| digit(i, 2);
-            (d(0)?, d(2)?, d(4)?, if hex.len() == 8 { d(6)? } else { 255 })
+            (
+                d(0)?,
+                d(2)?,
+                d(4)?,
+                if hex.len() == 8 { d(6)? } else { 255 },
+            )
         }
         _ => return None,
     };
@@ -267,8 +286,9 @@ fn clamp(c: Rgba) -> Rgba {
 }
 
 /// The nearest colour to `fg` (by OKLCH lightness, hue kept) that reaches `min` contrast against every ground.
-/// `None` when `fg` already passes. Grounds are opaque. The search moves away from the grounds' average
-/// luminance; if that direction cannot reach `min` it tries the other one, and returns the best it found.
+/// `None` when `fg` already passes, or when no colour the search tries is better than `fg`. Grounds are opaque.
+/// The search moves away from the grounds' average luminance; if that direction cannot reach `min` it tries the
+/// other one, and returns the best it found.
 pub fn fix_contrast(fg: Rgba, grounds: &[Rgba], min: f32) -> Option<Rgba> {
     let passes = |c: Rgba| grounds.iter().all(|g| c.quantized().contrast(*g) >= min);
     if grounds.is_empty() || passes(fg) {
@@ -280,10 +300,15 @@ pub fn fix_contrast(fg: Rgba, grounds: &[Rgba], min: f32) -> Option<Rgba> {
             .map(|g| c.quantized().contrast(*g))
             .fold(f32::INFINITY, f32::min)
     };
-    let light_ground = grounds.iter().map(|g| g.luminance()).sum::<f32>() / grounds.len() as f32 > 0.18;
+    let light_ground =
+        grounds.iter().map(|g| g.luminance()).sum::<f32>() / grounds.len() as f32 > 0.18;
     let start = fg.to_oklch();
     let mut best = fg;
-    for dir in if light_ground { [-1.0f32, 1.0] } else { [1.0, -1.0] } {
+    for dir in if light_ground {
+        [-1.0f32, 1.0]
+    } else {
+        [1.0, -1.0]
+    } {
         let mut l = start.l;
         for _ in 0..400 {
             l += dir * 0.0025;
@@ -299,7 +324,7 @@ pub fn fix_contrast(fg: Rgba, grounds: &[Rgba], min: f32) -> Option<Rgba> {
             }
         }
     }
-    Some(best)
+    (best != fg).then_some(best)
 }
 
 impl Serialize for Rgba {
@@ -324,7 +349,10 @@ mod tests {
         assert_eq!(Rgba::parse("#F6F4EE").unwrap().to_hex(), "#f6f4ee");
         assert_eq!(Rgba::parse("#abc").unwrap().to_hex(), "#aabbcc");
         assert_eq!(Rgba::parse("#00000080").unwrap().to_hex(), "#00000080");
-        assert_eq!(Rgba::parse("rgba(40, 30, 15, .5)").unwrap().to_hex(), "#281e0f80");
+        assert_eq!(
+            Rgba::parse("rgba(40, 30, 15, .5)").unwrap().to_hex(),
+            "#281e0f80"
+        );
         assert_eq!(Rgba::parse("rgb(255 0 0)").unwrap().to_hex(), "#ff0000");
         assert!(Rgba::parse("#ggg").is_none());
         assert!(Rgba::parse("red").is_none());
@@ -332,7 +360,9 @@ mod tests {
 
     #[test]
     fn oklab_round_trips() {
-        for hex in ["#f6f4ee", "#d0602c", "#2f5ff0", "#121110", "#5ccf8c", "#000000", "#ffffff"] {
+        for hex in [
+            "#f6f4ee", "#d0602c", "#2f5ff0", "#121110", "#5ccf8c", "#000000", "#ffffff",
+        ] {
             let c = Rgba::parse(hex).unwrap();
             let back = Rgba::from_oklab(c.to_oklab(), 1.0);
             assert_eq!(back.to_hex(), hex, "{hex}");
@@ -363,5 +393,21 @@ mod tests {
     fn alpha_composites_over_the_ground() {
         let half = Rgba::parse("#00000080").unwrap();
         assert_eq!(half.over(Rgba::WHITE).to_hex(), "#7f7f7f");
+    }
+
+    #[test]
+    fn non_finite_channels_are_refused() {
+        assert!(Rgba::parse("rgb(nan 0 0)").is_none());
+        assert!(Rgba::parse("rgb(0, inf, 0)").is_none());
+        assert!(Rgba::parse("rgba(0, 0, 0, nan)").is_none());
+        assert!(Rgba::parse("rgba(0, 0, 0, infinity)").is_none());
+        assert!(Rgba::parse("rgb(1e39 0 0)").is_none());
+        assert_eq!(Rgba::parse("rgb(255 0 0)").unwrap().to_hex(), "#ff0000");
+    }
+
+    #[test]
+    fn a_fix_that_improves_nothing_is_not_reported() {
+        // White on black is already as far apart as colours get, so no lightness step improves it.
+        assert!(fix_contrast(Rgba::WHITE, &[Rgba::BLACK], 30.0).is_none());
     }
 }

@@ -174,11 +174,27 @@ the desktop app.
   console shows them by name and use, never by value, with a MAC-chained audit trail.
 - **Models.** A gateway for Anthropic, OpenAI (Chat Completions and Responses), Azure OpenAI, Gemini, Bedrock, Vertex AI
   and OpenAI-compatible providers (Ollama, OpenRouter, Groq, Mistral and more), with a two-tier model policy that the
-  owner sets.
+  owner sets. Several accounts of one kind, each with its own key. Coding engines (Claude Code, Codex, OpenCode, Gemini
+  CLI, and any ACP registry agent or local ACP command) are instances the owner manages beside the providers, pinned to
+  a verified version and run only in agent VMs. Background health checks, favourite models that lead every picker, and
+  CLIProxyAPI usage hubs that show pooled subscription quotas. See [`docs/guide/providers.md`](docs/guide/providers.md).
 - **Workstations.** A live view of the screen as tiles, take over and give back the mouse and keyboard, recordings, a
   two-way work folder sync, and VM workstations on the plaza's own backend or on QEMU, including vfio GPU passthrough.
 - **Rich content.** References in agent text become chips with hover cards: GitHub (pull requests, issues, commits,
-  files), agents, tasks and Library files (`crates/apz-rich`).
+  files), agents, tasks, Library files and artifacts (`crates/apz-rich`).
+- **Looks.** Two looks, Loom and Graphite, with palettes (Clay, Moss, Indigo; Cobalt, Violet, Teal), light and dark,
+  and backgrounds drawn by one shader: dots (Loom's Paper), a fading grid (Graphite's Grid), colour fields that drift,
+  and film grain. Every built-in palette passes 4.5:1 for text. Make your own in the theme
+  editor, or import a VS Code theme or `.vsix`. One look for the hub on every console, or another on one device. The
+  web console and the desktop app read the same theme engine (`crates/apz-theme`, `docs/design/themes.md`).
+- **Artifacts.** Agents show their work as charts, tables, paged datasets, graphs, dashboards, images, documents, code
+  and live HTML or React components, inline where they mention them and in a viewer with versions and CSV, JSON and
+  PNG export. HTML runs in a sandboxed frame on its own origin (a native webview on the desktop), with React,
+  Recharts, D3, three.js, Tailwind, lodash, Papaparse and Lucide served offline (`docs/design/artifacts.md`).
+- **Share links.** One Share button gives a link anyone can open, at `agentplaza.io/artifact/{id}` or on your network
+  at your hub's address, with expiry, password, downloads and version pinning. Your hub serves the content and
+  agentplaza.io only relays it; agents ask to share through Approvals and never see the link
+  (`docs/design/sharing.md`).
 - **VM snapshots.** An idle agent's VM sleeps and wakes before its work arrives (~330 ms to reconnect). Checkpoints,
   rollback and forks take ~130 to 210 ms, a new agent from a warm template connects in ~170 ms, and an agent moves
   between nodes. See `docs/design/vm-snapshots.md`.
@@ -196,6 +212,10 @@ the desktop app.
 | Machines | A machine |
 |---|---|
 | ![Machines: the grid of machines in zones](docs/assets/capture-machines.webp) | ![A machine's view: its 3D model, hardware, load and agents](docs/assets/capture-machine.webp) |
+
+| Models | An artifact | Appearance |
+|---|---|---|
+| ![Models: every provider and coding engine with its health, version and models](docs/assets/capture-models.webp) | ![An artifact an agent made: tiles, a latency chart, a table and code](docs/assets/capture-artifact.webp) | ![Appearance: the Loom and Graphite looks, their palettes and backgrounds](docs/assets/capture-looks.webp) |
 
 ## How it works
 
@@ -249,14 +269,18 @@ owners.
 ## Documentation
 
 - [The guide](https://agentplaza.io/guide/): install, the console, agents, work, governance, treasury, models, vault,
-  tools, the Lab, machines, workstations and security, for owners.
+  tools, the Lab, machines, workstations, looks, artifacts and sharing, and security, for owners.
+- [`docs/guide/`](docs/guide): user guides for providers, engines and models, the editors, Git platforms, and projects
+  after launch.
 - [`docs/architecture.md`](docs/architecture.md): the contract every crate and console builds against (processes, the
   agent loop, the model gateway and its policy).
 - [`docs/repository-layout.md`](docs/repository-layout.md): every crate, app and folder in the repository, and what each
   one is for.
 - [`docs/dev/ci.md`](docs/dev/ci.md): the CI workflows, what runs them and when.
 - [`docs/design/`](docs/design): design notes for the engine, the database, the IDE, workstations, the vault, the Foundry,
-  MCP, the hub as an MCP server, the prompt and skill libraries, and more.
+  MCP, the hub as an MCP server, the prompt and skill libraries, and more; [`themes.md`](docs/design/themes.md),
+  [`artifacts.md`](docs/design/artifacts.md) and [`sharing.md`](docs/design/sharing.md) for looks, artifacts and share
+  links.
 - [`docs/agents/`](docs/agents): the fleet, the social layer and the council contracts, and the initial roles.
 - [`docs/security/redteam`](docs/security/redteam): the red-team catalog.
 - [`docs/design/parity.md`](docs/design/parity.md): the web console and the desktop app, and what each side still lacks.

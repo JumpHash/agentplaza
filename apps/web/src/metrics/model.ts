@@ -2,7 +2,9 @@
 // panels; this console and the desktop only render them). Field names are the JSON ones (snake_case); enums are
 // tagged with `type`. Keep this file in step with model.rs.
 
-export type Unit = 'count' | 'percent' | 'ms' | 'bytes' | 'bytes_per_sec' | 'mib' | 'usd' | 'tokens' | 'tokens_per_sec' | 'ratio';
+import type { ArtifactBody } from '../view/model';
+
+export type Unit = 'count'| 'percent' | 'ms' | 'bytes' | 'bytes_per_sec' | 'mib' | 'usd' | 'tokens' | 'tokens_per_sec' | 'ratio';
 
 /** A colour token: `chart-1` … `chart-8`, `chart-other`, `ink-3`, `rule`, `ok`, `warn`, `crit`, `info`, `signal`. */
 export type Tone =
@@ -116,7 +118,8 @@ export type Body =
   | { type: 'rules'; rules: RuleRow[] }
   | ({ type: 'traces' } & TracesBody)
   | { type: 'events'; kinds: string[]; rows: EventRow[] }
-  | { type: 'empty'; text: string };
+  | { type: 'empty'; text: string }
+  | ArtifactBody;
 
 export interface HealthItem { area: string; status: Status; text: string; tab: string }
 

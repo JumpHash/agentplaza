@@ -8,8 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use iced::widget::{checkbox, column, row, text_input};
-use iced::{Element, Length, Task};
+use iced::widget::{Space, button, checkbox, column, container, pick_list, row, text_input};
+use iced::{Alignment, Background, Border, Color, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -1406,20 +1406,44 @@ fn field<'a>(label: &str, control: Element<'a, Msg>, hint: &str) -> Element<'a, 
     column(items).spacing(6).width(Length::Fill).into()
 }
 
+/// One source choice as the web's `.mcpwz-src` tile: its name, what it is and its note; bordered, and the chosen
+/// one in the signal border on the signal ground.
 fn option<'a>(on: bool, title: &str, body: &str, note: &str, msg: Msg) -> Element<'a, Msg> {
-    let kind = if on {
-        ui::Kind::Primary
-    } else {
-        ui::Kind::Secondary
-    };
+    let p = crate::theme::palette();
     let mut items: Vec<Element<'a, Msg>> = vec![
-        ui::btn_sm(title, None, kind, Some(msg)),
-        ui::prose(body.to_string()).into(),
+        ui::sans(title.to_string(), 13.0, p.ink)
+            .font(ui::SANS_SEMIBOLD)
+            .into(),
+        ui::faint(body.to_string()).into(),
     ];
     if !note.is_empty() {
         items.push(ui::faint(note.to_string()).into());
     }
-    column(items).spacing(6).into()
+    button(column(items).spacing(4).width(Length::Fill))
+        .on_press(msg)
+        .padding([12, 14])
+        .width(Length::Fill)
+        .style(move |_: &Theme, status: button::Status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            let edge = if on {
+                p.signal
+            } else if hovered {
+                p.ink_3
+            } else {
+                p.rule_strong
+            };
+            button::Style {
+                background: Some(Background::Color(if on { p.signal_soft } else { p.raised })),
+                text_color: p.ink_2,
+                border: Border {
+                    color: edge,
+                    width: 1.0,
+                    radius: crate::theme::skin().radius_lg.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
 }
 
 /// A credential's name, required badge, help and format.
@@ -1607,7 +1631,7 @@ fn step1(st: &State) -> Element<'_, Msg> {
     ));
     let mut items: Vec<Element<'_, Msg>> = vec![
         ui::faint("Pick a preset, or bring your own container image or remote URL.").into(),
-        column(options).spacing(12).into(),
+        ui::card_grid(options),
     ];
     match &st.source {
         Some(Source::Custom) => {
@@ -1850,6 +1874,19 @@ fn step3(st: &State) -> Element<'_, Msg> {
     column(items).spacing(12).width(Length::Fill).into()
 }
 
+/// A risk in a tool's select: the value it stores ("" is the hub's own, auto) and its label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RiskChoice {
+    value: String,
+    label: String,
+}
+
+impl std::fmt::Display for RiskChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
 fn step4(st: &State) -> Element<'_, Msg> {
     let d = &st.draft;
     let mut items: Vec<Element<'_, Msg>> =
@@ -1884,28 +1921,29 @@ fn step4(st: &State) -> Element<'_, Msg> {
                 if !tool.description.is_empty() {
                     lines.push(ui::prose(tool.description.clone()).into());
                 }
+                // The risk select sits at the right of the tool, as the web's `.mcpwz-tool` grid draws it.
                 let current = d.tool_risk.get(&tool.name).cloned().unwrap_or_default();
-                let mut options: Vec<(String, String)> =
-                    vec![(String::new(), format!("auto ({})", tool.auto))];
-                options.extend(RISKS.iter().map(|r| (r.to_string(), r.to_string())));
-                let buttons: Vec<Element<'_, Msg>> = options
-                    .into_iter()
-                    .map(|(value, label)| {
-                        let kind = if value == current {
-                            ui::Kind::Primary
-                        } else {
-                            ui::Kind::Ghost
-                        };
-                        ui::btn_sm(
-                            &label,
-                            None,
-                            kind,
-                            Some(Msg::ToolRisk(tool.name.clone(), value)),
-                        )
-                    })
-                    .collect();
-                lines.push(row(buttons).spacing(6).into());
-                items.push(column(lines).spacing(6).into());
+                let mut options: Vec<RiskChoice> = vec![RiskChoice {
+                    value: String::new(),
+                    label: format!("auto ({})", tool.auto),
+                }];
+                options.extend(RISKS.iter().map(|r| RiskChoice {
+                    value: r.to_string(),
+                    label: r.to_string(),
+                }));
+                let selected = options.iter().find(|c| c.value == current).cloned();
+                let name = tool.name.clone();
+                let risk = pick_list(options, selected, move |c: RiskChoice| {
+                    Msg::ToolRisk(name.clone(), c.value)
+                })
+                .style(crate::theme::pick_list)
+                .width(Length::Fixed(180.0));
+                items.push(
+                    row![column(lines).spacing(6).width(Length::Fill), risk,]
+                        .spacing(12)
+                        .align_y(Alignment::Center)
+                        .into(),
+                );
             }
         }
     }
@@ -2031,9 +2069,85 @@ fn step6(st: &State) -> Element<'_, Msg> {
     column(items).spacing(10).width(Length::Fill).into()
 }
 
+/// One step in the rail (the web's `.mcpwz-step`): its number and name, a rule on the left when it is the open
+/// step, a check when it is behind the open one. A step not reached yet cannot be pressed.
+fn rail_step<'a>(
+    n: usize,
+    label: &str,
+    on: bool,
+    done: bool,
+    press: Option<Msg>,
+) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let ink = if on {
+        p.ink
+    } else if done {
+        p.ink_2
+    } else {
+        p.ink_3
+    };
+    let name = ui::sans(format!("{n}. {label}"), 13.0, ink);
+    let name = if on {
+        name.font(ui::SANS_SEMIBOLD)
+    } else {
+        name
+    };
+    let mut line = row![name].spacing(6).align_y(Alignment::Center);
+    if done {
+        line = line.push(ui::icon::<Msg>("check", 12.0, p.ok));
+    }
+    let bar_color = if on { p.signal } else { Color::TRANSPARENT };
+    let bar = container(Space::new().width(3.0).height(Length::Fill)).style(move |_: &Theme| {
+        container::Style {
+            background: Some(Background::Color(bar_color)),
+            ..Default::default()
+        }
+    });
+    let content = row![
+        bar,
+        container(line)
+            .padding([7, 12])
+            .width(Length::Fill)
+            .align_y(Alignment::Center),
+    ]
+    .width(Length::Fill)
+    .align_y(Alignment::Center);
+    button(content)
+        .on_press_maybe(press)
+        .padding(0)
+        .width(Length::Fill)
+        .style(move |_: &Theme, status: button::Status| button::Style {
+            background: matches!(status, button::Status::Hovered | button::Status::Pressed)
+                .then_some(Background::Color(p.hover)),
+            text_color: ink,
+            border: Border::default().rounded(crate::theme::skin().radius),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A square icon button with no label: the glyph in ink-2, a hover ground (the web's `.iconbtn`).
+fn icon_button<'a>(name: &str, msg: Option<Msg>) -> Element<'a, Msg> {
+    let glyph =
+        container(ui::icon::<Msg>(name, 14.0, crate::theme::palette().ink_2)).center(Length::Fill);
+    button(glyph)
+        .on_press_maybe(msg)
+        .padding(0)
+        .width(Length::Fixed(28.0))
+        .height(Length::Fixed(28.0))
+        .style(|_: &Theme, status: button::Status| button::Style {
+            background: matches!(status, button::Status::Hovered | button::Status::Pressed)
+                .then_some(Background::Color(crate::theme::palette().hover)),
+            text_color: crate::theme::palette().ink,
+            border: Border::default().rounded(crate::theme::skin().radius),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The footer: Back and the primary (Next, or Save and Enable and save on the last step), at the right.
 fn footer(st: &State) -> Element<'_, Msg> {
-    let mut items: Vec<Element<'_, Msg>> =
-        vec![ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Cancel))];
+    let mut items: Vec<Element<'_, Msg>> = vec![Space::new().width(Length::Fill).into()];
     if st.step > 1 {
         items.push(ui::btn(
             "Back",
@@ -2062,10 +2176,14 @@ fn footer(st: &State) -> Element<'_, Msg> {
             gate(st.busy, Msg::Save(Then::Finish)),
         ));
     }
-    row(items).spacing(12).into()
+    row(items)
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .into()
 }
 
-/// The wizard: the steps, the open step, any error, the discard prompt when asked, and the footer.
+/// The wizard: the steps down the left, the open step beside them, any error and the discard prompt, and the footer.
 pub fn view(st: &State) -> Element<'_, Msg> {
     let title = match st.mode {
         Mode::Create => "Add MCP server".to_string(),
@@ -2078,7 +2196,7 @@ pub fn view(st: &State) -> Element<'_, Msg> {
             }
         ),
     };
-    let stepper: Vec<Element<'_, Msg>> = STEP_LABELS
+    let rail: Vec<Element<'_, Msg>> = STEP_LABELS
         .iter()
         .enumerate()
         .map(|(i, label)| {
@@ -2089,18 +2207,10 @@ pub fn view(st: &State) -> Element<'_, Msg> {
             } else {
                 None
             };
-            ui::btn_sm(
-                &format!("{n} {label}"),
-                None,
-                if on {
-                    ui::Kind::Primary
-                } else {
-                    ui::Kind::Ghost
-                },
-                press,
-            )
+            rail_step(n, label, on, n < st.step, press)
         })
         .collect();
+    let rail = column(rail).spacing(2).width(Length::Fixed(200.0));
     let body: Element<'_, Msg> = match st.step {
         1 => step1(st),
         2 => step2(st),
@@ -2109,25 +2219,43 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         5 => step5(st),
         _ => step6(st),
     };
-    let mut items: Vec<Element<'_, Msg>> = vec![row(stepper).spacing(6).into(), body];
+    let mut side: Vec<Element<'_, Msg>> = Vec::new();
     if !st.error.is_empty() {
-        items.push(ui::error_line(&st.error));
+        side.push(ui::error_line(&st.error));
     }
     if st.confirming {
-        let prompt: Vec<Element<'_, Msg>> = vec![
-            ui::faint("Discard the unsaved changes?").into(),
-            ui::btn_sm(
-                "Keep editing",
-                None,
-                ui::Kind::Ghost,
-                Some(Msg::KeepEditing),
-            ),
-            ui::btn_sm("Discard", None, ui::Kind::Primary, Some(Msg::Discard)),
-        ];
-        items.push(row(prompt).spacing(12).into());
+        side.push(ui::card(
+            "Discard changes?",
+            column![
+                ui::faint("The changes to this server are not saved."),
+                row![
+                    ui::btn_sm(
+                        "Keep editing",
+                        None,
+                        ui::Kind::Ghost,
+                        Some(Msg::KeepEditing)
+                    ),
+                    ui::btn_sm("Discard", None, ui::Kind::Danger, Some(Msg::Discard)),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(12)
+            .width(Length::Fill)
+            .into(),
+        ));
     }
-    items.push(footer(st));
-    ui::card(&title, column(items).spacing(18).width(Length::Fill).into())
+    side.push(footer(st));
+    let split: Element<'_, Msg> = row![
+        rail,
+        column![body, column(side).spacing(14).width(Length::Fill)]
+            .spacing(16)
+            .width(Length::Fill),
+    ]
+    .spacing(20)
+    .width(Length::Fill)
+    .into();
+    ui::card_with(&title, vec![icon_button("x", Some(Msg::Cancel))], split)
 }
 
 #[cfg(test)]

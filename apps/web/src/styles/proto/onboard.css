@@ -1,0 +1,59 @@
+/* The first-run wizard, the look step, the tour and its offer, and the sign-in screen: the prototype's rules
+   (m-onboard.js), with the console's token names. */
+
+/* ---- the wizard (a modal in the prototype's sheet) ---- */
+.sheet.onboard { width: min(600px, calc(100vw - 32px)); }
+.onb-rail { list-style: none; margin: 0 0 18px; padding: 0; display: grid; grid-template-columns: repeat(var(--steps, 6), minmax(0, 1fr)); gap: 8px; }
+.onb-rail li { display: grid; gap: 7px; min-width: 0; font-size: var(--fs-xs); color: var(--ink-3); }
+.onb-rail li span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.onb-rail li.done { color: var(--ink-2); }
+.onb-rail li.on { color: var(--ink); }
+.onb-dot { display: block; height: 4px; border-radius: 999px; background: var(--rule-strong); }
+.onb-rail li.on .onb-dot, .onb-rail li.done .onb-dot { background: var(--signal); }
+.onb-rail li.done .onb-dot { opacity: .45; }
+.onb-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; }
+.onb-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: var(--radius); background: var(--sheet-2); }
+.onb-row small { display: block; margin-top: 3px; line-height: 1.45; }
+.onb-box { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding: 12px; border-radius: var(--radius); background: var(--sheet-2); }
+.sheet.onboard .lede { margin: 0 0 6px; }
+.sheet.onboard p { margin: 12px 0 0; }
+.onboard-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.onboard-error { color: var(--crit); }
+@media (max-width: 860px) { .onb-rail li span { display: none; } }
+
+/* ---- the look step: Loom or Graphite, two choices side by side ---- */
+.look-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.look-pick { display: grid; gap: 4px; padding: 12px; text-align: left; border-radius: var(--radius); border: 1px solid var(--rule-strong); background: var(--raised); color: var(--ink); transition: background-color .14s var(--ease), border-color .14s var(--ease); }
+.look-pick:hover { background: var(--hover); }
+.look-pick strong { font-weight: 600; font-size: var(--fs-prose); }
+.look-pick span { font-size: var(--fs-sm); line-height: 1.45; color: var(--ink-3); }
+.look-pick[aria-pressed="true"] { border-color: var(--signal); box-shadow: inset 0 0 0 1px var(--signal); background: var(--signal-soft); }
+@media (max-width: 560px) { .look-choices { grid-template-columns: minmax(0, 1fr); } }
+
+/* ---- the tour: a callout beside its sidebar link; the offer sits in the corner ---- */
+.tour-card { position: fixed; z-index: 60; width: min(320px, calc(100vw - 32px)); display: grid; gap: 8px; padding: 14px 16px 12px; border-radius: var(--radius-lg); background: var(--panel); color: var(--ink); box-shadow: var(--shadow-pop); animation: fade .15s; }
+.tour-card.centred { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.tour-card::before { content: ""; position: absolute; left: -6px; top: var(--arrow-y, 50%); width: 12px; height: 12px; margin-top: -6px; background: var(--panel); transform: rotate(45deg); border-radius: 2px; }
+.tour-card.flip::before { left: auto; right: -6px; }
+.tour-card.centred::before, .tour-card.offer::before { display: none; }
+.tour-card.offer { left: auto; top: auto; right: 16px; bottom: 16px; }
+.tour-count { font-size: var(--fs-xs); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.tour-t { font-size: 15px; line-height: 1.3; }
+.tour-b { margin: 0; font-size: var(--fs-sm); line-height: 1.55; color: var(--ink-2); }
+.tour-f { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.tour-on { box-shadow: 0 0 0 3px var(--signal-soft); border-radius: var(--radius); transition: box-shadow .2s var(--ease); }
+
+/* ---- the sign-in screen: the page alone, the card at the top ---- */
+.signin { flex: 1 1 auto; min-height: 0; width: 100%; overflow: auto; display: grid; place-items: start center; padding: 32px 16px; box-sizing: border-box; color: var(--ink); }
+.signin-sheet { width: min(400px, 100%); display: grid; gap: 12px; padding: 28px; border-radius: var(--radius-lg); background: var(--panel); border: 1px solid var(--rule); box-shadow: var(--shadow-card); box-sizing: border-box; }
+.signin-brand { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--ink); }
+.signin-name { font-weight: 600; font-size: inherit; letter-spacing: normal; }
+.signin h1 { margin: 6px 0 0; font-size: var(--fs-h2); font-weight: 700; line-height: 1.2; }
+.signin-lede, .signin-hub { margin: 0; color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.5; max-width: none; }
+.signin-hub { color: var(--ink-3); font-family: inherit; overflow-wrap: anywhere; }
+.signin-error { min-height: 1.4em; margin: 0; color: var(--crit); font-size: var(--fs-sm); }
+.signin-warning { display: grid; gap: 10px; padding: 12px; border-radius: var(--radius); background: var(--warn-soft); color: var(--ink); font-size: var(--fs-sm); line-height: 1.5; }
+.signin-warning p { margin: 0; }
+.signin-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-start; margin: 0; }
+.signin .input { font-family: inherit; }
+.signin-sheet .btn.primary { justify-self: start; }

@@ -3,6 +3,7 @@
 //! Tasks tabs show (see `scope`), and the Chat tab talks to the orchestrator. The first start shows
 //! a short setup and a tour (see `onboarding`); `--setup` and `--tour` show them again.
 
+pub mod context_bar;
 pub mod floor;
 
 mod app;

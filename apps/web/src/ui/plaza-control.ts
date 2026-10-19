@@ -4,7 +4,7 @@
 import { api, type PlazaState } from '../api';
 import { on, onConnection } from '../store';
 import { ago, attempt, badge, button, field, input, modal } from './components';
-import { h, icon, replace } from './dom';
+import { h, lu, replace } from './dom';
 
 // ---- Shared state: one copy, painted into every control and banner on screen ----
 
@@ -147,6 +147,21 @@ export function plazaControl(): HTMLElement {
   });
 }
 
+/** The sidebar foot's STOP ALL (RESUME while the plaza is held), as the Loom and Graphite consoles draw it. */
+export function stopAll(): HTMLElement {
+  const el = h('span.stopall-slot', null);
+  return subscribe(el, () => {
+    const held = !!state?.paused;
+    const b = h(
+      'button.stopall',
+      { type: 'button', class: held ? 'resume' : '', title: held ? 'Let the plaza start new work again' : "Cancel every agent's running work and hold the plaza" },
+      held ? 'RESUME' : 'STOP ALL',
+    );
+    b.addEventListener('click', () => (held ? confirmResume() : confirmStop()));
+    replace(el, b);
+  });
+}
+
 /** The banner shown under the top bar while the plaza is held (empty otherwise). */
 export function heldBanner(): HTMLElement {
   const el = h('div.held-banner', { role: 'status' });
@@ -161,9 +176,13 @@ export function heldBanner(): HTMLElement {
     const reason = s.reason ? `: ${s.reason}` : '';
     replace(
       el,
-      icon('stop'),
-      h('span.held-text', null, `The plaza is stopped — ${s.cancelled} running items were cancelled ${ago(s.since_ms)}${by}${reason}. Nothing new starts until you resume.`),
-      resumeButton(),
+      lu('octagon-pause', 15),
+      h('span', null, `The plaza is stopped — ${s.cancelled} running items were cancelled ${ago(s.since_ms)}${by}${reason}. Nothing new starts until you resume.`),
+      bannerResume(),
     );
   });
+}
+
+function bannerResume(): HTMLButtonElement {
+  return button('RESUME', () => confirmResume(), { kind: 'primary', icon: 'play', size: 'sm', title: 'Let the plaza start new work again' });
 }

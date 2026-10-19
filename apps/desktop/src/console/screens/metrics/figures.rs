@@ -437,9 +437,14 @@ impl<M> canvas::Program<M> for Tiles<'_> {
                 0.0
             };
             let name = ui::ellipsize(&cell.item.name, ((w - 12.0) / 6.5).max(0.0) as usize);
-            Label::new(name, Point::new(x + 6.0, y + 6.0), 12.0, Color::WHITE)
-                .semibold()
-                .draw(&mut frame);
+            Label::new(
+                name,
+                Point::new(x + 6.0, y + 6.0),
+                12.0,
+                crate::theme::palette().on_hue,
+            )
+            .semibold()
+            .draw(&mut frame);
             Label::new(
                 format!(
                     "{} · {:.0}%",
@@ -448,7 +453,7 @@ impl<M> canvas::Program<M> for Tiles<'_> {
                 ),
                 Point::new(x + 6.0, y + 22.0),
                 11.0,
-                Color::WHITE,
+                crate::theme::palette().on_hue,
             )
             .draw(&mut frame);
         }
@@ -778,15 +783,6 @@ impl<M> canvas::Program<M> for Spark<'_> {
             })
             .collect();
         let color = tone(self.tone);
-        let area = Path::new(|b| {
-            b.move_to(Point::new(0.0, self.height));
-            for p in &pts {
-                b.line_to(*p);
-            }
-            b.line_to(Point::new(self.width, self.height));
-            b.close();
-        });
-        frame.fill(&area, Color { a: 0.15, ..color });
         let line = Path::new(|b| {
             for (i, p) in pts.iter().enumerate() {
                 if i == 0 {

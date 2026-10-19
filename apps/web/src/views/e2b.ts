@@ -3,8 +3,7 @@
 // the reveal box, and is never stored: leaving the screen clears it. The pure helpers (the setup text, the actions a
 // sandbox row offers, the memory text, the template builds) are exported and unit-tested (test/tests.ts).
 
-import '../styles/mcp.css';
-import '../styles/mcp-hub.css';
+import '../styles/proto/settings-d.css';
 import {
   e2bApi,
   type BuildStatus,
@@ -15,10 +14,11 @@ import {
   type E2bTemplate,
 } from '../api';
 export type { BuildStatus, E2bBuild, E2bTemplate } from '../api';
-import { ago, attempt, badge, button, card, empty, field, input, modal, toast, type Tone } from '../ui/components';
+import { attempt, badge, card, field, input, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { errorText } from './vault-common';
+import { ago, btn, dialog, empty, head, ptable, type PCol } from './workstations-ui';
 
 /** The hub machine's local sandbox gateway. An SDK client on the hub machine reaches the sandboxes through it. */
 export const SANDBOX_GATEWAY = 'http://127.0.0.1:49982';
@@ -76,9 +76,10 @@ const ACTIONS: Record<SandboxAction, { label: string; done: string; send: (id: s
 const BUILD_TONE: Record<BuildStatus, Tone> = { waiting: 'muted', building: 'info', ready: 'ok', error: 'danger' };
 
 
+
 /** A copy button for one piece of text. The text is not stored; the click copies it and says so. */
 function copyButton(text: string, label = 'Copy'): HTMLButtonElement {
-  return button(label, () => void attempt(() => navigator.clipboard.writeText(text), 'Copied'), { kind: 'ghost', size: 'sm' });
+  return btn(label, () => void attempt(() => navigator.clipboard.writeText(text), 'Copied'), { kind: 'ghost', sm: true });
 }
 
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
@@ -94,16 +95,17 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let templatesError: unknown = null;
   // The key made in this visit: the setup text names it, and the reveal box shows it. Neither outlives the screen.
   let madeKey: string | null = null;
+  let madeLabel = '';
   let timer: number | undefined;
 
-  const keysSlot = h('div', null, h('p.mcp-loading', null, 'Loading the keys...'));
-  const keyError = h('p.mcp-danger');
-  const revealSlot = h('div.hub-reveal-slot');
-  const setupSlot = h('div.stack');
-  const sandboxError = h('p.mcp-danger');
-  const sandboxSlot = h('div', null, h('p.mcp-loading', null, 'Loading the sandboxes...'));
-  const templateError = h('p.mcp-danger');
-  const templateSlot = h('div', null, h('p.mcp-loading', null, 'Loading the templates...'));
+  const keysSlot = h('div', null, h('p.muted', null, 'Loading the keys...'));
+  const keyError = h('div.e2b-err');
+  const revealSlot = h('div');
+  const setupSlot = h('div');
+  const sandboxError = h('div.e2b-err');
+  const sandboxSlot = h('div', null, h('p.muted', null, 'Loading the sandboxes...'));
+  const templateError = h('div.e2b-err');
+  const templateSlot = h('div', null, h('p.muted', null, 'Loading the templates...'));
 
   // ---- Keys -----------------------------------------------------------------------------------------------------
 
@@ -123,27 +125,17 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   };
 
   const revokeKey = (k: E2bKey): void => {
-    const close = modal(
-      `Revoke ${k.label}`,
-      h(
-        'div.mcp-confirm',
-        null,
-        h('p', null, 'Clients that use this key stop working. This cannot be undone.'),
-        h(
-          'div.mcp-actions',
-          null,
-          button('Cancel', () => close()),
-          button(
-            'Revoke',
-            () => {
-              close();
-              void doRevoke(k);
-            },
-            { kind: 'danger' },
-          ),
-        ),
+    const close = dialog(`Revoke ${k.label}`, h('p', null, 'Clients that use this key stop working. This cannot be undone.'), [
+      btn('Cancel', () => close(), { kind: 'ghost' }),
+      btn(
+        'Revoke',
+        () => {
+          close();
+          void doRevoke(k);
+        },
+        { kind: 'danger' },
       ),
-    );
+    ]);
   };
 
   const doRevoke = async (k: E2bKey): Promise<void> => {
@@ -158,14 +150,11 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     if (alive) void loadKeys();
   };
 
-  const keyRow = (k: E2bKey): HTMLElement =>
-    h(
-      'tr',
-      null,
-      h('td', { 'data-label': 'Label' }, k.label),
-      h('td', { 'data-label': 'Created' }, ago(k.created_ms)),
-      h('td', { 'data-label': 'Actions', class: 'mcp-actions-cell' }, button('Revoke', () => revokeKey(k), { kind: 'danger', size: 'sm', icon: 'trash' })),
-    );
+  const keyColumns: PCol<E2bKey>[] = [
+    { label: 'Label', cell: (k) => k.label },
+    { label: 'Created', cell: (k) => ago(k.created_ms) },
+    { label: '', cls: 'num', cell: (k) => btn('Revoke', () => revokeKey(k), { kind: 'danger', sm: true, icon: 'trash' }) },
+  ];
 
   const drawKeys = (): void => {
     if (keysError) {
@@ -173,24 +162,10 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       return;
     }
     if (!keys) return;
-    replace(
-      keysSlot,
-      keys.length
-        ? h(
-            'div.mcp-table-wrap',
-            null,
-            h(
-              'table.mcp-table',
-              null,
-              h('thead', null, h('tr', null, h('th', null, 'Label'), h('th', null, 'Created'), h('th', null, 'Actions'))),
-              h('tbody', null, keys.map(keyRow)),
-            ),
-          )
-        : empty('key', 'No keys', 'Make a key below for an SDK client.'),
-    );
+    replace(keysSlot, keys.length ? ptable(keyColumns, keys) : empty('key', 'No keys', 'Make a key below for an SDK client.'));
   };
 
-  const labelInput = input({ maxlength: 80, placeholder: 'laptop-sdk', autocomplete: 'off' });
+  const labelInput = input({ maxlength: 80, placeholder: 'laptop-sdk', autocomplete: 'off', id: 'e2b-label' });
 
   const createKey = async (): Promise<void> => {
     const label = labelInput.value.trim();
@@ -205,7 +180,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       if (!alive) return;
       labelInput.value = '';
       madeKey = made.key;
-      showReveal(made);
+      madeLabel = made.label;
+      showReveal();
       drawSetup();
       void loadKeys();
     } catch (err) {
@@ -215,21 +191,27 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     }
   };
 
-  const createBtn = button('Create key', () => void createKey(), { kind: 'primary', icon: 'plus' });
+  const createBtn = btn('Create key', () => void createKey(), { kind: 'primary', icon: 'plus' });
 
   /** The new key, once. The reveal box is the only place it is shown; it leaves with the screen. */
-  const showReveal = (made: E2bKeyCreated): void => {
+  const showReveal = (): void => {
+    if (!madeKey) return replace(revealSlot);
     replace(
       revealSlot,
       h(
-        'div.hub-reveal',
+        'div.e2b-reveal',
         null,
-        h('h3', null, `Key for ${made.label}`),
-        h('p.hub-warn', null, 'Shown once. Copy it now, because it cannot be shown again.'),
-        h('div.hub-token-row', null, h('code.mcp-mono.hub-token', null, made.key), copyButton(made.key, 'Copy key')),
-        button('Hide', () => replace(revealSlot), { kind: 'ghost' }),
+        h('b', null, `Key for ${madeLabel}`),
+        h('div.e2b-env', null, madeKey),
+        h('div.ws-cluster', null, copyButton(madeKey, 'Copy key'), btn('Hide', () => hideReveal(), { kind: 'ghost' })),
       ),
     );
+  };
+
+  const hideReveal = (): void => {
+    madeKey = null;
+    replace(revealSlot);
+    drawSetup();
   };
 
   // ---- Setup ----------------------------------------------------------------------------------------------------
@@ -238,23 +220,15 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     const text = e2bSetupText(location.origin, madeKey);
     replace(
       setupSlot,
+      h('pre.e2b-env', null, text),
+      h('p.hint', null, "E2B_SANDBOX_URL is the hub machine's own local sandbox gateway, so it is the same on every client that runs there. Use it as written."),
+      h('div.ws-cluster', null, copyButton(text)),
       h(
-        'div.hub-snippet',
+        'p.muted',
         null,
-        h('div.hub-snippet-head', null, h('strong', null, 'Environment'), copyButton(text)),
-        h('pre.mcp-mono', null, text),
-        h(
-          'p.mcp-muted',
-          null,
-          madeKey
-            ? 'The key above is in this setup. It lives only on this screen, so copy it into the client before you leave.'
-            : 'Put a key in E2B_API_KEY. Make one above; it is shown once.',
-        ),
-        h(
-          'p.mcp-muted',
-          null,
-          'E2B_SANDBOX_URL is the hub machine\'s own local sandbox gateway, so it is the same on every client that runs there. Use it as written.',
-        ),
+        madeKey
+          ? 'The key above is in this setup. It lives only on this screen, so copy it into the client before you leave.'
+          : 'Put a key in E2B_API_KEY. Make one above; it is shown once.',
       ),
     );
   };
@@ -296,50 +270,41 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   };
 
   const confirmAction = (s: E2bSandbox, a: SandboxAction): void => {
-    const close = modal(
+    const close = dialog(
       `${ACTIONS[a].label} this sandbox`,
-      h(
-        'div.mcp-confirm',
-        null,
-        h('p', null, CONFIRM[a], ' ', h('span.mcp-mono', null, s.sandboxID)),
-        h(
-          'div.mcp-actions',
-          null,
-          button('Cancel', () => close()),
-          button(
-            ACTIONS[a].label,
-            () => {
-              close();
-              void runAction(s, a);
-            },
-            { kind: a === 'end' ? 'danger' : 'primary' },
-          ),
+      [h('p', null, CONFIRM[a]), h('p.ws-mono', null, s.sandboxID)],
+      [
+        btn('Cancel', () => close(), { kind: 'ghost' }),
+        btn(
+          ACTIONS[a].label,
+          () => {
+            close();
+            void runAction(s, a);
+          },
+          { kind: a === 'end' ? 'danger' : 'primary' },
         ),
-      ),
+      ],
     );
   };
 
   const actionButton = (s: E2bSandbox, a: SandboxAction): HTMLButtonElement =>
-    button(ACTIONS[a].label, () => confirmAction(s, a), {
+    btn(ACTIONS[a].label, () => confirmAction(s, a), {
       kind: a === 'end' ? 'danger' : 'ghost',
-      size: 'sm',
-      icon: a === 'end' ? 'stop' : a === 'resume' ? 'play' : undefined,
+      sm: true,
+      icon: a === 'resume' ? 'play' : a === 'end' ? 'stop' : undefined,
     });
 
-  const sandboxRow = (s: E2bSandbox): HTMLElement =>
-    h(
-      'tr',
-      null,
-      h('td', { 'data-label': 'Sandbox' }, h('span.mcp-mono', null, s.sandboxID)),
-      h('td', { 'data-label': 'Template' }, s.templateID),
-      h('td', { 'data-label': 'State' }, badge(s.state, s.state === 'running' ? 'ok' : 'muted')),
-      h('td', { 'data-label': 'Started' }, sandboxTime(s.startedAt)),
-      h('td', { 'data-label': 'Ends' }, sandboxTime(s.endAt)),
-      h('td', { 'data-label': 'CPU' }, `${s.cpuCount} vCPU`),
-      h('td', { 'data-label': 'Memory' }, memoryText(s.memoryMB)),
-      h('td', { 'data-label': 'CID' }, s.cid == null ? '—' : String(s.cid)),
-      h('td', { 'data-label': 'Actions', class: 'mcp-actions-cell' }, sandboxActions(s.state).map((a) => actionButton(s, a))),
-    );
+  const sandboxColumns: PCol<E2bSandbox>[] = [
+    { label: 'Sandbox', cell: (s) => h('span.ws-mono', null, s.sandboxID) },
+    { label: 'Template', cell: (s) => s.templateID },
+    { label: 'State', cell: (s) => badge(s.state, s.state === 'running' ? 'ok' : 'muted', true) },
+    { label: 'Started', cell: (s) => sandboxTime(s.startedAt) },
+    { label: 'Ends', cell: (s) => sandboxTime(s.endAt) },
+    { label: 'CPU', cell: (s) => `${s.cpuCount} vCPU` },
+    { label: 'Memory', cell: (s) => memoryText(s.memoryMB) },
+    { label: 'CID', cell: (s) => (s.cid == null ? '—' : String(s.cid)) },
+    { label: 'Actions', cls: 'num', cell: (s) => sandboxActions(s.state).map((a) => actionButton(s, a)) },
+  ];
 
   const drawSandboxes = (): void => {
     if (sandboxesError) {
@@ -350,24 +315,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     replace(
       sandboxSlot,
       sandboxes.length
-        ? h(
-            'div.mcp-table-wrap',
-            null,
-            h(
-              'table.mcp-table',
-              null,
-              h(
-                'thead',
-                null,
-                h(
-                  'tr',
-                  null,
-                  ['Sandbox', 'Template', 'State', 'Started', 'Ends', 'CPU', 'Memory', 'CID', 'Actions'].map((c) => h('th', null, c)),
-                ),
-              ),
-              h('tbody', null, sandboxes.map(sandboxRow)),
-            ),
-          )
+        ? ptable(sandboxColumns, sandboxes)
         : empty('harness', 'No sandboxes', 'The gateway runs none right now. A client that makes one shows it here.'),
     );
   };
@@ -403,53 +351,47 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   // Deleting a template asks first. A build that runs, or one that starts from it, makes the hub refuse (409).
   const confirmDeleteTemplate = (t: E2bTemplate): void => {
-    const close = modal(
+    const close = dialog(
       `Delete ${t.name}`,
-      h(
-        'div.mcp-confirm',
-        null,
-        h(
-          'p',
-          null,
-          'Deletes the template and all its builds. This cannot be undone. A build that is running, or one that starts from it, blocks the delete until it finishes.',
-          ' ',
-          h('span.mcp-mono', null, t.templateID),
+      [
+        h('p', null, 'Deletes the template and all its builds. This cannot be undone. A build that is running, or one that starts from it, blocks the delete until it finishes.'),
+        h('p.ws-mono', null, t.templateID),
+      ],
+      [
+        btn('Cancel', () => close(), { kind: 'ghost' }),
+        btn(
+          'Delete',
+          () => {
+            close();
+            void doDeleteTemplate(t);
+          },
+          { kind: 'danger' },
         ),
-        h(
-          'div.mcp-actions',
-          null,
-          button('Cancel', () => close()),
-          button(
-            'Delete',
-            () => {
-              close();
-              void doDeleteTemplate(t);
-            },
-            { kind: 'danger' },
-          ),
-        ),
-      ),
+      ],
     );
   };
 
-  const templateRow = (t: E2bTemplate): HTMLElement => {
-    const latest = latestBuild(t);
-    return h(
-      'tr',
-      null,
-      h('td', { 'data-label': 'Template' }, t.name, h('span.mcp-mono', null, t.templateID.slice(0, 12))),
-      h('td', { 'data-label': 'Build' }, latest ? badge(latest.status, BUILD_TONE[latest.status]) : '—'),
-      h('td', { 'data-label': 'Tags' }, templateTags(t).join(', ') || '—'),
-      h('td', { 'data-label': 'Size' }, latest ? `${latest.cpuCount} vCPU, ${memoryText(latest.memoryMB)}` : '—'),
-      h('td', { 'data-label': 'Updated' }, sandboxTime(t.updatedAt)),
-      h('td', { 'data-label': 'Failure' }, templateFailure(t) ?? '—'),
-      h(
-        'td',
-        { 'data-label': 'Actions', class: 'mcp-actions-cell' },
-        button('Delete', () => confirmDeleteTemplate(t), { kind: 'danger', size: 'sm', icon: 'trash' }),
-      ),
-    );
-  };
+  const templateColumns: PCol<E2bTemplate>[] = [
+    { label: 'Template', cell: (t) => [h('b', null, t.name), ' ', h('span.ws-mono.muted', null, t.templateID.slice(0, 12))] },
+    {
+      label: 'Build',
+      cell: (t) => {
+        const latest = latestBuild(t);
+        return latest ? badge(latest.status, BUILD_TONE[latest.status], true) : '—';
+      },
+    },
+    { label: 'Tags', cell: (t) => templateTags(t).join(', ') || '—' },
+    {
+      label: 'Size',
+      cell: (t) => {
+        const latest = latestBuild(t);
+        return latest ? `${latest.cpuCount} vCPU, ${memoryText(latest.memoryMB)}` : '—';
+      },
+    },
+    { label: 'Updated', cell: (t) => sandboxTime(t.updatedAt) },
+    { label: 'Failure', cell: (t) => templateFailure(t) ?? '—' },
+    { label: '', cls: 'num', cell: (t) => btn('Delete', () => confirmDeleteTemplate(t), { kind: 'danger', sm: true, icon: 'trash' }) },
+  ];
 
   const drawTemplates = (): void => {
     if (templatesError) {
@@ -460,40 +402,29 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     replace(
       templateSlot,
       templates.length
-        ? h(
-            'div.mcp-table-wrap',
-            null,
-            h(
-              'table.mcp-table',
-              null,
-              h(
-                'thead',
-                null,
-                h(
-                  'tr',
-                  null,
-                  ['Template', 'Build', 'Tags', 'Size', 'Updated', 'Failure', 'Actions'].map((c) => h('th', null, c)),
-                ),
-              ),
-              h('tbody', null, templates.map(templateRow)),
-            ),
-          )
-        : empty('harness', 'No templates', 'Templates are built with the E2B SDK\'s Template.build.'),
+        ? ptable(templateColumns, templates)
+        : empty('harness', 'No templates', "Templates are built with the E2B SDK's Template.build."),
     );
   };
 
   // ---- Page -----------------------------------------------------------------------------------------------------
 
-  const keysCard = card('Keys', [
-    keysSlot,
-    revealSlot,
-    h('div.stack', null, h('h3', null, 'New key'), field('Label', labelInput, 'What this client is, such as ci or laptop-sdk.'), h('div.row', null, createBtn), keyError),
-  ]);
-  const setupCard = card('Setup for SDK clients', setupSlot);
-  const sandboxCard = card('Sandboxes', [sandboxError, sandboxSlot]);
-  const templatesCard = card('Templates', [templateError, templateSlot]);
-
-  replace(root, h('div.mcp-page', null, h('div.stack', null, keysCard, setupCard, sandboxCard, templatesCard)));
+  root.append(
+    head('E2B API'),
+    h(
+      'div.ws-stack',
+      null,
+      card('Keys', [
+        keysSlot,
+        revealSlot,
+        h('div.e2b-form', null, h('b', null, 'New key'), field('Label', labelInput, 'What this client is, such as ci or laptop-sdk.'), createBtn),
+        keyError,
+      ]),
+      card('Setup for SDK clients', setupSlot),
+      card('Sandboxes', [sandboxError, sandboxSlot], { flush: true }),
+      card('Templates', [templateError, templateSlot], { flush: true }),
+    ),
+  );
   drawSetup();
   drawKeys();
   drawSandboxes();

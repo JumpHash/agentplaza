@@ -9,8 +9,7 @@ use super::{ide_chat, ide_chrome};
 use crate::console::Ctx;
 use apz_ide::state::Panel;
 use iced::Task;
-use iced::widget::text::Wrapping;
-use iced::widget::{Space, button, column, container, row, text, tooltip};
+use iced::widget::{Space, column, container, row, text};
 use iced::{Alignment, Element, Length, Padding};
 
 use super::board;
@@ -20,20 +19,6 @@ use super::ide_model::{self, Activity, ProjectRow};
 use super::ide_panels;
 use crate::console::ui::{self, Tone};
 use crate::theme;
-
-/// The tab row's gap between tabs, and the gaps inside one tab: its icon, its label, its badge.
-const TAB_GAP: f32 = 8.0;
-const ICON: f32 = 13.0;
-const ICON_GAP: f32 = 5.0;
-const BADGE_GAP: f32 = 5.0;
-/// Estimated advances at the tab's sizes: a label character (Inter 13), a badge digit (Inter 11, semibold), and the
-/// badge's padding. They are generous, so a row that is judged to fit does not wrap.
-const LABEL_CHAR: f32 = 7.6;
-const BADGE_CHAR: f32 = 6.8;
-const BADGE_PAD: f32 = 10.0;
-/// A tab's own padding (the cell's 2px on each side), and the panel's padding around the tab row (left and right).
-const TAB_PAD: f32 = 4.0;
-const PANEL_PAD: f32 = 22.0;
 
 /// The project the agent on screen belongs to, the tasks that count for the tabs, and whether a post is in scope.
 fn scope(st: &State) -> (Option<&ProjectRow>, Vec<&ide_model::TaskRow>) {
@@ -73,40 +58,6 @@ struct TabInfo {
     icon: &'static str,
     label: &'static str,
     count: Option<String>,
-}
-
-impl TabInfo {
-    /// The tab's width in its labelled form: icon, label and badge on one line, with the gaps between them.
-    fn labelled_width(&self) -> f32 {
-        let badge = self
-            .count
-            .as_deref()
-            .map_or(0.0, |c| BADGE_GAP + badge_width(c));
-        ICON + ICON_GAP + self.label.chars().count() as f32 * LABEL_CHAR + badge + TAB_PAD
-    }
-}
-
-/// How the right tabs draw: each with its label, or each as icon and badge with the label as its tooltip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TabForm {
-    Labelled,
-    Compact,
-}
-
-/// Chooses the tab row's form: labelled when every tab fits in `available` px (their widths and the gaps between
-/// them), else compact for all of them. One form for the whole row, so the tabs never wrap or change shape apart.
-pub fn tab_form(widths: &[f32], gap: f32, available: f32) -> TabForm {
-    let gaps = gap * widths.len().saturating_sub(1) as f32;
-    if widths.iter().sum::<f32>() + gaps <= available {
-        TabForm::Labelled
-    } else {
-        TabForm::Compact
-    }
-}
-
-/// A count badge's width: its characters, and its padding.
-fn badge_width(count: &str) -> f32 {
-    count.chars().count() as f32 * BADGE_CHAR + BADGE_PAD
 }
 
 /// The tabs in tab order, each with its icon, its name and its count: the ones the workspace has (see `right_tabs`).
@@ -158,9 +109,9 @@ fn tab_infos(st: &State) -> Vec<TabInfo> {
         .collect()
 }
 
-/// The right panel: the tabs, then the shown tab. `width` is the panel's width, which decides the tabs' form.
-pub fn view(st: &State, width: f32) -> Element<'_, Msg> {
-    let tabs = tab_row(st, width);
+/// The right panel (the web's `.ide-dock`): the tabs, then the shown tab in the panel's padding.
+pub fn view(st: &State) -> Element<'_, Msg> {
+    let tabs = tab_row(st);
     let agent = matches!(st.ide.workspace, Some(apz_ide::WorkspaceId::Agent(_)));
     let body: Element<'_, Msg> = match st.right {
         RightTab::Board => board_tab(st),
@@ -174,94 +125,49 @@ pub fn view(st: &State, width: f32) -> Element<'_, Msg> {
         RightTab::Board | RightTab::Files => body,
         _ => ui::scroll(body).height(Length::Fill).into(),
     };
-    column![tabs, body].spacing(12).height(Length::Fill).into()
+    let body = container(body)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(Padding {
+            top: 12.0,
+            right: 14.0,
+            bottom: 12.0,
+            left: 14.0,
+        });
+    column![tabs, body].height(Length::Fill).into()
 }
 
-/// The tab row: icon, label and count on one line, with an accent underline under the tab shown. Labelled when the
-/// row fits the panel (see `tab_form`); else icon and count only, with the label as the tooltip.
-fn tab_row(st: &State, width: f32) -> Element<'_, Msg> {
-    let p = theme::palette();
-    let infos = tab_infos(st);
-    let widths: Vec<f32> = infos.iter().map(TabInfo::labelled_width).collect();
-    let form = tab_form(&widths, TAB_GAP, width - PANEL_PAD);
-    let mut strip = row![].spacing(TAB_GAP).align_y(Alignment::Center);
+/// The dock's tab order (the web's): files, tasks, board, approvals, activity.
+fn dock_rank(tab: RightTab) -> u8 {
+    match tab {
+        RightTab::Files => 0,
+        RightTab::Tasks => 1,
+        RightTab::Board => 2,
+        RightTab::Approvals => 3,
+        RightTab::Activity => 4,
+    }
+}
+
+/// The tab row (the web's `.ide-dtabs`): icon and count on each tab, the label on the one shown, a rule under the row.
+fn tab_row(st: &State) -> Element<'_, Msg> {
+    let mut infos = tab_infos(st);
+    infos.sort_by_key(|info| dock_rank(info.tab));
+    let mut strip = row![].spacing(2).align_y(Alignment::Center);
     for info in infos {
         let on = info.tab == st.right;
-        let ink = if on { p.ink } else { p.ink_3 };
-        let mut line = row![ui::icon(info.icon, ICON, ink)]
-            .spacing(ICON_GAP)
-            .align_y(Alignment::Center);
-        if form == TabForm::Labelled {
-            line = line.push(
-                text(info.label)
-                    .font(if on {
-                        theme::SANS_SEMIBOLD
-                    } else {
-                        theme::SANS_MEDIUM
-                    })
-                    .size(theme::TYPE_UI)
-                    .wrapping(Wrapping::None)
-                    .color(ink),
-            );
-        }
-        if let Some(count) = info.count.clone() {
-            line = line.push(count_badge(count, on));
-        }
-        let underline = container(Space::new().width(Length::Fill).height(Length::Fixed(2.0)))
-            .style(move |_| container::Style {
-                background: if on { Some(p.signal.into()) } else { None },
-                ..Default::default()
-            });
-        let cell = button(column![line, underline].spacing(4))
-            .padding([4, 2])
-            .style(theme::register_row(false))
-            .on_press(Msg::Right(info.tab));
-        let item: Element<'_, Msg> = match form {
-            TabForm::Labelled => cell.into(),
-            TabForm::Compact => {
-                tooltip(cell, tab_tooltip(info.label), tooltip::Position::Bottom).into()
-            }
-        };
-        strip = strip.push(item);
+        strip = strip.push(ide_chrome::dock_tab(
+            info.icon,
+            info.label,
+            info.count,
+            on,
+            Msg::Right(info.tab),
+        ));
     }
-    strip.into()
-}
-
-/// A tab's count, in a small bordered badge that does not wrap.
-fn count_badge(count: String, on: bool) -> Element<'static, Msg> {
-    let p = theme::palette();
-    container(
-        text(count)
-            .font(theme::SANS_SEMIBOLD)
-            .size(theme::TYPE_BADGE)
-            .wrapping(Wrapping::None)
-            .color(if on { p.ink } else { p.ink_2 }),
-    )
-    .padding([0, 4])
-    .style(move |_| container::Style {
-        border: iced::Border {
-            color: p.rule,
-            width: 1.0,
-            radius: 3.0.into(),
-        },
-        ..Default::default()
-    })
-    .into()
-}
-
-/// The tooltip of a compact tab: its name.
-fn tab_tooltip(label: &'static str) -> Element<'static, Msg> {
-    let p = theme::palette();
-    container(
-        text(label)
-            .font(theme::SANS_MEDIUM)
-            .size(theme::TYPE_META)
-            .wrapping(Wrapping::None)
-            .color(p.ink),
-    )
-    .padding([4, 8])
-    .style(ui::frame(Some(p.sheet), p.rule))
-    .into()
+    let bar = container(strip)
+        .width(Length::Fill)
+        .padding([0, 8])
+        .center_y(Length::Fixed(44.0));
+    column![bar, ide_chrome::rule_strip()].into()
 }
 
 /// The Board tab: the scope, and the board's pause and export, on top; the project's posts (or all of them) in the

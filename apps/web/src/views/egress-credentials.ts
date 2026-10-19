@@ -1,13 +1,14 @@
-// Setup > Egress credentials: the rules by which the hub adds a header to an agent's HTTPS requests to a host. The
+// Settings > Egress credentials: the rules by which the hub adds a header to an agent's HTTPS requests to a host. The
 // header's value is a vault secret's name, filled into `format`; the secret never enters the VM. Only hosts with a rule
 // are intercepted, every other host stays an opaque tunnel. A table of the rules (the switch and delete per row) and a
 // form to add one. The pure checks and the form's body are exported and unit-tested (test/tests.ts).
 
-import '../styles/mcp.css';
+import '../styles/proto/settings-a.css';
 import { egressApi, type EgressRule, type EgressRuleBody } from '../api';
-import { button, card, empty, field, input, modal, toast } from '../ui/components';
+import { button, empty, field, input, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
+import { sheet } from './models-providers';
 import { errorText } from './vault-common';
 
 export const DEFAULT_PORT = 443;
@@ -91,11 +92,17 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let rules: EgressRule[] | null = null;
   let loadError: unknown = null;
 
-  const tableSlot = h('div', null, h('p.mcp-loading', null, 'Loading the rules...'));
-  const listError = h('p.mcp-danger');
-  const formError = h('p.mcp-danger');
+  const tableSlot = h('div', null, h('p.mdl-faint', null, 'Loading the rules…'));
+  const listError = h('p.eg-err', { role: 'alert' });
+  const formError = h('p.eg-err', { role: 'alert' });
+  listError.hidden = true;
+  formError.hidden = true;
 
-  const showListError = (text: string | null): void => replace(listError, text);
+  /** Shows a message in an error line, or hides the line when there is none. */
+  const showError = (line: HTMLElement, text: string | null): void => {
+    line.textContent = text ?? '';
+    line.hidden = !text;
+  };
 
   const reload = async (): Promise<void> => {
     const seq = ++loadSeq;
@@ -116,47 +123,42 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   /** The switch turns the rule on or off; the list is read again either way, so the switch shows what the hub holds. */
   const setEnabled = async (rule: EgressRule, on: boolean): Promise<void> => {
-    showListError(null);
+    showError(listError, null);
     try {
       await egressApi.patchRule(rule.id, { enabled: on });
     } catch (err) {
-      if (alive) showListError(errorText(err));
+      if (alive) showError(listError, errorText(err));
     }
     if (alive) void reload();
   };
 
   const removeRule = (rule: EgressRule): void => {
-    const close = modal(
+    let close = (): void => {};
+    close = sheet(
       `Delete the rule for ${rule.host}`,
-      h(
-        'div.mcp-confirm',
-        null,
-        h('p', null, `The hub stops adding ${rule.header} to requests to ${rule.host}:${rule.port}. The vault secret ${rule.secret} stays.`),
-        h(
-          'div.mcp-actions',
-          null,
-          button('Cancel', () => close()),
-          button(
-            'Delete',
-            () => {
-              close();
-              void deleteRule(rule);
-            },
-            { kind: 'danger' },
-          ),
+      h('p', null, `The hub stops adding ${rule.header} to requests to ${rule.host}:${rule.port}. The vault secret ${rule.secret} stays.`),
+      [
+        button('Cancel', () => close(), { kind: 'ghost' }),
+        button(
+          'Delete',
+          () => {
+            close();
+            void deleteRule(rule);
+          },
+          { kind: 'danger' },
         ),
-      ),
+      ],
     );
   };
 
   const deleteRule = async (rule: EgressRule): Promise<void> => {
-    showListError(null);
+    showError(listError, null);
     try {
       await egressApi.deleteRule(rule.id);
       if (!alive) return;
       toast(`Deleted the rule for ${rule.host}`);
     } catch (err) {
-      if (alive) showListError(errorText(err));
+      if (alive) showError(listError, errorText(err));
     }
     if (alive) void reload();
   };
@@ -167,16 +169,16 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     box.addEventListener('change', () => void setEnabled(r, box.checked));
     return h(
       'tr',
-      null,
-      h('td', { 'data-label': 'Host' }, h('span.mcp-mono', null, r.host)),
+      { 'data-key': `rule-${r.id}` },
+      h('td', { 'data-label': 'Host', class: 'mono' }, r.host),
       h('td', { 'data-label': 'Port' }, String(r.port)),
       h('td', { 'data-label': 'Methods' }, methodsText(r.methods)),
-      h('td', { 'data-label': 'Path' }, h('span.mcp-mono', null, r.path_prefix)),
+      h('td', { 'data-label': 'Path', class: 'mono' }, r.path_prefix),
       h('td', { 'data-label': 'Roles' }, rolesText(r.roles)),
-      h('td', { 'data-label': 'Header' }, h('span.mcp-mono', null, r.header), ' ', h('span.mcp-muted', { title: 'The value the header carries' }, r.format)),
-      h('td', { 'data-label': 'Secret' }, h('span.mcp-mono', null, r.secret)),
-      h('td', { 'data-label': 'Enabled' }, h('label.hub-switch', null, box, h('span', null, r.enabled ? 'On' : 'Off'))),
-      h('td', { 'data-label': 'Actions', class: 'mcp-actions-cell' }, button('Delete', () => removeRule(r), { kind: 'danger', size: 'sm', icon: 'trash' })),
+      h('td', { 'data-label': 'Header' }, h('span.mono', null, r.header), ' ', h('span.mdl-faint', { title: 'The value the header carries' }, r.format)),
+      h('td', { 'data-label': 'Secret', class: 'mono' }, r.secret),
+      h('td', { 'data-label': 'Enabled' }, h('label.check', null, box, h('span', null, r.enabled ? 'On' : 'Off'))),
+      h('td', { 'data-label': 'Actions' }, button('Delete', () => removeRule(r), { kind: 'danger', size: 'sm', icon: 'trash' })),
     );
   };
 
@@ -190,23 +192,23 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       tableSlot,
       rules.length
         ? h(
-            'div.mcp-table-wrap',
+            'div.eg-wrap',
             null,
             h(
-              'table.mcp-table',
+              'table.mdl-table',
               null,
               h('thead', null, h('tr', null, COLUMNS.map((c) => h('th', null, c)))),
               h('tbody', null, rules.map(ruleRow)),
             ),
           )
-        : empty('key', 'No rules', 'No host gets a header yet. Until a rule is added, every host is an opaque tunnel.'),
+        : empty('agents', 'No rules', 'No host gets a header yet. Until a rule is added, every host is an opaque tunnel.'),
     );
   };
 
   // ---- Add a rule -----------------------------------------------------------------------------------------------
 
   const fields = {
-    host: input({ placeholder: 'api.example.com or *.example.com', maxlength: 253, autocomplete: 'off' }),
+    host: input({ maxlength: 253, autocomplete: 'off', placeholder: 'api.example.com or *.example.com' }),
     port: input({ type: 'number', min: 1, max: 65535, step: 1 }),
     methods: input({ placeholder: 'GET, POST (blank: any method)', autocomplete: 'off' }),
     path_prefix: input({ autocomplete: 'off' }),
@@ -245,7 +247,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const addRule = async (): Promise<void> => {
     const form = readForm();
     const problem = ruleProblem(form);
-    replace(formError, problem);
+    showError(formError, problem);
     if (problem) return;
     addBtn.disabled = true;
     let made: EgressRule;
@@ -253,7 +255,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       made = await egressApi.addRule(ruleBody(form));
     } catch (err) {
       // The hub's own reason (400 for a rule it refuses, 503 when the vault is not ready) is shown beside the form.
-      if (alive) replace(formError, errorText(err));
+      if (alive) showError(formError, errorText(err));
       return;
     } finally {
       addBtn.disabled = false;
@@ -265,41 +267,47 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     void reload();
   };
 
-  const formCard = card('Add a rule', [
+  const egForm = h(
+    'div.mdl-card.mdl-stack',
+    null,
+    h('h3', { style: 'margin:0' }, 'Add a rule'),
     h(
-      'div.stack',
+      'div.eg-form',
       null,
-      h(
-        'p.mcp-muted',
-        null,
-        "The hub adds this header to the agent's HTTPS requests to the host; the secret never enters the VM. Only hosts with a rule are intercepted; every other host stays an opaque tunnel.",
-      ),
-      field('Host', fields.host, 'An exact host, or *.suffix for every host under it.'),
-      h(
-        'div.row',
-        null,
-        field('Port', fields.port, 'Default 443. Port 80 is refused.'),
-        field('Path prefix', fields.path_prefix, 'Requests whose path starts with this. Default /.'),
-      ),
+      h('div.wide', null, field('Host', fields.host, 'An exact host, or *.suffix for every host under it.')),
+      field('Port', fields.port, 'Default 443. Port 80 is refused.'),
+      field('Path prefix', fields.path_prefix, 'Requests whose path starts with this. Default /.'),
       field('Methods', fields.methods, 'Comma-separated. Blank means any method.'),
       field('Roles', fields.roles, 'Comma-separated role names. Blank means every role.'),
-      h(
-        'div.row',
-        null,
-        field('Header', fields.header, 'The header the hub sets. Default Authorization.'),
-        field('Format', fields.format, 'The header value; ${SECRET} is replaced by the secret. Default Bearer ${SECRET}.'),
-      ),
-      field('Secret', fields.secret, 'The name of a vault secret bound to the egress consumer.'),
-      h('label.hub-switch', null, enabledBox, h('span', null, 'Enabled')),
-      formError,
-      h('div.row', null, addBtn),
+      field('Header', fields.header, 'The header the hub sets. Default Authorization.'),
+      field('Format', fields.format, 'The header value; ${SECRET} is replaced by the secret. Default Bearer ${SECRET}.'),
+      h('div.wide', null, field('Secret', fields.secret, 'The name of a vault secret bound to the egress consumer.')),
+      h('div.wide', null, h('label.check', null, enabledBox, h('span', null, 'Enabled'))),
     ),
-  ]);
-
-  const listCard = card('Rules', [listError, tableSlot]);
+    formError,
+    h('div.mdl-row-a', null, addBtn),
+  );
 
   fillForm(defaultRuleForm());
-  replace(root, h('div.mcp-page', null, h('div.stack', null, listCard, formCard)));
+  replace(
+    root,
+    h(
+      'div.mdl-page',
+      null,
+      h(
+        'header.page-head',
+        null,
+        h('div.page-head-row', null, h('h1', null, 'Egress credentials'), h('span.sp'), h('div.page-actions')),
+        h(
+          'p.lede',
+          null,
+          "The hub adds this header to the agent's HTTPS requests to the host; the secret never enters the VM. Only hosts with a rule are intercepted; every other host stays an opaque tunnel.",
+        ),
+      ),
+      h('div.mdl-card', null, h('h3', { style: 'margin:0 0 8px' }, 'Rules'), listError, tableSlot),
+      egForm,
+    ),
+  );
   drawRules();
   void reload();
 

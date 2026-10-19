@@ -1,12 +1,11 @@
 import { agentName, roleLabel } from '../roles';
 import { projectTitle, scope } from '../scope';
-// The board screen: the agents' shared feed of posts, newest first, set as a
-// ruled register. One line per post; an older body that differs from the
-// subject shows beneath it, clamped to three lines. Each post carries its
-// thread of comments (the last few shown, the rest on request) and a reply
-// composer that opens under it.
+// The board screen, as the Loom console draws it (the bd-* rules in styles/proto/social.css): the
+// agents' shared feed of posts, newest first, each with its numbered head, its clamped body, its
+// thread of comments (the last few shown, the rest on request) and a reply composer that opens under
+// it. The owner's composer sits in a dock at the foot.
 
-import '../styles/social.css';
+import '../styles/proto/social.css';
 import { api, type BoardComment, type BoardPost, type Deliverable } from '../api';
 import { boardOwnerBar, composer as ownerComposer } from '../board/owner';
 import { href } from '../router';
@@ -42,31 +41,32 @@ interface Ui {
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
   // Under a project, the board is its board: its agents' posts, and the owner's posts go to it.
   const inProject = scope.get() ?? undefined;
-  const author = h('select.board-filter', { 'aria-label': 'Filter by author' });
-  const search = h('input.board-search', {
+  const author = h('select.select', { 'aria-label': 'Author', 'data-input': 'bd-author' });
+  const search = h('input.input', {
     type: 'search',
     placeholder: 'Search subject or body',
     'aria-label': 'Search the board',
   });
-  const feed = h('div.board-feed');
+  const feed = h('div.bd-feed');
   // The owner's controls: Pause/Resume and Export, the paused banner, and the composer at the foot.
-  const owner = boardOwnerBar({ project: () => inProject, onChanged: () => void load() });
+  const owner = boardOwnerBar({ project: () => inProject, onChanged: () => void load(), proto: true });
   const post = ownerComposer({
     placeholder: 'Message the team… (@ to mention)',
     label: 'Message the team',
     project: () => inProject,
     onPosted: () => void load(),
+    proto: true,
   });
+  const title = h('h1', null, 'Board', inProject ? h('span.scoped', null, ` · ${projectTitle(inProject)}`) : null);
   root.append(
     h(
-      'div.view-head',
+      'header.page-head',
       null,
-      h('h1', null, 'Board', inProject ? h('span.faint', null, ` · ${projectTitle(inProject)}`) : null),
-      h('div.actions.board-actions', null, author, search, owner.actions),
+      h('div.page-head-row', null, title, h('span.sp'), h('div.page-actions', null, h('div.bd-bar', null, author, search, owner.actions))),
     ),
     owner.banner,
     feed,
-    h('div.board-owner-dock', null, post.el),
+    post.el,
   );
 
   let posts: BoardPost[] = [];
@@ -122,12 +122,11 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     author.value = authorCid;
   };
 
-  // A body that overflows its clamp gets its "Show more" toggle.
+  // A body that overflows its clamp, or is open, marks its "Show more" toggle (the CSS shows it).
   const fit = (): void => {
-    for (const body of feed.querySelectorAll<HTMLElement>('.board-body')) {
-      const toggle = body.nextElementSibling;
-      const open = body.classList.contains('open');
-      if (toggle instanceof HTMLElement && (open || body.scrollHeight > body.clientHeight + 1)) toggle.hidden = false;
+    for (const body of feed.querySelectorAll<HTMLElement>('.bd-body')) {
+      if (body.classList.contains('open') || body.scrollHeight > body.clientHeight + 1) body.dataset.over = '1';
+      else delete body.dataset.over;
     }
   };
 
@@ -189,19 +188,18 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
 function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
   const extra = p.body.trim();
-  const body = extra && extra !== p.subject.trim() ? h('div.board-body', null, renderMarkdown(extra, { embeds: embedContextFromStore({ project: p.project ?? null }) })) : null;
+  const body = extra && extra !== p.subject.trim() ? h('div.bd-body.md.clamp', null, renderMarkdown(extra, { embeds: embedContextFromStore({ project: p.project ?? null }) })) : null;
   const show = (open: boolean): void => {
     if (!body) return;
     body.classList.toggle('open', open);
-    body.classList.toggle('clamped', !open);
+    body.classList.toggle('clamp', !open);
     more.textContent = open ? 'Show less' : 'Show more';
   };
   // The open state lives in `ui.opened`, so a redraw (any board event) keeps it.
   const more: HTMLButtonElement = h(
-    'button.board-more',
+    'button.btn.ghost.sm.bd-more',
     {
       type: 'button',
-      hidden: true,
       onclick: () => {
         const open = !ui.opened.has(p.id);
         if (open) ui.opened.add(p.id);
@@ -212,30 +210,28 @@ function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
     'Show more',
   );
   show(ui.opened.has(p.id));
+  const mentions = (p.mentions ?? []).map((m) => h('span.chip', { class: m === 'all' ? 't-accent' : 't-muted' }, `@${m}`));
   return h(
-    'article.board-entry',
-    { 'data-key': p.id },
-    h('span.board-no', null, `p${no}`),
+    'article.bd-post',
+    { 'data-id': p.id },
     h(
-      'div.board-matter',
+      'div.bd-top',
       null,
-      h(
-        'div.board-by',
-        null,
-        p.owner ? h('span.board-author', null, name) : h('a.board-author', { href: href('agents', p.agent_cid) }, name),
-        p.owner ? null : h('span.board-role', null, roleLabel(p.role)),
-        p.mentions?.length ? h('span.board-mentions', null, p.mentions.map((m) => `@${m}`).join(' ')) : null,
-        h('span.board-count', null, countLabel(commentsOf(p).length)),
-        p.task ? h('a.board-task', { href: href('tasks', p.task) }, `Task ${p.task}`) : null,
-        replyLink(p, ui),
-      ),
-      h('h3.board-subject', null, p.subject),
-      body,
-      body ? more : null,
-      attachmentsOf(p.id, p.attachments),
-      thread(p, ui),
+      h('span.num.muted', null, `p${no}`),
+      h('span', null, p.owner ? name : h('a', { href: href('agents', p.agent_cid) }, name)),
+      p.owner ? null : h('span.muted', null, roleLabel(p.role)),
+      mentions.length ? h('span', null, ...mentions.flatMap((m, i) => (i ? [' ', m] : [m]))) : null,
+      p.task ? h('span', null, h('a', { href: href('tasks', p.task) }, `Task ${p.task}`)) : null,
+      h('span', null, countLabel(commentsOf(p).length)),
+      h('span.bd-time', { title: new Date(p.created_at).toLocaleString('en-US') }, ago(p.created_at)),
     ),
-    h('time.board-time', null, ago(p.created_at)),
+    h('h3', null, p.subject),
+    body,
+    body ? more : null,
+    attachmentsOf(p.id, p.attachments),
+    thread(p, ui),
+    h('div.bd-foot', null, replyLink(p, ui)),
+    ui.composing.has(p.id) ? composer(p, ui) : null,
   );
 }
 
@@ -271,7 +267,7 @@ const fileNodes = new Map<string, HTMLElement>();
 function attachmentsOf(owner: string, ids: string[] | undefined): HTMLElement | null {
   if (!ids || ids.length === 0) return null;
   return h(
-    'div.board-files',
+    'div.bd-atts',
     null,
     ids.map((id) => {
       const key = `${owner}/${id}`;
@@ -284,24 +280,24 @@ function attachmentsOf(owner: string, ids: string[] | undefined): HTMLElement | 
 
 function attachment(id: string): HTMLElement {
   const url = api.fileUrl(id);
-  const link = h('a.board-file', { href: url, target: '_blank', rel: 'noopener' }, 'file …');
-  const slot = h('span.board-file-slot', null, link);
+  const slot = h('span.bd-slot', null, h('a.bd-att', { href: url, target: '_blank', rel: 'noopener' }, h('span.hint', null, 'file …')));
   void metaOf(id).then((d) => {
     if (!d) {
-      link.textContent = 'file unavailable';
+      slot.replaceChildren(h('span.chip.t-muted', null, 'File unavailable'));
       fileNodes.forEach((node, key) => node === slot && fileNodes.delete(key));
       return;
     }
     const name = d.title || d.name;
     if (d.content_type.startsWith('image/')) {
-      link.replaceChildren(h('img.board-file-img', { src: url, loading: 'lazy', alt: name }));
+      slot.replaceChildren(
+        h('a.bd-att', { href: url, target: '_blank', rel: 'noopener' }, h('img.bd-thumb', { src: url, loading: 'lazy', alt: name }), h('span.hint', null, `${name} · ${sizeOf(d.size)}`)),
+      );
     } else if (d.content_type.startsWith('video/')) {
-      const v = h('video.board-file-video', { src: url, preload: 'metadata' }) as HTMLVideoElement;
+      const v = h('video.bd-thumb', { src: url, preload: 'metadata', 'aria-label': name }) as HTMLVideoElement;
       v.controls = true;
-      slot.replaceChildren(v);
+      slot.replaceChildren(h('figure.bd-att', null, v, h('figcaption.hint', null, `${name} · ${sizeOf(d.size)}`)));
     } else {
-      link.className = 'board-file-chip';
-      link.replaceChildren(name, ' ', h('span.faint', null, sizeOf(d.size)));
+      slot.replaceChildren(h('a.chip.t-muted', { href: url, target: '_blank', rel: 'noopener' }, `${name} · ${sizeOf(d.size)}`));
     }
   });
   return slot;
@@ -315,7 +311,7 @@ const countLabel = (n: number): string => (n === 1 ? '1 comment' : `${n} comment
 
 function replyLink(p: BoardPost, ui: Ui): HTMLButtonElement {
   return h(
-    'button.board-reply',
+    'button.btn.ghost.sm',
     {
       type: 'button',
       'aria-expanded': ui.composing.has(p.id) ? 'true' : 'false',
@@ -329,46 +325,48 @@ function replyLink(p: BoardPost, ui: Ui): HTMLButtonElement {
   );
 }
 
-/** The thread under a post: its last comments (or all, on request), then the composer if open. */
+/** The thread under a post: its last comments (or all, on request). */
 function thread(p: BoardPost, ui: Ui): HTMLElement | null {
   const all = commentsOf(p);
-  const composing = ui.composing.has(p.id);
-  if (!all.length && !composing) return null;
+  if (!all.length) return null;
   const expanded = ui.expanded.has(p.id);
   const shown = all.length > THREAD_PREVIEW && !expanded ? all.slice(-THREAD_PREVIEW) : all;
   return h(
-    'div.board-thread',
+    'div.bd-thread',
     null,
     all.length > THREAD_PREVIEW
       ? h(
-          'button.board-thread-toggle',
-          {
-            type: 'button',
-            'aria-expanded': expanded ? 'true' : 'false',
-            onclick: () => {
-              if (!ui.expanded.delete(p.id)) ui.expanded.add(p.id);
-              ui.rerender();
+          'div',
+          null,
+          h(
+            'button.btn.ghost.sm',
+            {
+              type: 'button',
+              'aria-expanded': expanded ? 'true' : 'false',
+              onclick: () => {
+                if (!ui.expanded.delete(p.id)) ui.expanded.add(p.id);
+                ui.rerender();
+              },
             },
-          },
-          expanded ? 'Show fewer' : `Show all ${all.length} comments`,
+            expanded ? 'Show fewer' : `Show all ${all.length} comments`,
+          ),
         )
       : null,
-    all.length ? h('ol.board-comments', null, shown.map((c) => commentRow(c, ui, p.project ?? null))) : null,
-    composing ? composer(p, ui) : null,
+    shown.map((c) => commentRow(c, ui, p.project ?? null)),
   );
 }
 
 function commentRow(c: BoardComment, ui: Ui, project: string | null): HTMLElement {
   const name = ui.commenter(c);
   return h(
-    'li.board-comment',
+    'div.bd-c',
     { class: c.agent_cid === null ? 'owner' : '', 'data-key': c.id },
-    h('span.board-chip', { 'aria-hidden': 'true' }, name.charAt(0).toUpperCase() || '?'),
+    h('span.bd-chip', { 'aria-hidden': 'true' }, name.charAt(0).toUpperCase() || '?'),
     h(
-      'div.board-comment-main',
+      'div',
       null,
-      h('div.board-comment-by', null, h('span.board-comment-author', null, name), h('time.board-comment-time', null, ago(c.created_at))),
-      h('div.board-comment-body', null, renderMarkdown(c.body, { embeds: embedContextFromStore({ project }) })),
+      h('div.bd-cm', null, h('b', null, name), h('span', null, ago(c.created_at))),
+      h('div.bd-md', null, renderMarkdown(c.body, { embeds: embedContextFromStore({ project }) })),
       attachmentsOf(c.id, c.attachments),
     ),
   );
@@ -376,7 +374,7 @@ function commentRow(c: BoardComment, ui: Ui, project: string | null): HTMLElemen
 
 /** The reply composer. Its draft lives in `ui.drafts`, so a redraw never loses it. */
 function composer(p: BoardPost, ui: Ui): HTMLElement {
-  const ta = h('textarea.board-reply-text', {
+  const ta = h('textarea.textarea', {
     'data-post': p.id,
     rows: 3,
     maxlength: REPLY_MAX,
@@ -384,7 +382,7 @@ function composer(p: BoardPost, ui: Ui): HTMLElement {
     'aria-label': 'Reply to this post',
   });
   ta.value = ui.drafts.get(p.id) ?? '';
-  const meter = h('span.board-reply-count', null);
+  const meter = h('span.bd-meter', null);
   const sendBtn = button('Send', () => void send(), { kind: 'primary', size: 'sm' });
   const cancelBtn = button(
     'Cancel',
@@ -432,12 +430,7 @@ function composer(p: BoardPost, ui: Ui): HTMLElement {
     }
   });
   sync();
-  return h(
-    'div.board-composer',
-    null,
-    ta,
-    h('div.board-composer-foot', null, meter, h('div.board-composer-actions', null, cancelBtn, sendBtn)),
-  );
+  return h('div.bd-reply', null, ta, h('div.bd-foot', null, meter, cancelBtn, sendBtn));
 }
 
 // ---- Focus ----------------------------------------------------------------
@@ -458,7 +451,7 @@ function captureFocus(feed: HTMLElement): Focus | null {
 /** Puts focus back on the reply it came from; a negative `start` means the end of the text. */
 function restoreFocus(feed: HTMLElement, focus: Focus | null): void {
   if (!focus) return;
-  for (const ta of feed.querySelectorAll<HTMLTextAreaElement>('.board-reply-text')) {
+  for (const ta of feed.querySelectorAll<HTMLTextAreaElement>('textarea[data-post]')) {
     if (ta.dataset.post !== focus.post) continue;
     const start = focus.start < 0 ? ta.value.length : focus.start;
     ta.focus();

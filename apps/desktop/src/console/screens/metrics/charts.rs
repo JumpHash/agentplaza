@@ -9,10 +9,13 @@ use iced::alignment;
 use iced::mouse;
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{Row, Space, button, column, container, text};
-use iced::{Background, Color, Element, Event, Length, Point, Rectangle, Renderer, Size, Theme};
+use iced::{
+    Background, Border, Color, Element, Event, Font, Length, Point, Rectangle, Renderer, Size,
+    Theme,
+};
 
 use super::{Msg, Pointer, axis_color, grid_color, tone};
-use crate::theme::{SANS, TYPE_META};
+use crate::theme::{MONO, SANS, TYPE_META};
 
 /// The space left of the plot for the value labels ("1.4 MiB/s" and "$1,264" fit at 11 px; the web uses the same
 /// gutter), and right, above and below it.
@@ -479,7 +482,8 @@ impl LineChart<'_> {
             );
         }
 
-        // The tooltip, on the chart the pointer is over: a sheet box with an ink-3 border and a 2 px ink shadow.
+        // The tooltip, on the chart the pointer is over: the web's `.mt-tip`, a raised box with a rule edge and the
+        // skin's radius.
         if self.pointer.hover_panel.as_deref() == Some(self.panel)
             && let Some(i) = self.pointer.hover.and_then(|frac| index_at(frac, n))
         {
@@ -493,47 +497,53 @@ impl LineChart<'_> {
             })
             .max(0.0);
             let top = plot.top + 2.0;
-            frame.fill_rectangle(
-                Point::new(left + 2.0, top + 2.0),
-                Size::new(TIP_W, height),
-                palette.ink,
-            );
-            frame.fill_rectangle(
+            let radius = crate::theme::skin().radius;
+            let boxed = Path::rounded_rectangle(
                 Point::new(left, top),
                 Size::new(TIP_W, height),
-                palette.sheet,
+                radius.into(),
             );
-            frame.stroke(
-                &Path::rectangle(Point::new(left, top), Size::new(TIP_W, height)),
-                stroke(palette.ink_3, 1.0, None),
-            );
+            frame.fill(&boxed, palette.raised);
+            frame.stroke(&boxed, stroke(palette.rule, 1.0, None));
             for (k, row) in rows.iter().enumerate() {
                 let y = top + 8.0 + TIP_ROW / 2.0 + k as f32 * TIP_ROW;
-                let mut x0 = left + 8.0;
+                let mut x0 = left + 10.0;
                 if let Some(color) = row.swatch {
-                    frame.fill_rectangle(Point::new(x0, y - 4.0), Size::new(8.0, 8.0), color);
-                    x0 += 14.0;
+                    // The web's 12 x 4 swatch with a 2 px radius.
+                    frame.fill(
+                        &Path::rounded_rectangle(
+                            Point::new(x0, y - 2.0),
+                            Size::new(12.0, 4.0),
+                            2.0.into(),
+                        ),
+                        color,
+                    );
+                    x0 += 18.0;
                 }
                 let ink = if row.muted {
                     palette.ink_3
                 } else {
                     palette.ink
                 };
-                text_at(
+                text_in(
                     frame,
                     row.left.as_str(),
                     Point::new(x0, y),
                     ink,
                     alignment::Horizontal::Left,
                     alignment::Vertical::Center,
+                    SANS,
+                    TYPE_META,
                 );
-                text_at(
+                text_in(
                     frame,
                     row.right.as_str(),
-                    Point::new(left + TIP_W - 8.0, y),
+                    Point::new(left + TIP_W - 10.0, y),
                     ink,
                     alignment::Horizontal::Right,
                     alignment::Vertical::Center,
+                    SANS,
+                    TYPE_META,
                 );
             }
         }
@@ -676,17 +686,17 @@ fn legend(c: &Chart) -> Element<'_, Msg> {
     }
     if let Some(b) = &c.band {
         items.push(entry(
-            bar(14.0, 8.0, tone(b.tone).scale_alpha(0.3)),
+            bar(12.0, 8.0, tone(b.tone).scale_alpha(0.3)),
             &b.name,
             palette.ink_2,
         ));
     }
     // Whole entries wrap to the next line, as the web's flex-wrap legend does; an entry's name never breaks.
     Row::with_children(items)
-        .spacing(14.0)
+        .spacing(16.0)
         .align_y(alignment::Vertical::Center)
         .wrap()
-        .vertical_spacing(4.0)
+        .vertical_spacing(8.0)
         .into()
 }
 
@@ -707,12 +717,11 @@ fn entry<'a>(mark: Element<'a, Msg>, name: &str, color: Color) -> Element<'a, Ms
 
 /// A legend mark for a series: a solid bar, or three short bars for a dashed one.
 fn swatch<'a>(color: Color, dashed: bool) -> Element<'a, Msg> {
+    // The web's legend mark is the same 12 x 4 bar for every series; a comparison overlay shows at 60 %.
     if dashed {
-        Row::with_children((0..3).map(|_| bar(3.0, 2.0, color)))
-            .spacing(2.0)
-            .into()
+        bar(12.0, 4.0, color.scale_alpha(0.6))
     } else {
-        bar(14.0, 3.0, color)
+        bar(12.0, 4.0, color)
     }
 }
 
@@ -721,6 +730,10 @@ fn bar<'a>(width: f32, height: f32, color: Color) -> Element<'a, Msg> {
     container(Space::new().width(width).height(height))
         .style(move |_theme: &Theme| container::Style {
             background: Some(Background::Color(color)),
+            border: Border {
+                radius: 2.0.into(),
+                ..Border::default()
+            },
             ..container::Style::default()
         })
         .into()
@@ -921,12 +934,28 @@ fn text_at(
     align_x: alignment::Horizontal,
     align_y: alignment::Vertical,
 ) {
+    text_in(frame, content, at, color, align_x, align_y, MONO, LABEL_PX);
+}
+
+/// Text in a canvas at a point, in the font and size given: the axes use the web's mono 11 px, the tooltip's rows the
+/// sans 12 px.
+#[allow(clippy::too_many_arguments)]
+fn text_in(
+    frame: &mut canvas::Frame,
+    content: impl Into<String>,
+    at: Point,
+    color: Color,
+    align_x: alignment::Horizontal,
+    align_y: alignment::Vertical,
+    font: Font,
+    size: f32,
+) {
     frame.fill_text(canvas::Text {
         content: content.into(),
         position: at,
         color,
-        size: iced::Pixels(LABEL_PX),
-        font: SANS,
+        size: iced::Pixels(size),
+        font,
         align_x: align_x.into(),
         align_y,
         ..canvas::Text::default()

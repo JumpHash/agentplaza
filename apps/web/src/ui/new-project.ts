@@ -3,7 +3,7 @@
 // here are its first change), or bring a project that exists: a repository on a git platform, a git address, a folder on
 // the hub, or files from this computer, with its mode, its environments and whether it is finished.
 
-import '../styles/new-project.css';
+import '../styles/proto/newproject.css';
 import { api } from '../api';
 import { ENV_KINDS, projectsApi, type ProjectMode } from '../api-projects';
 import { platforms } from '../api-platforms';
@@ -36,7 +36,7 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
 
 /** A line that shows while files are sent; hidden until there is something to say. */
 function statusLine(): HTMLParagraphElement {
-  const el = h('p.faint.np-status', null);
+  const el = h('p.np-muted', null);
   el.hidden = true;
   return el;
 }
@@ -50,15 +50,19 @@ function progressTo(el: HTMLElement): (p: UploadProgress) => void {
 
 /** A picked file as a chip: its name, its size, and × to take it off the list. */
 function chip(f: PickedFile, onRemove: () => void): HTMLElement {
-  const remove = h('button', { type: 'button', title: 'Remove', 'aria-label': `Remove ${f.path}` }, '×');
-  remove.addEventListener('click', onRemove);
-  return h('span.attach-chip', null, h('span.name', { title: f.path }, f.path), h('span.faint', null, sizeText(f.file.size)), remove);
+  const remove = button('×', onRemove, { kind: 'ghost', size: 'sm', title: 'Remove' });
+  return h('li.np-chip', null, h('span.np-chip-n', { title: f.path }, f.path), h('span.np-muted', null, sizeText(f.file.size)), remove);
+}
+
+/** A field whose control holds buttons: a div, so a click on the label is not a click on a button. */
+function fieldBox(label: string, el: HTMLElement): HTMLElement {
+  return h('div.field', null, h('span.field-l', null, label), el);
 }
 
 function checkbox(text: string, checked: boolean): { el: HTMLLabelElement; box: HTMLInputElement } {
   const box = h('input', { type: 'checkbox' });
   box.checked = checked;
-  return { el: h('label.np-check', null, box, h('span', null, text)), box };
+  return { el: h('label.check', null, box, h('span', null, text)), box };
 }
 
 /** Files picked or dropped on a zone. `chips`: they show as chips with ×; otherwise as one line with a Clear. */
@@ -70,9 +74,9 @@ interface FileBox {
 
 function fileBox(opts: { text: string; folders: boolean; chips?: boolean }): FileBox {
   let picked: PickedFile[] = [];
-  const list = h('div.attach-chips');
-  const summaryText = h('span', null, '');
-  const summary = h('div.np-summary', null, summaryText, button('Clear', () => set([]), { kind: 'ghost', size: 'sm' }));
+  const list = h('ul.np-chips');
+  const summaryText = h('div.np-sum', null, '');
+  const summary = h('div.np-row', null, summaryText, button('Clear', () => set([]), { kind: 'ghost', size: 'sm' }));
   summary.hidden = true;
   const draw = (): void => {
     if (opts.chips) {
@@ -91,7 +95,7 @@ function fileBox(opts: { text: string; folders: boolean; chips?: boolean }): Fil
   };
   const pickers = [button('Choose files', () => void pickFiles().then(add), { kind: 'ghost', size: 'sm' })];
   if (opts.folders) pickers.push(button('Choose a folder', () => void pickFiles({ folder: true }).then(add), { kind: 'ghost', size: 'sm' }));
-  const zone = h('div.drop-zone', { class: opts.chips ? 'np-small' : '' }, h('span', null, opts.text), h('div.drop-actions', null, pickers));
+  const zone = h('div.np-zone', null, h('div', null, opts.text), h('div.np-row', null, pickers));
   dropZone(zone, add);
   return { el: h('div.np-files', null, zone, opts.chips ? list : summary), files: () => picked, add };
 }
@@ -185,7 +189,7 @@ export function openNewProject(): void {
     signBox.el,
   );
   const noAuthText = h('span', null, 'No git platform is set up yet. ');
-  const noAuth = h('p.faint.np-hint', null, noAuthText, h('a', { href: '#/platforms' }, 'Open Platforms'));
+  const noAuth = h('p.np-muted', null, noAuthText, h('a.np-link', { href: '#/platforms' }, 'Open Platforms'));
   noAuth.hidden = true;
   noAuth.querySelector('a')?.addEventListener('click', () => close());
   const platformBox = h('div.np-group', null, platformFields, noAuth);
@@ -200,7 +204,7 @@ export function openNewProject(): void {
 
   // Where it is: files from this computer, uploaded after the adoption.
   const bringFiles = fileBox({ text: 'Drop files or a folder here', folders: true });
-  const filesBox = h('div.np-group', null, field('Files', bringFiles.el));
+  const filesBox = h('div.np-group', null, fieldBox('Files', bringFiles.el));
 
   const showWhere = (): void => {
     const k = where.value as WhereKind;
@@ -254,13 +258,13 @@ export function openNewProject(): void {
     ],
     'maintenance',
   );
-  const modeHint = h('span.hint', null, MODE_HINTS.maintenance);
+  const modeHint = h('small.hint', null, MODE_HINTS.maintenance);
   mode.addEventListener('change', () => {
     modeHint.textContent = MODE_HINTS[mode.value as ProjectMode];
   });
-  const modeField = h('label.field', null, h('span', null, 'Mode'), mode, modeHint);
+  const modeField = h('label.field', null, h('span.field-l', null, 'Mode'), mode, modeHint);
   const finished = checkbox('It is finished', true);
-  const finishedHint = h('p.faint.np-hint', null, 'On: it opens delivered. Off: it stays in implementation.');
+  const finishedHint = h('p.np-muted', null, 'On: it opens delivered. Off: it stays in implementation.');
 
   type EnvRow = { row: HTMLElement; name: HTMLInputElement; kind: HTMLSelectElement; url: HTMLInputElement };
   const envRows: EnvRow[] = [];
@@ -296,10 +300,10 @@ export function openNewProject(): void {
   const envBox = h(
     'div.np-group',
     null,
-    h('div.np-sub', null, 'Environments (optional)'),
-    h('p.faint.np-hint', null, 'Each has a name, a kind and an address. Empty rows are ignored.'),
+    h('div.field-l', null, 'Environments (optional)'),
+    h('p.np-muted', null, 'Each has a name, a kind and an address. Empty rows are ignored.'),
     envList,
-    h('div.np-add', null, addEnv),
+    h('div.np-row', null, addEnv),
   );
 
   const bringStatus = statusLine();
@@ -359,34 +363,34 @@ export function openNewProject(): void {
   const close = modal(
     'New project',
     h(
-      'div.new-project',
+      'div.np-root',
       null,
       h(
-        'section',
-        null,
-        h('h3', null, 'Talk it through'),
-        h('p.faint', null, 'The orchestrator asks what it needs and drafts the project beside the conversation: its tasks, its team and its budget. You start it when it looks right.'),
+        'section.np-sec',
+        { 'aria-label': 'Talk it through' },
+        h('h3.np-h', null, 'Talk it through'),
+        h('p.np-p', null, 'The orchestrator asks what it needs and drafts the project beside the conversation: its tasks, its team and its budget. You start it when it looks right.'),
         field('Your goal', ask),
-        talkFiles.el,
-        h('div.actions', null, talk),
+        fieldBox('Files', talkFiles.el),
+        h('div.np-foot', null, talk),
       ),
       h(
-        'section',
-        null,
-        h('h3', null, 'Or open it directly'),
-        h('p.faint', null, 'A project of yours: you put agents on it and give it tasks. Files you add become its first change.'),
+        'section.np-sec',
+        { 'aria-label': 'Or open it directly' },
+        h('h3.np-h', null, 'Or open it directly'),
+        h('p.np-p', null, 'A project of yours: you put agents on it and give it tasks. Files you add become its first change.'),
         field('Title', title),
         field('Goal', goal),
         field('Kind', kind),
-        field('Files (optional)', directFiles.el),
+        fieldBox('Files (optional)', directFiles.el),
         directStatus,
-        h('div.actions', null, direct),
+        h('div.np-foot', null, direct),
       ),
       h(
-        'section',
-        null,
-        h('h3', null, 'Or bring a project that exists'),
-        h('p.faint', null, 'A product that is finished, or nearly: the plaza imports its history and looks after it.'),
+        'section.np-sec',
+        { 'aria-label': 'Or bring a project that exists' },
+        h('h3.np-h', null, 'Or bring a project that exists'),
+        h('p.np-p', null, 'A product that is finished, or nearly: the plaza imports its history and looks after it.'),
         field('Title', bringTitle),
         field('Goal (optional)', bringGoal),
         field('Where it is', where),
@@ -398,7 +402,7 @@ export function openNewProject(): void {
         h('div.np-group', null, finished.el, finishedHint),
         envBox,
         bringStatus,
-        h('div.actions', null, bring),
+        h('div.np-foot', null, bring),
       ),
     ),
   );

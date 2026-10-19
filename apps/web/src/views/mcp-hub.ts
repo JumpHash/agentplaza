@@ -1,8 +1,9 @@
-// Setup > MCP > This hub as a server: the owner turns the hub's own MCP server on, mints tokens for outside clients,
-// and reads the tokens and the call log (docs/design/hub-mcp.md, "Configuration flow"). A new token is shown once, in
-// the reveal box. It is never written to localStorage, and leaving the tab clears the page, reveal box included.
+// Setup > MCP > This hub as a server, in the prototype's markup: the owner turns the hub's own MCP server on, mints
+// tokens for outside clients, and reads the tokens and the call log (docs/design/hub-mcp.md, "Configuration flow").
+// A new token is shown once, in the reveal box. It is never written to localStorage, and leaving the tab clears the
+// page, reveal box included.
 
-import '../styles/mcp-hub.css';
+import '../styles/proto/settings-b.css';
 import {
   acpApi,
   api,
@@ -15,10 +16,11 @@ import {
   type HubMcpStatus,
   type HubToken,
 } from '../api';
-import { ago, attempt, badge, button, card, clip, empty, field, input, modal, select, toast } from '../ui/components';
+import { ago, attempt, badge, card, clip, field, input, select, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { agents } from '../store';
 import type { Cleanup } from './index';
+import { btn, check, dialog, emptyBox, iconBtn, tbl, type TblCol } from './mcp-common';
 import { HUB_SCOPES, HUB_TOOLS, acpSnippets, scopePermits, setupSnippets, type HubScope } from './hub-mcp-snippets';
 import { errorText } from './vault-common';
 
@@ -28,9 +30,9 @@ const BIND_OPTIONS: { value: HubBind; label: string }[] = [
 ];
 
 /** Secure needs a token; open lets anonymous callers in with the open scope. */
-const AUTH_OPTIONS: { value: HubAuthMode; label: string; plain: string }[] = [
-  { value: 'secure', label: 'Secure', plain: 'token required' },
-  { value: 'open', label: 'Open', plain: 'no token' },
+const AUTH_OPTIONS: { value: HubAuthMode; label: string }[] = [
+  { value: 'secure', label: 'Secure: token required' },
+  { value: 'open', label: 'Open: no token' },
 ];
 
 /** Each tool's own scope, for the checklist and for the scope change. */
@@ -42,51 +44,68 @@ const ALL_TOOLS = Array.from(TOOL_SCOPE.keys());
 /** The editor setup text (Zed, JetBrains, Neovim). It holds no token, so it is built once. */
 const ACP_SNIPPETS = acpSnippets();
 
-/** A small confirm dialog, as the servers tab has: a message, Cancel, and the action in the danger tone. */
-function confirmDialog(title: string, text: string, label: string, onConfirm: () => void): void {
-  const close = modal(
-    title,
-    h(
-      'div.mcp-confirm',
-      null,
-      h('p', null, text),
-      h(
-        'div.mcp-actions',
-        null,
-        button('Cancel', () => close()),
-        button(
-          label,
-          () => {
-            close();
-            onConfirm();
-          },
-          { kind: 'danger' },
-        ),
-      ),
-    ),
-  );
-}
-
-/** A copy button for one piece of text. The text is never stored; the click copies it and says so. */
-function copyButton(text: string, label = 'Copy'): HTMLButtonElement {
-  return button(label, () => void attempt(() => navigator.clipboard.writeText(text), 'Copied'), {
-    kind: 'ghost',
-    size: 'sm',
+/** A radio in the prototype's label.check. check() draws only checkboxes, so the radios are drawn here. */
+function radioRow(
+  name: string,
+  value: string,
+  text: string,
+  checked: boolean,
+  onPick: () => void,
+): { row: HTMLLabelElement; el: HTMLInputElement } {
+  const el = h('input', { type: 'radio', name, value }) as HTMLInputElement;
+  el.checked = checked;
+  el.addEventListener('change', () => {
+    if (el.checked) onPick();
   });
+  return { el, row: h('label.check', null, el, h('span', null, text)) };
 }
 
-/** One block of setup text, with its copy button and a note on what it does. */
-function snippet(title: string, text: string, note: string): HTMLElement {
+/** A checkbox in the prototype's label.check, with its input kept so the tab can read and set it. */
+function checkRow(
+  text: string,
+  onChange?: (on: boolean) => void,
+  disabled = false,
+): { row: HTMLLabelElement; box: HTMLInputElement } {
+  const row = check(text, onChange ? { onChange, disabled } : { disabled });
+  return { row, box: row.querySelector('input') as HTMLInputElement };
+}
+
+/** A ghost copy button for one piece of text. The text is never stored; the click copies it and says so. */
+function copyButton(text: string, label = 'Copy'): HTMLButtonElement {
+  return btn(label, () => void attempt(() => navigator.clipboard.writeText(text), 'Copied'), { kind: 'ghost', sm: true });
+}
+
+/** One block of setup text: its title and copy button, the note on what it does, then the text. */
+function snippet(title: string, note: string, text: string): HTMLElement {
   return h(
-    'div.hub-snippet',
+    'div.mcp-snip',
     null,
-    h('div.hub-snippet-head', null, h('strong', null, title), copyButton(text)),
-    h('pre.mcp-mono', null, text),
-    h('p.mcp-muted', null, note),
+    h('div.mcp-row', null, h('strong', null, title), copyButton(text)),
+    h('p.muted', null, note),
+    h('pre.mono', null, text),
   );
 }
 
-/** The tab. It fills `root` and returns a cleanup that empties it, so no token outlives the tab. */
+/** The revoke confirm: a sheet with the warning, Cancel, and Revoke in the danger tone. */
+function confirmRevoke(name: string, onConfirm: () => void): void {
+  const close: () => void = dialog(
+    `Revoke ${name}`,
+    h('p', null, 'Clients that use this token lose access at once. This cannot be undone.'),
+    [
+      btn('Cancel', () => close(), { kind: 'ghost' }),
+      btn(
+        'Revoke',
+        () => {
+          close();
+          onConfirm();
+        },
+        { kind: 'danger' },
+      ),
+    ],
+  );
+}
+
+/** The tab. It fills `root` with the prototype's stack of cards and returns a cleanup that empties it, so no token outlives the tab. */
 export function mountHubTab(root: HTMLElement): Cleanup {
   let alive = true;
   let status: HubMcpStatus | null = null;
@@ -110,35 +129,35 @@ export function mountHubTab(root: HTMLElement): Cleanup {
   let openScope: HubScope = 'observe';
   let warning: string | null = null;
 
-  const statusSlot = h('div.hub-status-slot', null, h('p.mcp-loading', null, 'Loading...'));
-  const originsSlot = h('ul.hub-origins');
-  const toolsSlot = h('div.hub-tools');
-  const revealSlot = h('div.hub-reveal-slot');
-  const tokensSlot = h('div', null, h('p.mcp-loading', null, 'Loading...'));
-  const tokenFilterSlot = h('div.hub-filter');
-  const callsSlot = h('div', null, h('p.mcp-loading', null, 'Loading...'));
+  const statusSlot = h('div.mcp-stack', null, h('p.muted', null, 'Loading...'));
+  const originsSlot = h('div.mcp-stack');
+  const effectiveLine = h('p.muted');
+  const toolsSlot = h('fieldset.mcp-tools');
+  const revealSlot = h('div');
+  revealSlot.hidden = true;
+  const tokensSlot = h('div', null, h('p.muted', null, 'Loading...'));
+  const tokenFilterSlot = h('div');
+  const callsSlot = h('div', null, h('p.muted', null, 'Loading...'));
 
   // ---- Enable -----------------------------------------------------------------------------------------------------
 
-  const enabledBox = input({ type: 'checkbox' });
-  enabledBox.addEventListener('change', () => {
-    enabled = enabledBox.checked;
+  const enabledCheck = checkRow('Serve this hub over MCP', (on) => {
+    enabled = on;
   });
 
-  const bindRows = BIND_OPTIONS.map((o) => {
-    const el = input({ type: 'radio', name: 'hub-bind', value: o.value });
-    el.addEventListener('change', () => {
-      if (el.checked) {
-        bind = o.value;
-        drawAuth();
-      }
-    });
-    return { value: o.value, el, row: h('label.hub-radio', null, el, h('span', null, o.label)) };
-  });
+  const bindRows = BIND_OPTIONS.map((o) =>
+    radioRow('hub-bind', o.value, o.label, o.value === bind, () => {
+      bind = o.value;
+      drawAuth();
+    }),
+  );
 
   const syncControls = (): void => {
-    enabledBox.checked = enabled;
-    for (const b of bindRows) b.el.checked = b.value === bind;
+    enabledCheck.box.checked = enabled;
+    BIND_OPTIONS.forEach((o, i) => {
+      const row = bindRows[i];
+      if (row) row.el.checked = o.value === bind;
+    });
   };
 
   const drawOrigins = (): void => {
@@ -147,20 +166,20 @@ export function mountHubTab(root: HTMLElement): Cleanup {
       origins.length
         ? origins.map((o) =>
             h(
-              'li',
+              'div.mcp-row',
               null,
-              h('span.mcp-mono', null, o),
-              button(
-                '',
+              h('span.mono', null, o),
+              iconBtn(
+                'x',
                 () => {
                   origins = origins.filter((x) => x !== o);
                   drawOrigins();
                 },
-                { kind: 'ghost', size: 'sm', icon: 'trash', title: `Remove ${o}` },
+                `Remove ${o}`,
               ),
             ),
           )
-        : h('li.mcp-muted', null, 'No origins yet.'),
+        : h('p.muted', null, 'No origins yet.'),
     );
   };
 
@@ -179,66 +198,55 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     }
   });
 
-  // Whether the endpoint serves TLS: a remote bind needs it, so the bind names it.
-  const tlsSlot = h('div.hub-tls');
-  const drawTls = (): void => {
+  // The origins the endpoint accepts in practice, read-only: the hub's own, then the owner's.
+  const drawEffective = (): void => {
+    const list = status?.effective_origins ?? [];
+    replace(effectiveLine, `Effective origins: ${list.length ? list.join(', ') : 'None.'}`);
+  };
+
+  /** The status block: the badge and the TLS line, the live tokens and the URL, and the database note when it is off. */
+  const drawStatus = (): void => {
+    if (statusError) {
+      replace(
+        statusSlot,
+        emptyBox(
+          'triangle-alert',
+          'Could not load the hub server',
+          errorText(statusError),
+          btn('Try again', () => void loadStatus(), { kind: 'ghost' }),
+        ),
+      );
+      return;
+    }
     if (!status) {
-      replace(tlsSlot);
+      replace(statusSlot, h('p.muted', null, 'Loading...'));
       return;
     }
     replace(
-      tlsSlot,
+      statusSlot,
       h(
-        'p',
+        'div.mcp-row',
         null,
+        badge(
+          status.enabled ? `On, ${status.bind === 'remote' ? 'remote over TLS' : 'local only'}` : 'Off',
+          status.enabled ? 'ok' : 'muted',
+        ),
         badge(status.tls ? 'TLS on' : 'TLS off', status.tls ? 'ok' : 'warn'),
-        ' ',
         h(
-          'span.mcp-muted',
+          'p.muted',
           null,
           status.tls
             ? 'This endpoint serves TLS, so remote bind is available.'
             : 'Remote bind needs TLS. This endpoint has none, so the hub refuses remote bind until it serves TLS.',
         ),
       ),
-    );
-  };
-
-  // The origins the endpoint accepts in practice, read-only: the hub's own, then the owner's.
-  const effectiveSlot = h('ul.hub-origins');
-  const drawEffective = (): void => {
-    const list = status?.effective_origins ?? [];
-    replace(effectiveSlot, list.length ? list.map((o) => h('li', null, h('span.mcp-mono', null, o))) : h('li.mcp-muted', null, 'None.'));
-  };
-
-  const drawStatus = (): void => {
-    if (statusError) {
-      replace(
-        statusSlot,
-        empty('alert', 'Could not load the hub server', errorText(statusError), button('Try again', () => void loadStatus(), { kind: 'ghost' })),
-      );
-      return;
-    }
-    if (!status) {
-      replace(statusSlot, h('p.mcp-loading', null, 'Loading...'));
-      return;
-    }
-    const url = status.url;
-    replace(
-      statusSlot,
       h(
-        'div.hub-status',
+        'p.muted',
         null,
-        badge(
-          status.enabled ? `On, ${status.bind === 'remote' ? 'remote over TLS' : 'local only'}` : 'Off',
-          status.enabled ? 'ok' : 'muted',
-          true,
-        ),
-        h('span.mcp-mono.hub-url', null, url),
-        copyButton(url, 'Copy URL'),
-        h('span.mcp-muted', null, `${status.tokens} live token${status.tokens === 1 ? '' : 's'}`),
+        `${status.tokens === 1 ? '1 live token' : `${status.tokens} live tokens`} · `,
+        h('span.mono', null, status.url),
       ),
-      status.stored ? null : h('p.mcp-muted', null, 'The database is off, so these settings last only until the hub restarts.'),
+      status.stored ? null : h('p.mcp-warn', null, 'The database is off, so these settings last only until the hub restarts.'),
     );
   };
 
@@ -254,7 +262,6 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     syncControls();
     drawOrigins();
     drawEffective();
-    drawTls();
     drawStatus();
     drawAuth();
   };
@@ -272,25 +279,12 @@ export function mountHubTab(root: HTMLElement): Cleanup {
 
   // ---- Auth: secure (a token) or open (no token; anonymous callers get the open scope) ----------------------------
 
-  const authRows = AUTH_OPTIONS.map((o) => {
-    const el = input({ type: 'radio', name: 'hub-auth', value: o.value });
-    el.addEventListener('change', () => {
-      if (el.checked) {
-        authMode = o.value;
-        drawAuth();
-      }
-    });
-    return {
-      value: o.value,
-      el,
-      row: h(
-        'label.hub-radio',
-        null,
-        el,
-        h('span', null, h('strong', null, o.label), ' ', h('span.mcp-muted', null, o.plain)),
-      ),
-    };
-  });
+  const authRows = AUTH_OPTIONS.map((o) =>
+    radioRow('hub-auth', o.value, o.label, o.value === authMode, () => {
+      authMode = o.value;
+      drawAuth();
+    }),
+  );
 
   const openScopeSelect = select(
     HUB_SCOPES.map((s) => ({ value: s.value, label: `${s.label}: ${s.plain}` })),
@@ -299,48 +293,25 @@ export function mountHubTab(root: HTMLElement): Cleanup {
   openScopeSelect.addEventListener('change', () => {
     openScope = openScopeSelect.value as HubScope;
   });
-  const openScopeRow = h(
-    'div.hub-group',
-    null,
-    h('span.hub-label', null, 'Open scope (anonymous callers)'),
-    openScopeSelect,
-  );
-
-  const confirmBox = input({ type: 'checkbox' });
-  const confirmRow = h(
-    'label.hub-switch',
-    null,
-    confirmBox,
-    h('span', null, 'I understand anyone on the network can use it'),
-  );
-  const warningBox = h('div.hub-warning');
-  const authBox = h(
-    'div.hub-group',
-    null,
-    h('span.hub-label', null, 'Auth'),
-    h('div.hub-auth', null, authRows.map((a) => a.row)),
-    openScopeRow,
-    warningBox,
-    confirmRow,
-  );
+  const openScopeField = field('Open scope (anonymous callers)', openScopeSelect);
+  const openWarn = h('p.mcp-warn', null, 'Open mode lets callers without a token use this hub at the open scope.');
+  const serverWarn = h('p.mcp-warn');
+  const confirmCheck = checkRow('I understand anyone on the network can use it');
 
   const drawAuth = (): void => {
     const open = authMode === 'open';
-    for (const a of authRows) a.el.checked = a.value === authMode;
+    for (const a of authRows) a.el.checked = a.el.value === authMode;
     openScopeSelect.value = openScope;
-    openScopeRow.hidden = !open;
-    warningBox.hidden = !open;
-    confirmRow.hidden = !(open && bind === 'remote');
-    replace(
-      warningBox,
-      h('strong', null, 'Anyone who can reach this address can use these tools without a token.'),
-      warning ? h('p', null, warning) : null,
-    );
+    openScopeField.hidden = !open;
+    openWarn.hidden = !open;
+    replace(serverWarn, warning ?? '');
+    serverWarn.hidden = !(open && warning);
+    confirmCheck.row.hidden = !(open && bind === 'remote');
   };
 
   const save = (): void => {
     const body: HubMcpSettings = { enabled, bind, allowed_origins: origins, auth_mode: authMode, open_scope: openScope };
-    if (authMode === 'open' && bind === 'remote') body.confirm_open_remote = confirmBox.checked;
+    if (authMode === 'open' && bind === 'remote') body.confirm_open_remote = confirmCheck.box.checked;
     void attempt(() => hubMcpApi.save(body), 'Saved').then((next) => {
       if (alive && next) applyStatus(next);
     });
@@ -348,45 +319,69 @@ export function mountHubTab(root: HTMLElement): Cleanup {
 
   const enableCard = card(
     'Enable',
-    [
-      h('label.hub-switch', null, enabledBox, h('span', null, 'Serve this hub over MCP')),
-      h('fieldset.hub-group', null, h('legend', null, 'Bind'), bindRows.map((b) => b.row), tlsSlot),
-      authBox,
-      h(
-        'div.hub-group',
-        null,
-        h('span.hub-label', null, 'Allowed origins'),
-        originsSlot,
-        h('div.hub-row', null, originInput, button('Add', addOrigin, { kind: 'ghost', size: 'sm', icon: 'plus' })),
-      ),
-      h('div.hub-group', null, h('span.hub-label', null, 'Effective origins (read-only)'), h('span.mcp-muted', null, 'The hub\'s own origins, then the allowed origins above.'), effectiveSlot),
+    h(
+      'div.mcp-stack',
+      null,
       statusSlot,
-    ],
-    { actions: [button('Save', save, { kind: 'primary' })] },
+      enabledCheck.row,
+      field('Bind', h('div.mcp-row', null, bindRows.map((b) => b.row))),
+      field('Auth', h('div.mcp-row', null, authRows.map((a) => a.row))),
+      openScopeField,
+      openWarn,
+      serverWarn,
+      confirmCheck.row,
+      field(
+        'Allowed origins',
+        h('div.mcp-row', null, originInput, btn('Add', addOrigin, { kind: 'ghost', sm: true, icon: 'plus' })),
+      ),
+      originsSlot,
+      effectiveLine,
+      h(
+        'div.mcp-row',
+        null,
+        btn(
+          'Copy URL',
+          () => {
+            if (status) void attempt(() => navigator.clipboard.writeText(status?.url ?? ''), 'Copied');
+          },
+          { kind: 'ghost', sm: true },
+        ),
+      ),
+    ),
+    { actions: [btn('Save', save, { kind: 'primary', sm: true })] },
   );
 
   // ---- New token --------------------------------------------------------------------------------------------------
 
-  const nameInput = input({ maxlength: 80, placeholder: 'laptop' });
-  const expiresInput = input({ type: 'number', min: 1, max: 3650, placeholder: 'Never' });
+  const nameInput = input({ maxlength: 80, placeholder: 'laptop', 'aria-label': 'Name' });
+  const expiresInput = input({
+    type: 'number',
+    min: 1,
+    max: 3650,
+    placeholder: 'Never',
+    'aria-label': 'Expires after (days)',
+  });
 
+  /** The tool checklist, grouped by scope. A group above the chosen scope is greyed out. */
   const drawTools = (): void => {
     replace(
       toolsSlot,
+      h('legend', null, 'Tools (optional)'),
+      h('p.muted', null, 'Leave them all unticked for every tool the scope allows.'),
       HUB_SCOPES.map((group) => {
         const allowed = scopePermits(scope, group.value);
         return h(
-          'fieldset.hub-tool-group',
+          'fieldset.mcp-grp',
           null,
-          h('legend', null, allowed ? group.label : `${group.label} (above this scope)`),
+          h('legend', null, allowed ? group.value : `${group.value} (above this scope)`),
           HUB_TOOLS[group.value].map((name) => {
-            const box = input({ type: 'checkbox', disabled: !allowed });
+            const box = h('input', { type: 'checkbox', disabled: !allowed }) as HTMLInputElement;
             box.checked = picked.has(name);
             box.addEventListener('change', () => {
               if (box.checked) picked.add(name);
               else picked.delete(name);
             });
-            return h('label.hub-tool', null, box, h('code', null, name));
+            return h('label.check', null, box, h('span.mono', null, name));
           }),
         );
       }),
@@ -403,14 +398,14 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     drawTools();
   };
 
-  const scopeRows = HUB_SCOPES.map((s) => {
-    const el = input({ type: 'radio', name: 'hub-token-scope', value: s.value });
-    el.checked = s.value === scope;
-    el.addEventListener('change', () => {
-      if (el.checked) setScope(s.value);
-    });
-    return h('label.hub-scope', null, el, h('span', null, h('strong', null, s.label), ' ', h('span.mcp-muted', null, s.plain)));
-  });
+  const scopeRows = HUB_SCOPES.map(
+    (s) => radioRow('hub-token-scope', s.value, `${s.label}: ${s.plain}`, s.value === scope, () => setScope(s.value)).row,
+  );
+
+  const hideReveal = (): void => {
+    replace(revealSlot);
+    revealSlot.hidden = true;
+  };
 
   /** Shows a new token once, with the setup text for each client. The token lives only in this reveal box. */
   const showReveal = (token: string, name: string): void => {
@@ -418,24 +413,29 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     replace(
       revealSlot,
       h(
-        'div.hub-reveal',
+        'div.mcp-reveal',
         null,
-        h('h3', null, `Token for ${name}`),
-        h('p.hub-warn', null, 'Shown once. Copy it now, because it cannot be shown again.'),
-        h('div.hub-token-row', null, h('code.mcp-mono.hub-token', null, token), copyButton(token, 'Copy token')),
-        snippet('Claude Code', s.claudeCode, 'Run this in a terminal.'),
+        h('h4', null, `Token for ${name}`),
+        h('p.mcp-warn', null, 'Shown once. Copy it now, because it cannot be shown again.'),
+        h('div.mcp-row', null, h('pre.mono.mcp-pre', null, token), copyButton(token, 'Copy token')),
+        snippet('Claude Code', 'Run this in a terminal.', s.claudeCode),
         snippet(
           'Claude Desktop',
+          'Add this to the MCP servers of Claude Desktop or another stdio client. It runs the stdio bridge against this hub and never carries a token.',
           s.desktop,
-          'Add this to the MCP servers of Claude Desktop or another stdio client. It runs the CLI bridge, which uses the token saved by the login line below.',
         ),
         s.desktopLogin
-          ? snippet('Save the token', s.desktopLogin, 'Reads the token from stdin and saves it in cli.json. Paste the token, then end the input.')
+          ? snippet(
+              'Save the token',
+              'Reads the token from stdin and saves it in cli.json. Paste the token, then end the input.',
+              s.desktopLogin,
+            )
           : null,
-        snippet('Generic', s.generic, 'The URL and the header, for any other client.'),
-        button('Hide', () => replace(revealSlot), { kind: 'ghost' }),
+        snippet('Generic', 'The URL and the header, for any other client.', s.generic),
+        btn('Hide', hideReveal, { kind: 'ghost' }),
       ),
     );
+    revealSlot.hidden = false;
   };
 
   const createToken = async (): Promise<void> => {
@@ -464,91 +464,61 @@ export function mountHubTab(root: HTMLElement): Cleanup {
 
   const formCard = card(
     'New token',
-    [
+    h(
+      'div.mcp-stack',
+      null,
       field('Name', nameInput, 'What this client is, such as laptop or ci.'),
-      h('fieldset.hub-group', null, h('legend', null, 'Scope'), scopeRows),
-      h(
-        'fieldset.hub-group',
-        null,
-        h('legend', null, 'Tools (optional)'),
-        h('p.mcp-muted', null, 'Leave them all unticked for every tool the scope allows.'),
-        toolsSlot,
-      ),
+      field('Scope', h('div.mcp-stack', null, scopeRows)),
+      toolsSlot,
       field('Expires after (days)', expiresInput, 'Blank means the token never expires.'),
+      h('div.mcp-row', null, btn('Create token', () => void createToken(), { kind: 'primary', icon: 'plus' })),
       revealSlot,
-    ],
-    { actions: [button('Create token', () => void createToken(), { kind: 'primary', icon: 'plus' })] },
+    ),
   );
 
   // ---- Tokens -----------------------------------------------------------------------------------------------------
 
   const tokenName = (id: string): string => tokens.find((t) => t.id === id)?.name ?? id;
 
-  const tokenRow = (t: HubToken): HTMLElement =>
-    h(
-      'tr',
-      null,
-      h('td', { 'data-label': 'Name' }, h('strong.mcp-name', null, t.name), h('span.mcp-id', null, t.id)),
-      h('td', { 'data-label': 'Scope' }, badge(t.scope, 'info')),
-      h(
-        'td',
-        { 'data-label': 'Tools' },
-        t.tools.length ? h('span.mcp-mono', null, clip(t.tools.join(', '), 80)) : h('span.mcp-muted', null, "All the scope's tools"),
-      ),
-      h('td', { 'data-label': 'Last used' }, t.last_used_ms ? ago(t.last_used_ms) : 'never'),
-      h('td', { 'data-label': 'Calls' }, String(t.calls)),
-      h('td', { 'data-label': 'Expires' }, t.expires_ms ? new Date(t.expires_ms).toLocaleDateString() : 'never'),
-      h(
-        'td',
-        { 'data-label': 'Actions', class: 'mcp-actions-cell' },
-        button(
+  const tokenCols: TblCol<HubToken>[] = [
+    {
+      label: 'Name',
+      cell: (t) => h('div', null, h('strong', null, t.name), h('div.mono.muted', null, t.id)),
+    },
+    { label: 'Scope', cell: (t) => badge(t.scope, 'info') },
+    {
+      label: 'Tools',
+      cell: (t) =>
+        t.tools.length
+          ? h('span.mono', null, clip(t.tools.join(', '), 80))
+          : h('span.muted', null, "All the scope's tools"),
+    },
+    { label: 'Last used', cell: (t) => (t.last_used_ms ? ago(t.last_used_ms) : 'never') },
+    { label: 'Calls', cell: (t) => String(t.calls) },
+    { label: 'Expires', cell: (t) => (t.expires_ms ? new Date(t.expires_ms).toLocaleDateString() : 'never') },
+    {
+      label: 'Actions',
+      cell: (t) =>
+        btn(
           'Revoke',
           () =>
-            confirmDialog(
-              `Revoke ${t.name}`,
-              'Clients that use this token lose access at once. This cannot be undone.',
-              'Revoke',
-              () => void attempt(() => hubMcpApi.revokeToken(t.id), `${t.name} revoked`).then(() => loadTokens()),
-            ),
-          { kind: 'danger', size: 'sm', icon: 'trash', title: `Revoke ${t.name}` },
+            confirmRevoke(t.name, () => void attempt(() => hubMcpApi.revokeToken(t.id), `${t.name} revoked`).then(() => loadTokens())),
+          { kind: 'danger', sm: true, icon: 'trash-2', title: `Revoke ${t.name}` },
         ),
-      ),
-    );
+    },
+  ];
 
   const drawTokens = (): void => {
     if (tokensError) {
-      replace(tokensSlot, empty('alert', 'Could not load the tokens', errorText(tokensError)));
+      replace(tokensSlot, emptyBox('triangle-alert', 'Could not load the tokens', errorText(tokensError)));
       return;
     }
     const live = tokens.filter((t) => t.revoked_at_ms == null);
     replace(
       tokensSlot,
       live.length
-        ? h(
-            'div.mcp-table-wrap',
-            null,
-            h(
-              'table.mcp-table',
-              null,
-              h(
-                'thead',
-                null,
-                h(
-                  'tr',
-                  null,
-                  h('th', null, 'Name'),
-                  h('th', null, 'Scope'),
-                  h('th', null, 'Tools'),
-                  h('th', null, 'Last used'),
-                  h('th', null, 'Calls'),
-                  h('th', null, 'Expires'),
-                  h('th', null, 'Actions'),
-                ),
-              ),
-              h('tbody', null, live.map(tokenRow)),
-            ),
-          )
-        : empty('terminal', 'No tokens', 'Make one above to give an outside client access to this hub.'),
+        ? tbl(tokenCols, live, (t) => t.id)
+        : emptyBox('key', 'No tokens', 'Make one above to give an outside client access to this hub.'),
     );
   };
 
@@ -582,54 +552,30 @@ export function mountHubTab(root: HTMLElement): Cleanup {
 
   // ---- Calls ------------------------------------------------------------------------------------------------------
 
-  const callRow = (c: HubCall): HTMLElement =>
-    h(
-      'tr',
-      null,
-      h('td', { 'data-label': 'Time' }, new Date(c.at_ms).toLocaleString()),
-      h('td', { 'data-label': 'Token' }, tokenName(c.token_id)),
-      h('td', { 'data-label': 'Tool' }, h('code', null, c.tool)),
-      h(
-        'td',
-        { 'data-label': 'Result' },
+  const callCols: TblCol<HubCall>[] = [
+    { label: 'Time', cell: (c) => new Date(c.at_ms).toLocaleString() },
+    { label: 'Token', cell: (c) => tokenName(c.token_id) },
+    { label: 'Tool', cell: (c) => h('code', null, c.tool) },
+    {
+      label: 'Result',
+      cell: (c) =>
         c.ok
           ? badge('ok', 'ok')
-          : h('span', null, badge('error', 'danger'), ' ', h('span.mcp-danger', null, clip(c.error ?? '', 120))),
-      ),
-      h('td', { 'data-label': 'Duration' }, `${c.duration_ms} ms`),
-    );
+          : h('span', null, badge('error', 'danger'), ' ', h('span.muted', null, clip(c.error ?? '', 120))),
+    },
+    { label: 'Duration', cell: (c) => `${c.duration_ms} ms` },
+  ];
 
   const drawCalls = (): void => {
     if (callsError) {
-      replace(callsSlot, empty('alert', 'Could not load the calls', errorText(callsError)));
+      replace(callsSlot, emptyBox('triangle-alert', 'Could not load the calls', errorText(callsError)));
       return;
     }
     replace(
       callsSlot,
       calls.length
-        ? h(
-            'div.mcp-table-wrap',
-            null,
-            h(
-              'table.mcp-table',
-              null,
-              h(
-                'thead',
-                null,
-                h(
-                  'tr',
-                  null,
-                  h('th', null, 'Time'),
-                  h('th', null, 'Token'),
-                  h('th', null, 'Tool'),
-                  h('th', null, 'Result'),
-                  h('th', null, 'Duration'),
-                ),
-              ),
-              h('tbody', null, calls.map(callRow)),
-            ),
-          )
-        : empty('terminal', 'No calls', 'Calls appear here once a client uses a token.'),
+        ? tbl(callCols, calls, (c) => `${c.at_ms}-${c.tool}`)
+        : emptyBox('message-square', 'No calls', 'Calls appear here once a client uses a token.'),
     );
   };
 
@@ -660,126 +606,98 @@ export function mountHubTab(root: HTMLElement): Cleanup {
     void loadCalls();
   });
 
-  const callsCard = card('Calls', [
-    h('div.hub-filters', null, tokenFilterSlot, field('Tool', toolSelect)),
-    callsSlot,
-  ]);
+  const callsCard = card(
+    'Calls',
+    h('div.mcp-stack', null, h('div.mcp-row', null, tokenFilterSlot, field('Tool', toolSelect)), callsSlot),
+  );
 
   // ---- Editors (ACP) ---------------------------------------------------------------------------------------------
 
   // The switches save at once, as the strict permits switch does: the whole settings document is read, the one
   // field changed, and saved back. A failed save puts the switch back where it was. Both wait while either save is
   // on its way, since each save reads the whole document and two at once could overwrite each other.
-  const acpBox = input({ type: 'checkbox' });
-  const writeBackBox = input({ type: 'checkbox' });
-  const v2Box = input({ type: 'checkbox' });
-  const boxes = { acp_enabled: acpBox, acp_write_back: writeBackBox, acp_v2: v2Box };
   let acpSaving = false;
+  const acpBox = checkRow('Let editors prompt a plaza agent', (on) =>
+    void saveAcpFlag('acp_enabled', on, on ? 'Editors may prompt agents' : 'Editors are off'),
+  );
+  const writeBack = checkRow("Offer to apply an agent's change to the editor's project", (on) =>
+    void saveAcpFlag(
+      'acp_write_back',
+      on,
+      on ? "The editor will offer to apply agents' changes" : "The editor will not offer to apply agents' changes",
+    ),
+  );
+  const v2Box = checkRow('Speak the ACP v2 draft', (on) =>
+    void saveAcpFlag(
+      'acp_v2',
+      on,
+      on ? 'Editors and engines that ask for protocol 2 get the ACP v2 draft' : 'Editors and engines are back on the stable v1',
+    ),
+  );
+  const acpFlagBoxes = { acp_enabled: acpBox.box, acp_write_back: writeBack.box, acp_v2: v2Box.box };
   // The write-back switch stays greyed out while Editors (ACP) is off: no editor is there to offer the change.
   // The v2 switch is not greyed out by Editors: the engines inside the VMs speak v2 too.
   const drawAcpSwitches = (): void => {
-    acpBox.disabled = acpSaving;
-    writeBackBox.disabled = acpSaving || !acpBox.checked;
-    v2Box.disabled = acpSaving;
+    acpBox.box.disabled = acpSaving;
+    writeBack.box.disabled = acpSaving || !acpBox.box.checked;
+    v2Box.box.disabled = acpSaving;
   };
   const saveAcpFlag = async (
-    field: 'acp_enabled' | 'acp_write_back' | 'acp_v2',
+    key: 'acp_enabled' | 'acp_write_back' | 'acp_v2',
     on: boolean,
     success: string,
   ): Promise<void> => {
-    const box = boxes[field];
+    const box = acpFlagBoxes[key];
     acpSaving = true;
     drawAcpSwitches();
     const saved = await attempt(async () => {
       const current = await api.settings();
-      return api.saveSettings({ ...current, [field]: on });
+      return api.saveSettings({ ...current, [key]: on });
     }, success);
     if (!saved && alive) box.checked = !on;
     acpSaving = false;
     if (alive) drawAcpSwitches();
   };
-  acpBox.addEventListener('change', () =>
-    void saveAcpFlag('acp_enabled', acpBox.checked, acpBox.checked ? 'Editors may prompt agents' : 'Editors are off'),
-  );
-  writeBackBox.addEventListener('change', () =>
-    void saveAcpFlag(
-      'acp_write_back',
-      writeBackBox.checked,
-      writeBackBox.checked ? "The editor will offer to apply agents' changes" : "The editor will not offer to apply agents' changes",
-    ),
-  );
-  v2Box.addEventListener('change', () =>
-    void saveAcpFlag(
-      'acp_v2',
-      v2Box.checked,
-      v2Box.checked ? 'Editors and engines that ask for protocol 2 get the ACP v2 draft' : 'Editors and engines are back on the stable v1',
-    ),
-  );
   drawAcpSwitches();
 
   const loadAcpSwitch = async (): Promise<void> => {
     try {
       const current = await api.settings();
       if (!alive) return;
-      acpBox.checked = current.acp_enabled === true;
-      writeBackBox.checked = current.acp_write_back === true;
-      v2Box.checked = current.acp_v2 === true;
+      acpBox.box.checked = current.acp_enabled === true;
+      writeBack.box.checked = current.acp_write_back === true;
+      v2Box.box.checked = current.acp_v2 === true;
       drawAcpSwitches();
     } catch (err) {
       if (alive) toast(errorText(err), 'error');
     }
   };
 
-  const sessionsSlot = h('div', null, h('p.mcp-loading', null, 'Loading...'));
+  const sessionsSlot = h('div', null, h('p.muted', null, 'Loading...'));
   let sessions: AcpSession[] = [];
   let sessionsError: unknown = null;
 
   const agentName = (cid: number): string => agents.get().find((a) => a.cid === cid)?.name ?? `agent ${cid}`;
 
-  const sessionRow = (s: AcpSession): HTMLElement =>
-    h(
-      'tr',
-      null,
-      h('td', { 'data-label': 'Title' }, h('strong.mcp-name', null, s.title || 'untitled')),
-      h('td', { 'data-label': 'Agent' }, agentName(s.cid)),
-      h('td', { 'data-label': 'Client' }, s.client || 'unknown'),
-      h('td', { 'data-label': 'Folder' }, h('span.mcp-mono', null, clip(s.cwd, 60))),
-      h('td', { 'data-label': 'Updated' }, ago(s.updated_ms)),
-      h('td', { 'data-label': 'State' }, s.closed ? badge('closed', 'muted') : badge('open', 'ok')),
-    );
+  const sessionCols: TblCol<AcpSession>[] = [
+    { label: 'Title', cell: (s) => s.title || 'untitled' },
+    { label: 'Agent', cell: (s) => agentName(s.cid) },
+    { label: 'Client', cell: (s) => s.client || 'unknown' },
+    { label: 'Folder', cell: (s) => h('span.mono', null, clip(s.cwd, 60)) },
+    { label: 'Updated', cell: (s) => ago(s.updated_ms) },
+    { label: 'State', cell: (s) => (s.closed ? badge('closed', 'muted') : badge('open', 'ok')) },
+  ];
 
   const drawSessions = (): void => {
     if (sessionsError) {
-      replace(sessionsSlot, empty('alert', 'Could not load the sessions', errorText(sessionsError)));
+      replace(sessionsSlot, emptyBox('triangle-alert', 'Could not load the sessions', errorText(sessionsError)));
       return;
     }
     replace(
       sessionsSlot,
       sessions.length
-        ? h(
-            'div.mcp-table-wrap',
-            null,
-            h(
-              'table.mcp-table',
-              null,
-              h(
-                'thead',
-                null,
-                h(
-                  'tr',
-                  null,
-                  h('th', null, 'Title'),
-                  h('th', null, 'Agent'),
-                  h('th', null, 'Client'),
-                  h('th', null, 'Folder'),
-                  h('th', null, 'Updated'),
-                  h('th', null, 'State'),
-                ),
-              ),
-              h('tbody', null, sessions.map(sessionRow)),
-            ),
-          )
-        : empty('terminal', 'No editor sessions', 'Sessions appear here once an editor prompts a plaza agent.'),
+        ? tbl(sessionCols, sessions, (s) => `${s.cid}-${s.updated_ms}`)
+        : emptyBox('message-square', 'No editor sessions', 'Sessions appear here once an editor prompts a plaza agent.'),
     );
   };
 
@@ -798,44 +716,49 @@ export function mountHubTab(root: HTMLElement): Cleanup {
 
   const editorsCard = card(
     'Editors (ACP)',
-    [
-      h('label.hub-switch', null, acpBox, h('span', null, 'Let editors prompt a plaza agent')),
+    h(
+      'div.mcp-stack',
+      null,
+      acpBox.row,
       h(
-        'p.mcp-muted',
+        'p.muted',
         null,
         "Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine: the editor's MCP servers and files stay local.",
       ),
-      h('label.hub-switch', null, writeBackBox, h('span', null, "Offer to apply an agent's change to the editor's project")),
+      writeBack.row,
       h(
-        'p.mcp-muted',
+        'p.muted',
         null,
-        'With ',
-        h('code', null, 'agentplaza acp --repo'),
-        ", the agent works in a lane of its own on the editor's project, mirrored in Weft. When this is on, the editor asks you whether to apply the files it changed; the editor writes them, the agent never does.",
+        'Write-back runs through agentplaza acp --repo, on a lane of its own, mirrored in Weft. The editor writes the files; the agent never does.',
       ),
-      h('label.hub-switch', null, v2Box, h('span', null, 'Speak the ACP v2 draft')),
+      v2Box.row,
       h(
-        'p.mcp-muted',
+        'p.muted',
         null,
-        "Editors and coding engines that ask for protocol 2 get it; everything else stays on the stable v1. v2 is a draft that still changes, and it has no write-back: the editor's file methods are gone in v2.",
+        "v2 is a draft that still changes, and it has no write-back: the editor's file methods are gone in v2.",
       ),
-      snippet('Zed', ACP_SNIPPETS.zed, 'Add this to the settings.json of Zed. It runs the default plaza agent.'),
-      snippet('Zed, one agent', ACP_SNIPPETS.zedAgent, "The same, pinned to one plaza agent. Replace <name> with the agent's name."),
-      snippet('JetBrains IDEs', ACP_SNIPPETS.jetbrains, 'AI Assistant › ACP agents: enter the command and the arguments.'),
-      snippet('Neovim (CodeCompanion)', ACP_SNIPPETS.neovim, 'Under the adapters of the CodeCompanion setup.'),
-      h('div.hub-group', null, h('span.hub-label', null, 'Editor sessions'), sessionsSlot),
-    ],
-    { actions: [button('Refresh', () => void loadSessions(), { kind: 'ghost', size: 'sm' })] },
+      snippet('Zed', 'Add this to the settings.json of Zed. It runs the default plaza agent.', ACP_SNIPPETS.zed),
+      snippet(
+        'Zed, one agent',
+        "The same, pinned to one plaza agent. Replace <name> with the agent's name.",
+        ACP_SNIPPETS.zedAgent,
+      ),
+      snippet('JetBrains IDEs', 'AI Assistant › ACP agents: enter the command and the arguments.', ACP_SNIPPETS.jetbrains),
+      snippet('Neovim (CodeCompanion)', 'Under the adapters of the CodeCompanion setup.', ACP_SNIPPETS.neovim),
+      sessionsSlot,
+    ),
+    { actions: [btn('Refresh', () => void loadSessions(), { kind: 'ghost', sm: true })] },
   );
 
   // ---- Mount ------------------------------------------------------------------------------------------------------
 
-  replace(root, h('div.hub-page', null, enableCard, formCard, tokensCard, callsCard, editorsCard));
+  replace(root, h('div.mcp-stack', null, enableCard, formCard, tokensCard, callsCard, editorsCard));
+  syncControls();
   drawOrigins();
   drawEffective();
-  drawTls();
   drawTools();
   drawAuth();
+  drawTokenFilter();
   void loadStatus();
   void loadTokens();
   void loadCalls();

@@ -261,6 +261,7 @@ mod tests {
             output: String::new(),
             is_error: false,
             program: None,
+            engine: None,
             approval: None,
         }
     }
@@ -314,6 +315,7 @@ mod tests {
                     output: String::new(),
                     is_error: false,
                     program: None,
+                    engine: None,
                     approval: Some("a4".to_string()),
                 };
                 shared.nested().route(held);
@@ -438,6 +440,7 @@ mod tests {
             output: output.to_string(),
             is_error,
             program: None,
+            engine: None,
             approval: None,
         }
     }

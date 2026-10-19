@@ -16,6 +16,21 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
+// The vendored libraries the viewer loads by name: each is a file in node_modules, copied to dist/_lib/ under the second
+// name. This list must match crates/apz-view/src/libs.rs.
+const VENDORED = [
+  ['react/umd/react.production.min.js', 'react.js'],
+  ['react-dom/umd/react-dom.production.min.js', 'react-dom.js'],
+  ['prop-types/prop-types.min.js', 'prop-types.js'],
+  ['recharts/umd/Recharts.js', 'recharts.js'],
+  ['d3/dist/d3.min.js', 'd3.js'],
+  ['three/build/three.min.js', 'three.js'],
+  ['lodash/lodash.min.js', 'lodash.js'],
+  ['papaparse/papaparse.min.js', 'papaparse.js'],
+  ['lucide/dist/umd/lucide.min.js', 'lucide.js'],
+  ['@tailwindcss/browser/dist/index.global.js', 'tailwind.js'],
+];
+
 const root = dirname(fileURLToPath(import.meta.url));
 // The build goes to dist.next and replaces dist only once it is complete, so a hub serving dist
 // never sees it empty or half written (and a failed build leaves the last good one in place).
@@ -25,11 +40,11 @@ const dist = join(root, 'dist.next');
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 
-// The faces the console names (styles/tokens.css) sit at the root of dist too: noded serves bare file names only. Inter
-// (woff2, variable, upright and italic) is the interface and reading face; Martian Mono (ttf) is for code. The Source
-// Serif 4 and Inter TTF files in assets/fonts are the desktop's (it embeds them), so the web does not copy them.
+// The faces the console names (styles/tokens.css) sit at the root of dist too: noded serves bare file names only. Geist
+// (woff2, variable, upright and italic) is the interface and reading face; Geist Mono (woff2, variable) is for code. The
+// other font files in assets/fonts (the TTFs, Inter, Source Serif 4) are the desktop's, so the web does not copy them.
 const fontsDir = join(root, '../../assets/fonts');
-const webFace = /^(MartianMono-.*\.ttf|InterVariable(-Italic)?\.woff2)$/;
+const webFace = /^Geist(Mono)?Variable(-Italic)?\.woff2$/;
 for (const file of readdirSync(fontsDir).filter((f) => webFace.test(f))) {
   copyFileSync(join(fontsDir, file), join(dist, file));
 }
@@ -95,18 +110,45 @@ if (existsSync(join(repoRoot, 'crates/apz-graph-web/Cargo.toml'))) {
   console.log('graph: crates/apz-graph-web is not there yet, skipped');
 }
 
+// The theme's wasm (crates/apz-theme-web) for the appearance code, packed the same way and loaded on first use. Only its
+// name is defined here.
+let themeJsName = null;
+let themeWasmName = null;
+let themeSizes = null;
+if (existsSync(join(repoRoot, 'crates/apz-theme-web/Cargo.toml'))) {
+  const theme = packWeb('web-theme');
+  themeJsName = theme.js;
+  themeWasmName = theme.wasm;
+  themeSizes = { bytes: theme.bytes, gzip: theme.gzip, brotli: theme.brotli, wasmOpt: theme.wasm_opt };
+  // The backdrop shader, translated for the browser: the WGSL for WebGPU and the GLSL ES 3.00 for WebGL2, three files at
+  // the root of dist. The console loads them by name (src/view/backdrop.ts).
+  packWeb('web-backdrop');
+} else {
+  console.log('theme: crates/apz-theme-web is not there yet, skipped');
+}
+
 // The IDE screen (views/ide.ts) is loaded on first visit, with CodeMirror: esbuild splits it into a chunk beside main
 // (`splitting`, esm). Its stylesheet is not in the start CSS either: this plugin makes `styles/ide.css` a string the view
-// inserts when it first opens. The IDE terminal (views/ide-terminal.ts) is in that chunk too, so its stylesheet and
+// inserts when it first opens (and its Loom/Graphite rules, `styles/proto/ide*.css`). The IDE terminal (views/ide-terminal.ts) is in that chunk too, so its stylesheet and
 // xterm's own are text the same way.
 const ideStylesheetAsText = {
   name: 'ide-stylesheet-as-text',
   setup(b) {
-    b.onLoad({ filter: /([\\/]styles[\\/]ide(-[a-z]+)*\.css|[\\/]@xterm[\\/]xterm[\\/]css[\\/]xterm\.css)$/ }, (args) => ({
+    b.onLoad({ filter: /([\\/]styles[\\/](proto[\\/])?ide(-[a-z]+)*\.css|[\\/]@xterm[\\/]xterm[\\/]css[\\/]xterm\.css)$/ }, (args) => ({
       contents: readFileSync(args.path, 'utf8'),
       loader: 'text',
     }));
   },
+};
+
+// The engine's fingerprinted glue and wasm names, for the app to import the engine by. Both esbuild builds (the console
+// and the share viewer) share them, so a module either one bundles sees the same values.
+const defines = {
+  __APZ_ENGINE_JS__: JSON.stringify(engineJsName),
+  __APZ_ENGINE_WASM__: JSON.stringify(engineWasmName),
+  __APZ_IDE_JS__: JSON.stringify(ideJsName),
+  __APZ_GRAPH_JS__: JSON.stringify(graphJsName),
+  __APZ_THEME_JS__: JSON.stringify(themeJsName),
 };
 
 const result = await esbuild.build({
@@ -123,13 +165,7 @@ const result = await esbuild.build({
   plugins: [ideStylesheetAsText],
   // The @font-face urls name the copied font files; leave them as written.
   external: ['*.ttf', '*.woff2'],
-  // The engine's fingerprinted glue and wasm names, for the app to import the engine by.
-  define: {
-    __APZ_ENGINE_JS__: JSON.stringify(engineJsName),
-    __APZ_ENGINE_WASM__: JSON.stringify(engineWasmName),
-    __APZ_IDE_JS__: JSON.stringify(ideJsName),
-    __APZ_GRAPH_JS__: JSON.stringify(graphJsName),
-  },
+  define: defines,
   entryNames: '[name]-[hash]',
   metafile: true,
   logLevel: 'silent',
@@ -164,6 +200,51 @@ const html = template
   .replaceAll('{{CSS}}', cssBase)
   .replaceAll('{{BUNDLE_HASH}}', bundleHash);
 writeFileSync(join(dist, 'index.html'), html);
+
+// The first-paint theme script, a plain file the index.html loads before the stylesheet.
+copyFileSync(join(root, 'src/boot-theme.js'), join(dist, 'boot-theme.js'));
+
+// The vendored libraries, under dist/_lib/. A missing one fails the build: the viewer cannot load without it.
+mkdirSync(join(dist, '_lib'), { recursive: true });
+for (const [from, to] of VENDORED) {
+  const src = join(root, 'node_modules', from);
+  if (!existsSync(src)) throw new Error(`build: vendored library ${from} is missing (run npm install in apps/web)`);
+  copyFileSync(src, join(dist, '_lib', to));
+}
+
+// The share viewer (src/viewer.ts), the page a share link opens. It is a second entry, built on its own with splitting off:
+// one js file and one css file, so the page needs nothing from the console's chunks. Its page (src/viewer.html) names
+// those hashed files, and the hub serves them from /artifact/_assets/.
+const viewerResult = await esbuild.build({
+  absWorkingDir: root,
+  entryPoints: [join(root, 'src/viewer.ts')],
+  bundle: true,
+  minify: true,
+  sourcemap: false,
+  target: ['es2022'],
+  format: 'esm',
+  outdir: dist,
+  splitting: false,
+  plugins: [ideStylesheetAsText],
+  external: ['*.ttf', '*.woff2'],
+  define: defines,
+  entryNames: 'viewer-[hash]',
+  metafile: true,
+  logLevel: 'silent',
+});
+let viewerJs = null;
+for (const [name, entry] of Object.entries(viewerResult.metafile.outputs)) {
+  if (entry.entryPoint?.endsWith('viewer.ts')) viewerJs = name;
+}
+const viewerCss = viewerJs ? viewerResult.metafile.outputs[viewerJs].cssBundle : null;
+if (!viewerJs || !viewerCss) {
+  console.error('build: expected the viewer entry js and its css bundle, got', Object.keys(viewerResult.metafile.outputs));
+  process.exit(1);
+}
+const viewerHtml = readFileSync(join(root, 'src/viewer.html'), 'utf8')
+  .replaceAll('{{VIEWER_JS}}', basename(viewerJs))
+  .replaceAll('{{VIEWER_CSS}}', basename(viewerCss));
+writeFileSync(join(dist, 'viewer.html'), viewerHtml);
 
 // Precompressed .br and .gz siblings of the js, css, wasm and html, for the hub to serve by Accept-Encoding
 // (apz-pack compress, Rust). The .br files are committed with dist; the .gz ones are rebuilt (see .gitignore).
@@ -210,4 +291,8 @@ if (ideSizes) {
 if (graphSizes) {
   const opt = { kept: 'wasm-opt -Oz', larger: 'wasm-opt dropped: it compressed larger', off: 'no wasm-opt' }[graphSizes.wasmOpt];
   console.log(`dist/${graphWasmName}  ${kb(graphSizes.bytes)}  br ${kb(graphSizes.brotli)}  gzip -9 ${kb(graphSizes.gzip)}  (${opt})`);
+}
+if (themeSizes) {
+  const opt = { kept: 'wasm-opt -Oz', larger: 'wasm-opt dropped: it compressed larger', off: 'no wasm-opt' }[themeSizes.wasmOpt];
+  console.log(`dist/${themeWasmName}  ${kb(themeSizes.bytes)}  br ${kb(themeSizes.brotli)}  gzip -9 ${kb(themeSizes.gzip)}  (${opt})`);
 }

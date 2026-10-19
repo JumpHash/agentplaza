@@ -12,8 +12,8 @@ use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, mouse_area, row, scrollable, shader};
 use iced::{
-    Alignment, Border, Color, Element, Length, Pixels, Point, Rectangle, Size, Subscription, Task,
-    Theme, Vector, mouse,
+    Alignment, Border, Color, Element, Length, Padding, Pixels, Point, Rectangle, Size,
+    Subscription, Task, Theme, Vector, mouse,
 };
 use serde_json::Value;
 
@@ -28,13 +28,13 @@ use crate::console::engine::fleet::{self, FleetResponse};
 use crate::console::engine::kit;
 use crate::console::engine::machine_stage::View;
 use crate::console::floor_engine::EngineProgram;
-use crate::console::ui::{INK, INK_2, INK_3, Kind, RULE, RULE_FAINT, SHEET, SIGNAL, Tone};
+use crate::console::ui::{Kind, Tone};
 use crate::console::{Ctx, client, render_card, ui};
-use crate::theme::SANS;
+use crate::theme::{SANS, SANS_SEMIBOLD};
 
 /// A machine's row in the topology, and the topology's fleet column.
-const ROW_H: f32 = 56.0;
-const FLEET_W: f32 = 260.0;
+const ROW_H: f32 = 80.0;
+const FLEET_W: f32 = 200.0;
 const PLANE_W: f32 = 200.0;
 /// The CPU sparkline: its height, and how many of the latest samples it draws.
 const SPARK_H: f32 = 72.0;
@@ -49,6 +49,8 @@ pub struct State {
     offline: Option<String>,
     /// The machine the topology picked.
     selected: Option<String>,
+    /// The List's open row (one at a time): its panel shows the 3D view or the picture, and the machine's usage.
+    open: Option<String>,
     /// Each machine's Agents-table sort, kept across refreshes.
     sorts: HashMap<String, Sort>,
     /// Runs with their VMs open; `run/index` serials open; machines with technical details open.
@@ -116,6 +118,8 @@ pub enum Msg {
     Loaded(Result<Value, String>),
     /// The topology picked a machine.
     Pick(String),
+    /// A List row opens or closes (one at a time).
+    ToggleOpen(String),
     PickChecked(String, f32, f32),
     /// The pick's scroll has run and a frame has passed: measure the section again.
     PickMeasure(String, f32),
@@ -460,6 +464,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 visible: false,
             };
             state.selected = Some(id.clone());
+            state.open = Some(id.clone());
             // Measure the section against the screen's scroll, scroll so its top is the view's top, then check it.
             operate(measure).then(move |target| {
                 eprintln!("agentplaza-desktop: pick {id}: scroll to {target:.1} px");
@@ -534,6 +539,23 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 },
                 Msg::Killed,
             )
+        }
+        Msg::ToggleOpen(id) => {
+            // One row is open at a time; the 3D view of a row that closes (or is left) closes with it.
+            let next = if state.open.as_deref() == Some(id.as_str()) {
+                None
+            } else {
+                Some(id)
+            };
+            if state
+                .stage
+                .as_ref()
+                .is_some_and(|s| Some(&s.id) != next.as_ref())
+            {
+                state.stage = None;
+            }
+            state.open = next;
+            Task::none()
         }
         Msg::ToggleStage(id) => {
             if state.stage.as_ref().is_some_and(|s| s.id == id) {
@@ -648,11 +670,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         Mode::Grid => Tab::Grid,
         Mode::List => Tab::List,
     };
-    let switch = ui::seg(
-        &[(Tab::Grid, "Grid"), (Tab::List, "List")],
-        tab,
-        |t: Tab| Msg::SetMode(t.mode()),
-    );
+    let switch = ui::seg(&[(Tab::Grid, "3D"), (Tab::List, "List")], tab, |t: Tab| {
+        Msg::SetMode(t.mode())
+    });
     let styles = ui::seg(
         &[
             (Style::Ink, "Ink"),
@@ -663,18 +683,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         Msg::SetStyle,
     );
     match &state.mode {
-        Mode::Grid => {
-            let actions = vec![floor::reset_button().map(Msg::Grid), switch, styles];
-            ui::sheet(
-                ui::view_head("Machines", actions),
-                floor::body(&state.grid).map(Msg::Grid),
-            )
-        }
-        Mode::List => ui::sheet(ui::view_head("Machines", vec![switch, styles]), body(state)),
-        Mode::Machine(id) => ui::sheet(
+        Mode::Grid => ui::sheet(
             ui::view_head("Machines", vec![switch, styles]),
-            machine_body(state, id),
+            floor::body(&state.grid).map(Msg::Grid),
         ),
+        Mode::List => ui::sheet(ui::view_head("Machines", vec![switch, styles]), body(state)),
+        Mode::Machine(id) => ui::sheet(machine_head(state, id, styles), machine_body(state, id)),
     }
 }
 
@@ -737,6 +751,50 @@ fn machine_body<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
     column(parts).spacing(24).into()
 }
 
+/// A machine's own head (the web's machine view): the back link, the name over its kind and model; on the right its
+/// status and the machine style switch.
+fn machine_head<'a>(state: &'a State, id: &'a str, styles: Element<'a, Msg>) -> Element<'a, Msg> {
+    let found = state
+        .data
+        .as_ref()
+        .and_then(|d| d.machines.iter().find(|m| m.id == id));
+    let (name, sub, status) = match found {
+        Some(m) => {
+            let (status, tone) = status_of(m);
+            let model = m.model.as_deref().unwrap_or("model not reported");
+            (
+                m.name.clone(),
+                format!("{} · {model}", kind_label(&m.kind)),
+                Some(ui::badge(status, tone)),
+            )
+        }
+        None => (id.to_string(), String::new(), None),
+    };
+    let left = column![
+        ui::btn("‹ Machines", None, Kind::Ghost, Some(Msg::Back)),
+        iced::widget::text(name)
+            .font(SANS_SEMIBOLD)
+            .size(ui::TYPE_H1)
+            .color(crate::theme::palette().ink),
+        ui::faint(sub),
+    ]
+    .spacing(6);
+    let mut actions: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(badge) = status {
+        actions.push(badge);
+    }
+    actions.push(styles);
+    row![
+        left,
+        Space::new().width(Length::Fill),
+        row(actions).spacing(8).align_y(Alignment::Center)
+    ]
+    .align_y(Alignment::End)
+    .into()
+}
+
+/// The machine's view below its head: its cards in two columns (the web's `.mt-cards`): the 3D view across, then the
+/// hardware and the load, the VM slots and the agents, the events, and the four flat views across.
 fn machine_page<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
     let stage: Element<'a, Msg> = match state.stage.as_ref().filter(|s| s.id == m.id) {
         Some(s) => stage_view(s, (MACHINE_STAGE_W, MACHINE_STAGE_H)),
@@ -745,45 +803,77 @@ fn machine_page<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element
             .height(Length::Fixed(MACHINE_STAGE_H))
             .into(),
     };
-    let (status, tone) = status_of(m);
-    let head = column![
-        row![
-            ui::btn("‹ Machines", None, Kind::Ghost, Some(Msg::Back)),
-            ui::sans(m.name.to_string(), 22.0, INK),
-            ui::badge(status, tone),
-        ]
-        .spacing(16)
-        .align_y(Alignment::Center),
-        ui::faint(format!(
-            "{} · {}",
-            kind_label(&m.kind),
-            m.model.as_deref().unwrap_or("model not reported")
-        )),
-    ]
-    .spacing(6);
     let fleet_m = state
         .grid
         .fleet_data
         .as_ref()
         .and_then(|f| f.machines.iter().find(|x| x.id == m.id));
-    let side = column![
-        ui::card("Hardware", hardware(m, fleet_m)),
-        ui::card("Load", live_stats(m, true))
-    ]
-    .spacing(16)
-    .width(Length::Fill);
-    let mut parts: Vec<Element<'a, Msg>> = vec![head.into(), row![stage, side].spacing(24).into()];
-    parts.extend(flat_views(m));
-    parts.push(
-        row![
-            container(ui::card("VM slots", runs(state, m))).width(Length::Fill),
-            container(ui::card("Agents", agent_list(data, m))).width(Length::Fill),
-            container(ui::card("Events", events_block(m))).width(Length::Fill),
+    let stage_card = ui::card(
+        "3D view",
+        column![
+            container(stage).width(Length::Fill).center_x(Length::Fill),
+            ui::faint(
+                "Drag to turn it. The cubes around it are its VM slots, lit while their VM runs; the dots circling it are the agents it hosts."
+            ),
         ]
-        .spacing(16)
+        .spacing(12)
         .into(),
     );
-    column(parts).spacing(24).into()
+    let mut cards: Vec<(bool, Element<'a, Msg>)> = vec![
+        (true, stage_card),
+        (false, ui::card("Hardware", hardware(m, fleet_m))),
+        (false, ui::card("Load", live_stats(m, true))),
+        (false, ui::card("VM slots", runs(state, m))),
+        (false, ui::card("Agents", agent_list(data, m))),
+        (false, ui::card("Events", events_block(m))),
+    ];
+    if let Some(views) = flat_views(m) {
+        cards.push((true, ui::card("Views", views)));
+    }
+    cards_grid(cards)
+}
+
+/// Cards in two columns: a wide card takes a row to itself, the others pair up in order, and a lone card keeps its column.
+fn cards_grid<'a>(cards: Vec<(bool, Element<'a, Msg>)>) -> Element<'a, Msg> {
+    fn half<'a>(card: Element<'a, Msg>) -> Element<'a, Msg> {
+        container(card).width(Length::FillPortion(1)).into()
+    }
+    fn gap<'a>() -> Element<'a, Msg> {
+        Space::new().width(Length::FillPortion(1)).into()
+    }
+    let mut rows: Vec<Element<'a, Msg>> = Vec::new();
+    let mut lone: Option<Element<'a, Msg>> = None;
+    for (wide, card) in cards {
+        if wide {
+            if let Some(left) = lone.take() {
+                rows.push(
+                    row![half(left), gap()]
+                        .spacing(16)
+                        .width(Length::Fill)
+                        .into(),
+                );
+            }
+            rows.push(container(card).width(Length::Fill).into());
+        } else if let Some(left) = lone.take() {
+            rows.push(
+                row![half(left), half(card)]
+                    .spacing(16)
+                    .width(Length::Fill)
+                    .into(),
+            );
+        } else {
+            lone = Some(card);
+        }
+    }
+    if let Some(left) = lone.take() {
+        rows.push(
+            row![half(left), gap()]
+                .spacing(16)
+                .width(Length::Fill)
+                .into(),
+        );
+    }
+    column(rows).spacing(16).width(Length::Fill).into()
 }
 
 /// The machine's hardware: its CPU, cores, memory, system and storage, then each GPU with its reference card. The
@@ -854,9 +944,12 @@ fn hardware<'a>(m: &'a Machine, f: Option<&'a apz_engine::fleet::Machine>) -> El
 }
 
 fn fact<'a>(label: &str, value: String) -> Element<'a, Msg> {
-    column![ui::label(label), ui::sans(value, 12.0, INK)]
-        .spacing(2)
-        .into()
+    column![
+        ui::label(label),
+        ui::sans(value, 12.0, crate::theme::palette().ink)
+    ]
+    .spacing(2)
+    .into()
 }
 
 /// A GPU's line: its reference card (name, form, slots when there are any, cooling), "(generic)" for a fallback card,
@@ -919,7 +1012,7 @@ fn agent_list<'a>(data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
                 .unwrap_or_else(|| "—".to_string());
             let title: Element<'a, Msg> = match v.cid {
                 Some(cid) => ui::btn_sm(&name, None, Kind::Ghost, Some(Msg::Go(Id::Agent(cid)))),
-                None => ui::sans(name, 12.0, INK).into(),
+                None => ui::sans(name, 12.0, crate::theme::palette().ink).into(),
             };
             column![title, ui::faint(format!("{role} · {}/{}", v.run, v.vm))]
                 .spacing(2)
@@ -937,7 +1030,7 @@ fn events_block<'a>(m: &'a Machine) -> Element<'a, Msg> {
         None => "Reachability not reported",
     };
     column![
-        ui::sans(reach.to_string(), 12.0, INK),
+        ui::sans(reach.to_string(), 12.0, crate::theme::palette().ink),
         ui::faint("No recent events")
     ]
     .spacing(8)
@@ -953,7 +1046,7 @@ fn topology<'a>(state: &'a State, data: &'a Data) -> Element<'a, Msg> {
         labels: data
             .machines
             .iter()
-            .map(|m| format!("{} AGENTS · {} VMS", m.agents, machine_vms(m)))
+            .map(|m| format!("{} agents · {} VMs", m.agents, machine_vms(m)))
             .collect(),
     })
     .width(Length::Fill)
@@ -970,7 +1063,6 @@ fn topology<'a>(state: &'a State, data: &'a Data) -> Element<'a, Msg> {
     let plane = container(
         column![
             ui::label("Control plane"),
-            ui::faint(overview_text),
             row![
                 ui::badge(
                     "apid",
@@ -983,14 +1075,28 @@ fn topology<'a>(state: &'a State, data: &'a Data) -> Element<'a, Msg> {
                 ui::badge("hub", if hub { Tone::Ok } else { Tone::Muted }),
             ]
             .spacing(8),
+            ui::faint(overview_text),
         ]
         .spacing(8),
     )
-    .padding(12)
+    .padding(16)
     .width(Length::Fixed(PLANE_W))
-    .style(boxed);
+    .style(plane_style);
 
-    row![plane, wires, fleet].align_y(Alignment::Center).into()
+    row![plane, wires, fleet].align_y(Alignment::Start).into()
+}
+
+fn plane_style(_: &Theme) -> container::Style {
+    let p = crate::theme::palette();
+    container::Style {
+        background: Some(p.sheet.into()),
+        border: Border {
+            color: p.rule_strong,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
+        ..Default::default()
+    }
 }
 
 /// The straight rules from the control plane's middle to each machine's row, drawn over the
@@ -1013,19 +1119,19 @@ impl canvas::Program<Msg> for Wires {
     ) -> Vec<canvas::Geometry> {
         let (w, h) = (bounds.width, bounds.height);
         let rows = self.live.len().max(1) as f32;
-        let hub = Point::new(0.0, h / 2.0);
+        let p = crate::theme::palette();
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         for (i, (live, label)) in self.live.iter().zip(self.labels.iter()).enumerate() {
-            let end = Point::new(w, (i as f32 + 0.5) * h / rows);
-            let (color, width) = if *live { (SIGNAL, 2.0) } else { (INK_3, 1.0) };
+            let y = (i as f32 + 0.5) * h / rows;
+            let color = if *live { p.signal } else { p.rule_strong };
             frame.stroke(
-                &Path::line(hub, end),
-                Stroke::default().with_color(color).with_width(width),
+                &Path::line(Point::new(0.0, y), Point::new(w, y)),
+                Stroke::default().with_color(color).with_width(2.0),
             );
             frame.fill_text(canvas::Text {
                 content: label.clone(),
-                position: Point::new(w * 0.5, (hub.y + end.y) * 0.5 - 14.0),
-                color: INK_2,
+                position: Point::new(w * 0.5, y - 18.0),
+                color: p.ink_3,
                 size: Pixels(11.0),
                 font: SANS,
                 ..canvas::Text::default()
@@ -1059,14 +1165,27 @@ fn status_of(m: &Machine) -> (&str, Tone) {
     (status, tone)
 }
 
-/// One machine's block in the fleet column: its name, its kind and state. Picking it selects it.
+/// One machine's block in the fleet column (the web's `.mt-block`): its name, a status mark, its kind and state.
+/// Picking it opens the machine's row.
 fn block<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
-    let (status, tone) = status_of(m);
+    let (status, _tone) = status_of(m);
     let selected = state.selected.as_deref() == Some(m.id.as_str());
+    let p = crate::theme::palette();
+    let mark = if m.reachable == Some(false) {
+        p.crit
+    } else if is_live(&m.runs) {
+        p.ok
+    } else {
+        p.rule_strong
+    };
     let content = column![
         row![
-            swatch(tone.color(), 8.0),
-            ui::sans(m.name.to_string(), 13.0, INK)
+            iced::widget::text(m.name.to_string())
+                .font(SANS_SEMIBOLD)
+                .size(13.0)
+                .color(p.ink),
+            Space::new().width(Length::Fill),
+            ui::dot(mark),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -1074,23 +1193,33 @@ fn block<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
     ]
     .spacing(4);
     let cell = container(content)
-        .padding([8, 12])
+        .padding(12)
         .width(Length::Fill)
-        .height(Length::Fixed(ROW_H))
+        .height(Length::Fixed(ROW_H - 16.0))
         .align_y(Alignment::Center)
         .style(block_style(selected));
-    mouse_area(cell).on_press(Msg::Pick(m.id.clone())).into()
+    mouse_area(
+        container(cell)
+            .width(Length::Fill)
+            .center_y(Length::Fixed(ROW_H)),
+    )
+    .on_press(Msg::Pick(m.id.clone()))
+    .into()
 }
 
 fn block_style(selected: bool) -> impl Fn(&Theme) -> container::Style {
-    move |_: &Theme| container::Style {
-        background: if selected { Some(SHEET.into()) } else { None },
-        border: Border {
-            color: if selected { SIGNAL } else { RULE },
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
+    move |_: &Theme| {
+        let p = crate::theme::palette();
+        let fill: Color = if selected { p.signal_soft } else { p.sheet };
+        container::Style {
+            background: Some(fill.into()),
+            border: Border {
+                color: if selected { p.signal } else { p.rule_strong },
+                width: 1.0,
+                radius: crate::theme::skin().radius.into(),
+            },
+            ..Default::default()
+        }
     }
 }
 
@@ -1312,7 +1441,14 @@ impl Pen {
 /// A small GPU card beside the device, its riser joining it at y 46.
 fn gpu_card(p: &mut Pen, riser: f32) {
     p.line(riser, 46.0, 86.0, 46.0, 1.5);
-    p.rect(86.0, 36.0, 28.0, 24.0, 0.0, Some(SHEET));
+    p.rect(
+        86.0,
+        36.0,
+        28.0,
+        24.0,
+        0.0,
+        Some(crate::theme::palette().sheet),
+    );
     p.circle(98.0, 46.0, 6.0, None, 1.5);
     p.circle(98.0, 46.0, 1.5, None, 1.5);
     p.solid(90.0, 56.0, 20.0, 3.0, GOLD);
@@ -1320,7 +1456,14 @@ fn gpu_card(p: &mut Pen, riser: f32) {
 
 /// A 2U rack chassis: two front bays with drive slots, vents and an LED row. Returns its riser's x.
 fn server(p: &mut Pen, active: bool) -> f32 {
-    p.rect(8.0, 18.0, 68.0, 44.0, 0.0, Some(SHEET));
+    p.rect(
+        8.0,
+        18.0,
+        68.0,
+        44.0,
+        0.0,
+        Some(crate::theme::palette().sheet),
+    );
     p.rect(
         13.0,
         23.0,
@@ -1352,7 +1495,14 @@ fn server(p: &mut Pen, active: bool) -> f32 {
 
 /// A tower: a front panel with a drive bay, a power button, LEDs and side vents.
 fn workstation(p: &mut Pen, active: bool) -> f32 {
-    p.rect(26.0, 8.0, 42.0, 76.0, 0.0, Some(SHEET));
+    p.rect(
+        26.0,
+        8.0,
+        42.0,
+        76.0,
+        0.0,
+        Some(crate::theme::palette().sheet),
+    );
     p.poly(
         &[(68.0, 8.0), (76.0, 3.0), (76.0, 79.0), (68.0, 84.0)],
         crate::theme::palette().paper,
@@ -1382,11 +1532,18 @@ fn workstation(p: &mut Pen, active: bool) -> f32 {
 /// A single-board computer: a green board, a CPU die, a GPIO header, USB and ethernet.
 fn edge(p: &mut Pen, active: bool) -> f32 {
     p.ink = EDGE_GREEN;
-    p.rect(10.0, 30.0, 70.0, 40.0, 0.0, Some(SHEET));
+    p.rect(
+        10.0,
+        30.0,
+        70.0,
+        40.0,
+        0.0,
+        Some(crate::theme::palette().sheet),
+    );
     for (x, y) in [(14.0, 34.0), (76.0, 34.0), (14.0, 66.0), (76.0, 66.0)] {
         p.circle(x, y, 1.5, None, 1.0);
     }
-    p.ink = INK_2;
+    p.ink = crate::theme::palette().ink_2;
     p.rect(
         30.0,
         40.0,
@@ -1432,7 +1589,14 @@ fn edge(p: &mut Pen, active: bool) -> f32 {
 
 /// A flat rounded box with a front light and a top line: a Mac mini or Studio.
 fn mini(p: &mut Pen, active: bool) -> f32 {
-    p.rect(10.0, 30.0, 66.0, 30.0, 8.0, Some(SHEET));
+    p.rect(
+        10.0,
+        30.0,
+        66.0,
+        30.0,
+        8.0,
+        Some(crate::theme::palette().sheet),
+    );
     p.line(18.0, 35.0, 66.0, 35.0, 1.0);
     p.line(20.0, 50.0, 50.0, 50.0, 1.0);
     p.line(20.0, 53.0, 50.0, 53.0, 1.0);
@@ -1442,7 +1606,14 @@ fn mini(p: &mut Pen, active: bool) -> f32 {
 
 /// A laptop, lid open: a screen with a camera dot, a base wedge with a keyboard line and a light.
 fn laptop(p: &mut Pen, active: bool) -> f32 {
-    p.rect(26.0, 14.0, 68.0, 46.0, 4.0, Some(SHEET));
+    p.rect(
+        26.0,
+        14.0,
+        68.0,
+        46.0,
+        4.0,
+        Some(crate::theme::palette().sheet),
+    );
     p.rect(
         31.0,
         19.0,
@@ -1454,7 +1625,7 @@ fn laptop(p: &mut Pen, active: bool) -> f32 {
     p.circle(60.0, 16.5, 0.9, None, 0.8);
     p.poly(
         &[(12.0, 60.0), (108.0, 60.0), (113.0, 70.0), (7.0, 70.0)],
-        SHEET,
+        crate::theme::palette().sheet,
     );
     p.line(24.0, 65.0, 96.0, 65.0, 1.0);
     p.led(102.0, 66.0, active);
@@ -1463,7 +1634,14 @@ fn laptop(p: &mut Pen, active: bool) -> f32 {
 
 /// A MacBook: a thin lid with a camera notch and a lit screen, on a slim aluminium base.
 fn macbook(p: &mut Pen, active: bool) -> f32 {
-    p.rect(24.0, 14.0, 72.0, 48.0, 6.0, Some(SHEET));
+    p.rect(
+        24.0,
+        14.0,
+        72.0,
+        48.0,
+        6.0,
+        Some(crate::theme::palette().sheet),
+    );
     p.rect(
         29.0,
         19.0,
@@ -1480,7 +1658,14 @@ fn macbook(p: &mut Pen, active: bool) -> f32 {
         1.2,
         Some(crate::theme::palette().paper),
     );
-    p.rect(12.0, 62.0, 96.0, 6.0, 3.0, Some(SHEET));
+    p.rect(
+        12.0,
+        62.0,
+        96.0,
+        6.0,
+        3.0,
+        Some(crate::theme::palette().sheet),
+    );
     p.line(44.0, 65.0, 76.0, 65.0, 1.0);
     p.led(104.0, 65.0, active);
     0.0
@@ -1488,7 +1673,14 @@ fn macbook(p: &mut Pen, active: bool) -> f32 {
 
 /// A phone standing upright: a slim body, a screen, a speaker grille and a home bar.
 fn phone(p: &mut Pen, active: bool) -> f32 {
-    p.rect(40.0, 8.0, 40.0, 74.0, 7.0, Some(SHEET));
+    p.rect(
+        40.0,
+        8.0,
+        40.0,
+        74.0,
+        7.0,
+        Some(crate::theme::palette().sheet),
+    );
     p.rect(
         44.0,
         14.0,
@@ -1523,7 +1715,7 @@ impl canvas::Program<Msg> for Device {
         let mut pen = Pen {
             frame: canvas::Frame::new(renderer, bounds.size()),
             scale: bounds.width / 120.0,
-            ink: INK_2,
+            ink: crate::theme::palette().ink_2,
         };
         let riser = match self.look {
             Look::Server => server(&mut pen, self.active),
@@ -1607,51 +1799,218 @@ fn flat_views<'a>(m: &'a Machine) -> Option<Element<'a, Msg>> {
     )
 }
 
+/// A machine's row on the List (the web's `.mlist-item`): its picture, name and status, kind and model, facts and load
+/// bars. Picking the row opens it, and its panel holds the 3D view or the picture beside the machine's usage.
 fn section<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
     let slot = data.machines.iter().position(|x| x.id == m.id).unwrap_or(0);
-    let figure: Element<'a, Msg> = device(m, slot);
-    let open = state.stage.as_ref().filter(|s| s.id == m.id);
-    let orbit_label = if open.is_some() {
-        "Hide 3D view"
-    } else {
-        "Show 3D view"
-    };
-    let mut parts: Vec<Element<'a, Msg>> = vec![
-        row![
-            ui::sans(m.name.to_string(), 18.0, INK),
-            ui::btn(
-                "Open",
-                None,
-                ui::Kind::Secondary,
-                Some(Msg::OpenMachine(m.id.clone()))
-            ),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .into(),
-        ui::faint(sentence(m)).into(),
-        ui::btn(
-            orbit_label,
-            None,
-            ui::Kind::Secondary,
-            Some(Msg::ToggleStage(m.id.clone())),
-        ),
-        live_stats(m, false),
-        resources(state, data, m),
-        ui::label("Runs").into(),
-        runs(state, m),
-        technical(state, m),
+    let open = state.open.as_deref() == Some(m.id.as_str());
+    let (status, tone) = status_of(m);
+    let picture = container(device(m, slot))
+        .width(Length::Fixed(160.0))
+        .height(Length::Fixed(120.0))
+        .style(picture_style);
+    let mut head: Vec<Element<'a, Msg>> = vec![
+        iced::widget::text(m.name.clone())
+            .font(SANS_SEMIBOLD)
+            .size(15.0)
+            .color(crate::theme::palette().ink)
+            .into(),
+        ui::badge(status, tone),
     ];
-    if let Some(s) = open {
-        let mut stage: Vec<Element<'a, Msg>> = vec![stage_view(s, (STAGE_W, STAGE_H))];
-        stage.extend(flat_views(m));
-        parts.insert(3, column(stage).spacing(12).into());
+    if let Some(tag) = m.station.as_ref().and_then(|st| st.badge.as_deref()) {
+        head.push(ui::badge(tag, Tone::Info));
     }
-    if let Some(st) = &m.station {
-        parts.insert(2, station_facts(st));
+    let model = m.model.as_deref().unwrap_or("");
+    let sub = if model.is_empty() {
+        kind_label(&m.kind).to_string()
+    } else {
+        format!("{} · {model}", kind_label(&m.kind))
+    };
+    let body = column![
+        row(head).spacing(8).align_y(Alignment::Center),
+        ui::faint(sub),
+        row_facts(m),
+        row_bars(m),
+    ]
+    .spacing(8)
+    .width(Length::Fill);
+    let summary = mouse_area(
+        container(row![picture, body].spacing(16))
+            .padding(16)
+            .width(Length::Fill),
+    )
+    .interaction(mouse::Interaction::Pointer)
+    .on_press(Msg::ToggleOpen(m.id.clone()));
+    let mut parts: Vec<Element<'a, Msg>> = vec![summary.into()];
+    if open {
+        parts.push(detail(state, data, m, slot));
     }
-    container(row![figure, column(parts).spacing(16).width(Length::Fill)].spacing(24))
+    container(column(parts).width(Length::Fill))
         .id(section_id(&m.id))
+        .width(Length::Fill)
+        .into()
+}
+
+fn picture_style(_: &Theme) -> container::Style {
+    let p = crate::theme::palette();
+    container::Style {
+        background: Some(p.sheet_2.into()),
+        border: Border {
+            color: p.rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// A row's facts (the web's `.mlist-facts`): the platform, CPU, memory, GPUs and agents.
+fn row_facts<'a>(m: &'a Machine) -> Element<'a, Msg> {
+    let platform = if m.apple.is_some() {
+        format!("macOS · {}", m.arch)
+    } else {
+        m.arch.clone()
+    };
+    let cpu = match &m.apple {
+        Some(a) => format!("{} · {} cores", a.chip, m.cpus),
+        None => format!("{} cores", m.cpus),
+    };
+    let gpus = if m.gpus.is_empty() {
+        "None".to_string()
+    } else {
+        format!("{} · {}", m.gpus.len(), m.vendor)
+    };
+    let facts = [
+        ("Platform", platform),
+        ("CPU", cpu),
+        ("Memory", format!("{} GiB", gib(m.memory_mib))),
+        ("GPUs", gpus),
+        ("Agents", format!("{} · {} VMs", m.agents, machine_vms(m))),
+    ];
+    let lines: Vec<Element<'a, Msg>> = facts
+        .into_iter()
+        .map(|(label, value)| {
+            row![
+                container(ui::faint(label)).width(Length::Fixed(76.0)),
+                ui::sans(value, 12.0, crate::theme::palette().ink),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        })
+        .collect();
+    column(lines).spacing(4).into()
+}
+
+/// A row's load bars (the web's `.mlist-bars`): CPU, memory and the first load average, each with its reading.
+fn row_bars<'a>(m: &'a Machine) -> Element<'a, Msg> {
+    let Some(s) = &m.stats else {
+        return Space::new().into();
+    };
+    let mem_pct = s.mem_used / s.mem_total.max(1.0) * 100.0;
+    let load_pct = s.load[0] / m.cpus.max(1) as f64 * 100.0;
+    column![
+        meter("CPU", s.cpu, format!("{:.1}%", s.cpu)),
+        meter(
+            "Mem",
+            mem_pct,
+            format!("{} / {} GiB", gib(s.mem_used), gib(s.mem_total))
+        ),
+        meter(
+            "Load",
+            load_pct,
+            format!("{:.1} · {:.1} · {:.1}", s.load[0], s.load[1], s.load[2])
+        ),
+    ]
+    .spacing(4)
+    .into()
+}
+
+/// A meter (the web's `.mt-meter`): its label, a bar filled to `pct` (0 to 100), and its reading.
+fn meter<'a>(label: &str, pct: f64, reading: String) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let (signal, track, radius) = (p.signal, p.sheet_2, crate::theme::skin().radius);
+    let fill = (pct.clamp(0.0, 100.0) * 10.0).round() as u16;
+    let bar = container(row![
+        container(Space::new().height(Length::Fixed(8.0)))
+            .width(Length::FillPortion(fill.max(1)))
+            .style(move |_: &Theme| container::Style {
+                background: Some(signal.into()),
+                ..Default::default()
+            }),
+        Space::new()
+            .width(Length::FillPortion(1000u16.saturating_sub(fill).max(1)))
+            .height(Length::Fixed(8.0)),
+    ])
+    .width(Length::Fill)
+    .height(Length::Fixed(8.0))
+    .style(move |_: &Theme| container::Style {
+        background: Some(track.into()),
+        border: Border::default().rounded(radius),
+        ..Default::default()
+    });
+    row![
+        container(ui::faint(label.to_string())).width(Length::Fixed(48.0)),
+        bar,
+        ui::mono(reading, 11.0, p.ink_2),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// A row's open panel (the web's `.mt-detail`): the 3D view or the picture, its toggle and the flat views on the left;
+/// the machine's usage, resources, runs and technical details on the right.
+fn detail<'a>(state: &'a State, data: &'a Data, m: &'a Machine, slot: usize) -> Element<'a, Msg> {
+    let open = state.stage.as_ref().filter(|s| s.id == m.id);
+    let mut left: Vec<Element<'a, Msg>> = Vec::new();
+    match open {
+        Some(s) => {
+            left.push(stage_view(s, (STAGE_W, STAGE_H)));
+            left.push(ui::faint("Drag to rotate, scroll to zoom").into());
+        }
+        None => left.push(device(m, slot)),
+    }
+    left.push(ui::btn(
+        if open.is_some() {
+            "Hide 3D view"
+        } else {
+            "Show 3D view"
+        },
+        None,
+        Kind::Secondary,
+        Some(Msg::ToggleStage(m.id.clone())),
+    ));
+    if let Some(views) = open.and_then(|_| flat_views(m)) {
+        left.push(views);
+    }
+    let mut right: Vec<Element<'a, Msg>> = vec![ui::btn(
+        "Open",
+        None,
+        Kind::Secondary,
+        Some(Msg::OpenMachine(m.id.clone())),
+    )];
+    if let Some(st) = &m.station {
+        right.push(station_facts(st));
+    }
+    right.push(ui::faint(sentence(m)).into());
+    right.push(live_stats(m, false));
+    right.push(resources(state, data, m));
+    right.push(ui::label("Runs").into());
+    right.push(runs(state, m));
+    right.push(technical(state, m));
+    let split = row![
+        container(column(left).spacing(12).width(Length::Fill)).width(Length::FillPortion(10)),
+        container(column(right).spacing(16).width(Length::Fill)).width(Length::FillPortion(12)),
+    ]
+    .spacing(24);
+    container(split)
+        .padding(Padding {
+            top: 0.0,
+            right: 16.0,
+            bottom: 16.0,
+            left: 16.0,
+        })
         .width(Length::Fill)
         .into()
 }
@@ -1675,8 +2034,11 @@ fn live_stats<'a>(m: &'a Machine, two_rows: bool) -> Element<'a, Msg> {
             Some("GiB used of GiB".to_string()),
             Some(stacked(
                 &[
-                    (s.mem_used, INK),
-                    ((s.mem_total - s.mem_used).max(0.0), RULE_FAINT),
+                    (s.mem_used, crate::theme::palette().ink),
+                    (
+                        (s.mem_total - s.mem_used).max(0.0),
+                        crate::theme::palette().rule_faint,
+                    ),
                 ],
                 s.mem_total,
                 6.0,
@@ -1729,7 +2091,9 @@ fn tally<'a>(
     };
     let mut parts: Vec<Element<'a, Msg>> = vec![
         ui::label(label).wrapping(Wrapping::None).into(),
-        ui::sans(figure, size, INK).wrapping(Wrapping::None).into(),
+        ui::sans(figure, size, crate::theme::palette().ink)
+            .wrapping(Wrapping::None)
+            .into(),
     ];
     if let Some(extra) = extra {
         parts.push(extra);
@@ -1762,7 +2126,9 @@ impl canvas::Program<Msg> for Spark {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         frame.stroke(
             &Path::line(Point::new(0.0, h - 0.5), Point::new(w, h - 0.5)),
-            Stroke::default().with_color(RULE).with_width(1.0),
+            Stroke::default()
+                .with_color(crate::theme::palette().rule)
+                .with_width(1.0),
         );
         let pts = &self.0[self.0.len().saturating_sub(SPARK_POINTS)..];
         if pts.len() >= 2 {
@@ -1778,7 +2144,12 @@ impl canvas::Program<Msg> for Spark {
                     }
                 }
             });
-            frame.stroke(&path, Stroke::default().with_color(INK).with_width(2.0));
+            frame.stroke(
+                &path,
+                Stroke::default()
+                    .with_color(crate::theme::palette().ink)
+                    .with_width(2.0),
+            );
         }
         vec![frame.into_geometry()]
     }
@@ -1852,27 +2223,39 @@ fn resources<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a
     };
     let t = &plaza.total;
     let cpu_parts = [
-        ("Plaza services", t.services_cpu, INK),
-        ("Agents", t.vms_cpu, SIGNAL),
+        (
+            "Plaza services",
+            t.services_cpu,
+            crate::theme::palette().ink,
+        ),
+        ("Agents", t.vms_cpu, crate::theme::palette().signal),
         (
             "Rest of the system",
             (stats.cpu - (t.services_cpu + t.vms_cpu)).max(0.0),
-            INK_3,
+            crate::theme::palette().ink_3,
         ),
-        ("Free", (100.0 - stats.cpu).max(0.0), RULE_FAINT),
+        (
+            "Free",
+            (100.0 - stats.cpu).max(0.0),
+            crate::theme::palette().rule_faint,
+        ),
     ];
     let mem_parts = [
-        ("Plaza services", t.services_rss, INK),
-        ("Agents", t.vms_rss, SIGNAL),
+        (
+            "Plaza services",
+            t.services_rss,
+            crate::theme::palette().ink,
+        ),
+        ("Agents", t.vms_rss, crate::theme::palette().signal),
         (
             "Rest of the system",
             (stats.mem_used - (t.services_rss + t.vms_rss)).max(0.0),
-            INK_3,
+            crate::theme::palette().ink_3,
         ),
         (
             "Free",
             (stats.mem_total - stats.mem_used).max(0.0),
-            RULE_FAINT,
+            crate::theme::palette().rule_faint,
         ),
     ];
 
@@ -1889,9 +2272,21 @@ fn resources<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a
     for p in &plaza.services {
         service_lines.push(grid(vec![
             (4, false, ui::faint(p.name.clone()).into()),
-            (2, true, ui::mono(p.pid.to_string(), 12.0, INK_2).into()),
-            (2, true, ui::sans(pct(p.cpu), 12.0, INK).into()),
-            (2, true, ui::sans(human(p.rss), 12.0, INK).into()),
+            (
+                2,
+                true,
+                ui::mono(p.pid.to_string(), 12.0, crate::theme::palette().ink_2).into(),
+            ),
+            (
+                2,
+                true,
+                ui::sans(pct(p.cpu), 12.0, crate::theme::palette().ink).into(),
+            ),
+            (
+                2,
+                true,
+                ui::sans(human(p.rss), 12.0, crate::theme::palette().ink).into(),
+            ),
         ]));
         service_lines.push(ui::hairline());
     }
@@ -1945,18 +2340,34 @@ fn resources<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a
                 .map(|a| a.role_label.clone())
                 .or_else(|| v.role.clone())
                 .unwrap_or_else(|| "—".to_string());
-            let who: Element<'a, Msg> = column![ui::sans(name, 12.0, INK), ui::faint(role)]
-                .spacing(2)
-                .into();
+            let who: Element<'a, Msg> = column![
+                ui::sans(name, 12.0, crate::theme::palette().ink),
+                ui::faint(role)
+            ]
+            .spacing(2)
+            .into();
             lines.push(grid(vec![
                 (3, false, who),
                 (
                     2,
                     false,
-                    ui::sans(format!("{}/{}", v.run, v.vm), 12.0, INK_2).into(),
+                    ui::sans(
+                        format!("{}/{}", v.run, v.vm),
+                        12.0,
+                        crate::theme::palette().ink_2,
+                    )
+                    .into(),
                 ),
-                (2, true, ui::sans(pct(v.cpu), 12.0, INK).into()),
-                (2, true, ui::sans(human(v.rss), 12.0, INK).into()),
+                (
+                    2,
+                    true,
+                    ui::sans(pct(v.cpu), 12.0, crate::theme::palette().ink).into(),
+                ),
+                (
+                    2,
+                    true,
+                    ui::sans(human(v.rss), 12.0, crate::theme::palette().ink).into(),
+                ),
                 (3, true, guest_cell(v)),
             ]));
             lines.push(ui::hairline());
@@ -1974,12 +2385,29 @@ fn resources<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a
             (
                 3,
                 false,
-                ui::sans(format!("{} VMs", plaza.vms.len()), 12.0, INK).into(),
+                ui::sans(
+                    format!("{} VMs", plaza.vms.len()),
+                    12.0,
+                    crate::theme::palette().ink,
+                )
+                .into(),
             ),
             (2, false, Space::new().into()),
-            (2, true, ui::sans(pct(sum_cpu), 12.0, INK).into()),
-            (2, true, ui::sans(human(sum_rss), 12.0, INK).into()),
-            (3, true, ui::sans(guest_total, 12.0, INK).into()),
+            (
+                2,
+                true,
+                ui::sans(pct(sum_cpu), 12.0, crate::theme::palette().ink).into(),
+            ),
+            (
+                2,
+                true,
+                ui::sans(human(sum_rss), 12.0, crate::theme::palette().ink).into(),
+            ),
+            (
+                3,
+                true,
+                ui::sans(guest_total, 12.0, crate::theme::palette().ink).into(),
+            ),
         ]));
         column(lines).into()
     };
@@ -2016,7 +2444,7 @@ fn breakdown<'a>(
             row![
                 swatch(color, 8.0),
                 ui::faint(label.to_string()),
-                ui::sans(fmt(value), 11.0, INK)
+                ui::sans(fmt(value), 11.0, crate::theme::palette().ink)
             ]
             .spacing(8)
             .align_y(Alignment::Center)
@@ -2036,15 +2464,21 @@ fn breakdown<'a>(
 fn guest_cell<'a>(v: &VmUsage) -> Element<'a, Msg> {
     let used = v.guest_used.map_or("—".to_string(), human);
     let usable = v.usable.map_or("—".to_string(), human);
-    let mut parts: Vec<Element<'a, Msg>> =
-        vec![ui::sans(format!("{used} / {usable}"), 12.0, INK).into()];
+    let mut parts: Vec<Element<'a, Msg>> = vec![
+        ui::sans(
+            format!("{used} / {usable}"),
+            12.0,
+            crate::theme::palette().ink,
+        )
+        .into(),
+    ];
     if let (Some(used), Some(usable)) = (v.guest_used, v.usable)
         && usable > 0.0
     {
         parts.push(stacked(
             &[
-                (used.min(usable), INK_2),
-                ((usable - used).max(0.0), RULE_FAINT),
+                (used.min(usable), crate::theme::palette().ink_2),
+                ((usable - used).max(0.0), crate::theme::palette().rule_faint),
             ],
             usable,
             4.0,
@@ -2100,7 +2534,11 @@ fn runs<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
             Some(Msg::Kill(run.id.clone())),
         );
         let line = grid(vec![
-            (3, false, ui::mono(run.id.clone(), 12.0, INK).into()),
+            (
+                3,
+                false,
+                ui::mono(run.id.clone(), 12.0, crate::theme::palette().ink).into(),
+            ),
             (
                 2,
                 false,
@@ -2149,7 +2587,11 @@ fn vm_line<'a>(state: &'a State, run: &str, vm: &'a VmRow) -> Element<'a, Msg> {
     let key = format!("{run}/{}", vm.index);
     let guest = vm.guest_cid.map_or("—".to_string(), |c| c.to_string());
     let head: Element<'a, Msg> = row![
-        ui::sans(format!("VM {}", vm.index), 12.0, INK),
+        ui::sans(
+            format!("VM {}", vm.index),
+            12.0,
+            crate::theme::palette().ink
+        ),
         ui::badge(&vm.state, state_tone(&vm.state)),
         ui::faint(format!("guest CID {guest}")),
     ]
@@ -2168,9 +2610,13 @@ fn vm_line<'a>(state: &'a State, run: &str, vm: &'a VmRow) -> Element<'a, Msg> {
         if let (true, Some(serial)) = (open, &vm.serial) {
             lines.push(
                 ui::scroll(
-                    container(ui::mono(serial.clone(), 11.0, INK_2))
-                        .padding(8)
-                        .style(boxed),
+                    container(ui::mono(
+                        serial.clone(),
+                        11.0,
+                        crate::theme::palette().ink_2,
+                    ))
+                    .padding(8)
+                    .style(boxed),
                 )
                 .width(Length::Fill)
                 .into(),
@@ -2210,7 +2656,7 @@ fn technical<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
         lines.push(
             row![
                 container(ui::faint(key.to_string())).width(Length::Fixed(160.0)),
-                ui::sans(value, 12.0, INK)
+                ui::sans(value, 12.0, crate::theme::palette().ink)
             ]
             .spacing(12)
             .into(),
@@ -2224,7 +2670,7 @@ fn technical<'a>(state: &'a State, m: &'a Machine) -> Element<'a, Msg> {
 fn boxed(_: &Theme) -> container::Style {
     container::Style {
         border: Border {
-            color: RULE,
+            color: crate::theme::palette().rule,
             width: 1.0,
             radius: 0.0.into(),
         },

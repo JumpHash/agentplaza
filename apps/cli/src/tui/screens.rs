@@ -276,7 +276,7 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
         ))
     } else if app.tab == Tab::Workspace {
         Line::from(Span::styled(
-            " Tab pane · ↑↓ move · / filter · i steer · p post · P pause · E export · o IDE · Enter expand · 0-9 tabs · q quit",
+            " Tab pane · ↑↓ move · / filter · t steer · i context · M model · p post · P pause · E export · o IDE · Enter expand · 0-9 tabs · q quit",
             Style::new().fg(palette.muted),
         ))
     } else if app.tab == Tab::Workstations {
@@ -286,7 +286,7 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
         ))
     } else if app.tab == Tab::Chat {
         Line::from(Span::styled(
-            " 1-9,0,w,c tabs · ↑↓ conversation · t message · n new conversation · S start the draft · r refresh · q quit",
+            " 1-9,0,w,c tabs · ↑↓ conversation · t message · i context · M model · n new conversation · S start the draft · r refresh · q quit",
             Style::new().fg(palette.muted),
         ))
     } else {

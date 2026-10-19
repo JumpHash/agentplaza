@@ -1,0 +1,412 @@
+/* The IDE's panels beyond the chat, ported from the prototype (m-ide-more.js, m-ide-dock.js): the terminal's chrome around
+   xterm (views/ide-terminal.ts), the command palette (views/ide-palette.ts), the editor's tabs and banners
+   (views/ide-editing.ts) and the Activity panel (views/ide-activity.ts). Tokens only, so light and dark follow the console. */
+
+/* ---- terminal ---------------------------------------------------------------------------------------------------- */
+
+.idem-term,
+.idem-term-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.idem-term {
+  min-height: 280px;
+}
+
+.idem-bar,
+.idem-tabs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.idem-bar {
+  padding: 8px 16px;
+}
+
+.idem-tabs {
+  flex: none;
+  gap: 22px;
+  padding: 0 16px;
+}
+
+.idem-sp {
+  flex: 1;
+}
+
+.idem-term-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+}
+
+.idem-term-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  background: var(--sheet-2);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+
+.idem-term-status:empty {
+  display: none;
+}
+
+.idem-term-status.is-warn {
+  color: var(--warn);
+}
+
+.idem-term-status.is-danger {
+  color: var(--crit);
+  background: var(--crit-soft);
+}
+
+/* The xterm frame: the prototype's bordered output box. The emulator opens in the inner body, which holds the padding. */
+.idem-term-out {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 200px;
+  box-sizing: border-box;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--sheet);
+  overflow: hidden;
+}
+
+.idem-term-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px 12px;
+}
+
+.idem-term-body .xterm {
+  height: 100%;
+}
+
+.idem-panes {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.idem-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.idem-pane[hidden] {
+  display: none;
+}
+
+.idem-tab {
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  cursor: pointer;
+}
+
+.idem-tab[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--signal);
+}
+
+.idem-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+/* ---- shared ------------------------------------------------------------------------------------------------------ */
+
+.idem-body {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.idem-h {
+  font-family: var(--font-display);
+  font-size: var(--fs-h2);
+}
+
+/* ---- command palette and quick open ----------------------------------------------------------------------------- */
+
+.idem-pal-back {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--paper) 60%, transparent);
+  font-family: var(--font);
+}
+
+.idem-pal {
+  width: min(600px, calc(100vw - 32px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--raised);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+}
+
+.idem-pal-in {
+  min-width: 0;
+  padding: 16px;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+
+.idem-pal-in::placeholder {
+  color: var(--ink-3);
+}
+
+.idem-pal-list {
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.idem-pal-sec {
+  padding: 8px 16px 4px;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+}
+
+.idem-pal-opt {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 16px;
+  cursor: pointer;
+  color: var(--ink-2);
+}
+
+.idem-pal-opt[aria-selected="true"] {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.idem-pal-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.idem-pal-hint {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+}
+
+.idem-pal-none {
+  padding: 16px;
+  color: var(--ink-3);
+}
+
+@media (max-width: 900px) {
+  .idem-pal-back {
+    padding-top: 4vh;
+  }
+}
+
+/* ---- editor: the tab strip, the path bar and the banners --------------------------------------------------------- */
+
+/* The strip is the console's tab bar (ide.ts makes it), restyled: the bar's own class keeps its layout rules. */
+.ide-tabbar.ided-tabs {
+  display: flex;
+  overflow-x: auto;
+  min-height: 0;
+  border-bottom: 1px solid var(--rule);
+  background: var(--sheet-2);
+}
+
+.ided-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 8px 12px;
+  border-right: 1px solid var(--rule);
+  white-space: nowrap;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.ided-tab.on {
+  background: var(--sheet);
+  color: var(--ink);
+}
+
+.ided-tab-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.ided-tab-x {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ided-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex: none;
+}
+
+.ided-conflict {
+  color: var(--crit);
+  font-weight: 700;
+}
+
+.ided-banner {
+  padding: 8px 12px;
+  background: var(--info-soft);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+
+.ided-banner.conflict {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: var(--crit-soft);
+  color: var(--ink);
+}
+
+/* ---- Activity panel ---------------------------------------------------------------------------------------------- */
+
+.idem-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+  padding: 16px;
+}
+
+.idem-panel-h {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.idem-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+}
+
+.idem-list {
+  max-height: 60vh;
+  overflow: auto;
+  min-width: 0;
+}
+
+.idem-activity-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--sheet-2);
+}
+
+.idem-seg-t {
+  background: var(--review);
+}
+
+.idem-seg-h {
+  background: var(--signal);
+}
+
+.idem-seg-o {
+  background: var(--ink-3);
+}
+
+.idem-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
+
+.idem-call {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: var(--fs-sm);
+}
+
+.idem-call-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .idem-call {
+    grid-template-columns: 1fr auto;
+  }
+}

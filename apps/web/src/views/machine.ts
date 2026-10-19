@@ -3,7 +3,6 @@
 // view and shows its usage, where its resources go, its runs (kill, serial) and its technical
 // details. The topology's machine blocks open their row.
 
-import '../styles/ops.css';
 import { api, type Agent, type MachineNode, type Overview, type StationView } from '../api';
 import { on } from '../store';
 import { attempt, badge, empty } from '../ui/components';
@@ -12,67 +11,55 @@ import { agentCount, isLive, KIND_LABEL, machineList, machineRow, machineVms, ne
 import { stationMachine } from './station-machine';
 import type { Cleanup } from './index';
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
 const POLL_MS = 2000;
 
-function svgEl(tag: string, attrs: Record<string, string>): SVGElement {
-  const el = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
-  return el;
-}
-
-// The control plane, and the machines it runs on, joined by straight rules.
-// Each machine's block sits on its own row; its rule ends at the row's centre.
+// The control plane, and the machines it runs on, joined by rules: each machine's block sits on its own row, and
+// its rule runs from the plane to the block (the prototype's `.mt-topo`).
 function topology(o: Overview | null, machines: MachineNode[], selectedId: string | null, onPick: (id: string) => void): HTMLElement {
-  const wires = svgEl('svg', { class: 'mach-wires', viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': 'true' });
-  const wiresBox = h('div.mach-wires-box', null, wires);
-  const fleet = h('div.mach-fleet');
-  fleet.style.gridTemplateRows = `repeat(${Math.max(machines.length, 1)}, minmax(44px, 1fr))`;
-  if (!machines.length) fleet.append(empty('machine', 'No machines.'));
-
-  machines.forEach((m, i) => {
+  const blocks = machines.map((m) => {
     const live = isLive(m.runs ?? []);
-    const y = ((i + 0.5) / machines.length) * 100;
-    wires.append(
-      svgEl('line', {
-        x1: '0',
-        y1: '50',
-        x2: '100',
-        y2: String(y),
-        class: live ? 'mach-wire live' : 'mach-wire',
-        'vector-effect': 'non-scaling-stroke',
-      }),
-    );
-    const label = h('div.mach-wire-label', { 'data-key': `wire-${m.id}` }, `${agentCount(m.agents)} agents · ${machineVms(m)} VMs`);
-    label.style.top = `${(50 + y) / 2}%`;
-    wiresBox.append(label);
-
-    const mark = h('span.mach-mark', null);
+    const state = m.reachable === false ? 'unreachable' : live ? 'running' : 'idle';
+    const mark = h('span.mt-mark', null);
     if (live) mark.classList.add('live');
     if (m.reachable === false) mark.classList.add('down');
-    const state = m.reachable === false ? 'unreachable' : live ? 'running' : 'idle';
     const block = h(
-      'div.mach-block',
+      'div.mt-block',
       { role: 'button', tabindex: '0', 'data-key': `block-${m.id}` },
-      h('div.mach-row', null, mark, h('span.mach-name', null, m.name)),
-      h('div.faint', null, `${KIND_LABEL[m.kind] ?? 'Machine'} · ${state}`),
+      mark,
+      h('strong', null, m.name),
+      h('span.mt-faint', null, `${KIND_LABEL[m.kind] ?? 'Machine'} · ${state}`),
     );
     block.classList.toggle('selected', m.id === selectedId);
     block.addEventListener('click', () => onPick(m.id));
     block.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter') onPick(m.id);
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        onPick(m.id);
+      }
     });
-    fleet.append(block);
+    const wire = h('div.mt-wire', null, h('span', { 'data-key': `wire-${m.id}` }, `${agentCount(m.agents)} agents · ${machineVms(m)} VMs`));
+    if (live) wire.classList.add('live');
+    return h('div.mt-trow', null, wire, block);
   });
 
   const plane = h(
-    'div.mach-plane',
+    'div.mt-plane',
     null,
-    h('div.mach-caps', null, 'Control plane'),
-    h('div.faint', null, o ? `${o.agents.total} agents · ${o.agents.working} working` : 'Unreachable'),
-    h('div.mach-chips', null, badge('apid', o ? 'ok' : 'danger', true), badge('hub', o?.hub ? 'ok' : 'muted', true)),
+    h('p.mt-cap', null, 'Control plane'),
+    h(
+      'div.mt-chips',
+      null,
+      badge('apid', o ? 'ok' : 'danger'),
+      badge('hub', o?.hub ? 'ok' : 'muted'),
+    ),
+    h('p.mt-faint', null, o ? `${o.agents.total} agents · ${o.agents.working} working` : 'Unreachable'),
   );
-  return h('div.mach-topo', null, plane, wiresBox, fleet);
+  return h(
+    'div.mt-topo',
+    null,
+    plane,
+    machines.length ? h('div.mt-trows', null, blocks) : h('div.mt-trows', null, empty('machine', 'No machines.')),
+  );
 }
 
 /** The Machines screen's List view (machines.ts): the control plane, then one row per machine. */

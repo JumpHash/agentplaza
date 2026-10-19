@@ -19,8 +19,8 @@ export interface BarOptions { format: (v: number) => string; height?: number; ar
 export interface SparkOptions { color?: string; height?: number; ariaLabel?: string }
 
 const NS = 'http://www.w3.org/2000/svg';
-const GRID = 'var(--chart-grid, rgba(128, 128, 128, 0.25))';
-const AXIS = 'var(--chart-axis, currentColor)';
+const GRID = 'var(--chart-grid)';
+const AXIS = 'var(--chart-axis)';
 const DURATION = 400;
 
 // ---- pure helpers ----
@@ -204,7 +204,7 @@ export function stackedArea(el: HTMLElement, data: AreaData, opts: AreaOptions):
     ];
     for (const t of g.tops) {
       kids.push(paint(svgEl('circle', { cx: xi, cy: g.y(t.upper[i] ?? 0), r: 3 }),
-        { fill: t.color, stroke: 'var(--sheet, #fff)', strokeWidth: '1.5px' }));
+        { fill: t.color, stroke: 'var(--sheet)', strokeWidth: '1.5px' }));
     }
     gHover.replaceChildren(...kids);
   }

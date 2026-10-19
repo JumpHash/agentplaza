@@ -1,0 +1,96 @@
+/* The chats' model chip and context bar (ui/chat-tools.ts). Colours are the console's own tokens, so both skins and
+   both modes follow. */
+
+/* ---- The model chip ---- */
+.ct-chip-wrap { position: relative; display: inline-flex; min-width: 0; flex: none; }
+.ct-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; max-width: 260px; min-width: 0;
+  padding: 0 8px 0 6px; border: 1px solid transparent; border-radius: 999px; background: transparent;
+  color: var(--ink-2); font: 500 12px/1 var(--font); cursor: pointer;
+}
+.ct-chip:hover { background: var(--hover); color: var(--ink); }
+.ct-chip[aria-expanded="true"] { background: var(--hover); border-color: var(--rule-strong); color: var(--ink); }
+.ct-chip:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.ct-chip:disabled { opacity: .5; cursor: default; }
+.ct-chip .logo { flex: none; }
+.ct-model { font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ct-eff { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; flex: none; }
+.ct-chev { color: var(--ink-3); flex: none; }
+
+/* A popover above its trigger (the chip's picker, the bar's breakdown). */
+.ct-pop {
+  position: absolute; z-index: 40; bottom: calc(100% + 8px); left: 0;
+  background: var(--raised); border: 1px solid var(--rule-strong); border-radius: 12px;
+  box-shadow: var(--shadow-pop); color: var(--ink); font: 13px/1.4 var(--font);
+  animation: ct-in .16s var(--ease);
+}
+.ct-pop[hidden] { display: none; }
+.ct-model-pop { width: min(340px, calc(100vw - 32px)); padding: 10px; }
+.ct-picker { margin-bottom: 10px; }
+.ct-picker > .mp { display: block; width: 100%; }
+.ct-eff-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.ct-eff-l { color: var(--ink-3); font-size: 12px; margin-right: 4px; }
+.ct-seg {
+  height: 24px; padding: 0 9px; border: 1px solid var(--rule); border-radius: 999px; background: transparent;
+  color: var(--ink-2); font: 500 12px/1 var(--font); cursor: pointer;
+}
+.ct-seg:hover { background: var(--hover); color: var(--ink); }
+.ct-seg[aria-checked="true"] {
+  background: var(--signal-soft); border-color: color-mix(in srgb, var(--signal) 40%, var(--rule)); color: var(--signal-ink);
+}
+.ct-seg:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+
+/* A tool row under a composer that has none of its own (the agent page). */
+.ct-tools { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 6px 0 0; }
+
+/* A save error, under the composer. */
+.ct-note { margin: 6px 0 0; font-size: 12px; color: var(--crit); }
+.ct-note:empty { display: none; }
+
+/* ---- The context bar ---- */
+.ct-ctx { position: relative; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 8px 6px; }
+.ct-ctx-hit {
+  flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 6px 0;
+  border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.ct-ctx-hit:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 4px; }
+.ct-track {
+  flex: 1; display: flex; height: 4px; min-width: 40px; overflow: hidden;
+  border-radius: 2px; background: var(--rule);
+}
+.ct-part { display: block; height: 100%; flex: none; }
+.ct-ctx-txt { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+.ct-ctx[data-tone="warn"] .ct-ctx-txt { color: var(--warn); }
+.ct-ctx[data-tone="crit"] .ct-ctx-txt { color: var(--crit); }
+
+/* The breakdown: anchored above the bar (below it when there is more room there), 360 px wide, scrolling past the
+   room it gets. The rows are grids of fixed columns, so the numbers line up and never draw over each other. */
+.ct-breakdown { left: auto; right: 0; width: min(360px, calc(100vw - 32px)); padding: 12px 14px; overflow: auto; box-sizing: border-box; }
+.ct-breakdown.down { bottom: auto; top: calc(100% + 8px); }
+.ct-bd-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; margin-bottom: 4px; }
+.ct-bd-top b { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ct-bd-top span { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.ct-bd-sec { margin: 12px 0 4px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); }
+.ct-rows { list-style: none; margin: 0; padding: 0; }
+.ct-row {
+  display: grid; align-items: center; column-gap: 10px; box-sizing: border-box; width: 100%; min-width: 0;
+  padding: 3px 0; font-size: 12.5px; line-height: 1.4;
+}
+/* swatch, name (1fr), tokens, share */
+.ct-row-part { grid-template-columns: 8px minmax(0, 1fr) max-content max-content; }
+/* tool (1fr), calls, errors, result tokens */
+.ct-row-tool { grid-template-columns: minmax(0, 1fr) max-content max-content max-content; }
+.ct-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ct-cell.mono { font-size: 11.5px; }
+.ct-num {
+  text-align: right; white-space: nowrap; font-family: var(--font-mono); font-size: 11.5px;
+  font-variant-numeric: tabular-nums; color: var(--ink-2);
+}
+.ct-share { color: var(--ink-3); min-width: 34px; }
+.ct-sw { display: block; width: 8px; height: 8px; border-radius: 2px; }
+.ct-crit { color: var(--crit); }
+.ct-empty { margin: 2px 0; font-size: 12.5px; color: var(--ink-3); }
+.ct-bd-foot { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--ink-3); }
+
+@keyframes ct-in { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { .ct-pop { animation: none; } }

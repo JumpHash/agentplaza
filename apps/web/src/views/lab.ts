@@ -1,13 +1,12 @@
 // The Lab (`#/lab`, `#/lab/<section>`, `#/lab/jobs/<id>`, `#/lab/models/<id>`): the training lab's
-// sections under one sidebar entry. This file draws the section strip and hands the rest of the
-// route to the section's own `render(content, params)`, where `params` is what follows the
-// section (`[id]` for a job or a model detail). Each section module returns its cleanup.
+// sections under one sidebar entry. This file draws the page head and the section strip (the
+// prototype's `h.head('Lab')` and `nav.tabs.lab-strip`), then hands the rest of the route to the
+// section's own `render(content, params)`, where `params` is what follows the section (`[id]` for a
+// job or a model detail). Each section module returns its cleanup.
 
-import '../styles/lab.css';
-import '../styles/lab-strip.css';
+import '../styles/proto/lab.css';
 import { href } from '../router';
 import { h, replace } from '../ui/dom';
-import { tabs } from '../ui/components';
 import type { Cleanup } from './index';
 import { render as renderOverview } from './lab-overview';
 import { render as renderJobs } from './lab-jobs';
@@ -31,11 +30,29 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const known = SECTIONS.find((s) => s.key === params[0]);
   const section = known ? known.key : 'overview';
   const rest = known ? params.slice(1) : [];
-  const content = h('div.lab-stack');
-  const strip = tabs(SECTIONS, section, (key) => {
-    location.hash = href('lab', key);
-  });
-  replace(root, h('div.lab-body', null, h('div.lab-strip', null, strip), content));
+  const content = h('div.lab-body');
+  const head = h(
+    'header.page-head',
+    null,
+    h('div.page-head-row', null, h('h1', null, 'Lab'), h('span.sp'), h('div.page-actions')),
+  );
+  const strip = h(
+    'nav.tabs.lab-strip',
+    { role: 'tablist', 'aria-label': 'Lab sections' },
+    SECTIONS.map((s) =>
+      h(
+        'a.tab',
+        {
+          role: 'tab',
+          href: href('lab', s.key),
+          'aria-selected': s.key === section ? 'true' : 'false',
+          'aria-current': s.key === section ? 'page' : null,
+        },
+        s.label,
+      ),
+    ),
+  );
+  replace(root, head, strip, content);
   const cleanup = dispatch(section, rest, content);
   return () => cleanup();
 }

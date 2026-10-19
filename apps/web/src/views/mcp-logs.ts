@@ -1,11 +1,11 @@
-// The MCP logs drawer: the last lines a server wrote to stdout and stderr, newest at the bottom.
-// The hub redacts secrets before they reach this page. Opened from the MCP list (mcp.ts).
-import '../styles/mcp-logs.css';
+// The MCP logs drawer: the last lines a server wrote to stdout and stderr, newest at the bottom, over the list on the
+// right (not a modal). The hub redacts secrets before they reach this page. Opened from the MCP list (mcp.ts).
+import '../styles/proto/settings-b.css';
 import { mcpApi, type McpLogLine, type McpServerView, type McpStatus } from '../api';
-import { badge, button, empty } from '../ui/components';
+import { badge } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
-import { STATUS_LABEL, STATUS_TONE } from './mcp-common';
+import { STATUS_LABEL, STATUS_TONE, emptyBox, iconBtn } from './mcp-common';
 import { errorText } from './vault-common';
 
 const REFRESH_MS = 5000;
@@ -27,35 +27,30 @@ export function openLogsDrawer(server: McpServerView): () => void {
   let seq = 0;
 
   const statusBadge = (): HTMLElement => badge(STATUS_LABEL[status], STATUS_TONE[status], true);
-  const titleBadge = h('span.mcp-logs-status', null, statusBadge());
-  const bodyEl = h('div.mcp-logs-body', { role: 'log', 'aria-live': 'off', tabindex: '0' }, h('p.mcp-logs-note', null, 'Loading'));
-  const refreshBtn = button('', () => void refresh(), { kind: 'ghost', icon: 'refresh', title: 'Refresh' });
-  const closeBtn = button('', () => close(), { kind: 'ghost', icon: 'x', title: 'Close' });
+  const badgeEl = h('span.mcp-log-badge', null, statusBadge());
+  const bodyEl = h('div.mcp-log-body', { tabindex: '0' }, h('p.muted', null, 'Loading'));
+  const refreshBtn = iconBtn('refresh-cw', () => void refresh(), 'Refresh');
+  const closeBtn = iconBtn('x', () => close(), 'Close');
 
   const drawer = h(
     'aside.mcp-logs',
-    { role: 'dialog', 'aria-modal': 'false', 'aria-label': `Logs for ${server.name}`, tabindex: '-1' },
-    h(
-      'header.mcp-logs-head',
-      null,
-      h('div.mcp-logs-title', null, h('h2', null, server.name), titleBadge),
-      h('div.mcp-logs-actions', null, refreshBtn, closeBtn),
-    ),
+    { role: 'dialog', 'aria-label': `Logs for ${server.name}`, tabindex: '-1' },
+    h('div.mcp-log-head', null, h('h2', null, server.name), badgeEl, refreshBtn, closeBtn),
     bodyEl,
   );
 
   function renderLines(lines: McpLogLine[]): void {
     if (lines.length === 0) {
-      replace(bodyEl, empty('terminal', 'No output yet'));
+      replace(bodyEl, emptyBox('file-text', 'No output yet'));
       return;
     }
     const rows = lines.map((l) =>
       h(
-        l.stream === 'stderr' ? 'div.mcp-log-line.is-err' : 'div.mcp-log-line',
+        l.stream === 'stderr' ? 'div.mcp-line.err' : 'div.mcp-line',
         null,
-        h('span.mcp-log-time', null, clock(l.ts_ms)),
+        h('span.mono.muted', null, clock(l.ts_ms)),
         badge(l.stream, l.stream === 'stderr' ? 'danger' : 'muted'),
-        h('span.mcp-log-text', null, l.line),
+        h('span.mono', null, l.line),
       ),
     );
     replace(bodyEl, ...rows);
@@ -64,7 +59,7 @@ export function openLogsDrawer(server: McpServerView): () => void {
   }
 
   function renderError(err: unknown): void {
-    replace(bodyEl, h('p.mcp-logs-note.is-danger', null, errorText(err)));
+    replace(bodyEl, h('p.mcp-danger', null, errorText(err)));
   }
 
   async function refresh(): Promise<void> {
@@ -84,7 +79,7 @@ export function openLogsDrawer(server: McpServerView): () => void {
 
   function setStatus(next: McpStatus): void {
     status = next;
-    replace(titleBadge, statusBadge());
+    replace(badgeEl, statusBadge());
   }
 
   const onStatus = (data: unknown): void => {
@@ -98,7 +93,7 @@ export function openLogsDrawer(server: McpServerView): () => void {
 
   const onKey = (e: KeyboardEvent): void => {
     // A modal opened over the drawer takes Escape first.
-    if (e.key === 'Escape' && !document.querySelector('.modal-backdrop')) close();
+    if (e.key === 'Escape' && !document.querySelector('.scrim')) close();
   };
 
   function close(): void {

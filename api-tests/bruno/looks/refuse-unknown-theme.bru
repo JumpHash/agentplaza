@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a look that names no known theme
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/appearance
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "theme": "no-such-theme"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

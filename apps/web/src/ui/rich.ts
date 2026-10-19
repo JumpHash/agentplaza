@@ -46,6 +46,7 @@ export type Ref =
   | { kind: 'path'; path: string; line: number | null; dir: boolean }
   | { kind: 'library'; id: string }
   | { kind: 'library_tool'; name: string; version: number }
+  | { kind: 'artifact'; id: string; version: number | null }
   | { kind: 'image' | 'video' | 'html' | 'link'; url: string };
 
 /** A piece of a classified text. Concatenating every span's raw text gives the input back. */
@@ -124,6 +125,8 @@ export function label(r: Ref): string {
       return `file ${r.id}`;
     case 'library_tool':
       return `${r.name} v${r.version}`;
+    case 'artifact':
+      return r.version !== null ? `artifact ${r.id}@${r.version}` : `artifact ${r.id}`;
     case 'image':
     case 'video':
     case 'html': {
@@ -360,8 +363,45 @@ function parseLink(text: string, open: number): ParsedLink | null {
 
 /** The reference a markdown target names: an http(s) URL, a hub route or a workspace path. */
 function targetRef(target: string, cx: Cx): Ref | null {
+  const artifact = artifactUrl(target, cx);
+  if (artifact !== null) return artifact;
   if (stripScheme(target) !== null) return classifyUrl(target, cx);
-  return localRef(target, cx);
+  return artifactWord(target) ?? localRef(target, cx);
+}
+
+/** An artifact id: 8 to 40 characters of lowercase ASCII letters, digits and hyphens. */
+function validArtifactId(id: string): boolean {
+  return /^[a-z0-9-]{8,40}$/.test(id);
+}
+
+/** `artifact:<id>` or `artifact:<id>@<n>`, as one whole word. A bad id or version is null, so the word stays text. */
+function artifactWord(word: string): Ref | null {
+  if (!word.startsWith('artifact:')) return null;
+  const rest = word.slice('artifact:'.length);
+  const at = rest.indexOf('@');
+  const id = at >= 0 ? rest.slice(0, at) : rest;
+  let version: number | null = null;
+  if (at >= 0) {
+    version = unsignedDigits(rest.slice(at + 1), U32_MAX);
+    if (version === null) return null;
+  }
+  return validArtifactId(id) ? { kind: 'artifact', id, version } : null;
+}
+
+/** A hub artifact link: `https://<hub host>/artifact/<id>` or `https://agentplaza.io/artifact/<id>`. No version. */
+function artifactUrl(url: string, cx: Cx): Ref | null {
+  const afterScheme = stripScheme(url);
+  if (afterScheme === null) return null;
+  const slashAt = afterScheme.indexOf('/');
+  if (slashAt < 0) return null;
+  const host = hostOf(afterScheme.slice(0, slashAt));
+  const isHub = cx.hubHost !== '' && host === cx.hubHost;
+  if (!isHub && host !== 'agentplaza.io') return null;
+  const rest = afterScheme.slice(slashAt);
+  if (!rest.startsWith('/artifact/')) return null;
+  const segment = rest.slice('/artifact/'.length);
+  const id = segment.slice(0, firstOf(segment, 0, ['?', '#']));
+  return validArtifactId(id) ? { kind: 'artifact', id, version: null } : null;
 }
 
 // ---- Pass 3: bare URLs -----------------------------------------------------
@@ -375,7 +415,7 @@ function urlSpans(text: string, cx: Cx): Span[] {
     const end = firstUrlStop(text, start);
     let stop = end;
     while (stop > start && URL_TRAILING.has(text.charAt(stop - 1))) stop--;
-    const r = classifyUrl(text.slice(start, stop), cx);
+    const r = artifactUrl(text.slice(start, stop), cx) ?? classifyUrl(text.slice(start, stop), cx);
     if (r) {
       pushText(out, text.slice(plainFrom, start));
       out.push({ kind: 'ref', value: { raw: text.slice(start, stop), r, text: null } });
@@ -490,6 +530,8 @@ function wordSpans(text: string, cx: Cx): Span[] {
 function singleWord(word: string, cx: Cx): Ref | null {
   const number = hashNumber(word);
   if (number !== null) return cx.hasProject ? { kind: 'task', number } : null;
+  const artifact = artifactWord(word);
+  if (artifact !== null) return artifact;
   if (word.startsWith('@')) {
     const name = word.slice(1);
     if (asciiLower(name) === 'all') return { kind: 'mention_all' };

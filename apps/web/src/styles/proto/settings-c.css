@@ -1,0 +1,418 @@
+/* Settings C: the Vault and Nodes screens (views/vault*.ts, views/nodes.ts). The prototype's inline rules for
+   them, with its tokens renamed to the console's (--fg → --ink, --line → --rule, and so on). */
+
+.vlt-dlg,
+.vlt-form {
+  display: contents;
+}
+.vlt-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  font-size: var(--fs-sm);
+}
+.vlt-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0;
+}
+.vlt-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.vlt-copy {
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+.vlt-slot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.vlt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.vlt-name {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.vlt-sub {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+.vlt-dim {
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+}
+.vlt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+}
+.vlt-miss {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+.vlt-radio,
+.vlt-chk {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: var(--fs-sm);
+}
+.vlt-fs {
+  border: 0;
+  padding: 0;
+  margin: 16px 0 0;
+  display: grid;
+  gap: 4px;
+}
+.vlt-fs legend {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.vlt-err {
+  color: var(--crit);
+  font-size: var(--fs-sm);
+  margin-top: 8px;
+}
+.vlt-res {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.vlt-list {
+  display: grid;
+  gap: 4px;
+  font-size: var(--fs-sm);
+}
+.vlt-mask {
+  -webkit-text-security: disc;
+}
+@media (max-width: 860px) {
+  .vs-table thead {
+    display: none;
+  }
+  .vs-table tr {
+    display: grid;
+    gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .vs-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 0;
+    border: 0;
+    text-align: right;
+  }
+  .vs-table td::before {
+    content: attr(data-label);
+    color: var(--ink-3);
+    font-size: var(--fs-xs);
+    flex: none;
+    text-align: left;
+  }
+}
+
+/* The Nodes screen (views/nodes.ts): each node's block, its detail, the join and hub cards. */
+.nd-node {
+  padding: 16px;
+  border-top: 1px solid var(--rule);
+}
+.nd-node:first-child {
+  border-top: 0;
+}
+.nd-head {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  cursor: pointer;
+}
+.nd-pic {
+  width: 64px;
+  height: 48px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--sheet-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.nd-pic .mt-art {
+  width: 100%;
+  height: 100%;
+}
+.nd-pic.live {
+  border-color: var(--ok);
+}
+.nd-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.nd-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.nd-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.nd-sub {
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nd-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px 16px;
+  margin-top: 8px;
+}
+.nd-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+.nd-fact > span:first-child {
+  color: var(--ink-3);
+}
+.nd-fact > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  min-width: 0;
+}
+.nd-detail {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.nd-sentence {
+  margin: 0;
+  color: var(--ink-2);
+}
+.nd-tallies {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+}
+.nd-tally {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.nd-tl {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.nd-fig {
+  font-family: var(--font-mono);
+  font-size: var(--fs-h2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nd-bar {
+  height: 6px;
+  background: var(--sheet-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.nd-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--signal);
+}
+.nd-cap {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+.nd-vms {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--sheet-2);
+  border-radius: var(--radius);
+}
+.nd-vm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: var(--fs-sm);
+}
+.nd-wait {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-sm);
+}
+.nd-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 0;
+}
+.nd-box {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  background: var(--sheet-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin: 8px 0;
+  font-size: var(--fs-sm);
+}
+.nd-box code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+}
+.nd-join {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nd-join .input {
+  min-width: 0;
+}
+.nd-err {
+  color: var(--crit);
+  font-size: var(--fs-sm);
+}
+.nd-warn {
+  color: var(--warn);
+  margin: 0;
+}
+.nd-msg {
+  padding: 16px;
+  color: var(--ink-2);
+}
+.nd-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.nd-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: var(--fs-sm);
+}
+.nd-tech summary {
+  cursor: pointer;
+  color: var(--ink-3);
+}
+.nd-view {
+  position: relative;
+  height: clamp(300px, 46vh, 440px);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: radial-gradient(120% 95% at 50% 0%, var(--sheet-2), var(--sheet));
+}
+.nd-view > svg {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: auto;
+  height: 72%;
+  max-width: 90%;
+  transform: translate(-50%, -50%);
+}
+@media (max-width: 899px) {
+  .nd-head {
+    grid-template-columns: 1fr;
+  }
+  .nd-pic {
+    width: 100%;
+    height: 48px;
+  }
+}
+
+/* The machine line art and its sparkline (the prototype's machines art rules). */
+.mt-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.mt-chassis {
+  fill: var(--sheet-2);
+  stroke: var(--ink-3);
+  stroke-width: 1.5;
+}
+.mt-led {
+  fill: var(--rule-strong);
+}
+.mt-led.on {
+  fill: var(--ok);
+}
+.mt-vent {
+  stroke: var(--rule-strong);
+  stroke-width: 1.5;
+}
+.mt-spark {
+  display: block;
+  width: 100%;
+  height: 48px;
+}
+.mt-spark polyline {
+  fill: none;
+  stroke: var(--ink-2);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.mt-spark line {
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}

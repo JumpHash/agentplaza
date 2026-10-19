@@ -11,8 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_prompt::{Finding, Kind, Report, Severity};
 use iced::widget::text_editor::{Cursor, Position};
-use iced::widget::{checkbox, column, container, operation, row, text_editor, text_input};
-use iced::{Alignment, Element, Font, Length, Task};
+use iced::widget::{
+    Space, button, checkbox, column, container, operation, row, text, text_editor, text_input,
+};
+use iced::{Alignment, Background, Border, Color, Element, Font, Length, Task, Theme};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -137,8 +139,9 @@ pub enum Msg {
     /// Keep editing after the confirmation.
     KeepEditing,
     Tab(Tab),
-    Loaded(Result<(PromptDetail, PromptVersion), String>),
-    Refreshed(Result<PromptDetail, String>),
+    /// The prompt, its latest version and its live version (the latest when none is live).
+    Loaded(Result<(PromptDetail, PromptVersion, PromptVersion), String>),
+    Refreshed(Result<(PromptDetail, PromptVersion), String>),
     Edit(text_editor::Action),
     Note(String),
     Save,
@@ -147,15 +150,19 @@ pub enum Msg {
     ReloadLatest,
     /// A publish, unpublish, archive or restore went through (its notice), or failed.
     Acted(Result<String, String>),
+    /// Open the publish form (the version chosen starts as the latest).
+    OpenPublish,
+    ClosePublish,
+    PublishPick(u32),
     Publish(u32),
     Unpublish,
     ToggleArchive,
     View(u32),
     Viewed(Result<PromptVersion, String>),
     CloseView,
+    /// Pick a version to compare; the second pick compares the two.
     Pick(u32),
     ClearPicks,
-    Compare,
     Compared(Result<PromptDiff, String>),
     RestoreVersion(u32),
     Restored(Result<PromptVersion, String>),
@@ -230,6 +237,10 @@ struct Loaded {
     source: text_editor::Content,
     /// The body last loaded or saved, normalised as the draft is, so the draft differs from it only by an edit.
     saved: String,
+    /// The live version's body: what the draft is compared with on the Edit tab.
+    live: String,
+    /// The version the publish form has chosen, while the form is open.
+    publish: Option<u32>,
     /// The draft being saved, until the hub answers.
     pending: String,
     note: String,
@@ -322,13 +333,15 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Task::none()
             }
         }
-        Msg::Loaded(Ok((detail, latest))) => {
+        Msg::Loaded(Ok((detail, latest, live))) => {
             let kind = Kind::parse(&detail.prompt.kind).unwrap_or(Kind::Fragment);
             state.changed = false;
             state.loaded = Some(Loaded {
                 report: apz_prompt::check(kind, &latest.body),
                 source: text_editor::Content::with_text(&latest.body),
                 saved: source_text(&text_editor::Content::with_text(&latest.body)),
+                live: live.body,
+                publish: None,
                 pending: String::new(),
                 kind,
                 summary: detail.prompt,
@@ -347,10 +360,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.error = Some(e);
             Task::none()
         }
-        Msg::Refreshed(Ok(detail)) => {
+        Msg::Refreshed(Ok((detail, live))) => {
             if let Some(l) = state.loaded.as_mut() {
                 l.summary = detail.prompt;
                 l.versions = sorted(detail.versions);
+                l.live = live.body;
             }
             Task::none()
         }
@@ -415,13 +429,36 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = Some((e, true));
             Task::none()
         }
-        Msg::Publish(version) => act(
-            &state.id,
-            ctx,
-            "publish",
-            Some(json!({ "version": version })),
-            format!("Published v{version}"),
-        ),
+        Msg::OpenPublish => {
+            if let Some(l) = state.loaded.as_mut() {
+                l.publish = Some(l.summary.latest_version);
+            }
+            Task::none()
+        }
+        Msg::ClosePublish => {
+            if let Some(l) = state.loaded.as_mut() {
+                l.publish = None;
+            }
+            Task::none()
+        }
+        Msg::PublishPick(version) => {
+            if let Some(l) = state.loaded.as_mut() {
+                l.publish = Some(version);
+            }
+            Task::none()
+        }
+        Msg::Publish(version) => {
+            if let Some(l) = state.loaded.as_mut() {
+                l.publish = None;
+            }
+            act(
+                &state.id,
+                ctx,
+                "publish",
+                Some(json!({ "version": version })),
+                format!("Published v{version}"),
+            )
+        }
         Msg::Unpublish => act(&state.id, ctx, "unpublish", None, "Unpublished".to_string()),
         Msg::ToggleArchive => {
             let archived = state
@@ -453,6 +490,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Pick(version) => {
             if let Some(l) = state.loaded.as_mut() {
+                l.compare = None;
                 if let Some(at) = l.picked.iter().position(|&p| p == version) {
                     l.picked.remove(at);
                 } else {
@@ -462,7 +500,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     l.picked.push(version);
                 }
             }
-            Task::none()
+            // The second pick compares the two, as the web does.
+            if state.loaded.as_ref().is_some_and(|l| l.picked.len() == 2) {
+                compare_task(state, ctx)
+            } else {
+                Task::none()
+            }
         }
         Msg::ClearPicks => {
             if let Some(l) = state.loaded.as_mut() {
@@ -471,22 +514,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
-        Msg::Compare => match state.loaded.as_ref() {
-            Some(l) if l.picked.len() == 2 => {
-                let (from, to) = (l.picked[0].min(l.picked[1]), l.picked[0].max(l.picked[1]));
-                let (c, id) = (ctx.client.clone(), state.id.clone());
-                client::task(
-                    move || {
-                        get::<PromptDiff>(
-                            &c,
-                            &format!("{}/diff?from={from}&to={to}", prompt_path(&id)),
-                        )
-                    },
-                    Msg::Compared,
-                )
-            }
-            _ => Task::none(),
-        },
         Msg::Compared(Ok(diff)) => {
             if let Some(l) = state.loaded.as_mut() {
                 l.compare = Some(diff);
@@ -663,68 +690,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let Some(l) = state.loaded.as_ref() else {
-        let status: Element<'a, Msg> = match &state.error {
-            Some(e) => ui::error_line(e),
-            None => ui::loading(),
-        };
-        return column![
-            ui::btn_sm("Back", None, ui::Kind::Secondary, Some(Msg::Back)),
-            status
-        ]
-        .spacing(16)
-        .into();
-    };
-    let mut parts: Vec<Element<'a, Msg>> = vec![header(l)];
-    if let Some((text, is_error)) = &state.notice {
-        parts.push(if *is_error {
-            ui::error_line(text)
-        } else {
-            ui::faint(text.clone()).into()
-        });
-    }
-    if state.conflict {
-        parts.push(ui::btn_sm(
-            "Reload latest",
-            None,
-            ui::Kind::Secondary,
-            Some(Msg::ReloadLatest),
-        ));
-    }
-    if state.changed && !state.conflict {
-        parts.push(changed_notice());
-    }
-    if state.leaving {
-        parts.push(
-            row![
-                ui::faint("Discard your changes?"),
-                ui::btn_sm("Discard", None, ui::Kind::Secondary, Some(Msg::Discard)),
-                ui::btn_sm(
-                    "Keep editing",
-                    None,
-                    ui::Kind::Ghost,
-                    Some(Msg::KeepEditing)
-                ),
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into(),
-        );
-    }
-    if let Some(d) = l.details.as_ref() {
-        parts.push(details_form(l.kind, d));
-    }
-    parts.push(ui::tabs(&TABS, state.tab, Msg::Tab));
-    parts.push(match state.tab {
-        Tab::Edit => edit_tab(l),
-        Tab::Versions => versions_tab(l),
-        Tab::History => history_tab(l),
-        Tab::Rules => rules_tab(l.kind),
-    });
-    column(parts).spacing(18).width(Length::Fill).into()
-}
-
 // ---- Hub calls -----------------------------------------------------------------------------------------------------
 
 /// The answer to one call: the HTTP status and the JSON body.
@@ -774,17 +739,56 @@ fn load(id: &str, ctx: &Ctx) -> Task<Msg> {
                     detail.prompt.latest_version
                 ),
             )?;
-            Ok((detail, latest))
+            let live = match detail.prompt.active_version {
+                Some(n) if n != latest.version => live_version(&c, &id, &detail)?,
+                _ => latest.clone(),
+            };
+            Ok((detail, latest, live))
         },
         Msg::Loaded,
     )
 }
 
+/// The live version's body, from the hub: the published version, or the latest when none is published.
+fn live_version(
+    c: &client::Client,
+    id: &str,
+    detail: &PromptDetail,
+) -> Result<PromptVersion, String> {
+    let n = detail
+        .prompt
+        .active_version
+        .unwrap_or(detail.prompt.latest_version);
+    get::<PromptVersion>(c, &format!("{}/versions/{n}", prompt_path(id)))
+}
+
 fn refresh(id: &str, ctx: &Ctx) -> Task<Msg> {
     let (c, id) = (ctx.client.clone(), id.to_string());
     client::task(
-        move || get::<PromptDetail>(&c, &prompt_path(&id)),
+        move || {
+            let detail: PromptDetail = get(&c, &prompt_path(&id))?;
+            let live = live_version(&c, &id, &detail)?;
+            Ok((detail, live))
+        },
         Msg::Refreshed,
+    )
+}
+
+/// The two picked versions' line diff, from the hub (the lower number first).
+fn compare_task(state: &State, ctx: &Ctx) -> Task<Msg> {
+    let Some(l) = state.loaded.as_ref() else {
+        return Task::none();
+    };
+    let (from, to) = (l.picked[0].min(l.picked[1]), l.picked[0].max(l.picked[1]));
+    let (c, id) = (ctx.client.clone(), state.id.clone());
+    client::task(
+        move || {
+            get::<PromptDiff>(
+                &c,
+                &format!("{}/diff?from={from}&to={to}", prompt_path(&id)),
+            )
+        },
+        Msg::Compared,
     )
 }
 
@@ -886,10 +890,6 @@ fn severity_tone(severity: Severity) -> ui::Tone {
     }
 }
 
-fn num(n: Option<u32>) -> String {
-    n.map_or_else(String::new, |n| n.to_string())
-}
-
 /// The id of the source editor, so a finding's jump can focus it.
 fn source_id() -> iced::widget::Id {
     iced::widget::Id::new("prompt-source")
@@ -953,17 +953,239 @@ pub fn meta_body(kind: Kind, d: &Details) -> Result<Value, String> {
 
 // ---- Views ---------------------------------------------------------------------------------------------------------
 
-fn header(l: &Loaded) -> Element<'_, Msg> {
+/// The kind's name, as the editor writes it (the web's KIND_NAME).
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::System => "System prompt",
+        Kind::AgentsMd => "AGENTS.md",
+        Kind::Fragment => "Fragment",
+    }
+}
+
+/// One line of a diff: unchanged, added or removed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiffOp {
+    Same,
+    Add,
+    Del,
+}
+
+fn diff_op(op: &str) -> DiffOp {
+    match op {
+        "add" => DiffOp::Add,
+        "del" => DiffOp::Del,
+        _ => DiffOp::Same,
+    }
+}
+
+/// The line diff of `a` against `b` (their longest common subsequence of lines), in order, as the web's editor draws it.
+fn line_diff(a: &str, b: &str) -> Vec<(DiffOp, String)> {
+    let a_lines: Vec<&str> = a.split('\n').collect();
+    let b_lines: Vec<&str> = b.split('\n').collect();
+    let (n, m) = (a_lines.len(), b_lines.len());
+    let mut dp = vec![vec![0u32; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            dp[i][j] = if a_lines[i] == b_lines[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j) = (0, 0);
+    let mut out = Vec::with_capacity(n + m);
+    while i < n && j < m {
+        if a_lines[i] == b_lines[j] {
+            out.push((DiffOp::Same, a_lines[i].to_string()));
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            out.push((DiffOp::Del, a_lines[i].to_string()));
+            i += 1;
+        } else {
+            out.push((DiffOp::Add, b_lines[j].to_string()));
+            j += 1;
+        }
+    }
+    out.extend(a_lines[i..].iter().map(|l| (DiffOp::Del, l.to_string())));
+    out.extend(b_lines[j..].iter().map(|l| (DiffOp::Add, l.to_string())));
+    out
+}
+
+/// A bordered well on the paper ground, the web's `.diff` and preview boxes: a rule and the skin's radius.
+pub(super) fn well_style(_: &Theme) -> container::Style {
+    let p = palette();
+    container::Style {
+        text_color: Some(p.ink),
+        background: Some(p.paper.into()),
+        border: Border {
+            color: p.rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// A card's surface with no head: the web's `.card` holding only a body, padded 16.
+fn plain_card<'a>(body: Element<'a, Msg>) -> Element<'a, Msg> {
+    container(body)
+        .padding(16)
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
+}
+
+/// The diff's rows: the sign, then the line; an added line on the ok ground, a removed one on the crit ground. `cap`
+/// bounds the box's height (the compare panel scrolls); without it the box grows with its lines.
+fn diff_box<'a>(rows: Vec<(DiffOp, String)>, cap: Option<f32>) -> Element<'a, Msg> {
+    let p = palette();
+    let lines: Vec<Element<'a, Msg>> = rows
+        .into_iter()
+        .map(|(op, line)| {
+            let (sign, ink, ground) = match op {
+                DiffOp::Same => (' ', p.ink_2, None),
+                DiffOp::Add => ('+', p.ok, Some(p.ok_soft)),
+                DiffOp::Del => ('−', p.crit, Some(p.crit_soft)),
+            };
+            container(ui::mono(format!("{sign} {line}"), 12.5, ink))
+                .padding([1, 10])
+                .width(Length::Fill)
+                .style(move |_: &Theme| container::Style {
+                    background: ground.map(Background::Color),
+                    ..Default::default()
+                })
+                .into()
+        })
+        .collect();
+    let body: Element<'a, Msg> = match cap {
+        Some(height) => ui::scroll(column(lines).width(Length::Fill))
+            .height(Length::Fixed(height))
+            .into(),
+        None => column(lines).width(Length::Fill).into(),
+    };
+    container(body)
+        .padding([6, 0])
+        .width(Length::Fill)
+        .style(well_style)
+        .into()
+}
+
+/// A hairline across, in `color`.
+pub(super) fn rule<'a, M: 'a>(color: Color) -> Element<'a, M> {
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A table as the web's `.tbl`: a head row in the label voice over a strong rule, then a rule under each row, in a card's
+/// surface. Each column takes its portion of the row; a width of 0 is the width of its content (the actions).
+pub(super) fn table<'a, M: 'a>(
+    heads: &[&str],
+    widths: &[u16],
+    rows: Vec<Vec<Element<'a, M>>>,
+) -> Element<'a, M> {
+    let p = palette();
+    let cell = |w: u16, content: Element<'a, M>| -> Element<'a, M> {
+        let c = container(content).padding([9, 12]);
+        if w == 0 {
+            c.into()
+        } else {
+            c.width(Length::FillPortion(w)).into()
+        }
+    };
+    let head_cells: Vec<Element<'a, M>> = heads
+        .iter()
+        .zip(widths)
+        .map(|(name, &w)| cell(w, ui::label(name).into()))
+        .collect();
+    let mut lines: Vec<Element<'a, M>> = vec![
+        row(head_cells)
+            .width(Length::Fill)
+            .align_y(Alignment::Center)
+            .into(),
+        rule(p.rule_strong),
+    ];
+    for cells in rows {
+        let row_cells: Vec<Element<'a, M>> = cells
+            .into_iter()
+            .zip(widths)
+            .map(|(content, &w)| cell(w, content))
+            .collect();
+        lines.push(
+            row(row_cells)
+                .width(Length::Fill)
+                .align_y(Alignment::Center)
+                .into(),
+        );
+        lines.push(rule(p.rule));
+    }
+    container(column(lines))
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
+}
+
+/// The Edit, Versions, History and Rules tabs, as the web's `.tabs`: the Versions count after its label.
+fn tab_strip<'a>(current: Tab, versions: usize) -> Element<'a, Msg> {
+    let p = palette();
+    let mut strip = row![].spacing(22);
+    for (tab, name) in TABS {
+        let on = tab == current;
+        let mut label = row![text(name).font(ui::SANS_MEDIUM).size(13.0)]
+            .spacing(6)
+            .align_y(Alignment::Center);
+        if tab == Tab::Versions {
+            label = label.push(ui::count(versions as u32));
+        }
+        let body = column![
+            container(label).center_y(Length::Fixed(34.0)),
+            container(Space::new().height(2.0))
+                .width(Length::Fill)
+                .style(move |_: &Theme| container::Style {
+                    background: on.then(|| p.action.into()),
+                    ..Default::default()
+                }),
+        ];
+        let cell = button(body)
+            .padding(0.0)
+            .style(move |_: &Theme, status: button::Status| {
+                let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                button::Style {
+                    background: None,
+                    text_color: if on || hovered { p.ink } else { p.ink_3 },
+                    border: Border::default(),
+                    ..Default::default()
+                }
+            })
+            .on_press(Msg::Tab(tab));
+        strip = strip.push(cell);
+    }
+    column![strip, ui::hairline()].into()
+}
+
+/// The page head: the title with the prompt's actions, the kind and id line, and the status badges (live, latest, score,
+/// binding, archived, unsaved), with the hub's change notice when the draft is kept.
+fn header<'a>(state: &'a State, l: &'a Loaded) -> Element<'a, Msg> {
     let s = &l.summary;
     let archived = s.archived_ms.is_some();
     let editing = l.details.is_some();
-    let actions: Vec<Element<'_, Msg>> = vec![
-        ui::btn_sm("Back", None, ui::Kind::Ghost, Some(Msg::Back)),
-        ui::btn_sm("Save version", None, ui::Kind::Primary, Some(Msg::Save)),
+    let mut actions: Vec<Element<'a, Msg>> = vec![
+        ui::btn_sm("Back to prompts", None, ui::Kind::Ghost, Some(Msg::Back)),
+        ui::btn_sm("Download .md", None, ui::Kind::Ghost, Some(Msg::Download)),
         ui::btn_sm(
-            if editing { "Close details" } else { "Details" },
+            if editing {
+                "Close details"
+            } else {
+                "Details…"
+            },
             None,
-            ui::Kind::Secondary,
+            ui::Kind::Ghost,
             Some(if editing {
                 Msg::CloseDetails
             } else {
@@ -971,110 +1193,120 @@ fn header(l: &Loaded) -> Element<'_, Msg> {
             }),
         ),
         ui::btn_sm(
-            "Download .md",
+            "Publish…",
             None,
-            ui::Kind::Secondary,
-            Some(Msg::Download),
+            ui::Kind::Ghost,
+            Some(if l.publish.is_some() {
+                Msg::ClosePublish
+            } else {
+                Msg::OpenPublish
+            }),
         ),
-        ui::btn_sm(
-            "Publish",
-            None,
-            ui::Kind::Secondary,
-            Some(Msg::Publish(s.latest_version)),
-        ),
-        ui::btn_sm(
+    ];
+    if s.active_version.is_some() {
+        actions.push(ui::btn_sm(
             "Unpublish",
             None,
-            ui::Kind::Secondary,
-            s.active_version.map(|_| Msg::Unpublish),
-        ),
-        ui::btn_sm(
-            if archived { "Restore" } else { "Archive" },
-            None,
-            ui::Kind::Secondary,
-            Some(Msg::ToggleArchive),
-        ),
-    ];
-    let live = match (s.active_version, s.score) {
-        (Some(v), Some(score)) => format!("live v{v} · score {score}"),
-        (Some(v), None) => format!("live v{v}"),
-        _ => "not published".to_string(),
+            ui::Kind::Ghost,
+            Some(Msg::Unpublish),
+        ));
+    }
+    actions.push(ui::btn_sm(
+        if archived { "Restore" } else { "Archive" },
+        None,
+        ui::Kind::Ghost,
+        Some(Msg::ToggleArchive),
+    ));
+    let title = if s.title.is_empty() {
+        "Untitled prompt"
+    } else {
+        s.title.as_str()
     };
-    let binding = s
-        .binding
-        .clone()
-        .unwrap_or_else(|| "no binding".to_string());
-    let mut meta: Vec<Element<'_, Msg>> = vec![
-        ui::badge(l.kind.as_str(), ui::Tone::Muted),
-        ui::faint(binding).into(),
-        ui::faint(live).into(),
-        ui::badge(
-            &format!("score {}", l.report.score),
-            score_tone(l.report.score),
-        ),
-    ];
-    if dirty(l) {
-        meta.push(ui::badge("Unsaved", ui::Tone::Warn));
+    let mut bar: Vec<Element<'a, Msg>> = vec![match s.active_version {
+        Some(v) => ui::badge(&format!("Live v{v}"), ui::Tone::Ok),
+        None => ui::badge("Not published", ui::Tone::Muted),
+    }];
+    bar.push(ui::badge(
+        &format!("Latest v{}", s.latest_version),
+        ui::Tone::Muted,
+    ));
+    if let Some(score) = s.score {
+        bar.push(ui::badge(&format!("Score {score}"), score_tone(score)));
+    }
+    if let Some(binding) = s.binding.as_deref() {
+        bar.push(ui::badge(&format!("Binds {binding}"), ui::Tone::Signal));
     }
     if archived {
-        meta.push(ui::badge("archived", ui::Tone::Warn));
+        bar.push(ui::badge("Archived", ui::Tone::Muted));
     }
-    let mut parts: Vec<Element<'_, Msg>> = vec![
-        ui::view_head(&s.title, actions),
-        row(meta).spacing(12).align_y(Alignment::Center).into(),
-    ];
-    if !s.description.is_empty() {
-        parts.push(ui::faint(s.description.clone()).into());
+    if dirty(l) {
+        bar.push(ui::badge("Unsaved changes", ui::Tone::Warn));
     }
-    if !s.tags.is_empty() {
-        parts.push(ui::faint(s.tags.join(" · ")).into());
-    }
-    column(parts).spacing(8).into()
-}
-
-/// One finding. With `jump`, a finding that has a line is a link that moves the source to that line.
-fn finding_row(f: &Finding, jump: bool) -> Element<'static, Msg> {
-    let place = if f.line == 0 {
-        "document".to_string()
-    } else {
-        format!("line {}", f.line)
-    };
-    let place: Element<'static, Msg> = if jump && f.line > 0 {
-        ui::link(&place, Msg::Jump(f.line), true)
-    } else {
-        ui::sans(place, 12.0, palette().ink_3).into()
-    };
-    row![
-        ui::badge(f.severity.as_str(), severity_tone(f.severity)),
-        place,
-        ui::prose(f.message.clone()),
-        ui::mono(f.rule.clone(), 11.0, palette().ink_3),
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-/// The notice when the hub changed the prompt while the draft had unsaved edits.
-fn changed_notice<'a>() -> Element<'a, Msg> {
-    row![
-        ui::faint("Changed on the hub — reload. Reloading replaces the draft."),
-        ui::btn_sm(
-            "Reload latest",
+    if state.changed && !state.conflict {
+        bar.push(ui::badge("Changed on the hub", ui::Tone::Warn));
+        bar.push(ui::btn_sm(
+            "Reload",
             None,
-            ui::Kind::Secondary,
-            Some(Msg::ReloadLatest)
-        ),
+            ui::Kind::Ghost,
+            Some(Msg::ReloadLatest),
+        ));
+    }
+    column![
+        ui::view_head(title, actions),
+        ui::faint(format!("{} · {}", kind_name(l.kind), state.id)),
+        row(bar).spacing(8).align_y(Alignment::Center).wrap(),
+    ]
+    .spacing(8)
+    .into()
+}
+
+/// One finding: its severity in the tone, the place (a line moves the source to it), the message and the rule's id, in
+/// a ruled box. With `jump`, a finding with a line is a link that moves the source to that line.
+fn finding_row(f: &Finding, jump: bool) -> Element<'static, Msg> {
+    let (name, tone) = match f.severity {
+        Severity::Error => ("Error", ui::Tone::Danger),
+        Severity::Warning => ("Warning", ui::Tone::Warn),
+        Severity::Info => ("Info", ui::Tone::Info),
+    };
+    let place: Element<'static, Msg> = if f.line == 0 {
+        ui::faint("Whole document").into()
+    } else if jump {
+        ui::link(&format!("Line {}", f.line), Msg::Jump(f.line), false)
+    } else {
+        ui::faint(format!("Line {}", f.line)).into()
+    };
+    let content = row![
+        ui::sans(name, 13.0, tone.color()),
+        place,
+        container(ui::prose(f.message.clone())).width(Length::Fill),
+        ui::mono(f.rule.clone(), 12.0, palette().ink_3),
     ]
     .spacing(12)
-    .align_y(Alignment::Center)
-    .into()
+    .align_y(Alignment::Center);
+    boxed(content.into())
+}
+
+/// A row in a ruled box on the sheet, the web's `.pe-finding`: its padding, a rule and the skin's radius.
+pub(super) fn boxed<'a, M: 'a>(content: Element<'a, M>) -> Element<'a, M> {
+    container(content)
+        .padding([8, 12])
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(palette().sheet.into()),
+            border: Border {
+                color: palette().rule,
+                width: 1.0,
+                radius: crate::theme::skin().radius.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 /// The Details form: the create form's fields for the prompt's metadata (its kind does not change).
 fn details_form(kind: Kind, d: &Details) -> Element<'_, Msg> {
     let binding: Element<'_, Msg> = match kind {
-        Kind::System => text_input("Role, for example builder", &d.role)
+        Kind::System => text_input("e.g. planner", &d.role)
             .on_input(|v| Msg::DetailText(Field::Role, v))
             .padding(8)
             .style(crate::theme::input)
@@ -1083,12 +1315,12 @@ fn details_form(kind: Kind, d: &Details) -> Element<'_, Msg> {
             .label("Apply to every agent")
             .on_toggle(Msg::DetailEvery)
             .into(),
-        Kind::Fragment => ui::faint("Fragments are not bound to an agent.").into(),
+        Kind::Fragment => ui::faint("Fragments are not bound to a role or to the plaza.").into(),
     };
     let body = column![
         prompts::field(
             "Title",
-            text_input("Title", &d.title)
+            text_input("What the prompt is for", &d.title)
                 .on_input(|v| Msg::DetailText(Field::Title, v))
                 .padding(8)
                 .style(crate::theme::input)
@@ -1096,15 +1328,15 @@ fn details_form(kind: Kind, d: &Details) -> Element<'_, Msg> {
         ),
         prompts::field(
             "Description",
-            text_input("What this prompt is for", &d.description)
+            text_input("A line on what it is for", &d.description)
                 .on_input(|v| Msg::DetailText(Field::Description, v))
                 .padding(8)
                 .style(crate::theme::input)
                 .into(),
         ),
         prompts::field(
-            "Tags (comma separated)",
-            text_input("review, safety", &d.tags)
+            "Tags",
+            text_input("comma, separated", &d.tags)
                 .on_input(|v| Msg::DetailText(Field::Tags, v))
                 .padding(8)
                 .style(crate::theme::input)
@@ -1126,204 +1358,298 @@ fn details_form(kind: Kind, d: &Details) -> Element<'_, Msg> {
     ui::card("Details", body.into())
 }
 
+/// The publish form: the version to publish (the latest at first), as the web's Publish dialog.
+fn publish_form(l: &Loaded) -> Option<Element<'_, Msg>> {
+    let chosen = l.publish?;
+    let labels: Vec<(u32, String)> = l
+        .versions
+        .iter()
+        .map(|v| {
+            let live = if l.summary.active_version == Some(v.version) {
+                " (live)"
+            } else {
+                ""
+            };
+            (
+                v.version,
+                format!("v{}, score {}{live}", v.version, v.score),
+            )
+        })
+        .collect();
+    let options: Vec<(u32, &str)> = labels.iter().map(|(n, s)| (*n, s.as_str())).collect();
+    let body = column![
+        ui::faint("Publishing an older version rolls the prompt back. Versions with errors cannot be published."),
+        ui::seg(&options, chosen, Msg::PublishPick),
+        row![
+            ui::btn("Publish", None, ui::Kind::Primary, Some(Msg::Publish(chosen))),
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::ClosePublish)),
+        ]
+        .spacing(8),
+    ]
+    .spacing(12);
+    Some(ui::card("Publish", body.into()))
+}
+
+/// The Edit tab: the source beside the diff against the live version, with the note and the save; the checks and the
+/// preview under them.
 fn edit_tab(l: &Loaded) -> Element<'_, Msg> {
     let body = source_text(&l.source);
-    let editor = text_editor(&l.source)
+    let source = text_editor(&l.source)
+        .style(crate::theme::editor)
         .id(source_id())
         .on_action(Msg::Edit)
         .font(Font::MONOSPACE)
-        .height(Length::Fixed(420.0));
-    let preview = ui::scroll(ui::markdown::<Msg>(&body)).height(Length::Fixed(420.0));
-    let panes = row![
-        container(editor).width(Length::FillPortion(1)),
-        container(preview).width(Length::FillPortion(1))
+        .height(Length::Fixed(360.0));
+    let save_label = format!("Save as version {}", l.summary.latest_version + 1);
+    let save_row = row![
+        container(prompts::field(
+            "Note",
+            text_input("What changed, in a few words", &l.note)
+                .on_input(Msg::Note)
+                .padding(8)
+                .style(crate::theme::input)
+                .into(),
+        ))
+        .width(Length::Fixed(260.0)),
+        ui::btn(&save_label, None, ui::Kind::Primary, Some(Msg::Save)),
     ]
-    .spacing(16);
+    .spacing(8)
+    .align_y(Alignment::End);
+    let panes = row![
+        container(plain_card(column![source, save_row].spacing(12).into(),))
+            .width(Length::FillPortion(1)),
+        container(ui::card(
+            "Against the live version",
+            diff_box(line_diff(&l.live, &body), None),
+        ))
+        .width(Length::FillPortion(1)),
+    ]
+    .spacing(16)
+    .align_y(Alignment::Start);
 
     let r = &l.report;
+    let summary = row![
+        ui::badge(&format!("Score {}", r.score), score_tone(r.score)),
+        ui::badge(
+            &format!("{} errors", r.errors),
+            if r.errors > 0 {
+                ui::Tone::Danger
+            } else {
+                ui::Tone::Muted
+            }
+        ),
+        ui::badge(
+            &format!("{} warnings", r.warnings),
+            if r.warnings > 0 {
+                ui::Tone::Warn
+            } else {
+                ui::Tone::Muted
+            }
+        ),
+        ui::badge(
+            &format!("{} infos", r.infos),
+            if r.infos > 0 {
+                ui::Tone::Info
+            } else {
+                ui::Tone::Muted
+            }
+        ),
+        ui::faint(format!(
+            "{} words, about {} tokens, {} lines, {} headings",
+            r.stats.words, r.stats.est_tokens, r.stats.lines, r.stats.headings
+        )),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .wrap();
     let mut findings: Vec<Element<'_, Msg>> = Vec::new();
     if r.findings.is_empty() {
-        findings.push(ui::faint("No findings: every check passes.").into());
+        findings.push(ui::faint("No findings. This prompt passes every check.").into());
     }
     findings.extend(r.findings.iter().map(|f| finding_row(f, true)));
-
-    let counts = ui::faint(format!(
-        "{} errors · {} warnings · {} infos · score {}",
-        r.errors, r.warnings, r.infos, r.score
-    ));
-    let stats = ui::faint(format!(
-        "{} words · {} lines · {} headings · ~{} tokens",
-        r.stats.words, r.stats.lines, r.stats.headings, r.stats.est_tokens
-    ));
-    column![
-        panes,
-        text_input("Note for this version", &l.note)
-            .on_input(Msg::Note)
-            .padding(8)
-            .style(crate::theme::input),
-        counts,
-        stats,
-        column(findings).spacing(8),
-    ]
-    .spacing(12)
-    .into()
+    let checks = ui::card(
+        "Checks",
+        column![summary, column(findings).spacing(6)]
+            .spacing(12)
+            .into(),
+    );
+    let preview = ui::card(
+        "Preview",
+        container(ui::scroll(ui::markdown::<Msg>(&body)).height(Length::Fixed(320.0)))
+            .padding(12)
+            .width(Length::Fill)
+            .style(well_style)
+            .into(),
+    );
+    column![panes, column![checks, preview].spacing(16)]
+        .spacing(16)
+        .into()
 }
 
+/// The Versions tab: the viewed version, the table of versions with their actions, the pick bar and the comparison.
 fn versions_tab(l: &Loaded) -> Element<'_, Msg> {
     let mut parts: Vec<Element<'_, Msg>> = Vec::new();
     if let Some(v) = &l.viewing {
         parts.push(viewing(v));
     }
+    if l.versions.is_empty() {
+        parts.push(ui::faint("No versions yet.").into());
+    } else {
+        let rows: Vec<Vec<Element<'_, Msg>>> =
+            l.versions.iter().map(|v| version_cells(l, v)).collect();
+        parts.push(table(
+            &[
+                "Version",
+                "Note",
+                "Author",
+                "Created",
+                "Score",
+                "E / W / I",
+                "",
+            ],
+            &[2, 3, 2, 2, 1, 1, 0],
+            rows,
+        ));
+    }
+    if !l.picked.is_empty() {
+        parts.push(pick_bar(l));
+    }
     if let Some(d) = &l.compare {
         parts.push(compare(d));
     }
-    let picked = l.picked.len();
-    parts.push(
-        row![
-            ui::faint(format!("{picked} of 2 picked to compare")),
-            ui::btn_sm(
-                "Compare",
-                None,
-                ui::Kind::Secondary,
-                (picked == 2).then_some(Msg::Compare)
-            ),
-            ui::btn_sm(
-                "Clear",
-                None,
-                ui::Kind::Ghost,
-                (picked > 0).then_some(Msg::ClearPicks)
-            ),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .into(),
-    );
-    for v in &l.versions {
-        parts.push(ui::hairline());
-        parts.push(version_row(l, v));
-    }
-    column(parts).spacing(12).into()
+    column(parts).spacing(16).into()
 }
 
-fn version_row<'a>(l: &'a Loaded, v: &'a PromptVersion) -> Element<'a, Msg> {
+/// One version's cells: its number with the live, best and stale marks; its note, author and age; its score and findings
+/// counts; and its actions (view, compare or unpick, publish or roll back, restore as new).
+fn version_cells<'a>(l: &'a Loaded, v: &'a PromptVersion) -> Vec<Element<'a, Msg>> {
     let n = v.version;
-    let mut marks: Vec<&str> = Vec::new();
-    if l.summary.active_version == Some(n) {
-        marks.push("live");
+    let live = l.summary.active_version;
+    let mut marks: Vec<Element<'a, Msg>> = vec![
+        text(format!("v{n}"))
+            .font(ui::SANS_SEMIBOLD)
+            .size(13.0)
+            .color(palette().ink)
+            .into(),
+    ];
+    if live == Some(n) {
+        marks.push(ui::badge("Live", ui::Tone::Ok));
     }
     if l.summary.best_version == Some(n) {
-        marks.push("best");
+        marks.push(ui::badge("Best", ui::Tone::Signal));
     }
     if v.rules_version < apz_prompt::RULES_VERSION {
-        marks.push("stale");
+        marks.push(ui::badge("stale", ui::Tone::Warn));
     }
-    let mut head: Vec<Element<'a, Msg>> = vec![
-        ui::sans(format!("v{n}"), 13.0, palette().ink).into(),
-        ui::badge(&format!("score {}", v.score), score_tone(v.score)),
-    ];
-    for mark in marks {
-        head.push(ui::badge(mark, ui::Tone::Signal));
-    }
-    let mut body: Vec<Element<'a, Msg>> =
-        vec![row(head).spacing(10).align_y(Alignment::Center).into()];
-    if !v.note.is_empty() {
-        body.push(ui::prose(v.note.clone()).into());
-    }
-    body.push(
-        ui::faint(format!(
-            "{} · {} · {} errors, {} warnings, {} infos",
-            v.author,
-            mcp_hub::ago(now_ms(), v.created_ms),
-            v.errors,
-            v.warnings,
-            v.infos
-        ))
-        .into(),
-    );
-    let pick: Element<'a, Msg> = if l.picked.contains(&n) {
-        ui::btn_sm("Unpick", None, ui::Kind::Ghost, Some(Msg::Pick(n)))
+    let publish_label = if live == Some(n) {
+        "Live"
+    } else if live.is_some_and(|x| n < x) {
+        "Roll back"
     } else {
-        ui::btn_sm("Compare", None, ui::Kind::Ghost, Some(Msg::Pick(n)))
+        "Publish"
     };
-    body.push(
+    let picked = l.picked.contains(&n);
+    let note = if v.note.is_empty() {
+        "—".to_string()
+    } else {
+        v.note.clone()
+    };
+    vec![
+        row(marks).spacing(6).align_y(Alignment::Center).into(),
+        ui::sans(note, 13.0, palette().ink_2).into(),
+        ui::sans(v.author.clone(), 13.0, palette().ink_2).into(),
+        ui::faint(mcp_hub::ago(now_ms(), v.created_ms)).into(),
+        ui::badge(&v.score.to_string(), score_tone(v.score)),
+        ui::mono(
+            format!("{} / {} / {}", v.errors, v.warnings, v.infos),
+            12.0,
+            palette().ink_2,
+        )
+        .into(),
         row![
-            pick,
             ui::btn_sm("View", None, ui::Kind::Ghost, Some(Msg::View(n))),
-            ui::btn_sm("Publish", None, ui::Kind::Secondary, Some(Msg::Publish(n))),
+            ui::btn_sm(
+                if picked { "Unpick" } else { "Compare" },
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Pick(n))
+            ),
+            ui::btn_sm(
+                publish_label,
+                None,
+                ui::Kind::Ghost,
+                (live != Some(n)).then_some(Msg::Publish(n))
+            ),
             ui::btn_sm(
                 "Restore as new",
                 None,
-                ui::Kind::Secondary,
+                ui::Kind::Ghost,
                 Some(Msg::RestoreVersion(n))
             ),
         ]
-        .spacing(12)
+        .spacing(4)
         .align_y(Alignment::Center)
         .into(),
-    );
-    column(body).spacing(8).into()
+    ]
 }
 
-fn viewing(v: &PromptVersion) -> Element<'_, Msg> {
-    let stale = if v.stale { " · stale" } else { "" };
-    let mut parts: Vec<Element<'_, Msg>> = vec![
-        row![
-            ui::sans(
-                format!("v{} · {} findings{stale}", v.version, v.findings.len()),
-                12.0,
-                palette().ink_3
-            ),
-            ui::btn_sm("Close", None, ui::Kind::Ghost, Some(Msg::CloseView)),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .into(),
-    ];
-    parts.extend(v.findings.iter().map(|f| finding_row(f, false)));
-    parts.push(ui::markdown::<Msg>(&v.body));
-    column(parts).spacing(10).into()
-}
-
-fn compare(d: &PromptDiff) -> Element<'_, Msg> {
-    let side = |v: &PromptVersion| {
-        ui::sans(
-            format!(
-                "v{} · score {} · {} errors, {} warnings",
-                v.version, v.score, v.errors, v.warnings
-            ),
-            12.0,
-            palette().ink,
-        )
+/// The pick bar: the version picked so far, and Clear.
+fn pick_bar(l: &Loaded) -> Element<'_, Msg> {
+    let note = if l.picked.len() == 1 {
+        format!("v{} picked. Pick one more version to compare.", l.picked[0])
+    } else {
+        String::new()
     };
-    let mut lines: Vec<Element<'_, Msg>> = Vec::new();
-    for line in &d.lines {
-        let (mark, colour) = match line.op.as_str() {
-            "add" => ("+", ui::Tone::Ok.color()),
-            "del" => ("−", ui::Tone::Danger.color()),
-            _ => (" ", ui::Tone::Muted.color()),
-        };
-        lines.push(
-            ui::mono(
-                format!(
-                    "{:>4} {:>4} {mark} {}",
-                    num(line.old),
-                    num(line.new),
-                    line.text
-                ),
-                12.0,
-                colour,
-            )
-            .into(),
-        );
-    }
-    column![
-        row![side(&d.from), side(&d.to)].spacing(24),
-        ui::scroll(column(lines)).height(Length::Fixed(360.0)),
+    row![
+        ui::faint(note),
+        ui::btn_sm("Clear", None, ui::Kind::Ghost, Some(Msg::ClearPicks)),
     ]
     .spacing(12)
+    .align_y(Alignment::Center)
     .into()
 }
 
+/// A version read only, in a card: its body in a scrolling well, with Close.
+fn viewing(v: &PromptVersion) -> Element<'_, Msg> {
+    ui::card_with(
+        &format!("v{}, read only", v.version),
+        vec![ui::btn_sm(
+            "Close",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::CloseView),
+        )],
+        container(
+            ui::scroll(ui::mono(v.body.clone(), 12.5, palette().ink_2))
+                .height(Length::Fixed(320.0)),
+        )
+        .padding(12)
+        .width(Length::Fill)
+        .style(well_style)
+        .into(),
+    )
+}
+
+/// The comparison of two picked versions, in a card: the line diff, with Close.
+fn compare(d: &PromptDiff) -> Element<'_, Msg> {
+    let rows: Vec<(DiffOp, String)> = d
+        .lines
+        .iter()
+        .map(|l| (diff_op(&l.op), l.text.clone()))
+        .collect();
+    ui::card_with(
+        &format!("Compare v{} and v{}", d.from.version, d.to.version),
+        vec![ui::btn_sm(
+            "Close",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::ClearPicks),
+        )],
+        diff_box(rows, Some(360.0)),
+    )
+}
+
+/// The History tab: each event's action, version, actor and age.
 fn history_tab(l: &Loaded) -> Element<'_, Msg> {
     let Some(events) = l.events.as_ref() else {
         return ui::loading();
@@ -1332,52 +1658,127 @@ fn history_tab(l: &Loaded) -> Element<'_, Msg> {
         return ui::faint("No history yet.").into();
     }
     let now = now_ms();
-    let rows: Vec<Element<'_, Msg>> = events
+    let rows: Vec<Vec<Element<'_, Msg>>> = events
         .iter()
         .map(|e| {
-            let version = e.version.map_or_else(String::new, |v| format!("v{v}"));
-            row![
-                ui::sans(e.action.clone(), 12.0, palette().ink),
-                ui::faint(version),
-                ui::faint(e.actor.clone()),
-                ui::faint(mcp_hub::ago(now, e.at_ms)),
+            vec![
+                ui::badge(&e.action, ui::Tone::Muted),
+                ui::sans(
+                    e.version
+                        .map_or_else(|| "—".to_string(), |v| format!("v{v}")),
+                    13.0,
+                    palette().ink_2,
+                )
+                .into(),
+                ui::sans(e.actor.clone(), 13.0, palette().ink_2).into(),
+                ui::faint(mcp_hub::ago(now, e.at_ms)).into(),
             ]
-            .spacing(16)
-            .align_y(Alignment::Center)
-            .into()
         })
         .collect();
-    column(rows).spacing(10).into()
+    table(&["Action", "Version", "Actor", "When"], &[2, 1, 2, 2], rows)
 }
 
-/// The rules that apply to this kind, grouped by their usual severity, with the why under each.
+/// The Rules tab: the checks that apply to this kind, grouped by their severity, each with the why under it.
 fn rules_tab(kind: Kind) -> Element<'static, Msg> {
     let rules = apz_prompt::rules();
     let mut parts: Vec<Element<'static, Msg>> = vec![
         ui::faint(format!(
-            "The rules for {} prompts (rules version {}).",
-            kind.as_str(),
-            apz_prompt::RULES_VERSION
+            "The checks that apply to {}. Errors block publishing and cost 25 points each; warnings cost 8 and infos 2.",
+            kind_name(kind)
         ))
         .into(),
     ];
+    let mut items: Vec<Element<'static, Msg>> = Vec::new();
     for severity in [Severity::Error, Severity::Warning, Severity::Info] {
-        parts.push(ui::label(severity.as_str()).into());
         for rule in rules
             .iter()
             .filter(|r| r.severity == severity && r.applies_to(kind))
         {
-            parts.push(
-                column![
-                    ui::mono(format!("{} · {}", rule.title, rule.id), 13.0, palette().ink),
-                    ui::prose(rule.why)
+            items.push(
+                row![
+                    ui::badge(severity.as_str(), severity_tone(severity)),
+                    column![
+                        ui::sans(rule.title.to_string(), 13.0, palette().ink),
+                        ui::faint(rule.why.to_string()),
+                    ]
+                    .spacing(2),
                 ]
-                .spacing(4)
+                .spacing(12)
+                .align_y(Alignment::Start)
                 .into(),
             );
         }
     }
+    parts.push(column(items).spacing(14).into());
     column(parts).spacing(14).into()
+}
+
+pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+    let Some(l) = state.loaded.as_ref() else {
+        let status: Element<'a, Msg> = match &state.error {
+            Some(e) => ui::error_line(e),
+            None => ui::loading(),
+        };
+        return ui::sheet(
+            ui::view_head(
+                "Prompt",
+                vec![ui::btn_sm(
+                    "Back to prompts",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::Back),
+                )],
+            ),
+            status,
+        );
+    };
+    let mut body: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some((text, is_error)) = &state.notice {
+        body.push(if *is_error {
+            ui::error_line(text)
+        } else {
+            ui::faint(text.clone()).into()
+        });
+    }
+    if state.conflict {
+        body.push(ui::btn_sm(
+            "Reload latest",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::ReloadLatest),
+        ));
+    }
+    if state.leaving {
+        body.push(
+            row![
+                ui::faint("Discard your changes?"),
+                ui::btn_sm("Discard", None, ui::Kind::Secondary, Some(Msg::Discard)),
+                ui::btn_sm(
+                    "Keep editing",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::KeepEditing)
+                ),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    if let Some(form) = publish_form(l) {
+        body.push(form);
+    }
+    if let Some(d) = l.details.as_ref() {
+        body.push(details_form(l.kind, d));
+    }
+    body.push(tab_strip(state.tab, l.versions.len()));
+    body.push(match state.tab {
+        Tab::Edit => edit_tab(l),
+        Tab::Versions => versions_tab(l),
+        Tab::History => history_tab(l),
+        Tab::Rules => rules_tab(l.kind),
+    });
+    ui::sheet(header(state, l), column(body).spacing(16).into())
 }
 
 #[cfg(test)]

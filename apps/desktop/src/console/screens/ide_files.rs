@@ -11,7 +11,7 @@ use apz_ide::state::Base;
 use apz_ide::{ChangeSet, FileChange};
 use iced::Task;
 use iced::widget::{Space, button, column, container, row, text_input};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Element, Length, Padding};
 use serde_json::{Value, json};
 
 use super::ide::{self, BaseChoice, Checkpoint, Msg, QUICK_ID, SEARCH_ID, Search, State};
@@ -62,12 +62,16 @@ pub fn files_tab(st: &State) -> Element<'_, Msg> {
     let main: Element<'_, Msg> = match (&st.search, filter, &st.changes) {
         (Some(search), _, _) => search_panel(search),
         (None, true, Some(changes)) => ui::scroll(ide_tree::view(
-            ide_tree::rows(&ide_tree::changed(&st.tree, changes), true),
+            ide_tree::rows(
+                &ide_tree::changed(&st.tree, changes),
+                true,
+                &changed_paths(Some(changes)),
+            ),
             st.ide.active.clone(),
         ))
         .into(),
         (None, _, _) => ui::scroll(ide_tree::view(
-            ide_tree::rows(&st.tree, false),
+            ide_tree::rows(&st.tree, false, &changed_paths(st.changes.as_ref())),
             st.ide.active.clone(),
         ))
         .into(),
@@ -89,6 +93,24 @@ pub fn files_tab(st: &State) -> Element<'_, Msg> {
         .into()
 }
 
+/// The file's bar, the web's `.ide-editor-bar`: the path in mono beside the Save button, which is live while the file
+/// has changes. The bar sits under the tab strip, over the editor.
+fn editor_bar<'a>(path: &str, dirty: bool) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let bar = row![
+        ui::mono(path.to_string(), 13.0, p.ink_2).width(Length::Fill),
+        ui::btn_sm("Save", None, Kind::Primary, dirty.then_some(Msg::Save)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    column![
+        container(bar).padding([8, 12]).width(Length::Fill),
+        ide_editor::hrule(),
+    ]
+    .into()
+}
+
+/// The editor in the centre: the tab strip, the file's bar and the active file, or the empty state under the bar.
 /// The editor in the centre: the open tabs and the active file, or a note when no file is open. A quick open
 /// (Ctrl+P) takes the centre while it is up.
 pub fn editor_centre(st: &State) -> Element<'_, Msg> {
@@ -100,17 +122,29 @@ pub fn editor_centre(st: &State) -> Element<'_, Msg> {
     {
         return column![
             ide_editor::tab_strip(&st.ide.open, st.ide.active.as_deref(), &st.tabs),
+            editor_bar(path, tab.buffer.dirty),
             ide_editor::editor(path, tab, ide::writable(st)),
         ]
-        .spacing(8)
         .height(Length::Fill)
         .into();
     }
-    ui::empty(
+    let empty = ui::empty(
         "file",
         "No file open",
-        "Pick a file in the Files tab on the right, or press Ctrl+P to find one by name.",
-    )
+        "Pick a file in the Files tab, or press Ctrl/Cmd+P to find one by name.",
+    );
+    if st.ide.workspace.is_some() {
+        return column![
+            editor_bar("", false),
+            container(empty)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_y(Length::Fill),
+        ]
+        .height(Length::Fill)
+        .into();
+    }
+    empty
 }
 
 /// The diff in the centre: the changed files since the base, with the base choice, on the left, and the file
@@ -128,51 +162,54 @@ pub fn diff_centre(st: &State) -> Element<'_, Msg> {
         base,
         Msg::PickBase,
     );
-    let mut side = column![ui::label("Changed since"), seg].spacing(10);
-    if let Some(error) = &st.changes_error {
-        side = side.push(ui::error_line(error));
-    }
-    let Some(changes) = st.changes.as_ref() else {
-        if st.changes_error.is_none() {
-            side = side.push(ui::faint("Loading changes…"));
+    let mut top = row![seg].spacing(12).align_y(Alignment::Center);
+    let body: Element<'_, Msg> = match st.changes.as_ref() {
+        Some(changes) => {
+            top = top.push(ui::sans(
+                ide_diff::summary(changes),
+                12.5,
+                theme::palette().ink_2,
+            ));
+            match st
+                .diff_file
+                .as_deref()
+                .and_then(|path| changes.files.iter().find(|f| f.path == path))
+            {
+                Some(file) => diff_view(file),
+                None => ide_diff::review(changes),
+            }
         }
-        return row![
-            container(side).width(Length::Fixed(260.0)),
-            ui::empty(
-                "git",
-                "Nothing to review yet",
-                "The changes are still loading."
-            )
-        ]
-        .spacing(12)
-        .height(Length::Fill)
-        .into();
+        None => match &st.changes_error {
+            Some(error) => ui::error_line(error),
+            None => ui::faint("Loading changes…").into(),
+        },
     };
-    side = side.push(ui::mono(
-        ide_diff::summary(changes),
-        11.0,
-        theme::palette().ink_2,
-    ));
-    side = side.push(
-        ui::scroll(ide_diff::file_list(changes, st.diff_file.as_deref())).height(Length::Fill),
-    );
-    let picked = st
-        .diff_file
-        .as_deref()
-        .and_then(|path| changes.files.iter().find(|f| f.path == path));
-    let body: Element<'_, Msg> = match picked {
-        Some(file) => diff_view(file),
-        None => ide_diff::review(changes),
-    };
-    row![
-        container(side)
-            .width(Length::Fixed(260.0))
+    column![
+        container(top).padding(Padding {
+            top: 24.0,
+            right: 32.0,
+            bottom: 0.0,
+            left: 32.0,
+        }),
+        container(body)
+            .padding(Padding {
+                top: 16.0,
+                right: 32.0,
+                bottom: 24.0,
+                left: 32.0,
+            })
+            .width(Length::Fill)
             .height(Length::Fill),
-        container(body).width(Length::Fill).height(Length::Fill),
     ]
-    .spacing(12)
     .height(Length::Fill)
     .into()
+}
+
+/// The paths a change set touches: the tree marks them with a dot.
+fn changed_paths(changes: Option<&ChangeSet>) -> std::collections::BTreeSet<String> {
+    changes
+        .map(|c| c.files.iter().map(|f| f.path.clone()).collect())
+        .unwrap_or_default()
 }
 
 /// The changed files of a set, counted for the tabs.

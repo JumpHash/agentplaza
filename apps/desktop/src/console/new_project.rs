@@ -5,21 +5,22 @@
 
 use std::fmt;
 
-use iced::widget::{checkbox, column, container, pick_list, row, text_input};
-use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
+use iced::widget::text_editor::Content;
+use iced::widget::{Space, checkbox, column, container, pick_list, row, text_editor, text_input};
+use iced::{Alignment, Background, Border, Element, Length, Padding, Task, Theme};
 use serde_json::{Value, json};
 
 use super::screens::project_environments::{EnvKind, NAME_RULE, is_web_url, valid_name};
 use super::{Ctx, client, ui};
-use crate::theme;
+use crate::theme::{self, SANS_MEDIUM, SANS_SEMIBOLD};
 
 /// The dialog's fields, and the call in flight.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Form {
     /// What the owner wants done: the conversation's first message.
-    pub ask: String,
+    pub ask: Content,
     pub title: String,
-    pub goal: String,
+    pub goal: Content,
     /// A code project gets a repository; the other kind does not.
     pub code: bool,
     /// The bring-in section's fields.
@@ -31,9 +32,9 @@ pub struct Form {
 impl Default for Form {
     fn default() -> Self {
         Form {
-            ask: String::new(),
+            ask: Content::new(),
             title: String::new(),
-            goal: String::new(),
+            goal: Content::new(),
             code: true,
             adopt: AdoptForm::default(),
             busy: false,
@@ -46,7 +47,7 @@ impl Form {
     /// The dialog with `ask` typed in (a capture hook, `APZ_NEW_PROJECT`).
     pub fn with_goal(ask: String) -> Form {
         Form {
-            ask,
+            ask: Content::with_text(&ask),
             ..Form::default()
         }
     }
@@ -63,6 +64,26 @@ pub enum SourceKind {
     Nothing,
 }
 
+impl SourceKind {
+    const ALL: [SourceKind; 4] = [
+        SourceKind::Platform,
+        SourceKind::Git,
+        SourceKind::Path,
+        SourceKind::Nothing,
+    ];
+}
+
+impl fmt::Display for SourceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            SourceKind::Platform => "A repository on GitHub, GitLab or Forgejo",
+            SourceKind::Git => "A git address anyone can read",
+            SourceKind::Path => "A folder on the hub's machine",
+            SourceKind::Nothing => "Files from this computer",
+        })
+    }
+}
+
 /// The mode the project is brought in with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AdoptMode {
@@ -72,11 +93,22 @@ pub enum AdoptMode {
 }
 
 impl AdoptMode {
+    const ALL: [AdoptMode; 2] = [AdoptMode::Maintenance, AdoptMode::Build];
+
     fn key(self) -> &'static str {
         match self {
             AdoptMode::Maintenance => "maintenance",
             AdoptMode::Build => "build",
         }
+    }
+}
+
+impl fmt::Display for AdoptMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            AdoptMode::Maintenance => "Maintenance",
+            AdoptMode::Build => "Build",
+        })
     }
 }
 
@@ -103,10 +135,10 @@ pub struct AdoptEnv {
 }
 
 /// The "Or bring a project that exists" section's fields.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AdoptForm {
     pub title: String,
-    pub goal: String,
+    pub goal: Content,
     pub source: SourceKind,
     pub git: String,
     pub path: String,
@@ -123,13 +155,15 @@ pub struct AdoptForm {
     pub finished: bool,
     /// Up to three environments.
     pub envs: Vec<AdoptEnv>,
+    /// The platform's repository is signed with the hub's key on the owner's account (the web's "Sign exports").
+    pub sign: bool,
 }
 
 impl Default for AdoptForm {
     fn default() -> Self {
         AdoptForm {
             title: String::new(),
-            goal: String::new(),
+            goal: Content::new(),
             source: SourceKind::default(),
             git: String::new(),
             path: String::new(),
@@ -141,15 +175,16 @@ impl Default for AdoptForm {
             mode: AdoptMode::default(),
             finished: true,
             envs: Vec::new(),
+            sign: false,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    Ask(String),
+    Ask(text_editor::Action),
     Title(String),
-    Goal(String),
+    Goal(text_editor::Action),
     /// The kind: code (true) or other.
     Code(bool),
     /// Start a conversation with the orchestrator, the goal its first message.
@@ -160,7 +195,8 @@ pub enum Msg {
     Talked(Result<Value, String>),
     Opened(Result<Value, String>),
     AdoptTitle(String),
-    AdoptGoal(String),
+    AdoptGoal(text_editor::Action),
+    AdoptSign(bool),
     AdoptSource(SourceKind),
     AdoptGit(String),
     AdoptPath(String),
@@ -193,13 +229,13 @@ pub enum Effect {
 
 pub fn update(form: &mut Form, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Effect) {
     match msg {
-        Msg::Ask(s) => form.ask = s,
+        Msg::Ask(action) => form.ask.perform(action),
         Msg::Title(s) => form.title = s,
-        Msg::Goal(s) => form.goal = s,
+        Msg::Goal(action) => form.goal.perform(action),
         Msg::Code(code) => form.code = code,
         Msg::Cancel => return (Task::none(), Effect::Close),
         Msg::Talk => {
-            let text = form.ask.trim().to_string();
+            let text = form.ask.text().trim().to_string();
             if text.is_empty() {
                 form.error = Some("Say what you want done first.".into());
                 return (Task::none(), Effect::None);
@@ -217,7 +253,10 @@ pub fn update(form: &mut Form, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Effect) {
             );
         }
         Msg::Open => {
-            let (title, goal) = (form.title.trim().to_string(), form.goal.trim().to_string());
+            let (title, goal) = (
+                form.title.trim().to_string(),
+                form.goal.text().trim().to_string(),
+            );
             if title.is_empty() || goal.is_empty() {
                 form.error = Some("A project needs a title and a goal.".into());
                 return (Task::none(), Effect::None);
@@ -256,7 +295,8 @@ pub fn update(form: &mut Form, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Effect) {
             };
         }
         Msg::AdoptTitle(s) => form.adopt.title = s,
-        Msg::AdoptGoal(s) => form.adopt.goal = s,
+        Msg::AdoptGoal(action) => form.adopt.goal.perform(action),
+        Msg::AdoptSign(on) => form.adopt.sign = on,
         Msg::AdoptSource(source) => {
             form.adopt.source = source;
             // The authorizations load the first time the source is a platform.
@@ -283,7 +323,7 @@ pub fn update(form: &mut Form, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Effect) {
             if form.adopt.envs.len() < 3 {
                 form.adopt.envs.push(AdoptEnv {
                     name: String::new(),
-                    kind: EnvKind::Staging,
+                    kind: EnvKind::Production,
                     url: String::new(),
                 });
             }
@@ -410,9 +450,9 @@ fn adopt_body(adopt: &AdoptForm) -> Result<Value, String> {
         "mode": adopt.mode.key(),
         "finished": adopt.finished,
     });
-    let goal = adopt.goal.trim();
-    if !goal.is_empty() {
-        body["goal"] = json!(goal);
+    let goal = adopt.goal.text();
+    if !goal.trim().is_empty() {
+        body["goal"] = json!(goal.trim());
     }
     match adopt.source {
         SourceKind::Platform => {
@@ -423,7 +463,11 @@ fn adopt_body(adopt: &AdoptForm) -> Result<Value, String> {
             if !valid_repo(repo) {
                 return Err("The repository is owner/name, as the platform shows it.".into());
             }
-            body["source"] = json!({ "platform": platform.id, "repo": repo });
+            let mut source = json!({ "platform": platform.id, "repo": repo });
+            if adopt.sign {
+                source["sign"] = json!(true);
+            }
+            body["source"] = source;
         }
         SourceKind::Git => {
             let git = adopt.git.trim();
@@ -472,328 +516,411 @@ fn adopt_body(adopt: &AdoptForm) -> Result<Value, String> {
     Ok(body)
 }
 
-/// The dialog, over a dimmed window.
+/// The sheet's kind choice: a pick list of Code (a repository) or Other, as the web's select.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KindChoice {
+    Code,
+    Other,
+}
+
+impl KindChoice {
+    const ALL: [KindChoice; 2] = [KindChoice::Code, KindChoice::Other];
+}
+
+impl fmt::Display for KindChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            KindChoice::Code => "Code (it gets a repository)",
+            KindChoice::Other => "Other",
+        })
+    }
+}
+
+/// The text area's look: the field's surface, its rule, and the signal ring while focused (the web's `.textarea`).
+pub fn editor(_: &Theme, status: text_editor::Status) -> text_editor::Style {
+    let p = theme::palette();
+    let focused = matches!(status, text_editor::Status::Focused { .. });
+    text_editor::Style {
+        background: Background::Color(p.sheet),
+        border: Border::default()
+            .width(1.0)
+            .color(if focused {
+                p.signal
+            } else if matches!(status, text_editor::Status::Hovered) {
+                p.ink_3
+            } else {
+                p.rule_strong
+            })
+            .rounded(theme::skin().radius),
+        placeholder: p.ink_3,
+        value: p.ink,
+        selection: p.signal_soft,
+    }
+}
+
+/// A labelled field, as the web's `.field`: the label above the control, a hint under it.
+fn field<'a>(label: &str, control: Element<'a, Msg>, hint: Option<&str>) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let mut body = column![
+        ui::sans(label.to_string(), crate::theme::TYPE_UI, p.ink_2).font(SANS_MEDIUM),
+        control
+    ]
+    .spacing(5);
+    if let Some(hint) = hint {
+        body = body.push(ui::faint(hint.to_string()));
+    }
+    body.width(Length::Fill).into()
+}
+
+/// A single-line field on the sheet.
+fn text_box<'a>(
+    value: &str,
+    placeholder: &str,
+    on: impl Fn(String) -> Msg + 'a,
+) -> Element<'a, Msg> {
+    text_input(placeholder, value)
+        .on_input(on)
+        .size(crate::theme::TYPE_UI)
+        .padding([6, 10])
+        .width(Length::Fill)
+        .style(theme::input)
+        .into()
+}
+
+/// A multi-line field: the web's textarea, `height` tall, with the draft kept in the form.
+fn area_box<'a>(
+    content: &'a Content,
+    placeholder: &str,
+    height: f32,
+    on: fn(text_editor::Action) -> Msg,
+) -> Element<'a, Msg> {
+    text_editor(content)
+        .placeholder(placeholder.to_string())
+        .height(Length::Fixed(height))
+        .style(editor)
+        .on_action(on)
+        .into()
+}
+
+/// A pick list on the sheet, as the web's select.
+fn select_box<'a, T>(
+    options: Vec<T>,
+    selected: Option<T>,
+    on: impl Fn(T) -> Msg + 'a,
+) -> Element<'a, Msg>
+where
+    T: Clone + PartialEq + fmt::Display + 'a,
+{
+    pick_list(options, selected, on)
+        .style(theme::pick_list)
+        .text_size(crate::theme::TYPE_UI)
+        .width(Length::Fill)
+        .into()
+}
+
+/// A section of the sheet: its title, what it does, its fields and its call; a rule under it unless it is the last.
+fn section<'a>(title: &str, intro: &str, body: Element<'a, Msg>, last: bool) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let inner = column![
+        ui::sans(title.to_string(), 16.0, p.ink).font(SANS_SEMIBOLD),
+        ui::faint(intro.to_string()),
+        body,
+    ]
+    .spacing(12)
+    .width(Length::Fill);
+    if last {
+        inner.into()
+    } else {
+        column![
+            inner,
+            Space::new().height(24.0),
+            container(Space::new().height(1.0))
+                .width(Length::Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::palette().rule.into()),
+                    ..Default::default()
+                }),
+        ]
+        .spacing(0)
+        .width(Length::Fill)
+        .into()
+    }
+}
+
+/// The call at the foot of a section: right aligned, the one primary.
+fn foot<'a>(calls: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let mut line = row![Space::new().width(Length::Fill)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    for call in calls {
+        line = line.push(call);
+    }
+    line.into()
+}
+
+/// The dialog, over a dimmed window: the three ways in, one after another, in a sheet that scrolls.
 pub fn view(form: &Form) -> Element<'_, Msg> {
     let p = theme::palette();
     let enabled = |msg: Msg| (!form.busy).then_some(msg);
-    let talk = column![
-        ui::sans("Talk it through", 14.0, p.ink),
-        ui::faint("The orchestrator asks what it needs and drafts the project beside the conversation: its tasks, its team and its budget. You start it when it looks right."),
-        ui::label("Your goal"),
-        text_input(
-            "What do you want done? “The scheduler tests are flaky and I want 0.9 out this week.”",
-            &form.ask
-        )
-        .on_input(Msg::Ask)
-        .on_submit(Msg::Talk)
-        .padding(8)
-        .style(theme::input),
-        row![ui::btn(
-            "Start a conversation",
-            Some("conversations"),
-            ui::Kind::Primary,
-            enabled(Msg::Talk)
-        )],
-    ]
-    .spacing(10);
-    let kind = |code: bool, label: &str| {
-        ui::btn(
-            label,
-            None,
-            if form.code == code {
-                ui::Kind::Primary
-            } else {
-                ui::Kind::Secondary
-            },
-            Some(Msg::Code(code)),
-        )
-    };
-    let direct = column![
-        ui::sans("Or open it directly", 14.0, p.ink),
-        ui::faint("An empty project of yours: you put agents on it and give it tasks."),
-        ui::label("Title"),
-        text_input("Release 0.9", &form.title)
-            .on_input(Msg::Title)
-            .padding(8)
-            .style(theme::input),
-        ui::label("Goal"),
-        text_input("What the project delivers", &form.goal)
-            .on_input(Msg::Goal)
-            .on_submit(Msg::Open)
-            .padding(8)
-            .style(theme::input),
-        ui::label("Kind"),
-        row![
-            kind(true, "Code (it gets a repository)"),
-            kind(false, "Other")
+
+    let talk = section(
+        "Talk it through",
+        "The orchestrator asks what it needs and drafts the project beside the conversation: its tasks, its team and its budget. You start it when it looks right.",
+        column![
+            field(
+                "Your goal",
+                area_box(
+                    &form.ask,
+                    "What do you want done? “The scheduler tests are flaky and I want 0.9 out this week.”",
+                    96.0,
+                    Msg::Ask,
+                ),
+                None,
+            ),
+            foot(vec![ui::btn(
+                "Start a conversation",
+                Some("conversations"),
+                ui::Kind::Primary,
+                enabled(Msg::Talk),
+            )]),
         ]
-        .spacing(6),
-        row![ui::btn(
-            "Open project",
-            None,
-            ui::Kind::Secondary,
-            enabled(Msg::Open)
-        )],
-    ]
-    .spacing(10);
-    let adopt = adopt_section(&form.adopt, form.busy);
-    let mut body = column![
-        ui::sans("New project", 16.0, p.ink),
-        talk,
-        ui::hairline(),
-        direct,
-        ui::hairline(),
-        adopt,
-    ]
-    .spacing(16);
+        .spacing(12)
+        .width(Length::Fill)
+        .into(),
+        false,
+    );
+
+    let direct = section(
+        "Or open it directly",
+        "A project of yours: you put agents on it and give it tasks. Files you add become its first change.",
+        column![
+            field(
+                "Title",
+                text_box(&form.title, "Release 0.9", Msg::Title),
+                None
+            ),
+            field(
+                "Goal",
+                area_box(&form.goal, "What the project delivers", 72.0, Msg::Goal),
+                None
+            ),
+            field(
+                "Kind",
+                select_box(
+                    KindChoice::ALL.to_vec(),
+                    Some(if form.code {
+                        KindChoice::Code
+                    } else {
+                        KindChoice::Other
+                    }),
+                    |kind| Msg::Code(kind == KindChoice::Code),
+                ),
+                None,
+            ),
+            foot(vec![ui::btn(
+                "Open project",
+                None,
+                ui::Kind::Primary,
+                enabled(Msg::Open),
+            )]),
+        ]
+        .spacing(12)
+        .width(Length::Fill)
+        .into(),
+        false,
+    );
+
+    let bring = section(
+        "Or bring a project that exists",
+        "A product that is finished, or nearly: the plaza imports its history and looks after it.",
+        adopt_fields(&form.adopt, form.busy),
+        true,
+    );
+
+    let mut body = column![talk, direct, bring].spacing(24).width(Length::Fill);
     if let Some(e) = &form.error {
         body = body.push(ui::error_line(e));
     }
-    body = body.push(row![ui::btn(
-        "Cancel",
-        None,
-        ui::Kind::Ghost,
-        Some(Msg::Cancel)
-    )]);
-    // Scrolls within the panel: the three sections together are taller than a window.
-    let panel = container(ui::scroll(body))
-        .padding(20)
-        .width(Length::Fixed(560.0))
-        .max_height(680.0)
-        .style(|_: &Theme| container::Style {
-            background: Some(theme::palette().sheet.into()),
-            border: Border {
-                color: theme::palette().ink,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        });
-    container(panel)
+    let head = container(
+        row![
+            ui::sans("New project", 17.0, p.ink)
+                .font(SANS_SEMIBOLD)
+                .width(Length::Fill),
+            ui::btn("", Some("x"), ui::Kind::Ghost, Some(Msg::Cancel)),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding {
+        top: 16.0,
+        right: 14.0,
+        bottom: 6.0,
+        left: 22.0,
+    });
+    // Scrolls within the sheet: the three sections together are taller than a window.
+    let sheet = container(column![
+        head,
+        ui::scroll(container(body).padding(Padding {
+            top: 8.0,
+            right: 22.0,
+            bottom: 16.0,
+            left: 22.0,
+        })),
+    ])
+    .width(Length::Fixed(560.0))
+    .max_height(720.0)
+    .style(theme::pop);
+    container(sheet)
         .width(Length::Fill)
         .height(Length::Fill)
         .center(Length::Fill)
         .style(|_: &Theme| container::Style {
-            background: Some(
-                Color {
-                    a: 0.5,
-                    ..Color::BLACK
-                }
-                .into(),
-            ),
+            background: Some(crate::theme::palette().scrim.into()),
             ..Default::default()
         })
         .into()
 }
 
-/// "Or bring a project that exists": a finished (or nearly finished) product, brought in with its history.
-fn adopt_section(adopt: &AdoptForm, busy: bool) -> Element<'_, Msg> {
-    let p = theme::palette();
-    let enabled = move |msg: Msg| (!busy).then_some(msg);
-    let source = |kind: SourceKind, label: &str| {
-        ui::btn_sm(
-            label,
-            None,
-            if adopt.source == kind {
-                ui::Kind::Primary
-            } else {
-                ui::Kind::Secondary
-            },
-            Some(Msg::AdoptSource(kind)),
-        )
-    };
-    let mode = |m: AdoptMode, label: &str| {
-        ui::btn_sm(
-            label,
-            None,
-            if adopt.mode == m {
-                ui::Kind::Primary
-            } else {
-                ui::Kind::Secondary
-            },
-            Some(Msg::AdoptMode(m)),
-        )
-    };
-    let mut body: Vec<Element<'_, Msg>> = vec![
-        ui::sans("Or bring a project that exists", 14.0, p.ink).into(),
-        ui::faint("A product that is finished, or nearly: the plaza imports its history and looks after it.").into(),
-        ui::label("Title").into(),
-        text_input("The product's name", &adopt.title)
-            .on_input(Msg::AdoptTitle)
-            .padding(8)
-            .style(theme::input)
-            .into(),
-        ui::label("Goal").into(),
-        text_input("What it is for", &adopt.goal)
-            .on_input(Msg::AdoptGoal)
-            .padding(8)
-            .style(theme::input)
-            .into(),
-        ui::label("Where its code is").into(),
-        row![
-            source(SourceKind::Platform, "Platform"),
-            source(SourceKind::Git, "Git address"),
-            source(SourceKind::Path, "Folder on the hub"),
-            source(SourceKind::Nothing, "Later"),
-        ]
-        .spacing(6)
-        .into(),
-    ];
+/// The source's fields: the authorization and repository, the git address and branch, or the folder and branch.
+fn source_fields(adopt: &AdoptForm) -> Element<'_, Msg> {
+    let mut out: Vec<Element<'_, Msg>> = Vec::new();
     match adopt.source {
-        SourceKind::Platform => body.extend(platform_fields(adopt)),
+        SourceKind::Platform => match &adopt.platforms {
+            None => out.push(ui::faint(if adopt.platforms_loading {
+                "Loading the platform authorizations…"
+            } else {
+                "The platform authorizations did not load. Pick the source again to retry."
+            }).into()),
+            Some(list) if list.is_empty() => out.push(
+                ui::faint("No git platform is set up yet. Connect one first, or bring the project from a git address or a folder.").into(),
+            ),
+            Some(list) => {
+                out.push(field(
+                    "Account",
+                    select_box(list.clone(), adopt.platform.clone(), Msg::AdoptPlatform),
+                    None,
+                ));
+                out.push(field("Repository", text_box(&adopt.repo, "owner/name", Msg::AdoptRepo), None));
+                out.push(
+                    checkbox(adopt.sign)
+                        .label("Sign exports with the hub's key on my account")
+                        .on_toggle(Msg::AdoptSign)
+                        .size(14.0)
+                        .text_size(crate::theme::TYPE_UI)
+                        .into(),
+                );
+            }
+        },
         SourceKind::Git => {
-            body.push(ui::label("Git address").into());
-            body.push(
-                text_input("https://github.com/owner/product.git", &adopt.git)
-                    .on_input(Msg::AdoptGit)
-                    .padding(8)
-                    .style(theme::input)
-                    .into(),
-            );
-            body.push(branch_field(adopt));
+            out.push(field("Git address", text_box(&adopt.git, "https://…", Msg::AdoptGit), None));
+            out.push(field("Branch", text_box(&adopt.branch, "main", Msg::AdoptBranch), None));
         }
         SourceKind::Path => {
-            body.push(ui::label("Folder on the hub").into());
-            body.push(
-                text_input("/srv/repos/product", &adopt.path)
-                    .on_input(Msg::AdoptPath)
-                    .padding(8)
-                    .style(theme::input)
-                    .into(),
-            );
-            body.push(branch_field(adopt));
+            out.push(field(
+                "Folder on the hub's machine",
+                text_box(&adopt.path, "/Users/me/code/shop", Msg::AdoptPath),
+                Some("An absolute path, starting with /"),
+            ));
+            out.push(field("Branch", text_box(&adopt.branch, "main", Msg::AdoptBranch), None));
         }
-        SourceKind::Nothing => body.push(
+        SourceKind::Nothing => out.push(
             ui::faint("The files come later: upload them into the project once it is open.").into(),
         ),
     }
-    body.push(ui::label("Mode").into());
-    body.push(
-        row![
-            mode(AdoptMode::Maintenance, "Maintenance"),
-            mode(AdoptMode::Build, "Build"),
-        ]
-        .spacing(6)
-        .into(),
-    );
-    body.push(
-        ui::faint("Maintenance: the plaza watches it and proposes changes. Build: it is still being built.")
-            .into(),
-    );
-    body.push(
-        checkbox(adopt.finished)
-            .label("Finished: it opens delivered")
-            .on_toggle(Msg::AdoptFinished)
-            .size(14.0)
-            .text_size(13.0)
-            .into(),
-    );
-    body.push(ui::label("Environments").into());
-    body.push(
-        ui::faint("Where it runs, up to three. A name is lower-case letters, digits and dashes.")
-            .into(),
-    );
+    column(out).spacing(12).width(Length::Fill).into()
+}
+
+/// The fields of "Or bring a project that exists", as the web lays them out.
+fn adopt_fields(adopt: &AdoptForm, busy: bool) -> Element<'_, Msg> {
+    let p = theme::palette();
+    let enabled = move |msg: Msg| (!busy).then_some(msg);
+
+    // Environments: up to three rows of a name, a kind and an address, and a remove at the end of each.
+    let mut env_rows: Vec<Element<'_, Msg>> = Vec::new();
     for (i, slot) in adopt.envs.iter().enumerate() {
-        body.push(
+        env_rows.push(
             row![
                 text_input("production", &slot.name)
                     .on_input(move |s| Msg::AdoptEnvName(i, s))
-                    .padding(8)
+                    .padding([6, 10])
+                    .size(crate::theme::TYPE_UI)
                     .style(theme::input)
-                    .width(Length::Fixed(130.0)),
+                    .width(Length::FillPortion(1)),
                 pick_list(EnvKind::ALL.to_vec(), Some(slot.kind), move |k| {
                     Msg::AdoptEnvKind(i, k)
                 })
                 .style(theme::pick_list)
-                .text_size(13.0),
-                text_input("https://example.com", &slot.url)
+                .text_size(crate::theme::TYPE_UI)
+                .width(Length::FillPortion(1)),
+                text_input("https://…", &slot.url)
                     .on_input(move |s| Msg::AdoptEnvUrl(i, s))
-                    .padding(8)
+                    .padding([6, 10])
+                    .size(crate::theme::TYPE_UI)
                     .style(theme::input)
-                    .width(Length::Fill),
-                ui::btn_sm(
-                    "Remove",
-                    None,
-                    ui::Kind::Ghost,
-                    Some(Msg::AdoptEnvRemove(i))
-                ),
+                    .width(Length::FillPortion(2)),
+                ui::btn_sm("", Some("x"), ui::Kind::Ghost, Some(Msg::AdoptEnvRemove(i))),
             ]
-            .spacing(6)
+            .spacing(8)
             .align_y(Alignment::Center)
             .into(),
         );
     }
-    if adopt.envs.len() < 3 {
-        body.push(
-            row![ui::btn_sm(
-                "Add an environment",
-                Some("plus"),
-                ui::Kind::Secondary,
-                Some(Msg::AdoptEnvAdd)
-            )]
-            .into(),
-        );
-    }
-    body.push(
-        row![ui::btn(
+    let add = (adopt.envs.len() < 3).then_some(Msg::AdoptEnvAdd);
+    let environments = column![
+        ui::sans("Environments (optional)", crate::theme::TYPE_UI, p.ink_2).font(SANS_MEDIUM),
+        ui::faint("Each has a name, a kind and an address. Empty rows are ignored."),
+        column(env_rows).spacing(8).width(Length::Fill),
+        foot(vec![ui::btn_sm("+ Add", None, ui::Kind::Ghost, add)]),
+    ]
+    .spacing(8)
+    .width(Length::Fill);
+
+    column![
+        field(
+            "Title",
+            text_box(&adopt.title, "Shop", Msg::AdoptTitle),
+            None
+        ),
+        field(
+            "Goal (optional)",
+            area_box(&adopt.goal, "What it delivers", 56.0, Msg::AdoptGoal),
+            None
+        ),
+        field(
+            "Where it is",
+            select_box(
+                SourceKind::ALL.to_vec(),
+                Some(adopt.source),
+                Msg::AdoptSource
+            ),
+            None,
+        ),
+        source_fields(adopt),
+        field(
+            "Mode",
+            select_box(AdoptMode::ALL.to_vec(), Some(adopt.mode), Msg::AdoptMode),
+            Some(match adopt.mode {
+                AdoptMode::Maintenance => "Agents watch it and propose; you pick what is done",
+                AdoptMode::Build => "Agents keep building it",
+            }),
+        ),
+        checkbox(adopt.finished)
+            .label("It is finished")
+            .on_toggle(Msg::AdoptFinished)
+            .size(14.0)
+            .text_size(crate::theme::TYPE_UI),
+        ui::faint("On: it opens delivered. Off: it stays in implementation."),
+        environments,
+        foot(vec![ui::btn(
             "Bring it in",
             None,
-            ui::Kind::Secondary,
+            ui::Kind::Primary,
             enabled(Msg::Adopt)
-        )]
-        .into(),
-    );
-    column(body).spacing(10).into()
-}
-
-/// The branch to bring in (git and folders); "main" when left empty.
-fn branch_field(adopt: &AdoptForm) -> Element<'_, Msg> {
-    column![
-        ui::label("Branch"),
-        text_input("main", &adopt.branch)
-            .on_input(Msg::AdoptBranch)
-            .padding(8)
-            .style(theme::input),
+        )]),
     ]
-    .spacing(10)
+    .spacing(12)
+    .width(Length::Fill)
     .into()
-}
-
-/// The platform source's fields: the authorization to pick from, and the repository typed as `owner/name`.
-fn platform_fields(adopt: &AdoptForm) -> Vec<Element<'_, Msg>> {
-    let mut out: Vec<Element<'_, Msg>> = Vec::new();
-    match &adopt.platforms {
-        None => out.push(
-            ui::faint(if adopt.platforms_loading {
-                "Loading the platform authorizations…"
-            } else {
-                "The platform authorizations did not load. Pick the source again to retry."
-            })
-            .into(),
-        ),
-        Some(list) if list.is_empty() => out.push(
-            ui::faint("No platform is authorized yet. Connect one first, or bring the project from a git address or a folder.")
-                .into(),
-        ),
-        Some(list) => {
-            out.push(ui::label("Authorization").into());
-            out.push(
-                pick_list(list.clone(), adopt.platform.clone(), Msg::AdoptPlatform)
-                    .style(theme::pick_list)
-                    .text_size(13.0)
-                    .into(),
-            );
-            out.push(ui::label("Repository").into());
-            out.push(
-                text_input("owner/name", &adopt.repo)
-                    .on_input(Msg::AdoptRepo)
-                    .padding(8)
-                    .style(theme::input)
-                    .into(),
-            );
-        }
-    }
-    out
 }
 
 #[cfg(test)]

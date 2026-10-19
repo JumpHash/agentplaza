@@ -30,7 +30,7 @@ const REPORT_OUTPUT_BYTES: usize = 16_000;
 /// The head the harness writes at the top of a compaction summary (`SUMMARY_HEAD` in agent-harness).
 const SUMMARY_HEAD: &str = "Summary of the work so far (earlier turns were compressed):";
 /// The context parts of a model call, in the order the metrics show them.
-const CONTEXT_PARTS: [&str; 6] = [
+pub(crate) const CONTEXT_PARTS: [&str; 6] = [
     "system",
     "tools",
     "history",
@@ -522,6 +522,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 output: "unknown agent".to_string(),
                 is_error: true,
                 program: None,
+                engine: None,
                 approval: None,
             }),
             _ => None,
@@ -550,7 +551,10 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             // One credit per tool report; task work is cancelled if its escrow runs out.
             let _ = meter(app, cid, work, 1, "tool report");
             // A report carries no duration of its own, so the tool's time is recorded as 0.
-            collect::tool_call(app, cid, &take_tool(cid, &call), 0.0, ok);
+            let tool = take_tool(cid, &call);
+            collect::tool_call(app, cid, &tool, 0.0, ok);
+            let snap = app.context.on_tool(cid, work, &tool, ok, output.len());
+            crate::context_track::publish(app, &snap);
             if crate::library::take_package_call(cid, &call)
                 && ok
                 && let Err(err) = crate::library::accept(app, cid, &output)
@@ -656,6 +660,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 json!({ "before": before, "after": after, "folded": folded, "reason": reason }),
             );
             record_compaction(app, cid, before, after);
+            app.context.on_compaction(cid, work);
             None
         }
         GuestMessage::Stats {
@@ -696,7 +701,9 @@ fn model_call(
             error: Some(e),
         };
     }
-    let model = model_of(app, agent);
+    // A chat's own choice (one message's, or its owner conversation's) before the agent's model.
+    let model =
+        crate::context_track::chat_model(app, cid, work).unwrap_or_else(|| model_of(app, agent));
     let settings = app.settings.get();
     if let Err(e) = app.settings.allowed(tier_of(&agent.role), &model) {
         app.transcripts
@@ -774,6 +781,17 @@ fn model_call(
             crate::usage::meter(app, cid, &model, tokens, None, task.clone(), "harness");
             let context_tokens =
                 usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+            let split = context_split(&request, context_tokens);
+            let snap = app.context.on_model(
+                cid,
+                work,
+                &model,
+                crate::providers::context_window(app, &model),
+                context_tokens,
+                usage.output_tokens,
+                &split,
+            );
+            crate::context_track::publish(app, &snap);
             collect::model_call(
                 app,
                 &ModelCall {
@@ -791,7 +809,7 @@ fn model_call(
                     status: 200,
                     retries: 0,
                     task,
-                    context: context_split(&request, context_tokens),
+                    context: split,
                     ratelimit: (None, None),
                 },
             );
@@ -981,12 +999,18 @@ fn tool_request(
             "output": cap_output(&output, DECISION_OUTPUT_BYTES),
         }),
     );
+    // An allowed engine call on an instance the owner configured carries how to start it.
+    let engine = (name == "code_engine" && matches!(decision, Decision::Allow))
+        .then(|| input.get("engine").and_then(Value::as_str))
+        .flatten()
+        .and_then(|id| app.engines.launch_spec(id));
     HostMessage::ToolDecision {
         call,
         decision,
         output,
         is_error,
         program,
+        engine,
         approval,
     }
 }

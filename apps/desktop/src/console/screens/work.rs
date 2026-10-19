@@ -26,8 +26,8 @@ use serde_json::json;
 
 use super::Id;
 use super::work_model::{
-    self as model, FLOW_TASKS, GraphTask, LineContext, PlanCard, PlanState, Project, Seg, SegKind,
-    SegState, Step, WorkState,
+    self as model, FLOW_TASKS, GraphTask, LineContext, PlanCard, PlanState, Project, Seg, SegState,
+    Step, WorkState,
 };
 use crate::console::{Ctx, boot, client, events, roles, ui};
 use crate::theme;
@@ -37,17 +37,17 @@ use crate::theme;
 /// line and its state.
 pub const CARD: apz_graph::Options = apz_graph::Options {
     card_width: 232.0,
-    card_height: 124.0,
+    card_height: 132.0,
     gap_x: 48.0,
     gap_y: 14.0,
     pad: 12.0,
 };
-/// The Plan column's cards and delivery, as the web's `PLAN_W`, `PLAN_H`, `PLAN_GAP`, `SIDE_GAP` and `DELIVERY`.
-const PLAN_W: f64 = 196.0;
-const PLAN_H: f64 = 62.0;
-const PLAN_GAP: f64 = 8.0;
-const SIDE_GAP: f64 = 56.0;
-const DELIVERY: (f64, f64) = (196.0, 96.0);
+/// The Plan column's cards and delivery, as the web's `PW`, `PH`, `PG` and `GX` (delivery is a plan card's size).
+const PLAN_W: f64 = 220.0;
+const PLAN_H: f64 = 72.0;
+const PLAN_GAP: f64 = 14.0;
+const SIDE_GAP: f64 = 48.0;
+const DELIVERY: (f64, f64) = (220.0, 72.0);
 /// The map's margin inside its frame (the web's `.wk-canvas` margin, `--s5`).
 const MARGIN: f32 = 20.0;
 const DRAWER_W: f32 = 340.0;
@@ -445,11 +445,10 @@ fn lens_on(state: &State) -> bool {
 fn geometry(p: Option<&Project>, laid: &apz_graph::Layout) -> model::MapGeometry {
     let plan = p.map(|_| {
         let n = model::PLAN_STAGES.len() as f64;
-        let height = n * PLAN_H + (n - 1.0) * PLAN_GAP;
+        // The web's `planH`: a card and its gap for each stage.
         model::PlanPart {
             width: PLAN_W,
-            height,
-            anchor: height - PLAN_H / 2.0,
+            height: n * (PLAN_H + PLAN_GAP),
         }
     });
     model::compose(laid, plan, p.map(|_| DELIVERY), SIDE_GAP)
@@ -568,16 +567,26 @@ fn strip<'a>(state: &'a State) -> Element<'a, Msg> {
             state.current == LOOSE,
         ));
     }
-    // The print shadow of the open tab and the scrollbar need room under the tabs.
-    ui::scroll_x(container(row(tabs).spacing(8)).padding(Padding {
-        top: 0.0,
-        right: 4.0,
-        bottom: 10.0,
-        left: 0.0,
-    }))
+    // The strip's rule runs under the tabs; the open tab's signal underline sits on it (the web's `.wk-strip`).
+    let rule = container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::palette().rule.into()),
+            ..Default::default()
+        });
+    column![
+        ui::scroll_x(container(row(tabs).spacing(32)).padding(Padding {
+            top: 0.0,
+            right: 4.0,
+            bottom: 0.0,
+            left: 0.0,
+        })),
+        rule
+    ]
     .into()
 }
 
+/// A tab of the strip: its title, its line and its flow, with a signal underline when it is open (the web's `.wk-tab`).
 fn tab<'a>(
     key: &str,
     title: &str,
@@ -597,27 +606,25 @@ fn tab<'a>(
         flow_line(segs, more),
     ]
     .spacing(4);
-    button(body)
-        .padding([8, 12])
+    let underline = container(Space::new().height(2.0))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: current.then(|| theme::palette().signal.into()),
+            ..Default::default()
+        });
+    button(column![body, underline].spacing(8))
+        .padding(Padding {
+            top: 8.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
         .width(Length::Fixed(200.0))
-        .style(move |_: &Theme, status| {
+        .style(move |_: &Theme, _status| {
             let pal = theme::palette();
             button::Style {
-                background: Some(
-                    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                        pal.hover
-                    } else {
-                        pal.sheet
-                    }
-                    .into(),
-                ),
-                text_color: pal.ink,
-                border: Border {
-                    color: if current { pal.ink } else { pal.rule },
-                    width: 1.0,
-                    radius: 0.0.into(),
-                },
-                shadow: if current { print() } else { Shadow::default() },
+                background: None,
+                text_color: if current { pal.ink } else { pal.ink_2 },
                 ..Default::default()
             }
         })
@@ -643,23 +650,17 @@ fn print() -> Shadow {
 /// Overview's project lines draw it too.
 pub fn flow_line<'a, M: 'a>(segs: &[Seg], more: usize) -> Element<'a, M> {
     let mut items: Vec<Element<'a, M>> = Vec::new();
-    let mut last: Option<SegKind> = None;
     for s in segs {
-        // A little more room between the plan, the tasks and the end.
-        if last.is_some_and(|k| k != s.kind) {
-            items.push(Space::new().width(3.0).into());
-        }
-        last = Some(s.kind);
+        // Every square is 9px and they sit 3px apart, as the web's `.wk-sq` in `.wk-flow`.
         let (fill, edge) = square_colors(s.state);
-        let width = if s.kind == SegKind::Task { 7.0 } else { 9.0 };
         items.push(
-            container(Space::new().width(width).height(9.0))
+            container(Space::new().width(9.0).height(9.0))
                 .style(move |_: &Theme| container::Style {
                     background: fill.map(Into::into),
                     border: Border {
                         color: edge,
                         width: 1.0,
-                        radius: 0.0.into(),
+                        radius: 2.0.into(),
                     },
                     snap: true,
                     ..Default::default()
@@ -670,7 +671,7 @@ pub fn flow_line<'a, M: 'a>(segs: &[Seg], more: usize) -> Element<'a, M> {
     if more > 0 {
         items.push(ui::sans(format!("+{more}"), 11.0, theme::palette().ink_3).into());
     }
-    row(items).spacing(2).align_y(Alignment::Center).into()
+    row(items).spacing(3).align_y(Alignment::Center).into()
 }
 
 /// A flow square's fill and edge. Orange is the owner's: only what waits on the owner wears it. The web dashes the
@@ -768,27 +769,25 @@ struct MapPaint {
     frames: Vec<PaintFrame>,
 }
 
-/// A link: its corners, its colour, whether it is dashed (the plan's posting and delivery), and whether it ends in an
-/// arrowhead.
+/// A link: a curve from `from` to `to` as the web's `bez` draws it, its colour, whether it is dashed (the plan's and
+/// delivery's), and whether it ends in an arrowhead.
 struct PaintLine {
-    points: Vec<Point>,
+    from: Point,
+    to: Point,
     color: Color,
     dashed: bool,
     head: bool,
 }
 
-/// A box's frame: its ground, edge and the strip down its left side, dashed or not, and the offset shadow under it.
+/// A box's frame: its ground and edge, and the ring round a picked card (the web's `box-shadow: 0 0 0 1px`).
 struct PaintFrame {
     rect: Rectangle,
     fill: Color,
     edge: Color,
-    dashed: bool,
-    strip: Option<Color>,
-    shadow: Option<Color>,
+    ring: Option<Color>,
 }
 
 const DASH: &[f32] = &[4.0, 4.0];
-const FRAME_DASH: &[f32] = &[4.0, 3.0];
 
 impl canvas::Program<Msg> for MapPaint {
     type State = ();
@@ -803,14 +802,15 @@ impl canvas::Program<Msg> for MapPaint {
     ) -> Vec<canvas::Geometry<Renderer>> {
         let mut frame = Frame::new(renderer, bounds.size());
         for line in &self.lines {
-            let Some((first, rest)) = line.points.split_first() else {
-                continue;
-            };
+            // The web's `bez`: out to the middle, then in, with both ends level.
+            let mid = (line.from.x + line.to.x) / 2.0;
             let path = Path::new(|p| {
-                p.move_to(*first);
-                for point in rest {
-                    p.line_to(*point);
-                }
+                p.move_to(line.from);
+                p.bezier_curve_to(
+                    Point::new(mid, line.from.y),
+                    Point::new(mid, line.to.y),
+                    line.to,
+                );
             });
             let stroke = Stroke::default().with_color(line.color).with_width(1.5);
             let stroke = if line.dashed {
@@ -825,49 +825,32 @@ impl canvas::Program<Msg> for MapPaint {
                 stroke
             };
             frame.stroke(&path, stroke);
-            if line.head
-                && let Some(end) = line.points.last()
-            {
+            if line.head {
+                let end = line.to;
                 let head = Path::new(|p| {
                     p.move_to(Point::new(end.x - 6.0, end.y - 4.0));
-                    p.line_to(*end);
+                    p.line_to(end);
                     p.line_to(Point::new(end.x - 6.0, end.y + 4.0));
                 });
                 frame.stroke(&head, stroke);
             }
         }
         for f in &self.frames {
-            if let Some(shadow) = f.shadow {
+            if let Some(ring) = f.ring {
+                // A 1px ring outside the box: the fill below covers all but it.
                 frame.fill_rectangle(
-                    f.rect.position() + Vector::new(2.0, 2.0),
-                    f.rect.size(),
-                    shadow,
+                    f.rect.position() + Vector::new(-1.0, -1.0),
+                    Size::new(f.rect.width + 2.0, f.rect.height + 2.0),
+                    ring,
                 );
             }
             frame.fill_rectangle(f.rect.position(), f.rect.size(), f.fill);
-            if let Some(strip) = f.strip {
-                frame.fill_rectangle(f.rect.position(), Size::new(3.0, f.rect.height), strip);
-            }
             // The edge on the half pixel, so a 1px line stays crisp.
             let edge = Path::rectangle(
                 f.rect.position() + Vector::new(0.5, 0.5),
                 Size::new(f.rect.width - 1.0, f.rect.height - 1.0),
             );
-            let stroke = Stroke::default().with_color(f.edge).with_width(1.0);
-            frame.stroke(
-                &edge,
-                if f.dashed {
-                    Stroke {
-                        line_dash: canvas::LineDash {
-                            segments: FRAME_DASH,
-                            offset: 0,
-                        },
-                        ..stroke
-                    }
-                } else {
-                    stroke
-                },
-            );
+            frame.stroke(&edge, Stroke::default().with_color(f.edge).with_width(1.0));
         }
         vec![frame.into_geometry()]
     }
@@ -892,31 +875,22 @@ fn tone(state: WorkState) -> ui::Tone {
     }
 }
 
-/// How a card's frame is drawn in a state: its edge, whether it is dashed, its strip and its shadow.
-fn card_frame(state: WorkState, selected: bool) -> (Color, bool, Color, Option<Color>) {
+/// How a card's frame is drawn in a state, as the web's `.wk-card`: its edge and the ring round a picked card. What
+/// waits on the owner has the signal edge (`.s-accent`).
+fn card_frame(state: WorkState, selected: bool) -> (Color, Option<Color>) {
     let pal = theme::palette();
-    let strip = match state {
-        WorkState::Ready | WorkState::Working | WorkState::Review => pal.info,
-        WorkState::NeedsYou => pal.signal,
-        WorkState::Blocked | WorkState::Failed => pal.crit,
-        WorkState::Done => pal.ok,
-        WorkState::Waiting | WorkState::Withdrawn => pal.ink_3,
-    };
-    let (edge, shadow) = match state {
-        _ if selected => (pal.ink, Some(print().color)),
-        WorkState::NeedsYou => (pal.signal, Some(pal.signal)),
-        WorkState::Blocked => (pal.crit, None),
+    if selected {
+        // The picked card: a signal edge and ring, as the web's `.wk-card[aria-pressed="true"]`.
+        return (pal.signal, Some(pal.signal));
+    }
+    match state {
+        WorkState::NeedsYou => (pal.signal, None),
         _ => (pal.rule, None),
-    };
-    (
-        edge,
-        state == WorkState::Waiting && !selected,
-        strip,
-        shadow,
-    )
+    }
 }
 
-/// The linked map: the plan column, the graph as the layout places it, and delivery, with the links between them.
+/// The linked map, as the web's `mapOf`: the plan column, the graph as the layout places it, and delivery. Each link is a
+/// curve from the card it leaves to the one it enters; the links from the plan and to delivery are dashed.
 fn linked_map<'a>(
     state: &'a State,
     g: &model::Graph,
@@ -933,34 +907,73 @@ fn linked_map<'a>(
         lines: Vec::new(),
         frames: Vec::new(),
     };
-    for corners in geo.posted.iter().chain(&geo.delivered) {
-        paint.lines.push(PaintLine {
-            points: corners.iter().map(|[x, y]| at(*x, *y)).collect(),
-            color: pal.ink_3,
-            dashed: true,
-            head: false,
-        });
-    }
     let faded = |id: &str| kept.is_some_and(|k| !k.contains(id));
-    for r in &laid.routes {
-        let ended = states.get(&r.to).is_some_and(|s| s.ended());
-        let alpha = if faded(&r.from) || faded(&r.to) {
-            0.12
-        } else if ended {
-            0.45
-        } else {
-            1.0
+    // A card's box on the map: its left, top, width and height.
+    let box_of = |id: &str| {
+        laid.cards
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| (geo.graph[0] + c.x, geo.graph[1] + c.y, c.width, c.height))
+    };
+    let link =
+        |from: (f64, f64), to: (f64, f64), color: Color, dashed: bool, head: bool| PaintLine {
+            from: at(from.0, from.1),
+            to: at(to.0, to.1),
+            color,
+            dashed,
+            head,
         };
-        paint.lines.push(PaintLine {
-            points: r
-                .points
-                .iter()
-                .map(|[x, y]| at(*x + geo.graph[0], *y + geo.graph[1]))
-                .collect(),
-            color: fade(pal.ink_3, alpha),
-            dashed: false,
-            head: true,
-        });
+    for [a, b] in &g.edges {
+        let (Some((ax, ay, aw, ah)), Some((bx, by, _, bh))) = (box_of(a), box_of(b)) else {
+            continue;
+        };
+        let ended = states.get(b).is_some_and(|s| s.ended());
+        let color = if ended {
+            fade(pal.rule_strong, 0.35)
+        } else {
+            pal.rule_strong
+        };
+        paint.lines.push(link(
+            (ax + aw, ay + ah / 2.0),
+            (bx, by + bh / 2.0),
+            color,
+            false,
+            true,
+        ));
+    }
+    // From the plan to the tasks that run after nothing (the first column), level with the plan's middle.
+    if let (Some(plan), Some(first)) = (geo.plan, laid.columns.first()) {
+        let start_y = model::MAP_TOP + plan.height / 2.0 - PLAN_GAP;
+        for id in first {
+            if let Some((bx, by, _, bh)) = box_of(id.as_str()) {
+                paint.lines.push(link(
+                    (plan.x + plan.width, start_y),
+                    (bx, by + bh / 2.0),
+                    pal.ink_3,
+                    true,
+                    false,
+                ));
+            }
+        }
+    }
+    // From each task that nothing runs after to delivery, which sits level with the map's middle.
+    if let Some(d) = geo.delivery {
+        let mid = geo.height / 2.0;
+        for c in &laid.cards {
+            if g.edges.iter().any(|edge| edge[0] == c.id) {
+                continue;
+            }
+            paint.lines.push(link(
+                (
+                    geo.graph[0] + c.x + c.width,
+                    geo.graph[1] + c.y + c.height / 2.0,
+                ),
+                (d.x, mid),
+                pal.ink_3,
+                true,
+                false,
+            ));
+        }
     }
 
     let mut layers: Vec<Element<'a, Msg>> = Vec::new();
@@ -971,19 +984,15 @@ fn linked_map<'a>(
                 at(plan.x, plan.y + i as f64 * (PLAN_H + PLAN_GAP)),
                 Size::new(PLAN_W as f32, PLAN_H as f32),
             );
-            let (edge, dashed, shadow) = match c.state {
-                PlanState::Done => (pal.rule, false, None),
-                PlanState::Current => (pal.ink, false, None),
-                PlanState::Later => (pal.rule, true, None),
-                PlanState::You => (pal.signal, false, Some(pal.signal)),
-            };
             paint.frames.push(PaintFrame {
                 rect,
-                fill: pal.sheet,
-                edge,
-                dashed,
-                strip: None,
-                shadow,
+                fill: pal.raised,
+                edge: if c.state == PlanState::You {
+                    pal.signal
+                } else {
+                    pal.rule
+                },
+                ring: None,
             });
             layers.push(pinned(
                 rect,
@@ -1015,25 +1024,18 @@ fn linked_map<'a>(
         };
         let s = states.get(&t.id).copied().unwrap_or(WorkState::Waiting);
         let selected = state.selected.as_deref() == Some(t.id.as_str());
-        let alpha = if faded(&t.id) {
-            0.18
-        } else if s.ended() {
-            0.62
-        } else {
-            1.0
-        };
+        // A card the lens keeps out is faded (the web's `.wk-faded`).
+        let alpha = if faded(&t.id) { 0.35 } else { 1.0 };
         let rect = Rectangle::new(
             Point::new(MARGIN + gx + c.x as f32, MARGIN + gy + c.y as f32),
             Size::new(c.width as f32, c.height as f32),
         );
-        let (edge, dashed, strip, shadow) = card_frame(s, selected);
+        let (edge, ring) = card_frame(s, selected);
         paint.frames.push(PaintFrame {
             rect,
-            fill: fade(pal.sheet, alpha),
+            fill: fade(pal.raised, alpha),
             edge: fade(edge, alpha),
-            dashed,
-            strip: Some(fade(strip, alpha)),
-            shadow: shadow.map(|c| fade(c, alpha)),
+            ring: ring.map(|c| fade(c, alpha)),
         });
         let line = model::card_line(t, s, &ctx);
         layers.push(pinned(
@@ -1045,19 +1047,11 @@ fn linked_map<'a>(
     // Delivery.
     if let (Some(p), Some(d)) = (p, geo.delivery) {
         let rect = Rectangle::new(at(d.x, d.y), Size::new(d.width as f32, d.height as f32));
-        let place = model::stage_index(&p.stage).cmp(&model::stage_index("review"));
-        let (edge, dashed) = match place {
-            std::cmp::Ordering::Less => (pal.ink_3, true),
-            std::cmp::Ordering::Equal => (pal.ink, false),
-            std::cmp::Ordering::Greater => (pal.ink_3, false),
-        };
         paint.frames.push(PaintFrame {
             rect,
-            fill: pal.sheet,
-            edge,
-            dashed,
-            strip: None,
-            shadow: None,
+            fill: pal.raised,
+            edge: pal.rule,
+            ring: None,
         });
         let delivered = p.stage == "delivered";
         let body = column![
@@ -1114,14 +1108,16 @@ fn linked_map<'a>(
     .id(MAP_ID.clone())
     .on_scroll(Msg::MapScrolled)
     .width(Length::Fill);
+    // The map's frame: the sheet under a rule, with the skin's large radius (the web's `.wk-scroll`).
     container(map)
+        .padding(16)
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
-            background: Some(theme::palette().paper.into()),
+            background: Some(theme::palette().sheet.into()),
             border: Border {
                 color: theme::palette().rule,
                 width: 1.0,
-                radius: 0.0.into(),
+                radius: theme::skin().radius_lg.into(),
             },
             snap: true,
             ..Default::default()
@@ -1165,46 +1161,10 @@ fn plan_card<'a>(c: &PlanCard) -> Element<'a, Msg> {
         ]
         .spacing(2),
     )
-    .padding([0, 10])
+    .padding([0, 12])
     .width(Length::Fill)
     .height(Length::Fill)
     .align_y(iced::alignment::Vertical::Center)
-    .into()
-}
-
-/// A badge as `ui::badge` draws it, at `alpha`: a dimmed card dims its badge too.
-fn badge<'a>(label: &str, tone: ui::Tone, alpha: f32) -> Element<'a, Msg> {
-    let pal = theme::palette();
-    let (marker, ink, filled) = match tone {
-        ui::Tone::Muted => (pal.ink_3, pal.ink_2, false),
-        ui::Tone::Info => (pal.info, pal.info, false),
-        ui::Tone::Ok => (pal.ok, pal.ok, true),
-        ui::Tone::Warn => (pal.warn, pal.warn, false),
-        ui::Tone::Danger => (pal.crit, pal.crit, true),
-        ui::Tone::Signal => (pal.signal, pal.signal_ink, true),
-    };
-    let (marker, ink) = (fade(marker, alpha), fade(ink, alpha));
-    let square = container(Space::new())
-        .width(Length::Fixed(8.0))
-        .height(Length::Fixed(8.0))
-        .style(move |_: &Theme| container::Style {
-            background: filled.then(|| marker.into()),
-            border: Border {
-                color: marker,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        });
-    row![
-        square,
-        text(label.to_string())
-            .font(ui::SANS_SEMIBOLD)
-            .size(theme::TYPE_BADGE)
-            .color(ink)
-    ]
-    .spacing(7)
-    .align_y(Alignment::Center)
     .into()
 }
 
@@ -1228,12 +1188,14 @@ fn card_body<'a>(
         ui::sans(ui::ellipsize(&role, 22), 11.0, fade(pal.ink_3, alpha)).wrapping(Wrapping::None),
     ]
     .align_y(Alignment::Center);
+    // An ended card's title is a little dimmer (the web's `.wk-card.ended .wk-card-title`).
+    let title_alpha = if s.ended() { alpha * 0.78 } else { alpha };
     let title = container(
         text(ui::ellipsize(&model::title_of(&t.goal), TITLE_CHARS))
             .font(ui::SANS_SEMIBOLD)
             .size(theme::TYPE_ITEM)
             .line_height(1.4)
-            .color(fade(pal.ink, alpha))
+            .color(fade(pal.ink, title_alpha))
             .wrapping(Wrapping::WordOrGlyph),
     )
     .width(Length::Fill)
@@ -1253,17 +1215,10 @@ fn card_body<'a>(
     )
     .width(Length::Fill)
     .clip(true);
-    let mut body = column![top, title, line].spacing(3);
-    if fixed {
-        body = body.push(Space::new().height(Length::Fill));
-    }
-    body.push(badge(s.label(), tone(s), alpha))
-        .padding(Padding {
-            top: 7.0,
-            right: 9.0,
-            bottom: 7.0,
-            left: 12.0,
-        })
+    // The web's card is a column of 4px gaps with 12px padding: the state chip sits under the line.
+    column![top, title, line, ui::badge_dot(s.label(), tone(s))]
+        .spacing(4)
+        .padding(12)
         .width(Length::Fill)
         .into()
 }
@@ -1314,15 +1269,22 @@ fn state_columns<'a>(
                 })
                 .collect();
             let count = items.len();
-            let head = row![
-                text(label.to_string())
-                    .font(ui::SANS_SEMIBOLD)
-                    .size(13.0)
-                    .color(pal.ink),
-                ui::sans(count.to_string(), 12.0, pal.ink_3),
+            // The column's head: its name at the left, its count at the right, over a rule (the web's `.wk-ch`).
+            let head = column![
+                row![
+                    ui::sans(label.to_string(), 13.0, pal.ink_2),
+                    Space::new().width(Length::Fill),
+                    ui::sans(count.to_string(), 13.0, pal.ink_3),
+                ]
+                .align_y(Alignment::Center),
+                container(Space::new().height(1.0))
+                    .width(Length::Fill)
+                    .style(|_: &Theme| container::Style {
+                        background: Some(theme::palette().rule.into()),
+                        ..Default::default()
+                    }),
             ]
-            .spacing(8)
-            .align_y(Alignment::Center);
+            .spacing(4);
             let body: Element<'a, Msg> = if items.is_empty() {
                 ui::sans("None.", 12.0, pal.ink_3).into()
             } else {
@@ -1342,8 +1304,7 @@ fn state_columns<'a>(
     .into()
 }
 
-/// A card in a state column: a bordered button as tall as its text. Its border cannot be dashed, so a waiting card's
-/// edge is the faint rule.
+/// A card in a state column, as the web's `.wk-card` there: a bordered button as tall as its text.
 fn flat_card<'a>(
     t: &GraphTask,
     s: WorkState,
@@ -1351,23 +1312,8 @@ fn flat_card<'a>(
     alpha: f32,
     selected: bool,
 ) -> Element<'a, Msg> {
-    let (edge, _, strip, shadow) = card_frame(s, selected);
-    let edge = if s == WorkState::Waiting && !selected {
-        theme::palette().rule_faint
-    } else {
-        edge
-    };
-    // The strip down the card's left side: a stack is as tall as its first layer, the card's text.
-    let content = stack![
-        card_body(t, s, line, alpha, false),
-        container(Space::new().width(3.0).height(Length::Fill)).style(move |_: &Theme| {
-            container::Style {
-                background: Some(fade(strip, alpha).into()),
-                ..Default::default()
-            }
-        }),
-    ];
-    button(content)
+    let (edge, ring) = card_frame(s, selected);
+    button(card_body(t, s, line, alpha, false))
         .padding(0)
         .width(Length::Fill)
         .style(move |_: &Theme, status| {
@@ -1378,7 +1324,7 @@ fn flat_card<'a>(
                         if matches!(status, button::Status::Hovered | button::Status::Pressed) {
                             pal.hover
                         } else {
-                            pal.sheet
+                            pal.raised
                         },
                         alpha,
                     )
@@ -1388,9 +1334,9 @@ fn flat_card<'a>(
                 border: Border {
                     color: fade(edge, alpha),
                     width: 1.0,
-                    radius: 0.0.into(),
+                    radius: theme::skin().radius.into(),
                 },
-                shadow: shadow.map_or(Shadow::default(), |color| Shadow {
+                shadow: ring.map_or(Shadow::default(), |color| Shadow {
                     color: fade(color, alpha),
                     ..print()
                 }),
@@ -1414,7 +1360,7 @@ fn planning<'a>(p: &'a Project) -> Element<'a, Msg> {
             };
             let mut lines = column![].spacing(2);
             if !kind.is_empty() {
-                lines = lines.push(ui::sans(kind, 10.5, tone.unwrap_or(pal.ink_3)));
+                lines = lines.push(ui::mono(kind, 10.5, tone.unwrap_or(pal.ink_3)));
             }
             container(
                 lines
@@ -1427,14 +1373,19 @@ fn planning<'a>(p: &'a Project) -> Element<'a, Msg> {
                     )
                     .push(ui::sans(meta, 11.5, pal.ink_3).wrapping(Wrapping::WordOrGlyph)),
             )
-            .padding(8)
+            .padding(Padding {
+                top: 8.0,
+                right: 12.0,
+                bottom: 8.0,
+                left: 12.0,
+            })
             .width(Length::Fill)
             .style(move |_: &Theme| container::Style {
-                background: Some(theme::palette().paper.into()),
+                background: Some(theme::palette().sheet_2.into()),
                 border: Border {
                     color: edge,
                     width: 1.0,
-                    radius: 0.0.into(),
+                    radius: theme::skin().radius.into(),
                 },
                 ..Default::default()
             })
@@ -1467,6 +1418,11 @@ fn planning<'a>(p: &'a Project) -> Element<'a, Msg> {
         if i == at {
             head = head.push(ui::badge("Now", ui::Tone::Signal));
         }
+        // The stage's line, as its Plan card says it (the web's `.wk-note` under the title).
+        let line = model::plan_cards(p)
+            .into_iter()
+            .find(|c| c.stage == stage)
+            .map_or(String::new(), |c| c.line);
         let body: Element<'a, Msg> = if cards.is_empty() {
             ui::sans(idle.to_string(), 12.0, pal.ink_3)
                 .wrapping(Wrapping::WordOrGlyph)
@@ -1474,7 +1430,16 @@ fn planning<'a>(p: &'a Project) -> Element<'a, Msg> {
         } else {
             column(cards).spacing(8).into()
         };
-        stage_box(column![head, body].spacing(10).into(), i.cmp(&at))
+        stage_box(
+            column![
+                head,
+                ui::sans(line, 12.0, pal.ink_3).wrapping(Wrapping::WordOrGlyph),
+                body
+            ]
+            .spacing(10)
+            .into(),
+            i.cmp(&at),
+        )
     };
     let critiques: Vec<Element<'a, Msg>> = p
         .critiques
@@ -1501,52 +1466,45 @@ fn planning<'a>(p: &'a Project) -> Element<'a, Msg> {
             (c.state == PlanState::You).then_some(pal.signal),
         )
     });
-    let tasks_col = stage_box(
-        column![
-            text("Tasks")
-                .font(ui::SANS_SEMIBOLD)
-                .size(13.0)
-                .color(pal.ink),
-            ui::sans(
-                "Posted from the plan’s tasks list once it is approved, each after the tasks it names.",
-                12.0,
-                pal.ink_3
-            )
-            .wrapping(Wrapping::WordOrGlyph),
+    // The tasks stand under the plan, not in it (the web's `section.wk-note`).
+    let tasks_note = ui::sans(
+        "Tasks: Posted from the plan’s tasks list once it is approved, each after the tasks it names.",
+        12.0,
+        pal.ink_3,
+    )
+    .wrapping(Wrapping::WordOrGlyph);
+    column![
+        row![
+            col(
+                "brief",
+                docs_of(&["brief"]),
+                "The orchestrator writes the brief."
+            ),
+            col(
+                "research",
+                docs_of(&["research"]),
+                "Researchers attach what they find."
+            ),
+            col(
+                "proposal",
+                docs_of(&["proposal", "design", "spec", "tasks", "revision"]),
+                "The planner writes the proposal, the design and the tasks list."
+            ),
+            col(
+                "critique",
+                critiques,
+                "Agents other than the author critique the plan."
+            ),
+            col(
+                "approval",
+                approval.into_iter().collect(),
+                "The mayor approves."
+            ),
         ]
-        .spacing(10)
-        .into(),
-        std::cmp::Ordering::Greater,
-    );
-    row![
-        col(
-            "brief",
-            docs_of(&["brief"]),
-            "The orchestrator writes the brief."
-        ),
-        col(
-            "research",
-            docs_of(&["research"]),
-            "Researchers attach what they find."
-        ),
-        col(
-            "proposal",
-            docs_of(&["proposal", "design", "spec", "tasks", "revision"]),
-            "The planner writes the proposal, the design and the tasks list."
-        ),
-        col(
-            "critique",
-            critiques,
-            "Agents other than the author critique the plan."
-        ),
-        col(
-            "approval",
-            approval.into_iter().collect(),
-            "The mayor approves."
-        ),
-        tasks_col,
+        .spacing(10),
+        tasks_note,
     ]
-    .spacing(10)
+    .spacing(8)
     .into()
 }
 
@@ -1562,18 +1520,14 @@ fn stage_box<'a>(body: Element<'a, Msg>, place: std::cmp::Ordering) -> Element<'
                 background: Some(pal.sheet.into()),
                 border: Border {
                     color: match place {
-                        std::cmp::Ordering::Equal => pal.ink,
-                        std::cmp::Ordering::Less => pal.rule,
+                        std::cmp::Ordering::Equal => pal.signal,
+                        std::cmp::Ordering::Less => pal.ok,
                         std::cmp::Ordering::Greater => pal.rule_faint,
                     },
                     width: 1.0,
-                    radius: 0.0.into(),
+                    radius: theme::skin().radius_lg.into(),
                 },
-                shadow: if place == std::cmp::Ordering::Equal {
-                    print()
-                } else {
-                    Shadow::default()
-                },
+                shadow: Shadow::default(),
                 ..Default::default()
             }
         })
@@ -1781,11 +1735,11 @@ fn drawer<'a>(state: &'a State, g: &model::Graph) -> Option<Element<'a, Msg>> {
         .padding(4)
         .style(button::text)
         .on_press(Msg::Select(None));
-    let mut badges = row![badge(s.label(), tone(s), 1.0)]
+    let mut badges = row![ui::badge_dot::<Msg>(s.label(), tone(s))]
         .spacing(10)
         .align_y(Alignment::Center);
     if let Some(role) = t.role.as_deref() {
-        badges = badges.push(badge(&roles::label(role), ui::Tone::Muted, 1.0));
+        badges = badges.push(ui::badge::<Msg>(&roles::label(role), ui::Tone::Muted));
     }
     let body = column![
         row![
@@ -1846,9 +1800,21 @@ fn drawer_link<'a>(label: String, msg: Msg) -> Element<'a, Msg> {
 mod tests {
     use super::*;
 
-    /// The web's `CARD` (apps/web/src/views/work.ts), read from the source: `{ card_width: 232, … }` as JSON.
+    /// The web's `CARD` (apps/web/src/views/work.ts), read from the source as JSON. Its values are the web's named
+    /// sizes (`const CW = 232;`), so each name is looked up in the same file.
     fn web_card() -> String {
         let source = include_str!("../../../../web/src/views/work.ts");
+        let number = |name: &str| -> f64 {
+            let prefix = format!("const {name} = ");
+            source
+                .lines()
+                .find_map(|l| l.trim_start().strip_prefix(&prefix))
+                .unwrap_or_else(|| panic!("work.ts declares {name}"))
+                .trim_end_matches(';')
+                .trim()
+                .parse()
+                .expect("a number")
+        };
         let line = source
             .lines()
             .find(|l| l.trim_start().starts_with("const CARD = {"))
@@ -1857,10 +1823,12 @@ mod tests {
         let mut json = String::new();
         for part in body.trim_matches(|c| c == '{' || c == '}').split(',') {
             let (key, value) = part.split_once(':').expect("key: value");
+            let value = value.trim();
+            let value = value.parse::<f64>().unwrap_or_else(|_| number(value));
             if !json.is_empty() {
                 json.push(',');
             }
-            json.push_str(&format!("\"{}\":{}", key.trim(), value.trim()));
+            json.push_str(&format!("\"{}\":{value}", key.trim()));
         }
         format!("{{{json}}}")
     }

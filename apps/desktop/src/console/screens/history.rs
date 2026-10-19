@@ -11,9 +11,10 @@ use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Id, approvals};
+use super::history_map::{self, View, Want};
+use super::{Id, approvals, history_ops};
 use crate::console::client::{self, Client, enc};
-use crate::console::ui::{self, INK, INK_2, INK_3, Kind, Tone};
+use crate::console::ui::{self, Kind, Tone};
 use crate::console::{Ctx, events};
 use crate::theme;
 
@@ -74,7 +75,10 @@ pub struct RepoRow {
 #[serde(default)]
 pub struct Connection {
     pub id: String,
+    pub remote: String,
     pub state: String,
+    /// What the state says, in a line (a moved remote, a failed export).
+    pub detail: String,
 }
 
 /// An intent: what a change does, as its kind and title (the summary and covered paths come with the change's page).
@@ -202,6 +206,10 @@ pub struct Data {
     releases: Vec<ReleaseRow>,
     /// The open repository's artifacts (every one of them, for the releases' digests).
     artifacts: Vec<ArtifactRow>,
+    /// What the Queue, Keys, Sync and Ops tabs fetched.
+    extra: history_ops::Data,
+    /// What the Map, Files and Trace views fetched.
+    view: history_map::Data,
 }
 
 // ---- Navigation and presets -------------------------------------------------------------------------------
@@ -211,7 +219,25 @@ pub struct Data {
 pub enum Tab {
     #[default]
     Changes,
+    Queue,
     Releases,
+    Keys,
+    Sync,
+    Ops,
+}
+
+/// A tab of the repository page: one of the history's own tabs, or one of the views this module routes to the
+/// history_map module (Map, Files and Trace).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Core(Tab),
+    View(View),
+}
+
+impl Default for Pane {
+    fn default() -> Self {
+        Pane::Core(Tab::Changes)
+    }
 }
 
 /// The query presets above the change list: each sends a query to the hub's log.
@@ -513,12 +539,12 @@ fn latest_intents(detail: &ChangeDetail) -> &[Intent] {
         .unwrap_or(&[])
 }
 
-fn plural(n: u64, one: &str, many: &str) -> String {
+pub(super) fn plural(n: u64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
 /// A byte count in KB or MB, for an artifact's line.
-fn size_text(bytes: u64) -> String {
+pub(super) fn size_text(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
     } else if bytes < 1024 * 1024 {
@@ -542,7 +568,7 @@ fn connections_text(repo: &RepoRow) -> String {
     }
     repo.connections
         .iter()
-        .map(|c| format!("{}: {}", c.id, connection_label(&c.state)))
+        .map(|c| format!("{}: {}", c.id, history_ops::connection_text(&c.state)))
         .collect::<Vec<_>>()
         .join(" · ")
 }
@@ -553,9 +579,10 @@ fn connections_text(repo: &RepoRow) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     repo: String,
-    tab: Tab,
+    pane: Pane,
     query: String,
     change: Option<String>,
+    want: Want,
 }
 
 #[derive(Debug, Default)]
@@ -564,7 +591,8 @@ pub struct State {
     pub notice: Option<String>,
     /// The open repository ("" for the list of repositories).
     pub repo: String,
-    pub tab: Tab,
+    /// The tab shown: one of the history's own, or Map, Files or Trace.
+    pub pane: Pane,
     /// The query box's text, and the query the change list shows (sent on Enter or by a preset).
     pub query: String,
     pub applied: String,
@@ -572,6 +600,10 @@ pub struct State {
     pub change: Option<String>,
     /// The Expert view: a change's revisions and each record's predicate.
     pub expert: bool,
+    /// The Queue, Keys, Sync and Ops tabs' own state (the verify draft, the filter, the dry run, the dialog).
+    pub ops: history_ops::State,
+    /// The Map, Files and Trace views' own state (the Where… question, the file open, the traced file).
+    pub map: history_map::State,
     /// The version being signed.
     pub signing: Option<String>,
     /// The request the data answers; the screen shows loading until it is the current request.
@@ -583,7 +615,7 @@ pub struct State {
 pub enum Msg {
     OpenRepo(String),
     Home,
-    Tab(Tab),
+    Tab(Pane),
     Query(String),
     Search,
     Preset(Preset),
@@ -593,6 +625,10 @@ pub enum Msg {
     /// Signs a proposed release by its version.
     Sign(String),
     Signed(Result<String, String>),
+    /// A message of the Queue, Keys, Sync and Ops tabs.
+    Ops(history_ops::Msg),
+    /// A message of the Map, Files and Trace views.
+    View(history_map::Msg),
     Loaded(Request, Result<Data, String>),
     /// A hub event: the Weft topics reload the screen.
     Event(events::Event),
@@ -606,13 +642,17 @@ pub fn go(_msg: &Msg) -> Option<Id> {
 fn request(state: &State) -> Request {
     Request {
         repo: state.repo.clone(),
-        tab: state.tab,
+        pane: state.pane,
         query: if state.applied.is_empty() {
             Preset::All.query().to_string()
         } else {
             state.applied.clone()
         },
         change: state.change.clone(),
+        want: match state.pane {
+            Pane::View(view) => state.map.want(view),
+            Pane::Core(_) => Want::default(),
+        },
     }
 }
 
@@ -623,7 +663,41 @@ fn ready(state: &State) -> bool {
 
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    refresh(state, ctx)
+    let mut tasks: Vec<Task<Msg>> = Vec::new();
+    if state.loaded.is_none() {
+        // Snapshots and design review open a repository's tab first: `APZ_WEFT_REPO=<repo>`, `APZ_WEFT_TAB=<tab>`.
+        if let Some(repo) = std::env::var("APZ_WEFT_REPO")
+            .ok()
+            .filter(|_| state.repo.is_empty())
+        {
+            state.repo = repo;
+        }
+        if let Some(pane) = std::env::var("APZ_WEFT_TAB")
+            .ok()
+            .and_then(|t| pane_named(&t))
+        {
+            state.pane = pane;
+        }
+        tasks.push(history_map::snapshot_hooks(&mut state.map, ctx, &state.repo).map(Msg::View));
+    }
+    tasks.push(refresh(state, ctx));
+    Task::batch(tasks)
+}
+
+/// The tab a snapshot names: a history tab by its name, or one of the views.
+fn pane_named(name: &str) -> Option<Pane> {
+    Some(match name {
+        "changes" => Pane::Core(Tab::Changes),
+        "queue" => Pane::Core(Tab::Queue),
+        "releases" => Pane::Core(Tab::Releases),
+        "map" => Pane::View(View::Map),
+        "files" => Pane::View(View::Files),
+        "trace" => Pane::View(View::Trace),
+        "keys" => Pane::Core(Tab::Keys),
+        "sync" => Pane::Core(Tab::Sync),
+        "ops" => Pane::Core(Tab::Ops),
+        _ => return None,
+    })
 }
 
 fn refresh(state: &State, ctx: &Ctx) -> Task<Msg> {
@@ -651,15 +725,18 @@ fn fetch(client: &Client, req: &Request) -> Result<Data, String> {
         return Ok(data);
     }
     let base = format!("/v1/weft/repos/{}", enc(&req.repo));
-    match (req.tab, &req.change) {
+    match (req.pane, &req.change) {
         (_, Some(name)) => {
             data.change = Some(client.get(&format!("/v1/weft/changes/{}", enc(name)))?);
         }
-        (Tab::Changes, None) => {
+        (Pane::Core(Tab::Changes), None) => {
             let path = format!("{base}/log?q={}&limit={LOG_LIMIT}", enc(&req.query));
             data.changes = client.get::<Log>(&path)?.changes;
         }
-        (Tab::Releases, None) => {
+        (Pane::Core(tab @ (Tab::Queue | Tab::Keys | Tab::Sync | Tab::Ops)), None) => {
+            data.extra = history_ops::fetch(client, &req.repo, tab)?;
+        }
+        (Pane::Core(Tab::Releases), None) => {
             data.releases = client
                 .get::<Releases>(&format!("{base}/releases"))?
                 .releases;
@@ -670,6 +747,15 @@ fn fetch(client: &Client, req: &Request) -> Result<Data, String> {
                 .map(|s| s.artifact)
                 .filter(|a| a.repo == req.repo)
                 .collect();
+        }
+        (Pane::View(view), None) => {
+            let head = data
+                .repos
+                .iter()
+                .find(|r| r.name == req.repo)
+                .and_then(|r| r.refs.get("main").cloned())
+                .unwrap_or_else(|| "root".to_string());
+            data.view = history_map::fetch(client, &req.repo, &head, view, &req.want)?;
         }
     }
     Ok(data)
@@ -705,7 +791,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::OpenRepo(repo) => {
             state.repo = repo;
-            state.tab = Tab::Changes;
+            state.pane = Pane::Core(Tab::Changes);
+            state.map = history_map::State::default();
             state.change = None;
             state.query = Preset::All.query().to_string();
             state.applied = state.query.clone();
@@ -718,10 +805,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.notice = None;
             refresh(state, ctx)
         }
-        Msg::Tab(tab) => {
-            state.tab = tab;
+        Msg::Tab(pane) => {
+            state.pane = pane;
             state.change = None;
+            state.ops.clear_notes();
+            state.map.clear_notes();
             refresh(state, ctx)
+        }
+        Msg::View(m) => {
+            let reload = m.reloads();
+            let task = history_map::update(&mut state.map, m, ctx, &state.repo).map(Msg::View);
+            if reload {
+                Task::batch([task, refresh(state, ctx)])
+            } else {
+                task
+            }
         }
         Msg::Query(query) => {
             state.query = query;
@@ -785,6 +883,23 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     state.error = Some(e);
                     Task::none()
                 }
+            }
+        }
+        Msg::Ops(m) => {
+            // A success changed the hub (an export, an adoption): the screen reloads what it shows.
+            let landed = matches!(m, history_ops::Msg::Done(Ok(_)));
+            let conns = state
+                .data
+                .repos
+                .iter()
+                .find(|r| r.name == state.repo)
+                .map_or(&[][..], |r| r.connections.as_slice());
+            let task =
+                history_ops::update(&mut state.ops, m, ctx, &state.repo, conns).map(Msg::Ops);
+            if landed {
+                Task::batch([task, refresh(state, ctx)])
+            } else {
+                task
             }
         }
         Msg::Loaded(req, res) => {
@@ -855,7 +970,10 @@ fn hairlines<'a>(rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
 
 /// The line under a page's head: the state, in one sentence.
 fn lede<'a>(line: String) -> Element<'a, Msg> {
-    ui::prose(line).size(15.0).color(INK_2).into()
+    ui::prose(line)
+        .size(15.0)
+        .color(crate::theme::palette().ink_2)
+        .into()
 }
 
 /// A sheet with the screen's notes (an error, a notice) above its body.
@@ -911,49 +1029,69 @@ fn repos_page<'a>(state: &'a State) -> Element<'a, Msg> {
     }
     let open: u64 = repos.iter().map(|r| r.open_changes).sum();
     let landed: u64 = repos.iter().map(|r| r.landed).sum();
-    let rows: Vec<Element<'a, Msg>> = repos.iter().map(repo_row).collect();
+    let cards: Vec<Element<'a, Msg>> = repos.iter().map(repo_card).collect();
     let body = column![
         lede(format!(
             "{} · {open} open · {landed} landed",
             plural(repos.len() as u64, "repository", "repositories")
         )),
-        hairlines(rows),
+        ui::card_grid(cards),
     ]
     .spacing(16);
     page(state, head, body.into())
 }
 
-/// A repository in the list: its name and description, its main line, landed and open counts, and its connection.
-fn repo_row<'a>(r: &RepoRow) -> Element<'a, Msg> {
+/// A repository as a card, as the web draws it: its name with its project, its description, the landed and open
+/// counts, its main line and its connections. A click opens it.
+fn repo_card<'a>(r: &RepoRow) -> Element<'a, Msg> {
+    let palette = crate::theme::palette();
+    let fig = |value: u64, label: &str| -> Element<'a, Msg> {
+        column![
+            ui::sans(value.to_string(), 18.0, palette.ink),
+            ui::faint(label.to_string()),
+        ]
+        .spacing(2)
+        .into()
+    };
     let description = if r.description.is_empty() {
         "No description".to_string()
     } else {
         r.description.clone()
     };
-    let info = column![
-        text(r.name.clone())
-            .font(ui::SANS_SEMIBOLD)
-            .size(14.0)
-            .color(INK),
-        ui::prose(description).size(13.0).color(INK_2),
-    ]
-    .spacing(2);
-    let mut facts: Vec<Element<'a, Msg>> = vec![
-        ui::sans(format!("main at {}", main_of(r)), 11.0, INK_3).into(),
-        ui::faint(format!("{} landed · {} open", r.landed, r.open_changes)).into(),
-        ui::faint(connections_text(r)).into(),
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        ui::prose(description)
+            .size(13.0)
+            .color(palette.ink_2)
+            .into(),
+        row![fig(r.landed, "landed changes"), fig(r.open_changes, "open")]
+            .spacing(24)
+            .into(),
+        ui::mono(format!("main at {}", main_of(r)), 11.0, palette.ink_3).into(),
     ];
-    if let Some(project) = &r.project {
-        facts.push(ui::faint(format!("project {project}")).into());
+    if !r.connections.is_empty() {
+        let chips: Vec<Element<'a, Msg>> = r
+            .connections
+            .iter()
+            .map(|c| {
+                ui::badge(
+                    &format!("{} · {}", c.id, history_ops::connection_text(&c.state)),
+                    history_ops::connection_tone(&c.state),
+                )
+            })
+            .collect();
+        body.push(ui::chip_row(chips));
     }
-    let open = button(info)
+    let actions: Vec<Element<'a, Msg>> = r
+        .project
+        .iter()
+        .map(|p| ui::badge(p, Tone::Muted))
+        .collect();
+    let card = ui::card_with(&r.name, actions, column(body).spacing(10).into());
+    button(card)
         .on_press(Msg::OpenRepo(r.name.clone()))
         .style(theme::register_row(false))
-        .width(Length::Fill);
-    row![open, column(facts).spacing(2)]
-        .spacing(16)
-        .align_y(Alignment::Center)
-        .padding([10, 12])
+        .padding(0.0)
+        .width(Length::Fill)
         .into()
 }
 
@@ -971,24 +1109,52 @@ fn repo_page<'a>(state: &'a State) -> Element<'a, Msg> {
         );
     };
     let tabs = ui::tabs(
-        &[(Tab::Changes, "Changes"), (Tab::Releases, "Releases")],
-        state.tab,
+        &[
+            (Pane::Core(Tab::Changes), "Changes"),
+            (Pane::Core(Tab::Queue), "Queue"),
+            (Pane::Core(Tab::Releases), "Releases"),
+            (Pane::View(View::Map), "Map"),
+            (Pane::View(View::Files), "Files"),
+            (Pane::View(View::Trace), "Trace"),
+            (Pane::Core(Tab::Keys), "Keys"),
+            (Pane::Core(Tab::Sync), "Sync"),
+            (Pane::Core(Tab::Ops), "Ops"),
+        ],
+        state.pane,
         Msg::Tab,
     );
-    let (line, body) = match state.tab {
-        Tab::Changes => (
-            format!(
+    let (line, body): (Option<String>, Element<'a, Msg>) = match state.pane {
+        Pane::Core(Tab::Changes) => (
+            Some(format!(
                 "{} open · {} landed · main at {}",
                 repo.open_changes,
                 repo.landed,
                 main_of(repo)
-            ),
+            )),
             changes_view(state),
         ),
-        Tab::Releases => (releases_lede(state), releases_view(state)),
+        Pane::Core(Tab::Releases) => (Some(releases_lede(state)), releases_view(state)),
+        Pane::Core(tab) => (
+            None,
+            history_ops::body(&state.ops, tab, repo, &state.data.extra).map(Msg::Ops),
+        ),
+        Pane::View(view) => (
+            None,
+            history_map::body(&state.map, view, repo, &state.data.view).map(Msg::View),
+        ),
     };
-    let content = column![lede(line), ui::faint(connections_text(repo)), tabs, body,].spacing(16);
-    page(state, head, content.into())
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(line) = line {
+        parts.push(lede(line));
+    }
+    parts.push(ui::faint(connections_text(repo)).into());
+    parts.push(tabs);
+    parts.push(body);
+    let base = page(state, head, column(parts).spacing(16).into());
+    ui::with_modal(
+        base,
+        history_ops::dialog(&state.ops).map(|d| d.map(Msg::Ops)),
+    )
 }
 
 fn releases_lede(state: &State) -> String {
@@ -1034,104 +1200,171 @@ fn changes_view<'a>(state: &'a State) -> Element<'a, Msg> {
             "Nothing in this repository matches the query.",
         )
     } else {
-        hairlines(state.data.changes.iter().map(change_row).collect())
+        lane_graph(state)
     };
     column![search, row(presets).spacing(6), list]
         .spacing(14)
         .into()
 }
 
-/// A change in the list: its name, state, title and intents; a click opens its page.
-fn change_row<'a>(c: &ChangeRow) -> Element<'a, Msg> {
-    let intents: Vec<Element<'a, Msg>> = c
+/// The lane graph, as the web draws it: the open lanes above the line of main, main's head between them and main's
+/// landed changes below, newest first. Each change is a node on the rail; a click opens its page.
+fn lane_graph<'a>(state: &'a State) -> Element<'a, Msg> {
+    let mut main: Vec<&ChangeRow> = state
+        .data
+        .changes
+        .iter()
+        .filter(|c| c.state == "landed")
+        .collect();
+    let mut lanes: Vec<&ChangeRow> = state
+        .data
+        .changes
+        .iter()
+        .filter(|c| c.state != "landed")
+        .collect();
+    main.sort_by_key(|c| std::cmp::Reverse(c.at_ms));
+    lanes.sort_by_key(|c| std::cmp::Reverse(c.at_ms));
+    let head = state
+        .data
+        .repos
+        .iter()
+        .find(|r| r.name == state.repo)
+        .map(main_of)
+        .unwrap_or_else(|| "nothing yet".to_string());
+    let palette = crate::theme::palette();
+    let head_row: Element<'a, Msg> = row![
+        container(dot::<Msg>(palette.ink, true, 10.0)).padding([6, 3]),
+        column![
+            row![
+                ui::icon("git-branch", 15.0, palette.ink),
+                ui::sans("main".to_string(), 13.0, palette.ink),
+                ui::mono(head, 12.0, palette.ink_2),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            ui::faint(format!(
+                "{} above, {} below",
+                plural(lanes.len() as u64, "open lane", "open lanes"),
+                plural(main.len() as u64, "landed change", "landed changes")
+            )),
+        ]
+        .spacing(4),
+    ]
+    .spacing(12)
+    .padding([10, 12])
+    .into();
+    let mut rows: Vec<Element<'a, Msg>> = lanes.into_iter().map(|c| lane_row(c, false)).collect();
+    rows.push(head_row);
+    rows.extend(main.into_iter().map(|c| lane_row(c, true)));
+    hairlines(rows)
+}
+
+/// One change on the graph: a node in its state's tone, its id and state, its title, its intents as chips, and its
+/// origin and age (an imported change says whose commit it was).
+fn lane_row<'a>(c: &ChangeRow, on_main: bool) -> Element<'a, Msg> {
+    let palette = crate::theme::palette();
+    let tone = if on_main {
+        Tone::Ok
+    } else {
+        change_tone(&c.state)
+    };
+    let mut head = row![ui::mono(c.change.clone(), 12.0, palette.ink_2)]
+        .spacing(10)
+        .align_y(Alignment::Center);
+    if !on_main {
+        head = head.push(ui::badge(
+            change_state_label(&c.state),
+            change_tone(&c.state),
+        ));
+    }
+    let chips: Vec<Element<'a, Msg>> = c
         .intents
         .iter()
         .map(|i| {
-            row![
-                ui::mono(i.kind.clone(), 11.0, INK_3),
-                ui::prose(i.title.clone()).size(13.0).color(INK_2),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .into()
+            ui::badge(
+                &format!("{} {}", i.kind, ui::ellipsize(&i.title, 40)),
+                Tone::Muted,
+            )
         })
         .collect();
-    let title = column![
-        row![
-            ui::mono(c.change.clone(), 12.0, INK_2),
-            ui::badge(change_state_label(&c.state), change_tone(&c.state)),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center),
-        text(c.title.clone())
-            .font(ui::SANS_SEMIBOLD)
-            .size(14.0)
-            .color(INK),
-        column(intents).spacing(3),
-    ]
-    .spacing(6);
-    let open = button(title)
-        .on_press(Msg::OpenChange(c.change.clone()))
-        .style(theme::register_row(false))
-        .width(Length::Fill);
-    // An imported change has no rounds: it says whose commit it was instead.
     let origin = match &c.imported {
         Some(i) => format!("imported · {}", author_name(&i.author)),
         None => plural(c.rounds, "round", "rounds"),
     };
-    let meta = ui::faint(format!("{origin} · {}", approvals::ago(c.at_ms as i64)));
-    row![open, meta]
-        .spacing(16)
-        .align_y(Alignment::Center)
-        .padding([10, 12])
-        .into()
+    let info = column![
+        head,
+        text(c.title.clone())
+            .font(ui::SANS_SEMIBOLD)
+            .size(14.0)
+            .color(palette.ink),
+        ui::chip_row(chips),
+        ui::faint(format!("{origin} · {}", approvals::ago(c.at_ms as i64))),
+    ]
+    .spacing(6);
+    let open = button(info)
+        .on_press(Msg::OpenChange(c.change.clone()))
+        .style(theme::register_row(false))
+        .width(Length::Fill);
+    row![
+        container(dot::<Msg>(tone.color(), true, 10.0)).padding([6, 3]),
+        open
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .padding([10, 12])
+    .into()
 }
 
-/// A change's page: its line, its title and state, the sign-off chain, its intents, and under Expert its revisions and
-/// each record's predicate.
+/// A change's page, as the web draws it: its title over the Plain/Expert switch, its id and state, its status line, and
+/// cards for the sign-off chain and the intents; under Expert, the revisions and each record's predicate.
 fn change_page<'a>(state: &'a State) -> Element<'a, Msg> {
     let name = state.change.clone().unwrap_or_default();
-    let back = ui::btn("Changes", None, Kind::Ghost, Some(Msg::BackToChanges));
+    let back = ui::btn(
+        &format!("← {}", state.repo),
+        None,
+        Kind::Ghost,
+        Some(Msg::BackToChanges),
+    );
     let expert = ui::seg(
         &[(false, "Plain"), (true, "Expert")],
         state.expert,
         Msg::Expert,
     );
-    let head = ui::view_head(&format!("{name} · {}", state.repo), vec![back, expert]);
     let detail = match state.data.change.as_ref() {
         Some(d) if ready(state) && d.change == name => d,
-        _ => return page(state, head, ui::loading()),
+        _ => {
+            let head = ui::view_head(&format!("{name} · {}", state.repo), vec![back, expert]);
+            return page(state, head, ui::loading());
+        }
     };
+    let head = ui::view_head(&detail.title, vec![back, expert]);
     let steps = chain(&detail.records);
     let pending = to_come(&steps, &detail.state);
-    let mut body: Vec<Element<'a, Msg>> = vec![
-        lede(summary(detail, &steps)),
-        text(detail.title.clone())
-            .font(ui::SANS_SEMIBOLD)
-            .size(16.0)
-            .color(INK)
-            .into(),
-        row![
-            ui::badge(
-                change_state_label(&detail.state),
-                change_tone(&detail.state)
-            ),
-            ui::faint(plural(detail.rounds.len() as u64, "round", "rounds")),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .into(),
-        container(chain_view(&steps, &pending))
-            .padding([8, 0])
-            .width(Length::Fill)
-            .into(),
-        ui::label("Intents").into(),
-        intents_view(detail, state.expert),
+    let meta = row![
+        ui::mono(detail.change.clone(), 12.0, crate::theme::palette().ink_2),
+        ui::badge(
+            change_state_label(&detail.state),
+            change_tone(&detail.state)
+        ),
+        ui::faint(plural(detail.rounds.len() as u64, "round", "rounds")),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    let mut cards: Vec<Element<'a, Msg>> = vec![
+        ui::card("Sign-off", chain_view(&steps, &pending)),
+        ui::card("Intents", intents_view(detail, state.expert)),
     ];
     if state.expert {
-        body.push(expert_view(detail));
+        cards.push(ui::card("Revisions", revisions_view(detail)));
+        cards.push(ui::card("Records", records_view(detail)));
     }
-    page(state, head, column(body).spacing(18).into())
+    let body = column![
+        lede(summary(detail, &steps)),
+        meta,
+        column(cards).spacing(16)
+    ]
+    .spacing(16);
+    page(state, head, body.into())
 }
 
 /// The sign-off chain: a row of dots joined by a rule, one per step, then the stages still to come as rings. A ruling
@@ -1190,7 +1423,7 @@ fn node<'a>(
         row![left, dot, right]
             .width(Length::Fill)
             .align_y(Alignment::Center),
-        ui::sans(stage.to_string(), 13.0, INK),
+        ui::sans(stage.to_string(), 13.0, crate::theme::palette().ink),
         ui::faint(caption),
     ]
     .spacing(6)
@@ -1210,18 +1443,25 @@ fn intents_view<'a>(detail: &'a ChangeDetail, expert: bool) -> Element<'a, Msg> 
         .map(|i| -> Element<'a, Msg> {
             let mut lines: Vec<Element<'a, Msg>> = vec![
                 row![
-                    ui::mono(i.kind.clone(), 11.0, INK_3),
-                    ui::sans(i.title.clone(), 14.0, INK),
+                    ui::mono(i.kind.clone(), 11.0, crate::theme::palette().ink_3),
+                    ui::sans(i.title.clone(), 14.0, crate::theme::palette().ink),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center)
                 .into(),
             ];
             if !i.summary.is_empty() {
-                lines.push(ui::prose(i.summary.clone()).size(13.0).color(INK_2).into());
+                lines.push(
+                    ui::prose(i.summary.clone())
+                        .size(13.0)
+                        .color(crate::theme::palette().ink_2)
+                        .into(),
+                );
             }
             if expert && !i.covers.is_empty() {
-                lines.push(ui::mono(i.covers.join(", "), 11.0, INK_3).into());
+                lines.push(
+                    ui::mono(i.covers.join(", "), 11.0, crate::theme::palette().ink_3).into(),
+                );
             }
             column(lines).spacing(4).into()
         })
@@ -1229,14 +1469,14 @@ fn intents_view<'a>(detail: &'a ChangeDetail, expert: bool) -> Element<'a, Msg> 
     hairlines(rows)
 }
 
-/// Expert: a change's revisions, and each record in the order it was signed, with its predicate.
-fn expert_view<'a>(detail: &'a ChangeDetail) -> Element<'a, Msg> {
+/// Expert: a change's revisions, each with its files, its signer and its age.
+fn revisions_view<'a>(detail: &'a ChangeDetail) -> Element<'a, Msg> {
     let revisions: Vec<Element<'a, Msg>> = detail
         .revisions
         .iter()
         .map(|r| {
             row![
-                ui::mono(r.id.clone(), 12.0, INK),
+                ui::mono(r.id.clone(), 12.0, crate::theme::palette().ink),
                 ui::faint(r.kind.clone()),
                 ui::faint(r.actor.clone()),
                 ui::faint(plural(r.files, "file", "files")),
@@ -1247,17 +1487,15 @@ fn expert_view<'a>(detail: &'a ChangeDetail) -> Element<'a, Msg> {
             .into()
         })
         .collect();
+    hairlines(revisions)
+}
+
+/// Expert: each record in the order it was signed, with its predicate.
+fn records_view<'a>(detail: &'a ChangeDetail) -> Element<'a, Msg> {
     let mut records: Vec<&Record> = detail.records.iter().collect();
     records.sort_by_key(|r| r.seq);
     let records: Vec<Element<'a, Msg>> = records.into_iter().map(record_row).collect();
-    column![
-        ui::label("Revisions"),
-        hairlines(revisions),
-        ui::label("Records"),
-        hairlines(records),
-    ]
-    .spacing(10)
-    .into()
+    hairlines(records)
 }
 
 /// One record: its sequence number, type, revision, signer, a console mark, and its predicate as JSON.
@@ -1265,8 +1503,8 @@ fn record_row<'a>(r: &Record) -> Element<'a, Msg> {
     let predicate =
         serde_json::to_string_pretty(&r.predicate).unwrap_or_else(|_| "null".to_string());
     let mut head = row![
-        ui::mono(format!("#{}", r.seq), 12.0, INK),
-        ui::mono(r.kind.clone(), 12.0, INK_2),
+        ui::mono(format!("#{}", r.seq), 12.0, crate::theme::palette().ink),
+        ui::mono(r.kind.clone(), 12.0, crate::theme::palette().ink_2),
         ui::faint(r.revision.clone()),
         ui::faint(r.actor.clone()),
     ]
@@ -1282,7 +1520,7 @@ fn record_row<'a>(r: &Record) -> Element<'a, Msg> {
 
 /// The predicate's JSON, on a soft surface.
 fn code_box<'a>(source: String) -> Element<'a, Msg> {
-    container(ui::mono(source, 12.0, INK_2))
+    container(ui::mono(source, 12.0, crate::theme::palette().ink_2))
         .padding([10, 12])
         .width(Length::Fill)
         .style(|_: &Theme| container::Style {
@@ -1327,7 +1565,7 @@ fn release_row<'a>(state: &'a State, r: &'a ReleaseRow) -> Element<'a, Msg> {
         text(r.version.clone())
             .font(ui::MONO_SEMIBOLD)
             .size(15.0)
-            .color(INK),
+            .color(crate::theme::palette().ink),
         ui::badge(label, release_tone(label)),
         ui::faint(format!("from {}", change_of(&r.from))),
         Space::new().width(Length::Fill),
@@ -1356,7 +1594,7 @@ fn release_row<'a>(state: &'a State, r: &'a ReleaseRow) -> Element<'a, Msg> {
     for a in artifacts {
         items.push(
             row![
-                ui::mono(a.name.clone(), 12.0, INK),
+                ui::mono(a.name.clone(), 12.0, crate::theme::palette().ink),
                 ui::faint(a.target.clone()),
                 ui::faint(size_text(a.size)),
                 ui::faint(format!("built from {}", change_of(&a.built_from))),
@@ -1380,15 +1618,18 @@ fn notes_view<'a>(notes: &str) -> Element<'a, Msg> {
                 text(heading.trim_start_matches('#').trim().to_string())
                     .font(ui::SANS_SEMIBOLD)
                     .size(13.0)
-                    .color(INK)
+                    .color(crate::theme::palette().ink)
                     .into()
             } else if let Some(item) = line.strip_prefix("- ") {
                 ui::prose(format!("•  {item}"))
                     .size(14.0)
-                    .color(INK_2)
+                    .color(crate::theme::palette().ink_2)
                     .into()
             } else {
-                ui::prose(line.to_string()).size(14.0).color(INK_2).into()
+                ui::prose(line.to_string())
+                    .size(14.0)
+                    .color(crate::theme::palette().ink_2)
+                    .into()
             }
         })
         .collect();

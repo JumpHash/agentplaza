@@ -1,5 +1,6 @@
 // A project's team: the agents working on it, the bench to add from, and the agents that held its tasks before it had
-// members (one step to put them all on it). New agents can be spawned for it; they join at their first hello.
+// members (one step to put them all on it). New agents can be spawned for it; they join at their first hello. The
+// markup is the prototype's Team tab (styles/proto/projects.css).
 
 import { api, type Agent, type Project, type SuggestedMember } from '../api';
 import { href } from '../router';
@@ -12,27 +13,29 @@ import { avatar } from './agent-profile';
 import { openAgentWizard } from './agent-wizard';
 import { statusPill } from './agent-list';
 
-/** One agent's row: who, what role, how it is, and its action. */
+const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** One agent's row: who, what role and note, how it is, and its action. */
 function row(a: Agent, action: HTMLElement | null, note?: string): HTMLElement {
   const pill = statusPill(a.status);
   return h(
-    'div.row.team-row',
+    'div.pj-mrow',
     null,
     avatar(a, 28),
     h(
-      'div.team-who',
+      'div.pj-mrow-main',
       null,
-      h('a.truncate', { href: href('agents', a.cid) }, h('strong', null, agentName(a))),
-      h('div.faint.truncate', null, roleLabel(a.role), note ? ` · ${note}` : ''),
+      h('a.pj-clip', { href: href('agents', a.cid) }, h('strong', null, agentName(a))),
+      h('div.pj-faint', null, roleLabel(a.role), note ? ` · ${note}` : ''),
     ),
-    badge(pill.word ?? a.status, pill.tone),
+    badge(pill.word ?? cap(a.status), pill.tone, true),
     action,
   );
 }
 
 /** The Team tab of project `p`. `changed` redraws the page after a move. */
 export function teamTab(p: Project, changed: () => void): HTMLElement {
-  const root = h('div.pj-sections');
+  const root = h('div.pj-tab');
   const live = isLive(p);
   const draw = async (): Promise<void> => {
     const [members, bench, suggested] = await Promise.all([
@@ -59,12 +62,13 @@ export function teamTab(p: Project, changed: () => void): HTMLElement {
           })(),
         { size: 'sm', kind: 'primary', icon: 'plus' },
       );
+    const working = members ?? [];
     const sections: HTMLElement[] = [
       card(
-        `Working on it (${members?.length ?? 0})`,
-        members?.length
-          ? h('div.stack', null, members.map((a) => row(a, live ? remove(a) : null, a.held ?? undefined)))
-          : h('p.pj-none', null, live ? 'Nobody yet: add agents from the bench, or spawn new ones for this project.' : 'Nobody: the project is over, and its agents went back to the bench.'),
+        `Working on it (${working.length})`,
+        working.length
+          ? working.map((a) => row(a, live ? remove(a) : null, a.held ?? undefined))
+          : h('p.muted', null, live ? 'Nobody yet: add agents from the bench, or spawn new ones for this project.' : 'Nobody: the project is over, and its agents went back to the bench.'),
         {
           actions: live
             ? [button('New agents for this project', () => openAgentWizard({ project: p.id, onDone: moved }), { size: 'sm', icon: 'plus' })]
@@ -76,23 +80,22 @@ export function teamTab(p: Project, changed: () => void): HTMLElement {
       sections.push(
         card(
           'Worked on its tasks before',
-          h(
-            'div.stack',
-            null,
-            h('p.faint', null, 'These agents hold tasks of this project from before agents worked on one project at a time. Put them on it, and its tasks run again.'),
-            suggested.map((a) => row(a, add(a), `holds ${a.tasks.join(', ')}`)),
-          ),
+          [
+            h('p.pj-intro', null, 'These agents hold tasks of this project from before agents worked on one project at a time. Put them on it, and its tasks run again.'),
+            ...suggested.map((a) => row(a, add(a), `holds ${a.tasks.join(', ')}`)),
+          ],
           { actions: [addAll(suggested)] },
         ),
       );
     }
     if (live) {
+      const b = bench ?? [];
       sections.push(
         card(
           'The bench',
-          bench?.length
-            ? h('div.stack', null, h('p.faint', null, 'Agents on no project do nothing, and sleep. Adding one stops nothing: it has no work.'), bench.map((a) => row(a, add(a))))
-            : h('p.pj-none', null, 'Nobody is on the bench.'),
+          b.length
+            ? [h('p.pj-intro', null, 'Agents on no project do nothing, and sleep. Adding one stops nothing: it has no work.'), ...b.map((a) => row(a, add(a)))]
+            : h('p.muted', null, 'Nobody is on the bench.'),
         ),
       );
     }

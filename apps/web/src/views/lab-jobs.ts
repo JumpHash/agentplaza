@@ -2,13 +2,22 @@
 // status, recipe and mode and a search by id; a table or cards view; and the New job form under it.
 // The list refreshes on a poll and whenever a `training` frame arrives. Rows open `#/lab/jobs/<id>`.
 
-import '../styles/lab-jobs.css';
 import { listJobs, type FoundryMode, type JobStatus, type JobSummary } from '../api';
 import { href } from '../router';
-import { button, tabs } from '../ui/components';
+import { badge, table as dataTable, type Column } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
-import { errorText, fmtDuration, fmtGpuHours, fmtNumber, fmtTime, labEmpty, onTraining, pollEvery } from './lab-common';
+import {
+  agoText,
+  budgetCell,
+  errorText,
+  labButton,
+  labEmpty,
+  onTraining,
+  pollEvery,
+  runTimeText,
+  seg,
+} from './lab-common';
 import { jobForm } from './lab-jobs-form';
 
 type View = 'table' | 'cards';
@@ -24,30 +33,20 @@ const STATUSES: { key: StatusFilter; label: string }[] = [
   { key: 'failed', label: 'Failed' },
   { key: 'cancelled', label: 'Cancelled' },
 ];
-const MODES: { value: string; label: string }[] = [
-  { value: '', label: 'All modes' },
-  { value: 'single', label: 'single' },
-  { value: 'tight', label: 'tight' },
-  { value: 'loose', label: 'loose' },
+const MODES: [string, string][] = [
+  ['all', 'All'],
+  ['single', 'single'],
+  ['tight', 'tight'],
+  ['loose', 'loose'],
 ];
-const VIEWS: { key: View; label: string }[] = [
-  { key: 'table', label: 'Table' },
-  { key: 'cards', label: 'Cards' },
+const VIEWS: [View, string][] = [
+  ['table', 'Table'],
+  ['cards', 'Cards'],
 ];
-const TONE: Record<JobStatus, string> = { queued: 'info', running: 'accent', done: 'ok', failed: 'danger', cancelled: 'muted' };
-const COLUMNS: { label: string; num?: boolean }[] = [
-  { label: 'ID' },
-  { label: 'Status' },
-  { label: 'Mode' },
-  { label: 'Recipe' },
-  { label: 'Datasets', num: true },
-  { label: 'Created' },
-  { label: 'Duration', num: true },
-  { label: 'GPU-h used', num: true },
-  { label: 'Error' },
-];
+const TONE: Record<JobStatus, 'muted' | 'info' | 'ok' | 'danger' | 'warn'> = { queued: 'muted', running: 'info', done: 'ok', failed: 'danger', cancelled: 'warn' };
 
 const isLive = (s: JobStatus): boolean => s === 'queued' || s === 'running';
+const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** How long a job has run: to now while it is queued or running, else to its last update. */
 export function durationOf(job: JobSummary, now: number): number {
@@ -55,101 +54,60 @@ export function durationOf(job: JobSummary, now: number): number {
   return Math.max(0, end - job.created_ms);
 }
 
-function statusBadge(status: JobStatus): HTMLElement {
-  return h('span.lab-badge', { class: TONE[status] }, status);
-}
+const jobHref = (id: string): string => href('lab', 'jobs', id);
+const statusBadge = (status: JobStatus): HTMLElement => badge(cap(status), TONE[status]);
 
-/** The budget bar: how much of the job's budget the runs have used. Over budget turns it red. */
-function budgetBar(job: JobSummary): HTMLElement {
-  const ratio = job.budget_gpu_hours > 0 ? job.gpu_hours / job.budget_gpu_hours : 0;
-  const pct = Math.max(0, Math.min(100, ratio * 100));
-  return h(
-    'span.lab-jobs-bar',
-    { class: ratio > 1 ? 'over' : '', title: `${fmtGpuHours(job.gpu_hours)} of ${fmtGpuHours(job.budget_gpu_hours)}` },
-    h('i', { style: `width:${pct.toFixed(1)}%` }),
-  );
-}
-
-function used(job: JobSummary): HTMLElement {
-  return h(
-    'span.lab-jobs-used',
-    null,
-    h('span.lab-mono', null, `${fmtNumber(job.gpu_hours, 2)} / ${fmtNumber(job.budget_gpu_hours, 2)}`),
-    budgetBar(job),
-  );
-}
-
-function jobHref(id: string): string {
-  return href('lab', 'jobs', id);
+/** The job's error, in the red the prototype uses, or a dash. */
+function errorCell(job: JobSummary): HTMLElement | string {
+  return job.error ? h('span.lab-err', null, job.error) : '—';
 }
 
 function tableOf(rows: JobSummary[], fresh: ReadonlySet<string>, now: number): HTMLElement {
-  return h(
-    'div.lab-table-wrap',
-    null,
-    h(
-      'table.lab-table.lab-jobs-table',
-      null,
-      h('thead', null, h('tr', null, COLUMNS.map((c) => h('th', { class: c.num ? 'num' : '' }, c.label)))),
-      h(
-        'tbody',
-        null,
-        rows.map((job) => {
-          const tr = h(
-            'tr',
-            { 'data-link': '', class: fresh.has(job.id) ? 'lab-jobs-enter' : '' },
-            h('td', null, h('a.lab-mono', { href: jobHref(job.id) }, job.id)),
-            h('td', null, statusBadge(job.status)),
-            h('td', null, h('span.lab-mono', null, job.mode)),
-            h('td', null, h('span.lab-mono', null, job.recipe)),
-            h('td', { class: 'num' }, fmtNumber(job.datasets.length)),
-            h('td', null, h('span.lab-mono', null, fmtTime(job.created_ms))),
-            h('td', { class: 'num' }, h('span.lab-mono', null, fmtDuration(durationOf(job, now)))),
-            h('td', { class: 'num' }, used(job)),
-            h('td', null, h('span.lab-jobs-error', { title: job.error ?? '' }, job.error ?? '—')),
-          );
-          tr.addEventListener('click', () => {
-            location.hash = jobHref(job.id);
-          });
-          return tr;
-        }),
-      ),
-    ),
-  );
+  const cols: Column<JobSummary>[] = [
+    { label: 'ID', cell: (j) => h('span.mono', null, j.id) },
+    { label: 'Status', cell: (j) => statusBadge(j.status) },
+    { label: 'Mode', cell: (j) => j.mode },
+    { label: 'Recipe', cell: (j) => h('span.mono', null, j.recipe) },
+    { label: 'Datasets', num: true, cell: (j) => String(j.datasets.length) },
+    { label: 'Created', cell: (j) => agoText(j.created_ms, now) },
+    { label: 'Duration', num: true, cell: (j) => runTimeText(durationOf(j, now)) },
+    { label: 'GPU-h', cell: (j) => budgetCell(j.gpu_hours, j.budget_gpu_hours) },
+    { label: 'Error', cell: (j) => errorCell(j) },
+  ];
+  const el = h('div.tbl-wrap', null, dataTable(cols, rows, (j) => (location.hash = jobHref(j.id)), (j) => j.id));
+  for (const tr of el.querySelectorAll<HTMLTableRowElement>('tbody tr')) {
+    if (fresh.has(tr.dataset.key ?? '')) tr.classList.add('lab-flash');
+  }
+  return el;
 }
 
 function cardsOf(rows: JobSummary[], fresh: ReadonlySet<string>, now: number): HTMLElement {
   return h(
-    'div.lab-grid.auto.lab-jobs-cards',
+    'div.lab-cards',
     null,
-    rows.map((job) =>
-      h(
-        'a.lab-card.lab-jobs-card',
-        { href: jobHref(job.id), class: fresh.has(job.id) ? 'lab-jobs-enter' : '' },
-        h('div.lab-card-head', null, h('h3.lab-mono', null, job.id), statusBadge(job.status)),
+    rows.map((job) => {
+      const card = h(
+        'article.card.lab-jcard.clickable',
+        { 'data-id': job.id, tabindex: '0', role: 'link' },
+        h('header.card-h', null, h('h3.mono', null, job.id), h('span.sp'), statusBadge(job.status)),
         h(
-          'div.lab-card-body',
+          'div.card-b.lab-jcard-b',
           null,
-          h(
-            'dl.lab-jobs-kv',
-            null,
-            h('dt', null, 'Recipe'),
-            h('dd.lab-mono', null, job.recipe),
-            h('dt', null, 'Mode'),
-            h('dd.lab-mono', null, job.mode),
-            h('dt', null, 'Datasets'),
-            h('dd', null, fmtNumber(job.datasets.length)),
-            h('dt', null, 'Created'),
-            h('dd.lab-mono', null, fmtTime(job.created_ms)),
-            h('dt', null, 'Duration'),
-            h('dd.lab-mono', null, fmtDuration(durationOf(job, now))),
-            h('dt', null, 'GPU-h used'),
-            h('dd', null, used(job)),
-          ),
-          job.error ? h('p.lab-error', null, job.error) : null,
+          h('div', null, h('span.lab-note', null, 'Recipe'), ' ', h('span.mono', null, job.recipe), ` · ${job.mode}`),
+          h('div.lab-note', null, `${job.datasets.length} dataset${job.datasets.length === 1 ? '' : 's'} · created ${agoText(job.created_ms, now)} · ${runTimeText(durationOf(job, now))}`),
+          budgetCell(job.gpu_hours, job.budget_gpu_hours),
+          job.error ? h('div.lab-err', null, job.error) : null,
         ),
-      ),
-    ),
+      );
+      card.addEventListener('click', () => {
+        location.hash = jobHref(job.id);
+      });
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') location.hash = jobHref(job.id);
+      });
+      if (fresh.has(job.id)) card.classList.add('lab-flash');
+      return card;
+    }),
   );
 }
 
@@ -163,7 +121,7 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
   let fresh = new Set<string>();
   let status: StatusFilter = 'all';
   let recipe = '';
-  let mode = '';
+  let mode = 'all';
   let query = '';
   let view: View = 'table';
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -171,9 +129,9 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
   // Controls are built once and updated in place, so a poll never takes the focus away.
   const chipCounts = new Map<StatusFilter, HTMLElement>();
   const chips = STATUSES.map((s) => {
-    const count = h('span.lab-jobs-count', null, '0');
+    const count = h('span.num', null, '0');
     chipCounts.set(s.key, count);
-    const b = h('button.lab-jobs-chip', { type: 'button', 'aria-pressed': s.key === status ? 'true' : 'false' }, s.label, count);
+    const b = h('button.lab-chip', { type: 'button', 'aria-pressed': s.key === status ? 'true' : 'false' }, s.label, ' ', count);
     b.addEventListener('click', () => {
       status = s.key;
       updateChips();
@@ -182,38 +140,42 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
     return { key: s.key, el: b };
   });
   const updateChips = (): void => {
-    for (const c of chips) c.el.setAttribute('aria-pressed', c.key === status ? 'true' : 'false');
+    for (const c of chips) {
+      const on = c.key === status;
+      c.el.classList.toggle('is-on', on);
+      c.el.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
   };
-  const recipeSel = h('select.select', { 'aria-label': 'Filter by recipe' });
+  const recipeSel = h('select.select', { 'aria-label': 'Recipe' });
   recipeSel.addEventListener('change', () => {
     recipe = recipeSel.value;
     renderList();
   });
   const modeSel = h(
     'select.select',
-    { 'aria-label': 'Filter by mode' },
-    MODES.map((m) => h('option', { value: m.value }, m.label)),
+    { 'aria-label': 'Mode' },
+    MODES.map(([value, label]) => h('option', { value }, label)),
   );
   modeSel.addEventListener('change', () => {
     mode = modeSel.value;
     renderList();
   });
-  const search = h('input.input', { type: 'search', placeholder: 'Search by job id', 'aria-label': 'Search by job id', spellcheck: 'false' });
+  const search = h('input.input.lab-q', { type: 'search', placeholder: 'Search by job id', 'aria-label': 'Search by job id', spellcheck: 'false' });
   search.addEventListener('input', () => {
     query = search.value;
     renderList();
   });
   const viewSlot = h('div');
-  const listHost = h('div.lab-stack');
-  const countLine = h('span.lab-muted');
-  const errorLine = h('p.lab-error');
+  const listHost = h('div');
+  const countLine = h('p.lab-note');
+  const errorLine = h('p.lab-err');
 
-  const renderViewTabs = (): void => {
+  const renderViewSeg = (): void => {
     replace(
       viewSlot,
-      tabs(VIEWS, view, (key) => {
-        view = key as View;
-        renderViewTabs();
+      seg(VIEWS, view, (v) => {
+        view = v as View;
+        renderViewSeg();
         renderList();
       }),
     );
@@ -225,7 +187,7 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
       (j) =>
         (status === 'all' || j.status === status) &&
         (recipe === '' || j.recipe === recipe) &&
-        (mode === '' || j.mode === (mode as FoundryMode)) &&
+        (mode === 'all' || j.mode === (mode as FoundryMode)) &&
         (q === '' || j.id.toLowerCase().includes(q)),
     );
   };
@@ -255,27 +217,11 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
     errorLine.textContent = loadError ?? '';
     let body: Node;
     if (jobs === null) {
-      body = h('p.lab-muted', null, loadError ? '' : 'Loading jobs…');
+      body = h('p.lab-note', null, loadError ? '' : 'Loading jobs…');
     } else if (total === 0) {
-      body = h(
-        'div.lab-jobs-empty',
-        null,
-        labEmpty(
-          'play',
-          'No jobs yet',
-          'Pick a vetted recipe and a dataset, set a budget, and preview the plan before you submit.',
-        ),
-        h('div.lab-row.lab-jobs-center', null, button('New job', () => scrollToForm(), { kind: 'primary', icon: 'plus' })),
-      );
+      body = labEmpty('flask-conical', 'No jobs yet', undefined, labButton('New job', () => scrollToForm(), { kind: 'primary', sm: true, icon: 'plus' }));
     } else if (rows.length === 0) {
-      body = labEmpty('search', 'No jobs match', 'Clear the filters to see every job.');
-      body.appendChild(
-        h(
-          'div.lab-row.lab-jobs-center',
-          null,
-          button('Clear filters', () => clearFilters(), { kind: 'ghost' }),
-        ),
-      );
+      body = labEmpty('search', 'No jobs match', undefined, labButton('Clear filters', () => clearFilters(), { kind: 'ghost', sm: true }));
     } else {
       body = view === 'table' ? tableOf(rows, fresh, now) : cardsOf(rows, fresh, now);
     }
@@ -287,10 +233,10 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
   function clearFilters(): void {
     status = 'all';
     recipe = '';
-    mode = '';
+    mode = 'all';
     query = '';
     search.value = '';
-    modeSel.value = '';
+    modeSel.value = 'all';
     updateChips();
     renderList();
   }
@@ -338,41 +284,16 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
     location.hash = jobHref(id);
   });
 
-  const toolbar = h(
-    'div.lab-jobs-toolbar',
+  const tools = h(
+    'div.lab-tools',
     null,
-    h('div.lab-jobs-chips', { role: 'group', 'aria-label': 'Filter by status' }, chips.map((c) => c.el)),
-    h('div.lab-row', null, recipeSel, modeSel, search),
-  );
-  const listCard = h(
-    'section.lab-card',
-    null,
-    h(
-      'div.lab-card-head.lab-jobs-head',
-      null,
-      h('h3', null, 'Job list'),
-      countLine,
-      viewSlot,
-    ),
-    h('div.lab-card-body', null, toolbar, errorLine, listHost),
+    h('div.lab-chips', { role: 'group', 'aria-label': 'Status' }, chips.map((c) => c.el)),
+    h('div.lab-tools-r', null, recipeSel, modeSel, search, viewSlot),
   );
 
-  replace(
-    root,
-    h(
-      'div.lab-stack',
-      null,
-      h(
-        'div.lab-page-head',
-        null,
-        h('h2', null, 'Jobs'),
-        h('div.lab-actions', null, button('New job', () => scrollToForm(), { kind: 'primary', icon: 'plus' })),
-      ),
-      listCard,
-      form.el,
-    ),
-  );
-  renderViewTabs();
+  replace(root, h('div.lab-stack', null, tools, h('div', null, countLine, errorLine, listHost), form.el));
+  updateChips();
+  renderViewSeg();
   renderList();
   const offTraining = onTraining(() => scheduleLoad());
   const stopPoll = pollEvery(POLL_MS, () => void load());

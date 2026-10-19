@@ -106,9 +106,13 @@ pub fn kind_of(panels: &[Panel]) -> &'static str {
         return "dashboard";
     }
     match panels.first().map(|p| &p.body) {
-        Some(Body::Chart(_) | Body::Heatmap(_) | Body::Treemap { .. } | Body::Bars { .. } | Body::Split { .. }) => {
-            "chart"
-        }
+        Some(
+            Body::Chart(_)
+            | Body::Heatmap(_)
+            | Body::Treemap { .. }
+            | Body::Bars { .. }
+            | Body::Split { .. },
+        ) => "chart",
         Some(Body::Table(_)) => "table",
         Some(Body::Dataset(_)) => "dataset",
         Some(Body::Image(_)) => "image",
@@ -135,7 +139,11 @@ pub fn validate(spec: &Spec, caps: &Caps) -> Vec<String> {
         out.push("panels is empty: an artifact needs at least one panel".into());
     }
     if spec.panels.len() > caps.panels {
-        out.push(format!("{} panels; at most {}", spec.panels.len(), caps.panels));
+        out.push(format!(
+            "{} panels; at most {}",
+            spec.panels.len(),
+            caps.panels
+        ));
     }
     if let Ok(json) = serde_json::to_vec(spec)
         && json.len() > caps.spec_bytes
@@ -148,7 +156,11 @@ pub fn validate(spec: &Spec, caps: &Caps) -> Vec<String> {
     }
     let mut ids = std::collections::BTreeSet::new();
     for (i, p) in spec.panels.iter().enumerate() {
-        let at = if p.id.is_empty() { format!("panel {}", i + 1) } else { format!("panel {:?}", p.id) };
+        let at = if p.id.is_empty() {
+            format!("panel {}", i + 1)
+        } else {
+            format!("panel {:?}", p.id)
+        };
         if !p.id.is_empty() && !ids.insert(p.id.clone()) {
             out.push(format!("{at}: the id is used twice"));
         }
@@ -164,7 +176,11 @@ fn body_problems(body: &Body, caps: &Caps, at: &str, out: &mut Vec<String>) {
     match body {
         Body::Chart(c) => {
             if c.series.len() > caps.series {
-                out.push(format!("{at}: {} series; at most {}", c.series.len(), caps.series));
+                out.push(format!(
+                    "{at}: {} series; at most {}",
+                    c.series.len(),
+                    caps.series
+                ));
             }
             for s in &c.series {
                 if s.values.len() > caps.points {
@@ -189,7 +205,11 @@ fn body_problems(body: &Body, caps: &Caps, at: &str, out: &mut Vec<String>) {
                 out.push(format!("{at}: a dataset needs columns"));
             }
             if d.columns.len() > caps.columns {
-                out.push(format!("{at}: {} columns; at most {}", d.columns.len(), caps.columns));
+                out.push(format!(
+                    "{at}: {} columns; at most {}",
+                    d.columns.len(),
+                    caps.columns
+                ));
             }
             if d.rows.len() > caps.inline_rows {
                 out.push(format!(
@@ -215,38 +235,66 @@ fn body_problems(body: &Body, caps: &Caps, at: &str, out: &mut Vec<String>) {
                 out.push(format!("{at}: an image needs alt text"));
             }
             if !img.blob.content_type.is_empty() && !img.blob.content_type.starts_with("image/") {
-                out.push(format!("{at}: the image blob is {}, not an image", img.blob.content_type));
+                out.push(format!(
+                    "{at}: the image blob is {}, not an image",
+                    img.blob.content_type
+                ));
             }
             if img.blob.id.is_empty() {
-                out.push(format!("{at}: the image has no blob: attach it with artifact_attach_data first"));
+                out.push(format!(
+                    "{at}: the image has no blob: attach it with artifact_attach_data first"
+                ));
             }
         }
         Body::Graph(g) => {
             if g.nodes.len() > caps.nodes {
-                out.push(format!("{at}: {} nodes; at most {}", g.nodes.len(), caps.nodes));
+                out.push(format!(
+                    "{at}: {} nodes; at most {}",
+                    g.nodes.len(),
+                    caps.nodes
+                ));
             }
             if g.edges.len() > caps.edges {
-                out.push(format!("{at}: {} edges; at most {}", g.edges.len(), caps.edges));
+                out.push(format!(
+                    "{at}: {} edges; at most {}",
+                    g.edges.len(),
+                    caps.edges
+                ));
             }
-            let ids: std::collections::BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+            let ids: std::collections::BTreeSet<&str> =
+                g.nodes.iter().map(|n| n.id.as_str()).collect();
             if ids.len() != g.nodes.len() {
                 out.push(format!("{at}: node ids must be unique"));
             }
             for e in &g.edges {
                 for end in [&e.from, &e.to] {
                     if !ids.contains(end.as_str()) {
-                        out.push(format!("{at}: an edge names node {end:?}, which is not in nodes"));
+                        out.push(format!(
+                            "{at}: an edge names node {end:?}, which is not in nodes"
+                        ));
                     }
                 }
             }
         }
         Body::Document { markdown } if markdown.len() > caps.text => {
-            out.push(format!("{at}: the document is {} bytes; at most {}", markdown.len(), caps.text));
+            out.push(format!(
+                "{at}: the document is {} bytes; at most {}",
+                markdown.len(),
+                caps.text
+            ));
         }
         Body::Code(c) if c.text.len() > caps.text => {
-            out.push(format!("{at}: the code is {} bytes; at most {}", c.text.len(), caps.text));
+            out.push(format!(
+                "{at}: the code is {} bytes; at most {}",
+                c.text.len(),
+                caps.text
+            ));
         }
-        Body::Html(h) => out.extend(html_problems(h, caps).into_iter().map(|p| format!("{at}: {p}"))),
+        Body::Html(h) => out.extend(
+            html_problems(h, caps)
+                .into_iter()
+                .map(|p| format!("{at}: {p}")),
+        ),
         _ => {}
     }
 }
@@ -259,7 +307,9 @@ pub fn safe_path(path: &str) -> bool {
         && !path.starts_with("_lib")
         && !path.contains('\\')
         && !path.contains("//")
-        && path.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+        && path
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
         && path
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/'))
@@ -267,7 +317,9 @@ pub fn safe_path(path: &str) -> bool {
 
 /// The extensions an HTML artifact's code files use.
 pub fn is_script(path: &str) -> bool {
-    [".js", ".mjs", ".jsx", ".ts", ".tsx"].iter().any(|e| path.ends_with(e))
+    [".js", ".mjs", ".jsx", ".ts", ".tsx"]
+        .iter()
+        .any(|e| path.ends_with(e))
 }
 
 /// Problems with an HTML body: paths, sizes, the entry, network loads and imports outside the vendored set.
@@ -277,11 +329,22 @@ pub fn html_problems(h: &HtmlBody, caps: &Caps) -> Vec<String> {
         out.push("an html body needs files".into());
     }
     if h.files.len() > caps.html_files {
-        out.push(format!("{} files; at most {}", h.files.len(), caps.html_files));
+        out.push(format!(
+            "{} files; at most {}",
+            h.files.len(),
+            caps.html_files
+        ));
     }
-    let total: usize = h.files.iter().map(|f| f.text.as_ref().map_or(0, String::len)).sum();
+    let total: usize = h
+        .files
+        .iter()
+        .map(|f| f.text.as_ref().map_or(0, String::len))
+        .sum();
     if total > caps.html_bytes {
-        out.push(format!("the files are {total} bytes; at most {}", caps.html_bytes));
+        out.push(format!(
+            "the files are {total} bytes; at most {}",
+            caps.html_bytes
+        ));
     }
     if !h.files.iter().any(|f| f.path == h.entry) {
         out.push(format!("the entry {:?} is not one of the files", h.entry));
@@ -301,21 +364,40 @@ pub fn html_problems(h: &HtmlBody, caps: &Caps) -> Vec<String> {
             for p in network_loads(text) {
                 out.push(format!("{:?} loads {p} from the network: artifacts run offline; use /_lib/ or a file of the artifact", f.path));
             }
+            if f.path.ends_with(".html") {
+                // An inline script of a page may not import from the network either.
+                for spec in imports(text).into_iter().filter(|s| is_network(s)) {
+                    out.push(format!("{:?} imports {spec:?} from the network: artifacts run offline; use a vendored library", f.path));
+                }
+            }
             if is_script(&f.path) {
                 for spec in imports(text) {
-                    if spec.starts_with("./") || spec.starts_with("../") {
+                    if is_network(&spec) {
+                        out.push(format!("{:?} imports {spec:?} from the network: artifacts run offline; use a vendored library", f.path));
+                    } else if spec.starts_with("./") || spec.starts_with("../") {
                         let target = normalize(&f.path, &spec);
                         let found = target.as_deref().is_some_and(|t| {
-                            paths.contains(t) || [".js", ".jsx", ".ts", ".tsx"].iter().any(|e| paths.contains(format!("{t}{e}").as_str()))
+                            paths.contains(t)
+                                || [".js", ".jsx", ".ts", ".tsx"]
+                                    .iter()
+                                    .any(|e| paths.contains(format!("{t}{e}").as_str()))
                         });
                         if !found {
-                            out.push(format!("{:?} imports {spec:?}, which is not one of the files", f.path));
+                            out.push(format!(
+                                "{:?} imports {spec:?}, which is not one of the files",
+                                f.path
+                            ));
                         }
                     } else if libs::lib(&spec).is_none() {
                         out.push(format!(
                             "{:?} imports {spec:?}, which is not vendored (available: {})",
                             f.path,
-                            libs::LIBS.iter().filter(|l| l.name != "prop-types").map(|l| l.name).collect::<Vec<_>>().join(", ")
+                            libs::LIBS
+                                .iter()
+                                .filter(|l| l.name != "prop-types")
+                                .map(|l| l.name)
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         ));
                     }
                 }
@@ -342,8 +424,8 @@ pub fn normalize(from: &str, spec: &str) -> Option<String> {
 }
 
 /// The module specifiers a script imports: `import … from "x"`, `import "x"`, `export … from "x"` and
-/// `import("x")`. A scanner, not a parser: it skips comments and template text it can see, which is enough to
-/// refuse network imports early; the hub's compile step is the real check.
+/// `import("x")`. A scanner, not a parser: it skips comments it can see, which is enough to refuse network imports
+/// early; the hub's compile step is the real check. It reads bytes, so text with multi-byte characters is safe.
 pub fn imports(src: &str) -> Vec<String> {
     let mut out = vec![];
     let b = src.as_bytes();
@@ -363,17 +445,30 @@ pub fn imports(src: &str) -> Vec<String> {
             i += 2;
             continue;
         }
-        let word_start = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_' || b[i - 1] == b'$' || b[i - 1] == b'.');
-        if word_start && (src[i..].starts_with("import") || src[i..].starts_with("export")) {
+        let word_start = i == 0
+            || !(b[i - 1].is_ascii_alphanumeric()
+                || b[i - 1] == b'_'
+                || b[i - 1] == b'$'
+                || b[i - 1] == b'.');
+        if word_start && (b[i..].starts_with(b"import") || b[i..].starts_with(b"export")) {
             let kw_end = i + 6;
-            if b.get(kw_end).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_') {
+            if b.get(kw_end)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+            {
                 i += 1;
                 continue;
             }
-            // Find the statement's string: right after `import`/`import(`, or after `from`.
-            let mut j = kw_end;
-            let stop = src[j..].find(';').map_or(b.len(), |k| j + k).min(j + 2000);
-            let seg = &src[j..stop.min(src.len())];
+            // Find the statement's string: right after `import`/`import(`, or after `from`. The segment ends at a `;`
+            // or 2000 bytes on, moved back to a character boundary.
+            let mut stop = b[kw_end..]
+                .iter()
+                .position(|&c| c == b';')
+                .map_or(b.len(), |k| kw_end + k)
+                .min(kw_end + 2000);
+            while !src.is_char_boundary(stop) {
+                stop -= 1;
+            }
+            let seg = &src[kw_end..stop];
             let lead = seg.trim_start();
             let spec = if lead.starts_with('"') || lead.starts_with('\'') || lead.starts_with('(') {
                 let lead = lead.trim_start_matches('(').trim_start();
@@ -386,8 +481,7 @@ pub fn imports(src: &str) -> Vec<String> {
             if let Some(s) = spec {
                 out.push(s);
             }
-            j = kw_end;
-            i = j;
+            i = kw_end;
             continue;
         }
         i += 1;
@@ -401,7 +495,9 @@ fn find_word(s: &str, w: &str) -> Option<usize> {
     while let Some(k) = s[from..].find(w) {
         let at = from + k;
         let before = at == 0 || !(b[at - 1].is_ascii_alphanumeric() || b[at - 1] == b'_');
-        let after = b.get(at + w.len()).is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_'));
+        let after = b
+            .get(at + w.len())
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'_'));
         if before && after {
             return Some(at);
         }
@@ -420,35 +516,85 @@ fn quoted(s: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-/// The network loads in a file: `src`/`href` of scripts, styles, images and frames, CSS `@import`/`url()` and
-/// script imports that point at `http:`, `https:` or protocol-relative `//` URLs. Plain `<a href>` links are
-/// allowed (opening one goes through the console, which asks the owner).
+/// Whether a URL or module specifier names a host: `http:`, `https:` or a protocol-relative `//host`.
+pub fn is_network(spec: &str) -> bool {
+    spec.starts_with("http://") || spec.starts_with("https://") || spec.starts_with("//")
+}
+
+/// The network loads in a file: the `src`, `srcset` and `href` attributes of any tag but an anchor (`<a>`), CSS
+/// `@import` and `url(…)`, and the `import`, `export … from`, `import(…)` and `fetch(…)` of a URL. A URL is `http:`,
+/// `https:` or protocol-relative. Plain `<a href>` links are allowed (opening one goes through the console, which asks
+/// the owner). It reads bytes, so text with multi-byte characters is safe.
 pub fn network_loads(text: &str) -> Vec<String> {
-    let mut out = vec![];
     let lower = text.to_ascii_lowercase();
-    for needle in ["src=", "href=", "url(", "@import", "from ", "import(", "fetch("] {
+    let b = lower.as_bytes();
+    let mut out = vec![];
+    for word in [
+        "src", "srcset", "href", "url(", "@import", "import", "from", "fetch",
+    ] {
+        let attribute = matches!(word, "src" | "srcset" | "href");
+        let bounded = matches!(word, "import" | "from" | "fetch");
         let mut from = 0;
-        while let Some(k) = lower[from..].find(needle) {
+        while let Some(k) = lower[from..].find(word) {
             let at = from + k;
-            from = at + needle.len();
-            if needle == "href=" {
-                // An anchor's link is not a load.
-                let tag_start = lower[..at].rfind('<').unwrap_or(0);
-                let tag = &lower[tag_start..at];
-                if tag.starts_with("<a ") || tag.starts_with("<a\n") || tag.starts_with("<a\t") {
-                    continue;
-                }
+            from = at + word.len();
+            if bounded
+                && at > 0
+                && (b[at - 1].is_ascii_alphanumeric() || matches!(b[at - 1], b'_' | b'$' | b'.'))
+            {
+                continue;
             }
-            let rest = lower[from..].trim_start_matches([' ', '"', '\'', '(', '`']);
-            if rest.starts_with("http://") || rest.starts_with("https://") || rest.starts_with("//") {
-                let end = rest.find(['"', '\'', ')', ' ', '`', '>']).unwrap_or(rest.len()).min(120);
-                out.push(rest[..end].to_string());
+            let mut value = &lower[from..];
+            if attribute {
+                let Some(rest) = value.trim_start().strip_prefix('=') else {
+                    continue;
+                };
+                if word == "href" {
+                    // An anchor's link is not a load.
+                    let tag_start = lower[..at].rfind('<').unwrap_or(0);
+                    let tag = &lower[tag_start..at];
+                    if tag.starts_with("<a ") || tag.starts_with("<a\n") || tag.starts_with("<a\t")
+                    {
+                        continue;
+                    }
+                }
+                value = rest;
+            }
+            let value = value.trim_start_matches(|c: char| {
+                c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '(' | '=')
+            });
+            let value = value
+                .strip_prefix("url(")
+                .unwrap_or(value)
+                .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`'));
+            let items: Vec<&str> = if word == "srcset" {
+                let end = value.find(['"', '\'', '>', '`']).unwrap_or(value.len());
+                value[..end]
+                    .split(|c: char| c.is_whitespace() || c == ',')
+                    .collect()
+            } else {
+                vec![value]
+            };
+            for item in items.into_iter().filter(|item| is_network(item)) {
+                let end = item
+                    .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | '>' | '`'))
+                    .unwrap_or(item.len());
+                out.push(cut(&item[..end], 120).to_string());
             }
         }
     }
     out.sort();
     out.dedup();
     out
+}
+
+/// `s` cut to at most `max` bytes, moved back to a character boundary.
+fn cut(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// The vendored libraries an HTML body uses: imports in its scripts and `/_lib/` script tags in its pages.
@@ -466,7 +612,9 @@ pub fn libs_used(h: &HtmlBody) -> Vec<&'static str> {
         let mut from = 0;
         while let Some(k) = text[from..].find("/_lib/") {
             let at = from + k + 6;
-            let end = text[at..].find(['"', '\'', ' ', '>']).map_or(text.len(), |e| at + e);
+            let end = text[at..]
+                .find(['"', '\'', ' ', '>'])
+                .map_or(text.len(), |e| at + e);
             if let Some(l) = libs::by_file(&text[at..end]) {
                 names.push(l.name);
             }
@@ -505,30 +653,102 @@ mod tests {
     #[test]
     fn imports_are_found() {
         let src = "import React, { useState } from 'react';\nimport * as d3 from \"d3\";\n// import x from 'nope'\nimport './style.css';\nexport { a } from './a.js';\nconst m = import('lodash');";
-        assert_eq!(imports(src), vec!["react", "d3", "./style.css", "./a.js", "lodash"]);
+        assert_eq!(
+            imports(src),
+            vec!["react", "d3", "./style.css", "./a.js", "lodash"]
+        );
+    }
+
+    #[test]
+    fn scanners_read_non_ascii_text_without_panicking() {
+        let src = "// — 😀 中文\nconst s = \"中文 — 😀\"; import x from \"react\"; const t = 'é'; import(\"d3\")";
+        assert_eq!(imports(src), vec!["react", "d3"]);
+        let long = format!("import \"{}\"", "é".repeat(1500));
+        assert!(imports(&long).is_empty());
+        let page = "<p>中文 — 😀 é</p><img alt=\"é\" src = \"https://cdn.example.com/中文.png\">";
+        assert_eq!(
+            network_loads(page),
+            vec!["https://cdn.example.com/中文.png"]
+        );
     }
 
     #[test]
     fn network_loads_are_refused_but_links_are_not() {
         let page = r#"<script src="https://cdn.example.com/x.js"></script><a href="https://example.com">x</a><img src='//evil/p.png'>"#;
-        assert_eq!(network_loads(page), vec!["//evil/p.png", "https://cdn.example.com/x.js"]);
+        assert_eq!(
+            network_loads(page),
+            vec!["//evil/p.png", "https://cdn.example.com/x.js"]
+        );
+    }
+
+    #[test]
+    fn network_loads_catch_spaced_attributes_srcset_and_link_tags() {
+        let page = r#"<img src = "https://a.example/x.png"><img srcset="https://b.example/1x.png 1x, //c.example/2x.png 2x"><link rel="stylesheet" href = 'https://d.example/s.css'><a href = "https://ok.example">x</a>"#;
+        assert_eq!(
+            network_loads(page),
+            vec![
+                "//c.example/2x.png",
+                "https://a.example/x.png",
+                "https://b.example/1x.png",
+                "https://d.example/s.css"
+            ]
+        );
     }
 
     #[test]
     fn html_checks_imports_against_the_vendored_set() {
-        let h = html("App.tsx", &[("App.tsx", "import {LineChart} from 'recharts'; import pad from 'left-pad'; import {x} from './util';")]);
+        let h = html(
+            "App.tsx",
+            &[(
+                "App.tsx",
+                "import {LineChart} from 'recharts'; import pad from 'left-pad'; import {x} from './util';",
+            )],
+        );
         let p = html_problems(&h, &Caps::default());
         assert!(p.iter().any(|m| m.contains("left-pad")), "{p:?}");
         assert!(p.iter().any(|m| m.contains("./util")), "{p:?}");
-        let ok = html("App.tsx", &[("App.tsx", "import {LineChart} from 'recharts'; import {x} from './util';"), ("util.ts", "export const x = 1;")]);
+        let ok = html(
+            "App.tsx",
+            &[
+                (
+                    "App.tsx",
+                    "import {LineChart} from 'recharts'; import {x} from './util';",
+                ),
+                ("util.ts", "export const x = 1;"),
+            ],
+        );
         assert!(html_problems(&ok, &Caps::default()).is_empty());
-        assert_eq!(libs_used(&ok), vec!["react", "react-dom", "prop-types", "recharts"]);
+        assert_eq!(
+            libs_used(&ok),
+            vec!["react", "react-dom", "prop-types", "recharts"]
+        );
+    }
+
+    #[test]
+    fn an_inline_script_of_a_page_may_not_import_from_the_network() {
+        let h = html(
+            "index.html",
+            &[(
+                "index.html",
+                "<script type=\"module\">import x from \"https://esm.sh/x\"</script>",
+            )],
+        );
+        let p = html_problems(&h, &Caps::default());
+        assert!(p.iter().any(|m| m.contains("esm.sh")), "{p:?}");
     }
 
     #[test]
     fn paths_must_be_plain() {
         assert!(safe_path("data/points.csv"));
-        for bad in ["../x", "/etc/passwd", "a//b", "_lib/react.js", "a\\b", "a/./b", ""] {
+        for bad in [
+            "../x",
+            "/etc/passwd",
+            "a//b",
+            "_lib/react.js",
+            "a\\b",
+            "a/./b",
+            "",
+        ] {
             assert!(!safe_path(bad), "{bad}");
         }
     }

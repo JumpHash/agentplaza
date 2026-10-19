@@ -8,6 +8,8 @@ operation tool.exec(principal: Agent, resource: Sandbox, context: {flags: Set<St
 operation message.send(principal: Agent, resource: Agent, context: {flags: Set<String>})
 operation egress.connect(principal: Agent, resource: Host, context: {flags: Set<String>})
 operation artifact.publish(principal: Agent, resource: Artifact, context: {flags: Set<String>})
+operation artifact.create(principal: Agent, resource: Artifact, context: {flags: Set<String>})
+operation artifact.share(principal: Agent, resource: Artifact, context: {flags: Set<String>})
 operation approval.request(principal: Agent, resource: Approval, context: {flags: Set<String>})
 operation registry.set_name(principal: Agent, resource: Registry, context: {name_reserved: Bool, name_confusable: Bool})
 operation tool.call(principal: Agent, resource: Tool, context: {flags: Set<String>, owner_approval: Approval optional})

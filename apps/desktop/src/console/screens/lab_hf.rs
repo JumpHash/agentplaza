@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use iced::widget::{Space, column, container, row, text, text_input};
-use iced::{Alignment, Element, Length, Subscription, Task, Theme};
+use iced::{Alignment, Element, Length, Padding, Subscription, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -573,6 +573,7 @@ fn token_block<'a>(state: &'a State) -> Element<'a, Msg> {
         .into(),
     };
     let field = text_input("Token value", &state.token_input)
+        .style(crate::theme::input)
         .on_input(Msg::TokenInput)
         .secure(true)
         .on_submit(Msg::SaveToken)
@@ -626,10 +627,12 @@ fn token_block<'a>(state: &'a State) -> Element<'a, Msg> {
 
 fn search_block<'a>(state: &'a State) -> Element<'a, Msg> {
     let search = text_input("Search models", &state.search)
+        .style(crate::theme::input)
         .on_input(Msg::SearchText)
         .on_submit(Msg::Submit)
         .padding(8);
     let task = text_input("Task, e.g. text-classification", &state.task)
+        .style(crate::theme::input)
         .on_input(Msg::TaskText)
         .on_submit(Msg::Submit)
         .padding(8);
@@ -1045,77 +1048,44 @@ fn bar<'a>(ratio: f64) -> Element<'a, Msg> {
     .into()
 }
 
+/// A panel section, as the web's card: its title in the card head over its body.
+fn section<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    ui::card(title, body)
+}
+
+/// A panel section with its own head (the drawer's name and actions), as the web's card: the head over
+/// a rule, then the body padded 16.
+fn section_head<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    let head = container(head)
+        .padding(Padding {
+            top: 8.0,
+            right: 16.0,
+            bottom: 8.0,
+            left: 16.0,
+        })
+        .width(Length::Fill)
+        .center_y(Length::Fixed(44.0));
+    container(column![
+        head,
+        lab_common::rule(crate::theme::palette().rule),
+        container(body).padding(16).width(Length::Fill),
+    ])
+    .width(Length::Fill)
+    .style(ui::card_style)
+    .into()
+}
+
+/// A table cell of the given share of its row; numbers read right-aligned.
 fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
     let c = container(content).width(Length::FillPortion(portion));
     if right {
-        c.align_x(iced::alignment::Horizontal::Right).into()
+        c.align_x(Alignment::End).into()
     } else {
         c.into()
     }
 }
 
+/// A section's caption in the label voice.
 fn section_title<'a>(label: &str) -> Element<'a, Msg> {
-    text(label.to_string())
-        .font(SANS)
-        .size(11.0)
-        .color(crate::theme::palette().ink_3)
-        .into()
-}
-
-/// A panel section: a ruled box with its title in caps and its body.
-fn section<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(
-        column![
-            text(title.to_string())
-                .font(SANS)
-                .size(11.5)
-                .color(crate::theme::palette().ink),
-            container(Space::new().height(1.0))
-                .width(Length::Fill)
-                .style(|_: &Theme| container::Style {
-                    background: Some(crate::theme::palette().rule.into()),
-                    ..Default::default()
-                }),
-            body,
-        ]
-        .spacing(12),
-    )
-    .padding(16)
-    .width(Length::Fill)
-    .style(|_: &Theme| container::Style {
-        border: iced::Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    })
-    .into()
-}
-
-fn section_head<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(
-        column![
-            head,
-            container(Space::new().height(1.0))
-                .width(Length::Fill)
-                .style(|_: &Theme| container::Style {
-                    background: Some(crate::theme::palette().rule.into()),
-                    ..Default::default()
-                }),
-            body
-        ]
-        .spacing(12),
-    )
-    .padding(16)
-    .width(Length::Fill)
-    .style(|_: &Theme| container::Style {
-        border: iced::Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    })
-    .into()
+    ui::label(label).into()
 }
