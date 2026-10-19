@@ -7,6 +7,6 @@
   "operations": 527,
   "tested": 149,
   "findings": {
-    "Server error": 17
+    "Server error": 16
   }
 }
