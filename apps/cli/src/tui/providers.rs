@@ -14,10 +14,11 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use serde_json::{Value, json};
 
 use super::Palette;
+use super::style::{chip, hints, mix, panel, pulse};
 use crate::cmd::models::{self, EngineFlags, Family};
 use crate::ctx::{self, Client};
 use crate::tui::screens::clip;
@@ -1202,7 +1203,14 @@ pub fn is_change(kind: &str) -> bool {
 
 // ---- Drawing ----------------------------------------------------------------------------------
 
-pub fn render(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, palette: Palette) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    screen: &Screen,
+    data: &Data,
+    palette: Palette,
+    clock: f32,
+) {
     let body = match screen.plan() {
         Some(plan) => {
             let height = (plan.len() as u16 + 3)
@@ -1226,7 +1234,7 @@ pub fn render(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, palet
         ),
     ])
     .areas(left);
-    draw_list(frame, list, screen, data, palette);
+    draw_list(frame, list, screen, data, palette, clock);
     draw_usage(frame, usage, screen, data, palette);
     match screen.modal() {
         Some(Modal::Models(picker)) => draw_picker(frame, body, picker, data, palette),
@@ -1239,27 +1247,47 @@ pub fn render(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, palet
     }
 }
 
+/// The colour of a health status: ok, the warnings (an update is out) and the failures (not authenticated).
 fn status_color(status: &str, palette: Palette) -> Color {
     match status {
         "ok" => palette.ok,
-        "crit" => palette.accent,
-        "warn" => Color::Yellow,
+        "warn" => palette.warn(),
+        "crit" => palette.crit(),
         _ => palette.muted,
     }
 }
 
-fn draw_list(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, palette: Palette) {
+/// A health dot: filled and coloured for a status the hub reports, hollow and muted for anything else.
+fn status_dot(status: &str, palette: Palette) -> Span<'static> {
+    let glyph = match status {
+        "ok" | "warn" | "crit" => "●",
+        _ => "○",
+    };
+    Span::styled(glyph, Style::new().fg(status_color(status, palette)))
+}
+
+/// The list's title and rows: API providers and engines under their section labels, the selected row on the sheet
+/// colour, and the scroll keeping the selected row in view (a row is never cut).
+fn draw_list(
+    frame: &mut Frame,
+    area: Rect,
+    screen: &Screen,
+    data: &Data,
+    palette: Palette,
+    clock: f32,
+) {
     let list = entries(data, screen.query());
     let title = if screen.searching || !screen.query().is_empty() {
         format!(
-            " / {}{} ",
+            "/ {}{}",
             screen.query(),
             if screen.searching { "_" } else { "" }
         )
     } else {
-        format!(" providers · {} ", list.len())
+        format!("Providers · {}", list.len())
     };
-    let block = Block::bordered().title(title);
+    let focused = screen.modal().is_none() && !screen.usage_focus;
+    let block = panel(&title, &palette, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if list.is_empty() {
@@ -1277,68 +1305,148 @@ fn draw_list(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, palett
         );
         return;
     }
-    let visible = (usize::from(inner.height) / 2).max(1);
-    let start = if screen.selected() < visible {
-        0
-    } else {
-        screen.selected() + 1 - visible
-    };
+    // The blocks of the list: a section label, a blank line between the families, and each row (two lines).
+    let mut blocks: Vec<(Option<usize>, Vec<Line<'static>>)> = Vec::new();
+    let mut family = None;
+    for (i, e) in list.iter().enumerate() {
+        if family != Some(e.family) {
+            if family.is_some() {
+                blocks.push((None, vec![Line::raw("")]));
+            }
+            let label = match e.family {
+                Family::Api => "API",
+                Family::Engine => "ENGINES",
+            };
+            blocks.push((None, vec![section(label, palette)]));
+            family = Some(e.family);
+        }
+        let selected = i == screen.selected();
+        let rows = row_lines(e, selected, inner.width, clock, palette);
+        blocks.push((Some(i), rows.to_vec()));
+    }
+    let height = usize::from(inner.height);
+    let current = blocks
+        .iter()
+        .position(|(i, _)| *i == Some(screen.selected()))
+        .unwrap_or(0);
+    // The first block shown: the selected row's block and the ones above it, as many as fit.
+    let mut start = 0;
+    while start < current
+        && blocks[start..=current]
+            .iter()
+            .map(|(_, lines)| lines.len())
+            .sum::<usize>()
+            > height
+    {
+        start += 1;
+    }
     let mut lines = Vec::new();
-    for (i, e) in list.iter().enumerate().skip(start).take(visible) {
-        lines.extend(row_lines(e, i == screen.selected(), inner.width, palette));
+    for (_, block_lines) in &blocks[start..] {
+        if lines.len() + block_lines.len() > height {
+            break;
+        }
+        lines.extend(block_lines.iter().cloned());
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// One row of the list: the status dot, the label, the version and the toggle; then the health message.
-fn row_lines(e: &Entry, selected: bool, width: u16, palette: Palette) -> [Line<'static>; 2] {
+/// One row of the list: the marker and the health dot, the name, the version (engines), and the on/off pill at the
+/// right edge; then the health message. The selected row is on the sheet colour, its marker breathing on the clock.
+fn row_lines(
+    e: &Entry,
+    selected: bool,
+    width: u16,
+    clock: f32,
+    palette: Palette,
+) -> [Line<'static>; 2] {
     let width = usize::from(width);
-    let mark = if selected { "▌ " } else { "  " };
-    let name_style = if selected {
-        Style::new().add_modifier(Modifier::BOLD)
+    let bg = if selected {
+        palette.sheet()
     } else {
-        Style::new()
+        Color::Reset
     };
+    let on = |style: Style| style.bg(bg);
+    let marker_color = match palette.accent {
+        Color::Rgb(..) if selected => mix(palette.accent, palette.paper, 0.35 * pulse(clock, 2.4)),
+        _ => palette.accent,
+    };
+    let dot = if e.enabled() {
+        status_dot(e.status(), palette)
+    } else {
+        Span::styled("○", Style::new().fg(palette.muted))
+    };
+    let version = if e.family == Family::Engine {
+        clip(&e.version(), 10)
+    } else {
+        String::new()
+    };
+    let (pill, pill_color) = if e.enabled() {
+        ("on", palette.ok)
+    } else {
+        ("off", palette.muted)
+    };
+    // The name takes what the marker, the dot, the version, the pill and a gap leave.
+    let fixed =
+        4 + if version.is_empty() {
+            0
+        } else {
+            version.chars().count() + 2
+        } + pill.len()
+            + 2;
+    let name = clip(e.label(), width.saturating_sub(fixed).max(8));
+    let name_style = if selected {
+        Style::new().fg(palette.ink()).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(palette.ink2())
+    };
+    let used = 4
+        + name.chars().count()
+        + if version.is_empty() {
+            0
+        } else {
+            version.chars().count() + 2
+        }
+        + pill.len();
+    let gap = width.saturating_sub(used).max(1);
     let mut head = vec![
-        Span::styled(mark, Style::new().fg(palette.accent)),
-        Span::styled("● ", Style::new().fg(status_color(e.status(), palette))),
-        Span::styled(clip(e.label(), width.saturating_sub(24).max(8)), name_style),
+        Span::styled(
+            if selected { "▌ " } else { "  " },
+            on(Style::new().fg(marker_color)),
+        ),
+        Span::styled(format!("{} ", dot.content), on(dot.style)),
+        Span::styled(name, on(name_style)),
     ];
-    if e.family == Family::Engine {
+    if !version.is_empty() {
         head.push(Span::styled(
-            format!("  {}", clip(&e.version(), 10)),
-            Style::new().fg(palette.muted),
+            format!("  {version}"),
+            on(Style::new().fg(palette.muted)),
         ));
     }
-    let (toggle, tone) = if e.enabled() {
-        ("  on", palette.ok)
-    } else {
-        ("  off", palette.muted)
-    };
-    head.push(Span::styled(toggle, Style::new().fg(tone)));
+    head.push(Span::styled(" ".repeat(gap), on(Style::new())));
+    head.push(Span::styled(pill, on(Style::new().fg(pill_color))));
     let message = if e.message().is_empty() {
         e.status().to_string()
     } else {
         e.message().to_string()
     };
-    let second = Line::from(Span::styled(
-        format!("    {}", clip(&message, width.saturating_sub(6))),
-        Style::new().fg(palette.muted),
-    ));
+    let text = format!("    {}", clip(&message, width.saturating_sub(6)));
+    let text = format!("{text:<width$}");
+    let second = Line::from(vec![Span::styled(text, on(Style::new().fg(palette.muted)))]);
     [Line::from(head), second]
 }
 
 fn draw_usage(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, palette: Palette) {
     let hubs = array(data, USAGE);
-    let block = Block::bordered().title(format!(
-        " usage hubs · {}{} ",
+    let title = format!(
+        "Usage hubs · {}{}",
         hubs.len(),
         if screen.usage_focus {
             " · U back"
         } else {
             " · U select"
         }
-    ));
+    );
+    let block = panel(&title, &palette, screen.usage_focus);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if hubs.is_empty() {
@@ -1358,11 +1466,15 @@ fn draw_usage(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, palet
         let selected = screen.usage_focus && i == screen.usage;
         lines.push(Line::from(vec![
             Span::styled(
-                if selected { "▌" } else { " " },
+                if selected { "▌ " } else { "  " },
                 Style::new().fg(palette.accent),
             ),
-            Span::styled("● ", Style::new().fg(status_color(status, palette))),
-            Span::raw(ctx::s(hub, "label").to_string()),
+            status_dot(status, palette),
+            Span::raw(" "),
+            Span::styled(
+                ctx::s(hub, "label").to_string(),
+                Style::new().fg(palette.ink()).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 format!("  {}", ctx::s(hub, "url")),
                 Style::new().fg(palette.muted),
@@ -1388,14 +1500,17 @@ fn draw_usage(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, palet
 }
 
 fn draw_plan(frame: &mut Frame, area: Rect, plan: &[Change], palette: Palette) {
-    let block = Block::bordered().title(format!(" update {} engine(s)? ", plan.len()));
+    let block = panel(&format!("Update {} engine(s)?", plan.len()), &palette, true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let mut lines: Vec<Line> = plan
         .iter()
         .map(|c| {
             Line::from(vec![
-                Span::raw(format!("  {}  ", c.id)),
+                Span::styled(
+                    format!("  {}  ", c.id),
+                    Style::new().fg(palette.ink()).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     format!("{} → {}", c.from, c.to),
                     Style::new().fg(palette.muted),
@@ -1403,22 +1518,55 @@ fn draw_plan(frame: &mut Frame, area: Rect, plan: &[Change], palette: Palette) {
             ])
         })
         .collect();
-    lines.push(Line::from(Span::styled(
-        "  y to update · n to cancel",
-        Style::new().fg(palette.accent),
-    )));
+    lines.push(footer(
+        &[("y", "update"), ("n", "cancel")],
+        inner.width,
+        palette,
+    ));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// A section label: small, uppercase, in the secondary ink.
 fn section(title: &str, palette: Palette) -> Line<'static> {
     Line::from(Span::styled(
-        title.to_string(),
-        Style::new().fg(palette.muted).add_modifier(Modifier::BOLD),
+        title.to_uppercase(),
+        Style::new().fg(palette.ink2()).add_modifier(Modifier::BOLD),
     ))
 }
 
-fn field(label: &str, value: String) -> Line<'static> {
-    Line::from(vec![Span::raw(format!("  {label:<12}")), Span::raw(value)])
+/// A footer of key hints under a dialog or a pane: indented, the hints that fit the width.
+fn footer(items: &[(&str, &str)], width: u16, palette: Palette) -> Line<'static> {
+    let mut line = hints(items, width.saturating_sub(2), &palette);
+    line.spans.insert(0, Span::raw("  "));
+    line
+}
+
+fn field(label: &str, value: String, palette: Palette) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {label:<12}"), Style::new().fg(palette.muted)),
+        Span::raw(value),
+    ])
+}
+
+/// The text as lines of at most `width` columns, indented by two and broken at its spaces.
+fn wrap(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
+    let width = width.max(12);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width - 2 {
+            lines.push(Line::from(Span::styled(format!("  {line}"), style)));
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(Line::from(Span::styled(format!("  {line}"), style)));
+    }
+    lines
 }
 
 /// The credential as the setup line names it: where the key comes from, never the key.
@@ -1443,10 +1591,10 @@ fn credential_text(e: &Entry) -> String {
 }
 
 fn draw_detail(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, palette: Palette) {
+    let block = panel("Details", &palette, false);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     let Some(e) = screen.current(data) else {
-        let block = Block::bordered().title(" details ");
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "Nothing selected. Press a to add a provider or an engine.",
@@ -1456,44 +1604,88 @@ fn draw_detail(frame: &mut Frame, area: Rect, screen: &Screen, data: &Data, pale
         );
         return;
     };
-    let block = Block::bordered().title(format!(" {} ", e.label()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let lines = detail_lines(&e, screen, data, palette, usize::from(inner.height));
-    frame.render_widget(Paragraph::new(lines), inner);
+    let [body, keys] = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(inner);
+    let lines = detail_lines(
+        &e,
+        screen,
+        data,
+        palette,
+        usize::from(body.height),
+        usize::from(body.width),
+    );
+    frame.render_widget(Paragraph::new(lines), body);
+    frame.render_widget(Paragraph::new(key_lines(palette, keys.width)), keys);
 }
 
-/// The selected provider or engine: its head and status, its setup, runtime, variables and models, and the keys.
+/// The keys the detail takes, in three rows under its body.
+fn key_lines(palette: Palette, width: u16) -> Vec<Line<'static>> {
+    let rows: [&[(&str, &str)]; 3] = [
+        &[
+            ("space", "on/off"),
+            ("c", "check"),
+            ("C", "all"),
+            ("u", "update"),
+            ("r", "refresh"),
+        ],
+        &[
+            ("Enter", "models"),
+            ("p", "models"),
+            ("f", "favourite"),
+            ("a", "add"),
+            ("d", "remove"),
+        ],
+        &[("h", "usage hub"), ("U", "usage hubs"), ("/", "search")],
+    ];
+    rows.iter().map(|row| footer(row, width, palette)).collect()
+}
+
+/// The selected provider or engine: its name, kind and health, its setup, runtime, variables and models. The models
+/// scroll under the cursor when they are taller than the body.
 fn detail_lines(
     e: &Entry,
     screen: &Screen,
     data: &Data,
     palette: Palette,
     height: usize,
+    width: usize,
 ) -> Vec<Line<'static>> {
     let muted = Style::new().fg(palette.muted);
-    let mut lines = vec![Line::from(vec![
-        Span::styled(
-            e.label().to_string(),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("  {}", e.kind()), muted),
-    ])];
+    let mut head = vec![Span::styled(
+        e.label().to_string(),
+        Style::new().fg(palette.ink()).add_modifier(Modifier::BOLD),
+    )];
+    if !e.kind().is_empty() {
+        head.push(Span::raw("  "));
+        head.push(chip(e.kind(), palette.ink2(), palette.sheet()));
+    }
     let message = if e.message().is_empty() {
         e.status().to_string()
     } else {
         e.message().to_string()
     };
-    lines.push(Line::from(vec![
-        Span::styled("● ", Style::new().fg(status_color(e.status(), palette))),
-        Span::raw(message),
-    ]));
-    lines.push(Line::raw(""));
-    lines.push(section("Setup", palette));
+    let dot = if e.enabled() {
+        status_dot(e.status(), palette)
+    } else {
+        Span::styled("○", muted)
+    };
+    let mut lines = vec![
+        Line::from(head),
+        Line::from(vec![
+            dot,
+            Span::raw(" "),
+            Span::styled(message, Style::new().fg(palette.ink2())),
+        ]),
+        Line::raw(""),
+        section("Setup", palette),
+    ];
     match e.family {
         Family::Api => {
-            lines.push(field("key", credential_text(e)));
-            lines.push(field("endpoint", none_if(ctx::text(e.value, "base_url"))));
+            lines.push(field("key", credential_text(e), palette));
+            lines.push(field(
+                "endpoint",
+                none_if(ctx::text(e.value, "base_url")),
+                palette,
+            ));
             lines.push(Line::from(Span::styled(
                 "  k sets or replaces the key (masked, sent once to the hub)",
                 muted,
@@ -1508,18 +1700,19 @@ fn detail_lines(
                 } else {
                     route
                 },
+                palette,
             ));
-            lines.push(Line::from(Span::styled(format!("  {CONTAINMENT}"), muted)));
+            lines.extend(wrap(CONTAINMENT, width, muted));
             lines.push(Line::raw(""));
             lines.push(section("Runtime", palette));
-            lines.push(field("source", ctx::text(e.value, "source")));
-            lines.push(field("version", none_if(e.version())));
-            lines.push(field("home", none_if(ctx::text(e.value, "home"))));
+            lines.push(field("source", ctx::text(e.value, "source"), palette));
+            lines.push(field("version", none_if(e.version()), palette));
+            lines.push(field("home", none_if(ctx::text(e.value, "home")), palette));
             let args: Vec<String> = sub(e.value, "args")
                 .iter()
                 .filter_map(|a| a.as_str().map(str::to_string))
                 .collect();
-            lines.push(field("arguments", none_if(args.join(" "))));
+            lines.push(field("arguments", none_if(args.join(" ")), palette));
             lines.push(Line::raw(""));
             lines.push(section("Environment", palette));
             let env = e.value.get("env").and_then(Value::as_object);
@@ -1532,7 +1725,10 @@ fn detail_lines(
                 lines.push(Line::from(Span::styled("  none", muted)));
             }
             for pair in pairs {
-                lines.push(Line::raw(format!("  {pair}")));
+                lines.push(Line::from(Span::styled(
+                    format!("  {pair}"),
+                    Style::new().fg(palette.ink2()),
+                )));
             }
         }
     }
@@ -1541,9 +1737,7 @@ fn detail_lines(
         let models = e.models();
         lines.push(section(&format!("Models · {}", models.len()), palette));
         let favs = favourites(data);
-        let head = lines.len();
-        // The models list scrolls under the cursor when it is taller than the pane.
-        let room = height.saturating_sub(head + 4).max(1);
+        let room = height.saturating_sub(lines.len()).max(1);
         let cursor = if screen.models_focus { screen.model } else { 0 };
         let skip = (cursor + 1).saturating_sub(room);
         for (i, model) in models.iter().enumerate().skip(skip).take(room) {
@@ -1551,13 +1745,13 @@ fn detail_lines(
             let starred = favs.contains(&format!("{}/{}", e.id(), model));
             lines.push(Line::from(vec![
                 Span::styled(
-                    if on_cursor { "▌" } else { " " },
+                    if on_cursor { "▌ " } else { "  " },
                     Style::new().fg(palette.accent),
                 ),
                 Span::styled(
                     if starred { "★ " } else { "☆ " },
                     Style::new().fg(if starred {
-                        palette.accent
+                        palette.warn()
                     } else {
                         palette.muted
                     }),
@@ -1565,9 +1759,9 @@ fn detail_lines(
                 Span::styled(
                     (*model).to_string(),
                     if on_cursor {
-                        Style::new().add_modifier(Modifier::BOLD)
+                        Style::new().fg(palette.ink()).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::new()
+                        Style::new().fg(palette.ink2())
                     },
                 ),
             ]));
@@ -1578,20 +1772,12 @@ fn detail_lines(
     }
     if e.family == Family::Engine {
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
-            "  e edits the runtime and variables · d removes it (built-in: space turns it off)",
+        lines.extend(wrap(
+            "e edits the runtime and variables · d removes it (built-in: space turns it off)",
+            width,
             muted,
-        )));
+        ));
     }
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "space on/off · c check · C all · Enter models · f favourite · a add · d remove",
-        muted,
-    )));
-    lines.push(Line::from(Span::styled(
-        "h usage hub · U usage hubs · p models · u update · / search · r refresh",
-        muted,
-    )));
     lines
 }
 
@@ -1671,7 +1857,7 @@ fn lines_field(
 }
 
 fn draw_add(frame: &mut Frame, area: Rect, form: &Add, data: &Data, palette: Palette) {
-    let block = Block::bordered().title(" add provider ");
+    let block = panel("Add provider", &palette, true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let mut lines = vec![
@@ -1738,10 +1924,11 @@ fn draw_add(frame: &mut Frame, area: Rect, form: &Add, data: &Data, palette: Pal
     )));
     lines.push(Line::raw(""));
     push_error(&mut lines, form.error.as_deref(), palette);
-    lines.push(Line::from(Span::styled(
-        "  Tab next field · Enter adds · Esc cancels",
-        Style::new().fg(palette.muted),
-    )));
+    lines.push(footer(
+        &[("Tab", "next field"), ("Enter", "adds"), ("Esc", "cancels")],
+        inner.width,
+        palette,
+    ));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -1755,7 +1942,7 @@ fn push_error(lines: &mut Vec<Line<'static>>, error: Option<&str>, palette: Pale
 }
 
 fn draw_key(frame: &mut Frame, area: Rect, prompt: &KeyPrompt, palette: Palette) {
-    let block = Block::bordered().title(format!(" key for {} ", prompt.id));
+    let block = panel(&format!("Key for {}", prompt.id), &palette, true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let mut lines = vec![
@@ -1767,15 +1954,16 @@ fn draw_key(frame: &mut Frame, area: Rect, prompt: &KeyPrompt, palette: Palette)
         )),
     ];
     push_error(&mut lines, prompt.error.as_deref(), palette);
-    lines.push(Line::from(Span::styled(
-        "  Enter saves · Esc cancels",
-        Style::new().fg(palette.muted),
-    )));
+    lines.push(footer(
+        &[("Enter", "saves"), ("Esc", "cancels")],
+        inner.width,
+        palette,
+    ));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_hub(frame: &mut Frame, area: Rect, form: &HubForm, palette: Palette) {
-    let block = Block::bordered().title(" add a CLIProxyAPI hub ");
+    let block = panel("Add a CLIProxyAPI hub", &palette, true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let mut lines = vec![
@@ -1811,15 +1999,20 @@ fn draw_hub(frame: &mut Frame, area: Rect, form: &HubForm, palette: Palette) {
         Line::raw(""),
     ];
     push_error(&mut lines, form.error.as_deref(), palette);
-    lines.push(Line::from(Span::styled(
-        "  Tab next field · Enter adds the hub · Esc cancels",
-        Style::new().fg(palette.muted),
-    )));
+    lines.push(footer(
+        &[
+            ("Tab", "next field"),
+            ("Enter", "adds the hub"),
+            ("Esc", "cancels"),
+        ],
+        inner.width,
+        palette,
+    ));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_runtime(frame: &mut Frame, area: Rect, form: &RuntimeForm, palette: Palette) {
-    let block = Block::bordered().title(format!(" runtime · {} ", form.id));
+    let block = panel(&format!("Runtime · {}", form.id), &palette, true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let mut lines = vec![
@@ -1867,24 +2060,27 @@ fn draw_runtime(frame: &mut Frame, area: Rect, form: &RuntimeForm, palette: Pale
         Style::new().fg(palette.muted),
     )));
     push_error(&mut lines, form.error.as_deref(), palette);
-    lines.push(Line::from(Span::styled(
-        "  Tab next · Enter adds a line in a list · Ctrl+S saves · Esc cancels",
-        Style::new().fg(palette.muted),
-    )));
+    lines.push(footer(
+        &[
+            ("Tab", "next"),
+            ("Enter", "adds a line in a list"),
+            ("Ctrl+S", "saves"),
+            ("Esc", "cancels"),
+        ],
+        inner.width,
+        palette,
+    ));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, palette: Palette) {
-    let block = Block::bordered().title(" confirm ");
+    let block = panel("Confirm", &palette, true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let lines = vec![
         Line::raw(format!("  {}", confirm.question)),
         Line::raw(""),
-        Line::from(Span::styled(
-            "  y yes · n no",
-            Style::new().fg(palette.accent),
-        )),
+        footer(&[("y", "yes"), ("n", "no")], inner.width, palette),
     ];
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -1905,7 +2101,7 @@ fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker, data: &Data, pale
     .areas(popup_row);
     let rows = picker_rows(data);
     frame.render_widget(Clear, popup);
-    let block = Block::bordered().title(format!(" models · {} ", rows.len()));
+    let block = panel(&format!("Models · {}", rows.len()), &palette, true);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let mut lines = Vec::new();
@@ -1931,7 +2127,7 @@ fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker, data: &Data, pale
             Span::styled(
                 if row.favourite { "★ " } else { "☆ " },
                 Style::new().fg(if row.favourite {
-                    palette.accent
+                    palette.warn()
                 } else {
                     palette.muted
                 }),
@@ -1950,10 +2146,15 @@ fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker, data: &Data, pale
             Span::styled(format!("  {}", row.name), Style::new().fg(palette.muted)),
         ]));
     }
-    lines.push(Line::from(Span::styled(
-        "  Up/Down move · f or Space favourite · Esc closes",
-        Style::new().fg(palette.muted),
-    )));
+    lines.push(footer(
+        &[
+            ("Up/Down", "move"),
+            ("f / Space", "favourite"),
+            ("Esc", "close"),
+        ],
+        inner.width,
+        palette,
+    ));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -2756,7 +2957,7 @@ mod tests {
         let draw = |screen: &Screen, data: &Data| -> String {
             let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("a test terminal");
             terminal
-                .draw(|frame| render(frame, frame.area(), screen, data, palette()))
+                .draw(|frame| render(frame, frame.area(), screen, data, palette(), 0.0))
                 .expect("the tab draws");
             terminal
                 .backend()
@@ -2775,7 +2976,7 @@ mod tests {
         press(&mut screen, &data, KeyCode::Char('u'));
         screen.on_plan(Ok(json!({ "dry_run": true, "changes": [{ "id": "claude-code", "from": "1.2.3", "to": "1.3.0" }] })));
         assert!(
-            draw(&screen, &data).contains("update 1 engine"),
+            draw(&screen, &data).contains("Update 1 engine"),
             "the plan panel shows"
         );
         press(&mut screen, &data, KeyCode::Char('n'));
@@ -2793,14 +2994,14 @@ mod tests {
 
         press(&mut screen, &data, KeyCode::Char('a'));
         assert!(
-            draw(&screen, &data).contains("add provider"),
+            draw(&screen, &data).contains("Add provider"),
             "the add form shows"
         );
         press(&mut screen, &data, KeyCode::Esc);
 
         press(&mut screen, &data, KeyCode::Char('p'));
         let popup = draw(&screen, &data);
-        assert!(popup.contains("models · 3"), "the picker shows its count");
+        assert!(popup.contains("Models · 3"), "the picker shows its count");
         assert!(popup.contains("openai/gpt-b"), "and the models");
         press(&mut screen, &data, KeyCode::Esc);
 

@@ -1,0 +1,64 @@
+{
+ "width": 120,
+ "height": 34,
+ "fps": 10,
+ "title": "agentplaza tui",
+ "warmup": 3.0,
+ "steps": [
+  {
+   "key": "m"
+  },
+  {
+   "wait": 2.0
+  },
+  {
+   "key": "Down",
+   "repeat": 3,
+   "every": 0.4
+  },
+  {
+   "wait": 1.4
+  },
+  {
+   "key": "Down",
+   "repeat": 3,
+   "every": 0.4
+  },
+  {
+   "wait": 1.6
+  },
+  {
+   "key": "Up",
+   "repeat": 6,
+   "every": 0.2
+  },
+  {
+   "wait": 1.0
+  },
+  {
+   "key": "Enter"
+  },
+  {
+   "wait": 1.2
+  },
+  {
+   "key": "Down",
+   "repeat": 2,
+   "every": 0.4
+  },
+  {
+   "key": "f"
+  },
+  {
+   "wait": 2.0
+  },
+  {
+   "key": "Esc"
+  },
+  {
+   "wait": 1.5
+  }
+ ],
+ "poster": -1,
+ "out": "docs/assets/readme/tui-models"
+}

@@ -11,12 +11,13 @@ use std::sync::mpsc::Sender;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Row, Table};
+use ratatui::widgets::{Paragraph, Row, Table};
 use serde_json::Value;
 
-use super::App;
+use super::style::{dot, panel};
+use super::{App, Palette};
 use crate::cmd::stations;
 use crate::cmd::stations::control;
 use crate::cmd::stations::{files, recordings};
@@ -75,10 +76,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     details(frame, detail, app);
 }
 
+/// The station's status as a dot's status word: working spins, online is idle, offline has failed.
+fn dot_status(status: &str) -> &'static str {
+    match status {
+        "online" | "idle" | "ready" => "idle",
+        "busy" | "working" | "running" | "leased" => "working",
+        "offline" | "down" | "failed" | "error" => "failed",
+        "paused" | "held" => "paused",
+        _ => "gone",
+    }
+}
+
 fn table(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
     let all = app.array("/v1/stations");
-    let block = Block::bordered().title(format!(" workstations · {} ", all.len()));
+    let block = panel(&format!("Workstations · {}", all.len()), &palette, true);
     if all.is_empty() {
         let empty = Line::from(Span::styled(
             "no workstations joined yet",
@@ -99,19 +111,49 @@ fn table(frame: &mut Frame, area: Rect, app: &App) {
         ]
         .map(String::from),
     )
-    .style(Style::new().fg(palette.muted).add_modifier(Modifier::BOLD));
+    .style(Style::new().fg(palette.ink2()).add_modifier(Modifier::BOLD));
     let body = all.iter().enumerate().map(|(i, station)| {
-        let row = Row::new(stations::row(station));
-        if i == app.selected {
-            row.style(Style::new().fg(palette.paper).bg(palette.accent))
+        let selected = i == app.selected;
+        let cells: Vec<Line> = stations::row(station)
+            .into_iter()
+            .enumerate()
+            .map(|(column, text)| match column {
+                0 => Line::from(vec![
+                    Span::styled(
+                        if selected { "▌ " } else { "  " },
+                        Style::new().fg(palette.accent),
+                    ),
+                    Span::styled(text, Style::new().fg(palette.muted)),
+                ]),
+                1 => Line::from(Span::styled(
+                    text,
+                    if selected {
+                        Style::new().fg(palette.ink()).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new().fg(palette.ink2())
+                    },
+                )),
+                2 => {
+                    let status = dot_status(&text);
+                    Line::from(vec![
+                        dot(status, app.clock, &palette),
+                        Span::raw(format!(" {text}")),
+                    ])
+                }
+                _ => Line::raw(text),
+            })
+            .collect();
+        let row = Row::new(cells);
+        if selected {
+            row.style(Style::new().bg(palette.sheet()))
         } else {
             row
         }
     });
     let widths = [
-        Constraint::Length(6),
+        Constraint::Length(8),
         Constraint::Length(18),
-        Constraint::Length(9),
+        Constraint::Length(11),
         Constraint::Length(9),
         Constraint::Fill(1),
         Constraint::Length(7),
@@ -125,10 +167,7 @@ fn details(frame: &mut Frame, area: Rect, app: &App) {
     let [facts, side] =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
     let Some(station) = app.array("/v1/stations").get(app.selected) else {
-        frame.render_widget(
-            Paragraph::new("").block(Block::bordered().title(" workstation ")),
-            area,
-        );
+        frame.render_widget(panel("Workstation", &palette, false), facts);
         return;
     };
 
@@ -140,59 +179,56 @@ fn details(frame: &mut Frame, area: Rect, app: &App) {
         )));
         lines.push(Line::raw(""));
     }
-    lines.extend(pairs(&stations::station_fields(station), palette.muted));
+    lines.extend(pairs(&stations::station_fields(station), &palette));
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" workstation ")),
+        Paragraph::new(lines).block(panel("Workstation", &palette, false)),
         facts,
     );
 
     let [settings_area, sync_area] =
         Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(side);
-    let mut settings = pairs(
-        &stations::settings_fields(&station["settings"]),
-        palette.muted,
-    );
+    let mut settings = pairs(&stations::settings_fields(&station["settings"]), &palette);
     settings.push(Line::raw(""));
-    settings.push(Line::from(Span::styled(
-        "leases",
-        Style::new().fg(palette.muted),
-    )));
+    settings.push(section("Leases", &palette));
     let leases = stations::leases(station);
     if leases.is_empty() {
-        settings.push(Line::raw("  none"));
+        settings.push(Line::from(Span::styled(
+            "  none",
+            Style::new().fg(palette.muted),
+        )));
     }
     for lease in leases {
-        settings.push(Line::raw(format!(
-            "  {}",
-            stations::lease_row(lease).join("  ")
+        settings.push(Line::from(Span::styled(
+            format!("  {}", stations::lease_row(lease).join("  ")),
+            Style::new().fg(palette.ink2()),
         )));
     }
     frame.render_widget(
-        Paragraph::new(settings).block(Block::bordered().title(" settings and leases ")),
+        Paragraph::new(settings).block(panel("Settings and leases", &palette, false)),
         settings_area,
     );
     sync_and_recordings(frame, sync_area, app, station);
 }
 
 /// The takeover panel's border, with the newest reports in it (the prompt is the footer's line).
-fn takeover_log(frame: &mut Frame, area: Rect, app: &App, panel: &Panel) {
+fn takeover_log(frame: &mut Frame, area: Rect, app: &App, panel_state: &Panel) {
     let palette = app.palette;
     let shown = (PANEL_ROWS as usize).saturating_sub(2);
-    let lines: Vec<Line> = if panel.log.is_empty() {
+    let lines: Vec<Line> = if panel_state.log.is_empty() {
         vec![Line::from(Span::styled(
             "taking the session",
             Style::new().fg(palette.muted),
         ))]
     } else {
-        let from = panel.log.len().saturating_sub(shown);
-        panel.log[from..]
+        let from = panel_state.log.len().saturating_sub(shown);
+        panel_state.log[from..]
             .iter()
-            .map(|text| Line::raw(text.clone()))
+            .map(|text| Line::from(Span::styled(text.clone(), Style::new().fg(palette.ink2()))))
             .collect()
     };
-    let title = format!(" takeover · {} ", panel.station);
+    let title = format!("Takeover · {}", panel_state.station);
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(title)),
+        Paragraph::new(lines).block(panel(&title, &palette, true)),
         area,
     );
 }
@@ -213,7 +249,7 @@ fn sync_and_recordings(frame: &mut Frame, area: Rect, app: &App, station: &Value
                     Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
                 )));
             }
-            lines.extend(pairs(&files::sync_fields(state), palette.muted));
+            lines.extend(pairs(&files::sync_fields(state), &palette));
             let conflicts = state
                 .get("conflicts")
                 .and_then(Value::as_array)
@@ -221,10 +257,13 @@ fn sync_and_recordings(frame: &mut Frame, area: Rect, app: &App, station: &Value
                 .unwrap_or(&[]);
             for conflict in conflicts.iter().take(CONFLICTS_SHOWN) {
                 let cells = files::conflict_row(conflict);
-                lines.push(Line::raw(format!(
-                    "  conflict  {}  (copy of {})",
-                    cells[0], cells[1]
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled("  conflict  ", Style::new().fg(palette.warn())),
+                    Span::styled(
+                        format!("{}  (copy of {})", cells[0], cells[1]),
+                        Style::new().fg(palette.ink2()),
+                    ),
+                ]));
             }
             if conflicts.len() > CONFLICTS_SHOWN {
                 lines.push(Line::from(Span::styled(
@@ -239,10 +278,7 @@ fn sync_and_recordings(frame: &mut Frame, area: Rect, app: &App, station: &Value
         ))),
     }
     lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "recent recordings",
-        Style::new().fg(palette.muted),
-    )));
+    lines.push(section("Recent recordings", &palette));
     let recent = app
         .station_recent
         .get(id)
@@ -250,22 +286,33 @@ fn sync_and_recordings(frame: &mut Frame, area: Rect, app: &App, station: &Value
         .map(Vec::as_slice)
         .unwrap_or(&[]);
     if recent.is_empty() {
-        lines.push(Line::raw("  none"));
+        lines.push(Line::from(Span::styled(
+            "  none",
+            Style::new().fg(palette.muted),
+        )));
     }
     for recording in recent.iter().take(super::RECENT_RECORDINGS as usize) {
-        lines.push(Line::raw(format!(
-            "  {}",
-            recordings::recording_brief(recording)
+        lines.push(Line::from(Span::styled(
+            format!("  {}", recordings::recording_brief(recording)),
+            Style::new().fg(palette.ink2()),
         )));
     }
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" sync and recordings ")),
+        Paragraph::new(lines).block(panel("Sync and recordings", &palette, false)),
         area,
     );
 }
 
-/// `label  value` lines, the labels in the muted colour.
-fn pairs(pairs: &[(&'static str, String)], muted: Color) -> Vec<Line<'static>> {
+/// A section label: small, uppercase, in the secondary ink.
+fn section(title: &str, palette: &Palette) -> Line<'static> {
+    Line::from(Span::styled(
+        title.to_uppercase(),
+        Style::new().fg(palette.ink2()).add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// `label  value` lines, the labels muted and the values in the secondary ink.
+fn pairs(pairs: &[(&'static str, String)], palette: &Palette) -> Vec<Line<'static>> {
     let width = pairs
         .iter()
         .map(|(label, _)| label.len())
@@ -275,8 +322,8 @@ fn pairs(pairs: &[(&'static str, String)], muted: Color) -> Vec<Line<'static>> {
         .iter()
         .map(|(label, value)| {
             Line::from(vec![
-                Span::styled(format!("{label:>width$}  "), Style::new().fg(muted)),
-                Span::raw(value.clone()),
+                Span::styled(format!("{label:>width$}  "), Style::new().fg(palette.muted)),
+                Span::styled(value.clone(), Style::new().fg(palette.ink2())),
             ])
         })
         .collect()

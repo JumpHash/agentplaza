@@ -22,11 +22,13 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::Color;
 use serde_json::{Value, json};
 
+use super::cmdk;
 use super::context_bar;
 use super::floor::FloorView;
 use super::onboarding::{self, DepsKey, Facts, Onboarding, Stage, Step, TOUR};
 use super::scope;
 use super::screens;
+use super::style;
 use super::workspace::{self, Effect, Got, Want, Workspace};
 use super::workspace_view;
 use crate::cmd;
@@ -162,27 +164,49 @@ impl Tab {
     }
 }
 
-/// The colours: signal orange and paper for the selection and HELD, with 16-colour fallbacks for
-/// terminals that do not advertise truecolour.
+/// The colours of the Loom theme (dark): signal orange for the selection, the badges and the cursor,
+/// with 16-colour fallbacks for terminals that do not advertise truecolour, and no colour at all under
+/// `NO_COLOR` (emphasis is then bold or reversed; see `style::chip`). The four fields are what most
+/// screens use directly; the rest of the theme comes from the methods below, which follow the mode
+/// the accent says (truecolour, 16 colours, or none).
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
+    /// The signal orange: the selection, the HELD badge, the brand.
     pub accent: Color,
+    /// Light text on the default background (see `on_accent` for the dark text on the accent).
     pub paper: Color,
     pub ok: Color,
+    /// Ink 3: secondary text and hints.
     pub muted: Color,
+}
+
+/// How a palette draws: from its accent, which `detect` sets per mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Truecolor,
+    Ansi,
+    Mono,
 }
 
 impl Palette {
     pub fn detect() -> Palette {
+        if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+            return Palette {
+                accent: Color::Reset,
+                paper: Color::Reset,
+                ok: Color::Reset,
+                muted: Color::Reset,
+            };
+        }
         let truecolor = std::env::var("COLORTERM")
             .map(|v| v.contains("truecolor") || v.contains("24bit"))
             .unwrap_or(false);
         if truecolor {
             Palette {
-                accent: Color::Rgb(0xe8, 0x59, 0x0c),
+                accent: Color::Rgb(0xe8, 0x79, 0x4a),
                 paper: Color::Rgb(0xf4, 0xf1, 0xea),
-                ok: Color::Rgb(0x2f, 0x9e, 0x44),
-                muted: Color::Rgb(0x86, 0x8e, 0x96),
+                ok: Color::Rgb(0x5c, 0xcf, 0x8c),
+                muted: Color::Rgb(0x95, 0x8f, 0x83),
             }
         } else {
             Palette {
@@ -192,6 +216,78 @@ impl Palette {
                 muted: Color::DarkGray,
             }
         }
+    }
+
+    fn mode(&self) -> Mode {
+        match self.accent {
+            Color::Rgb(..) => Mode::Truecolor,
+            Color::Reset => Mode::Mono,
+            _ => Mode::Ansi,
+        }
+    }
+
+    /// One token: its truecolour value, its 16-colour fallback, or the terminal's own colour.
+    fn token(&self, rgb: Color, ansi: Color) -> Color {
+        match self.mode() {
+            Mode::Truecolor => rgb,
+            Mode::Ansi => ansi,
+            Mode::Mono => Color::Reset,
+        }
+    }
+
+    // The theme's tokens. The ones the body screens do not use yet are allowed unused until they do.
+    pub fn ink(&self) -> Color {
+        self.token(Color::Rgb(0xec, 0xe8, 0xdf), Color::White)
+    }
+
+    pub fn ink2(&self) -> Color {
+        self.token(Color::Rgb(0xaa, 0xa4, 0x98), Color::Gray)
+    }
+
+    #[allow(dead_code)]
+    pub fn rule(&self) -> Color {
+        self.token(Color::Rgb(0x2a, 0x28, 0x24), Color::DarkGray)
+    }
+
+    pub fn rule_strong(&self) -> Color {
+        self.token(Color::Rgb(0x3a, 0x37, 0x31), Color::DarkGray)
+    }
+
+    /// The header and status rows.
+    pub fn raised(&self) -> Color {
+        self.token(Color::Rgb(0x1c, 0x1b, 0x18), Color::Reset)
+    }
+
+    pub fn sheet(&self) -> Color {
+        self.token(Color::Rgb(0x21, 0x1f, 0x1c), Color::Reset)
+    }
+
+    pub fn accent_soft(&self) -> Color {
+        self.token(Color::Rgb(0x3a, 0x24, 0x18), Color::Reset)
+    }
+
+    /// Dark ink on the accent: the selected tab, the HELD badge, the mode chips.
+    pub fn on_accent(&self) -> Color {
+        self.token(Color::Rgb(0x1a, 0x0e, 0x07), Color::Black)
+    }
+
+    #[allow(dead_code)]
+    pub fn warn(&self) -> Color {
+        self.token(Color::Rgb(0xe8, 0xb2, 0x57), Color::Yellow)
+    }
+
+    pub fn crit(&self) -> Color {
+        self.token(Color::Rgb(0xf0, 0x7a, 0x6f), Color::LightRed)
+    }
+
+    #[allow(dead_code)]
+    pub fn info(&self) -> Color {
+        self.token(Color::Rgb(0x86, 0xa8, 0xf0), Color::Blue)
+    }
+
+    #[allow(dead_code)]
+    pub fn review(&self) -> Color {
+        self.token(Color::Rgb(0xb3, 0x9a, 0xf0), Color::Magenta)
     }
 }
 
@@ -296,6 +392,13 @@ pub struct App {
     /// The last fetch error (the hub is down or unreachable), shown in the footer.
     pub error: Option<String>,
     pub notice: Option<String>,
+    /// The animation clock: seconds since the UI started. `tick` advances it, and everything animated
+    /// reads it (the recorder drives it with fixed steps).
+    pub clock: f32,
+    /// When the notice on screen appeared, on the clock: its toast hides a few seconds after.
+    pub notice_at: f32,
+    /// The notice the clock last saw, so that a new notice is told from the same text again.
+    notice_seen: Option<String>,
     /// Whether the events socket is up.
     pub link: bool,
     pub floor: FloorView,
@@ -308,6 +411,8 @@ pub struct App {
     pub confirm: Option<Confirm>,
     /// The first-start setup or the tour, while it runs (it takes every key).
     pub onboarding: Option<Onboarding>,
+    /// The command palette, while it is open (Ctrl+K): it takes the keys.
+    pub cmdk: Option<cmdk::CommandPalette>,
     /// The sync state of each workstation the Workstations tab has read, by id.
     pub station_sync: HashMap<String, Value>,
     /// The recent recordings of each workstation the Workstations tab has read, by id.
@@ -358,6 +463,9 @@ impl App {
             data: HashMap::new(),
             error: None,
             notice: None,
+            clock: 0.0,
+            notice_at: 0.0,
+            notice_seen: None,
             link: false,
             floor: FloorView::new(),
             log: EventLog::new(EVENT_LOG_LINES),
@@ -366,6 +474,7 @@ impl App {
             draft: None,
             confirm: None,
             onboarding: None,
+            cmdk: None,
             station_sync: HashMap::new(),
             station_recent: HashMap::new(),
             desk: None,
@@ -790,9 +899,16 @@ impl App {
     }
 
     pub fn tick(&mut self, dt: f32) {
+        self.clock += dt;
         self.floor.tick(dt);
         let effects = self.ws.poll(dt, self.shown_owner());
         self.execute(effects);
+        if self.notice != self.notice_seen {
+            if self.notice.is_some() {
+                self.notice_at = self.clock;
+            }
+            self.notice_seen = self.notice.clone();
+        }
     }
 
     /// The chat on screen whose context the context bar shows: the Workspace's selected agent, or the Chat tab's
@@ -828,7 +944,7 @@ impl App {
             Tab::Floor => {
                 let [floor, events] =
                     Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).areas(body);
-                self.floor.render(frame, floor);
+                self.floor.render(frame, floor, self.palette);
                 screens::event_log(frame, events, self);
             }
             Tab::Overview => screens::overview(frame, body, self),
@@ -840,14 +956,32 @@ impl App {
             Tab::Nodes => screens::nodes(frame, body, self),
             Tab::Machines => machines::render(frame, body, self),
             Tab::Workstations => workstations::render(frame, body, self),
-            Tab::Workspace => workspace_view::render(frame, body, &mut self.ws, self.palette),
+            Tab::Workspace => {
+                workspace_view::render(frame, body, &mut self.ws, self.palette, self.clock)
+            }
             Tab::Chat => chat::render(frame, body, self),
             Tab::Providers => {
-                providers::render(frame, body, &self.providers, &self.data, self.palette);
+                providers::render(
+                    frame,
+                    body,
+                    &self.providers,
+                    &self.data,
+                    self.palette,
+                    self.clock,
+                );
             }
         }
         if let Some(ob) = &self.onboarding {
-            ob.draw(frame, body, self.palette, self.client.base());
+            ob.draw(frame, body, self.palette, self.client.base(), self.clock);
+        }
+        if let Some(notice) = &self.notice {
+            let age = self.clock - self.notice_at;
+            if age < style::TOAST_SECS {
+                style::toast(frame, body, notice, age, &self.palette);
+            }
+        }
+        if let Some(open) = &self.cmdk {
+            open.draw(frame, body, self.palette, self.clock);
         }
         screens::footer(frame, footer, self);
     }
@@ -855,6 +989,31 @@ impl App {
     /// Handles one key press; true when the UI should quit.
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
         if key.kind != KeyEventKind::Press {
+            return false;
+        }
+        // The command palette takes the keys while it is open. Ctrl+K opens it only where no other
+        // screen takes the keys (the setup, a takeover, a draft, a question, a typing workspace).
+        if let Some(open) = self.cmdk.as_mut() {
+            match open.on_key(key) {
+                cmdk::Step::Stay => {}
+                cmdk::Step::Close => self.cmdk = None,
+                cmdk::Step::Run(action) => {
+                    self.cmdk = None;
+                    return self.run_command(action);
+                }
+            }
+            return false;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('k')
+            && self.onboarding.is_none()
+            && self.desk.is_none()
+            && self.draft.is_none()
+            && self.compose.is_none()
+            && self.confirm.is_none()
+            && !(self.tab == Tab::Workspace && self.ws.captures_keys())
+        {
+            self.cmdk = Some(cmdk::CommandPalette::new(self.clock));
             return false;
         }
         let typing = self.tab == Tab::Workspace && self.ws.captures_keys();
@@ -872,6 +1031,7 @@ impl App {
             return false;
         }
         self.notice = None;
+        self.notice_seen = None;
         if self.onboarding.is_some() {
             self.on_onboarding_key(key.code);
             return false;
@@ -964,6 +1124,38 @@ impl App {
                 self.notice = Some("refreshing".to_string());
             }
             _ => {}
+        }
+        false
+    }
+
+    /// Runs a command the palette chose, with the methods its key calls. True when the UI should quit.
+    fn run_command(&mut self, action: cmdk::Action) -> bool {
+        match action {
+            cmdk::Action::GoTo(tab) => self.select_tab(tab),
+            cmdk::Action::NewConversation => {
+                self.select_tab(Tab::Chat);
+                self.start_compose(true);
+            }
+            cmdk::Action::MessageAgent => {
+                if self.tab != Tab::Agents {
+                    self.select_tab(Tab::Agents);
+                }
+                self.start_draft();
+            }
+            cmdk::Action::NextProject => self.step_scope(1),
+            cmdk::Action::PreviousProject => self.step_scope(-1),
+            cmdk::Action::Refresh => {
+                let _ = self.watch.send(self.tab.path());
+                self.fetch_projects();
+                if self.tab == Tab::Workspace {
+                    let effects = self.ws.enter();
+                    self.execute(effects);
+                }
+                self.notice = Some("refreshing".to_string());
+            }
+            cmdk::Action::StopAll => self.confirm = Some(Confirm::StopAll),
+            cmdk::Action::TakeTour => self.begin(Stage::Tour(0)),
+            cmdk::Action::Quit => return true,
         }
         false
     }
@@ -1501,6 +1693,10 @@ fn poll(mut client: Client, watched: Receiver<&'static str>, tx: Sender<Msg>) {
         let mut paths = vec!["/v1/hub/identity", "/v1/agents", "/v1/plaza/state"];
         if !paths.contains(&visible) {
             paths.push(visible);
+        }
+        // The overview counts the approvals waiting.
+        if visible == "/v1/overview" {
+            paths.push("/v1/approvals");
         }
         for path in paths {
             if tx.send(Msg::Fetched(path, client.get(path))).is_err() {

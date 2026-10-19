@@ -10,11 +10,12 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use serde_json::{Value, json};
 
 use super::app::Palette;
 use super::screens::clip;
+use super::style;
 use super::workspace::{Got, Key};
 use crate::ctx::{Client, seg};
 
@@ -78,7 +79,7 @@ pub enum Ask {
     },
 }
 
-/// How full a context is: calm, over 80 % (warn), or over 95 % (crit).
+/// How full a context is: calm, over 80 % (warn), or over 92 % (crit).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Calm,
@@ -164,7 +165,7 @@ impl Context {
     /// The fill: used over the window, when the window is known.
     pub fn tone(&self) -> Tone {
         match self.window {
-            Some(window) if self.used * 100 > window * 95 => Tone::Crit,
+            Some(window) if self.used * 100 > window * 92 => Tone::Crit,
             Some(window) if self.used * 100 > window * 80 => Tone::Warn,
             _ => Tone::Calm,
         }
@@ -225,35 +226,79 @@ fn part_color(part: usize, palette: Palette) -> Color {
     }
 }
 
-fn tone_style(tone: Tone, palette: Palette) -> Style {
+/// The percentage's colour: muted, then warn, then crit. Crit breathes towards the ink on the clock, gently, so a nearly
+/// full context is hard to miss.
+fn tone_style(tone: Tone, palette: Palette, clock: f32) -> Style {
     match tone {
         Tone::Calm => Style::new().fg(palette.muted),
-        Tone::Warn => Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        Tone::Crit => Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        Tone::Warn => Style::new().fg(palette.warn()).add_modifier(Modifier::BOLD),
+        Tone::Crit => {
+            let breathe = 0.35 * style::pulse(clock, 2.4);
+            let color = style::mix(palette.crit(), palette.ink(), breathe);
+            Style::new().fg(color).add_modifier(Modifier::BOLD)
+        }
     }
 }
 
-/// The track of the bar, `width` cells: each part's share as full blocks in its colour, then the empty rest as light
-/// shade. Scaled to the window when it is known, else to what the parts add up to.
+/// The partly filled cell glyphs, from one eighth to seven eighths, filled from the left.
+const EIGHTHS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+
+/// The track of the bar, `width` cells: each part's share as full blocks in its colour, with the cell where a part ends
+/// filled to the eighth, then the empty rest as light shade. Scaled to the window when it is known, else to what the
+/// parts add up to.
 fn track(ctx: &Context, width: usize, palette: Palette) -> Vec<Span<'static>> {
     let total: u64 = ctx.parts.iter().sum();
-    let scale = ctx.window.unwrap_or(total.max(ctx.used)).max(1);
-    let width_u = width as u64;
-    let mut cells: Vec<(char, Style)> = Vec::with_capacity(width);
-    let mut so_far = 0u64;
+    let scale = ctx.window.unwrap_or(total.max(ctx.used)).max(1) as f64;
+    // Each part's stretch of the track, in cells: from the end of the parts before it to its own end.
+    let mut stretches = Vec::with_capacity(ctx.parts.len());
+    let mut so_far = 0f64;
     for (i, tokens) in ctx.parts.iter().enumerate() {
-        so_far += tokens;
-        let end = ((so_far.min(scale) * width_u + scale / 2) / scale) as usize;
-        let style = Style::new().fg(part_color(i, palette));
-        while cells.len() < end.min(width) {
-            cells.push(('█', style));
-        }
+        let start = so_far.min(scale) / scale * width as f64;
+        so_far += *tokens as f64;
+        let end = so_far.min(scale) / scale * width as f64;
+        stretches.push((start, end, part_color(i, palette)));
     }
     let empty = Style::new().fg(palette.muted);
-    while cells.len() < width {
-        cells.push(('░', empty));
+    let mut cells: Vec<(char, Style)> = Vec::with_capacity(width);
+    for cell in 0..width {
+        let (from, to) = (cell as f64, cell as f64 + 1.0);
+        // The part that covers most of this cell, and how much of the cell the parts cover in all.
+        let mut covered = 0.0;
+        let mut owner: Option<(f64, Color)> = None;
+        for &(start, end, color) in &stretches {
+            let overlap = (end.min(to) - start.max(from)).max(0.0);
+            if overlap > 0.0 {
+                covered += overlap;
+                if owner.is_none_or(|(most, _)| overlap > most) {
+                    owner = Some((overlap, color));
+                }
+            }
+        }
+        let level = (covered * 8.0).round() as usize;
+        match (owner, level) {
+            (Some((_, color)), 1..=7) => cells.push((EIGHTHS[level - 1], Style::new().fg(color))),
+            (Some((_, color)), 8..) => cells.push(('█', Style::new().fg(color))),
+            _ => cells.push(('░', empty)),
+        }
     }
     group(cells)
+}
+
+/// A bar `width` cells long, filled to `part` of `whole` in eighths: full blocks, then the partial one, then blanks.
+fn share_bar(part: u64, whole: u64, width: usize) -> String {
+    let eighths = if whole == 0 {
+        0
+    } else {
+        (part as f64 / whole as f64 * (width * 8) as f64).round() as usize
+    };
+    let full = (eighths / 8).min(width);
+    let mut out = "█".repeat(full);
+    if full < width && eighths % 8 > 0 {
+        out.push(EIGHTHS[eighths % 8 - 1]);
+    }
+    let blanks = width.saturating_sub(out.chars().count());
+    out.push_str(&" ".repeat(blanks));
+    out
 }
 
 /// Joins cells of one style into spans.
@@ -270,7 +315,7 @@ fn group(cells: Vec<(char, Style)>) -> Vec<Span<'static>> {
 
 /// The bar's line over the input: the track, then the text (its colour follows the tone). `reading…` until the
 /// context is known.
-pub fn bar_line(ctx: Option<&Context>, width: u16, palette: Palette) -> Line<'static> {
+pub fn bar_line(ctx: Option<&Context>, width: u16, palette: Palette, clock: f32) -> Line<'static> {
     let Some(ctx) = ctx else {
         return Line::from(Span::styled(
             "context · reading…",
@@ -280,7 +325,7 @@ pub fn bar_line(ctx: Option<&Context>, width: u16, palette: Palette) -> Line<'st
     let width = usize::from(width);
     let text = bar_text(ctx);
     let text_width = text.chars().count();
-    let text_style = tone_style(ctx.tone(), palette);
+    let text_style = tone_style(ctx.tone(), palette, clock);
     if width < text_width + 1 + 8 {
         return Line::from(Span::styled(clip(&text, width), text_style));
     }
@@ -378,20 +423,23 @@ pub fn breakdown_lines(ctx: Option<&Context>, palette: Palette) -> Vec<Line<'sta
     if ctx.tools.is_empty() {
         lines.push(Line::from(Span::styled("  No tool calls yet", muted)));
     }
+    // Each tool's bar is its share of the biggest result, in tokens.
+    let most = ctx.tools.iter().map(|t| t.result_tokens).max().unwrap_or(0);
     for tool in &ctx.tools {
         let errors_style = if tool.errors > 0 {
-            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
+            Style::new().fg(palette.crit()).add_modifier(Modifier::BOLD)
         } else {
             muted
         };
         lines.push(Line::from(vec![
-            Span::raw(format!(
-                "  {:<20}{:>6} calls",
-                clip(&tool.name, 20),
-                tool.calls
-            )),
-            Span::styled(format!("{:>6} errors", tool.errors), errors_style),
-            Span::raw(format!("{:>9} tokens", compact(tool.result_tokens))),
+            Span::raw(format!("  {:<12}", clip(&tool.name, 12))),
+            Span::styled(
+                share_bar(tool.result_tokens, most, 6),
+                Style::new().fg(palette.accent),
+            ),
+            Span::raw(format!(" {:>4} calls ", tool.calls)),
+            Span::styled(format!("{:>3} errors", tool.errors), errors_style),
+            Span::raw(format!(" {:>7} tokens", compact(tool.result_tokens))),
         ]));
     }
     lines.push(Line::raw(""));
@@ -420,9 +468,7 @@ pub fn panel(frame: &mut Frame, area: Rect, ctx: Option<&Context>, palette: Pale
         height,
     };
     frame.render_widget(Clear, rect);
-    let block = Block::bordered()
-        .title(" context · i closes ")
-        .border_style(Style::new().fg(palette.accent));
+    let block = style::panel("context · i closes", &palette, true);
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
@@ -620,16 +666,23 @@ pub fn overlay(frame: &mut Frame, area: Rect, picker: &Picker, palette: Palette)
                     .window
                     .map_or(String::new(), |w| format!("  {}", compact(w)));
                 let star = if choice.favourite { "★ " } else { "  " };
-                let text = clip(
-                    &format!("{star}{label}{window}"),
-                    usize::from(width).saturating_sub(4),
-                );
-                let style = if i == picker.cursor {
-                    Style::new().fg(palette.paper).bg(palette.accent)
+                // The chosen row is a sheet with an accent marker; the rest sit on the background.
+                let row = usize::from(width).saturating_sub(3);
+                let text = clip(&format!("{star}{label}{window}"), row);
+                if i == picker.cursor {
+                    lines.push(Line::from(vec![
+                        Span::styled("▌", Style::new().fg(palette.accent).bg(palette.sheet())),
+                        Span::styled(
+                            format!("{text:<row$}"),
+                            Style::new()
+                                .fg(palette.ink())
+                                .bg(palette.sheet())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
                 } else {
-                    Style::new()
-                };
-                lines.push(Line::from(Span::styled(text, style)));
+                    lines.push(Line::from(Span::raw(format!(" {text}"))));
+                }
             }
         }
     }
@@ -657,9 +710,7 @@ pub fn overlay(frame: &mut Frame, area: Rect, picker: &Picker, palette: Palette)
         "↑↓ model · Tab or h/l effort · Enter saves · Esc closes",
         muted,
     )));
-    let block = Block::bordered()
-        .title(" model · effort ")
-        .border_style(Style::new().fg(palette.accent));
+    let block = style::panel("model · effort", &palette, true);
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
@@ -784,12 +835,12 @@ mod tests {
     }
 
     #[test]
-    fn the_tone_turns_warn_over_80_and_crit_over_95() {
+    fn the_tone_turns_warn_over_80_and_crit_over_92() {
         let at = |used| Context { used, ..sample() };
         assert_eq!(at(160_000).tone(), Tone::Calm, "80 % is not over 80");
         assert_eq!(at(170_000).tone(), Tone::Warn);
-        assert_eq!(at(190_000).tone(), Tone::Warn, "95 % is not over 95");
-        assert_eq!(at(191_000).tone(), Tone::Crit);
+        assert_eq!(at(184_000).tone(), Tone::Warn, "92 % is not over 92");
+        assert_eq!(at(185_000).tone(), Tone::Crit);
         let unknown = Context {
             window: None,
             used: 999_999,
@@ -818,7 +869,7 @@ mod tests {
 
     #[test]
     fn the_bar_fills_its_track_by_part_and_keeps_the_text_at_its_right() {
-        let line = bar_line(Some(&sample()), 40, palette());
+        let line = bar_line(Some(&sample()), 40, palette(), 0.0);
         let text = text_of(&line);
         assert_eq!(text.chars().count(), 40);
         assert!(text.ends_with("41.2k / 200k · 21%"), "{text}");
@@ -836,11 +887,11 @@ mod tests {
     #[test]
     fn the_bar_says_reading_until_the_context_is_known_and_shortens_when_narrow() {
         assert_eq!(
-            text_of(&bar_line(None, 40, palette())),
+            text_of(&bar_line(None, 40, palette(), 0.0)),
             "context · reading…"
         );
         assert_eq!(
-            text_of(&bar_line(Some(&sample()), 12, palette())),
+            text_of(&bar_line(Some(&sample()), 12, palette(), 0.0)),
             "41.2k / 200…"
         );
     }

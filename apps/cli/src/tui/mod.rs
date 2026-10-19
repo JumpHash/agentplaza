@@ -7,9 +7,12 @@ pub mod context_bar;
 pub mod floor;
 
 mod app;
+mod cmdk;
 mod onboarding;
+mod record;
 mod scope;
 mod screens;
+mod style;
 mod workspace;
 mod workspace_view;
 
@@ -28,6 +31,9 @@ pub struct Args {
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<(), String> {
+    if let Some(path) = std::env::var_os("APZ_TUI_RECORD") {
+        return record::run(ctx.client.clone(), std::path::Path::new(&path));
+    }
     if let Some(path) = std::env::var_os("APZ_TUI_SNAPSHOT") {
         return app::snapshot(
             ctx.client.clone(),

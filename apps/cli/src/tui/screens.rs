@@ -4,13 +4,17 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{
+    Block, BorderType, Cell, HighlightSpacing, Paragraph, Row, Table, TableState,
+};
 use serde_json::Value;
 
-use super::app::{App, Tab};
+use super::app::{App, Palette, Tab};
+use super::onboarding::Stage;
 use super::scope;
+use super::style::{chip, dot, hints, key_hint, mix, panel, pulse, spinner};
 use super::workspace_view::tail;
 use crate::cmd::agents::{held_of, place_of};
 use crate::rich;
@@ -121,8 +125,20 @@ fn doing(agent: &Value) -> String {
     }
 }
 
+/// `dim` breathing up to `bright` on the clock. Only RGB colours breathe; the 16-colour and the
+/// no-colour modes keep `bright` as it is.
+fn breathe(bright: Color, dim: Color, clock: f32) -> Color {
+    match bright {
+        Color::Rgb(..) => mix(dim, bright, pulse(clock, 2.4)),
+        _ => bright,
+    }
+}
+
+/// The header row: the brand with its breathing hexagon, the hub's live dot, name and address, the
+/// counts of working and idle agents, the project, and the HELD badge on the right when the plaza is
+/// paused.
 pub fn header(frame: &mut Frame, area: Rect, app: &App) {
-    let palette = app.palette;
+    let p = app.palette;
     let name = show(app.data.get("/v1/hub/identity").and_then(|v| v.get("name")));
     let (working, idle) = app.agents().iter().fold((0usize, 0usize), |(w, i), agent| {
         match agent.get("status").and_then(Value::as_str) {
@@ -131,175 +147,476 @@ pub fn header(frame: &mut Frame, area: Rect, app: &App) {
             _ => (w, i),
         }
     });
+    let muted = Style::new().fg(p.muted);
+    let row = Style::new().bg(p.raised());
+    let brand = breathe(p.accent, p.accent_soft(), app.clock);
     let mut spans = vec![
+        Span::raw(" "),
+        Span::styled("⬢", Style::new().fg(brand)),
+        Span::styled(" agent", Style::new().fg(p.ink2())),
         Span::styled(
-            format!(" {name} "),
-            Style::new().add_modifier(Modifier::BOLD),
+            "plaza",
+            Style::new().fg(p.ink()).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("{}   ", app.client.base()),
-            Style::new().fg(palette.muted),
-        ),
-        Span::raw(format!("working {working}  idle {idle}  ")),
-        Span::styled(
-            format!(
-                "project: {}  ",
-                scope::label(app.scope.as_deref(), app.projects())
-            ),
-            Style::new().fg(palette.muted),
-        ),
+        Span::styled("  │  ", Style::new().fg(p.rule_strong())),
     ];
+    if app.link {
+        let live = breathe(p.ok, mix(p.ok, p.raised(), 0.55), app.clock);
+        spans.push(Span::styled("● ", Style::new().fg(live)));
+    } else {
+        spans.push(Span::styled("○ offline ", muted));
+    }
+    spans.push(Span::styled(
+        name,
+        Style::new().fg(p.ink()).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(format!("  {}   ", app.client.base()), muted));
+    if working > 0 {
+        spans.push(Span::styled(
+            format!("{} ", spinner(app.clock)),
+            Style::new().fg(p.accent),
+        ));
+        spans.push(Span::styled(
+            format!("{working} working"),
+            Style::new().fg(p.accent),
+        ));
+    } else {
+        spans.push(Span::styled("0 working", muted));
+    }
+    spans.push(Span::raw("   "));
+    spans.push(Span::styled("● ", Style::new().fg(p.ok)));
+    spans.push(Span::styled(format!("{idle} idle"), muted));
+    spans.push(Span::raw("   "));
+    spans.push(Span::styled(
+        format!(
+            "project · {}",
+            scope::label(app.scope.as_deref(), app.projects())
+        ),
+        muted,
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(row), area);
     if app.paused() {
-        spans.push(Span::styled(
-            " HELD ",
-            Style::new()
-                .fg(palette.paper)
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD),
+        let badge = Line::from(chip(
+            "■ HELD",
+            p.on_accent(),
+            mix(p.accent, p.crit(), pulse(app.clock, 1.6)),
         ));
+        let width = u16::try_from(badge.width()).unwrap_or(0);
+        if width < area.width {
+            let rect = Rect::new(area.right() - width, area.y, width, area.height);
+            frame.render_widget(Paragraph::new(badge).style(row), rect);
+        }
     }
-    if !app.link {
-        spans.push(Span::styled(
-            "  events offline",
-            Style::new().fg(palette.muted),
-        ));
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+/// The tab row: every tab as its key and label, the active one as a chip. When the tabs are wider
+/// than the row, the window holds the active tab with its neighbours where they fit, and a muted
+/// `‹` or `›` shows that tabs are hidden on that side.
 pub fn tab_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let palette = app.palette;
+    let p = app.palette;
+    let n = Tab::ALL.len();
+    let active = Tab::ALL.iter().position(|tab| *tab == app.tab).unwrap_or(0);
+    // A tab is its label with a space and a key on each side of the label, or the same as a chip.
+    let widths: Vec<usize> = Tab::ALL
+        .iter()
+        .map(|tab| tab.label().chars().count() + 4)
+        .collect();
+    let budget = usize::from(area.width);
+    let used = |lo: usize, hi: usize| {
+        widths[lo..=hi].iter().sum::<usize>() + usize::from(lo > 0) + usize::from(hi + 1 < n)
+    };
+    let (mut lo, mut hi) = (active, active);
+    loop {
+        let mut grew = false;
+        if lo > 0 && used(lo - 1, hi) <= budget {
+            lo -= 1;
+            grew = true;
+        }
+        if hi + 1 < n && used(lo, hi + 1) <= budget {
+            hi += 1;
+            grew = true;
+        }
+        if !grew {
+            break;
+        }
+    }
+    let muted = Style::new().fg(p.muted);
     let mut spans = Vec::new();
-    for tab in Tab::ALL {
-        let style = if tab == app.tab {
-            Style::new()
-                .fg(palette.paper)
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
+    if lo > 0 {
+        spans.push(Span::styled("‹", muted));
+    }
+    for tab in &Tab::ALL[lo..=hi] {
+        if *tab == app.tab {
+            spans.push(chip(
+                &format!("{} {}", tab.key(), tab.label()),
+                p.on_accent(),
+                p.accent,
+            ));
         } else {
-            Style::new().fg(palette.muted)
-        };
-        spans.push(Span::styled(
-            format!(" {} {} ", tab.key(), tab.label()),
-            style,
-        ));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(tab.key().to_string(), muted));
+            spans.push(Span::styled(
+                format!(" {} ", tab.label()),
+                Style::new().fg(p.ink2()),
+            ));
+        }
+    }
+    if hi + 1 < n {
+        spans.push(Span::styled("›", muted));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// The last events the floor's log holds, as many as the area has lines for.
+/// The last events the floor's log holds, as many as the area has lines for: the newest in ink2,
+/// the older ones muted.
 pub fn event_log(frame: &mut Frame, area: Rect, app: &App) {
-    let palette = app.palette;
+    let p = app.palette;
     let rows = usize::from(area.height.saturating_sub(2));
-    let width = usize::from(area.width.saturating_sub(2));
+    let width = usize::from(area.width.saturating_sub(4));
     let skip = app.log.len().saturating_sub(rows);
+    let shown = app.log.len() - skip;
     let lines: Vec<Line> = app
         .log
         .iter()
         .skip(skip)
-        .map(|line| {
-            Line::from(Span::styled(
-                clip(line, width),
-                Style::new().fg(palette.muted),
-            ))
+        .enumerate()
+        .map(|(i, line)| {
+            let colour = if i + 1 == shown { p.ink2() } else { p.muted };
+            Line::from(vec![
+                Span::styled("· ", Style::new().fg(p.rule_strong())),
+                Span::styled(clip(line, width), Style::new().fg(colour)),
+            ])
         })
         .collect();
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" events ")),
+        Paragraph::new(lines).block(panel(" events ", &p, false)),
         area,
     );
 }
 
+/// The keys a tab's status line shows, in the order they drop out when the row is narrow.
+fn tab_keys(tab: Tab) -> &'static [(&'static str, &'static str)] {
+    match tab {
+        Tab::Workspace => &[
+            ("^K", "commands"),
+            ("Tab", "pane"),
+            ("↑↓", "move"),
+            ("/", "filter"),
+            ("t", "steer"),
+            ("i", "context"),
+            ("M", "model"),
+            ("p", "post"),
+            ("P", "pause"),
+            ("E", "export"),
+            ("o", "IDE"),
+            ("Enter", "expand"),
+            ("0-9", "tabs"),
+            ("q", "quit"),
+        ],
+        Tab::Workstations => &[
+            ("^K", "commands"),
+            ("1-9,0,w,c", "tabs"),
+            ("Tab", "next"),
+            ("↑↓", "move"),
+            ("T", "take over"),
+            ("r", "refresh"),
+            ("?", "tour"),
+            ("q", "quit"),
+        ],
+        Tab::Chat => &[
+            ("^K", "commands"),
+            ("1-9,0,w,c", "tabs"),
+            ("↑↓", "conversation"),
+            ("t", "message"),
+            ("i", "context"),
+            ("M", "model"),
+            ("n", "new conversation"),
+            ("S", "start the draft"),
+            ("r", "refresh"),
+            ("q", "quit"),
+        ],
+        _ => &[
+            ("^K", "commands"),
+            ("1-9,0,w,c", "tabs"),
+            ("Tab", "next"),
+            ("↑↓", "move"),
+            ("Enter", "details"),
+            ("t", "message"),
+            ("p/P", "project"),
+            ("a/d", "approve/deny"),
+            ("s", "stop all"),
+            ("r", "refresh"),
+            ("?", "tour"),
+            ("q", "quit"),
+        ],
+    }
+}
+
+/// The status line: a mode chip (the tab, or what is being typed or confirmed), its text, the keys
+/// that fit, and the version on the right. The onboarding, confirm, typing, takeover and error
+/// states take the chip and the text in their own colours.
 pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
-    let palette = app.palette;
-    let line = if let Some(ob) = &app.onboarding {
-        match &app.notice {
-            Some(notice) => Line::from(Span::styled(
-                format!(" {notice}"),
-                Style::new().fg(palette.accent),
-            )),
-            None => Line::from(Span::styled(ob.hint(), Style::new().fg(palette.muted))),
-        }
-    } else if let Some(confirm) = &app.confirm {
-        Line::from(Span::styled(
-            format!(" {}  [y] yes   [n] no ", confirm.question()),
-            Style::new().fg(palette.paper).bg(palette.accent),
-        ))
-    } else if let Some((cid, draft)) = &app.draft {
-        Line::from(vec![
-            Span::styled(
-                format!(" message to agent {cid}: "),
-                Style::new().fg(palette.accent),
-            ),
-            Span::raw(format!("{draft}_")),
-            Span::styled(
-                "   Enter sends · Esc cancels",
-                Style::new().fg(palette.muted),
-            ),
-        ])
-    } else if let Some(compose) = &app.compose {
-        Line::from(vec![
-            Span::styled(
-                format!(" {}: ", compose.label()),
-                Style::new().fg(palette.accent),
-            ),
-            Span::raw(format!(
-                "{}_",
-                tail(compose.text(), usize::from(area.width).saturating_sub(60))
-            )),
-            Span::styled(
-                "   Enter sends · Esc cancels",
-                Style::new().fg(palette.muted),
-            ),
-        ])
-    } else if let Some(panel) = &app.desk {
-        Line::from(vec![
-            Span::styled(
-                format!(" takeover of {} · ", panel.station),
-                Style::new().fg(palette.accent),
-            ),
-            Span::raw(format!("> {}_", panel.line)),
-            Span::styled(
-                "   Enter sends · give-back or Esc gives the session back",
-                Style::new().fg(palette.muted),
-            ),
-        ])
-    } else if let Some(error) = &app.error {
-        Line::from(Span::styled(
-            format!(" hub unreachable: {error}"),
-            Style::new().fg(palette.accent),
-        ))
-    } else if let Some(notice) = &app.notice {
-        Line::from(Span::styled(
-            format!(" {notice}"),
-            Style::new().fg(palette.ok),
-        ))
-    } else if app.tab == Tab::Workspace {
-        Line::from(Span::styled(
-            " Tab pane · ↑↓ move · / filter · t steer · i context · M model · p post · P pause · E export · o IDE · Enter expand · 0-9 tabs · q quit",
-            Style::new().fg(palette.muted),
-        ))
-    } else if app.tab == Tab::Workstations {
-        Line::from(Span::styled(
-            " 1-9,0,w,c tabs · Tab next · ↑↓ move · T take over · r refresh · ? tour · q quit",
-            Style::new().fg(palette.muted),
-        ))
-    } else if app.tab == Tab::Chat {
-        Line::from(Span::styled(
-            " 1-9,0,w,c tabs · ↑↓ conversation · t message · i context · M model · n new conversation · S start the draft · r refresh · q quit",
-            Style::new().fg(palette.muted),
-        ))
+    let p = app.palette;
+    let cursor = if ((app.clock * 2.0) as i32) % 2 == 0 {
+        "▌"
     } else {
-        Line::from(Span::styled(
-            " 1-9,0,w,c tabs · Tab next · ↑↓ move · Enter details · t message · p/P project · a/d approve/deny · s stop all · r refresh · ? tour · q quit",
-            Style::new().fg(palette.muted),
-        ))
+        " "
     };
-    frame.render_widget(Paragraph::new(line), area);
+    let ink = Style::new().fg(p.ink());
+    let ink2 = Style::new().fg(p.ink2());
+    let accent = Style::new().fg(p.accent);
+    let (lead, keys): (Vec<Span<'static>>, &[(&str, &str)]) = if let Some(ob) = &app.onboarding {
+        let label = if matches!(ob.stage, Stage::Tour(_)) {
+            "TOUR"
+        } else {
+            "SETUP"
+        };
+        let (text, style) = match &app.notice {
+            Some(notice) => (notice.clone(), accent),
+            None => (ob.hint().trim_start().to_string(), Style::new().fg(p.muted)),
+        };
+        (
+            vec![
+                chip(label, p.on_accent(), p.accent),
+                Span::styled(format!(" {text}"), style),
+            ],
+            &[],
+        )
+    } else if let Some(confirm) = &app.confirm {
+        (
+            vec![
+                chip("CONFIRM", p.on_accent(), p.crit()),
+                Span::styled(format!(" {} ", confirm.question()), ink),
+            ],
+            &[("y", "yes"), ("n", "no")],
+        )
+    } else if let Some((cid, draft)) = &app.draft {
+        (
+            vec![
+                chip("MESSAGE", p.on_accent(), p.accent),
+                Span::styled(format!(" to agent {cid}  "), ink2),
+                Span::styled(draft.clone(), ink),
+                Span::styled(cursor, accent),
+            ],
+            &[("Enter", "sends"), ("Esc", "cancels")],
+        )
+    } else if let Some(compose) = &app.compose {
+        let room = usize::from(area.width).saturating_sub(60);
+        (
+            vec![
+                chip(&compose.label().to_uppercase(), p.on_accent(), p.accent),
+                Span::styled(format!(" {}", tail(compose.text(), room)), ink),
+                Span::styled(cursor, accent),
+            ],
+            &[("Enter", "sends"), ("Esc", "cancels")],
+        )
+    } else if let Some(panel) = &app.desk {
+        (
+            vec![
+                chip("TAKEOVER", p.on_accent(), p.accent),
+                Span::styled(format!(" {} · ", panel.station), ink2),
+                Span::styled(format!("> {}", panel.line), ink),
+                Span::styled(cursor, accent),
+            ],
+            &[
+                ("Enter", "sends"),
+                ("give-back / Esc", "gives the session back"),
+            ],
+        )
+    } else if let Some(error) = &app.error {
+        (
+            vec![
+                chip("OFFLINE", p.on_accent(), p.crit()),
+                Span::styled(
+                    format!(" hub unreachable: {error}"),
+                    Style::new().fg(p.crit()),
+                ),
+            ],
+            &[],
+        )
+    } else {
+        let mut lead = vec![chip(
+            &app.tab.label().to_uppercase(),
+            p.on_accent(),
+            p.accent,
+        )];
+        if let Some(notice) = &app.notice {
+            lead.push(Span::styled(format!(" {notice}"), Style::new().fg(p.ok)));
+        }
+        (lead, tab_keys(app.tab))
+    };
+    let right = format!("agentplaza {}  ", env!("CARGO_PKG_VERSION"));
+    let right_w = u16::try_from(right.chars().count()).unwrap_or(0);
+    let lead_w: usize = lead.iter().map(|span| span.width()).sum();
+    // The keys sit after three spaces, and one more column keeps them off the version.
+    let room = usize::from(area.width).saturating_sub(lead_w + usize::from(right_w) + 4);
+    let mut spans = lead;
+    if !keys.is_empty() {
+        spans.push(Span::raw("   "));
+        let width = u16::try_from(room).unwrap_or(0);
+        spans.extend(hints(keys, width, &p).spans);
+    }
+    let row = Style::new().bg(p.raised());
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(row), area);
+    if right_w < area.width {
+        let rect = Rect::new(area.right() - right_w, area.y, right_w, area.height);
+        let text = Line::from(Span::styled(right, Style::new().fg(p.muted)));
+        frame.render_widget(Paragraph::new(text).style(row), rect);
+    }
+}
+
+/// A table's name, with the project the switcher shows when it shows one.
+fn scoped(name: &str, app: &App) -> String {
+    match app.scope.as_deref() {
+        Some(_) => format!(
+            "{name} of {}",
+            scope::label(app.scope.as_deref(), app.projects())
+        ),
+        None => name.to_string(),
+    }
+}
+
+/// A table's title: its name capitalised, the project the switcher shows when it shows one, and the count.
+fn titled(name: &str, count: usize, app: &App) -> String {
+    let base = scoped(name, app);
+    let mut chars = base.chars();
+    let head: String = chars
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    format!("{head}{} · {count}", chars.as_str())
+}
+
+/// Where an agent works and since when: its project, the bench, or every project for the orchestrator.
+fn place(agent: &Value) -> String {
+    let place = place_of(agent);
+    match agent.get("joined_ms").and_then(Value::as_i64) {
+        Some(ms) if place != "bench" && place != "all" => {
+            format!("{place} · since {}", local_time(ms))
+        }
+        _ => place,
+    }
+}
+
+/// The colour of a status word: working accent, idle and done ok, held or stopping warn, failed or
+/// revoked crit, anything else muted.
+fn status_colour(status: &str, p: &Palette) -> Color {
+    match status {
+        "working" => p.accent,
+        "idle" | "online" | "done" => p.ok,
+        "held" | "paused" | "stopping" => p.warn(),
+        "failed" | "error" | "revoked" => p.crit(),
+        _ => p.muted,
+    }
+}
+
+/// A state as a cell: its dot (for `dot_status`, see `style::dot`), then the word in `colour`.
+fn state_cell(dot_status: &str, word: &str, colour: Color, app: &App) -> Cell<'static> {
+    Cell::from(Line::from(vec![
+        dot(dot_status, app.clock, &app.palette),
+        Span::styled(format!(" {word}"), Style::new().fg(colour)),
+    ]))
+}
+
+/// A stat tile: a small rounded panel with its number in bold ink and its label under it in muted.
+fn tile(frame: &mut Frame, area: Rect, value: Vec<Span<'static>>, label: &str, p: &Palette) {
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(p.rule_strong()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let lines = vec![
+        Line::from(value),
+        Line::from(Span::styled(label.to_string(), Style::new().fg(p.muted))),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// A number in bold ink, the tiles' figure.
+fn figure(text: String, p: &Palette) -> Span<'static> {
+    Span::styled(text, Style::new().fg(p.ink()).add_modifier(Modifier::BOLD))
+}
+
+/// A task state's colour on the overview's counts.
+fn task_colour(state: &str, p: &Palette) -> Color {
+    match state {
+        "open" => p.ink(),
+        "claimed" => p.accent,
+        "awaiting_review" => p.review(),
+        "rework" => p.warn(),
+        "done" => p.ok,
+        "blocked" | "failed" => p.crit(),
+        _ => p.ink2(),
+    }
 }
 
 pub fn overview(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines = vec![
+    let p = &app.palette;
+    let [tiles, rest] = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).areas(area);
+    let [working, idle, open, waiting] = Layout::horizontal([Constraint::Fill(1); 4])
+        .spacing(1)
+        .areas(tiles);
+
+    // The working tile leads with the spinner while anything works.
+    let working_now = app
+        .data
+        .get("/v1/overview")
+        .and_then(|v| v.pointer("/agents/working"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut busy = Vec::new();
+    if working_now > 0 {
+        busy.push(Span::styled(
+            format!("{} ", spinner(app.clock)),
+            Style::new().fg(p.accent),
+        ));
+    }
+    busy.push(figure(at(app, "/v1/overview", "/agents/working"), p));
+    tile(frame, working, busy, "working", p);
+    tile(
+        frame,
+        idle,
+        vec![figure(at(app, "/v1/overview", "/agents/idle"), p)],
+        "idle",
+        p,
+    );
+    tile(
+        frame,
+        open,
+        vec![figure(at(app, "/v1/overview", "/tasks/open"), p)],
+        "tasks open",
+        p,
+    );
+    // The poller fetches the approvals while the overview shows; "-" until the first answer.
+    let waiting_text = if app.data.contains_key("/v1/approvals") {
+        app.array("/v1/approvals")
+            .iter()
+            .filter(|a| is_pending(a))
+            .count()
+            .to_string()
+    } else {
+        "-".to_string()
+    };
+    tile(
+        frame,
+        waiting,
+        vec![figure(waiting_text, p)],
+        "approvals waiting",
+        p,
+    );
+
+    let [left, right] = Layout::horizontal([Constraint::Fill(3), Constraint::Fill(2)])
+        .spacing(1)
+        .areas(rest);
+    let [system, _, fleet, _] = Layout::vertical([
+        Constraint::Length(6),
+        Constraint::Length(1),
+        Constraint::Length(4),
+        Constraint::Min(0),
+    ])
+    .areas(left);
+
+    let system_lines = vec![
         kv(
             "hub",
             format!(
@@ -310,6 +627,23 @@ pub fn overview(frame: &mut Frame, area: Rect, app: &App) {
             app,
         ),
         kv("url", app.client.base().to_string(), app),
+        kv(
+            "services",
+            format!(
+                "hub {} · noded {}",
+                up(app, "/v1/overview", "/hub"),
+                up(app, "/v1/overview", "/noded"),
+            ),
+            app,
+        ),
+        kv("plaza", plaza(app), app),
+    ];
+    frame.render_widget(
+        Paragraph::new(system_lines).block(panel("System", p, false)),
+        system,
+    );
+
+    let fleet_lines = vec![
         kv(
             "agents",
             format!(
@@ -330,58 +664,59 @@ pub fn overview(frame: &mut Frame, area: Rect, app: &App) {
             ),
             app,
         ),
-        kv(
-            "services",
-            format!(
-                "hub {} · noded {}",
-                up(app, "/v1/overview", "/hub"),
-                up(app, "/v1/overview", "/noded"),
-            ),
-            app,
-        ),
-        kv("plaza", plaza(app), app),
-        Line::from(""),
-        Line::from(Span::styled("tasks", Style::new().fg(app.palette.muted))),
     ];
-    if let Some(tasks) = app
+    frame.render_widget(
+        Paragraph::new(fleet_lines).block(panel("Fleet", p, false)),
+        fleet,
+    );
+
+    let counts = app
         .data
         .get("/v1/overview")
         .and_then(|v| v.get("tasks"))
-        .and_then(Value::as_object)
-    {
-        for (state, count) in tasks {
-            lines.push(kv(state, count.to_string(), app));
-        }
+        .and_then(Value::as_object);
+    let total: u64 = counts.map_or(0, |m| m.values().filter_map(Value::as_u64).sum());
+    let mut task_lines: Vec<Line> = counts
+        .into_iter()
+        .flat_map(|m| m.iter())
+        .map(|(state, count)| {
+            Line::from(vec![
+                Span::styled(format!("{state:>16}  "), Style::new().fg(p.muted)),
+                Span::styled(
+                    show(Some(count)),
+                    Style::new()
+                        .fg(task_colour(state, p))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+        })
+        .collect();
+    if task_lines.is_empty() {
+        task_lines.push(Line::from(Span::styled(
+            "○  No tasks yet",
+            Style::new().fg(p.muted),
+        )));
     }
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" overview ")),
-        area,
+        Paragraph::new(task_lines).block(panel(&format!("Tasks · {total}"), p, false)),
+        right,
     );
 }
 
-/// A table's title: its name, and the project the switcher shows when it shows one.
-fn scoped(name: &str, app: &App) -> String {
-    match app.scope.as_deref() {
-        Some(_) => format!(
-            "{name} of {}",
-            scope::label(app.scope.as_deref(), app.projects())
-        ),
-        None => name.to_string(),
-    }
-}
-
-/// Where an agent works and since when: its project, the bench, or every project for the orchestrator.
-fn place(agent: &Value) -> String {
-    let place = place_of(agent);
-    match agent.get("joined_ms").and_then(Value::as_i64) {
-        Some(ms) if place != "bench" && place != "all" => {
-            format!("{place} · since {}", local_time(ms))
+/// The keys a list answers, as the bottom edge's hint.
+fn keys(items: &[(&str, &str)], p: &Palette) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (i, (key, label)) in items.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::new().fg(p.muted)));
         }
-        _ => place,
+        spans.extend(key_hint(key, label, p));
     }
+    Line::from(spans)
 }
 
 pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
+    let p = &app.palette;
     let list = app.shown_agents();
     let (table_area, detail_area) = if app.detail && !list.is_empty() {
         let [table, detail] =
@@ -390,39 +725,44 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         (area, None)
     };
-    let rows: Vec<Vec<String>> = list
+    let rows: Vec<Vec<Cell<'static>>> = list
         .iter()
         .map(|a| {
+            let status = show(a.get("status"));
             vec![
-                show(a.get("cid")),
-                show(a.get("name")),
-                show(a.get("role_label")),
-                place_of(a),
-                show(a.get("status")),
-                show(a.get("model")),
-                show(a.get("queue")),
-                doing(a),
+                Cell::from(show(a.get("cid"))),
+                Cell::from(show(a.get("name"))),
+                Cell::from(show(a.get("role_label"))),
+                Cell::from(place_of(a)),
+                state_cell(&status, &status, status_colour(&status, p), app),
+                Cell::from(show(a.get("model"))),
+                Cell::from(show(a.get("queue"))),
+                Cell::from(doing(a)),
             ]
         })
         .collect();
     grid(
         frame,
         table_area,
-        &scoped("agents", app),
-        &[
-            "CID", "NAME", "ROLE", "PROJECT", "STATUS", "MODEL", "QUEUE", "DOING",
-        ],
-        rows,
-        &[
-            Constraint::Length(6),
-            Constraint::Length(14),
-            Constraint::Length(16),
-            Constraint::Length(8),
-            Constraint::Length(9),
-            Constraint::Length(24),
-            Constraint::Length(6),
-            Constraint::Fill(1),
-        ],
+        Grid {
+            title: titled("agents", list.len(), app),
+            empty: "No agents here yet",
+            header: &[
+                "CID", "NAME", "ROLE", "PROJECT", "STATUS", "MODEL", "QUEUE", "DOING",
+            ],
+            widths: &[
+                Constraint::Length(6),
+                Constraint::Length(14),
+                Constraint::Length(16),
+                Constraint::Length(8),
+                Constraint::Length(11),
+                Constraint::Length(24),
+                Constraint::Length(6),
+                Constraint::Fill(1),
+            ],
+            rows,
+            hint: None,
+        },
         app,
     );
     if let (Some(detail), Some(agent)) = (detail_area, list.get(app.selected).copied()) {
@@ -466,19 +806,21 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
                 app,
             ),
         ];
-        frame.render_widget(
-            Paragraph::new(lines)
-                .block(Block::bordered().title(" agent · t message · Enter close ")),
-            detail,
-        );
+        let block = panel("Agent", p, false).title_bottom(bottom_hint(hints(
+            &[("t", "message"), ("Enter", "close")],
+            detail.width,
+            p,
+        )));
+        frame.render_widget(Paragraph::new(lines).block(block), detail);
     }
 }
 
 pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
+    let p = &app.palette;
     let rich_ctx = app.rich_ctx();
-    let rows: Vec<Vec<Cell<'static>>> = app
-        .shown_tasks()
-        .into_iter()
+    let shown = app.shown_tasks();
+    let rows: Vec<Vec<Cell<'static>>> = shown
+        .iter()
         .map(|t| {
             // The tasks it runs after (the Work screen's links); "-" for none.
             let after: Vec<&str> = t
@@ -486,10 +828,20 @@ pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
                 .and_then(Value::as_array)
                 .map(|ids| ids.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
+            let word = crate::cmd::tasks::state_word(t);
+            let (dot_status, colour) = match word {
+                "working" => ("working", p.accent),
+                "needs you" | "sent back" => ("held", p.warn()),
+                "in review" => ("other", p.review()),
+                "ready" => ("other", p.info()),
+                "done" => ("idle", p.ok),
+                "blocked" | "failed" => ("failed", p.crit()),
+                _ => ("other", p.muted),
+            };
             vec![
                 Cell::from(clip(&show(t.get("id")), 10)),
                 Cell::from(show(t.get("project"))),
-                Cell::from(crate::cmd::tasks::state_word(t).to_string()),
+                state_cell(dot_status, word, colour, app),
                 Cell::from(show(t.get("role"))),
                 Cell::from(show(t.get("agent_cid"))),
                 Cell::from(if after.is_empty() {
@@ -504,57 +856,99 @@ pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
     grid(
         frame,
         area,
-        &scoped("tasks", app),
-        &["ID", "PROJECT", "STATE", "ROLE", "AGENT", "AFTER", "GOAL"],
-        rows,
-        &[
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Length(12),
-            Constraint::Length(12),
-            Constraint::Length(7),
-            Constraint::Length(14),
-            Constraint::Fill(1),
-        ],
+        Grid {
+            title: titled("tasks", shown.len(), app),
+            empty: "No tasks yet",
+            header: &["ID", "PROJECT", "STATE", "ROLE", "AGENT", "AFTER", "GOAL"],
+            widths: &[
+                Constraint::Length(10),
+                Constraint::Length(8),
+                Constraint::Length(13),
+                Constraint::Length(12),
+                Constraint::Length(7),
+                Constraint::Length(14),
+                Constraint::Fill(1),
+            ],
+            rows,
+            hint: None,
+        },
         app,
     );
 }
 
+/// Whether an approval waits for the owner's answer.
+fn is_pending(approval: &Value) -> bool {
+    approval.get("state").and_then(Value::as_str) == Some("pending")
+}
+
+/// An approval's state as a cell: a pulsing "waiting" chip while it waits, its word otherwise.
+fn approval_state(state: &str, app: &App) -> Line<'static> {
+    let p = &app.palette;
+    match state {
+        "pending" => {
+            let bg = mix(
+                p.accent_soft(),
+                p.accent,
+                0.25 + 0.5 * pulse(app.clock, 2.4),
+            );
+            Line::from(chip("waiting", p.ink(), bg))
+        }
+        "approved" => Line::from(Span::styled(state.to_string(), Style::new().fg(p.ok))),
+        "denied" => Line::from(Span::styled(state.to_string(), Style::new().fg(p.crit()))),
+        other => Line::from(Span::styled(other.to_string(), Style::new().fg(p.muted))),
+    }
+}
+
 pub fn approvals(frame: &mut Frame, area: Rect, app: &App) {
-    let rows: Vec<Vec<String>> = app
-        .array("/v1/approvals")
+    let p = &app.palette;
+    let items = app.array("/v1/approvals");
+    let rows: Vec<Vec<Cell<'static>>> = items
         .iter()
         .map(|a| {
+            let id = clip(&show(a.get("id")), 10);
+            // A waiting approval leads with the warn diamond; the others line up under it.
+            let id = if is_pending(a) {
+                Line::from(vec![
+                    Span::styled("◆ ", Style::new().fg(p.warn())),
+                    Span::styled(id, Style::new().fg(p.ink())),
+                ])
+            } else {
+                Line::from(format!("  {id}"))
+            };
             vec![
-                clip(&show(a.get("id")), 10),
-                show(a.get("cid")),
-                show(a.get("tool")),
-                show(a.get("state")),
-                show(a.get("input")),
+                Cell::from(id),
+                Cell::from(show(a.get("cid"))),
+                Cell::from(show(a.get("tool"))),
+                Cell::from(approval_state(&show(a.get("state")), app)),
+                Cell::from(show(a.get("input"))),
             ]
         })
         .collect();
     grid(
         frame,
         area,
-        "approvals · a approve · d deny",
-        &["ID", "AGENT", "TOOL", "STATE", "INPUT"],
-        rows,
-        &[
-            Constraint::Length(10),
-            Constraint::Length(7),
-            Constraint::Length(22),
-            Constraint::Length(10),
-            Constraint::Fill(1),
-        ],
+        Grid {
+            title: titled("approvals", items.len(), app),
+            empty: "No approvals waiting",
+            header: &["ID", "AGENT", "TOOL", "STATE", "INPUT"],
+            widths: &[
+                Constraint::Length(12),
+                Constraint::Length(7),
+                Constraint::Length(22),
+                Constraint::Length(10),
+                Constraint::Fill(1),
+            ],
+            rows,
+            hint: Some(keys(&[("a", "approve"), ("d", "deny")], p)),
+        },
         app,
     );
 }
 
 pub fn board(frame: &mut Frame, area: Rect, app: &App) {
     let rich_ctx = app.rich_ctx();
-    let rows: Vec<Vec<Cell<'static>>> = app
-        .wrapped("/v1/board", "posts")
+    let posts = app.wrapped("/v1/board", "posts");
+    let rows: Vec<Vec<Cell<'static>>> = posts
         .iter()
         .map(|p| {
             let comments = p
@@ -575,24 +969,30 @@ pub fn board(frame: &mut Frame, area: Rect, app: &App) {
     grid(
         frame,
         area,
-        "board",
-        &["FROM", "COMMENTS", "SUBJECT"],
-        rows,
-        &[
-            Constraint::Length(20),
-            Constraint::Length(9),
-            Constraint::Fill(1),
-        ],
+        Grid {
+            title: titled("board", posts.len(), app),
+            empty: "The board is quiet",
+            header: &["FROM", "COMMENTS", "SUBJECT"],
+            widths: &[
+                Constraint::Length(20),
+                Constraint::Length(9),
+                Constraint::Fill(1),
+            ],
+            rows,
+            hint: None,
+        },
         app,
     );
 }
 
 pub fn conversations(frame: &mut Frame, area: Rect, app: &App) {
+    let p = &app.palette;
     let rich_ctx = app.rich_ctx();
-    let rows: Vec<Vec<Cell<'static>>> = app
-        .wrapped("/v1/conversations", "conversations")
+    let items = app.wrapped("/v1/conversations", "conversations");
+    let rows: Vec<Vec<Cell<'static>>> = items
         .iter()
         .map(|c| {
+            let delivered = flag(c.get("delivered"));
             vec![
                 Cell::from(format!(
                     "{} #{}",
@@ -604,11 +1004,10 @@ pub fn conversations(frame: &mut Frame, area: Rect, app: &App) {
                     show(c.get("to_role")),
                     show(c.get("to_cid"))
                 )),
-                Cell::from(if flag(c.get("delivered")) {
-                    "yes"
-                } else {
-                    "no"
-                }),
+                Cell::from(Line::from(Span::styled(
+                    if delivered { "yes" } else { "no" },
+                    Style::new().fg(if delivered { p.ok } else { p.muted }),
+                ))),
                 Cell::from(Line::from(rich::spans(&show(c.get("text")), &rich_ctx))),
             ]
         })
@@ -616,104 +1015,170 @@ pub fn conversations(frame: &mut Frame, area: Rect, app: &App) {
     grid(
         frame,
         area,
-        "conversations",
-        &["FROM", "TO", "DELIVERED", "TEXT"],
-        rows,
-        &[
-            Constraint::Length(20),
-            Constraint::Length(20),
-            Constraint::Length(10),
-            Constraint::Fill(1),
-        ],
+        Grid {
+            title: titled("conversations", items.len(), app),
+            empty: "No conversations yet",
+            header: &["FROM", "TO", "DELIVERED", "TEXT"],
+            widths: &[
+                Constraint::Length(20),
+                Constraint::Length(20),
+                Constraint::Length(10),
+                Constraint::Fill(1),
+            ],
+            rows,
+            hint: None,
+        },
         app,
     );
 }
 
 pub fn nodes(frame: &mut Frame, area: Rect, app: &App) {
-    let rows: Vec<Vec<String>> = app
-        .array("/v1/nodes")
+    let p = &app.palette;
+    let items = app.array("/v1/nodes");
+    let rows: Vec<Vec<Cell<'static>>> = items
         .iter()
         .map(|n| {
             let hub = n.get("state").and_then(Value::as_str).unwrap_or("");
-            let state = if flag(n.get("revoked")) {
-                "revoked".to_string()
+            // The word and the dot that shows it: the same states the list always showed.
+            let (word, dot_status, colour) = if flag(n.get("revoked")) {
+                ("revoked".to_string(), "failed", p.crit())
             } else if hub == "stopping" {
-                match n.get("left").and_then(Value::as_u64) {
+                let word = match n.get("left").and_then(Value::as_u64) {
                     Some(left) => format!("stopping ({left} to move)"),
                     None => "stopping".to_string(),
-                }
+                };
+                (word, "held", p.warn())
             } else if hub == "stopped" || (hub.is_empty() && flag(n.get("draining"))) {
-                "stopped".to_string()
+                ("stopped".to_string(), "other", p.muted)
             } else if flag(n.get("online")) {
-                "online".to_string()
+                ("online".to_string(), "idle", p.ok)
             } else {
-                "offline".to_string()
+                ("offline".to_string(), "other", p.muted)
             };
             let memory = match n.pointer("/machine/memory_mib") {
                 Some(mib) if !mib.is_null() => format!("{} MiB", show(Some(mib))),
                 _ => "-".to_string(),
             };
             vec![
-                show(n.get("name")),
-                state,
-                show(n.get("agents")),
-                show(n.pointer("/machine/cpus")),
-                memory,
-                show(n.get("address")),
+                Cell::from(show(n.get("name"))),
+                state_cell(dot_status, &word, colour, app),
+                Cell::from(show(n.get("agents"))),
+                Cell::from(show(n.pointer("/machine/cpus"))),
+                Cell::from(memory),
+                Cell::from(show(n.get("address"))),
             ]
         })
         .collect();
     grid(
         frame,
         area,
-        "nodes",
-        &["NAME", "STATE", "AGENTS", "CPUS", "MEMORY", "ADDRESS"],
-        rows,
-        &[
-            Constraint::Length(14),
-            Constraint::Length(21),
-            Constraint::Length(8),
-            Constraint::Length(6),
-            Constraint::Length(12),
-            Constraint::Fill(1),
-        ],
+        Grid {
+            title: titled("nodes", items.len(), app),
+            empty: "No nodes yet",
+            header: &["NAME", "STATE", "AGENTS", "CPUS", "MEMORY", "ADDRESS"],
+            widths: &[
+                Constraint::Length(14),
+                Constraint::Length(23),
+                Constraint::Length(8),
+                Constraint::Length(6),
+                Constraint::Length(12),
+                Constraint::Fill(1),
+            ],
+            rows,
+            hint: None,
+        },
         app,
     );
 }
 
-/// A table of rows under a header; the selected row is drawn in the accent colour. Cells are text, or styled
-/// lines for agent text (`rich::spans`).
-fn grid<C: Into<Cell<'static>>>(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    header: &[&str],
+/// One list's table: its title (with the count), the header, the rows, the column widths, the line a
+/// list with no rows shows, and the keys its bottom edge hints.
+struct Grid<'a, C> {
+    title: String,
+    empty: &'a str,
+    header: &'a [&'a str],
+    widths: &'a [Constraint],
     rows: Vec<Vec<C>>,
-    widths: &[Constraint],
-    app: &App,
-) {
-    let palette = app.palette;
-    let block = Block::bordered().title(format!(" {title} · {} ", rows.len()));
-    if rows.is_empty() {
-        let empty = Line::from(Span::styled(
-            "nothing here yet",
-            Style::new().fg(palette.muted),
-        ));
-        frame.render_widget(Paragraph::new(empty).block(block), area);
+    hint: Option<Line<'static>>,
+}
+
+/// A panel's keys on its bottom edge: at the right, with a space kept from the corner and the frame.
+fn bottom_hint(line: Line<'static>) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(line.spans);
+    spans.push(Span::raw(" "));
+    Line::from(spans).right_aligned()
+}
+
+/// A list's panel: its title, and its keys on the bottom edge at the right.
+fn list_block(title: &str, hint: Option<Line<'static>>, p: &Palette) -> Block<'static> {
+    let block = panel(title, p, false);
+    match hint {
+        Some(line) => block.title_bottom(bottom_hint(line)),
+        None => block,
+    }
+}
+
+/// A list with nothing in it: a muted glyph and line, centred in its panel.
+fn empty_state(frame: &mut Frame, area: Rect, block: Block<'static>, text: &str, p: &Palette) {
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
         return;
     }
-    let head = Row::new(header.iter().map(|h| h.to_string()))
-        .style(Style::new().fg(palette.muted).add_modifier(Modifier::BOLD));
-    let body = rows.into_iter().enumerate().map(|(i, cells)| {
-        let row = Row::new(cells);
-        if i == app.selected {
-            row.style(Style::new().fg(palette.paper).bg(palette.accent))
-        } else {
-            row
-        }
-    });
-    frame.render_widget(
-        Table::new(body, widths.to_vec()).header(head).block(block),
-        area,
-    );
+    let row = Rect::new(inner.x, inner.y + (inner.height - 1) / 2, inner.width, 1);
+    let line = Line::from(vec![
+        Span::styled("○  ", Style::new().fg(p.muted)),
+        Span::styled(text.to_string(), Style::new().fg(p.muted)),
+    ])
+    .centered();
+    frame.render_widget(Paragraph::new(line), row);
+}
+
+/// A list as a table in a rounded panel. The selected row is marked by an accent bar and a raised
+/// background; a rule sits under the header. Cells are text, or styled lines for agent text
+/// (`rich::spans`).
+fn grid<C: Into<Cell<'static>>>(frame: &mut Frame, area: Rect, spec: Grid<'_, C>, app: &App) {
+    let p = &app.palette;
+    let Grid {
+        title,
+        empty,
+        header,
+        widths,
+        rows,
+        hint,
+    } = spec;
+    let block = list_block(&title, hint, p);
+    if rows.is_empty() {
+        return empty_state(frame, area, block, empty, p);
+    }
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    // The header's bottom margin is the row the rule is drawn in.
+    let head = Row::new(header.iter().copied())
+        .style(Style::new().fg(p.muted).add_modifier(Modifier::BOLD))
+        .bottom_margin(1);
+    let body = rows.into_iter().map(Row::new);
+    let table = Table::new(body, widths.to_vec())
+        .header(head)
+        .style(Style::new().fg(p.ink2()))
+        .row_highlight_style(
+            Style::new()
+                .fg(p.ink())
+                .bg(p.sheet())
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(Line::from("▌").style(Style::new().fg(p.accent)))
+        .highlight_spacing(HighlightSpacing::Always)
+        .column_spacing(2);
+    let mut state = TableState::default().with_selected(Some(app.selected));
+    frame.render_stateful_widget(table, inner, &mut state);
+    if inner.height > 1 {
+        let rule = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new("─".repeat(usize::from(inner.width)))
+                .style(Style::new().fg(p.rule_strong())),
+            rule,
+        );
+    }
 }

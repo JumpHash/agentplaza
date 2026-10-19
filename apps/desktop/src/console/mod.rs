@@ -449,8 +449,11 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
                 "agentplaza-desktop: graphics {} on {}",
                 info.graphics_backend, info.graphics_adapter
             );
-            console.shell.software_gpu =
-                is_software(&info.graphics_adapter).then(|| info.graphics_adapter.clone());
+            // `APZ_RECORDING=1` (a capture hook): the README's recordings run on a GPU-less virtual display, where
+            // the software-rendering banner would sit over every frame.
+            console.shell.software_gpu = (is_software(&info.graphics_adapter)
+                && std::env::var_os("APZ_RECORDING").is_none())
+            .then(|| info.graphics_adapter.clone());
             backdrop::renderer(&mut console.backdrop, &info.graphics_backend);
             Task::none()
         }
