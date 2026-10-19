@@ -1,5 +1,5 @@
 meta {
-  name: List the IDE's workspaces (none on a fresh hub)
+  name: List the IDE's workspaces (only project repos on a fresh hub)
   type: http
   seq: 7
 }
@@ -17,7 +17,13 @@ assert {
 }
 
 tests {
-  test("no agents, workstations or repos, so no workspaces", function () {
-    expect(res.getBody()).to.be.an("array").that.is.empty;
+  test("no agents or workstations: only the repos of the projects opened earlier in the run", function () {
+    const body = res.getBody();
+    expect(body).to.be.an("array");
+    // The projects folder runs first and opens projects, whose repositories Weft lists as repo workspaces.
+    for (const ws of body) {
+      expect(ws.kind).to.equal("repo");
+      expect(ws.id).to.match(/^repo:/);
+    }
   });
 }
