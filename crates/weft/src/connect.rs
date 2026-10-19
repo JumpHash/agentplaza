@@ -162,7 +162,8 @@ pub fn register_signing_key(
     .map(|_| "registered".into())
 }
 
-/// `owner/repo` of a remote URL: its last two path segments (github.com, GitHub Enterprise, a mirror).
+/// `owner/repo` of a remote URL: its last two path segments (github.com, GitHub Enterprise, a mirror, which on
+/// Windows may be a `file://C:\…` path with backslashes).
 pub fn github_slug(remote: &str) -> Option<String> {
     let rest = remote
         .split_once("://")
@@ -170,9 +171,9 @@ pub fn github_slug(remote: &str) -> Option<String> {
         .or_else(|| remote.split_once(':').map(|(_, r)| r))
         .unwrap_or(remote);
     let parts: Vec<&str> = rest
-        .trim_end_matches('/')
+        .trim_end_matches(['/', '\\'])
         .trim_end_matches(".git")
-        .split('/')
+        .split(['/', '\\'])
         .filter(|p| !p.is_empty())
         .collect();
     (parts.len() >= 2).then(|| format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]))
@@ -191,4 +192,26 @@ pub fn connection_body(
     credential: Option<&str>,
 ) -> Value {
     json!({ "repo": repo, "id": id, "remote": remote, "platform": platform, "branch": branch, "author_name": name, "author_email": email, "credential": credential })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::github_slug;
+
+    #[test]
+    fn the_slug_is_the_last_two_segments_of_any_remote() {
+        for remote in [
+            "https://github.com/irfan/app.git",
+            "git@github.com:irfan/app.git",
+            "ssh://git@ghe.example.com/irfan/app/",
+            "file:///tmp/remotes/irfan/app.git",
+            "file://C:\\Users\\actions\\Temp\\irfan\\app.git",
+        ] {
+            assert_eq!(
+                github_slug(remote).as_deref(),
+                Some("irfan/app"),
+                "{remote}"
+            );
+        }
+    }
 }
