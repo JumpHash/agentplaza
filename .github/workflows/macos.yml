@@ -50,8 +50,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Not incremental: the packages' release build. The tests' `checked` profile is (Cargo.toml), so
-  # their steps set 1.
+  # Not incremental, for the tests either (their `checked` profile is in Cargo.toml): on the Intel Mac an incremental
+  # optimised build of apid fails to link (undefined `….llvm.<n>` symbols), even from an empty incremental cache.
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
   # Not the runner fleet's sccache (its RUSTC_WRAPPER): its server died mid-build ("compiling locally
@@ -135,16 +135,16 @@ jobs:
       - name: Test (Intel; the guest harness runs only inside Linux VMs)
         id: test
         if: inputs.tests
-        run: CARGO_INCREMENTAL=1 bash .github/ci/incremental-retry.sh x86_64-apple-darwin cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile checked --profile ci --target x86_64-apple-darwin ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
+        run: cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile checked --profile ci --target x86_64-apple-darwin ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
       - name: Build the tests (Apple Silicon cannot run here)
         id: build_tests
         if: inputs.tests
         # cargo test, not nextest: nextest lists the tests by running the binaries, which an Intel Mac cannot.
         run: |
           if [ "${{ inputs.link }}" = true ]; then
-            CARGO_INCREMENTAL=1 bash .github/ci/incremental-retry.sh aarch64-apple-darwin cargo test --workspace --exclude agent-harness --locked --profile checked --target aarch64-apple-darwin --no-run
+            cargo test --workspace --exclude agent-harness --locked --profile checked --target aarch64-apple-darwin --no-run
           else
-            CARGO_INCREMENTAL=1 bash .github/ci/incremental-retry.sh aarch64-apple-darwin cargo check --workspace --exclude agent-harness --locked --profile checked --target aarch64-apple-darwin --all-targets
+            cargo check --workspace --exclude agent-harness --locked --profile checked --target aarch64-apple-darwin --all-targets
           fi
       # The pull request's Tests comment (check-results.yml) is made from these.
       - name: Results for the pull request
