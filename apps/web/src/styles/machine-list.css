@@ -46,19 +46,19 @@
 .mlist-body { min-width: 0; display: grid; gap: 6px; align-content: start; }
 .mlist-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
 .mlist-name {
-  font: 700 14px/1.2 var(--sans);
+  font: 700 14px/1.2 var(--font);
   letter-spacing: 0.04em;
 
   overflow-wrap: anywhere;
   color: var(--ink);
 }
-.mlist-sub { font: 400 12px/1.4 var(--sans); color: var(--ink-3); overflow-wrap: anywhere; }
+.mlist-sub { font: 400 12px/1.4 var(--font); color: var(--ink-3); overflow-wrap: anywhere; }
 
 .mlist-facts {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 3px 16px;
-  font: 400 12px/1.45 var(--sans);
+  font: 400 12px/1.45 var(--font);
 }
 .mlist-fact { display: flex; gap: 8px; min-width: 0; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .mlist-fact > span:first-child { flex: none; color: var(--ink-3); }
@@ -74,7 +74,7 @@
   grid-template-columns: 36px minmax(0, 1fr);
   gap: 2px 8px;
   align-items: center;
-  font: 400 12px var(--sans);
+  font: 400 12px var(--font);
   color: var(--ink-2);
   font-variant-numeric: tabular-nums;
 }
@@ -115,13 +115,13 @@
 .mlist-stage-slot > svg,
 .mlist-stage-slot > .device-model,
 .mlist-stage-slot > .mlist-unknown { width: 70%; height: 70%; max-width: none; margin: 0; }
-.mlist-caption { margin: 0; font: 400 12px/1.4 var(--sans); color: var(--ink-3); }
+.mlist-caption { margin: 0; font: 400 12px/1.4 var(--font); color: var(--ink-3); }
 /* The flat views under the stage: four labelled drawings in figures, then the machine's size. */
 .machine-views { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.machine-views figure { margin: 0; display: grid; gap: 6px; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: 6px; }
+.machine-views figure { margin: 0; display: grid; gap: 6px; min-width: 0; padding: 6px; border: 1px solid var(--rule); border-radius: 6px; }
 .machine-views canvas { display: block; width: 100%; max-width: 160px; height: auto; aspect-ratio: 4 / 3; }
-.machine-views figcaption { font: 600 10px/1 var(--sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
-.machine-views-caption { grid-column: 1 / -1; margin: 0; font: 400 12px/1.4 var(--sans); color: var(--ink-3); }
+.machine-views figcaption { font: 600 10px/1 var(--font); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.machine-views-caption { grid-column: 1 / -1; margin: 0; font: 400 12px/1.4 var(--font); color: var(--ink-3); }
 @media (max-width: 720px) { .machine-views { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .mlist-detail-main { min-width: 0; display: grid; gap: 16px; align-content: start; }
 .mlist-machine { display: grid; gap: 0; min-width: 0; }

@@ -18,7 +18,7 @@
   padding: 6px 10px;
   border-radius: 0;
   border: 1px solid var(--rule, #d0d0d6);
-  background: var(--surface, #ffffff);
+  background: var(--sheet, #ffffff);
   color: inherit;
   font: inherit;
 }
@@ -34,7 +34,7 @@
 }
 
 .lib-card:focus-visible {
-  outline: 2px solid var(--accent, #6b7cff);
+  outline: 2px solid var(--signal, #6b7cff);
   outline-offset: 2px;
 }
 
@@ -47,7 +47,7 @@
   aspect-ratio: 16 / 10;
   border-radius: 0;
   overflow: hidden;
-  background: var(--surface-2, #f1f1f4);
+  background: var(--sheet-2, #f1f1f4);
   display: grid;
   place-items: center;
 }
@@ -66,7 +66,7 @@
 }
 
 .lib-mono {
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-weight: 600;
   font-size: 22px;
   letter-spacing: 0.04em;
@@ -80,7 +80,7 @@
   right: 8px;
   padding: 2px 6px;
   border-radius: 0;
-  font-family: var(--sans);
+  font-family: var(--font);
   font-size: 11px;
   background: rgba(0, 0, 0, 0.6);
   color: #ffffff;

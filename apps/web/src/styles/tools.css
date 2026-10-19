@@ -15,10 +15,10 @@
   align-items: center;
   gap: 6px;
   padding: 2px 8px;
-  font: 500 11px var(--sans);
-  color: var(--text-2);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  font: 500 11px var(--font);
+  color: var(--ink-2);
+  background: var(--sheet-2);
+  border: 1px solid var(--rule);
   border-radius: 0;
   white-space: nowrap;
 }
@@ -39,8 +39,8 @@
 /* Made by agents: a library tool's command, and its file viewer in the modal. */
 .lib-command {
   margin: 0;
-  font: 11px/1.4 var(--mono);
-  color: var(--text-2);
+  font: 11px/1.4 var(--font-mono);
+  color: var(--ink-2);
   overflow-wrap: anywhere;
 }
 
@@ -59,10 +59,10 @@
   max-height: 360px;
   overflow: auto;
   padding: 10px 12px;
-  font: 12px/1.5 var(--mono);
-  color: var(--text-2);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  font: 12px/1.5 var(--font-mono);
+  color: var(--ink-2);
+  background: var(--sheet-2);
+  border: 1px solid var(--rule);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -78,7 +78,7 @@
 
 .disc-search,
 .disc-kind {
-  font: 13px var(--sans);
+  font: 13px var(--font);
   color: var(--ink);
   background: var(--sheet);
   border: 1px solid var(--rule);
@@ -91,7 +91,7 @@
 }
 
 .disc-count {
-  font: 11px var(--sans);
+  font: 11px var(--font);
   color: var(--ink-3);
   white-space: nowrap;
 }
@@ -146,7 +146,7 @@
 
 .disc-by {
   flex: none;
-  font: 11px var(--sans);
+  font: 11px var(--font);
   color: var(--ink-3);
   white-space: nowrap;
 }
@@ -182,6 +182,6 @@
   justify-content: flex-end;
   gap: 10px;
   padding-top: 10px;
-  font: 11px var(--sans);
+  font: 11px var(--font);
   color: var(--ink-3);
 }

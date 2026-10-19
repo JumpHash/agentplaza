@@ -27,7 +27,7 @@
 .prompts-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .prompts-title a { color: var(--ink); font-weight: 600; text-decoration: none; }
 .prompts-title a:hover { text-decoration: underline; }
-.prompts-id { font-family: var(--mono); font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
+.prompts-id { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
 .prompts-muted { color: var(--ink-3); font-size: 13px; }
 .prompts-score { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .prompts-best { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
@@ -38,13 +38,13 @@
 .prompts-empty { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding: 24px 18px; border: 1px dashed var(--rule); background: var(--sheet); }
 .prompts-empty h3 { margin: 0; font-size: 17px; }
 .prompts-empty p { margin: 0; max-width: 62ch; color: var(--ink-2); font-size: 14px; line-height: 1.6; }
-.prompts-error { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 16px 18px; border: 1px solid var(--crit); background: var(--danger-bg); }
+.prompts-error { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 16px 18px; border: 1px solid var(--crit); background: var(--crit-soft); }
 .prompts-error p { margin: 0; color: var(--ink); font-size: 14px; }
 
 /* The new-prompt dialog */
 .prompts-form { display: flex; flex-direction: column; gap: 14px; min-width: 0; width: min(560px, 100%); }
 .prompts-form .field { min-width: 0; }
-.prompts-form textarea { font-family: var(--mono); font-size: 13px; line-height: 1.5; resize: vertical; min-height: 180px; }
+.prompts-form textarea { font-family: var(--font-mono); font-size: 13px; line-height: 1.5; resize: vertical; min-height: 180px; }
 .prompts-binding { min-width: 0; }
 .prompts-check { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
 .prompts-hint { margin: 0; font-size: 13px; color: var(--ink-3); line-height: 1.5; }

@@ -64,8 +64,8 @@ p.se-muted {
 }
 
 .se-error {
-  color: var(--danger);
-  background: var(--danger-bg);
+  color: var(--crit);
+  background: var(--crit-soft);
   border-radius: 6px;
   padding: 8px 10px;
   font-size: 0.875rem;
@@ -82,7 +82,7 @@ p.se-error {
 .se-banner {
   width: 100%;
   color: var(--warn);
-  background: var(--warn-bg);
+  background: var(--warn-soft);
   border-radius: 6px;
   padding: 8px 10px;
   font-size: 0.875rem;
@@ -93,7 +93,7 @@ p.se-error {
 .se-view code,
 .se-compare code,
 .se-rule-head code {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
 }
 
@@ -163,12 +163,12 @@ p.se-error {
 }
 
 .se-file.active {
-  background: var(--surface-2);
+  background: var(--sheet-2);
   font-weight: 600;
 }
 
 .se-file-name {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
   overflow-wrap: anywhere;
 }
@@ -190,7 +190,7 @@ p.se-error {
 }
 
 .se-file-head h2 {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 1rem;
   margin: 0;
   overflow-wrap: anywhere;
@@ -235,8 +235,8 @@ p.se-error {
   padding: 10px 8px;
   text-align: right;
   color: var(--ink-3);
-  background: var(--surface-2);
-  font-family: var(--mono);
+  background: var(--sheet-2);
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
   line-height: 1.5;
   user-select: none;
@@ -248,7 +248,7 @@ p.se-error {
 }
 
 .se-gutter .sev-error {
-  color: var(--danger);
+  color: var(--crit);
   font-weight: 700;
 }
 
@@ -271,7 +271,7 @@ p.se-error {
   background: transparent;
   color: var(--ink);
   padding: 10px 12px;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
   line-height: 1.5;
   white-space: pre;
@@ -308,7 +308,7 @@ p.se-error {
 
 .se-group h3 {
   margin: 8px 0 4px;
-  font-family: var(--sans);
+  font-family: var(--font);
   font-size: 0.875rem;
 }
 
@@ -352,7 +352,7 @@ p.se-error {
 }
 
 .se-sev.danger {
-  color: var(--danger);
+  color: var(--crit);
 }
 
 .se-sev.warn {
@@ -434,7 +434,7 @@ p.se-error {
   border: 1px solid var(--rule);
   border-radius: 6px;
   background: var(--paper);
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
 }
 
@@ -448,11 +448,11 @@ p.se-error {
 }
 
 .se-line.add {
-  background: var(--ok-bg);
+  background: var(--ok-soft);
 }
 
 .se-line.del {
-  background: var(--danger-bg);
+  background: var(--crit-soft);
 }
 
 .se-ln {

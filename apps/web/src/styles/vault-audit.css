@@ -20,19 +20,19 @@
 }
 
 .vault-audit-event {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: var(--fs-sm);
 }
 
 .vault-audit-seq {
   display: block;
-  font-family: var(--sans);
+  font-family: var(--font);
   font-size: var(--fs-xs);
   color: var(--ink-3);
 }
 
 .vault-audit-mono {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: var(--fs-sm);
   word-break: break-all;
 }

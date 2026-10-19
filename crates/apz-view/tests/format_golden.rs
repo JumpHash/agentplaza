@@ -1,5 +1,5 @@
 use apz_metrics::catalog::Unit;
-use apz_metrics_view::format::{format, nice, time_label};
+use apz_view::format::{format, nice, time_label};
 use serde_json::Value;
 
 const GOLDEN: &str = include_str!("format_golden.json");

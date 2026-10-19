@@ -580,6 +580,7 @@ name = "apz-metrics-view"
 version = "0.1.0"
 dependencies = [
  "apz-metrics",
+ "apz-view",
  "serde",
  "serde_json",
 ]
@@ -680,6 +681,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-theme"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
 name = "apz-trust"
 version = "0.1.0"
 dependencies = [
@@ -699,6 +709,15 @@ version = "0.1.0"
 dependencies = [
  "vm-memory",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "apz-view"
+version = "0.1.0"
+dependencies = [
+ "apz-metrics",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -151,7 +151,7 @@ export function mount(root: HTMLElement): Cleanup {
 function mountLab(root: HTMLElement, cat: LabCatalog): Cleanup {
   const s = readState(location.hash);
   const bar = 'display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:8px 0';
-  const stats = h('div', { style: 'font-family:var(--sans);font-size:12px;color:var(--ink-2);padding:4px 0', 'aria-live': 'polite' });
+  const stats = h('div', { style: 'font-family:var(--font);font-size:12px;color:var(--ink-2);padding:4px 0', 'aria-live': 'polite' });
 
   const apply = (): void => {
     writeRoute(s);
@@ -159,7 +159,7 @@ function mountLab(root: HTMLElement, cat: LabCatalog): Cleanup {
     paint();
   };
   const paint = (): void => {
-    camBtns.forEach((b, i) => (b.style.outline = CAMS[i] === s.cam ? '2px solid var(--accent)' : ''));
+    camBtns.forEach((b, i) => (b.style.outline = CAMS[i] === s.cam ? '2px solid var(--signal)' : ''));
   };
   const clipChoices = (): HTMLOptionElement[] => choices(withCurrent(clipsOf(cat, s.species), s.clip), '(state clip)');
 

@@ -23,15 +23,15 @@
   padding: 6px 10px;
   border: 1px solid var(--rule);
   background: transparent;
-  color: var(--text-2);
-  font: 500 var(--fs-xs)/1 var(--sans);
+  color: var(--ink-2);
+  font: 500 var(--fs-xs)/1 var(--font);
 
   letter-spacing: 0.04em;
   cursor: pointer;
 }
-.lab-jobs-chip:hover { background: var(--hover); color: var(--text); }
-.lab-jobs-chip[aria-pressed="true"] { color: var(--text); border-color: var(--text); background: var(--hover); }
-.lab-jobs-count { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.lab-jobs-chip:hover { background: var(--hover); color: var(--ink); }
+.lab-jobs-chip[aria-pressed="true"] { color: var(--ink); border-color: var(--ink); background: var(--hover); }
+.lab-jobs-count { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 
 .lab-jobs-toolbar .lab-row { gap: 10px; }
 .lab-jobs-toolbar .lab-row > * { min-width: 0; }
@@ -48,8 +48,8 @@
   border: 1px solid var(--rule);
   overflow: hidden;
 }
-.lab-jobs-bar > i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--accent); }
-.lab-jobs-bar.over > i { background: var(--danger); }
+.lab-jobs-bar > i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--signal); }
+.lab-jobs-bar.over > i { background: var(--crit); }
 
 .lab-jobs-error {
   display: inline-block;
@@ -58,8 +58,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
-  color: var(--danger);
-  font: 400 var(--fs-sm)/1.4 var(--sans);
+  color: var(--crit);
+  font: 400 var(--fs-sm)/1.4 var(--font);
 }
 
 /* The table keeps its cells on one line (the lab's body breaks words anywhere, which would shred the
@@ -68,7 +68,7 @@
 .lab-jobs-table th,
 .lab-jobs-table td { overflow-wrap: normal; word-break: normal; white-space: nowrap; }
 .lab-jobs-table td a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--rule); }
-.lab-jobs-table td a:hover { border-bottom-color: var(--text); }
+.lab-jobs-table td a:hover { border-bottom-color: var(--ink); }
 
 /* Rows that arrive on a poll ease in once. */
 .lab-jobs-enter { animation: lab-jobs-in 0.45s ease-out both; }
@@ -89,7 +89,7 @@
   font-size: var(--fs-sm);
   min-width: 0;
 }
-.lab-jobs-kv dt { color: var(--text-3); font: 500 var(--fs-xs)/1.8 var(--sans); letter-spacing: 0.01em; }
+.lab-jobs-kv dt { color: var(--ink-3); font: 500 var(--fs-xs)/1.8 var(--font); letter-spacing: 0.01em; }
 .lab-jobs-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
 .lab-jobs-empty { display: flex; flex-direction: column; gap: 14px; }
@@ -109,9 +109,9 @@
   gap: 6px;
   min-width: 0;
 }
-.lab-jobs-label { color: var(--text-2); font: 500 var(--fs-xs)/1.4 var(--sans); letter-spacing: 0.01em; }
+.lab-jobs-label { color: var(--ink-2); font: 500 var(--fs-xs)/1.4 var(--font); letter-spacing: 0.01em; }
 .lab-jobs-form .input, .lab-jobs-form .select, .lab-jobs-form .textarea { width: 100%; min-width: 0; box-sizing: border-box; }
-.lab-jobs-form .textarea { font-family: var(--mono); font-size: var(--fs-sm); }
+.lab-jobs-form .textarea { font-family: var(--font-mono); font-size: var(--fs-sm); }
 .lab-jobs-hint { margin-top: -10px; }
 .lab-jobs-hint:empty { display: none; }
 
@@ -124,7 +124,7 @@
   border: 1px solid var(--rule);
   min-width: 0;
 }
-.lab-jobs-pin legend { padding: 0 6px; color: var(--text-2); font: 500 var(--fs-xs)/1.4 var(--sans); letter-spacing: 0.01em; }
+.lab-jobs-pin legend { padding: 0 6px; color: var(--ink-2); font: 500 var(--fs-xs)/1.4 var(--font); letter-spacing: 0.01em; }
 
 .lab-jobs-inline { display: flex; flex-wrap: wrap; gap: 8px 16px; min-width: 0; }
 .lab-jobs-checks {
@@ -149,7 +149,7 @@
 }
 .lab-jobs-checks .lab-jobs-check:last-child { border-bottom: 0; }
 .lab-jobs-check input { flex: none; margin: 0; }
-.lab-jobs-check-name { font-family: var(--sans); overflow-wrap: anywhere; min-width: 0; }
+.lab-jobs-check-name { font-family: var(--font); overflow-wrap: anywhere; min-width: 0; }
 .lab-jobs-check .lab-muted { margin-left: auto; }
 .lab-jobs-check .lab-badge { margin-left: 0; }
 
@@ -157,7 +157,7 @@
   margin: 0;
   padding: 10px 14px 10px 30px;
   border: 1px solid var(--rule);
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: var(--fs-sm);
   min-width: 0;
 }
@@ -194,8 +194,8 @@
 .lab-jobs-dev {
   padding: 2px 6px;
   border: 1px solid var(--rule);
-  color: var(--text-2);
-  font: 500 var(--fs-xs)/1.4 var(--sans);
+  color: var(--ink-2);
+  font: 500 var(--fs-xs)/1.4 var(--font);
   white-space: nowrap;
 }
 .lab-jobs-out { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }

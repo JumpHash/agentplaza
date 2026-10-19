@@ -18,7 +18,7 @@
   font-weight: 600;
   letter-spacing: 0.06em;
 
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .prov-grid {
@@ -39,8 +39,8 @@
   gap: var(--s3);
   min-width: 0;
   padding: var(--s4);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
   border-radius: 0;
 }
 
@@ -69,7 +69,7 @@
 .prov-title h3 {
   margin: 0;
   font-size: var(--fs-md);
-  color: var(--text);
+  color: var(--ink);
 }
 
 .prov-title .mono {
@@ -91,7 +91,7 @@
 
 .prov-models {
   padding-top: var(--s3);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--rule);
 }
 
 .prov-model-list {
@@ -107,7 +107,7 @@
 
 .prov-model-list li {
   font-size: var(--fs-xs);
-  color: var(--text-2);
+  color: var(--ink-2);
   overflow-wrap: anywhere;
 }
 
@@ -137,15 +137,15 @@
   padding: var(--s3);
   font: inherit;
   text-align: left;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+  color: var(--ink);
+  background: var(--sheet-2);
+  border: 1px solid var(--rule);
   border-radius: 0;
   cursor: pointer;
 }
 
 .prov-kind:hover {
-  border-color: var(--border-strong);
+  border-color: var(--rule-strong);
 }
 
 .prov-kind:focus-visible {
@@ -162,7 +162,7 @@
 
 /* Register refinements */
 .prov-bar { display: flex; justify-content: flex-end; margin-top: -8px; }
-.prov-group-title { font-family: var(--sans); font-size: 11px; letter-spacing: 0.12em; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
+.prov-group-title { font-family: var(--font); font-size: 11px; letter-spacing: 0.12em; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
 .prov-card { background: var(--paper); padding: 16px 16px 12px; gap: 12px; }
 .prov-card:hover { border-color: var(--ink-3); }
 .prov-title h3 { font-size: 16.5px; }

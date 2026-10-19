@@ -13,7 +13,7 @@
 
 .wk-intro {
   margin: 2px 0 0;
-  color: var(--text-2);
+  color: var(--ink-2);
   font: var(--type-meta);
 }
 
@@ -22,7 +22,7 @@
   align-items: center;
   gap: var(--s2);
   font: var(--type-ui);
-  color: var(--text-2);
+  color: var(--ink-2);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -42,19 +42,19 @@
   min-width: 190px;
   max-width: 280px;
   padding: var(--s2) var(--s3);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  color: var(--ink);
   text-decoration: none;
 }
 
 .wk-tab:hover {
-  background: var(--surface-2);
+  background: var(--sheet-2);
 }
 
 .wk-tab[aria-current="page"] {
-  border-color: var(--text);
-  box-shadow: var(--print);
+  border-color: var(--ink);
+  box-shadow: var(--shadow-card);
 }
 
 .wk-tab-title {
@@ -66,7 +66,7 @@
 
 .wk-tab-sub {
   font: var(--type-meta);
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 /* ---- A flow line: the plan's squares, a square per task, then review and delivery ---- */
@@ -81,7 +81,7 @@
 .wk-sq {
   width: 9px;
   height: 9px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--rule-strong);
 }
 
 .wk-sq.k-task {
@@ -95,8 +95,8 @@
 }
 
 .wk-sq.s-done {
-  background: var(--text-3);
-  border-color: var(--text-3);
+  background: var(--ink-3);
+  border-color: var(--ink-3);
 }
 
 .wk-sq.k-task.s-done {
@@ -105,8 +105,8 @@
 }
 
 .wk-sq.s-current {
-  background: var(--text);
-  border-color: var(--text);
+  background: var(--ink);
+  border-color: var(--ink);
 }
 
 .wk-sq.s-later,
@@ -132,14 +132,14 @@
 
 .wk-sq.s-blocked,
 .wk-sq.s-failed {
-  background: var(--danger);
-  border-color: var(--danger);
+  background: var(--crit);
+  border-color: var(--crit);
 }
 
 .wk-more {
   margin-left: 4px;
   font: var(--type-meta);
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 /* ---- The body: the map, and the drawer beside it ---- */
@@ -163,8 +163,8 @@
 
 .wk-map {
   overflow: auto;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  border: 1px solid var(--rule);
+  background: var(--paper);
 }
 
 .wk-canvas {
@@ -181,12 +181,12 @@
 
 .wk-links path {
   fill: none;
-  stroke: var(--text-3);
+  stroke: var(--ink-3);
   stroke-width: 1.5;
 }
 
 .wk-links path.posted {
-  stroke: var(--border-strong);
+  stroke: var(--rule-strong);
   stroke-dasharray: 4 4;
 }
 
@@ -207,9 +207,9 @@
   gap: 3px;
   padding: 8px 10px 8px 13px;
   text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  color: var(--ink);
   font: inherit;
   cursor: pointer;
   overflow: hidden;
@@ -222,21 +222,21 @@
   top: 0;
   bottom: 0;
   width: 3px;
-  background: var(--border-strong);
+  background: var(--rule-strong);
 }
 
 .wk-card:hover {
-  background: var(--surface-2);
+  background: var(--sheet-2);
 }
 
 .wk-card:focus-visible {
-  outline: 2px solid var(--text);
+  outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
 
 .wk-card.selected {
-  border-color: var(--text);
-  box-shadow: var(--print);
+  border-color: var(--ink);
+  box-shadow: var(--shadow-card);
 }
 
 .wk-card.st-ready::before,
@@ -259,12 +259,12 @@
 }
 
 .wk-card.st-blocked {
-  border-color: var(--danger);
+  border-color: var(--crit);
 }
 
 .wk-card.st-blocked::before,
 .wk-card.st-failed::before {
-  background: var(--danger);
+  background: var(--crit);
 }
 
 .wk-card.st-done::before {
@@ -284,7 +284,7 @@
   justify-content: space-between;
   gap: var(--s2);
   font: var(--type-meta);
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .wk-id {
@@ -309,7 +309,7 @@
 
 .wk-line {
   font: var(--type-meta);
-  color: var(--text-2);
+  color: var(--ink-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -332,27 +332,27 @@
   gap: 2px;
   align-content: center;
   padding: 6px 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  color: var(--ink);
   text-decoration: none;
 }
 
 .wk-plan-card:hover {
-  background: var(--surface-2);
+  background: var(--sheet-2);
 }
 
 .wk-plan-card.p-done {
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 
 .wk-plan-card.p-current {
-  border-color: var(--text);
+  border-color: var(--ink);
 }
 
 .wk-plan-card.p-later {
   border-style: dashed;
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .wk-plan-card.p-you {
@@ -369,7 +369,7 @@
 
 .wk-plan-line {
   font: var(--type-meta);
-  color: var(--text-3);
+  color: var(--ink-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -385,13 +385,13 @@
   gap: 4px;
   align-content: start;
   padding: 10px 12px;
-  background: var(--surface);
-  border: 1px dashed var(--border-strong);
+  background: var(--sheet);
+  border: 1px dashed var(--rule-strong);
 }
 
 .wk-delivery.p-current {
   border-style: solid;
-  border-color: var(--text);
+  border-color: var(--ink);
 }
 
 .wk-delivery.p-done {
@@ -410,9 +410,9 @@
   display: grid;
   gap: var(--s3);
   padding: var(--s4);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  box-shadow: var(--print);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow-card);
 }
 
 .wk-drawer-head {
@@ -426,12 +426,12 @@
   padding: 4px;
   background: none;
   border: 0;
-  color: var(--text-2);
+  color: var(--ink-2);
   cursor: pointer;
 }
 
 .wk-close:hover {
-  color: var(--text);
+  color: var(--ink);
 }
 
 .wk-drawer-title {
@@ -458,11 +458,11 @@
   grid-template-columns: 16px 1fr;
   gap: 6px;
   font: var(--type-meta);
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 
 .wk-life li.done {
-  color: var(--text);
+  color: var(--ink);
 }
 
 .wk-life li.now {
@@ -474,7 +474,7 @@
 }
 
 .wk-life li.bad {
-  color: var(--danger);
+  color: var(--crit);
 }
 
 .wk-mark {
@@ -508,7 +508,7 @@
 .wk-why {
   margin: 0;
   font: var(--type-meta);
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .wk-lensed {
@@ -554,13 +554,13 @@
 
 .wk-count {
   font: var(--type-meta);
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .wk-none {
   margin: 0;
   font: var(--type-meta);
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .wk-col .wk-card {
@@ -583,13 +583,13 @@
   gap: var(--s2);
   align-content: start;
   padding: var(--s3);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
 }
 
 .wk-stage.p-current {
-  border-color: var(--text);
-  box-shadow: var(--print);
+  border-color: var(--ink);
+  box-shadow: var(--shadow-card);
 }
 
 .wk-stage.p-later {
@@ -600,15 +600,15 @@
   display: grid;
   gap: 2px;
   padding: var(--s2);
-  background: var(--bg);
-  border: 1px solid var(--border);
+  background: var(--paper);
+  border: 1px solid var(--rule);
 }
 
 .wk-doc-kind {
   font: var(--type-badge);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .wk-doc.v-approve .wk-doc-kind {
@@ -616,7 +616,7 @@
 }
 
 .wk-doc.v-revise .wk-doc-kind {
-  color: var(--danger);
+  color: var(--crit);
 }
 
 .wk-doc.v-you {
@@ -625,7 +625,7 @@
 
 .wk-meta {
   font: var(--type-meta);
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 /* ---- The Overview's project lines (views/overview.ts) ---- */
@@ -640,8 +640,8 @@
   align-items: center;
   gap: var(--s3);
   padding: var(--s2) var(--s4);
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink);
   text-decoration: none;
 }
 
@@ -650,7 +650,7 @@
 }
 
 .ov-project:hover {
-  background: var(--surface-2);
+  background: var(--sheet-2);
 }
 
 .ov-project-title {

@@ -9,7 +9,7 @@
 .pe-tabs { min-width: 0; max-width: 100%; overflow-x: auto; }
 .pe-main { min-width: 0; }
 .pe-muted { margin: 0; color: var(--ink-3); font-size: 14px; line-height: 1.55; max-width: 72ch; }
-.pe-error { color: var(--danger); font-size: 14px; overflow-wrap: anywhere; }
+.pe-error { color: var(--crit); font-size: 14px; overflow-wrap: anywhere; }
 .pe-error[hidden] { display: none; }
 .pe-stats { color: var(--ink-3); font-size: 13px; font-variant-numeric: tabular-nums; }
 .pe-label { margin-bottom: 6px; font-size: 12px; letter-spacing: 0.01em; color: var(--ink-3); }
@@ -21,16 +21,16 @@
 .pe-pane { display: flex; flex-direction: column; min-width: 0; }
 .pe-code { display: flex; height: 60vh; min-height: 320px; min-width: 0; border: 1px solid var(--rule); background: var(--sheet); }
 .pe-gutter {
-  flex: none; overflow: hidden; padding: 10px 0; background: var(--surface-2); color: var(--ink-3);
-  font: 13px/1.6 var(--mono); text-align: right; user-select: none;
+  flex: none; overflow: hidden; padding: 10px 0; background: var(--sheet-2); color: var(--ink-3);
+  font: 13px/1.6 var(--font-mono); text-align: right; user-select: none;
 }
 .pe-gutter span { display: block; min-width: 3ch; padding: 0 10px 0 12px; }
-.pe-gutter .sev-error { color: var(--danger); background: var(--danger-bg); font-weight: 600; }
-.pe-gutter .sev-warning { color: var(--warn); background: var(--warn-bg); }
+.pe-gutter .sev-error { color: var(--crit); background: var(--crit-soft); font-weight: 600; }
+.pe-gutter .sev-warning { color: var(--warn); background: var(--warn-soft); }
 .pe-gutter .sev-info { color: var(--info); }
 .pe-src {
   flex: 1 1 auto; height: 100%; min-width: 0; margin: 0; padding: 10px 12px; border: 0; border-radius: 0;
-  background: transparent; color: var(--ink); font: 13px/1.6 var(--mono); white-space: pre; overflow: auto; tab-size: 2; resize: none;
+  background: transparent; color: var(--ink); font: 13px/1.6 var(--font-mono); white-space: pre; overflow: auto; tab-size: 2; resize: none;
 }
 .pe-src:focus { outline: none; box-shadow: inset 0 -2px 0 var(--signal); }
 .pe-src::placeholder { color: var(--ink-3); }
@@ -52,12 +52,12 @@
 .pe-finding:hover:not(:disabled) { background: var(--hover); }
 .pe-finding:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
 .pe-sev { font-weight: 600; white-space: nowrap; }
-.pe-sev.danger { color: var(--danger); }
+.pe-sev.danger { color: var(--crit); }
 .pe-sev.warn { color: var(--warn); }
 .pe-sev.info { color: var(--info); }
 .pe-where { color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pe-msg { min-width: 0; overflow-wrap: anywhere; }
-.pe-rule-id { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+.pe-rule-id { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); }
 @media (max-width: 640px) {
   .pe-finding { grid-template-columns: auto minmax(0, 1fr); }
   .pe-msg { grid-column: 1 / -1; }
@@ -76,16 +76,16 @@
 .pe-sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; min-width: 0; }
 .pe-diff {
   min-width: 0; overflow-x: auto; border: 1px solid var(--rule); background: var(--paper);
-  font: 13px/1.6 var(--mono);
+  font: 13px/1.6 var(--font-mono);
 }
 .pe-line { display: grid; grid-template-columns: 4ch 4ch 2ch minmax(0, 1fr); }
 .pe-ln { padding: 0 8px 0 0; color: var(--ink-3); text-align: right; user-select: none; font-variant-numeric: tabular-nums; }
 .pe-sign { text-align: center; user-select: none; }
 .pe-line code { font: inherit; min-width: 0; padding-right: 8px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
-.pe-line.add { background: var(--ok-bg); }
+.pe-line.add { background: var(--ok-soft); }
 .pe-line.add .pe-sign { color: var(--ok); }
-.pe-line.del { background: var(--danger-bg); }
-.pe-line.del .pe-sign { color: var(--danger); }
+.pe-line.del { background: var(--crit-soft); }
+.pe-line.del .pe-sign { color: var(--crit); }
 
 /* Rules: the in-app best-practices guide */
 .pe-rules { display: flex; flex-direction: column; gap: 24px; min-width: 0; }

@@ -204,7 +204,7 @@ export function stackedArea(el: HTMLElement, data: AreaData, opts: AreaOptions):
     ];
     for (const t of g.tops) {
       kids.push(paint(svgEl('circle', { cx: xi, cy: g.y(t.upper[i] ?? 0), r: 3 }),
-        { fill: t.color, stroke: 'var(--chart-bg, #fff)', strokeWidth: '1.5px' }));
+        { fill: t.color, stroke: 'var(--sheet, #fff)', strokeWidth: '1.5px' }));
     }
     gHover.replaceChildren(...kids);
   }

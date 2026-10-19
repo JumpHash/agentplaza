@@ -183,7 +183,7 @@ export function brandLogo(brand: string, large = false): HTMLElement {
     // Very dark brand colours vanish on a dark tile; keep those white.
     const hex = icon.hex.toLowerCase();
     const dark = parseInt(hex.slice(0, 2), 16) + parseInt(hex.slice(2, 4), 16) + parseInt(hex.slice(4, 6), 16) < 150;
-    tile.style.color = dark ? 'var(--text)' : `#${hex}`;
+    tile.style.color = dark ? 'var(--ink)' : `#${hex}`;
   } else {
     replace(tile, h('span.mono-mark', null, MONOGRAMS[brand] ?? brand.slice(0, 2).toUpperCase()));
   }

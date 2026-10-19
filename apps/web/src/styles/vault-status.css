@@ -4,7 +4,7 @@
 
 .vault-status-banner { margin: 0; text-transform: none; letter-spacing: 0; font: inherit; line-height: 1.5; }
 .vault-status-banner p { margin: 0 0 4px; }
-.vault-status-banner code { font-family: var(--mono); font-size: 12.5px; }
+.vault-status-banner code { font-family: var(--font-mono); font-size: 12.5px; }
 
 .vault-status-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 
@@ -21,7 +21,7 @@
 }
 .vault-fact { min-width: 0; }
 .vault-fact dt {
-  font: 600 11px var(--sans);
+  font: 600 11px var(--font);
   letter-spacing: 0.06em;
 
   color: var(--ink-2);
@@ -44,7 +44,7 @@
 .vault-status-check { display: inline-flex; align-items: center; gap: 6px; }
 .vault-status-error { margin: 0; color: var(--crit); font-size: 13px; }
 .vault-status-error[hidden] { display: none; }
-.vault-status-dialog input[readonly] { font-family: var(--mono); width: 100%; min-width: 0; }
+.vault-status-dialog input[readonly] { font-family: var(--font-mono); width: 100%; min-width: 0; }
 .vault-status-dialog .vault-status-row > input[readonly] { flex: 1 1 200px; }
 
 @media (max-width: 480px) {

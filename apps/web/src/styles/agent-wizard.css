@@ -3,10 +3,10 @@
 .modal.wizard { width: min(880px, 96vw); }
 
 .wizard { display: grid; gap: 18px; }
-.wizard h3 { font: 700 15px/1.2 var(--sans); margin: 6px 0 0; }
+.wizard h3 { font: 700 15px/1.2 var(--font); margin: 6px 0 0; }
 .wiz-body { display: grid; gap: 16px; align-content: start; }
-.wiz-muted { color: var(--ink-3); font: italic 13px/1.45 var(--sans); margin: 0; }
-.wiz-kicker { font: 400 11px var(--sans); color: var(--ink-3); letter-spacing: 0.01em; }
+.wiz-muted { color: var(--ink-3); font: italic 13px/1.45 var(--font); margin: 0; }
+.wiz-kicker { font: 400 11px var(--font); color: var(--ink-3); letter-spacing: 0.01em; }
 
 /* Step indicator */
 .wiz-steps {
@@ -16,7 +16,7 @@
 }
 .wiz-steps li {
   display: flex; align-items: center; gap: 8px; min-width: 0;
-  padding: 9px 10px; font: 400 12px var(--sans); color: var(--ink-3);
+  padding: 9px 10px; font: 400 12px var(--font); color: var(--ink-3);
   border-right: 1px solid var(--rule);
 }
 .wiz-steps li:last-child { border-right: 0; }
@@ -36,7 +36,7 @@
 }
 .wiz-proposal p, .wiz-proposal blockquote { margin: 0; font-size: 14px; }
 .wiz-proposal blockquote {
-  font: italic 14px/1.5 var(--sans); color: var(--ink-2);
+  font: italic 14px/1.5 var(--font); color: var(--ink-2);
   border-left: 1px solid var(--rule); padding-left: 10px;
 }
 .wiz-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -45,9 +45,9 @@
   font: inherit; color: var(--ink); background: var(--sheet);
   border: 1px solid var(--ink); cursor: pointer;
 }
-.wiz-choice strong { font: 700 14px var(--sans); }
+.wiz-choice strong { font: 700 14px var(--font); }
 .wiz-choice span { color: var(--ink-2); font-size: 13px; line-height: 1.4; }
-.wiz-choice.on { background: var(--ink); color: var(--sheet); box-shadow: var(--print); }
+.wiz-choice.on { background: var(--ink); color: var(--sheet); box-shadow: var(--shadow-card); }
 .wiz-choice.on span { color: var(--sheet); }
 
 .wiz-roles { display: grid; gap: 8px; max-height: 340px; overflow: auto; }
@@ -60,8 +60,8 @@
 .wiz-role.on { border: 2px solid var(--ink); }
 .wiz-role > span { font-size: 13px; line-height: 1.4; }
 .wiz-role-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
-.wiz-role-head strong { font: 700 14px var(--sans); }
-.wiz-role-id { font: 400 12px var(--mono); color: var(--ink-3); }
+.wiz-role-head strong { font: 700 14px var(--font); }
+.wiz-role-id { font: 400 12px var(--font-mono); color: var(--ink-3); }
 
 /* Step 2: role fields */
 .wiz-list { display: grid; gap: 6px; }
@@ -73,10 +73,10 @@
   display: grid; gap: 10px; margin: 0; padding: 12px 14px;
   border: 1px solid var(--rule);
 }
-.wiz-tools legend { font: 400 11px var(--sans); color: var(--ink-3); padding: 0 4px; }
+.wiz-tools legend { font: 400 11px var(--font); color: var(--ink-3); padding: 0 4px; }
 .wiz-group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
 .wiz-group > .wiz-kicker { width: 100%; }
-.wiz-check { display: inline-flex; align-items: center; gap: 6px; font: 400 13px var(--sans); }
+.wiz-check { display: inline-flex; align-items: center; gap: 6px; font: 400 13px var(--font); }
 .wiz-model { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 8px; }
 
 /* Read-only previews (existing roles) */
@@ -90,7 +90,7 @@
   padding: 14px 16px; max-height: 420px; overflow: auto;
   background: var(--sheet); border: 1px solid var(--rule);
 }
-.wiz-prompt-edit { min-height: 360px; font: 400 13px/1.5 var(--mono); }
+.wiz-prompt-edit { min-height: 360px; font: 400 13px/1.5 var(--font-mono); }
 
 /* Step 5: review */
 .wiz-summary { display: grid; margin: 0; }
@@ -98,7 +98,7 @@
   display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 12px;
   padding: 9px 0; border-bottom: 1px solid var(--rule-faint);
 }
-.wiz-summary dt { font: 400 11px/1.6 var(--sans); letter-spacing: 0.01em; color: var(--ink-3); }
+.wiz-summary dt { font: 400 11px/1.6 var(--font); letter-spacing: 0.01em; color: var(--ink-3); }
 .wiz-summary dd { margin: 0; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .wiz-summary ul { margin: 0; padding-left: 18px; }
 .wiz-reject {

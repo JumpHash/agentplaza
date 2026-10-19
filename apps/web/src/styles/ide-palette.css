@@ -22,11 +22,11 @@
   max-width: 560px;
   max-height: 60vh;
   padding: var(--s3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 12px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow);
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: var(--shadow-pop);
   animation: ide-pal-in 120ms ease-out;
 }
 
@@ -47,10 +47,10 @@
   width: 100%;
   margin: 0 0 var(--s2);
   padding: var(--s2) var(--s3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 6px;
   background: var(--paper);
-  color: var(--text);
+  color: var(--ink);
   font: inherit;
   font-size: 14px;
   line-height: 1.4;
@@ -58,11 +58,11 @@
 }
 
 .ide-pal-input::placeholder {
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .ide-pal-input:focus-visible {
-  border-color: var(--accent);
+  border-color: var(--signal);
   box-shadow: var(--focus);
 }
 
@@ -79,8 +79,8 @@
 
 .ide-pal-heading {
   padding: var(--s2) var(--s3) var(--s1);
-  color: var(--text-3);
-  font: 600 12px / 1.4 var(--sans);
+  color: var(--ink-3);
+  font: 600 12px / 1.4 var(--font);
 }
 
 .ide-pal-opt {
@@ -92,7 +92,7 @@
   min-height: 32px;
   padding: var(--s2) var(--s3);
   border-radius: 6px;
-  color: var(--text);
+  color: var(--ink);
   cursor: pointer;
   user-select: none;
 }
@@ -109,7 +109,7 @@
   bottom: 6px;
   width: 2px;
   border-radius: 2px;
-  background: var(--accent);
+  background: var(--signal);
 }
 
 .ide-pal-label {
@@ -130,14 +130,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 12px;
   text-align: right;
 }
 
 .ide-pal-empty {
   padding: var(--s2) var(--s3);
-  color: var(--text-3);
+  color: var(--ink-3);
   font-size: 14px;
 }
 

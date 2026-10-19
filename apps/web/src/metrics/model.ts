@@ -314,7 +314,7 @@ export interface Rule {
 }
 
 /** The CSS colour of a tone token. */
-export const toneVar = (t: Tone): string => (t === 'ok' ? 'var(--ok)' : t === 'warn' ? 'var(--warn)' : t === 'crit' ? 'var(--danger)' : t === 'info' ? 'var(--info)' : t === 'signal' ? 'var(--signal)' : `var(--${t})`);
+export const toneVar = (t: Tone): string => (t === 'ok' ? 'var(--ok)' : t === 'warn' ? 'var(--warn)' : t === 'crit' ? 'var(--crit)' : t === 'info' ? 'var(--info)' : t === 'signal' ? 'var(--signal)' : `var(--${t})`);
 
 /** The CSS colour of a status. */
-export const statusVar = (s: Status): string => (s === 'ok' ? 'var(--ok)' : s === 'warn' ? 'var(--warn)' : s === 'crit' ? 'var(--danger)' : s === 'info' ? 'var(--info)' : 'var(--ink-3)');
+export const statusVar = (s: Status): string => (s === 'ok' ? 'var(--ok)' : s === 'warn' ? 'var(--warn)' : s === 'crit' ? 'var(--crit)' : s === 'info' ? 'var(--info)' : 'var(--ink-3)');

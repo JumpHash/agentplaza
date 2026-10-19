@@ -114,7 +114,7 @@ function mountEngineLab(root: HTMLElement, s: LabState, cat: LabCatalog): Cleanu
     styleSel.value = s.style;
     themeSel.value = s.theme;
     statusSel.value = s.status;
-    camBtns.forEach((b, i) => (b.style.outline = CAMS[i] === s.cam ? '2px solid var(--accent)' : ''));
+    camBtns.forEach((b, i) => (b.style.outline = CAMS[i] === s.cam ? '2px solid var(--signal)' : ''));
     orthoIn.checked = s.ortho;
   };
 
@@ -127,7 +127,7 @@ function mountEngineLab(root: HTMLElement, s: LabState, cat: LabCatalog): Cleanu
   const camBtns = CAMS.map((c) => button(c.toUpperCase(), () => { s.cam = c; apply(); }));
   const orthoIn = h('input', { type: 'checkbox', onchange: () => { s.ortho = orthoIn.checked; apply(); } });
 
-  const readout = h('div', { style: 'font-family:var(--sans);font-size:12px;padding:4px 0;color:var(--ink-2)', 'aria-live': 'polite' });
+  const readout = h('div', { style: 'font-family:var(--font);font-size:12px;padding:4px 0;color:var(--ink-2)', 'aria-live': 'polite' });
   const panel = h(
     'div',
     { style: 'padding:12px 16px' },

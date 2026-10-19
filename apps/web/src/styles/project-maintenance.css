@@ -23,9 +23,9 @@
 
 .mt-note {
   padding: var(--s2) var(--s3);
-  border-radius: var(--r-md);
-  background: var(--warn-bg);
-  color: var(--warn-ink);
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  color: var(--warn);
   font-size: var(--fs-sm);
 }
 
@@ -33,7 +33,7 @@
   border: 0;
   padding: 0;
   background: none;
-  color: var(--accent);
+  color: var(--signal);
   cursor: pointer;
   font: inherit;
 }
@@ -41,9 +41,9 @@
 .mt-intro {
   max-width: 640px;
   padding: var(--s5);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--sheet);
 }
 
 .mt-intro p {
@@ -58,9 +58,9 @@
   gap: var(--s3);
   flex-wrap: wrap;
   padding: var(--s3) var(--s4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--sheet);
 }
 
 .mt-verdict {
@@ -70,7 +70,7 @@
 }
 
 .mt-verdict.needs {
-  color: var(--accent);
+  color: var(--signal);
 }
 
 .mt-sweep {
@@ -124,9 +124,9 @@
 
 .mt-map,
 .mt-map-empty {
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--sheet);
   aspect-ratio: 1;
 }
 
@@ -166,7 +166,7 @@
 }
 
 .mt-link {
-  stroke: var(--border-strong);
+  stroke: var(--rule-strong);
   stroke-width: 1.5;
   opacity: 0.7;
 }
@@ -182,7 +182,7 @@
 }
 
 .mt-core.heard .mt-core-ring {
-  stroke: var(--accent);
+  stroke: var(--signal);
   animation: mt-ring 2.4s ease-out infinite;
   transform-origin: 0 0;
 }
@@ -206,7 +206,7 @@
 }
 
 .mt-area-dot {
-  stroke: var(--surface);
+  stroke: var(--sheet);
   stroke-width: 3;
   transition: r 200ms ease;
 }
@@ -220,7 +220,7 @@
 }
 
 .mt-area.danger .mt-area-dot {
-  fill: var(--danger);
+  fill: var(--crit);
 }
 
 .mt-area.muted .mt-area-dot {
@@ -230,13 +230,13 @@
 .mt-area:hover .mt-area-dot,
 .mt-area:focus-visible .mt-area-dot,
 .mt-area.on .mt-area-dot {
-  stroke: var(--accent);
+  stroke: var(--signal);
 }
 
 .mt-area-label {
   fill: var(--ink-2);
   font-size: 11px;
-  font-family: var(--sans);
+  font-family: var(--font);
   pointer-events: none;
 }
 
@@ -246,8 +246,8 @@
 }
 
 .mt-prop-dot {
-  fill: var(--accent);
-  stroke: var(--surface);
+  fill: var(--signal);
+  stroke: var(--sheet);
   stroke-width: 1.5;
   animation: mt-pop 420ms ease-out both;
 }
@@ -257,7 +257,7 @@
 }
 
 .mt-prop-dot.security {
-  fill: var(--danger);
+  fill: var(--crit);
 }
 
 @keyframes mt-pop {
@@ -325,7 +325,7 @@
 }
 
 .mt-health.danger {
-  background: var(--danger);
+  background: var(--crit);
 }
 
 .mt-summary {
@@ -339,11 +339,11 @@
 }
 
 .mt-paths code {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
   padding: 1px 6px;
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  background: var(--sheet-2);
 }
 
 /* Proposals. */
@@ -358,9 +358,9 @@
   flex-direction: column;
   gap: var(--s2);
   padding: var(--s3) var(--s4);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--sheet);
 }
 
 .mt-proposal.declined,
@@ -387,7 +387,7 @@
 }
 
 .mt-title:hover {
-  color: var(--accent);
+  color: var(--signal);
 }
 
 .mt-value {
@@ -403,7 +403,7 @@
 }
 
 .mt-value i.on {
-  background: var(--accent);
+  background: var(--signal);
 }
 
 .mt-changes {
@@ -420,11 +420,11 @@
 }
 
 .mt-weigh .risk.high {
-  color: var(--danger);
+  color: var(--crit);
 }
 
 .mt-weigh .risk.medium {
-  color: var(--warn-ink);
+  color: var(--warn);
 }
 
 .mt-detail {
@@ -520,11 +520,11 @@
 }
 
 .mt-code {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
   padding: var(--s2) var(--s3);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
+  border-radius: var(--radius);
+  background: var(--sheet-2);
   white-space: pre-wrap;
   word-break: break-all;
   user-select: all;
@@ -547,7 +547,7 @@
   width: 100%;
   padding: var(--s2) var(--s3);
   border: 1px solid transparent;
-  border-radius: var(--r-md);
+  border-radius: var(--radius);
   background: none;
   color: var(--ink);
   font: inherit;
@@ -556,8 +556,8 @@
 }
 
 .mt-brief-item:hover {
-  border-color: var(--border);
-  background: var(--surface);
+  border-color: var(--rule);
+  background: var(--sheet);
 }
 
 .mt-brief-title {

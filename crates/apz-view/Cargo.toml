@@ -1,0 +1,15 @@
+[package]
+name = "apz-view"
+description = "The panel model both consoles render: charts, tables, tiles, heatmaps and the rest, plus images, graphs, datasets, documents, code and live HTML. The hub composes Metrics from it and agents build artifacts with it; the validator holds every artifact to its caps. Formatting rules are pinned by tests/format_golden.json, which the web test suite also reads."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-metrics = { path = "../apz-metrics" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -9,8 +9,8 @@
   display: grid;
   gap: 4px;
   padding: 10px 12px;
-  border-radius: var(--r-md);
-  background: var(--warn-bg);
+  border-radius: var(--radius);
+  background: var(--warn-soft);
   color: var(--warn);
   font-size: 13px;
 }
@@ -20,7 +20,7 @@
 }
 
 .vimp-warn code {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
 }
 
 .vimp-section {
@@ -43,14 +43,14 @@
 
 .vimp-muted {
   margin: 0;
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 13px;
   overflow-wrap: anywhere;
 }
 
 .vimp-sub {
   margin-left: 6px;
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 12px;
 }
 
@@ -86,14 +86,14 @@
 /* Typed or pasted .env text shows as dots, so values are never on screen. The text stays editable. */
 .vimp-masked {
   -webkit-text-security: disc;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   white-space: pre;
   overflow-x: auto;
 }
 
 .vimp-error {
   margin: 0;
-  color: var(--danger);
+  color: var(--crit);
   font-size: 13px;
   overflow-wrap: anywhere;
 }

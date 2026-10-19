@@ -8,8 +8,8 @@
   height: 100%;
   min-height: 0;
   box-sizing: border-box;
-  background: var(--surface);
-  color: var(--text);
+  background: var(--sheet);
+  color: var(--ink);
   font-family: var(--font);
   font-size: var(--fs-sm);
   line-height: 1.4;
@@ -18,7 +18,7 @@
 .ide-side-top {
   flex: none;
   padding: var(--s2) var(--s3);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--rule);
 }
 
 .ide-side-search {
@@ -26,21 +26,21 @@
   width: 100%;
   height: 32px;
   padding: 0 var(--s2);
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--paper);
+  color: var(--ink);
   font-family: var(--font);
   font-size: var(--fs-sm);
 }
 
 .ide-side-search::placeholder {
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .ide-side-search:focus-visible {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--signal);
   box-shadow: var(--focus);
 }
 
@@ -53,7 +53,7 @@
 
 .ide-side-empty {
   padding: var(--s4);
-  color: var(--text-3);
+  color: var(--ink-3);
   font-size: 12px;
 }
 
@@ -70,21 +70,21 @@
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--text-2);
-  font: 600 var(--fs-sm) / 1.4 var(--sans);
+  color: var(--ink-2);
+  font: 600 var(--fs-sm) / 1.4 var(--font);
   text-align: left;
   cursor: pointer;
 }
 
 .ide-side-group:hover {
   background: var(--hover);
-  color: var(--text);
+  color: var(--ink);
 }
 
 .ide-side-caret {
   flex: none;
   width: 10px;
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .ide-side-gtitle {
@@ -100,9 +100,9 @@
   min-width: 20px;
   padding: 0 6px;
   border-radius: 6px;
-  background: var(--surface-3);
-  color: var(--text-2);
-  font: 600 11px / 18px var(--sans);
+  background: var(--rule-faint);
+  color: var(--ink-2);
+  font: 600 11px / 18px var(--font);
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
@@ -121,7 +121,7 @@
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--text);
+  color: var(--ink);
   font: inherit;
   text-align: left;
   cursor: pointer;
@@ -132,7 +132,7 @@
 }
 
 .ide-side-row[aria-current="true"] {
-  background: var(--accent-bg);
+  background: var(--signal-soft);
 }
 
 .ide-side-row[aria-current="true"]::before {
@@ -143,7 +143,7 @@
   bottom: 4px;
   width: 2px;
   border-radius: 2px;
-  background: var(--accent);
+  background: var(--signal);
 }
 
 .ide-side-row:focus-visible,
@@ -161,7 +161,7 @@
   justify-content: center;
   width: 12px;
   height: 18px;
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .ide-side-mark svg {
@@ -175,12 +175,12 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--text-3);
+  background: var(--ink-3);
 }
 
 .ide-side-row[data-status="idle"] .ide-side-dot {
   background: transparent;
-  border: 1.5px solid var(--text-2);
+  border: 1.5px solid var(--ink-2);
 }
 
 /* Working: the success colour, breathing slowly. Failed: the error colour. Done: a check in success, the name struck through. */
@@ -190,7 +190,7 @@
 }
 
 .ide-side-row[data-status="failed"] .ide-side-dot {
-  background: var(--danger);
+  background: var(--crit);
 }
 
 .ide-side-row[data-status="done"] .ide-side-mark {
@@ -199,7 +199,7 @@
 
 .ide-side-row[data-status="repo"] .ide-side-dot {
   border-radius: 2px;
-  background: var(--text-3);
+  background: var(--ink-3);
 }
 
 /* A workstation: a round dot, green while it is online (the hub lists only online ones). */
@@ -208,7 +208,7 @@
 }
 
 .ide-side-row[data-status="offline"] .ide-side-dot {
-  background: var(--text-3);
+  background: var(--ink-3);
 }
 
 /* The warning under a workstation whose agents act as the owner. */
@@ -254,7 +254,7 @@
 }
 
 .ide-side-row[data-status="done"] .ide-side-name {
-  color: var(--text-2);
+  color: var(--ink-2);
   text-decoration: line-through;
 }
 
@@ -272,14 +272,14 @@
 
 .ide-side-cid {
   flex: none;
-  color: var(--text-3);
-  font: 400 12px / 1.4 var(--sans);
+  color: var(--ink-3);
+  font: 400 12px / 1.4 var(--font);
   font-variant-numeric: tabular-nums;
 }
 
 .ide-side-task {
   overflow: hidden;
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 12px;
   font-style: italic;
   line-height: 16px;
@@ -289,7 +289,7 @@
 
 .ide-side-meta {
   overflow: hidden;
-  color: var(--text-3);
+  color: var(--ink-3);
   font-size: 12px;
   line-height: 16px;
   text-overflow: ellipsis;
@@ -307,11 +307,11 @@
   margin: 0 6px 1px 28px;
   padding: 0 var(--s2);
   border: 0;
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--rule);
   border-radius: 6px;
   background: transparent;
-  color: var(--text-2);
-  font: 400 12px / 1.4 var(--sans);
+  color: var(--ink-2);
+  font: 400 12px / 1.4 var(--font);
   text-align: left;
   cursor: pointer;
 }
@@ -324,19 +324,19 @@
 
 .ide-side-term:hover {
   background: var(--hover);
-  color: var(--text);
+  color: var(--ink);
 }
 
 .ide-side-term[aria-current="true"] {
-  background: var(--accent-bg);
-  color: var(--text);
+  background: var(--signal-soft);
+  color: var(--ink);
 }
 
 /* Pinned footer. */
 .ide-side-foot {
   flex: none;
   padding: var(--s2) var(--s3);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--rule);
 }
 
 .ide-side-new {
@@ -348,11 +348,11 @@
   height: 32px;
   margin: 0;
   padding: 0 var(--s3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 6px;
   background: transparent;
-  color: var(--text);
-  font: 500 var(--fs-sm) / 1.4 var(--sans);
+  color: var(--ink);
+  font: 500 var(--fs-sm) / 1.4 var(--font);
   cursor: pointer;
 }
 
@@ -367,11 +367,11 @@
   box-sizing: border-box;
   width: 248px;
   padding: var(--s3);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--rule-strong);
   border-radius: 6px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow);
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: var(--shadow-pop);
   font-family: var(--font);
   font-size: 12px;
   line-height: 1.4;
@@ -397,20 +397,20 @@
 
 .ide-side-card-k {
   flex: 0 0 84px;
-  color: var(--text-3);
+  color: var(--ink-3);
   font-size: 12px;
 }
 
 .ide-side-card-v {
   min-width: 0;
-  color: var(--text);
+  color: var(--ink);
   overflow-wrap: anywhere;
 }
 
 /* The conversations above the groups, and the project's head in project mode. */
 .ide-side-subhead {
   padding: 10px 12px 4px;
-  font: 600 10.5px var(--sans);
+  font: 600 10.5px var(--font);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-3, var(--ink-2));
@@ -423,5 +423,5 @@
 }
 .ide-side-links { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; }
 .ide-side-links a { color: var(--ink-2); }
-.ide-side-links a:hover { color: var(--accent); }
+.ide-side-links a:hover { color: var(--signal); }
 .ide-side-foot .ide-side-new + .ide-side-new { margin-top: 6px; }

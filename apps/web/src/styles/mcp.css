@@ -21,15 +21,15 @@
 
 .mcp-loading,
 .mcp-muted {
-  color: var(--text-3);
+  color: var(--ink-3);
   font-size: var(--fs-sm);
   margin: 0;
 }
 
 .mcp-table-wrap {
   overflow-x: auto;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border: 1px solid var(--rule);
+  background: var(--sheet);
   max-width: 100%;
 }
 
@@ -50,7 +50,7 @@
 .mcp-table th {
   font-size: var(--fs-xs);
   font-weight: 600;
-  color: var(--text-3);
+  color: var(--ink-3);
 
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -63,15 +63,15 @@
 .mcp-name {
   display: block;
   font-weight: 700;
-  color: var(--text);
+  color: var(--ink);
 }
 
 .mcp-id,
 .mcp-mono {
   display: block;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 
 .mcp-truncate {
@@ -99,7 +99,7 @@
 }
 
 .mcp-danger {
-  color: var(--danger);
+  color: var(--crit);
 }
 
 .mcp-row-actions {
@@ -139,8 +139,8 @@
   }
 
   .mcp-table tbody tr {
-    border: 1px solid var(--border);
-    background: var(--surface);
+    border: 1px solid var(--rule);
+    background: var(--sheet);
     margin-bottom: var(--s3);
     padding: var(--s2) 0;
   }
@@ -157,7 +157,7 @@
   .mcp-table td::before {
     content: attr(data-label);
     font-size: var(--fs-xs);
-    color: var(--text-3);
+    color: var(--ink-3);
 
     letter-spacing: 0.04em;
   }
@@ -204,12 +204,12 @@
 }
 
 .mcp-facts dt {
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .mcp-facts dd {
   margin: 0;
-  font-family: var(--sans);
+  font-family: var(--font);
   overflow-wrap: anywhere;
 }
 
@@ -242,7 +242,7 @@
   overflow-wrap: anywhere;
   margin: 0;
   padding: var(--s2);
-  background: var(--surface-2);
+  background: var(--sheet-2);
   border: 1px solid var(--rule-faint);
   max-height: 240px;
   overflow: auto;
@@ -250,7 +250,7 @@
 
 .mcp-test pre.mcp-mono {
   font-size: var(--fs-xs);
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 
 /* Confirm dialog */

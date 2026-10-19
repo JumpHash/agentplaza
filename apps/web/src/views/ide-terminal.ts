@@ -85,19 +85,19 @@ const THEME_TOKENS: Array<[ColorKey, string]> = [
   ['selectionBackground', 'color-mix(in srgb, var(--signal) 28%, transparent)'],
   ['black', 'var(--paper)'],
   ['red', 'var(--crit)'],
-  ['green', 'var(--ok-ink)'],
-  ['yellow', 'var(--warn-ink)'],
-  ['blue', 'var(--info-ink)'],
+  ['green', 'var(--ok)'],
+  ['yellow', 'var(--warn)'],
+  ['blue', 'var(--info)'],
   ['magenta', 'var(--signal-ink)'],
-  ['cyan', 'color-mix(in srgb, var(--info-ink) 55%, var(--ok-ink))'],
+  ['cyan', 'color-mix(in srgb, var(--info) 55%, var(--ok))'],
   ['white', 'var(--ink-2)'],
   ['brightBlack', 'var(--ink-3)'],
   ['brightRed', 'var(--crit)'],
-  ['brightGreen', 'var(--ok-ink)'],
-  ['brightYellow', 'var(--warn-ink)'],
-  ['brightBlue', 'var(--info-ink)'],
+  ['brightGreen', 'var(--ok)'],
+  ['brightYellow', 'var(--warn)'],
+  ['brightBlue', 'var(--info)'],
   ['brightMagenta', 'var(--signal-ink)'],
-  ['brightCyan', 'color-mix(in srgb, var(--info-ink) 55%, var(--ok-ink))'],
+  ['brightCyan', 'color-mix(in srgb, var(--info) 55%, var(--ok))'],
   ['brightWhite', 'var(--ink)'],
 ];
 
@@ -123,7 +123,7 @@ function readTheme(host: HTMLElement): ITheme {
 }
 
 function readFont(host: HTMLElement): string {
-  return resolveCss(host, 'fontFamily', 'var(--mono)') || 'monospace';
+  return resolveCss(host, 'fontFamily', 'var(--font-mono)') || 'monospace';
 }
 
 function ensureStyle(): void {

@@ -94,7 +94,7 @@
   color: var(--ink);
   border: 1px solid var(--ink);
   border-radius: 0;
-  box-shadow: 4px 4px 0 var(--shade);
+  box-shadow: 4px 4px 0 var(--rule-strong);
 }
 
 .mp-list {
@@ -218,7 +218,7 @@
 
 .mp-id {
   color: var(--ink-3);
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   white-space: nowrap;
 }

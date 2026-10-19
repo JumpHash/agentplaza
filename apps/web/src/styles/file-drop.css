@@ -2,9 +2,9 @@
    message's attachments. */
 
 .drop-over {
-  outline: 2px dashed var(--accent);
+  outline: 2px dashed var(--signal);
   outline-offset: -4px;
-  background: var(--accent-bg);
+  background: var(--signal-soft);
 }
 
 .drop-zone {
@@ -13,8 +13,8 @@
   align-items: center;
   gap: var(--s2);
   padding: var(--s4);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--r-md);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius);
   color: var(--ink-2);
   font-size: var(--fs-sm);
   text-align: center;
@@ -39,9 +39,9 @@
   gap: var(--s1);
   max-width: 260px;
   padding: 2px var(--s2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--sheet-2);
   color: var(--ink-2);
   font-size: var(--fs-xs);
 }

@@ -15,7 +15,7 @@
 
 .harness-label {
   margin: 0;
-  font: 600 11px/1.2 var(--sans);
+  font: 600 11px/1.2 var(--font);
   letter-spacing: 0.06em;
 
   color: var(--ink-3);
@@ -95,7 +95,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font: 12px/1.4 var(--sans);
+  font: 12px/1.4 var(--font);
   color: var(--ink-2);
 }
 

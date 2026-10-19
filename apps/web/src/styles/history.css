@@ -37,7 +37,7 @@
   max-width: 78ch;
 }
 .history .hx-line.needs {
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--signal);
   padding-left: 10px;
   font-weight: 600;
 }
@@ -75,7 +75,7 @@
 }
 .history .hx-meta-line code,
 .history code {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
   text-transform: none;
 }
@@ -99,7 +99,7 @@
   align-content: start;
   padding: 14px 16px;
   border: 1px solid var(--rule);
-  background: var(--surface);
+  background: var(--sheet);
   color: inherit;
   text-decoration: none;
 }
@@ -246,19 +246,19 @@
   border-color: var(--warn);
 }
 .history .hx-dot.is-danger {
-  background: var(--danger);
-  border-color: var(--danger);
+  background: var(--crit);
+  border-color: var(--crit);
 }
 .history .hx-dot.is-muted {
   border-color: var(--ink-3);
 }
 .history .hx-dot.is-owner,
 .history .hx-dot.is-console {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--signal);
+  border-color: var(--signal);
 }
 .history .hx-dot.is-owner {
-  box-shadow: 0 0 0 3px var(--accent-bg);
+  box-shadow: 0 0 0 3px var(--signal-soft);
 }
 .history .hx-dot.is-pending {
   border-color: var(--rule);
@@ -285,7 +285,7 @@
   min-width: 0;
 }
 .history .hx-id {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--ink-3);
 }
@@ -310,7 +310,7 @@
   max-width: 100%;
 }
 .history .hx-chip-kind {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   text-transform: uppercase;
   color: var(--ink-3);
@@ -407,11 +407,11 @@
   min-height: 1em;
 }
 .history .hx-console {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   text-transform: uppercase;
-  color: var(--accent-2);
-  border: 1px solid var(--accent);
+  color: var(--signal-ink);
+  border: 1px solid var(--signal);
   padding: 1px 5px;
 }
 
@@ -474,7 +474,7 @@
   font-size: 13px;
 }
 .history .hx-rec-type {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
 }
@@ -482,10 +482,10 @@
   margin: 6px 0 0;
 }
 .history .hx-json {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
-  background: var(--surface-2);
+  background: var(--sheet-2);
   padding: 8px 10px;
   margin: 6px 0 0;
   overflow: auto;
@@ -517,7 +517,7 @@
   display: inline-block;
   width: 1.2em;
   text-align: center;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-weight: 700;
   color: var(--ink-2);
 }
@@ -528,7 +528,7 @@
   color: var(--info);
 }
 .history .hx-op.op-del {
-  color: var(--danger);
+  color: var(--crit);
 }
 .history .hx-op.op-mv {
   color: var(--warn);
@@ -548,10 +548,10 @@
   margin-left: 8px;
 }
 .history .hx-diff {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
-  background: var(--surface-2);
+  background: var(--sheet-2);
   margin: 6px 0 0;
   padding: 8px 0;
   overflow: auto;
@@ -569,7 +569,7 @@
   background: color-mix(in srgb, var(--ok) 14%, transparent);
 }
 .history .hx-dl.del {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  background: color-mix(in srgb, var(--crit) 14%, transparent);
 }
 .history .hx-dop {
   display: inline-block;
@@ -767,7 +767,7 @@
   background: none;
   border: 0;
   padding: 3px 6px;
-  font: 13px var(--sans);
+  font: 13px var(--font);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
@@ -801,7 +801,7 @@
   overflow-wrap: anywhere;
 }
 .history .hx-code {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
   border: 1px solid var(--rule);

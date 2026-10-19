@@ -10,7 +10,7 @@
 .setup-row:first-child { border-top: 0; }
 .setup-row[data-status="ok"] { box-shadow: inset 3px 0 0 var(--ok); }
 .setup-row[data-status="warning"] { box-shadow: inset 3px 0 0 var(--warn); }
-.setup-row[data-status="failed"] { box-shadow: inset 3px 0 0 var(--danger); }
+.setup-row[data-status="failed"] { box-shadow: inset 3px 0 0 var(--crit); }
 .setup-main { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
 .setup-label { font-size: 14px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
 .setup-detail { font-size: 13px; line-height: 1.5; color: var(--ink-2); overflow-wrap: anywhere; }

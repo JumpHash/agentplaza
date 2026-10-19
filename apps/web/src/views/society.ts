@@ -743,7 +743,7 @@ function suspendedRing(half: number): SVGElement {
     'stroke-width': 3.5,
     'stroke-linecap': 'round',
   });
-  ring.style.stroke = 'var(--danger)';
+  ring.style.stroke = 'var(--crit)';
   const title = s('title', {});
   title.textContent = 'suspended';
   ring.append(title);

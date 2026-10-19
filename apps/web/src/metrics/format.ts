@@ -1,5 +1,5 @@
 // Formatting shared with the desktop: the same rules as crates/apz-metrics-view/src/format.rs, checked against the
-// same golden file (crates/apz-metrics-view/tests/format_golden.json) by the test suite.
+// same golden file (crates/apz-view/tests/format_golden.json) by the test suite.
 
 import type { Unit } from './model';
 

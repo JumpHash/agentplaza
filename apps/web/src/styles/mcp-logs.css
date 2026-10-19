@@ -10,10 +10,10 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-  background: var(--surface);
-  color: var(--text);
-  border-left: 2px solid var(--text);
-  box-shadow: -6px 0 0 var(--shade);
+  background: var(--sheet);
+  color: var(--ink);
+  border-left: 2px solid var(--ink);
+  box-shadow: -6px 0 0 var(--rule-strong);
   outline: none;
   animation: mcp-logs-in 160ms ease-out;
 }
@@ -33,7 +33,7 @@
   justify-content: space-between;
   gap: var(--s3);
   padding: var(--s4) var(--s4) var(--s3);
-  border-bottom: 2px solid var(--text);
+  border-bottom: 2px solid var(--ink);
   flex: 0 0 auto;
 }
 
@@ -46,7 +46,7 @@
 }
 
 .mcp-logs-title h2 {
-  font: 700 18px/1.1 var(--sans);
+  font: 700 18px/1.1 var(--font);
   font-stretch: 80%;
   letter-spacing: -0.01em;
   overflow-wrap: anywhere;
@@ -64,10 +64,10 @@
   min-height: 0;
   overflow: auto;
   padding: var(--s2) 0;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
   line-height: 1.5;
-  background: var(--surface);
+  background: var(--sheet);
 }
 
 .mcp-logs-body:focus-visible {
@@ -88,11 +88,11 @@
 }
 
 .mcp-log-line.is-err .mcp-log-text {
-  color: var(--danger);
+  color: var(--crit);
 }
 
 .mcp-log-time {
-  color: var(--text-3);
+  color: var(--ink-3);
   white-space: nowrap;
 }
 
@@ -104,13 +104,13 @@
 
 .mcp-logs-note {
   margin: var(--s4);
-  color: var(--text-2);
+  color: var(--ink-2);
   font-family: var(--font);
   font-size: var(--fs-sm);
 }
 
 .mcp-logs-note.is-danger {
-  color: var(--danger);
+  color: var(--crit);
 }
 
 .mcp-logs-body .empty {

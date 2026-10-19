@@ -4,15 +4,15 @@
 
 .mcpw-body { display: grid; gap: 18px; align-content: start; min-width: 0; }
 .mcpw-step { display: grid; gap: 16px; align-content: start; min-width: 0; }
-.mcpw-step h3 { font: 700 15px/1.2 var(--sans); margin: 0; }
-.mcpw-lede { margin: 0; font: italic 14px/1.5 var(--sans); color: var(--ink-3); }
+.mcpw-step h3 { font: 700 15px/1.2 var(--font); margin: 0; }
+.mcpw-lede { margin: 0; font: italic 14px/1.5 var(--font); color: var(--ink-3); }
 .mcpw-warn {
   margin: 0; padding: 10px 12px;
-  background: var(--warn-bg); color: var(--warn-ink);
+  background: var(--warn-soft); color: var(--warn);
   border-left: 3px solid var(--warn);
-  font: 400 13px/1.45 var(--sans); overflow-wrap: anywhere;
+  font: 400 13px/1.45 var(--font); overflow-wrap: anywhere;
 }
-.mcpw-error { margin: 0; font: 400 13px/1.45 var(--sans); color: var(--danger); overflow-wrap: anywhere; }
+.mcpw-error { margin: 0; font: 400 13px/1.45 var(--font); color: var(--crit); overflow-wrap: anywhere; }
 
 /* Step indicator */
 .mcpw-steps {
@@ -25,7 +25,7 @@
 .mcpw-steps button {
   display: flex; align-items: center; gap: 5px; width: 100%; min-width: 0;
   padding: 9px 6px; background: none; border: 0;
-  font: 400 12px var(--sans); color: var(--ink-3); text-align: left; cursor: default;
+  font: 400 12px var(--font); color: var(--ink-3); text-align: left; cursor: default;
 }
 .mcpw-steps button:disabled { cursor: default; }
 .mcpw-steps .done button { color: var(--ink-2); cursor: pointer; }
@@ -47,19 +47,19 @@
 .mcpw-option:hover { background: var(--hover); }
 .mcpw-option.on { border-color: var(--ink); box-shadow: inset 3px 0 0 var(--signal); }
 .mcpw-option-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.mcpw-option-head strong { font: 700 14px/1.2 var(--sans); overflow-wrap: anywhere; }
-.mcpw-option-text { font: 400 13px/1.45 var(--sans); color: var(--ink-2); }
-.mcpw-note { font: italic 12px/1.4 var(--sans); color: var(--ink-3); }
+.mcpw-option-head strong { font: 700 14px/1.2 var(--font); overflow-wrap: anywhere; }
+.mcpw-option-text { font: 400 13px/1.45 var(--font); color: var(--ink-2); }
+.mcpw-note { font: italic 12px/1.4 var(--font); color: var(--ink-3); }
 
 .mcpw-fields { display: grid; gap: 14px; min-width: 0; }
 
 /* Step 5: access groups */
 .mcpw-group { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
-.mcpw-group legend { font: 700 13px/1.2 var(--sans); margin-bottom: 4px; padding: 0; }
+.mcpw-group legend { font: 700 13px/1.2 var(--font); margin-bottom: 4px; padding: 0; }
 .mcpw-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 12px; }
 .mcpw-check {
   display: flex; align-items: center; gap: 8px; min-width: 0;
-  font: 400 13px/1.4 var(--sans); cursor: pointer;
+  font: 400 13px/1.4 var(--font); cursor: pointer;
 }
 .mcpw-check span { overflow-wrap: anywhere; }
 
@@ -70,14 +70,14 @@
   padding: 9px 12px; border-bottom: 1px solid var(--rule-faint);
 }
 .mcpw-sum-row:last-child { border-bottom: 0; }
-.mcpw-sum-row dt { font: 400 12px var(--sans); color: var(--ink-3); letter-spacing: 0.01em; }
-.mcpw-sum-row dd { margin: 0; font: 400 13px/1.45 var(--sans); overflow-wrap: anywhere; }
+.mcpw-sum-row dt { font: 400 12px var(--font); color: var(--ink-3); letter-spacing: 0.01em; }
+.mcpw-sum-row dd { margin: 0; font: 400 13px/1.45 var(--font); overflow-wrap: anywhere; }
 
 /* Footer and confirm */
 .mcpw-foot { display: grid; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--rule); background: var(--sheet); }
 .mcpw-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .mcpw-confirm { display: grid; gap: 16px; }
-.mcpw-confirm p { margin: 0; font: 400 14px/1.5 var(--sans); }
+.mcpw-confirm p { margin: 0; font: 400 14px/1.5 var(--font); }
 
 @media (max-width: 640px) {
   .modal-backdrop.mcpw-backdrop { padding: 0; }

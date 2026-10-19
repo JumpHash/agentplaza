@@ -58,7 +58,7 @@
 }
 
 .models-policy .invalid {
-  border-color: var(--danger, #c24);
+  border-color: var(--crit, #c24);
 }
 
 .prices summary {

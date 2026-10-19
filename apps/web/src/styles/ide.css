@@ -1,5 +1,5 @@
 /* The IDE screen. Tokens only (styles/tokens.css): the editor surface is --sheet, its gutters --rule, the diff's add and
-   remove --ok-ink and --crit, and the dark theme comes with the tokens. Square corners; code in --mono. This sheet is
+   remove --ok and --crit, and the dark theme comes with the tokens. Square corners; code in --font-mono. This sheet is
    inserted on the first visit (views/ide.ts), so every rule is scoped under .ide or .ide-host. */
 
 /* The IDE is a full-window view: the root fills the window (ide-root in styles/sidebar.css) and the page does not scroll.
@@ -17,7 +17,7 @@
   overflow: hidden;
   color: var(--ink);
   background: var(--paper);
-  font: 400 var(--fs-sm) / 1.45 var(--sans);
+  font: 400 var(--fs-sm) / 1.45 var(--font);
 }
 
 .ide [hidden] {
@@ -57,7 +57,7 @@
 }
 
 .ide-brand-name {
-  font: 600 13px / 1.3 var(--sans);
+  font: 600 13px / 1.3 var(--font);
 }
 
 .ide-ws {
@@ -73,7 +73,7 @@
 }
 
 .ide-meta {
-  font: 400 12px / 1.4 var(--sans);
+  font: 400 12px / 1.4 var(--font);
   color: var(--ink-3);
   white-space: nowrap;
 }
@@ -108,12 +108,12 @@
 .ide-picker {
   min-width: 200px;
   max-width: 340px;
-  font: 400 12px / 1.4 var(--sans);
+  font: 400 12px / 1.4 var(--font);
 }
 
 .ide-count,
 .ide-totals {
-  font: 400 12px / 1.4 var(--sans);
+  font: 400 12px / 1.4 var(--font);
   font-variant-numeric: tabular-nums;
   color: var(--ink-3);
 }
@@ -173,7 +173,7 @@
   padding: 0 3px;
   border: 1px solid var(--rule);
   background: var(--sheet);
-  font: 600 11px / 1 var(--sans);
+  font: 600 11px / 1 var(--font);
   color: var(--ink-2);
   text-align: center;
 }
@@ -213,7 +213,7 @@
 }
 
 .ide-left-title {
-  font: 600 12px / 1.4 var(--sans);
+  font: 600 12px / 1.4 var(--font);
   color: var(--ink-2);
 }
 
@@ -275,7 +275,7 @@
   padding: 0 var(--s2);
   border-top: 1px solid var(--rule);
   background: var(--paper);
-  font: 400 12px / 1.4 var(--sans);
+  font: 400 12px / 1.4 var(--font);
   color: var(--ink-3);
   white-space: nowrap;
   overflow: hidden;
@@ -330,12 +330,12 @@
   padding: var(--s3) var(--s4);
   border: 1px solid var(--ink);
   background: var(--sheet);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
 }
 
 .ide-help h2 {
   margin: 0 0 var(--s2);
-  font: 600 14px / 1.4 var(--sans);
+  font: 600 14px / 1.4 var(--font);
   color: var(--ink-2);
 }
 
@@ -344,7 +344,7 @@
   grid-template-columns: auto minmax(0, 1fr);
   gap: 6px 14px;
   margin: 0;
-  font: 400 13px / 1.5 var(--sans);
+  font: 400 13px / 1.5 var(--font);
 }
 
 .ide-help dt {
@@ -354,7 +354,7 @@
 .ide-help dd {
   margin: 0;
   color: var(--ink-2);
-  font-family: var(--sans);
+  font-family: var(--font);
   font-size: var(--fs-sm);
 }
 
@@ -363,7 +363,7 @@
   border: 1px solid var(--rule);
   background: var(--paper);
   color: var(--ink);
-  font: 500 12px / 1.4 var(--sans);
+  font: 500 12px / 1.4 var(--font);
 }
 
 .ide-tree-tools {
@@ -379,7 +379,7 @@
   display: flex;
   align-items: center;
   gap: var(--s1);
-  font: 500 13px / 1.3 var(--sans);
+  font: 500 13px / 1.3 var(--font);
   color: var(--ink-2);
   cursor: pointer;
 }
@@ -389,7 +389,7 @@
   min-height: 0;
   overflow: auto;
   padding: var(--s1) 0;
-  font: 400 12.5px / 1.6 var(--mono);
+  font: 400 12.5px / 1.6 var(--font-mono);
 }
 
 .ide-row {
@@ -412,7 +412,7 @@
 }
 
 .ide-row.on {
-  background: var(--accent-bg);
+  background: var(--signal-soft);
   color: var(--ink);
   box-shadow: inset 2px 0 0 var(--signal);
 }
@@ -482,7 +482,7 @@
   flex: none;
   border-right: 1px solid var(--rule);
   color: var(--ink-3);
-  font: 400 12px / 1 var(--mono);
+  font: 400 12px / 1 var(--font-mono);
 }
 
 .ide-tab.on {
@@ -544,11 +544,11 @@
   border-bottom: 1px solid var(--rule);
   background: var(--paper);
   color: var(--ink-2);
-  font: 400 var(--fs-sm) / 1.4 var(--sans);
+  font: 400 var(--fs-sm) / 1.4 var(--font);
 }
 
 .ide-banner.conflict {
-  background: var(--danger-bg);
+  background: var(--crit-soft);
   border-bottom-color: var(--crit);
   color: var(--ink);
 }
@@ -620,7 +620,7 @@
   gap: var(--s2);
   padding: 6px 8px;
   list-style: none;
-  font: 400 12px / 1.4 var(--mono);
+  font: 400 12px / 1.4 var(--font-mono);
   cursor: pointer;
 }
 
@@ -646,11 +646,11 @@
 .ide-counts {
   display: flex;
   gap: 6px;
-  font: 400 11px / 1.4 var(--mono);
+  font: 400 11px / 1.4 var(--font-mono);
 }
 
 .ide-counts .add {
-  color: var(--ok-ink);
+  color: var(--ok);
 }
 
 .ide-counts .del {
@@ -669,15 +669,15 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font: 500 11px / 1.4 var(--sans);
+  font: 500 11px / 1.4 var(--font);
   color: var(--ink-2);
   cursor: pointer;
 }
 
 .ide-hunk > summary {
   padding: 2px 0;
-  color: var(--info-ink);
-  font: 400 11px / 1.6 var(--mono);
+  color: var(--info);
+  font: 400 11px / 1.6 var(--font-mono);
   cursor: pointer;
 }
 
@@ -691,7 +691,7 @@
   grid-template-columns: 44px 44px 16px minmax(0, 1fr);
   width: max-content;
   min-width: 100%;
-  font: 400 12px / 1.5 var(--mono);
+  font: 400 12px / 1.5 var(--font-mono);
   white-space: pre;
 }
 
@@ -714,11 +714,11 @@
 }
 
 .ide-line.add {
-  background: color-mix(in srgb, var(--ok-ink) 14%, transparent);
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
 }
 
 .ide-line.add .sign {
-  color: var(--ok-ink);
+  color: var(--ok);
 }
 
 .ide-line.remove {
@@ -736,7 +736,7 @@
 .ide-note {
   margin: 0;
   color: var(--ink-3);
-  font: 400 12px / 1.4 var(--sans);
+  font: 400 12px / 1.4 var(--font);
 }
 
 .ide-note.error {
@@ -788,14 +788,14 @@
   max-height: 70vh;
   border: 1px solid var(--ink);
   background: var(--sheet);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
 }
 
 .ide-palette .input {
   width: 100%;
   border: 0;
   border-bottom: 1px solid var(--rule);
-  font: 400 13px / 1.4 var(--sans);
+  font: 400 13px / 1.4 var(--font);
 }
 
 .ide-palette .ide-note {
@@ -816,19 +816,19 @@
   gap: var(--s3);
   padding: 6px 10px;
   color: var(--ink-2);
-  font: 400 12.5px / 1.5 var(--mono);
+  font: 400 12.5px / 1.5 var(--font-mono);
   cursor: pointer;
 }
 
 .ide-hits li.on,
 .ide-hits li:hover {
-  background: var(--accent-bg);
+  background: var(--signal-soft);
   color: var(--ink);
 }
 
 .ide-hit-where {
   flex: none;
-  color: var(--info-ink);
+  color: var(--info);
   white-space: nowrap;
 }
 
@@ -852,7 +852,7 @@
   left: var(--ide-rail);
   z-index: 12;
   width: min(86%, 340px);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
 }
 
 .ide.narrow .ide-right {
@@ -865,7 +865,7 @@
   height: min(56%, 460px);
   border-left: 0;
   border-top: 1px solid var(--rule);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
 }
 
 .ide.narrow .ide-edge,
@@ -918,7 +918,7 @@
   border-bottom: 2px solid transparent;
   background: none;
   color: var(--ink-3);
-  font: 500 13px / 1 var(--sans);
+  font: 500 13px / 1 var(--font);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -957,7 +957,7 @@
   padding: 0 3px;
   border: 1px solid var(--rule);
   background: var(--sheet);
-  font: 600 11px / 1 var(--sans);
+  font: 600 11px / 1 var(--font);
   color: var(--ink-2);
   text-align: center;
 }
@@ -1088,7 +1088,7 @@
 }
 
 .ide-bottom-title {
-  font: 600 12px / 1.4 var(--sans);
+  font: 600 12px / 1.4 var(--font);
   color: var(--ink-2);
 }
 
@@ -1149,28 +1149,28 @@
 }
 
 .ide-ag-kind {
-  font: 500 11px / 1.4 var(--sans);
+  font: 500 11px / 1.4 var(--font);
   color: var(--ink-3);
 }
 
 .ide-ag-text {
   margin: 0;
-  font: 400 13px / 1.5 var(--sans);
+  font: 400 13px / 1.5 var(--font);
   color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .ide-ag-chip {
-  font: 500 11px / 1.4 var(--sans);
-  color: var(--info-ink);
+  font: 500 11px / 1.4 var(--font);
+  color: var(--info);
   border: 1px solid var(--rule);
   padding: 4px 6px;
 }
 
 .ide-ag-error {
   margin: 0;
-  font: 400 12px / 1.5 var(--mono);
+  font: 400 12px / 1.5 var(--font-mono);
   color: var(--crit);
 }
 
@@ -1179,7 +1179,7 @@
 }
 
 .ide-ag-result summary {
-  font: 400 11px var(--mono);
+  font: 400 11px var(--font-mono);
   color: var(--ink-3);
   cursor: pointer;
 }
@@ -1189,7 +1189,7 @@
 }
 
 .ide-ag-result summary.ok {
-  color: var(--ok-ink);
+  color: var(--ok);
 }
 
 .ide-steer {
@@ -1241,7 +1241,7 @@
 }
 
 .ide-appr-head code {
-  font: 400 12px var(--mono);
+  font: 400 12px var(--font-mono);
   overflow-wrap: anywhere;
 }
 
@@ -1270,7 +1270,7 @@
   padding: 8px;
   border: 1px solid var(--rule-faint);
   background: var(--sheet);
-  font: 400 12px / 1.5 var(--mono);
+  font: 400 12px / 1.5 var(--font-mono);
   color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1303,7 +1303,7 @@
 
 .ide-run-status {
   margin: 0;
-  font: 400 12px / 1.4 var(--sans);
+  font: 400 12px / 1.4 var(--font);
   color: var(--ink-3);
 }
 
@@ -1319,7 +1319,7 @@
   overflow: auto;
   border: 1px solid var(--rule);
   background: var(--sheet);
-  font: 400 12px / 1.5 var(--mono);
+  font: 400 12px / 1.5 var(--font-mono);
   color: var(--ink);
   white-space: pre-wrap;
 }
@@ -1349,7 +1349,7 @@
 
 .ide-chg-base {
   max-width: 100%;
-  font: 400 12px / 1.4 var(--sans);
+  font: 400 12px / 1.4 var(--font);
 }
 
 .ide-chg-list {
@@ -1365,7 +1365,7 @@
   gap: 6px;
   padding: 3px 4px;
   border-bottom: 1px solid var(--rule-faint);
-  font: 400 12px / 1.6 var(--mono);
+  font: 400 12px / 1.6 var(--font-mono);
   color: var(--ink-2);
 }
 
@@ -1374,7 +1374,7 @@
 }
 
 .ide-chg-row.on {
-  background: var(--accent-bg);
+  background: var(--signal-soft);
   box-shadow: inset 2px 0 0 var(--signal);
   color: var(--ink);
 }
@@ -1384,17 +1384,17 @@
 }
 
 .ide-chg-status {
-  font: 600 11px / 1 var(--sans);
+  font: 600 11px / 1 var(--font);
   text-align: center;
   color: var(--ink-3);
 }
 
 .ide-chg-status.added {
-  color: var(--ok-ink);
+  color: var(--ok);
 }
 
 .ide-chg-status.modified {
-  color: var(--info-ink);
+  color: var(--info);
 }
 
 .ide-chg-status.deleted {
@@ -1402,7 +1402,7 @@
 }
 
 .ide-chg-status.renamed {
-  color: var(--warn-ink);
+  color: var(--warn);
 }
 
 .ide-chg-name {
@@ -1464,7 +1464,7 @@
 
 .ide-search-fields .input {
   width: 100%;
-  font: 400 13px / 1.4 var(--sans);
+  font: 400 13px / 1.4 var(--font);
 }
 
 .ide-search .ide-note {

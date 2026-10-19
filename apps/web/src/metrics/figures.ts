@@ -27,8 +27,8 @@ const LANE_W = 70;
 const LANE_H = 22;
 const AXIS_H = 18;
 const SWIM_MIN_W = 560;
-const LANE_TEXT = 'font:400 11px var(--mono);fill:var(--ink-2)';
-const AXIS_TEXT = 'font:400 10px var(--sans);fill:var(--ink-3)';
+const LANE_TEXT = 'font:400 11px var(--font-mono);fill:var(--ink-2)';
+const AXIS_TEXT = 'font:400 10px var(--font);fill:var(--ink-3)';
 
 /** A handle whose redraw re-renders the figure, and whose destroy empties its host (nothing draws after that). */
 function figureHandle(host: HTMLElement, redraw: () => void): FigureHandle {
@@ -252,7 +252,7 @@ function gaugeCell(g: GaugeItem): HTMLElement {
   });
   svg.appendChild(svgEl('path', { d: `M${p(a0)} A${r},${r} 0 0 1 ${p(2 * Math.PI)}`, fill: 'none', 'stroke-width': 10, style: 'stroke:var(--rule-faint)' }));
   svg.appendChild(svgEl('path', { d: `M${p(a0)} A${r},${r} 0 0 1 ${p(a1)}`, fill: 'none', 'stroke-width': 10, style: `stroke:${statusVar(g.status)}` }));
-  const label = svgEl('text', { x: cx, y: cy - 6, 'text-anchor': 'middle', style: 'font:600 17px var(--sans);fill:var(--ink)' });
+  const label = svgEl('text', { x: cx, y: cy - 6, 'text-anchor': 'middle', style: 'font:600 17px var(--font);fill:var(--ink)' });
   label.textContent = g.label;
   svg.appendChild(label);
   return el('div', null, svg, el('div', { style: 'text-align:center;font-size:11.5px;color:var(--ink-3)' }, g.sub));

@@ -4,7 +4,7 @@
 
 .machine-view { display: grid; gap: 16px; min-width: 0; }
 .mv-head { display: grid; gap: 4px; min-width: 0; }
-.mv-back { justify-self: start; font: 400 13px var(--sans); color: var(--ink-3); text-decoration: none; }
+.mv-back { justify-self: start; font: 400 13px var(--font); color: var(--ink-3); text-decoration: none; }
 .mv-back:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 .mv-title { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
 .mv-title h1 { margin: 0; overflow-wrap: anywhere; }
@@ -35,7 +35,7 @@
 .mv-stage-box > .mlist-unknown { width: 70%; height: 70%; max-width: none; margin: 0 auto; }
 .mv-caption { margin: 8px 0 0; font-size: 12px; color: var(--ink-3); }
 
-.mv-caps { font: 400 11px var(--sans); color: var(--ink-3); letter-spacing: 0.02em; margin-bottom: 6px; }
+.mv-caps { font: 400 11px var(--font); color: var(--ink-3); letter-spacing: 0.02em; margin-bottom: 6px; }
 .mv-body { min-width: 0; }
 .mv-body > p { margin: 0; }
 .mv-gpus { display: grid; gap: 10px; }

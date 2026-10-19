@@ -9,7 +9,7 @@
   min-height: 0;
   background: var(--sheet);
   color: var(--ink);
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: var(--fs-sm);
 }
 
@@ -40,7 +40,7 @@
 .ide-term-btn {
   padding: 2px var(--s2);
   border: 1px solid var(--rule);
-  border-radius: var(--r-sm);
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--ink-2);
   font: inherit;
@@ -49,7 +49,7 @@
 }
 
 .ide-term-btn:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  border-color: var(--rule-strong);
   background: var(--hover);
   color: var(--ink);
 }
@@ -65,8 +65,8 @@
 }
 
 .ide-term-tab[aria-selected="true"] {
-  border-color: var(--accent);
-  background: var(--accent-bg);
+  border-color: var(--signal);
+  background: var(--signal-soft);
   color: var(--ink);
 }
 
@@ -85,7 +85,7 @@
 }
 
 .ide-term-status.is-danger {
-  color: var(--danger);
+  color: var(--crit);
 }
 
 .ide-term-status .ide-term-btn {

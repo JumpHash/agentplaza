@@ -28,10 +28,10 @@
   min-width: 0;
 }
 .lab-job-stage.done { border-left-color: var(--ok); }
-.lab-job-stage.current { border-left-color: var(--accent); }
+.lab-job-stage.current { border-left-color: var(--signal); }
 .lab-job-stage.skipped { border-left-style: dashed; opacity: 0.7; }
-.lab-job-stage-label { font: 600 var(--fs-sm)/1.4 var(--sans); }
-.lab-job-stage-sub { color: var(--text-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.lab-job-stage-label { font: 600 var(--fs-sm)/1.4 var(--font); }
+.lab-job-stage-sub { color: var(--ink-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
 
 /* Plan: islands in a row that wraps; each island lists its machines, and each machine its devices. */
 .lab-job-islands { display: flex; flex-wrap: wrap; gap: 12px; min-width: 0; }
@@ -46,7 +46,7 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font: 600 var(--fs-sm)/1.4 var(--sans);
+  font: 600 var(--fs-sm)/1.4 var(--font);
 }
 .lab-job-machine {
   display: flex;
@@ -61,7 +61,7 @@
 .lab-job-dev {
   padding: 1px 6px;
   border: 1px solid var(--rule);
-  font: 500 var(--fs-xs)/1.5 var(--sans);
+  font: 500 var(--fs-xs)/1.5 var(--font);
 }
 .lab-job-kv {
   display: grid;
@@ -75,8 +75,8 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px 18px;
-  color: var(--text-3);
-  font: 500 var(--fs-xs)/1.5 var(--sans);
+  color: var(--ink-3);
+  font: 500 var(--fs-xs)/1.5 var(--font);
 }
 
 /* Charts: one per island and metric, two to a row from 640 px up. */
@@ -88,8 +88,8 @@
 .lab-job-chart-host { min-width: 0; }
 .lab-job-chart-sum {
   margin-top: 6px;
-  color: var(--text-2);
-  font: 500 var(--fs-xs)/1.4 var(--sans);
+  color: var(--ink-2);
+  font: 500 var(--fs-xs)/1.4 var(--font);
   overflow-wrap: anywhere;
 }
 .lab-job-tip {
@@ -99,7 +99,7 @@
   padding: 6px 8px;
   border: 1px solid var(--rule);
   background: var(--sheet, transparent);
-  font: 500 var(--fs-xs)/1.4 var(--sans);
+  font: 500 var(--fs-xs)/1.4 var(--font);
 }
 
 /* Shares and budget: a thin track with its fill. */
@@ -110,9 +110,9 @@
   min-width: 60px;
   background: var(--rule-faint);
 }
-.lab-job-fill { display: block; height: 100%; background: var(--accent); max-width: 100%; }
+.lab-job-fill { display: block; height: 100%; background: var(--signal); max-width: 100%; }
 .lab-job-budget { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.lab-job-budget.over .lab-job-fill { background: var(--danger); }
+.lab-job-budget.over .lab-job-fill { background: var(--crit); }
 .lab-job-budget .lab-job-track { min-width: 0; height: 10px; }
 .lab-job-pair { display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 @media (min-width: 640px) {
@@ -126,13 +126,13 @@
   overflow: auto;
   padding: 8px 12px;
   border: 1px solid var(--rule);
-  font: 400 var(--fs-xs)/1.5 var(--sans);
+  font: 400 var(--fs-xs)/1.5 var(--font);
   min-width: 0;
 }
 .lab-job-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .lab-job-back {
-  font: 500 var(--fs-sm)/1.4 var(--sans);
-  color: var(--accent-2);
+  font: 500 var(--fs-sm)/1.4 var(--font);
+  color: var(--signal-ink);
   text-decoration: underline;
 }

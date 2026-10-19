@@ -1,7 +1,7 @@
 /* The IDE's conversation workspace (views/ide-conversation.ts): conversations on the left, the chat in the centre, the
    project draft on the right. */
 
-.cv-host { position: fixed; inset: 0; background: var(--sheet); color: var(--ink); font: 14px/1.5 var(--sans); }
+.cv-host { position: fixed; inset: 0; background: var(--sheet); color: var(--ink); font: 14px/1.5 var(--font); }
 .cv-frame {
   display: grid; height: 100%;
   grid-template-columns: 240px minmax(0, 1fr) minmax(320px, 400px);
@@ -13,7 +13,7 @@
 .cv-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .cv-side { grid-area: side; overflow: auto; border-right: 1px solid var(--rule); padding: 10px 8px; }
-.cv-side-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 8px; font: 600 11px var(--sans); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-2); }
+.cv-side-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 8px; font: 600 11px var(--font); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-2); }
 .cv-side-row { display: grid; gap: 2px; padding: 8px 8px; border-radius: 4px; color: var(--ink); text-decoration: none; }
 .cv-side-row:hover { background: var(--hover); }
 .cv-side-row[aria-current='page'] { background: var(--hover); box-shadow: inset 2px 0 0 var(--signal); }
@@ -27,7 +27,7 @@
 .cv-owner { justify-self: end; background: var(--hover); }
 .cv-orch { justify-self: start; }
 .cv-failed { border-color: var(--crit); }
-.cv-who { display: flex; gap: 8px; align-items: baseline; font: 600 12px var(--sans); color: var(--ink-2); margin-bottom: 4px; }
+.cv-who { display: flex; gap: 8px; align-items: baseline; font: 600 12px var(--font); color: var(--ink-2); margin-bottom: 4px; }
 .cv-when { font-weight: 400; }
 .cv-text p { margin: 0 0 6px; white-space: pre-wrap; }
 .cv-text p:last-child { margin-bottom: 0; }
@@ -45,16 +45,16 @@
 
 .cv-draft { grid-area: draft; overflow: auto; border-left: 1px solid var(--rule); padding: 16px 18px; display: grid; gap: 10px; align-content: start; }
 .cv-draft-head { display: grid; gap: 2px; }
-.cv-draft-title { margin: 0; font: 600 16px var(--sans); }
+.cv-draft-title { margin: 0; font: 600 16px var(--font); }
 .cv-rev { font-size: 12px; color: var(--ink-2); }
 .cv-goal { margin: 0; }
 .cv-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 13px; }
 .cv-facts dt { color: var(--ink-2); }
 .cv-facts dd { margin: 0; }
-.cv-sub { margin: 6px 0 0; font: 600 12px var(--sans); text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-2); }
+.cv-sub { margin: 6px 0 0; font: 600 12px var(--font); text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-2); }
 .cv-tasks { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 13px; }
 .cv-tasks li { display: grid; grid-template-columns: 2.2em minmax(0, 1fr); column-gap: 6px; }
-.cv-key { color: var(--ink-2); font-family: var(--mono); }
+.cv-key { color: var(--ink-2); font-family: var(--font-mono); }
 .cv-role, .cv-after { grid-column: 2; font-size: 12px; color: var(--ink-2); }
 .cv-start, .cv-started { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--rule); }
 .cv-start .row, .cv-started .row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }

@@ -96,7 +96,7 @@ const KIND_COLOR: Record<string, string> = {
   spend: 'var(--chart-6)',
   budget_move: 'var(--chart-7)',
   subcontract: 'var(--chart-8)',
-  fine: 'var(--danger)',
+  fine: 'var(--crit)',
   transfer: 'var(--ink-2)',
   model: 'var(--ink-3)',
 };

@@ -227,9 +227,9 @@ export function stats(host: HTMLElement, list: StatLine[]): void {
           h('div.mx-mute', { style: 'font-size: 11px' }, s.label),
           h(
             'div',
-            { style: 'font: 600 22px var(--sans)' },
+            { style: 'font: 600 22px var(--font)' },
             s.value,
-            s.note ? [' ', h('span.mx-mute', { style: 'font: 400 12px var(--sans)' }, s.note)] : null,
+            s.note ? [' ', h('span.mx-mute', { style: 'font: 400 12px var(--font)' }, s.note)] : null,
           ),
         ),
       ),

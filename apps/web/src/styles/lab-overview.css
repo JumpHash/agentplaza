@@ -17,16 +17,16 @@
 .lab-dev { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-bottom: 14px; border-bottom: 1px solid var(--rule-faint); }
 .lab-dev:last-child { padding-bottom: 0; border-bottom: 0; }
 .lab-dev-top { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; min-width: 0; }
-.lab-dev-name { font: 600 var(--fs-sm)/1.4 var(--sans); min-width: 0; overflow-wrap: anywhere; }
-.lab-dev-mem, .lab-dev-run { font: 400 var(--fs-xs)/1.4 var(--sans); color: var(--text-2); overflow-wrap: anywhere; }
+.lab-dev-name { font: 600 var(--fs-sm)/1.4 var(--font); min-width: 0; overflow-wrap: anywhere; }
+.lab-dev-mem, .lab-dev-run { font: 400 var(--fs-xs)/1.4 var(--font); color: var(--ink-2); overflow-wrap: anywhere; }
 .lab-dev-util { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .lab-dev-util .lab-mono { min-width: 3.5em; text-align: right; }
 
 /* The utilization meter: a hairline track, the share in accent. */
 .lab-util { position: relative; flex: 1 1 auto; height: 8px; min-width: 60px; border: 1px solid var(--rule); }
-.lab-util i { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 0.4s ease-out; }
+.lab-util i { position: absolute; inset: 0 auto 0 0; background: var(--signal); transition: width 0.4s ease-out; }
 
-.lab-overview-link { color: var(--accent-2); text-decoration: none; overflow-wrap: anywhere; }
+.lab-overview-link { color: var(--signal-ink); text-decoration: none; overflow-wrap: anywhere; }
 .lab-overview-link:hover { text-decoration: underline; }
 
 .lab-hours { display: flex; flex-direction: column; gap: 16px; min-width: 0; }

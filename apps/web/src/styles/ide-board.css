@@ -12,8 +12,8 @@
   padding: var(--s3);
   font-size: 13px;
   line-height: 1.5;
-  color: var(--text);
-  background: var(--bg);
+  color: var(--ink);
+  background: var(--paper);
 }
 
 /* ---- Header ---------------------------------------------------------------- */
@@ -42,7 +42,7 @@
 .ide-board-note {
   margin: 0;
   font-size: 12px;
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 
 /* ---- Feed and post cards --------------------------------------------------- */
@@ -58,14 +58,14 @@
   grid-template-columns: 3px minmax(0, 1fr);
   gap: var(--s3);
   padding: var(--s3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 8px;
-  background: var(--surface);
+  background: var(--sheet);
 }
 
 .ide-board-bar {
   border-radius: 2px;
-  background: var(--border-strong);
+  background: var(--rule-strong);
 }
 
 .ide-board-main {
@@ -85,12 +85,12 @@
 
 .ide-board-author {
   font-weight: 600;
-  color: var(--text);
+  color: var(--ink);
 }
 
 .ide-board-time {
   font-size: 12px;
-  color: var(--text-3);
+  color: var(--ink-3);
 }
 
 .ide-board-subject {
@@ -117,19 +117,19 @@
 }
 
 /* Author colour bars: six hues, one per author, drawn from the tokens. */
-.ide-board-hue-0 { background: var(--accent); }
+.ide-board-hue-0 { background: var(--signal); }
 .ide-board-hue-1 { background: var(--ok); }
 .ide-board-hue-2 { background: var(--info); }
 .ide-board-hue-3 { background: var(--warn); }
-.ide-board-hue-4 { background: var(--danger); }
-.ide-board-hue-5 { background: var(--text-2); }
+.ide-board-hue-4 { background: var(--crit); }
+.ide-board-hue-5 { background: var(--ink-2); }
 
 .ide-board .mention {
   padding: 0 2px;
   border-radius: 3px;
   font-weight: 600;
-  color: var(--accent-2);
-  background: var(--accent-bg);
+  color: var(--signal-ink);
+  background: var(--signal-soft);
 }
 
 /* ---- Attachments ----------------------------------------------------------- */
@@ -145,10 +145,10 @@
   align-items: center;
   max-width: 100%;
   padding: 2px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 999px;
   font-size: 12px;
-  color: var(--text-2);
+  color: var(--ink-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -163,7 +163,7 @@
   margin: 0;
   padding: 0 0 0 var(--s3);
   list-style: none;
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--rule);
 }
 
 .ide-board-comment {
@@ -201,9 +201,9 @@
   font: inherit;
   font-size: 13px;
   line-height: 1.5;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--border);
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
   border-radius: 6px;
 }
 
@@ -222,7 +222,7 @@
 
 .ide-board textarea:focus-visible {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--signal);
   box-shadow: var(--focus);
 }
 
