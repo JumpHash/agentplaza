@@ -78,6 +78,10 @@ jobs:
       - name: No fleet sccache
         run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
+      # cmake on PATH: tree-sitter's wasm runtime (wasmtime's C API, weft's language packs) builds with it.
+      # The runner's own if there, else Kitware's release, checked and kept in the runner's cache.
+      - name: cmake
+        run: .github/ci/cmake.sh
       # zstd on PATH: the Actions cache keys an entry by its compression too, and the Linux jobs
       # save theirs (the aarch64 guest) with zstd; without it here they are not found, and what
       # this job saves is not found on Linux. Homebrew's if there, else built once into the cache.

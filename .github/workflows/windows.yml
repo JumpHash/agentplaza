@@ -93,6 +93,10 @@ jobs:
         run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
+      # cmake on PATH: tree-sitter's wasm runtime (wasmtime's C API, weft's language packs) builds with it.
+      # The runner's own if there, else Kitware's release, checked and kept in the runner's cache.
+      - name: cmake
+        run: .github/ci/cmake.sh
       # zstd on PATH: the Actions cache keys an entry by its compression too, and the Linux jobs
       # save theirs (the guest) with zstd; without it here they are not found, and what this job
       # saves is not found on Linux. Kept in the runner user's profile.
