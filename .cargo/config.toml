@@ -1,0 +1,7 @@
+[env]
+# tree-sitter's C code includes wasmtime's wasm.h and wasi.h, which declare every function `__declspec(dllimport)`
+# on MSVC unless told the library is static. wasmtime is linked statically, so without these the calls go through
+# import stubs: link.exe patches them up with a warning (LNK4217) and rust-lld builds binaries that crash with an
+# access violation when Weft loads a language pack (zed-industries/zed#38460). A value set in the environment wins.
+CFLAGS_x86_64_pc_windows_msvc = "-DLIBWASM_STATIC -DLIBWASI_STATIC"
+CFLAGS_aarch64_pc_windows_msvc = "-DLIBWASM_STATIC -DLIBWASI_STATIC"
