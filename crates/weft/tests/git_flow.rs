@@ -120,6 +120,23 @@ fn import_once_then_export_signed_commits_per_intent() {
     );
     #[cfg(unix)]
     std::os::unix::fs::symlink("README.md", src.join("LINK.md")).unwrap();
+    // Without symlinks (Windows), git keeps a link as a file holding its target and the index entry's mode,
+    // so the link goes into the index directly.
+    #[cfg(not(unix))]
+    {
+        git(&src, &["config", "core.symlinks", "false"]);
+        std::fs::write(src.join("LINK.md"), "README.md").unwrap();
+        let blob = git(&src, &["hash-object", "-w", "LINK.md"]);
+        git(
+            &src,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("120000,{blob},LINK.md"),
+            ],
+        );
+    }
     git(&src, &["add", "-A"]);
     git(&src, &["commit", "-q", "-m", "Start the app"]);
     std::fs::write(
