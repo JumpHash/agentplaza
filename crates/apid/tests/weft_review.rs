@@ -145,12 +145,17 @@ impl Vm<'_> {
         });
     }
 
-    /// A tool call the model makes in work item `work`: the hub's decision.
-    fn tool(&self, work: u64, name: &str, input: Value) -> Value {
+    /// A tool call the model makes in work item `work`: the hub's decision, whatever it is.
+    fn tool_reply(&self, work: u64, name: &str, input: Value) -> Value {
         let message = json!({ "type": "tool_request", "work": work, "call": format!("toolu_{name}_{work}"), "name": name, "input": input });
         let (status, body) = self.hub.guest(self.cid, "message", message);
         assert_eq!(status, 200, "{body}");
-        let reply = body["reply"].clone();
+        body["reply"].clone()
+    }
+
+    /// A tool call the model makes in work item `work`, which must succeed: the hub's decision.
+    fn tool(&self, work: u64, name: &str, input: Value) -> Value {
+        let reply = self.tool_reply(work, name, input);
         assert_eq!(
             reply["is_error"], false,
             "{name} for agent {}: {reply}",
@@ -219,9 +224,18 @@ fn review(
                     home: home.join(format!("vm{cid}")),
                     token: token.to_path_buf(),
                 };
-                let tree: Value =
-                    serde_json::from_str(&text(&vm.tool(id, "review_tree", json!({}))["output"]))
-                        .unwrap();
+                let reply = vm.tool_reply(id, "review_tree", json!({}));
+                // A step whose work item ended without a verdict is handed on under a new work item (work_ended):
+                // the old one has no step any more, and a reviewer drops it. On a slow runner the hub can count a
+                // delivery the gateway did record as failed, which hands the step on while the test holds the old item.
+                if reply["is_error"] == true && text(&reply["output"]).contains("no review step") {
+                    continue;
+                }
+                assert_eq!(
+                    reply["is_error"], false,
+                    "review_tree for agent {cid}: {reply}"
+                );
+                let tree: Value = serde_json::from_str(&text(&reply["output"])).unwrap();
                 assert_eq!(tree["step"], node, "{tree}");
                 let a = answer(run, node, &tree);
                 if !a.scores.is_empty() || !a.findings.is_empty() {
