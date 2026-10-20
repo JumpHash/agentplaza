@@ -55,18 +55,29 @@ bruno() {
   (cd api-tests/bruno && "$bru" run "$@" -r --env ci --env-var "baseUrl=$base" \
     --env-var "internalToken=$token" --reporter-skip-headers x-apz-internal)
 }
+# Bruno skips a request file it cannot parse and still passes the run: the collection has no skipped requests, so
+# any skip is a broken file, and fails the run with its parse error.
+skipped() {
+  node -e '
+    const runs = [].concat(require(process.argv[1]));
+    const bad = runs.flatMap((r) => r.results || []).filter((x) => x.status === "skipped");
+    for (const x of bad) console.log(`skipped: ${x.test && x.test.filename}\n${x.error}`);
+    process.exit(bad.length ? 1 : 0);' "$1"
+}
 echo "== bruno"
 if [ -n "${APZ_API_ONLY:-}" ]; then
   # One run per folder: `bru run -r` with several folders runs the whole collection.
   : > "$out/bruno.log"
   for folder in $APZ_API_ONLY; do
     bruno "$folder" --reporter-json "$out/bruno-$folder.json" >> "$out/bruno.log" 2>&1 || status=1
+    skipped "$out/bruno-$folder.json" || status=1
   done
   grep -E "Status|Requests|Tests  " "$out/bruno.log"
   exit "$status"
 fi
 bruno --reporter-json "$out/bruno.json" --reporter-junit "$out/bruno.xml" > "$out/bruno.log" 2>&1 || status=1
 tail -n 25 "$out/bruno.log"
+skipped "$out/bruno.json" || status=1
 
 echo "== timings"
 node api-tests/bench.mjs docs/api/openapi.json "$base" "$out/bench.json"

@@ -11,7 +11,7 @@ get {
 }
 
 assert {
-  res.responseTime: lt 1000
+  res.responseTime: lt 15000
 }
 
 tests {
@@ -24,4 +24,9 @@ tests {
       expect(res.getBody().error).to.include("could not be read");
     }
   });
+}
+
+docs {
+  The hub reads the public ACP registry over the internet, so the budget is a network one (15 s, as for the
+  provider probes); a second read can fetch again when the first one failed.
 }
