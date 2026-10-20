@@ -2,7 +2,7 @@
 
 - **Status:** draft
 - **Files:** [catalog.yaml](catalog.yaml) (60 attacks), [check_catalog.py](check_catalog.py) (validator)
-- **Sources:** threat model (`design/threat-model.md`, planning repo); decisions 0105–0108, 0070, 0010, 0028, 0072, 0096, 0102, 0116 (planning repo); the Codex (`docs/codex-draft`), the Cedar checks, role evals, the TLA+ models (`docs/formal`) and the protocol and ledger tests (`docs/protocol-draft`, `docs/treasury-draft`).
+- **Sources:** threat model (`design/threat-model.md`, planning repo); decisions 0105–0108, 0070, 0010, 0028, 0072, 0096, 0102, 0116 (planning repo); the Codex (`docs/codex-draft`), the Cedar checks, role evals, the jhrl machines (`crates/jhrl/specs/machines`) and the protocol and ledger tests (`docs/protocol-draft`, `docs/treasury-draft`).
 
 ## Purpose
 
@@ -24,7 +24,7 @@ a `severity`, and the `milestone` at which the target surface first exists.
   `#heading-slug`), or `tripwire` (a node tripwire from 0072). `how` is one sentence.
 - **tests**: a list of `{kind, ref, how}`. `kind` is `cedar` (a substring of a label in
   `codex-draft/tests/check.sh`), `eval` (`<role>/<scenario-id>` in `codex-draft/roles/*/evals.yaml`),
-  `tla` (an invariant, property, mutant or witness in `docs/formal`), `protocol` (a check label in
+  `jhrl` (an invariant, mutant or witness of a machine in `crates/jhrl/specs/machines`, written `Machine: name`), `protocol` (a check label in
   `test_protocol.py`), `ledger` (a test name in `ledger.test.mjs`), or `planned` (a test to write
   when the code exists, named by a slug).
 - **status**: `covered`, `planned-only` or `gap` (defined below). Gaps and planned-only entries
@@ -73,8 +73,8 @@ one, the `0 failure(s)` target can only be met there. The catalog and validator 
 | insider    |           17 |            1 |            0 |           18 |
 | all        |           49 |           11 |            0 |           60 |
 ```
-The counts were recomputed from `catalog.yaml` on the current tree. The strongest coverage is where real tests already exist: Cedar authorisation, the TLA+ session,
-approval and economy models, and the protocol and ledger test suites. The relay class has no
+The counts were recomputed from `catalog.yaml` on the current tree. The strongest coverage is where real tests already exist: Cedar authorisation, the jhrl session,
+approval and economy machines, and the protocol and ledger test suites. The relay class has no
 `covered` entries because the relay (M2) and its end-to-end encryption are not built yet; no Noise
 handshake is in the tree.
 

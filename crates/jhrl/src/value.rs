@@ -137,7 +137,7 @@ impl Value {
 }
 
 /// A 128-bit fingerprint of a canonical encoding: two std SipHash streams with different
-/// seeds. Like TLC's fingerprints, a collision would merge two states; for n states its
+/// seeds. As with any fingerprinting model checker, a collision would merge two states; for n states its
 /// probability is about n²/2¹²⁹ (≈ 10⁻²⁶ for the 4 million states of AgentSession).
 pub fn fingerprint(bytes: &[u8]) -> u128 {
     use std::hash::{DefaultHasher, Hasher};

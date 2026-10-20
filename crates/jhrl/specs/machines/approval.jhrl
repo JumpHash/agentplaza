@@ -1,7 +1,6 @@
 // Approval escalation (AP-038): a request moves up its chain on deadlines and expires to deny after
 // the last step. C-004 requests (irreversible, external, money-moving) have the chain ["owner"] only
 // (AP-052). Decisions can arrive late, from any authority, at any time.
-// Port of drafts/formal/Approval.tla; both run in CI until parity (AP-074.R8).
 
 pack agentplaza.machines.approval version "0.1.0"
 

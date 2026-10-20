@@ -44,7 +44,7 @@ pub struct StateRec {
     pub vals: State,
     pub parent: Option<usize>,
     pub via: Option<Step>,
-    /// BFS level, counting the initial states as 1 (as TLC does).
+    /// BFS level, counting the initial states as 1.
     pub depth: u32,
 }
 

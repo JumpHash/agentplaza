@@ -90,10 +90,10 @@ fn model<'a>(p: &'a Program, machine: &str) -> (usize, &'a jhrl::ast::ModelDecl)
         .unwrap()
 }
 
-/// Parity with TLC on drafts/formal/Approval.tla + Approval.cfg (tla2tools 1.8.0):
+/// The recorded state space of the Approval machine:
 /// "23 states generated, 11 distinct states found … depth of the complete state graph search is 3".
 #[test]
-fn approval_matches_tlc() {
+fn approval_state_space() {
     let p = load_specs();
     let (pk, m) = model(&p, "Approval");
     let r = mc::explore(&p, pk, m, &Options::default()).unwrap();
@@ -102,7 +102,7 @@ fn approval_matches_tlc() {
     assert_eq!(r.depth, 3);
     assert_eq!(r.invariants.len(), 4);
     assert_eq!(r.transitions.len(), 1);
-    // TLC also counts the 12 stuttering steps of its `Decide` (an out-of-turn answer is
+    // A checker that keeps stuttering steps would also count the 12 of its `Decide` (an out-of-turn answer is
     // UNCHANGED); JHRL's guard `when a == chain[pos]` disables those instead.
     assert_eq!(r.generated, 11);
 }
@@ -114,6 +114,45 @@ fn credit_line_holds() {
     let r = mc::explore(&p, pk, m, &Options::default()).unwrap();
     assert!(r.violations.is_empty(), "{:?}", r.violations);
     assert_eq!(r.states.len(), 16);
+}
+
+/// The recorded state space of the RestoreMerge machine: 14,914 states.
+#[test]
+fn restore_merge_state_space() {
+    let p = load_specs();
+    let (pk, m) = model(&p, "RestoreMerge");
+    let r = mc::explore(&p, pk, m, &Options::default()).unwrap();
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+    assert_eq!(r.states.len(), 14914);
+}
+
+#[test]
+fn agent_session_quick_model_holds() {
+    let p = load_specs();
+    let (pk, m) = model(&p, "AgentSession");
+    let r = mc::explore(&p, pk, m, &Options::default()).unwrap();
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+    assert_eq!(r.states.len(), 64316);
+}
+
+/// The full bounds of AgentSession (2 machines, 2 calls, 3 VMs): 4,144,576 states, about 17 minutes
+/// and 22 GB of memory.
+#[test]
+#[ignore = "explores 4.1 million states (minutes, ~22 GB); run with --release -- --ignored"]
+fn agent_session_full_bounds_hold() {
+    let p = load_specs();
+    let (pk, m) = p
+        .items()
+        .find_map(|(pk, _, it)| match it {
+            Item::Model(m) if m.machine == "AgentSession" && m.name == "full bounds" => {
+                Some((pk, m))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let r = mc::explore(&p, pk, m, &Options::default()).unwrap();
+    assert!(r.violations.is_empty(), "{:?}", r.violations);
+    assert_eq!(r.states.len(), 4_144_576);
 }
 
 #[test]

@@ -1,0 +1,258 @@
+// One agent's life across VMs and machines (0029, 0084, 0085, 0091, 0102).
+// Tool calls are authorised and recorded by the orchestrator,
+// snapshots are taken at tool boundaries, uploads run in the background, machines fail and return,
+// the owner moves the agent (Move), a killed VM is restored on the same machine (RestoreLocal), the
+// Hello handshake resumes the harness, and a returning machine fences VMs whose session is stale.
+// The orchestrator accepts a request only from the current session (token check).
+//
+// Encoding (jhrl v0 has no record types and no range(), so):
+// - the transcript is three parallel lists tr_kind / tr_call / tr_reexec, one entry per index;
+// - a VM record is one map per field (vm_m, vm_session, vm_applied, vm_state, vm_executing, vm_ran);
+// - the snapshot set of (machine, applied, uploaded) triples is two maps per machine: snap_plain
+//   (applied levels not uploaded) and snap_done (uploaded levels). Those two maps hold exactly the
+//   triples of the original model's set, so the reachable states are the same;
+// - integer sets come from Universe (0..6), filtered by MaxCalls and MaxVms;
+// - StartFrom(m, applied) with its \E w is inlined in RestoreLocal and Move: w and the applied
+//   level are action parameters, and Move's two branches (an uploaded snapshot, or applied 0) are
+//   one guard on the level;
+// - CHOOSE c \in Unfinished : TRUE is min(unfinished).
+// - TypeOK is not a separate invariant: VmState is an enum, and the maps are typed. Its one range
+//   fact (nextCall in 1..MaxCalls+1) is the invariant "Call numbers stay in range".
+
+pack agentplaza.machines.agent_session version "0.1.0"
+
+enum VmState "Where a VM of the agent is" {
+  "unused"    "Not started yet"
+  "running"   "Running; its requests are accepted while its session is current"
+  "restoring" "Started from a snapshot; waits for the Hello handshake"
+  "dead"      "Its VMM process died (kill -9) while the machine stayed up"
+  "discarded" "Fenced: a returning machine discarded it"
+}
+
+machine AgentSession "One agent's life across VMs and machines" {
+  const Machines: Set<String>
+  const MaxCalls: Int
+  const MaxVms: Int
+  const Universe: Set<Int> = {0, 1, 2, 3, 4, 5, 6}   // every integer the bounds reach
+
+  let calls = {for c in Universe where c >= 1 and c <= MaxCalls yield c}
+  let vm_ids = {for v in Universe where v >= 1 and v <= MaxVms yield v}
+  let levels = {for a in Universe where a <= 2 * MaxCalls yield a}
+
+  var tr_kind: List<String> = []                 // "decision" | "result"
+  var tr_call: List<Int> = []
+  var tr_reexec: List<Bool> = []
+  var current: Int = 1                           // id of the session the orchestrator accepts
+  var next_session: Int = 2
+  var next_call: Int = 1
+  var vm_m: Map<Int, String> = {for v in vm_ids yield v: "m1"}
+  var vm_session: Map<Int, Int> = {for v in vm_ids yield v: if v == 1 then 1 else 0}
+  var vm_applied: Map<Int, Int> = {for v in vm_ids yield v: 0}
+  var vm_state: Map<Int, VmState> = {for v in vm_ids yield v: if v == 1 then "running" else "unused"}
+  var vm_executing: Map<Int, Int> = {for v in vm_ids yield v: 0}
+  var vm_ran: Map<Int, Bool> = {for v in vm_ids yield v: false}
+  var snap_plain: Map<String, Set<Int>> = {for m in Machines yield m: {for a in levels where false yield a}}
+  var snap_done: Map<String, Set<Int>> = {for m in Machines yield m: {for a in levels where false yield a}}
+  var up: Map<String, Bool> = {for m in Machines yield m: true}
+  var executed: Map<Int, Int> = {for c in calls yield c: 0}   // external side effects per call
+  var stale_effects: Int = 0                     // effects by a stale session or for a closed call
+  var stale_writes: Int = 0                      // transcript entries written by a stale session
+
+  let positions = {for i in levels where i < len(tr_kind) yield i}
+  let decisions(c) = count({for i in positions where tr_kind[i] == "decision" and tr_call[i] == c yield i})
+  let results(c) = count({for i in positions where tr_kind[i] == "result" and tr_call[i] == c yield i})
+  let has_decision(c) = decisions(c) > 0
+  let has_result(c) = results(c) > 0
+  let unfinished = {for c in calls where has_decision(c) and not has_result(c) yield c}
+  let valid(v) = vm_session[v] == current
+  let live(v) = (vm_state[v] in {"running", "restoring"})
+  let can_act(v) = vm_state[v] == "running" and up[vm_m[v]]
+
+  // Harness asks to run a tool; the orchestrator checks the token and records the decision.
+  action Request(v in vm_ids) "Harness asks to run a tool; the orchestrator checks the token and records the decision" {
+    when can_act(v) and valid(v)
+    when vm_executing[v] == 0
+    when vm_applied[v] == len(tr_kind)           // harness is caught up
+    when next_call <= MaxCalls
+    tr_kind' = tr_kind + ["decision"]
+    tr_call' = tr_call + [next_call]
+    tr_reexec' = tr_reexec + [false]
+    vm_executing' = vm_executing with [v] = next_call
+    vm_applied' = vm_applied with [v] = len(tr_kind) + 1
+    vm_ran' = vm_ran with [v] = false
+    next_call' = next_call + 1
+  }
+
+  // The tool's external effect, authorised per request, so only the current session can cause it.
+  action Execute(v in vm_ids) "The tool's external effect happens once, and only for the current session" {
+    when can_act(v) and valid(v)
+    when not (vm_executing[v] == 0)
+    when not vm_ran[v]
+    executed' = executed with [vm_executing[v]] = executed[vm_executing[v]] + 1
+    stale_effects' = if (not valid(v)) or has_result(vm_executing[v]) then stale_effects + 1 else stale_effects
+    vm_ran' = vm_ran with [v] = true
+  }
+
+  // Harness reports the result; accepted only from the current session.
+  action Finish(v in vm_ids) "Harness reports the result; accepted only from the current session" {
+    when can_act(v)
+    when not (vm_executing[v] == 0)
+    when vm_ran[v]
+    if valid(v) and not has_result(vm_executing[v]) {
+      tr_kind' = tr_kind + ["result"]
+      tr_call' = tr_call + [vm_executing[v]]
+      tr_reexec' = tr_reexec + [false]
+      stale_writes' = if valid(v) then stale_writes else stale_writes + 1
+      vm_executing' = vm_executing with [v] = 0
+      vm_applied' = vm_applied with [v] = len(tr_kind) + 1
+    } else {
+      vm_executing' = vm_executing with [v] = 0
+    }
+  }
+
+  // Snapshot at a tool boundary, written to the machine's local cache (0043, 0091).
+  action Snapshot(v in vm_ids) "Snapshot at a tool boundary, written to the machine's local cache" {
+    when can_act(v)
+    when vm_executing[v] == 0
+    snap_plain' = snap_plain with [vm_m[v]] = (snap_plain[vm_m[v]] union {vm_applied[v]})
+  }
+
+  // Background upload of a local snapshot.
+  action Upload(m in Machines, a in levels) "Background upload of a local snapshot" {
+    when (a in snap_plain[m]) and up[m]
+    snap_plain' = snap_plain with [m] = (snap_plain[m] minus {a})
+    snap_done' = snap_done with [m] = (snap_done[m] union {a})
+  }
+
+  action MachineFail(m in Machines) "A machine goes down" {
+    when up[m]
+    up' = up with [m] = false
+  }
+
+  action MachineReturn(m in Machines) "A machine comes back" {
+    when not up[m]
+    up' = up with [m] = true
+  }
+
+  // The VMM process dies while the machine stays up (kill -9, 0027).
+  action Kill(v in vm_ids) "The VMM process dies while the machine stays up (kill -9)" {
+    when can_act(v)
+    vm_state' = vm_state with [v] = "dead"
+  }
+
+  // Resume on the same machine from a local snapshot after a kill (StartFrom inlined; w is the new VM).
+  action RestoreLocal(v in vm_ids, w in vm_ids, a in levels) "Resume on the same machine from a local snapshot after a kill" {
+    when vm_state[v] == "dead" and valid(v) and up[vm_m[v]]
+    when (a in snap_plain[vm_m[v]]) or (a in snap_done[vm_m[v]])
+    when vm_state[w] == "unused"
+    vm_m' = vm_m with [w] = vm_m[v]
+    vm_session' = vm_session with [w] = next_session
+    vm_applied' = vm_applied with [w] = a
+    vm_state' = vm_state with [w] = "restoring"
+    vm_executing' = vm_executing with [w] = 0
+    vm_ran' = vm_ran with [w] = false
+    current' = next_session
+    next_session' = next_session + 1
+  }
+
+  // Owner moves the agent (MoveRun, 0102): from an uploaded snapshot, or from the transcript alone
+  // (applied 0). The old machine is unreachable; the new VM starts on machine m with a fresh session.
+  action Move(m in Machines, w in vm_ids, a in levels) "The owner moves the agent: from an uploaded snapshot, or from the transcript alone" {
+    when any v in vm_ids: (live(v) and valid(v) and not up[vm_m[v]])
+    when up[m]
+    when (a == 0) or (any mm in Machines: (a in snap_done[mm]))
+    when vm_state[w] == "unused"
+    vm_m' = vm_m with [w] = m
+    vm_session' = vm_session with [w] = next_session
+    vm_applied' = vm_applied with [w] = a
+    vm_state' = vm_state with [w] = "restoring"
+    vm_executing' = vm_executing with [w] = 0
+    vm_ran' = vm_ran with [w] = false
+    current' = next_session
+    next_session' = next_session + 1
+  }
+
+  // Hello after (re)start: the orchestrator closes unfinished calls as "possibly re-executed" and
+  // returns everything after the harness's last seq (0084).
+  action Hello(v in vm_ids) "Hello after (re)start closes unfinished calls as possibly re-executed" {
+    when vm_state[v] == "restoring" and up[vm_m[v]] and valid(v)
+    if count(unfinished) > 0 {
+      tr_kind' = tr_kind + ["result"]
+      tr_call' = tr_call + [min(unfinished)]
+      tr_reexec' = tr_reexec + [true]
+    }
+    vm_state' = vm_state with [v] = (if count(unfinished) <= 1 then "running" else "restoring")
+    vm_applied' = vm_applied with [v] = (if count(unfinished) > 0 then len(tr_kind) + 1 else len(tr_kind))
+  }
+
+  // Fencing (0102): a returning machine is told to discard VMs whose session is no longer current.
+  action Fence(v in vm_ids) "A returning machine discards a VM whose session is no longer current" {
+    when live(v) and not valid(v) and up[vm_m[v]]
+    vm_state' = vm_state with [v] = "discarded"
+  }
+
+  invariant "At most one copy of the agent is accepted"
+    count({for v in vm_ids where live(v) and valid(v) yield v}) <= 1
+
+  invariant "No double external effect"
+    all c in calls: executed[c] <= 1
+
+  invariant "Transcript is well formed"
+    all c in calls: (decisions(c) <= 1 and results(c) <= 1 and (all i in positions: ((tr_kind[i] == "result" and tr_call[i] == c) => (any j in positions: (j < i and tr_kind[j] == "decision" and tr_call[j] == c)))))
+
+  invariant "No external effect from a stale session"
+    stale_effects == 0
+
+  invariant "Only the current session writes the transcript"
+    stale_writes == 0
+
+  invariant "The harness is never ahead of the transcript"
+    all v in vm_ids: vm_applied[v] <= len(tr_kind)
+
+  invariant "Call numbers stay in range"
+    next_call >= 1 and next_call <= MaxCalls + 1
+}
+
+// A stale token must not cause an external effect (Execute checks the session).
+  mutant "No session token check on effects" of AgentSession {
+    replace "when can_act(v) and valid(v)" in Execute with "when can_act(v)"
+    expect violation "No external effect from a stale session"
+  }
+
+  // Results from a stale session must not be written (Finish checks the session).
+  mutant "Results accepted from stale sessions" of AgentSession {
+    replace "if valid(v) and not has_result(vm_executing[v]) {" in Finish with "if not has_result(vm_executing[v]) {"
+    expect violation "Only the current session writes the transcript"
+  }
+
+  // A move starts the new VM under a fresh session; keeping the old token gives two accepted copies.
+  mutant "A move reuses the old session token" of AgentSession {
+    replace "current' = next_session" in Move with "current' = current"
+    replace "vm_session' = vm_session with [w] = next_session" in Move with "vm_session' = vm_session with [w] = current"
+    replace "current' = next_session" in RestoreLocal with "current' = current"
+    replace "vm_session' = vm_session with [w] = next_session" in RestoreLocal with "vm_session' = vm_session with [w] = current"
+    expect violation "At most one copy of the agent is accepted"
+  }
+
+  witness "A moved agent runs on another machine" of AgentSession in "quick" {
+    reachable current == 2 and vm_state[2] == "running" and not up[vm_m[1]] and not (vm_m[2] == vm_m[1])
+  }
+
+  witness "A resume closes an unfinished call as possibly re-executed" of AgentSession in "quick" {
+    reachable any i in positions: (tr_kind[i] == "result" and tr_reexec[i])
+  }
+
+model "quick" of AgentSession {
+  const Machines = {"m1", "m2"}
+  const MaxCalls = 2
+  const MaxVms = 2
+  deadlock allowed
+}
+
+// The full bounds: 2 machines, 2 calls, 3 VMs.
+model "full bounds" of AgentSession {
+  const Machines = {"m1", "m2"}
+  const MaxCalls = 2
+  const MaxVms = 3
+  deadlock allowed
+}

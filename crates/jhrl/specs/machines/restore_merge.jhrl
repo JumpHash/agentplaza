@@ -1,0 +1,245 @@
+// Restoring the orchestrator from a backup and merging newer work back (0135).
+// The orchestrator signs every transcript entry it commits (hash-chained). A tool call's
+// external effect happens only after the decision reached the harness. The machine daemon
+// journals every entry it relays, so a lost VM doesn't lose the tail; a lost machine does.
+// After a restore the orchestrator merges the longest *signed* extension of its log from the
+// machine's journal. Open calls the harness never ran are cancelled; if the machine is lost,
+// the run pauses until the owner reviews the unknown window against provider logs.
+// A compromised VM may append forged (unsigned) entries to its copy.
+// Log positions stay 1-based as in the original model: position p is db[p - 1]. `Slots` lists the positions.
+
+pack agentplaza.machines.restore_merge version "0.1.0"
+
+machine RestoreMerge "Restoring from a backup and merging the signed journal tail back" {
+  const Intents: Set<Int>
+  const MaxLen: Int
+  const Slots: Set<Int>                                          // log positions 1..MaxLen
+
+  var db: List<{k: String, i: Int, c: Int, sig: Bool}> = []     // the orchestrator's log
+  var j: List<{k: String, i: Int, c: Int, sig: Bool}> = []      // the machine's journal, as relayed
+  var backup: List<{k: String, i: Int, c: Int, sig: Bool}> = []
+  var crashed: Bool = false
+  var merged: Bool = false
+  var machineLost: Bool = false
+  var paused: Bool = false
+  var reviewed: Set<Int> = {for i in Intents where i < 0 yield i}
+  var executed: Map<Int, Int> = {for i in Intents yield i: 0}
+  var ranAt: Set<Int> = {for i in Intents where i < 0 yield i}
+  var cancelled: Set<Int> = {for i in Intents where i < 0 yield i}
+  var fenced: Set<Int> = {for i in Intents where i < 0 yield i}
+  var forged: Bool = false
+  var nextId: Int = 1            // call ids are unique across restores (ULIDs in the real system)
+  var tailMerged: Bool = false   // ghost: a merge recovered entries newer than the backup
+
+  let operating = (not crashed or merged) and not paused
+  // k: "d" decision, "r" result, "x" void; c: call id
+  let ent(k, i, c) = {k: k, i: i, c: c, sig: true}
+  let forgedEnt = {k: "d", i: min(Intents), c: 99, sig: false}   // CHOOSE i \in Intents : TRUE
+  // last position of intent i in s, or 0 when there is none
+  let lastPos(s, i) = max({for p in Slots where p <= len(s) and s[p - 1].i == i yield p} union {0})
+  let statusIn(s, i) = if lastPos(s, i) == 0 then "none" else if s[lastPos(s, i) - 1].k == "d" then "open" else if s[lastPos(s, i) - 1].k == "r" then "done" else "void"
+  let status(i) = statusIn(db, i)
+  let isPrefix(a, b) = len(a) <= len(b) and a == take(b, len(a))
+  // the longest signed prefix: all entries before the first unsigned one
+  let signedPrefix(s) = take(s, min({for p in Slots where p <= len(s) and not s[p - 1].sig yield p} union {len(s) + 1}) - 1)
+  // the call ids of the open intents in s
+  let openIds(s) = {for i in Intents where statusIn(s, i) == "open" yield s[lastPos(s, i) - 1].c}
+
+  // The agent asks for a tool call; the orchestrator signs and commits the decision.
+  action Request(i in Intents) "The agent asks for a tool call; the orchestrator signs and commits the decision." {
+    when operating
+    when len(db) < MaxLen
+    when status(i) == "none" or status(i) == "void"
+    db' = db + [ent("d", i, nextId)]
+    nextId' = nextId + 1
+  }
+
+  // The machine relays the next committed entry to the harness and journals it.
+  action Deliver "The machine relays the next committed entry to the harness and journals it." {
+    when not machineLost
+    when len(j) < len(db)
+    when isPrefix(j, db)
+    j' = j + [db[len(j)]]
+  }
+
+  // The tool's external effect: only for a signed decision the harness has, once, and not if cancelled.
+  action Effect(p in Slots) "The tool's external effect: only for a signed decision the harness has, once, and not if cancelled." {
+    when not machineLost
+    when p <= len(j)
+    when j[p - 1].k == "d" and j[p - 1].sig
+    when not (j[p - 1].c in ranAt)
+    when not (j[p - 1].c in cancelled)
+    when not (j[p - 1].c in fenced)
+    executed' = executed with [j[p - 1].i] = executed[j[p - 1].i] + 1
+    ranAt' = ranAt union {j[p - 1].c}
+  }
+
+  // The harness reports the result; the orchestrator accepts it only for the decision it has.
+  action Result(p in Slots) "The harness reports the result; the orchestrator accepts it only for the decision it has." {
+    when operating
+    when not machineLost
+    when p <= len(db) and p <= len(j)
+    when db[p - 1] == j[p - 1]
+    when j[p - 1].c in ranAt
+    when status(j[p - 1].i) == "open"
+    when lastPos(db, j[p - 1].i) == p
+    when len(db) < MaxLen
+    db' = db + [ent("r", j[p - 1].i, j[p - 1].c)]
+  }
+
+  action Backup "The orchestrator takes a backup of its log." {
+    when not crashed
+    backup' = db
+  }
+
+  // The orchestrator host dies and is restored from the last backup.
+  action Crash "The orchestrator host dies and is restored from the last backup." {
+    when not crashed
+    db' = backup
+    crashed' = true
+  }
+
+  // A compromised VM appends a forged entry to what the machine relays.
+  action Forge "A compromised VM appends a forged entry to what the machine relays." {
+    when not forged
+    when not machineLost
+    when len(j) < MaxLen
+    j' = j + [forgedEnt]
+    forged' = true
+  }
+
+  // While the orchestrator is down, the machine itself is lost (journal gone).
+  action LoseMachine "While the orchestrator is down, the machine itself is lost (journal gone)." {
+    when crashed and not merged and not machineLost
+    machineLost' = true
+    j' = []
+  }
+
+  // Merge: take the longest signed extension of the restored log from the machine's journal.
+  action Merge "Merge: take the longest signed extension of the restored log from the machine's journal." {
+    when crashed and not merged
+    let sp = signedPrefix(j)
+    let ext = if len(sp) > len(db) and isPrefix(db, sp) then sp else db
+    let ids = openIds(ext)
+    db' = ext
+    tailMerged' = len(ext) > len(db)
+    j' = ext
+    if machineLost {
+      paused' = true
+      fenced' = fenced union ids
+    } else {
+      paused' = false
+      cancelled' = cancelled union (ids minus ranAt)
+    }
+    merged' = true
+    machineLost' = false
+  }
+
+  // A cancelled open call is voided, so the agent may request it again.
+  action Void(i in Intents) "A cancelled open call is voided, so the agent may request it again." {
+    when operating
+    when status(i) == "open"
+    when db[lastPos(db, i) - 1].c in cancelled
+    when len(db) < MaxLen
+    db' = db + [ent("x", i, db[lastPos(db, i) - 1].c)]
+  }
+
+  // Owner review of the unknown window (machine lost): the owner checks provider and egress logs.
+  action Review(i in Intents) "Owner review of the unknown window (machine lost): the owner checks provider and egress logs." {
+    when paused
+    when not (i in reviewed)
+    when len(db) < MaxLen
+    if status(i) == "open" and executed[i] > 0 {
+      db' = db + [ent("r", i, db[lastPos(db, i) - 1].c)]
+    } else {
+      if status(i) == "open" {
+        db' = db + [ent("x", i, db[lastPos(db, i) - 1].c)]
+      } else {
+        if (status(i) == "none" or status(i) == "void") and executed[i] > 0 {
+          db' = db + [ent("r", i, 0)]   // a record of what happened, never a runnable decision
+        }
+      }
+    }
+    reviewed' = reviewed union {i}
+    paused' = (reviewed union {i}) != Intents
+  }
+
+  // No forged entry ever enters the orchestrator's log.
+  invariant "Every log entry is signed"
+    all e in db: e.sig
+  // No intended action takes effect twice, across crash, restore and merge.
+  invariant "No effect runs twice"
+    all i in Intents: executed[i] <= 1
+  // Whenever the system runs, the orchestrator knows about every effect that happened.
+  invariant "Effects are known while running"
+    operating => (all i in Intents: (executed[i] > 0 => status(i) in {"open", "done"}))
+  // A call cancelled because the harness never ran it never runs later.
+  invariant "A cancelled call never runs"
+    all c in cancelled: not (c in ranAt)
+  // A forged decision never causes an effect.
+  invariant "A forged decision never has an effect"
+    not (99 in ranAt)
+}
+
+model "two intents, log up to seven" of RestoreMerge {
+  const Intents = {1, 2}
+  const MaxLen = 7
+  const Slots = {1, 2, 3, 4, 5, 6, 7}
+  deadlock allowed
+}
+
+// The merge trusts the machine's copy without checking signatures.
+mutant "Accept an unsigned journal" of RestoreMerge {
+  replace "let sp = signedPrefix(j)" in Merge with "let sp = j"
+  expect violation "Every log entry is signed"
+}
+
+// The newer tail is thrown away and redone.
+mutant "Throw away the newer tail" of RestoreMerge {
+  replace "let ext = if len(sp) > len(db) and isPrefix(db, sp) then sp else db" in Merge with "let ext = db"
+  expect violation "Effects are known while running"
+}
+
+// Carry on although the window is unknown.
+mutant "Carry on while the window is unknown" of RestoreMerge {
+  replace "paused' = true" in Merge with "paused' = false"
+  expect violation "Effects are known while running"
+}
+
+// Cancelled calls may still run.
+mutant "Run cancelled calls" of RestoreMerge {
+  replace "when not (j[p - 1].c in cancelled)" in Effect with "when true"
+  expect violation "A cancelled call never runs"
+}
+
+// A replacement VM may run fenced calls.
+mutant "Run fenced calls" of RestoreMerge {
+  replace "when not (j[p - 1].c in fenced)" in Effect with "when true"
+  expect violation "Effects are known while running"
+}
+
+// The owner's record is a runnable decision.
+mutant "Owner record is a runnable decision" of RestoreMerge {
+  replace "ent(\"r\", i, 0)" in Review with "ent(\"d\", i, 0), ent(\"r\", i, 0)"
+  expect violation "No effect runs twice"
+}
+
+witness "A merge recovers a tail newer than the backup" of RestoreMerge in "two intents, log up to seven" {
+  reachable tailMerged
+}
+
+witness "A forged entry is dropped on merge" of RestoreMerge in "two intents, log up to seven" {
+  reachable forged and tailMerged
+}
+
+witness "The owner reviews an intent" of RestoreMerge in "two intents, log up to seven" {
+  reachable (any i in reviewed: true)
+}
+
+witness "A call is cancelled because the harness never ran it" of RestoreMerge in "two intents, log up to seven" {
+  reachable (any c in cancelled: true)
+}
+
+witness "A lost machine fences an open call" of RestoreMerge in "two intents, log up to seven" {
+  reachable (any c in fenced: true)
+}
