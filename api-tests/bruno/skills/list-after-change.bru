@@ -18,7 +18,8 @@ assert {
 
 tests {
   test("the list shows the changed skill", function () {
-    const skills = res.getBody().skills;
+    // Besides the built-in ones, the owner's one skill.
+    const skills = res.getBody().skills.filter((s) => !(s.tags || []).includes("builtin"));
     expect(skills).to.have.length(1);
     expect(skills[0].id).to.equal("pdf-forms");
     expect(skills[0].title).to.equal("PDF forms (fillable)");
