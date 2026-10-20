@@ -577,8 +577,9 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         Some(json!({ "text": "Here is what support saw", "attachments": [fid] })),
     );
     assert_eq!(status, 200, "{chat}\n{}", hub.log());
-    // Up to 15 s: a busy runner took longer than 5 to deliver it.
-    let (_, _, prompt) = (0..150)
+    // Up to 45 s: a busy runner took longer than 15 to deliver it. A push the gateway did not take stays queued
+    // until the hub's next sweep (every 30 s) sends it.
+    let (_, _, prompt) = (0..450)
         .find_map(|_| {
             let list = pushed(&gateway, BUILDER);
             if list.len() > chats_before {
@@ -587,7 +588,21 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
             std::thread::sleep(Duration::from_millis(100));
             None
         })
-        .unwrap_or_else(|| panic!("the chat went out\n{}", hub.log()));
+        .unwrap_or_else(|| {
+            let (_, agent) = hub.call("GET", &format!("/v1/agents/{BUILDER}"), None);
+            let sent: Vec<_> = gateway
+                .seen()
+                .into_iter()
+                .filter(|(_, path, _)| path.contains(&format!("/agents/{BUILDER}/")))
+                .map(|(method, path, body)| {
+                    format!("{method} {path} {}", &body[..body.len().min(200)])
+                })
+                .collect();
+            panic!(
+                "the chat went out\nthe gateway was sent: {sent:#?}\nthe agent: {agent}\n{}",
+                hub.log()
+            )
+        });
     assert!(
         prompt.contains("Attached files") && prompt.contains(&fid) && prompt.contains("safari.txt"),
         "{prompt}"

@@ -1,5 +1,5 @@
 meta {
-  name: Answer 502 for a revoked node's machine: refused at once
+  name: Answer 409 for a revoked node's machine: refused at once
   type: http
   seq: 7
 }
@@ -11,7 +11,7 @@ get {
 }
 
 assert {
-  res.status: eq 502
+  res.status: eq 409
   res.responseTime: lt {{budgetMs}}
 }
 

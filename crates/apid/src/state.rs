@@ -478,6 +478,16 @@ impl App {
             Err(e) => eprintln!("apid: the content origin did not start: {e}"),
         }
         let router = api::router();
+        // Who may send a body, and how much, is decided from the request's headers before the body is
+        // read: a caller the gate refuses gets its answer without one (`hub_auth::body_allowance`).
+        let admitting = Arc::clone(&app);
+        let server =
+            server.admit(
+                move |request| match crate::hub_auth::gate(&admitting, request) {
+                    Some(refused) => Err(refused),
+                    None => Ok(crate::hub_auth::body_allowance(&admitting, request)),
+                },
+            );
         // The hub's front door first (owner token off loopback), then the routes.
         server.spawn(move |request| {
             let started = std::time::Instant::now();

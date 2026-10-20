@@ -93,12 +93,49 @@ pub fn noded_for(
     noded(app, &node_of(app, cid), method, path, body)
 }
 
-/// A fleet call's outcome as a response for the console: the upstream status and body, or 502.
+/// A fleet call's outcome as a response for the console: the upstream status and body, or the
+/// status `status_of` gives the error.
 pub fn respond(result: Result<(u16, Value), String>) -> Response {
     match result {
         Ok((status, body)) => Response::json(status, &body),
-        Err(err) => Response::error(502, &err),
+        Err(err) => Response::error(status_of(&err), &err),
     }
+}
+
+/// The HTTP status for a fleet error built by `remote`: 404 for an unknown node, 409 for a revoked
+/// one, 503 for an offline one, 504 for one that did not answer, and 502 for anything else.
+pub fn status_of(err: &str) -> u16 {
+    if err.starts_with("no node ") {
+        404
+    } else if err.starts_with("node ") && err.contains(" did not answer ") {
+        504
+    } else if err.starts_with("node ") && err.ends_with(" is revoked") {
+        409
+    } else if err.starts_with("node ") && err.ends_with(" is offline") {
+        503
+    } else {
+        502
+    }
+}
+
+/// The error for a node the store does not know (`status_of`: 404).
+fn unknown_node(node: &str) -> String {
+    format!("no node {node}")
+}
+
+/// The error for a revoked node (`status_of`: 409).
+fn revoked_node(node: &str) -> String {
+    format!("node {node} is revoked")
+}
+
+/// The error for a node whose last heartbeat is too old (`status_of`: 503).
+fn offline_node(node: &str) -> String {
+    format!("node {node} is offline")
+}
+
+/// The error for a node that did not answer a queued call in time (`status_of`: 504).
+fn no_answer(node: &str, method: &str, path: &str) -> String {
+    format!("node {node} did not answer {method} {path}")
 }
 
 /// Queues the call on a joined node and waits for its result. Refused at once when the node is
@@ -112,13 +149,13 @@ fn remote(
     body: Option<&Value>,
 ) -> Result<(u16, Value), String> {
     let Some(record) = app.nodes.get(node) else {
-        return Err(format!("no node {node}"));
+        return Err(unknown_node(node));
     };
     if record.revoked {
-        return Err(format!("node {node} is revoked"));
+        return Err(revoked_node(node));
     }
     if apz_plaza::now_ms().saturating_sub(record.last_seen_ms) >= crate::nodes::OFFLINE_AFTER_MS {
-        return Err(format!("node {node} is offline"));
+        return Err(offline_node(node));
     }
     let id = app.nodes.enqueue(
         node,
@@ -129,7 +166,7 @@ fn remote(
     );
     match app.nodes.wait_result(&id, REMOTE_WAIT_MS) {
         Some(result) => Ok((result.status, result.body)),
-        None => Err(format!("node {node} did not answer {method} {path}")),
+        None => Err(no_answer(node, method, path)),
     }
 }
 
@@ -716,5 +753,21 @@ mod tests {
         assert_eq!(machines[0]["agents"], json!([]));
         assert_eq!(machines[0]["working"], 0);
         assert_eq!(links[0]["online"], false);
+    }
+
+    #[test]
+    fn fleet_errors_map_to_the_status_the_console_needs() {
+        assert_eq!(unknown_node("n9"), "no node n9");
+        assert_eq!(revoked_node("n3"), "node n3 is revoked");
+        assert_eq!(offline_node("n3"), "node n3 is offline");
+        assert_eq!(
+            no_answer("n3", "POST", "/v1/runs"),
+            "node n3 did not answer POST /v1/runs"
+        );
+        assert_eq!(status_of(&unknown_node("n9")), 404);
+        assert_eq!(status_of(&revoked_node("n3")), 409);
+        assert_eq!(status_of(&offline_node("n3")), 503);
+        assert_eq!(status_of(&no_answer("n3", "POST", "/v1/runs")), 504);
+        assert_eq!(status_of("connection refused"), 502);
     }
 }
