@@ -263,10 +263,12 @@ fn review(
                     token: token.to_path_buf(),
                 };
                 let reply = vm.tool_reply(id, "review_tree", json!({}));
-                // A step whose work item ended without a verdict is handed on under a new work item (work_ended):
-                // the old one has no step any more, and a reviewer drops it. On a slow runner the hub can count a
-                // delivery the gateway did record as failed, which hands the step on while the test holds the old item.
+                // A step whose work item ended without a verdict is handed on under a new work item (work_ended). On a
+                // slow runner the hub can count a delivery as failed while the test still holds the old item: the old
+                // item's verdict then reaches the step (an agent's tool calls go to its running step), and the new item
+                // finds no step. A reviewer with no step ends its turn, or its next work waits behind the item forever.
                 if reply["is_error"] == true && text(&reply["output"]).contains("no review step") {
+                    hub.work_done(cid, id, "done", "no review step left");
                     continue;
                 }
                 assert_eq!(

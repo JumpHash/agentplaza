@@ -456,6 +456,28 @@ impl Reviews {
         Ok(p)
     }
 
+    /// Takes waiting node `node` of running review `run` for one caller: it moves to running under the book's lock.
+    /// Ticks run side by side (each verdict ticks, and so does the review tick), and two that both saw a node ready
+    /// would otherwise both start it: a step sent twice, or a gate deciding twice.
+    fn claim(&self, run: &str, node: &str) -> bool {
+        self.with(|b| {
+            let Some(r) = b.runs.get_mut(run) else {
+                return false;
+            };
+            if r.state != RunState::Running {
+                return false;
+            }
+            match r.node_mut(node) {
+                Some(n) if n.state == NodeState::Waiting => {
+                    n.state = NodeState::Running;
+                    r.updated_ms = apz_plaza::now_ms();
+                    true
+                }
+                _ => false,
+            }
+        })
+    }
+
     fn update(&self, id: &str, f: impl FnOnce(&mut Run)) -> Option<Run> {
         self.with(|b| {
             let r = b.runs.get_mut(id)?;
@@ -797,6 +819,9 @@ pub fn tick(app: &App) {
 
 fn start_node(app: &App, run: &Run, node: &str) {
     let Some(n) = run.node(node) else { return };
+    if !app.reviews.claim(&run.id, node) {
+        return;
+    }
     match n.def.kind.as_str() {
         "tool" => {
             let (scores, notes) = match n.def.tool.as_deref() {
@@ -840,7 +865,8 @@ fn start_node(app: &App, run: &Run, node: &str) {
                 .unwrap_or_else(|| crate::scheduler::REVIEWER_ROLE.into());
             let taken: Vec<u64> = run.nodes.iter().filter_map(|x| x.assignee).collect();
             let Some(cid) = pick_agent(app, &run.project, &role, run.worker, &taken) else {
-                // No agent of that role: a reviewer takes it, else it waits (the timeout raises the owner's card).
+                // No agent of that role: a reviewer takes it, else it waits for the next tick (the timeout raises the
+                // owner's card).
                 if role != crate::scheduler::REVIEWER_ROLE
                     && let Some(cid) = pick_agent(
                         app,
@@ -851,13 +877,27 @@ fn start_node(app: &App, run: &Run, node: &str) {
                     )
                 {
                     assign(app, run, node, cid);
+                } else {
+                    unclaim(app, &run.id, node);
                 }
                 return;
             };
             assign(app, run, node, cid);
         }
-        _ => {}
+        _ => unclaim(app, &run.id, node),
     }
+}
+
+/// Puts a node [`Reviews::claim`] took back to waiting, for a later tick: nothing could start it now.
+fn unclaim(app: &App, run: &str, node: &str) {
+    app.reviews.update(run, |r| {
+        if let Some(n) = r.node_mut(node)
+            && n.state == NodeState::Running
+            && n.assignee.is_none()
+        {
+            n.state = NodeState::Waiting;
+        }
+    });
 }
 
 /// An agent of `role` working on `project`, not the worker, preferring one not already on this run and idle.
@@ -1363,6 +1403,18 @@ fn gate(app: &App, run_id: &str) {
     if run.state != RunState::Running {
         return;
     }
+    // One tick decides: the gate is taken (waiting → running) before anything is attested or sent.
+    let Some(gate_id) = run
+        .nodes
+        .iter()
+        .find(|n| n.def.kind == "gate")
+        .map(|n| n.def.id.clone())
+    else {
+        return;
+    };
+    if !app.reviews.claim(run_id, &gate_id) {
+        return;
+    }
     let outcome = decide(&run);
     // A re-check or a post-land suite decides on its own (its revision may not be one Weft has).
     if run.purpose != "review" {
@@ -1829,5 +1881,91 @@ fn settle_check(app: &App, run: &Run, outcome: Outcome) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn run_with(state: RunState) -> Run {
+        let node = |id: &str, kind: &str| NodeRun {
+            def: NodeDef {
+                id: id.into(),
+                kind: kind.into(),
+                ..Default::default()
+            },
+            parent: None,
+            state: NodeState::Waiting,
+            assignee: None,
+            work: None,
+            tries: 0,
+            scores: vec![],
+            findings: vec![],
+            touches: vec![],
+            notes: String::new(),
+            record: None,
+            started_ms: 0,
+            ended_ms: 0,
+            spawned: 0,
+        };
+        Run {
+            id: "rv1".into(),
+            task: "t1".into(),
+            project: "p1".into(),
+            worker: 300,
+            change: "w-1".into(),
+            revision: "w-1.r1".into(),
+            recipe: "code@3".into(),
+            round: 1,
+            rounds: 1,
+            kind: "code".into(),
+            state,
+            nodes: vec![node("quality", "agent"), node("gate", "gate")],
+            rules: vec![],
+            owner_asked: false,
+            outcome: None,
+            tree: Value::Null,
+            summary: String::new(),
+            purpose: "review".into(),
+            repo: String::new(),
+            created_ms: 0,
+            updated_ms: 0,
+        }
+    }
+
+    #[test]
+    fn of_ticks_that_start_one_node_at_once_only_one_takes_it() {
+        let reviews = Arc::new(Reviews::default());
+        reviews.with(|b| b.runs.insert("rv1".into(), run_with(RunState::Running)));
+        let taken: usize = (0..8)
+            .map(|_| {
+                let reviews = Arc::clone(&reviews);
+                std::thread::spawn(move || reviews.claim("rv1", "quality"))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| usize::from(t.join().unwrap()))
+            .sum();
+        assert_eq!(taken, 1);
+        let run = reviews.run("rv1").unwrap();
+        assert_eq!(run.node("quality").unwrap().state, NodeState::Running);
+        // The gate is taken the same way, once.
+        assert!(reviews.claim("rv1", "gate"));
+        assert!(!reviews.claim("rv1", "gate"));
+    }
+
+    #[test]
+    fn a_node_of_a_run_that_ended_is_not_taken() {
+        let reviews = Reviews::default();
+        reviews.with(|b| b.runs.insert("rv1".into(), run_with(RunState::Rework)));
+        assert!(!reviews.claim("rv1", "quality"));
+        assert!(!reviews.claim("rv2", "quality"));
+        assert_eq!(
+            reviews.run("rv1").unwrap().node("quality").unwrap().state,
+            NodeState::Waiting
+        );
     }
 }
