@@ -126,12 +126,18 @@ fn shortcuts_in(dir: &Path, depth: u32) -> Vec<PathBuf> {
 fn shortcut_target(shortcut: &Path) -> Option<String> {
     let path = shortcut.to_str()?;
     // SAFETY: CoCreateInstance builds the shell link object on this thread, whose COM is initialised by the
-    // backend; the file is loaded and the path read into a buffer of known size.
+    // backend. It returns an owned reference, which `link` releases when it drops.
     let link: IShellLinkW =
         unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.ok()?;
     let file: IPersistFile = link.cast().ok()?;
+    // SAFETY: `file` is a live IPersistFile; the QueryInterface in the cast above returned it as an owned
+    // reference, so it stays valid until this function returns. The HSTRING is a temporary holding a
+    // NUL-terminated UTF-16 copy of `path`, and it lives until the call returns, so the pointer stays valid.
+    // STGM_READ opens the shortcut read-only.
     unsafe { file.Load(&HSTRING::from(path), STGM_READ) }.ok()?;
     let mut buffer = [0u16; 512];
+    // SAFETY: `buffer` is a local array that outlives the call. Its pointer is passed with its length of 512,
+    // so the shell writes at most 512 UTF-16 units into it. pfd is null because only the path is read back.
     unsafe { link.GetPath(&mut buffer, std::ptr::null_mut(), 0) }.ok()?;
     let end = buffer
         .iter()
