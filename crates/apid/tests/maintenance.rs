@@ -169,6 +169,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         });
         assert_eq!(agent["role"], role, "{agent}\n{}", hub.log());
     }
+    hub.name_agent(ORCHESTRATOR, "Ada");
     let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
         w["running"] == true
     });
@@ -252,6 +253,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
             Value::Null,
             "a delivered project in maintenance is worked: {member}"
         );
+        hub.name_agent(cid, if cid == PLANNER { "Mira" } else { "Kofi" });
     }
 
     // Its watchers get the maintenance tools; the planner sweeps first, and the sweep asks for the map.

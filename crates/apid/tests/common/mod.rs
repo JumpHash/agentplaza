@@ -123,6 +123,17 @@ impl Hub {
         assert_eq!(code, 200, "{body}");
     }
 
+    /// Agent `cid` names itself with plaza_set_name, as an agent does when the hub asks. The hub asks an unnamed idle
+    /// agent two seconds after it connects, and a fake agent never answers: on a slow runner that ask is queued ahead
+    /// of the work a test waits for, so a test whose agents must take work names them first.
+    pub fn name_agent(&self, cid: u64, name: &str) {
+        let request = json!({ "type": "tool_request", "work": 0, "call": format!("toolu_name_{cid}"), "name": "plaza_set_name", "input": { "name": name } });
+        let (code, body) = self.guest(cid, "message", request);
+        assert_eq!(code, 200, "{body}");
+        let (_, agent) = self.call("GET", &format!("/v1/agents/{cid}"), None);
+        assert_eq!(agent["name"], name, "{body}\n{agent}");
+    }
+
     /// Waits up to `timeout` for `ready` to hold of the owner's `GET path`; the last answer either way.
     pub fn wait_for(&self, path: &str, timeout: Duration, ready: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + timeout;

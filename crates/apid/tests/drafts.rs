@@ -91,6 +91,7 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
         );
         assert_eq!(agent["role"], role, "{agent}\n{}", hub.log());
     }
+    hub.name_agent(ORCHESTRATOR, "Ada");
 
     // The owner asks; the orchestrator drafts the project in the conversation, naming the builder from the bench.
     let (status, conversation) = hub.call(
@@ -182,6 +183,7 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
     assert!(text(&project["goal"]).contains("release-0.9"), "{project}");
     let (_, builder) = hub.call("GET", &format!("/v1/agents/{BUILDER}"), None);
     assert_eq!(builder["project"], pid.as_str(), "{builder}");
+    hub.name_agent(BUILDER, "Kofi");
     // Its budget was set aside, and its two tasks (2000 each, the default) are funded from it.
     let (_, budget) = hub.call("GET", &format!("/v1/projects/{pid}/budget"), None);
     assert_eq!(budget["balance"], 4000, "{budget}");
@@ -206,6 +208,7 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
         |a| a["project"] == pid.as_str(),
     );
     assert_eq!(qa["project"], pid.as_str(), "{qa}");
+    hub.name_agent(SPAWNED_QA, "Lena");
     let first = text(&tasks[0]["id"]);
     let claimed = hub.wait_for(
         &format!("/v1/tasks/{first}"),
