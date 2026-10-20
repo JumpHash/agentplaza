@@ -78,24 +78,37 @@ fn perf_slack() -> f64 {
     }
 }
 
-/// Builds the Machines view of `fleet` at the budget size and steps it a few frames. Returns the build time, the
-/// slowest of the steps after the first, and the last frame's load.
+/// How many times [`measure`] builds and steps the view: the budgets judge the fastest run.
+const RUNS: usize = 5;
+
+/// Builds the Machines view of `fleet` at the budget size and steps it a few frames, [`RUNS`] times on a fresh stage.
+/// Returns the fastest build, the fastest run's slowest step after the first, and the last frame's load. Another
+/// process on the machine only ever adds time to a run, so the fastest is the code's own cost: one run on a busy CI
+/// runner took four times the budget.
 fn measure(fleet: FleetResponse) -> (Duration, Duration, Load) {
-    let mut stage = Stage::default();
-    stage.resize(W, H);
-    let t0 = Instant::now();
-    stage.apply_fleet(fleet);
-    let mut now = Instant::now();
-    stage.tick(now); // the first frame bakes the statics: part of the build
-    let build = t0.elapsed();
-    let mut slowest = Duration::ZERO;
-    for _ in 0..30 {
-        now += Duration::from_millis(16);
-        let t = Instant::now();
-        stage.tick(now);
-        slowest = slowest.max(t.elapsed());
+    let mut best: Option<(Duration, Duration, Load)> = None;
+    for _ in 0..RUNS {
+        let mut stage = Stage::default();
+        stage.resize(W, H);
+        let t0 = Instant::now();
+        stage.apply_fleet(fleet.clone());
+        let mut now = Instant::now();
+        stage.tick(now); // the first frame bakes the statics: part of the build
+        let build = t0.elapsed();
+        let mut slowest = Duration::ZERO;
+        for _ in 0..30 {
+            now += Duration::from_millis(16);
+            let t = Instant::now();
+            stage.tick(now);
+            slowest = slowest.max(t.elapsed());
+        }
+        let load = load_of(&stage.frame);
+        best = Some(match best {
+            None => (build, slowest, load),
+            Some((b, s, _)) => (b.min(build), s.min(slowest), load),
+        });
     }
-    (build, slowest, load_of(&stage.frame))
+    best.expect("at least one run")
 }
 
 #[test]
