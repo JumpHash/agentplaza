@@ -53,9 +53,23 @@ pub fn gen_json() -> String {
         "backgrounds": background::presets(),
         "themes": themes,
     });
-    let mut text = serde_json::to_string_pretty(&doc).expect("json");
+    let mut text = serde_json::to_string_pretty(&sorted(doc)).expect("json");
     text.push('\n');
     text
+}
+
+/// `v` with every object's keys in sorted order. serde_json keeps insertion order when another crate in the build
+/// turns on its `preserve_order` feature (a workspace build does), so the file would depend on what is built with it.
+fn sorted(v: Value) -> Value {
+    match v {
+        Value::Object(map) => {
+            let mut entries: Vec<(String, Value)> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().map(|(k, v)| (k, sorted(v))).collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sorted).collect()),
+        other => other,
+    }
 }
 
 fn px(v: f32) -> String {
