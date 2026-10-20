@@ -1,12 +1,13 @@
 //! Zip import and export, finding skills in an archive, and GitHub URLs (docs/design/skill-library.md, "Import,
 //! export, GitHub"). No network here: apid downloads, this reads and writes bytes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{Cursor, Read, Write};
 
-/// The archive limits: entries, per-file and total bytes (uncompressed).
+/// The archive limits: the zip's own size in bytes, entries, and per-file and total bytes (uncompressed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
+    pub max_archive: u64,
     pub max_entries: usize,
     pub max_file: u64,
     pub max_total: u64,
@@ -15,6 +16,7 @@ pub struct Limits {
 impl Limits {
     /// A whole uploaded or downloaded archive (a repo may hold many skills).
     pub const ARCHIVE: Limits = Limits {
+        max_archive: 64 * 1024 * 1024,
         max_entries: 5000,
         max_file: 5 * 1024 * 1024,
         max_total: 100 * 1024 * 1024,
@@ -42,12 +44,19 @@ pub struct FoundSkill {
 const S_IFMT: u32 = 0o170000;
 const S_IFLNK: u32 = 0o120000;
 
-/// Reads a zip within `limits`. Refuses entries with `..`, absolute paths, backslashes, drive letters, symlinks or
-/// names that are not UTF-8, and stops at the first limit crossed (Err says which). Directories are skipped; a
-/// GitHub zipball's single top folder (`<repo>-<sha>/`) is kept as part of the paths (find_skills handles any depth).
-/// `./` segments are dropped. The per-file size is checked against the declared size and again while reading, so a
-/// lying header cannot pass a zip bomb.
+/// Reads a zip within `limits`. Refuses a zip over `max_archive` bytes, entries with `..`, absolute paths,
+/// backslashes, drive letters, `:`, Windows device names, names ending in a dot or space, symlinks or names that are
+/// not UTF-8, and two entries whose paths are the same once normalised and case-folded. Stops at the first limit
+/// crossed (Err says which). Directories are skipped; a GitHub zipball's single top folder (`<repo>-<sha>/`) is kept
+/// as part of the paths (find_skills handles any depth). `./` segments are dropped. The per-file size is checked
+/// against the declared size and again while reading, so a lying header cannot pass a zip bomb.
 pub fn read_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, String> {
+    if bytes.len() as u64 > limits.max_archive {
+        return Err(format!(
+            "the zip is larger than {} bytes",
+            limits.max_archive
+        ));
+    }
     let mut archive =
         zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not a zip: {e}"))?;
     if archive.len() > limits.max_entries {
@@ -57,6 +66,7 @@ pub fn read_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, String> {
         ));
     }
     let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut total = 0u64;
     for index in 0..archive.len() {
         let mut file = archive
@@ -72,6 +82,9 @@ pub fn read_zip(bytes: &[u8], limits: Limits) -> Result<Vec<Entry>, String> {
         let path = normalise(&raw)?;
         if file.is_dir() || path.is_empty() {
             continue;
+        }
+        if !seen.insert(path.to_lowercase()) {
+            return Err(format!("duplicate path in archive: {path}"));
         }
         if file.size() > limits.max_file {
             return Err(format!("{path}: larger than {} bytes", limits.max_file));
@@ -267,7 +280,8 @@ pub fn parse_github_url(url: &str) -> Result<GithubRef, String> {
     })
 }
 
-/// Normalises an archive path: refuses `..`, a leading `/`, a backslash or a drive letter; drops `.` and empty segments.
+/// Normalises an archive path: refuses `..`, a leading `/`, a backslash, a drive letter, and any segment that
+/// `check_segment` refuses; drops `.` and empty segments.
 fn normalise(raw: &str) -> Result<String, String> {
     if raw.contains('\\') {
         return Err(format!("{raw}: backslashes are refused"));
@@ -284,10 +298,40 @@ fn normalise(raw: &str) -> Result<String, String> {
         match seg {
             "" | "." => {}
             ".." => return Err(format!("{raw}: '..' is refused")),
-            seg => parts.push(seg),
+            seg => {
+                check_segment(raw, seg)?;
+                parts.push(seg);
+            }
         }
     }
     Ok(parts.join("/"))
+}
+
+/// Refuses a path segment Windows cannot store: a `:` (alternate data streams), a trailing dot or space, or a device
+/// name (CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9) in any case and with any extension.
+fn check_segment(raw: &str, seg: &str) -> Result<(), String> {
+    if seg.contains(':') {
+        return Err(format!("{raw}: ':' is refused"));
+    }
+    if seg.ends_with('.') || seg.ends_with(' ') {
+        return Err(format!("{raw}: '{seg}' ends with a dot or a space"));
+    }
+    // Windows reads the device name as the part before the first dot, ignoring trailing spaces.
+    let stem = seg
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let number = stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"));
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || number.is_some_and(|n| matches!(n.as_bytes(), [b'1'..=b'9']));
+    if reserved {
+        return Err(format!("{raw}: '{seg}' is a reserved device name"));
+    }
+    Ok(())
 }
 
 /// The one top folder every entry sits under, if there is one.
@@ -371,6 +415,7 @@ mod tests {
     use super::*;
 
     const SMALL: Limits = Limits {
+        max_archive: 64 * 1024,
         max_entries: 100,
         max_file: 1024,
         max_total: 4096,
@@ -534,6 +579,7 @@ mod tests {
         let big = "x".repeat(50);
         let big_zip = raw_zip(&[("big.txt", big.as_str())]);
         let per_file = Limits {
+            max_archive: 64 * 1024,
             max_entries: 10,
             max_file: 10,
             max_total: 100,
@@ -548,6 +594,7 @@ mod tests {
         let fifteen = "y".repeat(15);
         let two = raw_zip(&[("a.txt", fifteen.as_str()), ("b.txt", fifteen.as_str())]);
         let total = Limits {
+            max_archive: 64 * 1024,
             max_entries: 10,
             max_file: 100,
             max_total: 20,
@@ -575,6 +622,53 @@ mod tests {
             .len(),
             2
         );
+    }
+
+    #[test]
+    fn archive_size_is_capped() {
+        let zip = raw_zip(&[("a.txt", "x")]);
+        let size = zip.len() as u64;
+        let under = Limits {
+            max_archive: size - 1,
+            ..SMALL
+        };
+        assert!(read_zip(&zip, under).unwrap_err().contains("larger than"));
+        let exact = Limits {
+            max_archive: size,
+            ..SMALL
+        };
+        assert!(read_zip(&zip, exact).is_ok());
+    }
+
+    #[test]
+    fn duplicate_paths_are_refused() {
+        // Compared case-folded: a case-insensitive filesystem would write both to one file.
+        let cased = raw_zip(&[("a/B.md", "x"), ("a/b.md", "y")]);
+        let err = read_zip(&cased, Limits::ARCHIVE).unwrap_err();
+        assert!(err.contains("duplicate path in archive: a/b.md"), "{err}");
+        // Compared normalised: `./` is dropped, so both name the same path.
+        let dot = raw_zip(&[("./a/x.md", "x"), ("a/x.md", "y")]);
+        assert!(read_zip(&dot, Limits::ARCHIVE).is_err());
+    }
+
+    #[test]
+    fn windows_unsafe_names_are_refused() {
+        for bad in [
+            "con.md",
+            "a/nul.txt",
+            "Com1",
+            "a/LPT9.log",
+            "x:y",
+            "name.",
+            "a/name ",
+        ] {
+            assert!(
+                read_zip(&raw_zip(&[(bad, "x")]), Limits::ARCHIVE).is_err(),
+                "{bad} must be refused"
+            );
+        }
+        let ok = raw_zip(&[("console.md", "x"), ("a/com10.txt", "x")]);
+        assert_eq!(read_zip(&ok, Limits::ARCHIVE).unwrap().len(), 2);
     }
 
     #[test]
