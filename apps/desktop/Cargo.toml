@@ -72,10 +72,16 @@ open = "5"
 dirs = "6"
 
 # The HTML artifacts' live frames: a native webview per frame (WebKitGTK on Linux, WebView2 on Windows, WKWebView on
-# macOS). The arm64 Linux packages are cross-built without WebKit, so there the frames are the still card.
+# macOS), behind the `webview` feature. The arm64 Linux packages are cross-built without WebKit, and the AppImage is
+# built without the feature (it runs where WebKitGTK is not installed): there the frames are the still card.
 [target.'cfg(any(windows, target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))'.dependencies]
-iced_wry = "0.1"
-wry = "0.55"
+iced_wry = { version = "0.1", optional = true }
+wry = { version = "0.55", optional = true }
+
+[features]
+default = ["webview"]
+# Live HTML artifact frames in a native webview, where one is linked (above).
+webview = ["dep:iced_wry", "dep:wry"]
 
 [dev-dependencies]
 # The web's layout binding, natively: the Work screen's test lays the fixtures out both ways and compares them.

@@ -138,6 +138,12 @@ if command -v appimagetool >/dev/null 2>&1 && [ -f "$RUNTIME" ]; then
   APPDIR="$WORK/AgentPlaza.AppDir"
   install -d "$APPDIR/usr"
   cp -a "$TREE/usr/bin" "$TREE/usr/share" "$APPDIR/usr/"
+  # Its desktop app may be one built without the webview (APZ_APPIMAGE_DESKTOP): the AppImage runs where WebKitGTK is
+  # not installed, which the packages declare as a dependency instead.
+  if [ -n "${APZ_APPIMAGE_DESKTOP:-}" ]; then
+    [ -f "$APZ_APPIMAGE_DESKTOP" ] || { echo "missing $APZ_APPIMAGE_DESKTOP" >&2; exit 1; }
+    install -m755 "$APZ_APPIMAGE_DESKTOP" "$APPDIR/usr/bin/agentplaza-desktop"
+  fi
   install -m755 "$HERE/AppRun" "$APPDIR/AppRun"
   install -m644 "$HERE/agentplaza.desktop" "$APPDIR/agentplaza.desktop"
   install -m644 "$STAGE/share/agentplaza/icons/agentplaza-256.png" "$APPDIR/agentplaza.png"
