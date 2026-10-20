@@ -12,7 +12,7 @@ import type { Artifact } from './model';
 /** The context an owner's artifact is drawn with. Frames and rows are fetched for the artifact's own version. */
 export function ownerCtx(a: Artifact): ViewCtx {
   const rows = (panelId: string, q: { offset: number; limit: number; sort?: string; desc?: boolean; filter?: string }) =>
-    artifactRows(a.id, panelId, q);
+    artifactRows(a.id, panelId, q, a.version);
   return {
     blobUrl: (blob: string) => artifactBlobUrl(a.id, blob),
     rows,

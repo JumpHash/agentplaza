@@ -48,8 +48,9 @@ export function listVersions(id: string): Promise<VersionInfo[]> {
 }
 
 /** One page of a dataset panel's rows. */
-export function artifactRows(id: string, panel: string, q: RowsParams): Promise<RowsPage> {
+export function artifactRows(id: string, panel: string, q: RowsParams, version?: number): Promise<RowsPage> {
   const params = {
+    v: version,
     panel,
     offset: q.offset,
     limit: q.limit,
@@ -71,8 +72,8 @@ export function artifactBlobUrl(id: string, blob: string): string {
 }
 
 /** Downloads an export (CSV or JSON of a dataset panel, or of every panel when `panel` is omitted). */
-export async function downloadExport(id: string, format: 'csv' | 'json', panel: string | null, name: string): Promise<void> {
-  const res = await raw('GET', `${path(id)}/export${query({ format, panel: panel ?? undefined })}`);
+export async function downloadExport(id: string, format: 'csv' | 'json', panel: string | null, name: string, version?: number): Promise<void> {
+  const res = await raw('GET', `${path(id)}/export${query({ format, panel: panel ?? undefined, v: version })}`);
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement('a');
   a.href = url;
@@ -86,7 +87,32 @@ export function deleteArtifact(id: string): Promise<unknown> {
   return call<unknown>('DELETE', path(id));
 }
 
+/** The most artifacts kept at once. A long session embeds many, so the oldest go first. */
+const MAX_CACHED = 200;
+
 const cache = new Map<string, { at: number; value: Promise<Artifact> }>();
+
+/**
+ * Stores a fetch. Entries past their TTL go first; then, while the cache is full, the oldest (a Map keeps insertion
+ * order) go, one at a time.
+ */
+function remember(key: string, value: Promise<Artifact>, now: number): void {
+  for (const [k, entry] of cache) {
+    if (now - entry.at >= TTL_MS) cache.delete(k);
+  }
+  while (cache.size >= MAX_CACHED) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  cache.set(key, { at: now, value });
+}
+
+/** Test hooks: the store itself, and the keys it holds, oldest first. */
+export const rememberForTest = remember;
+export function cacheKeysForTest(): string[] {
+  return [...cache.keys()];
+}
 
 /**
  * An artifact fetched once and reused for a minute, keyed by id and version. A failed fetch is not kept, so the next
@@ -97,7 +123,7 @@ export function cachedArtifact(id: string, version?: number): Promise<Artifact> 
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
   const value = getArtifact(id, version);
-  cache.set(key, { at: Date.now(), value });
+  remember(key, value, Date.now());
   value.catch(() => {
     if (cache.get(key)?.value === value) cache.delete(key);
   });

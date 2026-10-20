@@ -42,7 +42,7 @@ without the flag (tests, development) keeps an open API and says so in its log.
 
 | console | where | notes |
 |---|---|---|
-| web | `apps/web` | TypeScript, esbuild; CI builds `dist/` once per commit (it is not committed). Served by `apid`. CSP; text is set with `textContent` only. |
+| web | `apps/web` | TypeScript, esbuild; CI builds `dist/` once per commit (it is not committed). Served by `apid`. CSP; text is set with `textContent`, or with `innerHTML` only for a fixed template or values passed through `esc()`. Each such site is listed in the innerHTML test in `apps/web/test/tests.ts`. |
 | desktop | `apps/desktop` | Native app (iced + wgpu), at parity with the web console. "Start locally" and "Host a hub" set up the container for Postgres 17. |
 | CLI and terminal screen | `apps/cli` | The `agentplaza` command: every console feature as a command, `agentplaza chat` to talk a project into being with the orchestrator, `agentplaza tui` for the plaza live in a terminal, `agentplaza node` to join a machine. |
 

@@ -36,6 +36,9 @@ jobs:
         run: .github/ci/in-image.sh 'cd apps/web && npm run build' 2>&1 | tee console-build.log
         env:
           APZ_REQUIRE_ENGINE: "1"
+      # The engine's bundles must stay within their size budgets (apps/web/size-budget.json); a file over budget fails here.
+      - name: Size budget
+        run: .github/ci/in-image.sh 'node apps/web/scripts/size-budget.mjs apps/web/dist'
       - name: Test
         id: test
         shell: bash

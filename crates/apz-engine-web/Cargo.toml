@@ -12,7 +12,8 @@ path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-apz-engine = { path = "../apz-engine" }
+# Without the embedded kit (apz-engine's `embedded-kit` is the default): the page hands the kit's files over (kit_file, kit_ready).
+apz-engine = { path = "../apz-engine", default-features = false }
 # The same wgpu as apz-engine (27.0.1 in Cargo.lock), so the surface and the device are the engine's.
 wgpu = "27.0.1"
 # `Instant` for the frame clock: std on native, performance.now() in the browser.
