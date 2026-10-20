@@ -1,6 +1,7 @@
-//! The Overview screen (parity with the web console's `overview` view): the plaza at a glance,
-//! the orchestrator's chat box, the activity feed, the projects with their flow lines, and the fleet.
-//! Under a project it is that project's: its agents, its tasks, its stage and budget, its activity.
+//! The Overview screen (parity with the web console's `overview` view, in the prototype's bare page): the
+//! orchestrator's composer under the plaza's question, the three ways in, the figures, what waits on the owner
+//! beside the live activity, the projects in progress and the fleet. Under a project it is that project's: its
+//! agents, its tasks, its stage and budget, its activity.
 //!
 //! The web view is pushed the transcript bus. A screen has no event stream here, so the feed is
 //! polled: every load reads each agent's transcript after the last entry seen.
@@ -8,54 +9,43 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::alignment::Vertical;
-use iced::font::{Style as FontStyle, Weight};
+use iced::alignment::{Horizontal, Vertical};
 use iced::keyboard::{Key, key::Named};
-use iced::widget::text::{Span, Wrapping};
-use iced::widget::{
-    Space, button, column, container, rich_text, row, space, span, text, text_editor,
-};
+use iced::widget::text::{LineHeight, Wrapping};
+use iced::widget::{Space, button, column, container, row, space, text, text_editor};
 use iced::{Background, Border, Color, Element, Font, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::Id;
-use super::work::flow_line;
-use super::work_model::{self as model, FLOW_TASKS};
-use crate::console::{Ctx, client, ui};
-use crate::theme::{self};
+use super::approvals::{self, Approval, Proposal};
+use super::work_model::{self as model};
+use crate::console::{Ctx, chat_tools, client, ui};
+use crate::theme::{self, TYPE_META, TYPE_PROSE, TYPE_UI};
 
 const FEED_MAX: usize = 40;
 const FLEET_COLS: usize = 4;
-/// The web's `info` tone (dark ground): a working agent.
-const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
-const SANS_BOLD: Font = Font {
-    weight: Weight::Bold,
-    ..theme::SANS
-};
-const SANS_ITALIC: Font = Font {
-    style: FontStyle::Italic,
-    ..theme::SANS
-};
-const SANS_MEDIUM: Font = Font {
-    weight: Weight::Medium,
-    ..theme::SANS
-};
+const SANS_MEDIUM: Font = ui::SANS_MEDIUM;
+const SANS_SEMIBOLD: Font = ui::SANS_SEMIBOLD;
 
 #[derive(Debug, Default)]
 pub struct State {
+    /// The orchestrator composer's model chip and context bar (its orchestrator's work).
+    pub chat_tools: chat_tools::ChatTools,
     pub error: Option<String>,
     overview: Option<Overview>,
     agents: Vec<Agent>,
     feed: Vec<Item>,
-    /// The projects and the ledger, for the projects' flow lines; None when the hub would not say.
+    /// The projects and the ledger, for the projects' lines; None when the hub would not say.
     projects: Option<(Vec<model::Project>, Vec<model::Task>)>,
+    /// The approvals and the agents the orchestrator proposes: what waits on the owner.
+    approvals: Vec<Approval>,
+    proposals: Vec<Proposal>,
     /// The agents' steps as `agent_step` events bring them, newer than the roster's until the next read.
     steps: HashMap<u64, Option<model::Step>>,
     cursors: HashMap<u64, u64>,
     goal: text_editor::Content,
     sending: bool,
-    note: Option<String>,
     chat_error: Option<String>,
     /// A load is in flight; hub events that arrive meanwhile only mark `again`.
     loading: bool,
@@ -68,7 +58,9 @@ pub struct State {
 pub enum Msg {
     /// Navigate to another screen.
     Go(Id),
-    /// One poll of the hub: the overview, the fleet and the new transcript entries.
+    /// Open the New project dialog (the three ways in).
+    NewProject,
+    /// One poll of the hub: the overview, the fleet, the waiting list and the new transcript entries.
     Loaded(Result<Snapshot, String>),
     /// An edit to the orchestrator goal.
     Goal(text_editor::Action),
@@ -78,6 +70,8 @@ pub enum Msg {
     Sent(Result<Value, String>),
     /// A hub event: the roster or the transcript changed.
     Event(crate::console::events::Event),
+    /// The orchestrator composer's model chip and context bar.
+    ChatTools(chat_tools::ChatToolsMsg),
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +80,8 @@ pub struct Snapshot {
     agents: Vec<Agent>,
     feed: Vec<(u64, Vec<Entry>)>,
     projects: Option<(Vec<model::Project>, Vec<model::Task>)>,
+    approvals: Vec<Approval>,
+    proposals: Vec<Proposal>,
     budget: Option<i64>,
 }
 
@@ -193,6 +189,15 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
                 let entries: Vec<Entry> = client.get(&path)?;
                 feed.push((a.cid, entries));
             }
+            // What waits on the owner: a list that could not be read keeps the last one the owner saw.
+            let approvals = client
+                .get::<Value>("/v1/approvals")
+                .map(|v| approvals::list(&v, Approval::from_value))
+                .unwrap_or_default();
+            let proposals = client
+                .get::<Value>("/v1/agent-proposals")
+                .map(|v| approvals::list(&v, Proposal::from_value))
+                .unwrap_or_default();
             let budget = scope.as_deref().and_then(|p| {
                 let b: Value = client.get(&format!("/v1/projects/{p}/budget")).ok()?;
                 b["own"]
@@ -205,6 +210,8 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
                 agents,
                 feed,
                 projects: read_projects(&client, scope.as_deref()),
+                approvals,
+                proposals,
                 budget,
             })
         },
@@ -214,7 +221,7 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
-        Msg::Go(_) => {}
+        Msg::Go(_) | Msg::NewProject => {}
         Msg::Loaded(Ok(snap)) => {
             for (cid, entries) in snap.feed {
                 for e in entries {
@@ -234,18 +241,36 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.overview = Some(snap.overview);
             state.agents = snap.agents;
             state.projects = snap.projects;
+            state.approvals = snap.approvals;
+            state.proposals = snap.proposals;
             state.budget = snap.budget;
             // The roster was read after the steps the events brought, so its own are as new.
             state.steps.clear();
             state.error = None;
-            return landed(state, ctx);
+            let tools = match state.agents.iter().find(|a| a.tier == "orchestrator") {
+                Some(orch) if !state.chat_tools.is_loaded() => {
+                    chat_tools::load(&ctx.client, chat_tools::Target::Agent(orch.cid))
+                        .map(Msg::ChatTools)
+                }
+                _ => Task::none(),
+            };
+            return Task::batch([landed(state, ctx), tools]);
         }
         Msg::Loaded(Err(e)) => {
             state.overview = None;
             state.error = Some(e);
             return landed(state, ctx);
         }
+        Msg::ChatTools(m) => {
+            return chat_tools::update(&mut state.chat_tools, m, &ctx.client).map(Msg::ChatTools);
+        }
         Msg::Event(event) => {
+            if let Some(task) = state
+                .chat_tools
+                .on_event(&ctx.client, &event.kind, &event.data)
+            {
+                return task.map(Msg::ChatTools);
+            }
             if event.kind == "agent_step" {
                 if let Some(cid) = event.data.get("cid").and_then(Value::as_u64) {
                     let step = event
@@ -259,7 +284,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             if !matches!(
                 event.kind.as_str(),
-                "agent" | "work" | "transcript" | "project" | "task"
+                "agent"
+                    | "work"
+                    | "transcript"
+                    | "project"
+                    | "task"
+                    | "approval"
+                    | "agent_proposal"
             ) {
                 return Task::none();
             }
@@ -284,7 +315,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return Task::none();
             }
             state.sending = true;
-            state.note = None;
             state.chat_error = None;
             let client = ctx.client.clone();
             return client::task(
@@ -298,7 +328,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Sent(Ok(_)) => {
             state.sending = false;
             state.goal = text_editor::Content::new();
-            state.note = Some("Sent to the orchestrator".into());
+            return state.chat_tools.refresh(&ctx.client).map(Msg::ChatTools);
         }
         Msg::Sent(Err(e)) => {
             state.sending = false;
@@ -320,45 +350,90 @@ fn landed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let scope = ctx.project.as_deref();
-    let stats = match (&state.overview, scope) {
-        (Some(_), Some(p)) => project_stats(state, p),
-        (Some(o), None) => stat_row(o, state.agents.iter().filter(|a| a.on_bench()).count()),
-        (None, _) => empty("alert", "apid is unreachable", "Start apid, then reload."),
+    let p = crate::theme::palette();
+    // Under a project, the project's title is the page's question; the plaza's asks what it should work on.
+    let title = match scope {
+        Some(s) => state
+            .projects
+            .as_ref()
+            .and_then(|(list, _)| list.iter().find(|x| x.id == s))
+            .map_or(s.to_string(), |x| x.title.clone()),
+        None => "What should the plaza work on?".to_string(),
     };
-    let mut page = column![stats].spacing(26);
+    let orch = state.agents.iter().find(|a| a.tier == "orchestrator");
+    let sub = match orch {
+        Some(o) => format!(
+            "{} plans the work and delegates it to the fleet · {} · Ctrl+Enter to send",
+            name(o),
+            o.model
+        ),
+        None => String::new(),
+    };
+    let composer: Element<'a, Msg> = match orch {
+        Some(o) => composer_box(state, o),
+        None => boxed_card(ui::empty(
+            "orchestrator",
+            "No orchestrator connected",
+            "Add the orchestrator role to the fleet to delegate work by goal.",
+        )),
+    };
+    let hero = column![
+        container(
+            text(title)
+                .font(SANS_SEMIBOLD)
+                .size(26.0)
+                .line_height(LineHeight::Relative(1.2))
+                .color(p.ink)
+        )
+        .width(Length::Fill)
+        .align_x(Horizontal::Center),
+        container(text(sub).font(theme::SANS).size(TYPE_UI).color(p.ink_3))
+            .width(Length::Fill)
+            .align_x(Horizontal::Center),
+    ]
+    .spacing(8);
+
+    let stats = match (&state.overview, scope) {
+        (Some(_), Some(s)) => project_stats(state, s),
+        (Some(o), None) => stat_row(o, state.agents.iter().filter(|a| a.on_bench()).count()),
+        (None, _) => boxed_card(ui::empty(
+            "alert",
+            "apid is unreachable",
+            "Start apid, then reload.",
+        )),
+    };
+
+    let mut page = column![hero, composer, ways(), stats].spacing(16);
     if let Some(e) = &state.error {
         page = page.push(ui::error_line(e));
     }
     page = page.push(
         row![
-            container(orchestrator(state)).width(Length::FillPortion(1)),
+            container(waiting(state, scope)).width(Length::FillPortion(1)),
             container(activity(state)).width(Length::FillPortion(1)),
         ]
-        .spacing(22),
+        .spacing(16)
+        .align_y(Vertical::Top),
     );
     page = page.push(projects(state));
     let fleet_agents: Vec<&Agent> = state.agents.iter().filter(|a| a.in_scope(scope)).collect();
     page = page.push(fleet(fleet_agents));
-    let title = match scope {
-        Some(p) => format!(
-            "Overview · {}",
-            state
-                .projects
-                .as_ref()
-                .and_then(|(list, _)| list.iter().find(|x| x.id == p))
-                .map_or(p, |x| x.title.as_str())
-        ),
-        None => "Overview".to_string(),
-    };
-    // The page scrolls under its head (the shell leaves the Overview's scrolling to it): on a short window the
-    // figures, the projects and the fleet keep their height instead of being squeezed out.
-    let page = page.padding(Padding {
-        top: 0.0,
-        right: 14.0,
-        bottom: 0.0,
-        left: 0.0,
-    });
-    ui::sheet(ui::view_head(&title, vec![]), ui::scroll(page).into())
+
+    // The page is centred at 820 wide and scrolls under the window; its gutters are the web's `.home` padding.
+    container(ui::scroll(
+        container(page)
+            .max_width(820.0)
+            .width(Length::Fill)
+            .padding(Padding {
+                top: 48.0,
+                right: 28.0,
+                bottom: 48.0,
+                left: 28.0,
+            }),
+    ))
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 /// The projects and the ledger, for the Projects card; None when the hub would not say. Under a project, that
@@ -420,23 +495,512 @@ fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
     row![
         stat(
             "Agents",
-            team.len().to_string(),
+            figure(team.len().to_string()),
             format!("{working} working")
         ),
-        stat("Open tasks", open.to_string(), format!("{done} done")),
-        stat("Stage", stage, life.to_string()),
-        stat("Budget", budget, budget_sub.to_string()),
+        stat(
+            "Open tasks",
+            figure(open.to_string()),
+            format!("{done} done")
+        ),
+        stat("Stage", figure(stage), life.to_string()),
+        stat("Budget", figure(budget), budget_sub.to_string()),
     ]
-    .spacing(22)
+    .spacing(16)
     .into()
 }
 
-/// A line per project still in progress: its title, its stage and its flow line, opening it on the Work screen.
+fn stat_row<'a>(o: &Overview, bench: usize) -> Element<'a, Msg> {
+    let open =
+        o.tasks.get("open").copied().unwrap_or(0) + o.tasks.get("claimed").copied().unwrap_or(0);
+    let done = o.tasks.get("done").copied().unwrap_or(0);
+    row![
+        stat(
+            "Agents",
+            figure(o.agents.total.to_string()),
+            format!("{} working · {bench} on the bench", o.agents.working)
+        ),
+        stat(
+            "Open tasks",
+            figure(open.to_string()),
+            format!("{done} done")
+        ),
+        model_stat("Worker model", &o.default_model),
+        model_stat("Orchestrator model", &o.orchestrator_model),
+    ]
+    .spacing(16)
+    .into()
+}
+
+/// A model's stat: its name in mono, its provider under it (the web's `modelStat`).
+fn model_stat<'a>(label: &str, model: &str) -> Element<'a, Msg> {
+    let s = model.to_string();
+    let (name, provider) = match s.find('/') {
+        Some(i) => (
+            s.rsplit('/').next().unwrap_or("").to_string(),
+            s[..i].to_string(),
+        ),
+        None => (s.clone(), String::new()),
+    };
+    let name = if name.is_empty() {
+        "—".to_string()
+    } else {
+        name
+    };
+    stat(
+        label,
+        text(name)
+            .font(theme::MONO)
+            .size(15.0)
+            .wrapping(Wrapping::None)
+            .color(crate::theme::palette().ink)
+            .into(),
+        provider,
+    )
+}
+
+/// A stat's figure: semibold 19, one line.
+fn figure<'a>(value: String) -> Element<'a, Msg> {
+    text(value)
+        .font(SANS_SEMIBOLD)
+        .size(19.0)
+        .wrapping(Wrapping::None)
+        .color(crate::theme::palette().ink)
+        .into()
+}
+
+/// A stat tile, as the web's `.stat`: the label, the figure, a sub-line; a raised box with a rule.
+fn stat<'a>(label: &str, value: Element<'a, Msg>, sub: String) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    container(
+        column![
+            text(label.to_string())
+                .font(theme::SANS)
+                .size(TYPE_META)
+                .color(p.ink_3)
+                .wrapping(Wrapping::None),
+            value,
+            text(sub)
+                .font(theme::SANS)
+                .size(TYPE_META)
+                .color(p.ink_3)
+                .wrapping(Wrapping::None),
+        ]
+        .spacing(4),
+    )
+    .padding(Padding {
+        top: 14.0,
+        right: 16.0,
+        bottom: 14.0,
+        left: 16.0,
+    })
+    .width(Length::FillPortion(1))
+    .clip(true)
+    .style(boxed)
+    .into()
+}
+
+/// The composer to the orchestrator, as the web's `.composer`: the message, and its bar with the agent it goes to,
+/// the transcript link and Send.
+fn composer_box<'a>(state: &'a State, orch: &'a Agent) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let (label, tone) = match orch.status.as_str() {
+        "working" => ("Working", p.info),
+        "idle" => ("Idle", p.ok),
+        "asleep" => ("Asleep", p.ink_3),
+        "dozing" => ("Asleep (light)", p.ink_3),
+        _ => ("Offline", p.ink_3),
+    };
+    let chip = container(chat_tools::chip(&state.chat_tools).map(Msg::ChatTools))
+        .width(Length::Fixed(360.0));
+    let pick = row![
+        ui::dot::<Msg>(tone),
+        text(name(orch))
+            .font(SANS_MEDIUM)
+            .size(TYPE_UI)
+            .color(p.ink)
+            .wrapping(Wrapping::None),
+        text(label)
+            .font(theme::SANS)
+            .size(TYPE_META)
+            .color(p.ink_3)
+            .wrapping(Wrapping::None),
+    ]
+    .spacing(8)
+    .align_y(Vertical::Center);
+
+    let goal = text_editor(&state.goal)
+        .placeholder("Tell the orchestrator what you want done…")
+        .on_action(Msg::Goal)
+        .key_binding(|press| {
+            if matches!(press.key, Key::Named(Named::Enter))
+                && (press.modifiers.control() || press.modifiers.logo())
+            {
+                return Some(text_editor::Binding::Custom(Msg::Send));
+            }
+            text_editor::Binding::from_key_press(press)
+        })
+        .font(theme::SANS)
+        .size(TYPE_PROSE)
+        .padding(Padding {
+            top: 14.0,
+            right: 16.0,
+            bottom: 6.0,
+            left: 16.0,
+        })
+        .height(Length::Fixed(84.0))
+        .style(|_: &Theme, _| text_editor::Style {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border::default(),
+            placeholder: crate::theme::palette().ink_3,
+            value: crate::theme::palette().ink,
+            selection: crate::theme::palette().signal,
+        });
+
+    let bar = row![
+        pick,
+        chip,
+        space::horizontal(),
+        ui::btn_sm(
+            "Open transcript",
+            Some("scroll-text"),
+            ui::Kind::Ghost,
+            Some(Msg::Go(Id::Agent(orch.cid)))
+        ),
+        ui::btn_sm(
+            "Send",
+            Some("arrow-up"),
+            ui::Kind::Primary,
+            (!state.sending).then_some(Msg::Send)
+        ),
+    ]
+    .spacing(8)
+    .align_y(Vertical::Center);
+
+    let context = container(chat_tools::bar(&state.chat_tools).map(Msg::ChatTools))
+        .padding(Padding {
+            top: 10.0,
+            right: 16.0,
+            bottom: 0.0,
+            left: 16.0,
+        })
+        .width(Length::Fill);
+    let mut body = column![
+        context,
+        goal,
+        container(bar)
+            .padding(Padding {
+                top: 6.0,
+                right: 10.0,
+                bottom: 8.0,
+                left: 10.0,
+            })
+            .width(Length::Fill),
+    ]
+    .spacing(0);
+    if let Some(e) = chat_tools::notice(&state.chat_tools) {
+        body = body.push(container(e.map(Msg::ChatTools)).padding(Padding {
+            top: 0.0,
+            right: 16.0,
+            bottom: 10.0,
+            left: 16.0,
+        }));
+    }
+    if let Some(e) = &state.chat_error {
+        body = body.push(container(ui::error_line(e)).padding(Padding {
+            top: 0.0,
+            right: 16.0,
+            bottom: 10.0,
+            left: 16.0,
+        }));
+    }
+    container(body)
+        .width(Length::Fill)
+        .clip(true)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().raised.into()),
+            border: Border {
+                color: crate::theme::palette().rule_strong,
+                width: 1.0,
+                radius: 18.0.into(),
+            },
+            shadow: crate::theme::skin().shadow_card,
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The three ways in, as the web's `.home-ways`: one raised card of rows; each opens the New project dialog.
+fn ways<'a>() -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let items = [
+        ("messages-square", "Start a project by talking it through"),
+        ("folder-plus", "Open a project directly"),
+        ("git-pull-request-arrow", "Bring in a project that exists"),
+    ];
+    let mut list = column![].spacing(0);
+    for (i, (icon, label)) in items.into_iter().enumerate() {
+        if i > 0 {
+            list = list.push(rule(p.rule));
+        }
+        let inner = row![
+            ui::icon::<Msg>(icon, 15.0, p.ink_2),
+            text(label)
+                .font(theme::SANS)
+                .size(TYPE_UI)
+                .color(p.ink_2)
+                .wrapping(Wrapping::None),
+            space::horizontal(),
+            text("New project")
+                .font(theme::SANS)
+                .size(TYPE_META)
+                .color(p.ink_3)
+                .wrapping(Wrapping::None),
+            ui::icon::<Msg>("arrow-right", 15.0, p.ink_3),
+        ]
+        .spacing(12)
+        .align_y(Vertical::Center);
+        list = list.push(
+            button(container(inner).center_y(Length::Fill))
+                .on_press(Msg::NewProject)
+                .padding([0.0, 16.0])
+                .height(Length::Fixed(44.0))
+                .width(Length::Fill)
+                .style(|_: &Theme, status: button::Status| {
+                    let p = crate::theme::palette();
+                    let hovered =
+                        matches!(status, button::Status::Hovered | button::Status::Pressed);
+                    button::Style {
+                        background: hovered.then_some(Background::Color(p.hover)),
+                        text_color: if hovered { p.ink } else { p.ink_2 },
+                        border: Border::default(),
+                        ..Default::default()
+                    }
+                }),
+        );
+    }
+    container(list)
+        .width(Length::Fill)
+        .clip(true)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().raised.into()),
+            border: Border {
+                color: crate::theme::palette().rule,
+                width: 1.0,
+                radius: crate::theme::skin().radius_lg.into(),
+            },
+            shadow: crate::theme::skin().shadow_card,
+            ..Default::default()
+        })
+        .into()
+}
+
+/// What waits on the owner: the pending approvals and the agents proposed, under a project only its own.
+fn waiting<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
+    let shown = |a: &Approval| -> bool {
+        if scope.is_none() || a.cid == 0 {
+            return true;
+        }
+        state
+            .agents
+            .iter()
+            .find(|x| x.cid == a.cid)
+            .is_none_or(|agent| agent.in_scope(scope))
+    };
+    let mut list: Vec<&Approval> = state
+        .approvals
+        .iter()
+        .filter(|a| a.state == "pending" && shown(a))
+        .collect();
+    list.sort_by_key(|a| a.created_ms);
+    let props: Vec<&Proposal> = state
+        .proposals
+        .iter()
+        .filter(|p| p.state == "pending")
+        .collect();
+    let n = list.len() + props.len();
+
+    // The rows are ruled apart, the first one unruled (the web's `.ov-wait a`).
+    let mut rows = column![].spacing(0);
+    let mut lines: Vec<(&str, String, String)> = Vec::new();
+    for a in &list {
+        let who = name_of(state, a.cid);
+        lines.push((
+            kind_icon(&a.kind),
+            wait_title(a),
+            format!("{who} · {}", approvals::ago(a.created_ms)),
+        ));
+    }
+    for p in &props {
+        let title = if p.title.is_empty() {
+            "Proposed agent".to_string()
+        } else {
+            p.title.clone()
+        };
+        lines.push((
+            "user-plus",
+            title,
+            format!("{} · {}", p.by, approvals::ago(p.created_ms)),
+        ));
+    }
+    for (i, (icon, title, sub)) in lines.into_iter().enumerate() {
+        if i > 0 {
+            rows = rows.push(rule(crate::theme::palette().rule));
+        }
+        rows = rows.push(wait_row(icon, title, sub));
+    }
+    let body: Element<'a, Msg> = if n == 0 {
+        ui::empty(
+            "approval",
+            "Nothing is waiting",
+            "Agents ask here before acts that need your approval, and the orchestrator proposes new agents here.",
+        )
+    } else {
+        rows.into()
+    };
+    ov_card(
+        vec![
+            head_title(&format!("Waiting on you · {n}")),
+            space::horizontal().into(),
+            ui::btn_sm(
+                "Approvals",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Go(Id::Approvals)),
+            ),
+        ],
+        body,
+        true,
+    )
+}
+
+/// One row of the waiting list: an icon, its line (clipped), and who asked and when.
+fn wait_row<'a>(icon: &str, title: String, sub: String) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let inner = row![
+        ui::icon::<Msg>(icon, 15.0, p.ink_2),
+        container(
+            text(title)
+                .font(theme::SANS)
+                .size(TYPE_UI)
+                .color(p.ink)
+                .wrapping(Wrapping::None),
+        )
+        .width(Length::Fill)
+        .clip(true),
+        text(sub)
+            .font(theme::SANS)
+            .size(TYPE_META)
+            .color(p.ink_3)
+            .wrapping(Wrapping::None),
+    ]
+    .spacing(10)
+    .align_y(Vertical::Center);
+    button(container(inner).center_y(Length::Fill))
+        .on_press(Msg::Go(Id::Approvals))
+        .padding([0.0, 16.0])
+        .height(Length::Fixed(44.0))
+        .width(Length::Fill)
+        .style(row_hover)
+        .into()
+}
+
+/// The line of a waiting approval: its goal, its escalation, its payment, or the tool call.
+fn wait_title(a: &Approval) -> String {
+    let goal = a.detail.get("goal").and_then(Value::as_str);
+    let task = a.detail.get("task").and_then(Value::as_str);
+    match a.kind.as_str() {
+        "review" => goal
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Review of {}", task.unwrap_or(""))),
+        "sanction" => format!("Escalation: {}", a.subject),
+        "payment" => format!("Payment awaiting approval: {}", a.subject),
+        "deploy" => a.subject.clone(),
+        "artifact.share" => format!("Share {}", a.subject),
+        _ => {
+            if let Some(cmd) = a.input.get("command").and_then(Value::as_str) {
+                format!("{}: {cmd}", a.tool)
+            } else if let Some(d) = a.detail.as_str() {
+                format!("{}: {d}", a.tool)
+            } else {
+                a.tool.clone()
+            }
+        }
+    }
+}
+
+/// The icon of an approval's kind, as the approvals list draws it.
+fn kind_icon(kind: &str) -> &'static str {
+    match kind {
+        "review" => "git-pull-request",
+        "tool" => "terminal",
+        "deploy" => "rocket",
+        "payment" => "credit-card",
+        "sanction" => "gavel",
+        _ => "shield-check",
+    }
+}
+
+/// An agent's name for the waiting list: "Unnamed" while blank, "agent <cid>" when unknown.
+fn name_of(state: &State, cid: u64) -> String {
+    match state.agents.iter().find(|x| x.cid == cid) {
+        Some(a) => name(a),
+        None => format!("agent {cid}"),
+    }
+}
+
+/// The Activity card: the transcript events of the plaza's agents (or the project's), newest first.
+fn activity<'a>(state: &'a State) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let body: Element<'a, Msg> = if state.feed.is_empty() {
+        container(ui::faint("Waiting for activity…"))
+            .width(Length::Fill)
+            .align_x(Horizontal::Center)
+            .into()
+    } else {
+        let now = now_ms();
+        let mut list = column![].spacing(8);
+        for item in &state.feed {
+            let who = state
+                .agents
+                .iter()
+                .find(|a| a.cid == item.cid)
+                .map(name)
+                .unwrap_or_else(|| format!("agent {}", item.cid));
+            list = list.push(
+                row![
+                    container(
+                        text(ago(now, item.at_ms))
+                            .font(theme::SANS)
+                            .size(TYPE_META)
+                            .color(p.ink_3)
+                            .wrapping(Wrapping::None)
+                    )
+                    .width(Length::Fixed(72.0)),
+                    ui::text_link(&who, Msg::Go(Id::Agent(item.cid))),
+                    text(item.line.clone())
+                        .font(theme::SANS)
+                        .size(TYPE_UI)
+                        .color(p.ink_2)
+                        .width(Length::Fill),
+                ]
+                .spacing(12)
+                .align_y(Vertical::Top),
+            );
+        }
+        // The feed scrolls past 360px and is shorter than that when it has less to show.
+        container(ui::scroll(list)).max_height(360.0).into()
+    };
+    ov_card(vec![head_title("Activity")], body, false)
+}
+
+/// The Projects card: a line per project still in progress, its monogram, title, stage and task count; it opens the
+/// project's Work view.
 fn projects<'a>(state: &'a State) -> Element<'a, Msg> {
     let Some((list, tasks)) = &state.projects else {
-        return card(
-            card_title("Projects"),
-            empty(
+        return ov_card(
+            vec![head_title("Projects")],
+            ui::empty(
                 "alert",
                 "Projects are unavailable",
                 "apid did not answer; they come back with it.",
@@ -446,9 +1010,9 @@ fn projects<'a>(state: &'a State) -> Element<'a, Msg> {
     };
     let active: Vec<&model::Project> = list.iter().filter(|p| p.live()).collect();
     if active.is_empty() {
-        return card(
-            card_title("Projects"),
-            empty(
+        return ov_card(
+            vec![head_title("Projects")],
+            ui::empty(
                 "projects",
                 "No projects in progress",
                 "Each goal you give the orchestrator becomes a project; its flow shows here.",
@@ -464,12 +1028,13 @@ fn projects<'a>(state: &'a State) -> Element<'a, Msg> {
             .find(|a| a.cid == cid)
             .and_then(|a| a.step.clone()),
     };
-    let rows = active.into_iter().map(|p| {
-        let own = model::tasks_of(p, tasks);
+    let p = crate::theme::palette();
+    let rows = active.into_iter().map(|pj| {
+        let own = model::tasks_of(pj, tasks);
         let done = own.iter().filter(|t| t.state == "done").count();
-        let yours = if model::plan_waits_for_owner(p) {
+        let yours = if model::plan_waits_for_owner(pj) {
             "waits for your approval"
-        } else if model::waits_for_owner(Some(p), &own, &step_of) {
+        } else if model::waits_for_owner(Some(pj), &own, &step_of) {
             "waits for you"
         } else {
             ""
@@ -479,262 +1044,49 @@ fn projects<'a>(state: &'a State) -> Element<'a, Msg> {
         } else {
             format!("{done} of {} tasks done", own.len())
         };
-        let line = [model::stage_label(&p.stage), counted, yours.to_string()]
+        let line = [model::stage_label(&pj.stage), counted, yours.to_string()]
             .into_iter()
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join(" · ");
         let body = row![
-            container(
-                text(p.title.clone())
-                    .font(SANS_MEDIUM)
-                    .size(13.0)
-                    .color(crate::theme::palette().ink)
-                    .wrapping(Wrapping::None)
-            )
-            .width(Length::FillPortion(2))
-            .clip(true),
-            container(ui::faint(line).wrapping(Wrapping::None))
-                .width(Length::FillPortion(3))
-                .clip(true),
-            // A fixed width, so the columns line up from row to row: the longest line holds its 24 squares and "+N".
-            container(flow_line(
-                &model::flow_segments(Some(p), &own, &step_of),
-                own.len().saturating_sub(FLOW_TASKS)
-            ))
-            .width(Length::Fixed(320.0))
-            .align_x(iced::alignment::Horizontal::Right),
+            crate::console::shell::pmono::<Msg>(&pj.id, &pj.title, 28.0),
+            column![
+                container(
+                    text(pj.title.clone())
+                        .font(SANS_MEDIUM)
+                        .size(TYPE_UI)
+                        .color(p.ink)
+                        .wrapping(Wrapping::None)
+                )
+                .clip(true)
+                .width(Length::Fill),
+                container(ui::faint(line).wrapping(Wrapping::None))
+                    .clip(true)
+                    .width(Length::Fill),
+            ]
+            .spacing(4)
+            .width(Length::Fill),
         ]
-        .spacing(16)
+        .spacing(12)
         .align_y(Vertical::Center);
         let entry: Element<'a, Msg> = button(body)
-            .on_press(Msg::Go(Id::WorkOn(p.id.clone())))
-            .padding([10, 16])
+            .on_press(Msg::Go(Id::WorkOn(pj.id.clone())))
+            .padding([12.0, 16.0])
             .width(Length::Fill)
-            .style(theme::register_row(false))
+            .style(row_hover)
             .into();
-        column![entry, rule(crate::theme::palette().rule_faint)].into()
+        column![rule(p.rule), entry].into()
     });
-    card(card_title("Projects"), column(rows).into(), true)
+    ov_card(vec![head_title("Projects")], column(rows).into(), true)
 }
 
-fn stat_row<'a>(o: &Overview, bench: usize) -> Element<'a, Msg> {
-    let open =
-        o.tasks.get("open").copied().unwrap_or(0) + o.tasks.get("claimed").copied().unwrap_or(0);
-    let done = o.tasks.get("done").copied().unwrap_or(0);
-    row![
-        stat(
-            "Agents",
-            o.agents.total.to_string(),
-            format!("{} working · {bench} on the bench", o.agents.working)
-        ),
-        stat("Open tasks", open.to_string(), format!("{done} done")),
-        stat(
-            "Worker model",
-            model_name(&o.default_model),
-            model_provider(&o.default_model)
-        ),
-        stat(
-            "Orchestrator model",
-            model_name(&o.orchestrator_model),
-            model_provider(&o.orchestrator_model)
-        ),
-    ]
-    .spacing(22)
-    .into()
-}
-
-/// A stat tile: the figure in bold mono first, its label under it, an italic serif sub-line. A value with words in it
-/// (a stage, a model) is set at the section size on one line, as the web's `.value-text`, so it keeps to its tile.
-fn stat<'a>(label: &str, value: String, sub: String) -> Element<'a, Msg> {
-    let figure = if value.chars().any(char::is_alphabetic) {
-        text(value)
-            .font(ui::SANS_SEMIBOLD)
-            .size(crate::theme::TYPE_SECTION)
-            .wrapping(Wrapping::None)
-    } else {
-        text(value).font(ui::SANS_BOLD).size(34.0)
-    };
-    let body = column![
-        figure.color(crate::theme::palette().ink),
-        text(label.to_string())
-            .font(SANS_MEDIUM)
-            .size(10.5)
-            .color(crate::theme::palette().ink_3),
-        text(sub)
-            .font(SANS_ITALIC)
-            .size(13.0)
-            .color(crate::theme::palette().ink_2),
-    ]
-    .spacing(6);
-    container(body)
-        .padding(Padding {
-            top: 14.0,
-            right: 16.0,
-            bottom: 16.0,
-            left: 16.0,
-        })
-        .width(Length::FillPortion(1))
-        .style(rule_box)
-        .into()
-}
-
-fn orchestrator<'a>(state: &'a State) -> Element<'a, Msg> {
-    let Some(orch) = state.agents.iter().find(|a| a.tier == "orchestrator") else {
-        return card(
-            card_title("Orchestrator"),
-            empty(
-                "orchestrator",
-                "No orchestrator connected",
-                "Add the orchestrator role to the fleet to delegate work by goal.",
-            ),
-            false,
-        );
-    };
-    let (status, tone, filled) = match orch.status.as_str() {
-        "working" => ("Working", INFO, false),
-        "idle" => ("Idle", crate::theme::palette().ok, true),
-        "asleep" => ("Asleep", crate::theme::palette().ink_2, false),
-        "dozing" => ("Asleep (light)", crate::theme::palette().ink_2, false),
-        _ => ("Offline", crate::theme::palette().ink_2, false),
-    };
-    let head = row![
-        ui::icon::<Msg>("orchestrator", 15.0, crate::theme::palette().ink),
-        text(name(orch).to_string())
-            .font(ui::SANS_SEMIBOLD)
-            .size(11.5)
-            .color(crate::theme::palette().ink),
-        ui::faint(orch.role_label.clone()),
-        marker_tag(status, tone, filled),
-    ]
-    .spacing(10)
-    .align_y(Vertical::Center);
-
-    let goal = text_editor(&state.goal)
-        .placeholder("Tell the orchestrator what you want done…")
-        .on_action(Msg::Goal)
-        .key_binding(|press| {
-            if matches!(press.key, Key::Named(Named::Enter))
-                && (press.modifiers.control() || press.modifiers.logo())
-            {
-                return Some(text_editor::Binding::Custom(Msg::Send));
-            }
-            text_editor::Binding::from_key_press(press)
-        })
-        .font(theme::SANS)
-        .size(15.0)
-        .padding(Padding {
-            top: 6.0,
-            right: 0.0,
-            bottom: 7.0,
-            left: 0.0,
-        })
-        .height(Length::Fixed(84.0))
-        .style(|_: &Theme, _| text_editor::Style {
-            background: Background::Color(Color::TRANSPARENT),
-            border: Border::default(),
-            placeholder: crate::theme::palette().ink_3,
-            value: crate::theme::palette().ink,
-            selection: crate::theme::palette().signal,
-        });
-
-    let mut body = column![
-        text(format!(
-            "Plans the work and delegates it to the fleet · {}",
-            orch.model
-        ))
-        .font(theme::SANS)
-        .size(15.0)
-        .color(crate::theme::palette().ink_2),
-        column![goal, rule(crate::theme::palette().ink)],
-        row![
-            ui::faint("Ctrl+Enter to send"),
-            space::horizontal(),
-            link("Open transcript", 14.0, Msg::Go(Id::Agent(orch.cid))),
-            ui::btn(
-                "Send",
-                Some("send"),
-                ui::Kind::Primary,
-                (!state.sending).then_some(Msg::Send)
-            ),
-        ]
-        .spacing(14)
-        .align_y(Vertical::Center),
-    ]
-    .spacing(14);
-    if let Some(n) = &state.note {
-        body = body.push(ui::faint(n.as_str()));
-    }
-    if let Some(e) = &state.chat_error {
-        body = body.push(ui::error_line(e));
-    }
-    card(head.into(), body.into(), false)
-}
-
-fn activity<'a>(state: &'a State) -> Element<'a, Msg> {
-    let body: Element<'a, Msg> = if state.feed.is_empty() {
-        container(ui::faint("Waiting for activity…"))
-            .padding(Padding {
-                top: 6.0,
-                right: 20.0,
-                bottom: 6.0,
-                left: 20.0,
-            })
-            .width(Length::Fill)
-            .align_x(iced::alignment::Horizontal::Center)
-            .into()
-    } else {
-        let now = now_ms();
-        let mut list = column![].spacing(0);
-        for item in &state.feed {
-            let who = state
-                .agents
-                .iter()
-                .find(|a| a.cid == item.cid)
-                .map(name)
-                .unwrap_or_else(|| format!("agent {}", item.cid));
-            list = list.push(
-                container(
-                    row![
-                        ui::faint(ago(now, item.at_ms)).width(Length::Fixed(72.0)),
-                        link(&who, 13.0, Msg::Go(Id::Agent(item.cid))),
-                        text(item.line.clone())
-                            .font(theme::SANS)
-                            .size(13.0)
-                            .color(crate::theme::palette().ink_2)
-                            .wrapping(Wrapping::None)
-                            .width(Length::Fill),
-                    ]
-                    .spacing(8)
-                    .align_y(Vertical::Center),
-                )
-                .padding(Padding {
-                    top: 6.0,
-                    right: 20.0,
-                    bottom: 6.0,
-                    left: 20.0,
-                })
-                .width(Length::Fill),
-            );
-        }
-        // The web feed scrolls past 360px and is shorter than that when it has less to show.
-        container(ui::scroll(container(list).padding(Padding {
-            top: 8.0,
-            right: 0.0,
-            bottom: 8.0,
-            left: 0.0,
-        })))
-        .max_height(360.0)
-        .into()
-    };
-    card(card_title("Activity"), body, true)
-}
-
+/// The Fleet card: a tile per agent (its dot, its name, its work or state), opening its transcript.
 fn fleet<'a>(agents: Vec<&'a Agent>) -> Element<'a, Msg> {
     if agents.is_empty() {
-        return card(
-            card_title("Fleet"),
-            empty(
+        return ov_card(
+            vec![head_title("Fleet")],
+            ui::empty(
                 "agents",
                 "No agents yet",
                 "Agents appear here as their VMs connect.",
@@ -753,18 +1105,19 @@ fn fleet<'a>(agents: Vec<&'a Agent>) -> Element<'a, Msg> {
         }
         grid = grid.push(line);
     }
-    card(
-        card_title("Fleet"),
+    ov_card(
+        vec![head_title("Fleet")],
         container(grid).padding(16).width(Length::Fill).into(),
         true,
     )
 }
 
 fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
-    let (tone, filled) = match a.status.as_str() {
-        "working" => (INFO, true),
-        "idle" => (crate::theme::palette().ok, true),
-        _ => (crate::theme::palette().ink_3, false),
+    let p = crate::theme::palette();
+    let tone = match a.status.as_str() {
+        "working" => p.info,
+        "idle" => p.ok,
+        _ => p.ink_3,
     };
     let sub = match &a.work {
         Some(w) => clip(&w.prompt, 60),
@@ -773,19 +1126,27 @@ fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
         None if a.status == "dozing" => "asleep (light)".to_string(),
         None => a.role_label.clone(),
     };
-    let body = column![
-        row![
-            marker(tone, filled),
-            text(name(a))
-                .font(SANS_BOLD)
-                .size(13.0)
-                .color(crate::theme::palette().ink)
+    let body = row![
+        ui::dot::<Msg>(tone),
+        column![
+            container(
+                text(name(a))
+                    .font(SANS_MEDIUM)
+                    .size(TYPE_UI)
+                    .color(p.ink)
+                    .wrapping(Wrapping::None)
+            )
+            .clip(true)
+            .width(Length::Fill),
+            container(ui::faint(sub).wrapping(Wrapping::None))
+                .clip(true)
+                .width(Length::Fill),
         ]
-        .spacing(8)
-        .align_y(Vertical::Center),
-        ui::faint(sub),
+        .spacing(4)
+        .width(Length::Fill),
     ]
-    .spacing(2);
+    .spacing(8)
+    .align_y(Vertical::Center);
     button(body)
         .on_press(Msg::Go(Id::Agent(a.cid)))
         .style(tile_style)
@@ -794,141 +1155,96 @@ fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
         .into()
 }
 
-/// A fleet tile: a ruled box on the surface, lifted on hover.
+/// A fleet tile: a ruled box on the sheet's second ground, lifted on hover.
 fn tile_style(_: &Theme, status: button::Status) -> button::Style {
+    let p = crate::theme::palette();
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
-        background: Some(Background::Color(if hovered {
-            crate::theme::palette().rule_faint
-        } else {
-            crate::theme::palette().hover
-        })),
-        text_color: crate::theme::palette().ink,
+        background: Some(Background::Color(if hovered { p.hover } else { p.sheet_2 })),
+        text_color: p.ink,
         border: Border {
-            color: if hovered {
-                crate::theme::palette().ink_3
-            } else {
-                crate::theme::palette().rule
-            },
+            color: if hovered { p.ink_3 } else { p.rule },
             width: 1.0,
-            radius: 0.0.into(),
+            radius: crate::theme::skin().radius.into(),
         },
         ..Default::default()
     }
 }
 
-/// A card in the web's language: a mono head over a rule, the body below; a 1px rule frames it.
-/// The body is flush (no padding) when the content brings its own.
-fn card<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>, flush: bool) -> Element<'a, Msg> {
-    let head = container(head)
-        .padding(Padding {
-            top: 12.0,
-            right: 16.0,
-            bottom: 10.0,
-            left: 16.0,
-        })
-        .width(Length::Fill);
-    let body = container(body)
-        .padding(if flush { 0.0 } else { 16.0 })
-        .width(Length::Fill);
-    container(column![head, rule(crate::theme::palette().rule), body])
-        .width(Length::Fill)
-        .style(rule_box)
-        .into()
+/// A row's hover: the hover ground under the pointer, ink on it.
+fn row_hover(_: &Theme, status: button::Status) -> button::Style {
+    let p = crate::theme::palette();
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: hovered.then_some(Background::Color(p.hover)),
+        text_color: p.ink,
+        border: Border::default(),
+        ..Default::default()
+    }
 }
 
-/// A card's title: mono, semibold, uppercase.
-fn card_title<'a>(title: &str) -> Element<'a, Msg> {
-    text(title.to_string())
-        .font(ui::SANS_SEMIBOLD)
-        .size(11.5)
-        .color(crate::theme::palette().ink)
-        .into()
-}
-
-/// An empty state: an icon, a bold mono line, a faint serif sentence; centred.
-fn empty<'a>(icon_name: &str, title: &str, sentence: &str) -> Element<'a, Msg> {
-    container(
-        column![
-            ui::icon::<Msg>(icon_name, 16.0, crate::theme::palette().ink_3),
-            text(title.to_string())
-                .font(ui::SANS_BOLD)
-                .size(13.0)
-                .color(crate::theme::palette().ink),
-            text(sentence.to_string())
-                .font(theme::SANS)
-                .size(14.0)
-                .color(crate::theme::palette().ink_3),
-        ]
-        .spacing(10)
-        .align_x(iced::alignment::Horizontal::Center),
+/// The web's `.card.ov-card`: a raised card, its head (sans semibold, 48 tall) over a rule, its body padded 16 or
+/// flush when the body brings its own rows.
+fn ov_card<'a>(
+    head: Vec<Element<'a, Msg>>,
+    body: Element<'a, Msg>,
+    flush: bool,
+) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let head = container(
+        row(head)
+            .spacing(8)
+            .align_y(Vertical::Center)
+            .width(Length::Fill),
     )
     .padding(Padding {
-        top: 40.0,
+        top: 8.0,
         right: 16.0,
-        bottom: 40.0,
+        bottom: 8.0,
         left: 16.0,
     })
     .width(Length::Fill)
-    .align_x(iced::alignment::Horizontal::Center)
-    .into()
+    .center_y(Length::Fixed(48.0));
+    let body = container(body)
+        .padding(if flush { 0.0 } else { 16.0 })
+        .width(Length::Fill);
+    container(column![head, rule(p.rule), body])
+        .width(Length::Fill)
+        .clip(true)
+        .style(ui::card_style)
+        .into()
 }
 
-/// A status tag: a square marker and an uppercase mono label in its colour.
-fn marker_tag<'a>(label: &str, color: Color, filled: bool) -> Element<'a, Msg> {
-    row![
-        marker(color, filled),
-        text(label.to_string())
-            .font(SANS_MEDIUM)
-            .size(10.5)
-            .color(color)
-    ]
-    .spacing(7)
-    .align_y(Vertical::Center)
-    .into()
+/// A card's head title: sans semibold, ink (the web's `.ov-h`).
+fn head_title<'a>(title: &str) -> Element<'a, Msg> {
+    text(title.to_string())
+        .font(SANS_SEMIBOLD)
+        .size(TYPE_UI)
+        .color(crate::theme::palette().ink)
+        .wrapping(Wrapping::None)
+        .into()
 }
 
-/// The web's 8px square mark: outlined, or filled when it stands for ok, info or a working agent.
-fn marker<'a>(color: Color, filled: bool) -> Element<'a, Msg> {
-    container(
-        Space::new()
-            .width(Length::Fixed(8.0))
-            .height(Length::Fixed(8.0)),
-    )
-    .style(move |_: &Theme| container::Style {
-        background: filled.then_some(Background::Color(color)),
+/// A card-shaped box holding one element (an empty state with no head): the raised ground, the rule.
+fn boxed_card<'a>(content: Element<'a, Msg>) -> Element<'a, Msg> {
+    container(content)
+        .width(Length::Fill)
+        .clip(true)
+        .style(ui::card_style)
+        .into()
+}
+
+/// A raised box with a rule, the web's `.stat` and `.home-ways` ground.
+fn boxed(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(crate::theme::palette().raised.into()),
         border: Border {
-            color,
+            color: crate::theme::palette().rule,
             width: 1.0,
-            radius: 0.0.into(),
+            radius: crate::theme::skin().radius_lg.into(),
         },
         ..Default::default()
-    })
-    .into()
-}
-
-/// A text link: serif, underlined, as the web's links are.
-fn link<'a>(label: &str, size: f32, on_press: Msg) -> Element<'a, Msg> {
-    let spans: Vec<Span<'_, ()>> = vec![
-        span(label.to_string())
-            .underline(true)
-            .font(theme::SANS)
-            .size(size)
-            .color(crate::theme::palette().ink),
-    ];
-    button(rich_text(spans))
-        .on_press(on_press)
-        .padding(0)
-        .style(|_: &Theme, status: button::Status| button::Style {
-            background: None,
-            text_color: if matches!(status, button::Status::Hovered) {
-                crate::theme::palette().signal
-            } else {
-                crate::theme::palette().ink
-            },
-            ..Default::default()
-        })
-        .into()
+    }
 }
 
 /// A full-width ruled line.
@@ -942,18 +1258,6 @@ fn rule<'a>(color: Color) -> Element<'a, Msg> {
         .into()
 }
 
-/// A ruled box with no fill: the web's `.card` and `.stat` frame.
-fn rule_box(_: &Theme) -> container::Style {
-    container::Style {
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    }
-}
-
 /// The name an agent chose for itself, or "Unnamed" while it has none.
 fn name(a: &Agent) -> String {
     if a.name.trim().is_empty() {
@@ -961,19 +1265,6 @@ fn name(a: &Agent) -> String {
     } else {
         a.name.clone()
     }
-}
-
-/// The model's name: everything after the provider (`openrouter/anthropic/claude-x` keeps `anthropic/claude-x`).
-fn model_name(model: &str) -> String {
-    model
-        .split_once('/')
-        .map_or(model, |(_, rest)| rest)
-        .to_string()
-}
-
-/// The model's provider: its first path segment.
-fn model_provider(model: &str) -> String {
-    model.split('/').next().unwrap_or("").to_string()
 }
 
 /// The feed line for a transcript entry, if the feed shows that kind.

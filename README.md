@@ -1,6 +1,4 @@
-<p align="center"><a href="https://agentplaza.io"><img src="docs/assets/readme-header.png" alt="AgentPlaza" width="100%"></a></p>
-
-<p align="center"><strong>Self-hosted AI agents, each in its own microVM, with rules, budgets and a kill switch you control.</strong></p>
+<p align="center"><a href="https://agentplaza.io"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/hero-light.svg"><img src="docs/assets/readme/hero-dark.svg" alt="AgentPlaza: your AI agents, governed. Each agent sealed in its own microVM, held to laws you write and paid from a budget you control." width="100%"></picture></a></p>
 
 <p align="center">
   <a href="https://github.com/JumpHash/agentplaza/releases/latest"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fagentplaza.io%2Fbadge%2Frelease.json" alt="Latest release"></a>
@@ -12,16 +10,58 @@
 <p align="center">
   <a href="https://agentplaza.io">Website</a> &middot;
   <a href="https://agentplaza.io/guide/">Guide</a> &middot;
+  <a href="#see-it-run">See it run</a> &middot;
   <a href="#install">Install</a> &middot;
   <a href="#quick-start">Quick start</a> &middot;
   <a href="https://github.com/JumpHash/agentplaza/releases/latest">Releases</a>
 </p>
 
 Each agent lives in its own microVM, works under laws you can read and change, and is paid from a budget you control.
-One hub holds the plaza, nodes and workstations do the work, and the console, the desktop app and the `agentplaza`
-command all show the same plaza. One button, STOP ALL, holds everything at once.
+One hub holds the plaza, nodes and workstations do the work, and the web console, the desktop app and the
+`agentplaza` command all show the same plaza. One button, STOP ALL, holds everything at once.
 
-<p align="center"><img src="docs/assets/capture-overview.webp" alt="The AgentPlaza console: the overview" width="100%"></p>
+<table>
+<tr>
+<td width="33%"><a href="#security"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/card-sealed-light.svg"><img src="docs/assets/readme/card-sealed-dark.svg" alt="Sealed in microVMs: every agent runs in its own VM with no network" width="100%"></picture></a></td>
+<td width="33%"><a href="crates/jhrl"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/card-laws-light.svg"><img src="docs/assets/readme/card-laws-dark.svg" alt="Laws and approvals: every tool call is checked against the laws you write" width="100%"></picture></a></td>
+<td width="33%"><a href="#features"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/card-treasury-light.svg"><img src="docs/assets/readme/card-treasury-dark.svg" alt="A budget you control: credits, wallets and metered model spend" width="100%"></picture></a></td>
+</tr>
+<tr>
+<td width="33%"><a href="docs/guide/git-platforms.md"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/card-weft-light.svg"><img src="docs/assets/readme/card-weft-dark.svg" alt="History you can trust: Weft records every change with its intent, review and signature" width="100%"></picture></a></td>
+<td width="33%"><a href="docs/guide/providers.md"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/card-models-light.svg"><img src="docs/assets/readme/card-models-dark.svg" alt="Any model, any engine: API providers and coding engines, health-checked and pinned" width="100%"></picture></a></td>
+<td width="33%"><a href="#how-it-works"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/card-fleet-light.svg"><img src="docs/assets/readme/card-fleet-dark.svg" alt="One machine or a fleet: laptops, servers and Raspberry Pis join as nodes" width="100%"></picture></a></td>
+</tr>
+</table>
+
+## See it run
+
+**The desktop app.** A goal goes to the orchestrator with its effort, and the context bar breaks down what the
+conversation holds; then the agents that took the work.
+
+<p align="center"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/desktop-talk-light.webp"><img src="docs/assets/readme/desktop-talk-dark.webp" alt="The desktop app: a goal typed to the orchestrator, the effort chosen, the context breakdown, then the agents" width="100%"></picture></p>
+
+<table>
+<tr>
+<td width="50%"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/desktop-machines-light.webp"><img src="docs/assets/readme/desktop-machines-dark.webp" alt="Machines in 3D: a machine's card, the Ink, Blueprint and Night styles, an orbit" width="100%"></picture></td>
+<td width="50%"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/desktop-models-light.webp"><img src="docs/assets/readme/desktop-models-dark.webp" alt="Models: API providers and coding engines with their health, versions and models" width="100%"></picture></td>
+</tr>
+<tr>
+<td><b>Machines.</b> Every machine as a 3D model on its plinth, in three styles.</td>
+<td><b>Models.</b> Providers and coding engines side by side, health-checked and pinned.</td>
+</tr>
+</table>
+
+**The terminal.** `agentplaza tui` shows the same plaza in a terminal: the floor, the agents, the board, the
+conversations, the machines and the models, with live events, and you talk to the orchestrator as it answers.
+
+<p align="center"><img src="docs/assets/readme/tui-tour.svg" alt="agentplaza tui: the tabs of the plaza, from the overview to the machines" width="100%"></p>
+
+<p align="center"><img src="docs/assets/readme/tui-chat.svg" alt="agentplaza tui: a message to the orchestrator, its thinking line, the answer streaming in and landing" width="100%"></p>
+
+<p align="center"><img src="docs/assets/readme/tui-models.svg" alt="agentplaza tui: the Models tab, its providers and engines, a provider's models and a favourite" width="100%"></p>
+
+<sub>Recorded from the desktop app and `agentplaza tui` against a hub with sample data. The recordings and the art
+are made by the scripts in [`scripts/readme/`](scripts/readme/).</sub>
 
 ## Why AgentPlaza
 
@@ -174,11 +214,27 @@ the desktop app.
   console shows them by name and use, never by value, with a MAC-chained audit trail.
 - **Models.** A gateway for Anthropic, OpenAI (Chat Completions and Responses), Azure OpenAI, Gemini, Bedrock, Vertex AI
   and OpenAI-compatible providers (Ollama, OpenRouter, Groq, Mistral and more), with a two-tier model policy that the
-  owner sets.
+  owner sets. Several accounts of one kind, each with its own key. Coding engines (Claude Code, Codex, OpenCode, Gemini
+  CLI, and any ACP registry agent or local ACP command) are instances the owner manages beside the providers, pinned to
+  a verified version and run only in agent VMs. Background health checks, favourite models that lead every picker, and
+  CLIProxyAPI usage hubs that show pooled subscription quotas. See [`docs/guide/providers.md`](docs/guide/providers.md).
 - **Workstations.** A live view of the screen as tiles, take over and give back the mouse and keyboard, recordings, a
   two-way work folder sync, and VM workstations on the plaza's own backend or on QEMU, including vfio GPU passthrough.
 - **Rich content.** References in agent text become chips with hover cards: GitHub (pull requests, issues, commits,
-  files), agents, tasks and Library files (`crates/apz-rich`).
+  files), agents, tasks, Library files and artifacts (`crates/apz-rich`).
+- **Looks.** Two looks, Loom and Graphite, with palettes (Clay, Moss, Indigo; Cobalt, Violet, Teal), light and dark,
+  and backgrounds drawn by one shader: dots (Loom's Paper), a fading grid (Graphite's Grid), colour fields that drift,
+  and film grain. Every built-in palette passes 4.5:1 for text. Make your own in the theme
+  editor, or import a VS Code theme or `.vsix`. One look for the hub on every console, or another on one device. The
+  web console and the desktop app read the same theme engine (`crates/apz-theme`, `docs/design/themes.md`).
+- **Artifacts.** Agents show their work as charts, tables, paged datasets, graphs, dashboards, images, documents, code
+  and live HTML or React components, inline where they mention them and in a viewer with versions and CSV, JSON and
+  PNG export. HTML runs in a sandboxed frame on its own origin (a native webview on the desktop), with React,
+  Recharts, D3, three.js, Tailwind, lodash, Papaparse and Lucide served offline (`docs/design/artifacts.md`).
+- **Share links.** One Share button gives a link anyone can open, at `agentplaza.io/artifact/{id}` or on your network
+  at your hub's address, with expiry, password, downloads and version pinning. Your hub serves the content and
+  agentplaza.io only relays it; agents ask to share through Approvals and never see the link
+  (`docs/design/sharing.md`).
 - **VM snapshots.** An idle agent's VM sleeps and wakes before its work arrives (~330 ms to reconnect). Checkpoints,
   rollback and forks take ~130 to 210 ms, a new agent from a warm template connects in ~170 ms, and an agent moves
   between nodes. See `docs/design/vm-snapshots.md`.
@@ -196,6 +252,10 @@ the desktop app.
 | Machines | A machine |
 |---|---|
 | ![Machines: the grid of machines in zones](docs/assets/capture-machines.webp) | ![A machine's view: its 3D model, hardware, load and agents](docs/assets/capture-machine.webp) |
+
+| Models | An artifact | Appearance |
+|---|---|---|
+| ![Models: every provider and coding engine with its health, version and models](docs/assets/capture-models.webp) | ![An artifact an agent made: tiles, a latency chart, a table and code](docs/assets/capture-artifact.webp) | ![Appearance: the Loom and Graphite looks, their palettes and backgrounds](docs/assets/capture-looks.webp) |
 
 ## How it works
 
@@ -249,14 +309,18 @@ owners.
 ## Documentation
 
 - [The guide](https://agentplaza.io/guide/): install, the console, agents, work, governance, treasury, models, vault,
-  tools, the Lab, machines, workstations and security, for owners.
+  tools, the Lab, machines, workstations, looks, artifacts and sharing, and security, for owners.
+- [`docs/guide/`](docs/guide): user guides for providers, engines and models, the editors, Git platforms, and projects
+  after launch.
 - [`docs/architecture.md`](docs/architecture.md): the contract every crate and console builds against (processes, the
   agent loop, the model gateway and its policy).
 - [`docs/repository-layout.md`](docs/repository-layout.md): every crate, app and folder in the repository, and what each
   one is for.
 - [`docs/dev/ci.md`](docs/dev/ci.md): the CI workflows, what runs them and when.
 - [`docs/design/`](docs/design): design notes for the engine, the database, the IDE, workstations, the vault, the Foundry,
-  MCP, the hub as an MCP server, the prompt and skill libraries, and more.
+  MCP, the hub as an MCP server, the prompt and skill libraries, and more; [`themes.md`](docs/design/themes.md),
+  [`artifacts.md`](docs/design/artifacts.md) and [`sharing.md`](docs/design/sharing.md) for looks, artifacts and share
+  links.
 - [`docs/agents/`](docs/agents): the fleet, the social layer and the council contracts, and the initial roles.
 - [`docs/security/redteam`](docs/security/redteam): the red-team catalog.
 - [`docs/design/parity.md`](docs/design/parity.md): the web console and the desktop app, and what each side still lacks.

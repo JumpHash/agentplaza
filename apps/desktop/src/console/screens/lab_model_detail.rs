@@ -170,55 +170,53 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = if state.missing {
-        column![
-            lab_common::empty("No such model.", "No model with this id."),
-            ui::link("Go back to Models.", Msg::Go(Id::LabModels), false),
-        ]
-        .spacing(12)
-        .align_x(iced::Alignment::Center)
-        .into()
+        lab_common::empty("triangle-alert", "No such model", None, None)
     } else {
         match &state.data {
             None => match state.error.as_deref() {
-                Some(err) => ui::empty("alert", "Model unreachable", err),
+                Some(err) => lab_common::err(err),
                 None => ui::loading(),
             },
             Some(model) => detail(model, state),
         }
     };
-    lab::frame(Section::Models, body, Msg::Go)
+    lab::frame(
+        Section::Models,
+        ui::scroll(body).height(Length::Fill).into(),
+        Msg::Go,
+    )
 }
 
 fn detail<'a>(m: &'a ModelView, state: &'a State) -> Element<'a, Msg> {
-    let back = ui::link("Back to Models", Msg::Go(Id::LabModels), true);
-    // The state and the actions sit on their own line: a long model name would push them off the head.
-    let head = ui::view_head(&m.card.name, vec![]);
     // An imported model can be rederived (apid reads its download again); no other state has that action.
     let rederive = (m.state == "imported").then(|| {
-        ui::btn(
+        ui::btn_sm(
             "Rederive",
             Some("refresh"),
             Kind::Secondary,
             (!state.rederiving).then_some(Msg::AskRederive),
         )
     });
-    let mut items: Vec<Element<'a, Msg>> = vec![
+    let mut actions: Vec<Element<'a, Msg>> = vec![
         ui::badge(&m.state, lab_models::tone(&m.state)),
         lab_models::actions(m, state.controls.busy, Msg::Act),
     ];
-    items.extend(rederive);
-    let controls = row(items).spacing(14).align_y(iced::Alignment::Center);
-    let mut parts: Vec<Element<'a, Msg>> =
-        vec![back, head, lab_models::value(m.id.clone()), controls.into()];
+    actions.extend(rederive);
+    let head = ui::view_head_with_intro(
+        &m.card.name,
+        &format!("{} · version {}", m.id, m.card.version),
+        actions,
+    );
+    let mut parts: Vec<Element<'a, Msg>> = vec![head];
     if let Some(dialog) = lab_models::dialog(&state.controls, Msg::Act) {
         parts.push(dialog);
     } else if state.rederive_open {
         parts.push(rederive_dialog(state));
     } else if let Some(problem) = state.controls.problem.as_deref() {
-        parts.push(ui::error_line(problem));
+        parts.push(lab_common::err(problem));
     }
     if let Some(err) = state.error.as_deref() {
-        parts.push(ui::error_line(err));
+        parts.push(lab_common::err(err));
     }
     if let Some(card) = try_card(m, state) {
         parts.push(card);
@@ -233,7 +231,7 @@ fn detail<'a>(m: &'a ModelView, state: &'a State) -> Element<'a, Msg> {
             grid(
                 &["Split", "Metric", "Value"],
                 rows_of(&m.card.metrics, true),
-                "No metrics recorded.",
+                "No metrics yet.",
             ),
         ),
         card_of(
@@ -241,7 +239,7 @@ fn detail<'a>(m: &'a ModelView, state: &'a State) -> Element<'a, Msg> {
             grid(
                 &["Measure", "Value"],
                 rows_of(&m.calibration, false),
-                "No calibration recorded.",
+                "No calibration yet.",
             ),
         ),
         card_of(
@@ -263,7 +261,7 @@ fn detail<'a>(m: &'a ModelView, state: &'a State) -> Element<'a, Msg> {
         card_of(
             "Features",
             grid(
-                &["Name", "Kind", "Details"],
+                &["Feature", "Kind", "Details"],
                 feature_rows(&m.card.features),
                 "No features.",
             ),
@@ -284,17 +282,18 @@ fn detail<'a>(m: &'a ModelView, state: &'a State) -> Element<'a, Msg> {
                 container(a).width(Length::FillPortion(1)),
                 container(b).width(Length::FillPortion(1))
             ]
-            .spacing(22)
+            .spacing(16)
+            .align_y(iced::Alignment::Start)
             .into(),
             None => row![
                 container(a).width(Length::FillPortion(1)),
                 Space::new().width(Length::FillPortion(1))
             ]
-            .spacing(22)
+            .spacing(16)
             .into(),
         });
     }
-    column(parts).spacing(22).into()
+    column(parts).spacing(16).width(Length::Fill).into()
 }
 
 /// The rederive confirm: what it does, the last refusal, then Cancel and the confirm.
@@ -346,6 +345,7 @@ fn try_card<'a>(m: &'a ModelView, state: &'a State) -> Option<Element<'a, Msg>> 
         .and_then(Value::as_u64)
         .map_or("—".to_string(), |n| n.to_string());
     let field = text_input("Text to run through the model", &state.try_text)
+        .style(crate::theme::input)
         .on_input(Msg::TryText)
         .on_submit(Msg::TryRun)
         .padding(8);
@@ -592,38 +592,26 @@ fn pair<'a>(label: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
     .into()
 }
 
-/// A table of text cells with an equal share per column; `none` stands in for no rows.
-fn grid<'a>(heads: &[&str], rows: Vec<Vec<String>>, none: &str) -> Element<'a, Msg> {
+/// A plain table of text cells, as the web's `dataTable` in a panel; `none` stands in for no rows.
+fn grid<'a>(heads: &[&'static str], rows: Vec<Vec<String>>, none: &str) -> Element<'a, Msg> {
     if rows.is_empty() {
-        return ui::faint(none.to_string()).into();
+        return lab_common::note(none.to_string());
     }
-    let head = row(heads
+    let cols: Vec<lab_common::Col> = heads
         .iter()
-        .map(|h| {
-            cell(
-                text(h.to_string())
-                    .font(SANS)
-                    .size(11.0)
-                    .color(crate::theme::palette().ink_3),
-            )
-        })
-        .collect::<Vec<_>>())
-    .spacing(10);
-    let mut lines = column![head].spacing(8);
-    for cells in rows {
-        lines = lines.push(
-            row(cells
+        .map(|head| lab_common::col(head, 1, false))
+        .collect();
+    let rows: Vec<lab_common::Row<'a, Msg>> = rows
+        .into_iter()
+        .map(|cells| lab_common::Row {
+            cells: cells
                 .into_iter()
-                .map(|c| cell(lab_models::value(c)))
-                .collect::<Vec<_>>())
-            .spacing(10),
-        );
-    }
-    lines.into()
-}
-
-fn cell<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content).width(Length::FillPortion(1)).into()
+                .map(|c| lab_common::cell(c, false))
+                .collect(),
+            on_press: None,
+        })
+        .collect();
+    lab_common::table(&cols, rows)
 }
 
 /// The leaves of a nested record as rows. With `split`, the first key of a deeper path names its

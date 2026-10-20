@@ -20,7 +20,10 @@ use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::keyboard::key::Named;
 use iced::keyboard::{self, Key};
 use iced::widget::{column, container, image, mouse_area, pick_list, responsive, row};
-use iced::{ContentFit, Element, Event, Length, Point, Size, Subscription, Task, event};
+use iced::{
+    Border, ContentFit, Element, Event, Length, Padding, Point, Size, Subscription, Task, Theme,
+    event,
+};
 use serde_json::{Value, json};
 
 use super::workstations::{Station, Takeover, takeover_text};
@@ -944,77 +947,110 @@ const PICTURE_HEIGHT: f32 = 420.0;
 
 pub fn view<'a>(state: &'a State, station: &'a Station) -> Element<'a, Msg> {
     let live = !station.revoked;
-    let mut controls: Vec<Element<'a, Msg>> = vec![
-        pick_list(
-            state.sessions.clone(),
-            Some(state.choice.clone()),
-            Msg::Pick,
-        )
-        .style(theme::pick_list)
-        .text_size(13.0)
-        .width(Length::Fixed(240.0))
-        .into(),
-        pick_list(
-            FPS_CHOICES.to_vec(),
-            Some(FpsPick(state.fps)),
-            Msg::FpsPicked,
-        )
-        .style(theme::pick_list)
-        .text_size(13.0)
-        .width(Length::Fixed(96.0))
-        .into(),
-        pick_list(
-            SCALE_CHOICES.to_vec(),
-            Some(ScalePick(state.scale)),
-            Msg::ScalePicked,
-        )
-        .style(theme::pick_list)
-        .text_size(13.0)
-        .width(Length::Fixed(96.0))
-        .into(),
-        link_chip(&state.link),
-    ];
+    // The controls: the session, the frames a second and the size, each under its label, then the link's chip and
+    // the takeover's buttons (the web's `.ws-live-bar`).
+    let mut buttons: Vec<Element<'a, Msg>> = vec![link_chip(&state.link)];
     if live && state.taking {
-        controls.push(ui::btn(
+        buttons.push(ui::btn(
             "Give back",
             None,
             ui::Kind::Danger,
             Some(Msg::GiveBack),
         ));
     } else if live {
-        controls.push(ui::btn(
-            "Take over",
-            None,
-            ui::Kind::Primary,
-            Some(Msg::Take),
-        ));
+        buttons.push(ui::btn("Take over", None, ui::Kind::Ghost, Some(Msg::Take)));
     }
     if live && matches!(state.link, Link::Reconnecting(_) | Link::Ended(_)) {
-        controls.push(ui::btn(
+        buttons.push(ui::btn(
             "Reconnect",
             None,
             ui::Kind::Secondary,
             Some(Msg::Reconnect),
         ));
     }
-
-    let mut parts: Vec<Element<'a, Msg>> = vec![
-        row(controls)
-            .spacing(8)
-            .align_y(iced::Alignment::Center)
+    let bar = row![
+        field(
+            "Session",
+            pick_list(
+                state.sessions.clone(),
+                Some(state.choice.clone()),
+                Msg::Pick,
+            )
+            .style(theme::pick_list)
+            .text_size(13.0)
+            .width(Length::Fixed(240.0))
             .into(),
-    ];
+        ),
+        field(
+            "Frames a second",
+            pick_list(
+                FPS_CHOICES.to_vec(),
+                Some(FpsPick(state.fps)),
+                Msg::FpsPicked,
+            )
+            .style(theme::pick_list)
+            .text_size(13.0)
+            .width(Length::Fixed(160.0))
+            .into(),
+        ),
+        field(
+            "Size",
+            pick_list(
+                SCALE_CHOICES.to_vec(),
+                Some(ScalePick(state.scale)),
+                Msg::ScalePicked,
+            )
+            .style(theme::pick_list)
+            .text_size(13.0)
+            .width(Length::Fixed(120.0))
+            .into(),
+        ),
+        row(buttons).spacing(8).align_y(iced::Alignment::Center),
+    ]
+    .spacing(16)
+    .align_y(iced::Alignment::End);
+    let mut parts: Vec<Element<'a, Msg>> = vec![bar.into()];
     if let Some(banner) = banner(state, live) {
         parts.push(banner);
     }
-    parts.push(picture(state, live));
+    parts.push(stage(state, live));
     if let Some(shown) = &state.frame {
         parts.push(ui::faint(format!("{}×{} · frame {}", shown.w, shown.h, shown.seq)).into());
     }
     if let Some(notice) = &state.notice {
         parts.push(ui::error_line(notice.as_str()));
     }
-    column(parts).spacing(10).width(Length::Fill).into()
+    column(parts).spacing(16).width(Length::Fill).into()
+}
+
+/// A control's label over it (the web's `field`).
+fn field<'a>(label: &str, control: Element<'a, Msg>) -> Element<'a, Msg> {
+    column![ui::label(label), control].spacing(6).into()
+}
+
+/// The screen's stage, sixteen by nine as the web's `.ws-stage`: the sheet's second ground, the signal's ground while
+/// the owner holds the screen, and the picture centred in it.
+fn stage<'a>(state: &'a State, live: bool) -> Element<'a, Msg> {
+    let taken = state.taken.is_some() || state.taking;
+    responsive(move |size: Size| -> Element<'a, Msg> {
+        let p = theme::palette();
+        let fill = if taken { p.signal_soft } else { p.sheet_2 };
+        let radius = theme::skin().radius_lg;
+        container(picture(state, live))
+            .width(Length::Fill)
+            .height(Length::Fixed(size.width * 9.0 / 16.0))
+            .center(Length::Fill)
+            .style(move |_: &Theme| container::Style {
+                background: Some(fill.into()),
+                border: Border {
+                    radius: radius.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    })
+    .into()
 }
 
 fn link_chip<'a>(link: &Link) -> Element<'a, Msg> {
@@ -1026,24 +1062,39 @@ fn link_chip<'a>(link: &Link) -> Element<'a, Msg> {
     }
 }
 
-/// The owner's banner: that it holds the screen and the policy in force, or that it is asking for it.
+/// The owner's banner (the web's `.ws-banner`): that it has control and the policy in force, with how to give the
+/// screen back; or that it is asking for it.
 fn banner<'a>(state: &'a State, live: bool) -> Option<Element<'a, Msg>> {
     if !live {
         return None;
     }
     if let Some(policy) = state.taken {
+        let fill = crate::theme::palette().warn_soft;
+        let radius = theme::skin().radius;
         return Some(
             container(
                 column![
-                    ui::label("You have the screen"),
-                    ui::faint(takeover_text(policy)),
-                    ui::faint("Your mouse and keyboard now drive the workstation. Give back when you are done."),
+                    ui::label("You have control"),
+                    ui::prose(takeover_text(policy)),
+                    ui::faint("Press Escape twice to give the screen back."),
                 ]
-                .spacing(6),
+                .spacing(8),
             )
-            .padding(12.0)
+            .padding(Padding {
+                top: 12.0,
+                right: 16.0,
+                bottom: 12.0,
+                left: 16.0,
+            })
             .width(Length::Fill)
-            .style(ui::frame(None, theme::WARN))
+            .style(move |_: &Theme| container::Style {
+                background: Some(fill.into()),
+                border: Border {
+                    radius: radius.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
             .into(),
         );
     }
@@ -1107,7 +1158,10 @@ fn picture<'a>(state: &'a State, live: bool) -> Element<'a, Msg> {
     container(body)
         .width(Length::Fill)
         .height(Length::Fixed(PICTURE_HEIGHT))
-        .style(ui::frame(Some(theme::SUBSTRATE), theme::RULE))
+        .style(ui::frame(
+            Some(crate::theme::palette().sheet_2),
+            crate::theme::palette().rule,
+        ))
         .into()
 }
 

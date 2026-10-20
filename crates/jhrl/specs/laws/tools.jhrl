@@ -17,7 +17,7 @@ law "T-001" "Every agent may use its own workspace tools" {
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["bash", "read_file", "write_file", "edit_file", "list", "search", "share_file", "fetch_url", "download", "install_packages", "glob", "grep", "multi_edit", "bash_start", "bash_output", "bash_kill", "todo_write", "code_engine", "deliver_file", "tool_package", "checkpoint_diff", "checkpoint_restore", "checkpoint_list", "engine.read", "engine.edit", "engine.exec", "engine.fetch", "engine.other"]
+  when resource.name in ["bash", "read_file", "write_file", "edit_file", "list", "search", "share_file", "fetch_url", "download", "install_packages", "glob", "grep", "multi_edit", "bash_start", "bash_output", "bash_kill", "todo_write", "code_engine", "deliver_file", "artifact_create", "artifact_update", "artifact_attach_data", "artifact_share_request", "tool_package", "checkpoint_diff", "checkpoint_restore", "checkpoint_list", "engine.read", "engine.edit", "engine.exec", "engine.fetch", "engine.other"]
 }
 
 law "T-002" "Every agent may use the plaza's shared tools" {
@@ -246,4 +246,15 @@ law "T-025" "Agents read their project's environments; delivery roles deploy" {
   principal is Agent
   resource is Tool
   when resource.name == "plaza_environments" or (resource.name == "plaza_deploy" and principal.role in ["builder", "qa", "release", "incident", "edge-operator"])
+}
+
+law "T-026" "Agents make artifacts and ask the owner to share them" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may create and change its own artifacts, and ask the owner to share one it made. The owner's approval decides the share; the agent never receives the link."
+  rationale "An artifact is the agent's own work shown to the owner and other agents, so making one is free. Sharing it outside the plaza reaches people the owner chose, so the request waits for the owner in Approvals."
+  permit artifact.create, artifact.share
+  principal is Agent
+  resource is Artifact
 }

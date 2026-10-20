@@ -189,6 +189,9 @@ pub struct Store {
     models: Mutex<Option<(Instant, Value)>>,
     /// The saved default decision model (`/v1/decisions/default`).
     pub decisions: crate::decisions::DefaultStore,
+    /// The last check of each provider, by id (`provider_health.rs`). Kept in memory: the first check
+    /// after a start fills it again.
+    health: Mutex<BTreeMap<String, Value>>,
 }
 
 impl Store {
@@ -245,6 +248,7 @@ impl Store {
             write: Mutex::new(()),
             models: Mutex::new(None),
             decisions: Default::default(),
+            health: Mutex::new(BTreeMap::new()),
         };
         store.register(&store.gateway.providers());
         Ok(store)
@@ -254,6 +258,11 @@ impl Store {
     pub fn gateway(&self) -> Gateway {
         // contract
         self.gateway.clone()
+    }
+
+    /// Every provider's view, for the engines' health (`engine_instances.rs`).
+    pub(crate) fn views_for_engines(&self) -> Vec<Value> {
+        self.views()
     }
 
     /// Every provider's view, by id. Never carries a secret value.
@@ -313,8 +322,13 @@ impl Store {
             .collect();
         json!({
             "id": p.id,
+            "family": "api",
             "kind": p.kind.as_str(),
             "group": p.kind.group(),
+            "label": display_label(p),
+            "accent": p.accent,
+            "enabled": p.enabled,
+            "health": self.health_of(p),
             "base_url": p.base_url,
             "auth": auth,
             "models": p.models,
@@ -338,6 +352,10 @@ impl Store {
         let Ok(p) = self.find(id) else {
             return Ok(None);
         };
+        // A disabled provider takes no calls, through the gateway or past it.
+        if !p.enabled {
+            return Ok(None);
+        }
         let base = p.base_url.clone().unwrap_or_else(|| match id {
             "openai" => "https://api.openai.com/v1".to_string(),
             _ => "https://api.anthropic.com".to_string(),
@@ -461,8 +479,9 @@ impl Store {
     fn insert(&self, cfg: ProviderConfig) -> Result<Value, Failure> {
         let _guard = lock(&self.write);
         if !valid_id(&cfg.id) {
-            return Err((400, "id must match [a-z0-9-]{1,40}".into()));
+            return Err((400, "id must match [a-z0-9_-]{1,40}".into()));
         }
+        check_identity(&cfg)?;
         let mut providers = self.gateway.providers();
         if providers.iter().any(|p| p.id == cfg.id) {
             return Err((409, format!("provider `{}` exists", cfg.id)));
@@ -478,6 +497,7 @@ impl Store {
         if cfg.id != id {
             return Err((400, "the body's id must equal the path's id".into()));
         }
+        check_identity(&cfg)?;
         let mut providers = self.gateway.providers();
         let slot = providers
             .iter_mut()
@@ -498,6 +518,7 @@ impl Store {
         if providers.len() == before {
             return Err((404, format!("no provider `{id}`")));
         }
+        lock(&self.health).remove(id);
         self.commit(providers)?;
         Ok(json!({ "deleted": id }))
     }
@@ -552,7 +573,7 @@ impl Store {
         }
         let mut models = Vec::new();
         let mut errors = Vec::new();
-        for p in self.gateway.providers() {
+        for p in self.gateway.providers().into_iter().filter(|p| p.enabled) {
             match self
                 .gateway
                 .list_models_for(&p.id, &Caller::Owner { node: None })
@@ -565,6 +586,43 @@ impl Store {
         *lock(&self.models) = Some((Instant::now(), value.clone()));
         value
     }
+
+    /// The last check of `p`, or `unknown` before its first.
+    fn health_of(&self, p: &ProviderConfig) -> Value {
+        if !p.enabled {
+            return json!({ "status": "off", "message": "Disabled" });
+        }
+        lock(&self.health)
+            .get(&p.id)
+            .cloned()
+            .unwrap_or_else(|| json!({ "status": "unknown", "message": "Not checked yet" }))
+    }
+
+    /// Checks provider `id` now (see [`crate::provider_health::check`]) and keeps the result.
+    pub fn check(&self, id: &str) -> Result<Value, Failure> {
+        let p = self.find(id)?;
+        let health = crate::provider_health::check(&self.gateway, &p, self.credential(&p));
+        lock(&self.health).insert(p.id.clone(), health.clone());
+        Ok(json!({ "id": p.id, "health": health }))
+    }
+
+    /// Checks every enabled provider, one after another, and returns each one's result by id.
+    pub fn check_all(&self) -> Value {
+        let mut out = serde_json::Map::new();
+        for p in self.gateway.providers() {
+            let health = if p.enabled {
+                let health = crate::provider_health::check(&self.gateway, &p, self.credential(&p));
+                lock(&self.health).insert(p.id.clone(), health.clone());
+                health
+            } else {
+                self.health_of(&p)
+            };
+            out.insert(p.id.clone(), health);
+        }
+        // A check can change what the listing would show (a key that now works).
+        *lock(&self.models) = None;
+        Value::Object(out)
+    }
 }
 
 /// `/v1/provider-kinds`, `/v1/providers…`, `/v1/models`.
@@ -574,6 +632,17 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("List the provider kinds you can add"))
         .get("/v1/providers", list_route)
         .doc(RouteDoc::new("List the providers"))
+        .post("/v1/providers/check", check_all_route)
+        .doc(
+            RouteDoc::new("Check every enabled provider now: its key and its model listing")
+                .outbound(),
+        )
+        .post("/v1/providers/{id}/check", check_route)
+        .doc(
+            RouteDoc::new("Check one provider now: its key and its model listing")
+                .outbound()
+                .errors(&[404]),
+        )
         .post("/v1/providers", create_route)
         .doc(RouteDoc::new("Add a provider").status(201).errors(&[400]))
         .get("/v1/providers/{id}", get_route)
@@ -598,6 +667,25 @@ pub fn routes(router: Router<App>) -> Router<App> {
         )
         .get("/v1/models", all_models_route)
         .doc(RouteDoc::new("List the models of every provider").outbound())
+}
+
+fn check_all_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
+    let health = app.providers.check_all();
+    app.bus.publish("providers.health", &health);
+    Response::json(200, &health)
+}
+
+fn check_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+    match app.providers.check(p.get("id")) {
+        Ok(v) => {
+            app.bus.publish(
+                "providers.health",
+                &json!({ v["id"].as_str().unwrap_or(""): v["health"] }),
+            );
+            Response::json(200, &v)
+        }
+        Err(f) => failure(f),
+    }
 }
 
 fn kinds_route(_: &App, _: &Request, _: &Params<'_>) -> Response {
@@ -700,7 +788,19 @@ fn provider_models_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
 }
 
 fn all_models_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
-    Response::json(200, &app.providers.all_models())
+    let mut all = app.providers.all_models();
+    let favourites = app.settings.get().favourite_models;
+    if let Some(models) = all["models"].as_array_mut() {
+        for m in models.iter_mut() {
+            let name = format!(
+                "{}/{}",
+                m["provider"].as_str().unwrap_or(""),
+                m["id"].as_str().unwrap_or("")
+            );
+            m["favourite"] = Value::Bool(favourites.contains(&name));
+        }
+    }
+    Response::json(200, &all)
 }
 
 /// One `/v1/models` entry: the model, its provider, the provider's group, whether the model is a
@@ -708,7 +808,7 @@ fn all_models_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
 /// and its context window in tokens (`context`, null when the provider's listing does not say).
 fn model_entry(p: &ProviderConfig, m: ModelInfo) -> Value {
     let trains_on_data = apz_gateway::lists_training_model(&p.options, &m.id);
-    json!({ "provider": p.id, "group": p.kind.group(), "id": m.id, "name": m.name, "context": m.context, "trains_on_data": trains_on_data })
+    json!({ "provider": p.id, "provider_label": display_label(p), "accent": p.accent, "group": p.kind.group(), "id": m.id, "name": m.name, "context": m.context, "trains_on_data": trains_on_data })
 }
 
 /// The context window of `model` (`provider/model`, or a bare model id) in tokens: the window the
@@ -883,7 +983,43 @@ fn valid_id(id: &str) -> bool {
         && id.len() <= 40
         && id
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// The most characters a provider's label may have.
+const MAX_LABEL: usize = 60;
+
+/// A provider's label and accent: a label of at most [`MAX_LABEL`] characters with no control
+/// characters, and an accent of the form `#rrggbb`.
+fn check_identity(cfg: &ProviderConfig) -> Result<(), Failure> {
+    if let Some(label) = &cfg.label
+        && (label.trim().is_empty()
+            || label.chars().count() > MAX_LABEL
+            || label.chars().any(char::is_control))
+    {
+        return Err((
+            400,
+            format!("label must be 1 to {MAX_LABEL} characters, with no control characters"),
+        ));
+    }
+    if let Some(accent) = &cfg.accent
+        && !valid_accent(accent)
+    {
+        return Err((400, "accent must be a #rrggbb colour".into()));
+    }
+    Ok(())
+}
+
+/// Whether `accent` is `#` and six hex digits.
+fn valid_accent(accent: &str) -> bool {
+    accent.len() == 7
+        && accent.starts_with('#')
+        && accent[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The name a provider shows: its own label, else its preset's, else its id.
+pub(crate) fn display_label(p: &ProviderConfig) -> String {
+    p.label.clone().unwrap_or_else(|| label_of(p))
 }
 
 fn to_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
@@ -1045,6 +1181,41 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(from), "the vault file names {from}");
         std::fs::write(&path, text.replacen(from, to, 1)).unwrap();
+    }
+
+    #[test]
+    fn labels_and_accents_are_checked() {
+        let mut cfg = ProviderConfig::new("codex_2", ProviderKind::OpenAi);
+        assert!(valid_id(&cfg.id));
+        assert!(check_identity(&cfg).is_ok());
+        cfg.label = Some("Work account".into());
+        cfg.accent = Some("#5cc8ff".into());
+        assert!(check_identity(&cfg).is_ok());
+        assert_eq!(display_label(&cfg), "Work account");
+        cfg.accent = Some("blue".into());
+        assert_eq!(check_identity(&cfg).unwrap_err().0, 400);
+        cfg.accent = None;
+        cfg.label = Some("  ".into());
+        assert!(check_identity(&cfg).is_err());
+        cfg.label = Some("x".repeat(MAX_LABEL + 1));
+        assert!(check_identity(&cfg).is_err());
+    }
+
+    #[test]
+    fn a_disabled_provider_keeps_its_settings_and_round_trips() {
+        let mut cfg = ProviderConfig::new("openai", ProviderKind::OpenAi);
+        let text = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            !text.contains("enabled"),
+            "an enabled provider writes no flag: {text}"
+        );
+        cfg.enabled = false;
+        let text = serde_json::to_string(&cfg).unwrap();
+        let back: ProviderConfig = serde_json::from_str(&text).unwrap();
+        assert!(!back.enabled);
+        let old: ProviderConfig =
+            serde_json::from_str(r#"{"id":"openai","kind":"openai"}"#).unwrap();
+        assert!(old.enabled && old.label.is_none() && old.accent.is_none());
     }
 
     #[test]

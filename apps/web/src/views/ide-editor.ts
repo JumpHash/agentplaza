@@ -33,14 +33,14 @@ const external = Annotation.define<boolean>();
 const theme = EditorView.theme(
   {
     '&': { height: '100%', fontSize: '13px', color: 'var(--ink)', backgroundColor: 'var(--sheet)' },
-    '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '1.55' },
+    '.cm-scroller': { fontFamily: 'var(--font-mono)', lineHeight: '1.55' },
     '.cm-content': { caretColor: 'var(--signal)' },
     '.cm-gutters': { backgroundColor: 'var(--sheet)', color: 'var(--ink-3)', borderRight: '1px solid var(--rule)' },
     '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--signal) 6%, transparent)' },
     '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--ink)' },
-    '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'color-mix(in srgb, var(--info-ink) 22%, transparent)' },
-    '.cm-matchingBracket': { color: 'var(--ink)', backgroundColor: 'var(--accent-bg)' },
-    '.cm-searchMatch': { backgroundColor: 'var(--warn-bg)' },
+    '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'color-mix(in srgb, var(--info) 22%, transparent)' },
+    '.cm-matchingBracket': { color: 'var(--ink)', backgroundColor: 'var(--signal-soft)' },
+    '.cm-searchMatch': { backgroundColor: 'var(--warn-soft)' },
     '.cm-panels': { backgroundColor: 'var(--sheet)', color: 'var(--ink)', borderColor: 'var(--rule)' },
     '.cm-tooltip': { backgroundColor: 'var(--sheet)', color: 'var(--ink)', borderColor: 'var(--rule)', borderRadius: '0' },
   },
@@ -49,12 +49,12 @@ const theme = EditorView.theme(
 
 const highlight = HighlightStyle.define([
   { tag: [tags.keyword, tags.modifier, tags.operatorKeyword], color: 'var(--signal-ink)' },
-  { tag: [tags.string, tags.regexp], color: 'var(--ok-ink)' },
-  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: 'var(--warn-ink)' },
-  { tag: [tags.typeName, tags.className, tags.namespace], color: 'var(--info-ink)' },
+  { tag: [tags.string, tags.regexp], color: 'var(--ok)' },
+  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: 'var(--warn)' },
+  { tag: [tags.typeName, tags.className, tags.namespace], color: 'var(--info)' },
   { tag: [tags.comment, tags.lineComment, tags.blockComment], color: 'var(--ink-3)', fontStyle: 'italic' },
   { tag: [tags.heading, tags.strong], fontWeight: '600' },
-  { tag: [tags.link, tags.url], color: 'var(--info-ink)', textDecoration: 'underline' },
+  { tag: [tags.link, tags.url], color: 'var(--info)', textDecoration: 'underline' },
   { tag: tags.invalid, color: 'var(--crit)' },
 ]);
 

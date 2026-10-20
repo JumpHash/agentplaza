@@ -13,13 +13,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Row, Table};
+use ratatui::widgets::{Paragraph, Row, Table};
 use serde_json::Value;
 
-use super::{App, Palette};
+use super::context_bar::{self, Owner};
+use super::{App, Palette, style};
 use crate::cmd::chat::{delta_text, draft_lines, speaker, startable, unanswered};
 use crate::tui::screens::{clip, local_time, show};
-use crate::tui::workspace_view::{prose_lines, text_lines};
+use crate::tui::workspace_view::{prose_lines, text_lines, thinking, with_cursor, with_gutter};
 
 /// The hub's list of your conversations, which the tab polls while it shows.
 pub const PATH: &str = "/v1/owner/conversations";
@@ -220,12 +221,25 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
     list(frame, list_area, app);
     conversation(frame, talk_area, app);
+    if let Some(picker) = &app.ws.picker {
+        context_bar::overlay(frame, area, picker, app.palette);
+    }
+}
+
+/// The conversation the tab selects, as the context bar reads it: its owner, and its model as the list says it.
+pub fn selected(app: &App) -> Option<(Owner, Option<String>)> {
+    let summary = app.array(PATH).get(app.selected)?;
+    let id = summary.get("id")?.as_str()?;
+    Some((
+        Owner::Conversation(id.to_string()),
+        context_bar::model_of(summary.get("model")),
+    ))
 }
 
 fn list(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
     let all = app.array(PATH);
-    let block = Block::bordered().title(format!(" conversations · {} ", all.len()));
+    let block = style::panel(&format!("conversations · {}", all.len()), &palette, false);
     if all.is_empty() {
         let empty = Line::from(Span::styled(
             "none yet: n opens one",
@@ -262,7 +276,7 @@ fn conversation(frame: &mut Frame, area: Rect, app: &App) {
             muted,
         ));
         frame.render_widget(
-            Paragraph::new(hint).block(Block::bordered().title(" conversation ")),
+            Paragraph::new(hint).block(style::panel("conversation", &palette, false)),
             area,
         );
         return;
@@ -281,6 +295,8 @@ fn conversation(frame: &mut Frame, area: Rect, app: &App) {
             Layout::vertical([Constraint::Min(3), Constraint::Length(height)]).areas(area);
         (talk, Some(below))
     };
+    // The context bar sits under the transcript, above the draft and the footer's input.
+    let [talk, bar] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(talk);
     let title = format!(
         " {id} · {} · t message · n new ",
         clip(&show(summary.get("title")), 40)
@@ -295,23 +311,37 @@ fn conversation(frame: &mut Frame, area: Rect, app: &App) {
             height,
             palette,
             &app.rich_ctx(),
+            app.clock,
         ),
         None => vec![Line::from(Span::styled("reading…", muted))],
     };
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(title)),
+        Paragraph::new(lines).block(style::panel(&title, &palette, true)),
         talk,
     );
+    let owner = Owner::Conversation(id);
+    let context = app.ws.contexts.get(&owner);
+    frame.render_widget(
+        Paragraph::new(context_bar::bar_line(
+            context, bar.width, palette, app.clock,
+        )),
+        bar,
+    );
+    if app.ws.breakdown {
+        context_bar::panel(frame, talk, context, palette);
+    }
     if let (Some(below), Some(draft)) = (below, draft) {
         let lines: Vec<Line> = drafted.into_iter().map(Line::from).collect();
-        let block = Block::bordered().title(draft_title(draft, project));
+        let block = style::panel(&draft_title(draft, project), &palette, false);
         frame.render_widget(Paragraph::new(lines).block(block), below);
     }
 }
 
-/// The line over a message: who wrote it, when, and how an answer's work ended when it did not end done.
+/// The line over a message: its role's glyph (`›` for you, `●` for the orchestrator and the other agents), who wrote it,
+/// when, and how an answer's work ended when it did not end done.
 fn head_line(m: &Value, palette: Palette) -> Line<'static> {
-    let who = speaker(m.get("from").and_then(Value::as_str).unwrap_or("")).to_string();
+    let from = m.get("from").and_then(Value::as_str).unwrap_or("");
+    let who = speaker(from).to_string();
     let at = m
         .get("at_ms")
         .and_then(Value::as_i64)
@@ -321,15 +351,44 @@ fn head_line(m: &Value, palette: Palette) -> Line<'static> {
         None | Some("done") => String::new(),
         Some(status) => format!(" · {status}"),
     };
+    let (glyph, name) = if from == "owner" {
+        (
+            Span::styled(
+                "› ",
+                Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
+            ),
+            Style::new().fg(palette.ink()).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (
+            Span::styled("● ", Style::new().fg(palette.ok)),
+            Style::new().fg(palette.ink2()).add_modifier(Modifier::BOLD),
+        )
+    };
     Line::from(vec![
-        Span::styled(who, Style::new().add_modifier(Modifier::BOLD)),
+        glyph,
+        Span::styled(who, name),
         Span::styled(format!(" · {at}{status}"), Style::new().fg(palette.muted)),
     ])
 }
 
+/// Lines indented under a message's head, so the text lines up after the glyph.
+fn indent(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|line| {
+            if line.spans.is_empty() {
+                line
+            } else {
+                with_gutter(line, Span::raw("  "))
+            }
+        })
+        .collect()
+}
+
 /// The newest `height` lines of the conversation, wrapped to `width`: each message's head, its text and a blank line,
-/// oldest first; then the answers being written, as far as they have streamed, or a line that says the orchestrator
-/// is on it. Only the messages that reach the screen are wrapped.
+/// oldest first; then the answers being written, as far as they have streamed (the cursor after their words), or a
+/// `Thinking…` line while the orchestrator has written nothing yet. Only the messages that reach the screen are wrapped.
 fn talk_lines(
     view: &Value,
     live: &HashMap<u64, (String, String)>,
@@ -337,9 +396,11 @@ fn talk_lines(
     height: usize,
     palette: Palette,
     rctx: &apz_rich::Ctx,
+    clock: f32,
 ) -> Vec<Line<'static>> {
     let muted = Style::new().fg(palette.muted);
     let bold = Style::new().add_modifier(Modifier::BOLD);
+    let inner = width.saturating_sub(2).max(1);
     // The blocks, newest first, until the screen is full.
     let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
     let waiting = unanswered(view);
@@ -347,17 +408,17 @@ fn talk_lines(
     for work in &waiting {
         if let Some((_, text)) = live.get(work).filter(|(_, text)| !text.is_empty()) {
             streamed.push(Line::from(vec![
-                Span::styled("orchestrator", bold),
+                Span::styled("● ", Style::new().fg(palette.ok)),
+                Span::styled("orchestrator", bold.fg(palette.ink2())),
                 Span::styled(" · writing…", muted),
             ]));
-            streamed.extend(prose_lines(text, rctx, palette.accent, width));
+            let mut body = indent(prose_lines(text, rctx, palette.accent, inner));
+            with_cursor(&mut body, clock, palette.accent);
+            streamed.extend(body);
         }
     }
     if streamed.is_empty() && !waiting.is_empty() {
-        streamed.push(Line::from(Span::styled(
-            "the orchestrator is on it…",
-            muted,
-        )));
+        streamed.push(thinking(clock, palette));
     }
     let mut count = streamed.len();
     blocks.push(streamed);
@@ -372,11 +433,12 @@ fn talk_lines(
         }
         let text = m.get("text").and_then(Value::as_str).unwrap_or("");
         let mut block = vec![head_line(m, palette)];
-        if m.get("from").and_then(Value::as_str) == Some("owner") {
-            block.extend(text_lines(text, width, Style::new()));
+        let body = if m.get("from").and_then(Value::as_str) == Some("owner") {
+            text_lines(text, inner, Style::new().fg(palette.ink()))
         } else {
-            block.extend(prose_lines(text, rctx, palette.accent, width));
-        }
+            prose_lines(text, rctx, palette.accent, inner)
+        };
+        block.extend(indent(body));
         block.push(Line::raw(""));
         count += block.len();
         blocks.push(block);
@@ -441,17 +503,18 @@ mod tests {
             20,
             palette(),
             &apz_rich::Ctx::default(),
+            0.75,
         );
         assert_eq!(
             text_of(&lines),
             [
-                "you · 1970-01-01 00:00",
-                "Fix the flaky tests",
+                "› you · 1970-01-01 00:00",
+                "  Fix the flaky tests",
                 "",
-                "orchestrator · writing…",
-                "Which repo?",
+                "● orchestrator · writing…",
+                "  Which repo?",
                 "",
-                "Thanks.",
+                "  Thanks.",
             ]
         );
         // The answer is in: its streamed text goes, and an older view does not bring it back.
@@ -466,10 +529,11 @@ mod tests {
             3,
             palette(),
             &apz_rich::Ctx::default(),
+            0.75,
         );
         assert_eq!(
             text_of(&lines),
-            ["orchestrator · 1970-01-01 00:01", "Which repo?", ""],
+            ["● orchestrator · 1970-01-01 00:01", "  Which repo?", ""],
             "only the newest lines that fit"
         );
     }
@@ -525,5 +589,36 @@ mod tests {
             ("hi", "message to conv-3")
         );
         assert_eq!(Compose::New(String::new()).label(), "a new conversation");
+    }
+
+    #[test]
+    fn the_streamed_answer_ends_in_a_blinking_cursor_and_a_silent_turn_says_thinking() {
+        let mut tab = ChatTab::default();
+        tab.on_view(view(10, false));
+        let text = |clock: f32, tab: &ChatTab| {
+            text_of(&talk_lines(
+                &tab.views["conv-3"],
+                &tab.live,
+                40,
+                20,
+                palette(),
+                &apz_rich::Ctx::default(),
+                clock,
+            ))
+        };
+        let silent = text(0.0, &tab);
+        assert!(silent.last().unwrap().ends_with("Thinking…"), "{silent:?}");
+        let delta = json!({ "cid": 3, "work": 41, "req": "r1", "delta": { "type": "text", "text": "Which repo?" } });
+        tab.on_delta(&delta);
+        assert_eq!(
+            text(0.0, &tab).last().unwrap(),
+            "  Which repo?▌",
+            "on in the first half second"
+        );
+        assert_eq!(
+            text(0.75, &tab).last().unwrap(),
+            "  Which repo?",
+            "off in the second half"
+        );
     }
 }

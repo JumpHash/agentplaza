@@ -29,6 +29,8 @@ const KEEP_MAX: u64 = 100_000;
 const DAYS_MAX: u64 = 3650;
 /// The longest search the hub takes, in bytes.
 const QUERY_BYTES: usize = 200;
+/// The tallest a thread card grows before its messages scroll.
+const THREAD_MAX: f32 = 640.0;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -58,6 +60,8 @@ pub struct State {
     query: String,
     seq: u64,
     retention: Retention,
+    /// The retention panel under the head is open.
+    retention_open: bool,
     /// A live refresh is in flight; an event that came meanwhile runs once more when it lands.
     refreshing: bool,
     again: bool,
@@ -119,6 +123,8 @@ pub enum Msg {
     },
     /// Load the selected thread's earlier messages.
     LoadEarlier,
+    /// Open or close the retention panel under the head.
+    ToggleRetention,
     /// The retention fields were edited.
     KeepIn(String),
     DaysIn(String),
@@ -410,6 +416,10 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 _ => Task::none(),
             }
         }
+        Msg::ToggleRetention => {
+            state.retention_open = !state.retention_open;
+            Task::none()
+        }
         Msg::KeepIn(text) => {
             state.retention.keep = text;
             state.retention.dirty = true;
@@ -454,6 +464,7 @@ fn apply(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     state.retention.days = days.to_string();
                     state.retention.dirty = false;
                     state.retention.note = Some(Ok("Saved.".to_string()));
+                    state.retention_open = false;
                 }
                 Err(err) => state.retention.note = Some(Err(err)),
             }
@@ -467,22 +478,15 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let pairs = group_pairs(&state.conversations);
     let current = current_index(&pairs, state.selected.as_deref());
 
-    let search = text_input("Search messages", &state.draft)
-        .on_input(Msg::Search)
-        .font(SANS)
-        .size(12.0)
-        .padding(8)
-        .style(crate::theme::input);
-    let clear = ui::btn(
-        "Clear",
-        None,
-        ui::Kind::Ghost,
-        (!state.draft.is_empty()).then(|| Msg::Search(String::new())),
+    let head = ui::view_head(
+        "Conversations",
+        vec![ui::btn_sm(
+            &retention_summary(&state.retention),
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::ToggleRetention),
+        )],
     );
-    let search: Element<'a, Msg> = row![search, clear]
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .into();
 
     let list: Element<'a, Msg> = if !state.loaded {
         ui::loading()
@@ -494,11 +498,11 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         .into()
     } else if pairs.is_empty() {
         let title = if state.query.is_empty() {
-            "No conversations yet."
+            "No conversations yet.".to_string()
         } else {
-            "No conversations match."
+            format!("No exchanges match “{}”.", state.query)
         };
-        ui::empty("conversations", title, "")
+        ui::faint(title).into()
     } else {
         column(
             pairs
@@ -506,6 +510,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
                 .enumerate()
                 .map(|(i, p)| pair_item(p, exchange_count(state, p), i == current, &state.agents)),
         )
+        .spacing(8)
         .width(Length::Fill)
         .into()
     };
@@ -514,80 +519,145 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         rows.push(ui::error_line(err));
     }
     if state.older.is_some() {
-        rows.push(page_button("Load older", state.busy_older, Msg::LoadOlder));
+        rows.push(page_button(
+            "Load older exchanges",
+            state.busy_older,
+            Msg::LoadOlder,
+        ));
     }
-    let list_col = container(
-        column![
-            search,
-            ui::scroll(column(rows).width(Length::Fill)).height(Length::Fill)
-        ]
-        .spacing(10)
-        .height(Length::Fill),
-    )
-    .width(Length::Fixed(340.0))
-    .height(Length::Fill);
+    let list_col =
+        container(column(rows).spacing(8).width(Length::Fill)).width(Length::Fixed(320.0));
 
     let shown = pairs
         .get(current)
         .and_then(|p| state.thread.as_ref().filter(|t| t.key == p.key));
     let thread: Element<'a, Msg> = match (pairs.get(current), shown) {
-        (None, _) => Space::new().width(Length::Fill).into(),
-        (Some(_), Some(t)) => thread_view(
-            t,
-            &state.agents,
-            state.thread_error.as_deref(),
-            &rctx,
-            &state.cards,
-        ),
+        // No exchange picked: the card stays, empty (the web draws its empty `.cv-card`).
+        (None, _) => container(Space::new())
+            .padding(16)
+            .width(Length::Fill)
+            .style(card)
+            .into(),
+        (Some(p), Some(t)) => {
+            let count = if state.query.is_empty() {
+                format!("{} exchanges", exchange_count(state, p))
+            } else {
+                format!(
+                    "{}{} matching",
+                    t.messages.len(),
+                    if t.older.is_some() { "+" } else { "" }
+                )
+            };
+            thread_view(
+                t,
+                &count,
+                &state.agents,
+                state.thread_error.as_deref(),
+                &rctx,
+                &state.cards,
+            )
+        }
         (Some(_), None) => match &state.thread_error {
             Some(err) => ui::error_line(err),
             None => ui::loading(),
         },
     };
 
-    let divider = container(Space::new())
-        .width(Length::Fixed(1.0))
-        .height(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().rule.into()),
-            ..Default::default()
-        });
-
-    let body: Element<'a, Msg> = row![list_col, divider, thread]
-        .height(Length::Fixed(640.0))
+    let body: Element<'a, Msg> = row![list_col, thread]
+        .spacing(12)
+        .width(Length::Fill)
         .into();
-    let head: Element<'a, Msg> = column![
-        ui::view_head("Conversations", vec![]),
-        retention_row(&state.retention)
-    ]
-    .spacing(12)
-    .into();
-    ui::sheet(head, body)
+    let mut page: Vec<Element<'a, Msg>> = Vec::new();
+    if state.retention_open {
+        page.push(retention_panel(&state.retention));
+    }
+    page.push(search_bar(state));
+    page.push(body);
+    ui::sheet(head, column(page).spacing(12).into())
 }
 
-/// The retention row under the title: "Keep the newest [n] exchanges · delete after [d] days (0 = never)".
-fn retention_row<'a>(r: &'a Retention) -> Element<'a, Msg> {
+/// The search bar above the list (the web's `.cv-bar`): the box, Clear while a search is typed, and the count.
+fn search_bar<'a>(state: &'a State) -> Element<'a, Msg> {
+    let search = text_input("Search exchanges, agents, roles", &state.draft)
+        .on_input(Msg::Search)
+        .font(SANS)
+        .size(12.5)
+        .padding(8)
+        .style(crate::theme::input);
+    let mut bar = row![search.width(Length::Fill)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    if !state.draft.is_empty() {
+        bar = bar.push(ui::btn_sm(
+            "Clear",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::Search(String::new())),
+        ));
+    }
+    if !state.query.is_empty() && state.loaded && state.error.is_none() {
+        let n = state.conversations.len();
+        let more = if state.older.is_some() { "+" } else { "" };
+        let word = if n == 1 && state.older.is_none() {
+            "result"
+        } else {
+            "results"
+        };
+        bar = bar.push(ui::sans(
+            format!("{n}{more} {word}"),
+            12.5,
+            crate::theme::palette().ink_3,
+        ));
+    }
+    bar.into()
+}
+
+/// The retention button's text (the web's `retentionSummary`), from the values the reader sees.
+fn retention_summary(r: &Retention) -> String {
+    let keep = r.keep.trim();
+    if keep.is_empty() {
+        return "Retention".to_string();
+    }
+    let days = match r.days.trim() {
+        "" | "0" => "kept forever".to_string(),
+        d => format!("{d} days"),
+    };
+    format!("Retention · {keep} · {days}")
+}
+
+/// The retention panel under the head (the web's `.cv-ret`): "Keep the newest [n] exchanges · delete after [d]
+/// days (0 = never)", the field errors, the rule of what goes, and Save.
+fn retention_panel<'a>(r: &'a Retention) -> Element<'a, Msg> {
     let note: Element<'a, Msg> = match &r.note {
         Some(Ok(text)) => ui::faint(text.as_str()).into(),
         Some(Err(text)) => ui::error_line(text),
         None => Space::new().into(),
     };
-    row![
-        ui::faint("Keep the newest"),
-        retention_field(&r.keep, "100000", 90.0, Msg::KeepIn),
-        ui::faint("exchanges · delete after"),
-        retention_field(&r.days, "0", 64.0, Msg::DaysIn),
-        ui::faint("days (0 = never)"),
-        ui::btn(
-            if r.busy { "Saving…" } else { "Save" },
-            None,
-            ui::Kind::Secondary,
-            (!r.busy).then_some(Msg::SaveRetention)
-        ),
-        note,
+    let mut body = column![
+        row![
+            ui::faint("Keep the newest"),
+            retention_field(&r.keep, "100000", 90.0, Msg::KeepIn),
+            ui::faint("exchanges · delete after"),
+            retention_field(&r.days, "0", 64.0, Msg::DaysIn),
+            ui::faint("days (0 = never)"),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
     ]
-    .spacing(8)
-    .align_y(Alignment::Center)
+    .spacing(12);
+    if let Err(err) = validate_retention(&r.keep, &r.days) {
+        body = body.push(ui::error_line(&err));
+    }
+    body.push(ui::faint(
+        "Older exchanges are removed automatically: the oldest go first once the count is passed, and any older than the day limit go.",
+    ))
+    .push(note)
+    .push(ui::btn_sm(
+        if r.busy { "Saving…" } else { "Save" },
+        None,
+        ui::Kind::Primary,
+        (!r.busy).then_some(Msg::SaveRetention),
+    ))
     .into()
 }
 
@@ -600,7 +670,7 @@ fn retention_field<'a>(
     text_input(placeholder, value)
         .on_input(on_input)
         .font(SANS)
-        .size(12.0)
+        .size(12.5)
         .padding(6)
         .width(Length::Fixed(width))
         .style(crate::theme::input)
@@ -686,6 +756,7 @@ fn pair_item<'a>(
     active: bool,
     agents: &[(u64, String)],
 ) -> Element<'a, Msg> {
+    let p_ = crate::theme::palette();
     let names = format!("{} · {}", label(agents, p.a), label(agents, p.b));
     let meta = format!(
         "{} · {} exchanges",
@@ -693,54 +764,58 @@ fn pair_item<'a>(
         exchanges
     );
     let (background, edge) = if active {
-        (
-            crate::theme::palette().paper,
-            crate::theme::palette().signal,
-        )
+        (p_.signal_soft, p_.signal)
     } else {
-        (crate::theme::palette().sheet, crate::theme::palette().rule)
+        (p_.sheet, p_.rule)
     };
-    button(
-        column![
-            ui::sans(names, 12.0, crate::theme::palette().ink),
-            ui::prose(clip(&p.last.text, 90)),
-            ui::faint(meta)
-        ]
-        .spacing(4),
-    )
-    .width(Length::Fill)
-    .padding(12)
-    .on_press(Msg::Select(p.key.clone()))
-    .style(move |_: &Theme, _: button::Status| button::Style {
-        background: Some(background.into()),
-        text_color: crate::theme::palette().ink,
-        border: Border {
-            color: edge,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    })
-    .into()
+    let body = column![
+        one_line(
+            iced::widget::text(names)
+                .font(crate::theme::SANS_SEMIBOLD)
+                .size(13.0)
+                .color(p_.ink)
+        ),
+        one_line(ui::sans(clip(&p.last.text, 90), 12.5, p_.ink_2)),
+        one_line(ui::sans(meta, 12.5, p_.ink_2)),
+    ]
+    .spacing(4);
+    button(body)
+        .width(Length::Fill)
+        .padding(12)
+        .on_press(Msg::Select(p.key.clone()))
+        .style(move |_: &Theme, _: button::Status| button::Style {
+            background: Some(background.into()),
+            text_color: p_.ink,
+            border: Border {
+                color: edge,
+                width: 1.0,
+                radius: crate::theme::skin().radius.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
-/// The open thread: its pair as the head, the earlier-messages button, then every message as one
-/// readable column (speaker and time in mono, the text in serif).
+/// The open thread (the web's thread card): its pair and the exchange count as the head, the
+/// earlier-messages button, then every message as a bubble, oldest first.
 fn thread_view<'a>(
     t: &Thread,
+    count: &str,
     agents: &[(u64, String)],
     error: Option<&str>,
     rctx: &rich::RichCtx,
-    cards: &rich::Cards,
+    cards: &'a rich::Cards,
 ) -> Element<'a, Msg> {
-    let head = row![
+    let names = row![
         name_link(t.a, agents),
         ui::faint(" · "),
         name_link(t.b, agents)
     ]
-    .spacing(6)
     .align_y(Alignment::Center);
-    let mut items: Vec<Element<'a, Msg>> = vec![head.into(), ui::hairline()];
+    let head = row![names, ui::faint(count.to_string())]
+        .spacing(12)
+        .align_y(Alignment::Center);
+    let mut items: Vec<Element<'a, Msg>> = vec![head.into()];
     if let Some(err) = error {
         items.push(ui::error_line(err));
     }
@@ -751,55 +826,99 @@ fn thread_view<'a>(
             Msg::LoadEarlier,
         ));
     }
-    // The messages are held newest first; the thread reads oldest first.
+    if t.messages.is_empty() {
+        items.push(ui::faint("No exchanges yet.").into());
+    }
+    // The messages are held newest first; the thread reads oldest first. The first speaker sits on the
+    // left, the other on the right.
+    let first = t.messages.last().map_or(t.a, |m| m.from_cid);
     items.extend(
         t.messages
             .iter()
             .rev()
-            .map(|m| message(m, agents, rctx, cards)),
+            .map(|m| bubble(m, m.from_cid != first, agents, rctx, cards)),
     );
-    ui::scroll(
-        column(items)
-            .spacing(18)
-            .padding(16)
-            .max_width(720.0)
-            .width(Length::Fill),
-    )
-    .id(WidgetId::new(THREAD))
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    // The thread is as tall as its messages, to a limit where it scrolls on its own.
+    let thread = ui::scroll(column(items).spacing(12).width(Length::Fill))
+        .id(WidgetId::new(THREAD))
+        .width(Length::Fill)
+        .height(Length::Shrink);
+    container(thread)
+        .padding(16)
+        .width(Length::Fill)
+        .max_height(THREAD_MAX)
+        .style(card)
+        .into()
 }
 
-fn message<'a>(
+/// A line that never wraps and is clipped at the edge of its column (the web's `white-space: nowrap` with an ellipsis).
+fn one_line<'a>(content: iced::widget::text::Text<'a>) -> Element<'a, Msg> {
+    container(content.wrapping(iced::widget::text::Wrapping::None))
+        .width(Length::Fill)
+        .clip(true)
+        .into()
+}
+
+/// The web's `.cv-card`: the sheet, ruled, the skin's large radius.
+fn card(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(crate::theme::palette().sheet.into()),
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// One message as a bubble (the web's `.cv-msg`): the speaker and the time, the undelivered mark, the
+/// text; on the right for the other speaker, with the signal's soft ground, at 78% of the thread's width.
+fn bubble<'a>(
     m: &Conversation,
+    right: bool,
     agents: &[(u64, String)],
     rctx: &rich::RichCtx,
-    cards: &rich::Cards,
+    cards: &'a rich::Cards,
 ) -> Element<'a, Msg> {
     let mut meta = row![
         name_link(m.from_cid, agents),
-        ui::sans(
-            ago(m.created_at, now_ms()),
-            11.0,
-            crate::theme::palette().ink_3
-        )
+        ui::faint(ago(m.created_at, now_ms()))
     ]
-    .spacing(10)
+    .spacing(8)
     .align_y(Alignment::Center);
     if !m.delivered {
         meta = meta.push(ui::badge("undelivered", ui::Tone::Warn));
     }
-    column![meta, rich::view(&m.text, rctx, cards, &on_rich)]
-        .spacing(6)
-        .width(Length::Fill)
-        .into()
+    let body = column![meta, rich::view(&m.text, rctx, cards, &on_rich)].spacing(4);
+    let ground = if right {
+        crate::theme::palette().signal_soft
+    } else {
+        crate::theme::palette().sheet_2
+    };
+    let bubble = container(body)
+        .padding([8.0, 12.0])
+        .width(Length::FillPortion(78))
+        .style(move |_: &Theme| container::Style {
+            background: Some(ground.into()),
+            border: Border {
+                radius: crate::theme::skin().radius.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    let gap = Space::new().width(Length::FillPortion(22));
+    if right {
+        row![gap, bubble].into()
+    } else {
+        row![bubble, gap].into()
+    }
 }
 
-/// A mono button for paging; it reads "Loading…" and is inert while its page is in flight.
+/// A ghost small button for paging; it reads "Loading…" and is inert while its page is in flight.
 fn page_button<'a>(label: &str, busy: bool, msg: Msg) -> Element<'a, Msg> {
     let text = if busy { "Loading…" } else { label };
-    ui::btn(text, None, ui::Kind::Secondary, (!busy).then_some(msg))
+    ui::btn_sm(text, None, ui::Kind::Ghost, (!busy).then_some(msg))
 }
 
 fn thread_page(ctx: &Ctx, key: String, q: String, before: Option<u64>, earlier: bool) -> Task<Msg> {
@@ -1027,13 +1146,15 @@ fn ago(ms: i64, now: i64) -> String {
     if ms == 0 {
         return "\u{2014}".to_string();
     }
-    let s = ((now - ms) as f64 / 1000.0).round().max(0.0) as i64;
-    match s {
-        s if s < 5 => "just now".to_string(),
-        s if s < 60 => format!("{s}s ago"),
-        s if s < 3600 => format!("{}m ago", s / 60),
-        s if s < 86_400 => format!("{}h ago", s / 3600),
-        s => format!("{}d ago", s / 86_400),
+    let s = ((now - ms) as f64 / 1000.0).round().max(0.0);
+    if s < 45.0 {
+        "just now".to_string()
+    } else if s < 3600.0 {
+        format!("{} min ago", (s / 60.0).round().max(1.0))
+    } else if s < 86400.0 {
+        format!("{} h ago", (s / 3600.0).round())
+    } else {
+        format!("{} d ago", (s / 86400.0).round())
     }
 }
 

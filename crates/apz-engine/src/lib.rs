@@ -11,6 +11,7 @@
 //! OrbitControls.
 
 pub mod assets;
+pub mod backdrop;
 pub mod canvas;
 pub mod controls;
 pub mod core;

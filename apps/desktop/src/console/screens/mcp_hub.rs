@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{checkbox, column, pick_list, row, text_input};
-use iced::{Alignment, Element, Length, Task};
+use iced::widget::{Space, button, checkbox, column, container, pick_list, row, text_input};
+use iced::{Alignment, Background, Border, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -343,6 +343,8 @@ pub struct HubToken {
     pub id: String,
     pub name: String,
     pub scope: String,
+    /// The tools the token is narrowed to; empty means all the scope's tools.
+    pub tools: Vec<String>,
     pub expires_ms: Option<u64>,
     pub last_used_ms: Option<u64>,
     pub calls: u64,
@@ -1023,8 +1025,9 @@ fn gate(busy: bool, msg: Msg) -> Option<Msg> {
     if busy { None } else { Some(msg) }
 }
 
+/// The tab's cards in the web's order: Enable, New token, Tokens, Calls, Editors (ACP).
 pub fn view(state: &State) -> Element<'_, Msg> {
-    let mut parts: Vec<Element<'_, Msg>> = vec![ui::faint("Serve this hub to outside MCP clients. Each token is one client's key, and the calls log shows what each one used.").into()];
+    let mut parts: Vec<Element<'_, Msg>> = Vec::new();
     if let Some((text, is_error)) = &state.notice {
         parts.push(if *is_error {
             ui::error_line(text)
@@ -1035,55 +1038,153 @@ pub fn view(state: &State) -> Element<'_, Msg> {
     parts.push(enable_card(state));
     parts.push(token_form(state));
     parts.push(tokens_card(state));
-    parts.push(editors_card(state));
     parts.push(calls_card(state));
-    column(parts).spacing(22).width(Length::Fill).into()
+    parts.push(editors_card(state));
+    column(parts).spacing(16).width(Length::Fill).into()
+}
+
+/// A labelled control, as the web's field: the label over the control, and a hint under it in ink-3.
+fn field<'a>(label: &str, control: Element<'a, Msg>, hint: Option<&str>) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = vec![
+        ui::sans(label.to_string(), 12.5, crate::theme::palette().ink_2).into(),
+        control,
+    ];
+    if let Some(hint) = hint {
+        parts.push(ui::faint(hint.to_string()).into());
+    }
+    column(parts).spacing(6).width(Length::Fill).into()
+}
+
+/// A warning line, in the palette's warn tone (the web's `p.mcp-warn`).
+fn warn_text<'a>(line: &str) -> Element<'a, Msg> {
+    ui::sans(line.to_string(), 12.5, crate::theme::palette().warn).into()
+}
+
+/// A square icon button with no label (the web's `.iconbtn`): the glyph in ink-2, a hover ground.
+fn icon_button<'a>(name: &str, msg: Option<Msg>) -> Element<'a, Msg> {
+    let glyph =
+        container(ui::icon::<Msg>(name, 14.0, crate::theme::palette().ink_2)).center(Length::Fill);
+    button(glyph)
+        .on_press_maybe(msg)
+        .padding(0)
+        .width(Length::Fixed(28.0))
+        .height(Length::Fixed(28.0))
+        .style(|_: &Theme, status: button::Status| button::Style {
+            background: matches!(status, button::Status::Hovered | button::Status::Pressed)
+                .then_some(Background::Color(crate::theme::palette().hover)),
+            text_color: crate::theme::palette().ink,
+            border: Border::default().rounded(crate::theme::skin().radius),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A block of monospace text on the sheet ground, as the web's `pre.mono`.
+fn pre_box<'a>(content: String) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    container(ui::mono(content, 12.0, p.ink))
+        .padding([10, 12])
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(Background::Color(p.sheet_2)),
+            border: Border {
+                radius: crate::theme::skin().radius.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A table cell at a portion's width, padded as the web's `.tbl td`.
+fn cell<'a>(portion: u16, content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
+    container(content)
+        .width(Length::FillPortion(portion))
+        .padding([9, 12])
+        .into()
+}
+
+/// A rule the width of its line, in the given colour.
+fn rule<'a>(color: iced::Color) -> Element<'a, Msg> {
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(Background::Color(color)),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// A table as the web's `.tbl` inside a card: a head in the label voice over a strong rule, a rule under each row.
+fn table<'a>(heads: &[(u16, &str)], rows: Vec<Vec<Element<'a, Msg>>>) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let head_cells: Vec<Element<'a, Msg>> = heads
+        .iter()
+        .map(|(portion, label)| cell(*portion, ui::label(label)))
+        .collect();
+    let mut lines: Vec<Element<'a, Msg>> = vec![
+        row(head_cells).align_y(Alignment::Center).into(),
+        rule(p.rule_strong),
+    ];
+    let n = rows.len();
+    for (slot, cells) in rows.into_iter().enumerate() {
+        let spans: Vec<Element<'a, Msg>> = cells
+            .into_iter()
+            .zip(heads.iter())
+            .map(|(content, (portion, _))| cell(*portion, content))
+            .collect();
+        lines.push(row(spans).align_y(Alignment::Center).into());
+        if slot + 1 < n {
+            lines.push(rule(p.rule));
+        }
+    }
+    ui::scroll_x(column(lines).width(Length::Fill))
+        .width(Length::Fill)
+        .into()
 }
 
 fn enable_card(state: &State) -> Element<'_, Msg> {
     let remote = state.bind == Bind::Remote;
     let open = state.auth == Auth::Open;
     let mut parts: Vec<Element<'_, Msg>> = vec![
+        status_line(state),
         checkbox(state.enabled)
             .label("Serve this hub over MCP")
             .on_toggle(Msg::SetEnabled)
             .into(),
-        ui::label("Bind").into(),
-        ui::seg(&BIND_OPTIONS, state.bind, Msg::SetBind),
-        ui::label("Auth").into(),
-        ui::seg(&AUTH_OPTIONS, state.auth, Msg::SetAuth),
-        ui::faint(if matches!(state.auth, Auth::Open) {
-            "no token"
-        } else {
-            "token required"
-        })
-        .into(),
+        field(
+            "Bind",
+            ui::seg(&BIND_OPTIONS, state.bind, Msg::SetBind),
+            None,
+        ),
+        field(
+            "Auth",
+            ui::seg(&AUTH_OPTIONS, state.auth, Msg::SetAuth),
+            Some(if open {
+                "Open: no token"
+            } else {
+                "Secure: token required"
+            }),
+        ),
     ];
-    // The TLS line sits right after the bind: a remote bind needs TLS.
-    if let Some(line) = tls_line(state) {
-        parts.insert(3, line);
-    }
     if open {
-        parts.push(ui::error_line(
-            "Anyone who can reach this address can use these tools without a token.",
+        parts.push(field(
+            "Open scope (anonymous callers)",
+            pick_list(
+                Scope::ALL.to_vec(),
+                Some(state.open_scope),
+                Msg::SetOpenScope,
+            )
+            .style(crate::theme::pick_list)
+            .into(),
+            None,
+        ));
+        parts.push(warn_text(
+            "Open mode lets callers without a token use this hub at the open scope.",
         ));
         if let Some(warning) = state.status.as_ref().and_then(|s| s.warning.as_deref()) {
-            parts.push(ui::error_line(warning));
+            parts.push(warn_text(warning));
         }
-        parts.push(
-            row![
-                ui::faint("Open scope (anonymous callers)"),
-                pick_list(
-                    Scope::ALL.to_vec(),
-                    Some(state.open_scope),
-                    Msg::SetOpenScope
-                ),
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into(),
-        );
-        parts.push(ui::faint(state.open_scope.plain()).into());
         if remote {
             parts.push(
                 checkbox(state.confirm_open_remote)
@@ -1093,65 +1194,95 @@ fn enable_card(state: &State) -> Element<'_, Msg> {
             );
         }
     }
-    parts.push(ui::label("Allowed origins").into());
+    // The origins: the input and its Add, the list with each one's remove, then the effective origins read-only.
+    let origin_input = row![
+        text_input("https://app.example.com", &state.origin_input)
+            .on_input(Msg::OriginInput)
+            .on_submit(Msg::AddOrigin)
+            .padding(8)
+            .style(crate::theme::input),
+        ui::btn_sm("Add", Some("plus"), ui::Kind::Ghost, Some(Msg::AddOrigin)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    let mut origin_rows: Vec<Element<'_, Msg>> = Vec::new();
     if state.origins.is_empty() {
-        parts.push(ui::faint("No origins yet.").into());
+        origin_rows.push(ui::faint("No origins yet.").into());
     }
     for origin in &state.origins {
-        parts.push(
+        origin_rows.push(
             row![
                 ui::mono(origin.clone(), 12.0, crate::theme::palette().ink_2),
-                ui::btn_sm(
-                    "Remove",
-                    None,
-                    ui::Kind::Ghost,
-                    Some(Msg::RemoveOrigin(origin.clone()))
-                ),
+                icon_button("x", Some(Msg::RemoveOrigin(origin.clone()))),
             ]
-            .spacing(10)
+            .spacing(8)
             .align_y(Alignment::Center)
             .into(),
         );
     }
-    parts.push(
-        row![
-            text_input("https://app.example.com", &state.origin_input)
-                .on_input(Msg::OriginInput)
-                .on_submit(Msg::AddOrigin)
-                .padding(8)
-                .style(crate::theme::input),
-            ui::btn_sm("Add", None, ui::Kind::Secondary, Some(Msg::AddOrigin)),
+    parts.push(field(
+        "Allowed origins",
+        column![
+            origin_input,
+            column(origin_rows).spacing(4).width(Length::Fill)
         ]
         .spacing(8)
-        .align_y(Alignment::Center)
         .into(),
-    );
-    if let Some(status) = &state.status {
-        parts.push(ui::label("Effective origins (read only)").into());
-        if status.effective_origins.is_empty() {
-            parts.push(ui::faint("None.").into());
-        }
-        for origin in &status.effective_origins {
-            parts.push(ui::mono(origin.clone(), 12.0, crate::theme::palette().ink_2).into());
-        }
-    }
-    parts.push(status_line(state));
-    parts.push(ui::btn(
-        "Save",
         None,
-        ui::Kind::Primary,
-        gate(state.busy, Msg::Save),
     ));
-    ui::card(
+    let effective = match state.status.as_ref() {
+        Some(status) if !status.effective_origins.is_empty() => status.effective_origins.join(", "),
+        _ => "None.".to_string(),
+    };
+    parts.push(ui::faint(format!("Effective origins: {effective}")).into());
+    parts.push(ui::btn_sm(
+        "Copy URL",
+        None,
+        ui::Kind::Ghost,
+        state.status.as_ref().map(|s| Msg::Copy(s.url.clone())),
+    ));
+    ui::card_with(
         "Enable",
-        column(parts).spacing(12).width(Length::Fill).into(),
+        vec![ui::btn_sm(
+            "Save",
+            None,
+            ui::Kind::Primary,
+            gate(state.busy, Msg::Save),
+        )],
+        column(parts).spacing(14).width(Length::Fill).into(),
     )
 }
 
-/// Whether the endpoint serves TLS, next to the bind: a remote bind needs it, and the hub refuses it without.
-fn tls_line(state: &State) -> Option<Element<'_, Msg>> {
-    let status = state.status.as_ref()?;
-    let (label, tone, text) = if status.tls {
+/// The status block: the on or off badge with the TLS badge and its note, the live tokens and the URL, and the
+/// database note when it is off. A failed status load shows its error with a retry.
+fn status_line(state: &State) -> Element<'_, Msg> {
+    if let Some(error) = &state.status_error {
+        return column![
+            ui::empty("triangle-alert", "Could not load the hub server", error),
+            ui::btn_sm("Try again", None, ui::Kind::Ghost, Some(Msg::RetryStatus)),
+        ]
+        .spacing(12)
+        .align_x(Alignment::Center)
+        .width(Length::Fill)
+        .into();
+    }
+    let Some(status) = &state.status else {
+        return ui::faint("Loading...").into();
+    };
+    let remote = Bind::from_wire(&status.bind) == Bind::Remote;
+    let label = if !status.enabled {
+        "Off"
+    } else if remote {
+        "On, remote over TLS"
+    } else {
+        "On, local only"
+    };
+    let tone = if status.enabled {
+        ui::Tone::Ok
+    } else {
+        ui::Tone::Muted
+    };
+    let (tls_label, tls_tone, tls_note) = if status.tls {
         (
             "TLS on",
             ui::Tone::Ok,
@@ -1164,77 +1295,86 @@ fn tls_line(state: &State) -> Option<Element<'_, Msg>> {
             "Remote bind needs TLS. This endpoint has none, so the hub refuses remote bind until it serves TLS.",
         )
     };
-    Some(
-        row![ui::badge(label, tone), ui::faint(text)]
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .into(),
-    )
-}
-
-fn status_line(state: &State) -> Element<'_, Msg> {
-    if let Some(error) = &state.status_error {
-        return column![
-            ui::empty("alert", "Could not load the hub server", error),
-            ui::btn_sm("Try again", None, ui::Kind::Ghost, Some(Msg::RetryStatus)),
-        ]
-        .align_x(Alignment::Center)
-        .into();
-    }
-    let Some(status) = &state.status else {
-        return ui::faint("Loading...").into();
-    };
-    let label = if !status.enabled {
-        "Off".to_string()
-    } else if Bind::from_wire(&status.bind) == Bind::Remote {
-        "On, remote over TLS".to_string()
-    } else {
-        "On, local only".to_string()
-    };
-    let tone = if status.enabled {
-        ui::Tone::Ok
-    } else {
-        ui::Tone::Muted
-    };
     let plural = if status.tokens == 1 { "" } else { "s" };
-    let head: Vec<Element<'_, Msg>> = vec![
-        ui::badge(&label, tone),
-        ui::mono(status.url.clone(), 12.0, crate::theme::palette().ink).into(),
-        ui::btn_sm(
-            "Copy URL",
-            None,
-            ui::Kind::Ghost,
-            Some(Msg::Copy(status.url.clone())),
-        ),
-        ui::faint(format!("{} live token{plural}", status.tokens)).into(),
+    let mut lines: Vec<Element<'_, Msg>> = vec![
+        row![
+            ui::badge(label, tone),
+            ui::badge(tls_label, tls_tone),
+            ui::faint(tls_note),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into(),
+        row![
+            ui::faint(format!("{} live token{plural} · ", status.tokens)),
+            ui::mono(status.url.clone(), 12.0, crate::theme::palette().ink_2),
+        ]
+        .align_y(Alignment::Center)
+        .into(),
     ];
-    let mut lines: Vec<Element<'_, Msg>> =
-        vec![row(head).spacing(10).align_y(Alignment::Center).into()];
     if !status.stored {
-        lines.push(
-            ui::faint("The database is off, so these settings last only until the hub restarts.")
-                .into(),
-        );
+        lines.push(warn_text(
+            "The database is off, so these settings last only until the hub restarts.",
+        ));
     }
-    column(lines).spacing(6).into()
+    column(lines).spacing(8).width(Length::Fill).into()
 }
 
 fn token_form(state: &State) -> Element<'_, Msg> {
-    let mut parts: Vec<Element<'_, Msg>> = vec![
-        ui::label("Name").into(),
-        text_input("laptop", &state.name)
-            .on_input(Msg::SetName)
-            .padding(8)
-            .style(crate::theme::input)
-            .into(),
-        ui::label("Scope").into(),
-        ui::seg(&SCOPE_OPTIONS, state.scope, Msg::SetScope),
-    ];
+    let mut scope_block: Vec<Element<'_, Msg>> =
+        vec![ui::seg(&SCOPE_OPTIONS, state.scope, Msg::SetScope)];
     for scope in Scope::ALL {
-        parts.push(ui::faint(format!("{}: {}", scope.label(), scope.plain())).into());
+        scope_block.push(ui::faint(format!("{}: {}", scope.label(), scope.plain())).into());
     }
-    parts.push(ui::label("Tools (optional)").into());
-    parts.push(ui::faint("Leave them all unticked for every tool the scope allows.").into());
+    let parts: Vec<Element<'_, Msg>> = vec![
+        field(
+            "Name",
+            text_input("laptop", &state.name)
+                .on_input(Msg::SetName)
+                .padding(8)
+                .style(crate::theme::input)
+                .into(),
+            Some("What this client is, such as laptop or ci."),
+        ),
+        field(
+            "Scope",
+            column(scope_block).spacing(6).width(Length::Fill).into(),
+            None,
+        ),
+        tools_block(state),
+        field(
+            "Expires after (days)",
+            text_input("Never", &state.expires)
+                .on_input(Msg::SetExpires)
+                .padding(8)
+                .style(crate::theme::input)
+                .into(),
+            Some("Blank means the token never expires."),
+        ),
+        ui::btn(
+            "Create token",
+            Some("plus"),
+            ui::Kind::Primary,
+            gate(state.busy, Msg::CreateToken),
+        ),
+        match &state.reveal {
+            Some(reveal) => reveal_box(reveal),
+            None => Space::new().into(),
+        },
+    ];
+    ui::card(
+        "New token",
+        column(parts).spacing(14).width(Length::Fill).into(),
+    )
+}
+
+/// The tool checklist, grouped by scope: a group above the chosen scope is greyed out.
+fn tools_block(state: &State) -> Element<'_, Msg> {
+    let p = crate::theme::palette();
+    let mut groups: Vec<Element<'_, Msg>> = vec![
+        ui::label("Tools (optional)").into(),
+        ui::faint("Leave them all unticked for every tool the scope allows.").into(),
+    ];
     for group in Scope::ALL {
         let allowed = state.scope.permits(group);
         let heading = if allowed {
@@ -1242,54 +1382,48 @@ fn token_form(state: &State) -> Element<'_, Msg> {
         } else {
             format!("{} (above this scope)", group.label())
         };
-        parts.push(ui::faint(heading).into());
+        let mut lines: Vec<Element<'_, Msg>> = vec![ui::label(&heading).into()];
         for name in tools_of(group) {
             let mut tool = checkbox(state.picked.contains(*name)).label(*name);
             if allowed {
                 let owned = name.to_string();
                 tool = tool.on_toggle(move |on| Msg::TogglePick(owned.clone(), on));
             }
-            parts.push(tool.into());
+            lines.push(tool.into());
         }
+        groups.push(column(lines).spacing(6).width(Length::Fill).into());
     }
-    parts.push(ui::label("Expires after (days)").into());
-    parts.push(
-        text_input("Never", &state.expires)
-            .on_input(Msg::SetExpires)
-            .padding(8)
-            .style(crate::theme::input)
-            .into(),
-    );
-    parts.push(ui::faint("Blank means the token never expires.").into());
-    parts.push(ui::btn(
-        "Create token",
-        None,
-        ui::Kind::Primary,
-        gate(state.busy, Msg::CreateToken),
-    ));
-    if let Some(reveal) = &state.reveal {
-        parts.push(reveal_box(reveal));
-    }
-    ui::card(
-        "New token",
-        column(parts).spacing(12).width(Length::Fill).into(),
-    )
+    container(column(groups).spacing(12).width(Length::Fill))
+        .padding([10, 14])
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            border: Border {
+                color: p.rule,
+                width: 1.0,
+                radius: crate::theme::skin().radius.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 fn reveal_box(reveal: &Reveal) -> Element<'_, Msg> {
-    let token_row: Vec<Element<'_, Msg>> = vec![
-        ui::mono(reveal.token.clone(), 12.0, crate::theme::palette().ink).into(),
-        ui::btn_sm(
-            "Copy token",
-            None,
-            ui::Kind::Ghost,
-            Some(Msg::Copy(reveal.token.clone())),
-        ),
-    ];
+    let p = crate::theme::palette();
     let mut parts: Vec<Element<'_, Msg>> = vec![
-        ui::label(&format!("Token for {}", reveal.name)).into(),
-        ui::error_line("Shown once. Copy it now, because it cannot be shown again."),
-        row(token_row).spacing(10).align_y(Alignment::Center).into(),
+        ui::sans(format!("Token for {}", reveal.name), 13.0, p.ink).into(),
+        warn_text("Shown once. Copy it now, because it cannot be shown again."),
+        row![
+            container(pre_box(reveal.token.clone())).width(Length::Fill),
+            ui::btn_sm(
+                "Copy token",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Copy(reveal.token.clone())),
+            ),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into(),
         snippet(
             "Claude Code",
             &reveal.snippets.claude_code,
@@ -1319,32 +1453,46 @@ fn reveal_box(reveal: &Reveal) -> Element<'_, Msg> {
         ui::Kind::Ghost,
         Some(Msg::HideReveal),
     ));
-    column(parts).spacing(12).width(Length::Fill).into()
+    container(column(parts).spacing(12).width(Length::Fill))
+        .padding(14)
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(Background::Color(p.raised)),
+            border: Border {
+                color: p.rule_strong,
+                width: 1.0,
+                radius: crate::theme::skin().radius_lg.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
-/// One block of setup text, with its copy button and a note on what it does.
+/// One block of setup text: its title and copy button, the note on what it does, then the text in a block.
 fn snippet<'a>(title: &str, text: &str, note: &str) -> Element<'a, Msg> {
-    let head: Vec<Element<'a, Msg>> = vec![
-        ui::label(title).into(),
-        ui::btn_sm(
-            "Copy",
-            None,
-            ui::Kind::Ghost,
-            Some(Msg::Copy(text.to_string())),
-        ),
-    ];
     column![
-        row(head).spacing(10).align_y(Alignment::Center),
-        ui::sans(text.to_string(), 11.0, crate::theme::palette().ink_2),
+        row![
+            ui::sans(title.to_string(), 13.0, crate::theme::palette().ink),
+            ui::btn_sm(
+                "Copy",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Copy(text.to_string())),
+            ),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
         ui::faint(note.to_string()),
+        pre_box(text.to_string()),
     ]
     .spacing(6)
+    .width(Length::Fill)
     .into()
 }
 
 fn tokens_card(state: &State) -> Element<'_, Msg> {
     let body: Element<'_, Msg> = if let Some(error) = &state.tokens_error {
-        ui::empty("alert", "Could not load the tokens", error)
+        ui::empty("triangle-alert", "Could not load the tokens", error)
     } else {
         match &state.tokens {
             None => ui::loading(),
@@ -1353,65 +1501,114 @@ fn tokens_card(state: &State) -> Element<'_, Msg> {
                     list.iter().filter(|t| t.revoked_at_ms.is_none()).collect();
                 if live.is_empty() {
                     ui::empty(
-                        "terminal",
+                        "key",
                         "No tokens",
                         "Make one above to give an outside client access to this hub.",
                     )
                 } else {
-                    column(
-                        live.into_iter()
-                            .map(|token| token_row(state, token))
-                            .collect::<Vec<_>>(),
-                    )
-                    .spacing(14)
-                    .width(Length::Fill)
-                    .into()
+                    tokens_table(state, &live)
                 }
             }
         }
     };
-    ui::card("Tokens", body)
-}
-
-fn token_row<'a>(state: &State, token: &HubToken) -> Element<'a, Msg> {
-    let now = now_ms();
-    let last = match token.last_used_ms.filter(|&ms| ms > 0) {
-        Some(ms) => format!("last used {}", ago(now, ms)),
-        None => "never used".to_string(),
-    };
-    let facts = format!(
-        "{last} · {} calls · {}",
-        token.calls,
-        expiry_text(now, token.expires_ms)
-    );
-    let head: Vec<Element<'a, Msg>> = vec![
-        ui::mono(token.name.clone(), 12.0, crate::theme::palette().ink).into(),
-        ui::badge(&token.scope, ui::Tone::Info),
-        ui::faint(token.id.clone()).into(),
-    ];
-    let mut lines: Vec<Element<'a, Msg>> = vec![
-        row(head).spacing(10).align_y(Alignment::Center).into(),
-        ui::faint(facts).into(),
-    ];
-    if state.confirm_revoke.as_deref() == Some(token.id.as_str()) {
-        let confirm: Vec<Element<'a, Msg>> = vec![
-            ui::faint(format!("Revoke {}? Clients that use this token lose access at once. This cannot be undone.", token.name)).into(),
-            ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelRevoke)),
-            ui::btn_sm("Revoke", None, ui::Kind::Danger, gate(state.busy, Msg::Revoke(token.id.clone()))),
-        ];
-        lines.push(row(confirm).spacing(10).align_y(Alignment::Center).into());
-    } else {
-        lines.push(ui::btn_sm(
-            "Revoke",
-            None,
-            ui::Kind::Danger,
-            gate(state.busy, Msg::AskRevoke(token.id.clone())),
-        ));
+    let mut parts: Vec<Element<'_, Msg>> = Vec::new();
+    if let Some(confirm) = revoke_card(state) {
+        parts.push(confirm);
     }
-    column(lines).spacing(8).into()
+    parts.push(body);
+    ui::card(
+        "Tokens",
+        column(parts).spacing(14).width(Length::Fill).into(),
+    )
 }
 
-/// The Editors (ACP) section: the switch, the setup text for each editor, and the sessions the hub holds.
+/// The revoke confirmation as the web's dialog: the warning, Cancel, and Revoke in the danger tone.
+fn revoke_card(state: &State) -> Option<Element<'_, Msg>> {
+    let id = state.confirm_revoke.as_deref()?;
+    let name = state
+        .tokens
+        .as_deref()
+        .and_then(|list| list.iter().find(|t| t.id == id))
+        .map(|t| t.name.clone())
+        .unwrap_or_else(|| id.to_string());
+    Some(ui::card(
+        &format!("Revoke {name}"),
+        column![
+            ui::faint("Clients that use this token lose access at once. This cannot be undone."),
+            row![
+                ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelRevoke)),
+                ui::btn_sm(
+                    "Revoke",
+                    None,
+                    ui::Kind::Danger,
+                    gate(state.busy, Msg::Revoke(id.to_string())),
+                ),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(12)
+        .width(Length::Fill)
+        .into(),
+    ))
+}
+
+fn tokens_table<'a>(state: &'a State, tokens: &[&'a HubToken]) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let now = now_ms();
+    let rows: Vec<Vec<Element<'a, Msg>>> = tokens
+        .iter()
+        .map(|t| -> Vec<Element<'a, Msg>> {
+            let tools: Element<'a, Msg> = if t.tools.is_empty() {
+                ui::faint("All the scope's tools").into()
+            } else {
+                ui::mono(ui::ellipsize(&t.tools.join(", "), 80), 12.0, p.ink_2).into()
+            };
+            vec![
+                column![
+                    ui::sans(t.name.clone(), 13.0, p.ink),
+                    ui::mono(t.id.clone(), 11.0, p.ink_3),
+                ]
+                .spacing(2)
+                .into(),
+                ui::badge(&t.scope, ui::Tone::Info),
+                tools,
+                ui::faint(match t.last_used_ms.filter(|&ms| ms > 0) {
+                    Some(ms) => ago(now, ms),
+                    None => "never".to_string(),
+                })
+                .into(),
+                ui::faint(t.calls.to_string()).into(),
+                ui::faint(match t.expires_ms {
+                    Some(ms) => date_text(ms),
+                    None => "never".to_string(),
+                })
+                .into(),
+                ui::btn_sm(
+                    "Revoke",
+                    Some("trash-2"),
+                    ui::Kind::Danger,
+                    gate(state.busy, Msg::AskRevoke(t.id.clone())),
+                ),
+            ]
+        })
+        .collect();
+    table(
+        &[
+            (3, "Name"),
+            (2, "Scope"),
+            (3, "Tools"),
+            (2, "Last used"),
+            (1, "Calls"),
+            (2, "Expires"),
+            (2, "Actions"),
+        ],
+        rows,
+    )
+}
+
+/// The editors section, as the web's Editors (ACP) card: the switches, the setup text for each editor, and the
+/// sessions the hub holds.
 fn editors_card(state: &State) -> Element<'_, Msg> {
     let enabled = state.acp_enabled.unwrap_or(false);
     // Without an on_toggle the checkbox is greyed out: the write-back switch waits for editors to be on.
@@ -1426,14 +1623,14 @@ fn editors_card(state: &State) -> Element<'_, Msg> {
         .on_toggle(Msg::SetAcpV2);
     let mut parts: Vec<Element<'_, Msg>> = vec![
         checkbox(enabled)
-            .label("Let editors connect to this hub")
+            .label("Let editors prompt a plaza agent")
             .on_toggle(Msg::SetAcp)
             .into(),
-        ui::faint("Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine.").into(),
+        ui::faint("Zed, JetBrains IDEs, Neovim and other ACP clients prompt a plaza agent from the editor; its approvals are asked in the editor. Agents never reach your machine: the editor's MCP servers and files stay local.").into(),
         write_back.into(),
-        ui::faint("With agentplaza acp --repo, the agent works in a lane of its own on the editor's project, mirrored in Weft. When this is on, the editor asks you whether to apply the files it changed; the editor writes them, the agent never does.").into(),
+        ui::faint("Write-back runs through agentplaza acp --repo, on a lane of its own, mirrored in Weft. The editor writes the files; the agent never does.").into(),
         v2.into(),
-        ui::faint("Editors and coding engines that ask for protocol 2 get it; everything else stays on the stable v1. v2 is a draft that still changes, and it has no write-back: the editor's file methods are gone in v2.").into(),
+        ui::faint("v2 is a draft that still changes, and it has no write-back: the editor's file methods are gone in v2.").into(),
     ];
     if let Some(error) = &state.acp_error {
         parts.push(ui::error_line(error));
@@ -1442,82 +1639,88 @@ fn editors_card(state: &State) -> Element<'_, Msg> {
     parts.push(snippet(
         "Zed",
         &snippets.zed,
-        "Add to Zed's settings, under agent_servers.",
+        "Add this to the settings.json of Zed. It runs the default plaza agent.",
     ));
     parts.push(snippet(
         "Zed, one agent",
         &snippets.zed_agent,
-        "Replace <name> with the agent to open.",
+        "The same, pinned to one plaza agent. Replace <name> with the agent's name.",
     ));
     parts.push(snippet(
-        "JetBrains",
+        "JetBrains IDEs",
         &snippets.jetbrains,
-        "In the IDE's ACP agent settings, enter the command, then its arguments.",
+        "AI Assistant › ACP agents: enter the command and the arguments.",
     ));
     parts.push(snippet(
         "Neovim (CodeCompanion)",
         &snippets.neovim,
-        "Add to the CodeCompanion setup.",
+        "Under the adapters of the CodeCompanion setup.",
     ));
-    parts.push(sessions_block(state));
-    ui::card(
+    parts.push(sessions_table(state));
+    ui::card_with(
         "Editors (ACP)",
-        column(parts).spacing(16).width(Length::Fill).into(),
-    )
-}
-
-fn sessions_block(state: &State) -> Element<'_, Msg> {
-    let head: Element<'_, Msg> = row(vec![
-        ui::label("Editor sessions").into(),
-        ui::btn_sm(
+        vec![ui::btn_sm(
             "Refresh",
             None,
             ui::Kind::Ghost,
             Some(Msg::RefreshAcpSessions),
+        )],
+        column(parts).spacing(14).width(Length::Fill).into(),
+    )
+}
+
+fn sessions_table(state: &State) -> Element<'_, Msg> {
+    if let Some(error) = &state.acp_sessions_error {
+        return ui::empty("triangle-alert", "Could not load the sessions", error);
+    }
+    match &state.acp_sessions {
+        None => ui::loading(),
+        Some(list) if list.is_empty() => ui::empty(
+            "message-square",
+            "No editor sessions",
+            "Sessions appear here once an editor prompts a plaza agent.",
         ),
-    ])
-    .spacing(10)
-    .align_y(Alignment::Center)
-    .into();
-    let body: Element<'_, Msg> = if let Some(error) = &state.acp_sessions_error {
-        ui::empty("alert", "Could not load the editor sessions", error)
-    } else {
-        match &state.acp_sessions {
-            None => ui::loading(),
-            Some(list) if list.is_empty() => ui::empty(
-                "terminal",
-                "No editor sessions",
-                "A session shows here once an editor opens one.",
-            ),
-            Some(list) => {
-                let now = now_ms();
-                column(
-                    list.iter()
-                        .map(|session| session_row(session, now))
-                        .collect::<Vec<_>>(),
-                )
-                .spacing(12)
-                .width(Length::Fill)
-                .into()
-            }
+        Some(list) => {
+            let p = crate::theme::palette();
+            let now = now_ms();
+            let rows: Vec<Vec<Element<'_, Msg>>> = list
+                .iter()
+                .map(|s| -> Vec<Element<'_, Msg>> {
+                    vec![
+                        ui::sans(session_title(s).to_string(), 12.5, p.ink).into(),
+                        ui::mono(s.cid.to_string(), 12.0, p.ink_2).into(),
+                        ui::faint(if s.client.is_empty() {
+                            "unknown".to_string()
+                        } else {
+                            s.client.clone()
+                        })
+                        .into(),
+                        ui::mono(ui::ellipsize(&s.cwd, 60), 12.0, p.ink_2).into(),
+                        ui::faint(ago(now, s.updated_ms)).into(),
+                        if s.closed {
+                            ui::badge("closed", ui::Tone::Muted)
+                        } else {
+                            ui::badge("open", ui::Tone::Ok)
+                        },
+                    ]
+                })
+                .collect();
+            table(
+                &[
+                    (3, "Title"),
+                    (2, "Agent"),
+                    (2, "Client"),
+                    (3, "Folder"),
+                    (2, "Updated"),
+                    (1, "State"),
+                ],
+                rows,
+            )
         }
-    };
-    column![head, body].spacing(10).into()
+    }
 }
 
-fn session_row<'a>(session: &AcpSession, now: u64) -> Element<'a, Msg> {
-    column![
-        ui::sans(
-            session_title(session).to_string(),
-            12.0,
-            crate::theme::palette().ink
-        ),
-        ui::faint(session_line(session, now)),
-    ]
-    .spacing(4)
-    .into()
-}
-
+/// The Calls card: the token and tool filters over the call log.
 fn calls_card(state: &State) -> Element<'_, Msg> {
     let token_options = token_choices(state.tokens.as_deref().unwrap_or(&[]));
     let selected_token = token_options
@@ -1530,32 +1733,35 @@ fn calls_card(state: &State) -> Element<'_, Msg> {
         .find(|c| c.value == state.filter_tool)
         .cloned();
     let filters: Element<'_, Msg> = row![
-        ui::faint("Token"),
-        pick_list(token_options, selected_token, Msg::FilterToken),
-        ui::faint("Tool"),
-        pick_list(tool_options, selected_tool, Msg::FilterTool),
+        field(
+            "Token",
+            pick_list(token_options, selected_token, Msg::FilterToken)
+                .style(crate::theme::pick_list)
+                .into(),
+            None,
+        ),
+        field(
+            "Tool",
+            pick_list(tool_options, selected_tool, Msg::FilterTool)
+                .style(crate::theme::pick_list)
+                .into(),
+            None,
+        ),
     ]
     .spacing(12)
     .align_y(Alignment::Center)
     .into();
     let body: Element<'_, Msg> = if let Some(error) = &state.calls_error {
-        ui::empty("alert", "Could not load the calls", error)
+        ui::empty("triangle-alert", "Could not load the calls", error)
     } else {
         match &state.calls {
             None => ui::loading(),
             Some(list) if list.is_empty() => ui::empty(
-                "terminal",
+                "message-square",
                 "No calls",
                 "Calls appear here once a client uses a token.",
             ),
-            Some(list) => column(
-                list.iter()
-                    .map(|call| call_row(state, call))
-                    .collect::<Vec<_>>(),
-            )
-            .spacing(8)
-            .width(Length::Fill)
-            .into(),
+            Some(list) => calls_table(state, list),
         }
     };
     ui::card(
@@ -1567,25 +1773,51 @@ fn calls_card(state: &State) -> Element<'_, Msg> {
     )
 }
 
-fn call_row<'a>(state: &State, call: &HubCall) -> Element<'a, Msg> {
-    let result = if call.ok {
-        ui::Tone::Ok
-    } else {
-        ui::Tone::Danger
-    };
-    let head: Vec<Element<'a, Msg>> = vec![
-        ui::mono(call.tool.clone(), 12.0, crate::theme::palette().ink).into(),
-        ui::faint(name_of(state, &call.token_id)).into(),
-        ui::badge(if call.ok { "ok" } else { "error" }, result),
-        ui::faint(format!("{} ms", call.duration_ms)).into(),
-        ui::faint(ago(now_ms(), call.at_ms)).into(),
-    ];
-    let mut lines: Vec<Element<'a, Msg>> =
-        vec![row(head).spacing(10).align_y(Alignment::Center).into()];
-    if let Some(error) = call.error.as_deref().filter(|e| !e.is_empty()) {
-        lines.push(ui::error_line(&ui::ellipsize(error, 120)));
-    }
-    column(lines).spacing(4).into()
+fn calls_table<'a>(state: &'a State, calls: &'a [HubCall]) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let rows: Vec<Vec<Element<'a, Msg>>> = calls
+        .iter()
+        .map(|call| -> Vec<Element<'a, Msg>> {
+            let result: Element<'a, Msg> = if call.ok {
+                ui::badge("ok", ui::Tone::Ok)
+            } else {
+                let mut parts: Vec<Element<'a, Msg>> = vec![ui::badge("error", ui::Tone::Danger)];
+                if let Some(error) = call.error.as_deref().filter(|e| !e.is_empty()) {
+                    parts.push(ui::faint(ui::ellipsize(error, 120)).into());
+                }
+                row(parts).spacing(8).align_y(Alignment::Center).into()
+            };
+            vec![
+                ui::faint(stamp(call.at_ms)).into(),
+                ui::faint(name_of(state, &call.token_id)).into(),
+                ui::mono(call.tool.clone(), 12.0, p.ink).into(),
+                result,
+                ui::faint(format!("{} ms", call.duration_ms)).into(),
+            ]
+        })
+        .collect();
+    table(
+        &[
+            (3, "Time"),
+            (3, "Token"),
+            (3, "Tool"),
+            (4, "Result"),
+            (2, "Duration"),
+        ],
+        rows,
+    )
+}
+
+/// A moment as the calls log shows it: the UTC date and the time, to the second.
+fn stamp(ms: u64) -> String {
+    let day = ms % DAY_MS;
+    format!(
+        "{} {:02}:{:02}:{:02}",
+        date_text(ms),
+        day / 3_600_000,
+        (day / 60_000) % 60,
+        (day / 1_000) % 60
+    )
 }
 
 // ---- Load-free helpers the tests cover --------------------------------------------------------------------

@@ -8,6 +8,7 @@
 
 import '../styles/embeds.css';
 import { api, type UnfurlAnswer, type UnfurlCard } from '../api';
+import { artifactHref } from '../api-artifacts';
 import { go } from '../router';
 import { agents as roster } from '../store';
 import { agentHue } from '../views/floor-common';
@@ -408,6 +409,10 @@ function actionFor(r: Ref, embeds: EmbedContext): (() => void) | null {
     }
     case 'task':
       return openTask ? () => openTask(r.number) : null;
+    case 'artifact':
+      return () => {
+        location.hash = artifactHref(r.id, r.version);
+      };
     case 'path':
       return openPath ? () => openPath(r.path, r.line) : null;
     case 'library':

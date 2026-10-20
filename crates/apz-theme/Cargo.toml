@@ -1,0 +1,19 @@
+[package]
+name = "apz-theme"
+description = "AgentPlaza's themes: the token list both consoles read, the .apztheme.json format, the Loom and Graphite skins and palettes, background specs, OKLCH derivation, the contrast pass and VS Code theme import. Pure, no I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# .vsix import reads the archive in memory (the same crate apz-skill uses).
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

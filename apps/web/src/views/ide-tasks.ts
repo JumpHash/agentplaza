@@ -1,10 +1,10 @@
-// The Tasks tab of the IDE right column: the project's tasks with done / total.
+// The Tasks tab of the IDE's right column: the project's tasks, active first, with done of total. The markup is the
+// prototype's dock Tasks (loom: m-ide-tasks): a head with the project and its count, then a row per task with its state
+// glyph, goal, id, agent and state chip.
 import { api, type Project, type Task } from '../api';
-import { empty } from '../ui/components';
-import { h, replace } from '../ui/dom';
-import css from '../styles/ide-panels.css';
+import { badge, empty } from '../ui/components';
+import { h, lu, replace } from '../ui/dom';
 
-const STYLE_ID = 'apz-ide-panels-style';
 const MAX_TASKS = 50;
 const REFRESH_MS = 20_000;
 
@@ -16,12 +16,10 @@ export interface TasksPanel {
 
 type Tone = 'done' | 'failed' | 'active' | 'open';
 
-const GLYPH: Record<Tone, string> = {
-  done: '✓',
-  failed: '×',
-  active: '•',
-  open: '○',
-};
+/** The glyph's class in the prototype: a ring, a pulsing dot, a check, a cross. */
+const GLYPH_CLASS: Record<Tone, string> = { done: 's-done', failed: 's-failed', active: 's-working', open: 's-open' };
+/** The state chip's tone. */
+const CHIP_TONE: Record<Tone, 'ok' | 'danger' | 'info' | 'muted'> = { done: 'ok', failed: 'danger', active: 'info', open: 'muted' };
 
 // Active work first, then open, failed, and done last.
 const RANK: Record<Tone, number> = { active: 0, open: 1, failed: 2, done: 3 };
@@ -38,40 +36,47 @@ function shortId(id: string): string {
   return `#${id.slice(-6)}`;
 }
 
-function ensureStyle(): void {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = css;
-  document.head.appendChild(style);
-}
-
 function row(t: Task): HTMLElement {
   const tone = toneOf(t.state);
   const who = t.agent_cid != null ? `agent ${t.agent_cid}` : t.assignee_id;
-  return h('li.ipt-row', { 'data-tone': tone },
-    h('span.ipt-glyph', { 'aria-hidden': 'true' }, GLYPH[tone]),
-    h('div.ipt-main', null,
-      h('div.ipt-line', null, h('span.ipt-id', null, shortId(t.id)), h('span.ipt-goal', null, t.goal)),
-      h('div.ipt-meta', null, who ? h('span', null, who) : null, h('span.ipt-state', null, t.state.replace(/_/g, ' ')))));
+  const glyph = tone === 'done' ? lu('check', 13, '', 2.4) : tone === 'failed' ? lu('x', 13, '', 2.4) : null;
+  return h(
+    'div.idt-r',
+    { 'data-tone': tone },
+    h(`span.itk-g.${GLYPH_CLASS[tone]}`, { 'aria-hidden': 'true' }, glyph),
+    h(
+      'span.itk-txt',
+      null,
+      h('span.itk-goal', null, t.goal),
+      h(
+        'span.itk-meta',
+        null,
+        h('span.mono', null, shortId(t.id)),
+        who ? h('span', null, who) : null,
+        badge(t.state.replace(/_/g, ' '), CHIP_TONE[tone]),
+      ),
+    ),
+  );
 }
 
 export function tasksPanel(opts: { project: Project | null; onCount(done: number, total: number): void }): TasksPanel {
-  ensureStyle();
   const { project } = opts;
-  const count = h('span.ipt-total');
-  const body = h('div.ipt-body', { tabindex: 0, 'aria-label': 'Project tasks' });
-  const el = h('section.ipt', { 'aria-label': 'Tasks' },
-    h('header.ipt-head', null, h('span.ipt-title', null, 'Tasks'), count),
-    body);
+  const summary = h('span');
+  const body = h('div', { tabindex: 0, 'aria-label': 'Project tasks' });
+  const el = h(
+    'section.idt',
+    { 'aria-label': 'Tasks' },
+    h('div.idt-h', null, h('b', null, project ? project.title : 'Tasks'), h('span.sp'), summary),
+    body,
+  );
 
   if (!project) {
-    replace(body, empty('tasks', 'Not in a project', 'This workspace is not part of a project.'));
+    replace(body, empty('list-checks', 'Not in a project', 'Open an agent, a conversation or a repository of a project to see its tasks.'));
     return { el, show() {}, dispose() {} };
   }
 
   const ids = project.tasks.slice(0, MAX_TASKS);
-  replace(body, h('p.ipa-note', null, 'Loading tasks'));
+  replace(body, h('p.ic-muted', null, 'Loading tasks'));
 
   let loaded = false;
   let inflight = false;
@@ -79,17 +84,20 @@ export function tasksPanel(opts: { project: Project | null; onCount(done: number
   let timer: ReturnType<typeof setInterval> | null = null;
 
   function render(tasks: Task[]): void {
-    count.textContent = String(tasks.length);
+    const done = tasks.filter((t) => toneOf(t.state) === 'done').length;
+    summary.textContent = tasks.length === 0 ? '' : `${done} of ${tasks.length} done`;
     if (tasks.length === 0) {
-      replace(body, ids.length === 0
-        ? empty('tasks', 'No tasks yet', 'Tasks added to this project appear here.')
-        : empty('tasks', 'Could not load the tasks', 'Try again in a moment.'));
+      replace(
+        body,
+        ids.length === 0
+          ? empty('list-checks', 'No tasks yet', 'The orchestrator posts the plan\'s tasks once it is approved.')
+          : empty('list-checks', 'Could not load the tasks', 'Try again in a moment.'),
+      );
       return;
     }
-    const sorted = [...tasks].sort((a, b) =>
-      RANK[toneOf(a.state)] - RANK[toneOf(b.state)] || b.updated_at - a.updated_at);
+    const sorted = [...tasks].sort((a, b) => RANK[toneOf(a.state)] - RANK[toneOf(b.state)] || b.updated_at - a.updated_at);
     const top = body.scrollTop;
-    replace(body, h('ul.ipt-list', null, sorted.map(row)));
+    replace(body, sorted.map(row));
     body.scrollTop = top;
   }
 

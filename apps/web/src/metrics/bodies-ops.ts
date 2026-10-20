@@ -1,80 +1,102 @@
 // The operational panel bodies: firing alerts (with mute, acknowledge, open), the rules table (on/off, new rule),
 // kept traces (filter, list, waterfall, span details) and the events feed (kind filter).
 
-import { button } from '../ui/components';
+import { badge, button } from '../ui/components';
 import { h } from '../ui/dom';
 import { format } from './format';
 import { spark } from './figures';
 import type { PanelCtx } from './panels';
-import { statusVar, toneVar, type AlertRow, type EventRow, type LegendItem, type RuleRow, type SpanRow, type TraceDetail, type TracesBody } from './model';
+import { toneVar, type AlertRow, type EventRow, type LegendItem, type RuleRow, type SpanRow, type Status, type TraceDetail, type TracesBody } from './model';
 
 const TRACE_FILTERS = ['all', 'error', 'slow', 'sampled', 'open'];
 
-/** The firing rules, each with its severity bar, its current value, a spark line and the Open, Mute and Acknowledge actions. */
+const STATUS_TONE: Record<Status, 'ok' | 'warn' | 'danger' | 'info' | 'muted'> = { ok: 'ok', warn: 'warn', crit: 'danger', info: 'info', mute: 'muted' };
+const STATUS_WORD: Record<Status, string> = { ok: 'OK', warn: 'Warning', crit: 'Critical', info: 'Info', mute: 'Muted' };
+
+/** A status chip with its dot; the text defaults to the status's word. */
+function statusBadge(status: Status, text: string = STATUS_WORD[status]): HTMLElement {
+  return badge(text, STATUS_TONE[status], true);
+}
+
+/** The firing rules: the rule (a link to its scope), its scope, condition, trend, severity and the Mute and Acknowledge actions. */
 export function alerts(host: HTMLElement, rows: AlertRow[], ctx: PanelCtx): void {
   if (!rows.length) {
-    host.append(h('div.mx-empty', null, 'Nothing firing. Muted rules are listed below.'));
+    host.append(h('div.mt-empty', null, 'Nothing is firing.'));
     return;
   }
-  for (const r of rows) {
-    const bar = h('i.mx-sev');
-    bar.style.background = statusVar(r.severity);
-    const text = h('div', null,
-      h('b', null, r.name),
-      h('div.mx-mute', null, `${r.scope_label} · ${r.cond} for ${r.for_text} · since ${r.since}`));
-    const value = h('div.mx-val', null, h('b.num', null, r.now), ' ', h('span.mx-mute', null, 'now'));
-    const trend = h('div.mx-spk', null, spark(r.spark, 'crit', 120, 24));
-    const actions = h('div.mx-acts', null,
-      button('Open', () => ctx.go({ scope: r.scope, tab: r.tab }), { size: 'sm' }),
-      button('Mute 1 h', () => ctx.mute(r.rule), { size: 'sm' }),
-      button(r.acked ? 'Acknowledged' : 'Acknowledge', () => ctx.ack(r.rule, r.scope), { size: 'sm', disabled: r.acked }));
-    host.append(h('div.mx-alert-row', null, bar, text, value, trend, actions));
-  }
+  const trs = rows.map((r) =>
+    h('tr', null,
+      h('td', null, h('button.mt-link', { type: 'button', onclick: () => ctx.go({ scope: r.scope, tab: r.tab }) }, r.name)),
+      h('td', null, r.scope_label),
+      h('td', null, r.cond),
+      h('td', null, r.for_text),
+      h('td', null, r.since),
+      h('td', { class: 'num' }, r.now),
+      h('td', null, spark(r.spark, 'chart-1', 96, 22, 'mt-spark mt-spk')),
+      h('td', null, statusBadge(r.severity), r.acked ? ' ' : null, r.acked ? badge('acknowledged', 'muted') : null),
+      h('td', { class: 'mt-acts' },
+        r.acked
+          ? null
+          : [
+              button('Mute', () => ctx.mute(r.rule), { kind: 'ghost', size: 'sm', title: 'Mute for 1 h' }),
+              ' ',
+              button('Acknowledge', () => ctx.ack(r.rule, r.scope), { kind: 'ghost', size: 'sm' }),
+            ])));
+  host.append(table(['Alert', 'Scope', 'Condition', 'For', 'Since', ['Now', 'num'], 'Trend', 'Severity', ''], trs));
 }
 
-/** The rules table, with a New rule button above it. Turning a rule on or off reports the new state. */
+/** The rules table, with a New alert rule button above it. Turning a rule on or off reports the new state. */
 export function rules(host: HTMLElement, rows: RuleRow[], ctx: PanelCtx): void {
-  host.append(button('New rule', () => ctx.newRule(), { kind: 'primary', size: 'sm' }));
-  const body = rows.map((r) => {
-    const on = h('input', { type: 'checkbox', checked: r.on, 'aria-label': `Enable ${r.name}` });
-    on.addEventListener('change', () => ctx.toggleRule(r.id, on.checked));
-    const severity = h('span.mx-pill', { class: `mx-${r.severity}` }, r.severity);
-    const stateClass = r.state === 'firing' ? 'mx-crit' : r.state === 'ok' ? 'mx-ok' : 'mx-mute';
-    return h('tr', null,
-      h('td', null, on),
+  host.append(button('New alert rule', () => ctx.newRule(), { kind: 'primary', size: 'sm' }));
+  if (!rows.length) {
+    host.append(h('div.mt-empty', null, 'No alert rules.'));
+    return;
+  }
+  const trs = rows.map((r) =>
+    h('tr', null,
+      h('td', null, toggle(r, ctx)),
       h('td', null, r.name),
       h('td', null, r.scope_label),
-      h('td', null, h('span.mono', null, r.cond), ` for ${r.for_text}`),
-      h('td', null, severity),
-      h('td', { class: stateClass }, r.state),
-      h('td', null, r.last || '—'));
-  });
-  host.append(makeTable(['On', 'Rule', 'Scope', 'Condition', 'Severity', 'State', 'Last fired'], body));
+      h('td', null, r.cond),
+      h('td', null, r.for_text),
+      h('td', null, statusBadge(r.severity)),
+      h('td', null, r.state),
+      h('td', { class: 'muted' }, r.last || '—'),
+      h('td', null, r.starter ? badge('starter', 'accent') : null)));
+  host.append(table(['On', 'Rule', 'Scope', 'Condition', 'For', 'Severity', 'State', 'Last', ''], trs));
 }
 
-/** The kept traces: a filter, a list of turns (left) and the selected turn's waterfall and span details (right). */
+/** The on/off switch of a rule. */
+function toggle(r: RuleRow, ctx: PanelCtx): HTMLElement {
+  const sw = h('button.mt-toggle', { type: 'button', role: 'switch', 'aria-checked': String(r.on), 'aria-label': r.name }, h('i'));
+  sw.addEventListener('click', () => ctx.toggleRule(r.id, !r.on));
+  return sw;
+}
+
+/** The kept traces: a kind filter, the list of turns, then the selected turn's waterfall and span details. */
 export function traces(host: HTMLElement, t: TracesBody, ctx: PanelCtx): void {
-  const filter = segmented(TRACE_FILTERS, t.filter, (k) => ctx.filter(k));
-  if (!t.list.length) {
-    host.append(filter, h('div.mx-empty', null, 'No kept traces match.'));
-    return;
-  }
+  const filter = segmented(TRACE_FILTERS, t.filter, (k) => ctx.filter(k), 'Trace kind');
+  filter.classList.add('mt-kinds');
+  host.append(filter);
   const selectedId = t.selected?.id;
-  const listRows = t.list.map((r) => {
-    const row = h('tr', { class: r.id === selectedId ? 'mx-sel' : null, tabindex: '0' },
-      h('td.mono', null, r.time),
-      h('td', null, r.agent),
-      h('td.num', null, r.total),
-      h('td', { class: r.error ? 'mx-crit' : 'mx-mute' }, r.kept_text));
-    const open = () => ctx.go({ tab: 'traces', trace: r.id });
-    row.addEventListener('click', open);
-    row.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') open();
-    });
-    return row;
-  });
-  const list = h('div.mx-traces-list', null, makeTable(['Time', 'Agent', 'Total', 'Kept because'], listRows));
-  host.append(filter, h('div.mx-traces', null, list, t.selected ? traceDetail(t.selected) : null));
+  const trs = t.list.length
+    ? t.list.map((r) => {
+        const open = () => ctx.go({ tab: 'traces', trace: r.id });
+        const row = h('tr', { class: r.id === selectedId ? 'mt-click mt-sel' : 'mt-click', tabindex: '0' },
+          h('td', null, r.time),
+          h('td.mt-mono', null, r.id),
+          h('td', null, r.agent),
+          h('td.num', null, r.total),
+          h('td', null, statusBadge(r.error ? 'crit' : 'info', r.kept_text)));
+        row.addEventListener('click', open);
+        row.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') open();
+        });
+        return row;
+      })
+    : [h('tr', null, h('td', { colspan: '5', class: 'muted' }, 'No kept traces match.'))];
+  host.append(table(['Time', 'Trace', 'Agent', ['Total', 'num'], 'Kept'], trs));
+  if (t.selected) host.append(traceDetail(t.selected));
 }
 
 /** The events feed: a kind filter over the rows, then a table. Subjects with a scope open that scope. */
@@ -84,72 +106,73 @@ export function events(host: HTMLElement, kinds: string[], rows: EventRow[], ctx
     body.replaceChildren();
     const shown = rows.filter((r) => kind === 'all' || r.kind === kind);
     if (!shown.length) {
-      body.append(h('div.mx-empty', null, 'No events of this kind in range.'));
+      body.append(h('div.mt-empty', null, 'No events of this kind in range.'));
       return;
     }
-    const trs = shown.map((r) => h('tr', null,
-      h('td.mono', null, r.time),
-      h('td', null, h('span.mx-pill', { class: `mx-${r.status}` }, r.kind)),
-      h('td', null, subject(r.subject, r.scope, ctx)),
-      h('td', null, r.detail)));
-    body.append(makeTable(['Time', 'Kind', 'Subject', 'Detail'], trs));
+    const trs = shown.map((r) =>
+      h('tr', null,
+        h('td.mt-mono', null, r.time),
+        h('td', null, statusBadge(r.status, r.kind)),
+        h('td', null, subject(r.subject, r.scope, ctx)),
+        h('td.muted', null, r.detail)));
+    body.append(table(['Time', 'Kind', 'Subject', 'Detail'], trs));
   };
-  host.append(segmented(['all', ...kinds], 'all', draw), body);
+  host.append(segmented(['all', ...kinds], 'all', draw, 'Event kind'), body);
   draw('all');
 }
 
-/** The selected trace: its title, the error note, the waterfall, the legend and the clicked span's details. */
+/** The selected trace: its title, its sub line, the waterfall, the legend and the selected span's details. */
 function traceDetail(d: TraceDetail): HTMLElement {
   const total = Math.max(d.total_ms, 1, ...d.spans.map((s) => s.start_ms + s.dur_ms));
   const start = d.spans.length ? defaultSpan(d.spans) : -1;
-  let details: HTMLElement = h('dl.mx-kv');
+  let details: HTMLElement = h('dl.mt-dl');
   const wfRows = d.spans.map((s, i) => waterfallRow(s, total, () => select(i)));
   const select = (i: number): void => {
     const span = d.spans[i];
     if (!span) return;
-    wfRows.forEach((row, k) => row.classList.toggle('mx-sel', k === i));
+    wfRows.forEach((row, k) => {
+      row.classList.toggle('mt-sel', k === i);
+      row.setAttribute('aria-pressed', String(k === i));
+    });
     const next = spanDetails(span);
     details.replaceWith(next);
     details = next;
   };
   if (start >= 0) select(start);
-  return h('div.mx-trace-detail', null,
-    h('h3', null, d.title),
-    h('div.mx-mute', null, d.sub),
-    d.error ? h('p.mx-crit', null, 'Ended with an error.') : null,
-    h('div.mx-wf', null, wfRows),
-    h('div.mx-legend', null, d.legend.map(legendItem)),
-    details);
+  return h('div.mt-td', null,
+    h('div.mt-ttl', null, d.title),
+    h('div.mt-sub', null, d.sub),
+    wfRows,
+    details,
+    legend(d.legend));
 }
 
-/** One span: its indented name, the track (waiting for the first token, then the rest) and its duration. */
+/** One span: its indented name, its bar on the trace's time axis and its duration. A button that selects the span. */
 function waterfallRow(s: SpanRow, total: number, onSelect: () => void): HTMLElement {
-  const track = h('div.mx-wf-track');
-  const ft = s.first_token_ms ?? 0;
-  if (ft > 0) track.append(bar((s.start_ms / total) * 100, (ft / total) * 100, toneVar('chart-1'), '.35'));
-  const body = Math.max(0.4, ((s.dur_ms - ft) / total) * 100);
-  track.append(bar(((s.start_ms + ft) / total) * 100, body, toneVar(s.error ? 'crit' : s.tone)));
-  const name = h('div.mx-wf-name', { title: s.name }, s.name);
-  name.style.paddingLeft = `${s.depth * 12}px`;
-  const row = h('div.mx-wf-row', { tabindex: '0' }, name, track, h('div.mx-wf-dur', null, format('ms', s.dur_ms)));
+  const bar = h('i');
+  bar.style.left = `${((s.start_ms / total) * 100).toFixed(2)}%`;
+  bar.style.width = `${Math.max(0.6, (s.dur_ms / total) * 100).toFixed(2)}%`;
+  bar.style.background = toneVar(s.error ? 'crit' : s.tone);
+  const row = h('button.mt-span.mt-wf', { type: 'button', 'aria-pressed': 'false' },
+    h('span.mt-sn', { class: s.error ? 'mt-err' : null, title: s.name }, s.name),
+    h('span.mt-track.mt-sp', null, bar),
+    h('span.num', null, format('ms', s.dur_ms)));
+  row.style.paddingLeft = `${8 + s.depth * 16}px`;
   row.addEventListener('click', onSelect);
-  row.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') onSelect();
-  });
   return row;
 }
 
 /** The span's attributes as a definition list, with its name, start and duration first. */
 function spanDetails(s: SpanRow): HTMLElement {
   const entries: [string, string][] = [
-    ['span', s.name],
-    ['start', `+${format('ms', s.start_ms)}`],
-    ['duration', format('ms', s.dur_ms)],
+    ['Span', s.name],
+    ['Start', `+${format('ms', s.start_ms)}`],
+    ['Duration', format('ms', s.dur_ms)],
     ...s.attrs,
   ];
-  return h('dl.mx-kv', null, entries.flatMap(([k, v]) => [
+  return h('dl.mt-dl', null, entries.flatMap(([k, v]) => [
     h('dt', null, k),
-    h('dd', { class: k === 'outcome' && v !== 'ok' ? 'mx-crit' : null }, v),
+    h('dd', { class: k === 'outcome' && v !== 'ok' ? 'mt-err' : null }, v),
   ]));
 }
 
@@ -159,24 +182,18 @@ function defaultSpan(spans: SpanRow[]): number {
   return err >= 0 ? err : Math.min(3, spans.length - 1);
 }
 
-function bar(left: number, width: number, color: string, opacity?: string): HTMLElement {
-  const i = h('i');
-  i.style.left = `${left}%`;
-  i.style.width = `${width}%`;
-  i.style.background = color;
-  if (opacity) i.style.opacity = opacity;
-  return i;
-}
-
-function legendItem(item: LegendItem): HTMLElement {
-  const swatch = h('i');
-  swatch.style.background = toneVar(item.tone);
-  return h('span', null, swatch, item.label);
+/** The colour key of a trace or a chart: a swatch and its label. */
+function legend(items: LegendItem[]): HTMLElement {
+  return h('div.mt-legend', null, items.map((item) => {
+    const swatch = h('i.mt-sw');
+    swatch.style.background = toneVar(item.tone);
+    return h('span.mt-leg', null, swatch, item.label);
+  }));
 }
 
 /** A segmented control: one button per key, the current one pressed, and `pick` called with the key clicked. */
-function segmented(keys: string[], current: string, pick: (key: string) => void): HTMLElement {
-  const seg = h('div.mx-seg');
+function segmented(keys: string[], current: string, pick: (key: string) => void, label: string): HTMLElement {
+  const seg = h('div.seg', { role: 'group', 'aria-label': label });
   for (const k of keys) {
     const b = h('button', { type: 'button', 'aria-pressed': String(k === current) }, k);
     b.addEventListener('click', () => {
@@ -194,10 +211,12 @@ function subject(text: string, scope: string | undefined, ctx: PanelCtx): HTMLEl
   return button(text, () => ctx.go({ scope }), { kind: 'ghost', size: 'sm' });
 }
 
-function makeTable(heads: string[], rows: HTMLElement[]): HTMLElement {
-  // Rules, traces and events flow their text in their cells (as the desktop's ops tables do).
-  return h('div.mx-tablewrap', null,
-    h('table.mx-t.mx-flow', null,
-      h('thead', null, h('tr', null, heads.map((label) => h('th', null, label)))),
+type Col = string | [string, string];
+
+/** The prototype's table: a wrapped `tbl`, with the numeric heads (given as `[label, 'num']`) right-aligned. */
+function table(cols: Col[], rows: Node[]): HTMLElement {
+  return h('div.tbl-wrap', null,
+    h('table.tbl', null,
+      h('thead', null, h('tr', null, cols.map((c) => (typeof c === 'string' ? h('th', null, c) : h('th', { class: c[1] }, c[0]))))),
       h('tbody', null, rows)));
 }

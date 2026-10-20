@@ -1,0 +1,536 @@
+/* The Add provider dialog (views/provider-wizard.ts): a step rail of three pills, the Provider grid and the ACP Registry
+   list, Settings rows for Identity and Config. Tokens only: every colour comes from the theme. */
+
+.sheet.pw-sheet {
+  width: min(720px, 100%);
+}
+
+.pw-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.pw-sub {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.pw-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pw-steps li {
+  margin: 0;
+  min-width: 0;
+}
+
+.pw-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px 0 5px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill);
+  background: var(--raised);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur), color var(--dur), border-color var(--dur);
+}
+
+.pw-step:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink-2);
+}
+
+.pw-step:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.pw-step:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--signal-soft);
+}
+
+.pw-step.done {
+  color: var(--ink-2);
+}
+
+.pw-step.on {
+  border-color: var(--signal);
+  background: var(--signal-soft);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.pw-num {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--hover);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pw-step.done .pw-num {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.pw-step.on .pw-num {
+  background: var(--signal-fill);
+  color: var(--on-signal);
+}
+
+.pw-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.pw-muted {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+}
+
+/* The Provider grid: API kinds and built-in engines, two columns. */
+.pw-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.pw-tile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur), background-color var(--dur), box-shadow var(--dur);
+}
+
+.pw-tile:hover {
+  background: var(--hover);
+}
+
+.pw-tile[aria-pressed='true'] {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 3px var(--signal-soft);
+}
+
+.pw-tile .logo {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: 0;
+  background: none;
+}
+
+.pw-tile .logo svg {
+  width: 18px;
+  height: 18px;
+}
+
+.pw-tile-t {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pw-tile .chip {
+  flex: none;
+}
+
+.pw-tile-ck {
+  flex: none;
+  color: var(--signal-ink);
+}
+
+.pw-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+
+.pw-divider::before,
+.pw-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+
+.pw-reg-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pw-search {
+  display: flex;
+  flex: 1 1 200px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink-3);
+}
+
+.pw-search:focus-within {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 3px var(--signal-soft);
+}
+
+.pw-search-in {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+
+.pw-search-in::placeholder {
+  color: var(--ink-3);
+}
+
+.pw-reg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--paper-side);
+}
+
+.pw-reg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 8px 8px 10px;
+  border-radius: var(--radius);
+}
+
+.pw-reg-row:hover {
+  background: var(--hover);
+}
+
+.pw-reg-row.on {
+  background: var(--signal-soft);
+}
+
+.pw-reg-ic {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+}
+
+.pw-reg-ic img {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.pw-mono {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--sheet-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pw-reg-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pw-reg-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 500;
+}
+
+.pw-reg-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pw-reg-ver {
+  flex: none;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.pw-reg-desc {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pw-reg-row > .iconbtn,
+.pw-reg-row > .chip,
+.pw-reg-row > .btn {
+  flex: none;
+}
+
+/* Settings rows: the name and hint on the left, the control on the right. */
+.pw-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.pw-row.stacked {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+}
+
+.pw-row-l {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pw-row-n {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.pw-row-c {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pw-row-c .input,
+.pw-row-c .select,
+.pw-row-c .textarea,
+.pw-row-c .mp {
+  width: 100%;
+  min-width: 0;
+}
+
+.pw-row-c .textarea {
+  resize: vertical;
+  padding: 8px 10px;
+}
+
+.input.invalid {
+  border-color: var(--crit);
+}
+
+.hint.err {
+  color: var(--crit);
+}
+
+/* The accent swatch and its popover. */
+.pw-accent {
+  position: relative;
+  justify-self: start;
+}
+
+.pw-accent-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.pw-accent-btn:hover {
+  background: var(--hover);
+}
+
+.pw-accent-btn[aria-expanded='true'] {
+  border-color: var(--signal);
+  box-shadow: 0 0 0 3px var(--signal-soft);
+}
+
+.pw-swatch {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 1px solid var(--rule-strong);
+  border-radius: 50%;
+  background: var(--acc, var(--signal));
+  color: var(--ink-3);
+}
+
+.pw-swatch.none {
+  background: none;
+}
+
+.pw-swatches {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  display: grid;
+  grid-template-columns: repeat(5, 28px);
+  gap: 4px;
+  padding: 6px;
+  background: var(--raised);
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-pop);
+}
+
+.pw-swatch-opt {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+}
+
+.pw-swatch-opt:hover {
+  background: var(--hover);
+}
+
+.pw-swatch-opt[aria-selected='true'] {
+  box-shadow: inset 0 0 0 1.5px var(--signal);
+}
+
+/* Variables: one row per name and value. */
+.pw-env {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pw-env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 28px;
+  align-items: center;
+  gap: 6px;
+}
+
+.pw-env-row .input {
+  width: 100%;
+}
+
+.pw-env-row .iconbtn {
+  justify-self: end;
+}
+
+/* The foot: the error line above, the buttons split left and right. */
+.pw-foot {
+  display: flex;
+  flex: 1 1 100%;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pw-foot-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pw-foot-l,
+.pw-foot-r {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.pw-err {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  background: var(--crit-soft);
+  color: var(--crit);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .pw-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+}

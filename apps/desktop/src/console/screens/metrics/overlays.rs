@@ -1,5 +1,6 @@
 //! The Metrics overlays, drawn over the screen with a scrim: the panel menu, the sibling switcher, the find palette
-//! (and the compare picker), the keyboard help, the "what changed" drawer, "About this metric", and the toast.
+//! (and the compare picker), the "what changed" drawer, and the toast. The dialogs (the keyboard help, "About this
+//! metric", the alert rule form and the settings) are the kit's modal, drawn by `layer`.
 
 use apz_metrics_view::{Around, Body, EventRow, MoverRow, Status, Tone, Unit};
 use iced::alignment::{Horizontal, Vertical};
@@ -20,8 +21,6 @@ const SHADOW: f32 = 3.0;
 const MENU_WIDTH: f32 = 220.0;
 /// The width of the find palette.
 const PALETTE_WIDTH: f32 = 620.0;
-/// The width of the dialogs, the keyboard help and "About this metric".
-const DIALOG_WIDTH: f32 = 600.0;
 /// The most entries the find palette lists.
 const PALETTE_MAX: usize = 40;
 /// The keys the help lists, in order: (key, what it does).
@@ -53,13 +52,12 @@ enum Anchor {
     Siblings,
     /// Near the top, centred (the find palette).
     Top,
-    /// Centred on the screen (the dialogs, the help, About).
-    Centre,
     /// Down the right edge, full height (the drawer).
     Drawer,
 }
 
-/// The overlay layer (none when no overlay is open), to stack over the screen.
+/// The overlay layer (none when no overlay is open), to stack over the screen. The dialogs are the kit's modal,
+/// which carries its own scrim.
 pub fn layer<'a>(state: &'a State, overlay: &'a Overlay) -> Element<'a, Msg> {
     let (content, anchor) = match overlay {
         Overlay::PanelMenu { panel } => (panel_menu(state, panel), Anchor::Menu),
@@ -69,17 +67,12 @@ pub fn layer<'a>(state: &'a State, overlay: &'a Overlay) -> Element<'a, Msg> {
             selected,
             compare,
         } => (palette(state, query, *selected, *compare), Anchor::Top),
-        Overlay::Help => (help(), Anchor::Centre),
         Overlay::Drawer(around) => (drawer(around), Anchor::Drawer),
-        Overlay::About { panel } => (about(state, panel), Anchor::Centre),
-        Overlay::Rule(form) => (
-            dialog_frame(dialogs::rule(form, &state.catalog, &state.scopes)),
-            Anchor::Centre,
-        ),
-        Overlay::Settings(form) => (
-            dialog_frame(dialogs::settings(form, &state.scopes)),
-            Anchor::Centre,
-        ),
+        // Opaque, so a press on a dialog does not reach the screen beneath it.
+        Overlay::Help => return opaque(help()),
+        Overlay::About { panel } => return opaque(about(state, panel)),
+        Overlay::Rule(form) => return opaque(dialogs::rule(form, &state.catalog, &state.scopes)),
+        Overlay::Settings(form) => return opaque(dialogs::settings(form, &state.scopes)),
     };
     stack([scrim(), place(boxed(content), anchor)]).into()
 }
@@ -249,7 +242,6 @@ fn place<'a>(content: Element<'a, Msg>, anchor: Anchor) -> Element<'a, Msg> {
         Anchor::Menu => (Horizontal::Right, Vertical::Top, 110.0, 24.0, 0.0),
         Anchor::Siblings => (Horizontal::Left, Vertical::Top, 110.0, 0.0, 240.0),
         Anchor::Top => (Horizontal::Center, Vertical::Top, 96.0, 0.0, 0.0),
-        Anchor::Centre => (Horizontal::Center, Vertical::Center, 0.0, 0.0, 0.0),
         Anchor::Drawer => (Horizontal::Right, Vertical::Top, 0.0, 0.0, 0.0),
     };
     container(content)
@@ -261,12 +253,14 @@ fn place<'a>(content: Element<'a, Msg>, anchor: Anchor) -> Element<'a, Msg> {
         .into()
 }
 
-/// A dialog's frame: its content with room around it, at the dialog width.
-fn dialog_frame<'a>(content: Element<'a, Msg>) -> Element<'a, Msg> {
-    container(content)
-        .padding(pad(16.0, 16.0, 16.0, 16.0))
-        .width(Length::Fixed(DIALOG_WIDTH))
-        .into()
+/// The Close button of a dialog's foot.
+fn close_foot<'a>() -> Vec<Element<'a, Msg>> {
+    vec![ui::btn(
+        "Close",
+        None,
+        Kind::Primary,
+        Some(Msg::CloseOverlay),
+    )]
 }
 
 /// A title row: the title at the left, a Close button at the right.
@@ -508,18 +502,17 @@ fn palette_row<'a>(index: usize, selected: bool, group: String, label: String) -
     mouse_area(line).on_press(Msg::PaletteRun(index)).into()
 }
 
-/// The keyboard and mouse help, in two columns.
+/// The keyboard and mouse help, in two columns: the web's "Keyboard shortcuts" dialog.
 fn help<'a>() -> Element<'a, Msg> {
     let (left, right) = KEYS.split_at(KEYS.len() / 2);
     let columns: Vec<Element<'a, Msg>> = vec![help_column(left), help_column(right)];
-    let body: Vec<Element<'a, Msg>> = vec![
-        head_row("Keyboard and mouse".to_owned()),
+    ui::modal(
+        "Keyboard shortcuts",
         row(columns).spacing(24.0).into(),
-    ];
-    container(column(body).spacing(12.0))
-        .padding(pad(16.0, 16.0, 16.0, 16.0))
-        .width(Length::Fixed(DIALOG_WIDTH))
-        .into()
+        close_foot(),
+        Msg::CloseOverlay,
+        dialogs::WIDTH,
+    )
 }
 
 /// One column of the help: a row per key.
@@ -649,32 +642,30 @@ fn mover_row<'a>(mover: &'a MoverRow) -> Element<'a, Msg> {
     )
 }
 
-/// "About this metric": the catalog entry of the panel's metric, or a note when there is none.
+/// "About this metric": the panel's title, and the catalog entry of its metric as a list, or a note when there is none.
 fn about<'a>(state: &'a State, id: &'a str) -> Element<'a, Msg> {
     let p = theme::palette();
-    let metric = state
+    let panel = state
         .view
         .as_ref()
-        .and_then(|view| view.panels.iter().find(|panel| panel.id == id))
-        .and_then(|panel| panel.metric.as_deref());
+        .and_then(|view| view.panels.iter().find(|panel| panel.id == id));
+    let metric = panel.and_then(|panel| panel.metric.as_deref());
     let info = metric.and_then(|metric| state.catalog.iter().find(|info| info.id == metric));
 
-    let title = info.map_or("About this metric".to_owned(), |info| info.title.clone());
-    let mut body: Vec<Element<'a, Msg>> = vec![head_row(title)];
-    match info {
-        Some(info) => {
-            body.push(detail_row("What", info.description.clone()));
-            body.push(detail_row("Unit", unit_name(&info.unit).to_owned()));
-            body.push(detail_row("Source", info.source.clone()));
-            body.push(detail_row("Level", info.level.clone()));
-            body.push(detail_row("Cost", info.cost.clone()));
-        }
-        None => body.push(ui::sans("This panel has no catalog entry.", TYPE_UI, p.ink_2).into()),
-    }
-    container(column(body).spacing(8.0))
-        .padding(pad(16.0, 16.0, 16.0, 16.0))
-        .width(Length::Fixed(DIALOG_WIDTH))
-        .into()
+    let title = panel.map_or("About this metric", |panel| panel.title.as_str());
+    let body: Element<'a, Msg> = match info {
+        Some(info) => column![
+            detail_row("What it is", info.description.clone()),
+            detail_row("Unit", unit_name(&info.unit).to_owned()),
+            detail_row("Source", info.source.clone()),
+            detail_row("Collected at", info.level.clone()),
+            detail_row("Cost", info.cost.clone()),
+        ]
+        .spacing(8.0)
+        .into(),
+        None => ui::sans("No catalog entry for this panel.", TYPE_UI, p.ink_2).into(),
+    };
+    ui::modal(title, body, close_foot(), Msg::CloseOverlay, dialogs::WIDTH)
 }
 
 /// One labelled line of About: the label at the left, its value after it.
@@ -682,7 +673,7 @@ fn detail_row<'a>(label: &str, value: String) -> Element<'a, Msg> {
     let p = theme::palette();
     let parts: Vec<Element<'a, Msg>> = vec![
         ui::sans(label.to_owned(), TYPE_META, p.ink_3)
-            .width(Length::Fixed(90.0))
+            .width(Length::Fixed(110.0))
             .into(),
         ui::sans(value, TYPE_UI, p.ink).width(Length::Fill).into(),
     ];

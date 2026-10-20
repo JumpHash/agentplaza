@@ -1380,21 +1380,16 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
 /// The colour of a tone token, in the palette on screen (the web's `--chart-*` tokens for chart tones).
 pub fn tone(t: Tone) -> Color {
     let p = crate::theme::palette();
-    let light = crate::theme::is_light();
-    let chart = |dark: u32, lite: u32| {
-        let v = if light { lite } else { dark };
-        Color::from_rgb8((v >> 16) as u8, (v >> 8) as u8, v as u8)
-    };
     match t {
-        Tone::C1 => chart(0x6cc8ff, 0x2d5f8a),
-        Tone::C2 => chart(0x5fe0a0, 0x2e6a40),
-        Tone::C3 => chart(0xe2bd5a, 0x85640e),
-        Tone::C4 => chart(0xb79cf0, 0x6b4a8a),
-        Tone::C5 => chart(0x5ad6d6, 0x1f7a7a),
-        Tone::C6 => chart(0xd9a877, 0x7a5c3a),
-        Tone::C7 => chart(0xa3adc4, 0x4c544d),
-        Tone::C8 => chart(0xff7c86, 0xa3182b),
-        Tone::Other => chart(0x6c7790, 0x9aa39a),
+        Tone::C1 => p.chart_1,
+        Tone::C2 => p.chart_2,
+        Tone::C3 => p.chart_3,
+        Tone::C4 => p.chart_4,
+        Tone::C5 => p.chart_5,
+        Tone::C6 => p.chart_6,
+        Tone::C7 => p.chart_7,
+        Tone::C8 => p.chart_8,
+        Tone::Other => p.chart_other,
         Tone::Ink3 => p.ink_3,
         Tone::Rule => p.rule,
         Tone::Ok => p.ok,
@@ -1419,19 +1414,11 @@ pub fn status(s: Status) -> Color {
 
 /// The chart grid and axis colours (the web's `--chart-grid`, `--chart-axis`).
 pub fn grid_color() -> Color {
-    if crate::theme::is_light() {
-        Color::from_rgba8(21, 25, 22, 0.12)
-    } else {
-        Color::from_rgba8(227, 232, 244, 0.1)
-    }
+    crate::theme::palette().chart_grid
 }
 
 pub fn axis_color() -> Color {
-    if crate::theme::is_light() {
-        Color::from_rgb8(0x7d, 0x86, 0x7e)
-    } else {
-        Color::from_rgb8(0x6c, 0x77, 0x90)
-    }
+    crate::theme::palette().chart_axis
 }
 
 /// How long a toast stays.

@@ -447,6 +447,193 @@ fn calls_of(entry: &Value) -> Vec<String> {
 }
 
 /// "3 steps · bash, edit_file": the step line's text. A run of one reads "1 step".
+/// One tool call in a run of steps, as the web's chat lists it: its name, the argument that names what it acted on,
+/// its outcome ("running", "ok", "failed" or "denied") and how long it took.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepRow {
+    pub name: String,
+    pub detail: String,
+    pub outcome: &'static str,
+    pub ms: Option<u64>,
+}
+
+/// The first line of a value, trimmed and clipped to 80 characters.
+fn clip_line(s: &str) -> String {
+    let line = s.split('\n').next().unwrap_or("").trim();
+    line.chars().take(80).collect()
+}
+
+/// The argument that best names what a tool call acted on: a path, a command, a query.
+fn detail_of(input: Option<&Value>) -> String {
+    match input {
+        Some(Value::String(s)) => clip_line(s),
+        Some(v @ Value::Object(_)) => [
+            "path",
+            "file_path",
+            "file",
+            "command",
+            "query",
+            "pattern",
+            "url",
+            "title",
+            "name",
+        ]
+        .iter()
+        .map(|key| text_of(v, key))
+        .find(|s| !s.is_empty())
+        .map(clip_line)
+        .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// The steps of a run of entries, built as the web's tool tracker builds them: a tool_request opens a step; a
+/// result, or a denying decision, closes the matching open step (by id when both carry one, else the oldest open
+/// step). A result with no open step to close is a step of its own.
+pub fn steps_of(entries: &[Value]) -> Vec<StepRow> {
+    // Each step with its call id and the time its request came in; `open` holds the steps not yet closed.
+    let mut steps: Vec<(StepRow, Option<String>, u64)> = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    for entry in entries {
+        let kind = entry.get("kind").and_then(Value::as_str).unwrap_or("");
+        let data = entry.get("data").unwrap_or(&Value::Null);
+        let at = entry.get("at_ms").and_then(Value::as_u64).unwrap_or(0);
+        let id = ["id", "tool_use_id", "call_id"]
+            .iter()
+            .find_map(|key| data.get(*key))
+            .filter(|v| !v.is_null())
+            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string));
+        let name = |d: &Value| {
+            let n = text_of(d, "name");
+            if n.is_empty() {
+                text_of(d, "tool").to_string()
+            } else {
+                n.to_string()
+            }
+        };
+        match kind {
+            "tool_request" => {
+                let row = StepRow {
+                    name: name(data),
+                    detail: detail_of(data.get("input")),
+                    outcome: "running",
+                    ms: None,
+                };
+                steps.push((row, id, at));
+                open.push(steps.len() - 1);
+            }
+            "tool_result" | "tool_decision" => {
+                let denied = kind == "tool_decision";
+                if denied && text_of(data, "decision") != "deny" {
+                    continue;
+                }
+                let outcome = if denied {
+                    "denied"
+                } else if data.get("is_error").and_then(Value::as_bool) == Some(true) {
+                    "failed"
+                } else {
+                    "ok"
+                };
+                let matched = id
+                    .as_ref()
+                    .and_then(|want| open.iter().position(|&i| steps[i].1.as_ref() == Some(want)))
+                    .or_else(|| (!open.is_empty()).then_some(0));
+                match matched {
+                    Some(pos) => {
+                        let i = open.remove(pos);
+                        let (row, _, req_at) = &mut steps[i];
+                        row.outcome = outcome;
+                        row.ms = Some(at.saturating_sub(*req_at));
+                    }
+                    None => steps.push((
+                        StepRow {
+                            name: name(data),
+                            detail: detail_of(data.get("input")),
+                            outcome,
+                            ms: None,
+                        },
+                        id,
+                        at,
+                    )),
+                }
+            }
+            _ => {}
+        }
+    }
+    steps.into_iter().map(|(row, _, _)| row).collect()
+}
+
+/// A step's line: what it did to what, by the tool's name (the web's `stepLabel`).
+pub fn step_label(step: &StepRow) -> String {
+    let n = step.name.to_lowercase();
+    let d = step.detail.as_str();
+    let verb = |word: &str, bare: &str| {
+        if d.is_empty() {
+            bare.to_string()
+        } else {
+            format!("{word} {d}")
+        }
+    };
+    if n.contains("board") && n.contains("read") {
+        return "Read board message".into();
+    }
+    if n.contains("board") && (n.contains("post") || n.contains("write")) {
+        return "Posted to board".into();
+    }
+    if n == "bash"
+        || n == "shell"
+        || n.contains("command")
+        || n.contains("exec")
+        || n.contains("run")
+    {
+        return "Ran command".into();
+    }
+    if n.starts_with("read") || n.starts_with("view") || n.starts_with("open") {
+        return verb("Read", "Read file");
+    }
+    if ["edit", "patch", "replace"].iter().any(|w| n.contains(w)) {
+        return verb("Edited", "Edited file");
+    }
+    if n.contains("write") || n.contains("create") {
+        return verb("Wrote", "Wrote file");
+    }
+    if ["grep", "search", "glob", "find"]
+        .iter()
+        .any(|w| n.contains(w))
+    {
+        return verb("Searched", "Searched files");
+    }
+    format!("Used {}", step.name)
+}
+
+/// A run's outcome word: "running" while a step runs, "done" when none failed, "failed" when all did, else "mixed".
+pub fn group_outcome(steps: &[StepRow]) -> &'static str {
+    if steps.iter().any(|s| s.outcome == "running") {
+        return "running";
+    }
+    let bad = steps
+        .iter()
+        .filter(|s| s.outcome == "failed" || s.outcome == "denied")
+        .count();
+    match bad {
+        0 => "done",
+        n if n == steps.len() => "failed",
+        _ => "mixed",
+    }
+}
+
+/// A duration as the web shows it: "420 ms", "1.2 s", "2 min 5 s".
+pub fn format_ms(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms} ms")
+    } else if ms < 60_000 {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    } else {
+        let total = (ms as f64 / 1000.0).round() as u64;
+        format!("{} min {} s", total / 60, total % 60)
+    }
+}
+
 pub fn steps_label(count: usize, names: &[String]) -> String {
     let mut distinct: Vec<&str> = Vec::new();
     for name in names {
@@ -1032,5 +1219,28 @@ mod tests {
         assert_eq!(row.members.iter().copied().collect::<Vec<_>>(), vec![3, 5]);
         assert_eq!(row.repo.as_deref(), Some("plaza"));
         assert_eq!(row.tasks.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod step_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_run_of_steps_is_labelled_by_its_last_step_and_the_outcome_of_all() {
+        let entries = vec![
+            json!({"kind": "tool_request", "at_ms": 0, "data": {"id": "a", "name": "read_file", "input": {"path": "src/main.rs"}}}),
+            json!({"kind": "tool_result", "at_ms": 420, "data": {"id": "a"}}),
+            json!({"kind": "tool_request", "at_ms": 500, "data": {"id": "b", "name": "bash", "input": {"command": "cargo test\nmore"}}}),
+            json!({"kind": "tool_result", "at_ms": 2600, "data": {"id": "b", "is_error": true}}),
+        ];
+        let steps = steps_of(&entries);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].ms, Some(420));
+        assert_eq!(step_label(&steps[1]), "Ran command");
+        assert_eq!(steps[1].detail, "cargo test");
+        assert_eq!(group_outcome(&steps), "mixed");
+        assert_eq!(format_ms(2100), "2.1 s");
     }
 }

@@ -52,5 +52,5 @@
 
 [hidden] { display: none !important; }
 .hub-auth { display: flex; flex-wrap: wrap; gap: var(--s3); }
-.hub-warning { display: flex; flex-direction: column; gap: var(--s2); border: 1px solid var(--danger); color: var(--danger); padding: var(--s3); }
+.hub-warning { display: flex; flex-direction: column; gap: var(--s2); border: 1px solid var(--crit); color: var(--crit); padding: var(--s3); }
 .hub-warning p { margin: 0; }

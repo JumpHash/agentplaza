@@ -30,3 +30,12 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [[profile.ci.overrides]]
 filter = 'test(~opening_a_machine_keeps_every_call_under_50_ms_per_kind) | test(~a_simulated_node_of_fifty_vms_stays_inside_the_collection_budget)'
 threads-required = "num-test-threads"
+
+# The hub's integration tests (crates/apid/tests) each start a hub, Weft and fake daemons and play several
+# agents through a whole flow: on a runner busy with every other test they starved, one past the 2-minute kill.
+# Each takes two test slots, so fewer run at once, and has 4 minutes. Last: the first override that sets a value
+# wins, so the timing budgets above still run alone.
+[[profile.ci.overrides]]
+filter = 'package(apid) & kind(test)'
+threads-required = 2
+slow-timeout = { period = "30s", terminate-after = 8 }

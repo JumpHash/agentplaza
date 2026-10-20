@@ -7,6 +7,7 @@ import '../styles/markdown.css';
 import { h } from './dom';
 import { refNode, type EmbedContext } from './embeds';
 import { classify, codeText } from './rich';
+import { artifactChip, artifactEmbed } from '../views/artifact';
 
 export interface MarkdownOptions {
   /** Called for `[[Wiki links]]` (the memory library); omit to render them as plain text. */
@@ -20,6 +21,8 @@ export interface MarkdownOptions {
 interface Ctx {
   wikiLink?: (title: string) => HTMLElement;
   embeds?: EmbedContext;
+  /** The artifacts this message has shown, by id and version: the first gets an embed, the rest chips. */
+  artifacts?: { seen: Set<string> };
 }
 
 interface Parsed {
@@ -45,7 +48,7 @@ const INLINE =
 
 /** Renders `text` as a `div.md` element. Only DOM APIs build it; markup in `text` stays text. */
 export function renderMarkdown(text: string, opts: MarkdownOptions = {}): HTMLElement {
-  const ctx: Ctx = { wikiLink: opts.wikiLink, embeds: opts.embeds };
+  const ctx: Ctx = { wikiLink: opts.wikiLink, embeds: opts.embeds, artifacts: opts.embeds ? { seen: new Set() } : undefined };
   const { nodes, truncated } = parseBlocks(text.replace(/\r\n?/g, '\n').split('\n'), ctx, opts.maxBlocks ?? Infinity);
   const root = h('div.md', null, nodes);
   if (truncated) root.dataset.truncated = 'true';
@@ -121,7 +124,7 @@ function parseBlocks(lines: string[], ctx: Ctx, maxBlocks = Infinity): Parsed {
     // A paragraph: consecutive lines up to a blank line or the start of another block.
     const para: string[] = [line];
     for (i++; i < lines.length && at(i).trim() && !startsBlock(lines, i); i++) para.push(at(i));
-    nodes.push(h('p', null, paragraphInline(para, ctx)));
+    nodes.push(h('p', null, paragraphInline(para, ctx)), ...artifactBlocks(para.join('\n'), ctx));
   }
   return { nodes, truncated: false };
 }
@@ -227,6 +230,27 @@ function paragraphInline(lines: string[], ctx: Ctx): Inline[] {
     else text += `${raw.trim()} `;
   });
   return inline(text, ctx);
+}
+
+/**
+ * The artifacts a paragraph names, as blocks that follow it. The message's first artifact gets an embed; each later one
+ * (and each repeat of an artifact already shown) gets nothing or a compact chip. Without `embeds` there are none.
+ */
+function artifactBlocks(text: string, ctx: Ctx): Node[] {
+  if (!ctx.embeds || !ctx.artifacts) return [];
+  const out: Node[] = [];
+  const chips: Node[] = [];
+  for (const span of classify(text, ctx.embeds)) {
+    if (span.kind !== 'ref' || span.value.r.kind !== 'artifact') continue;
+    const ref = { id: span.value.r.id, version: span.value.r.version };
+    const key = `${ref.id}@${ref.version ?? ''}`;
+    if (ctx.artifacts.seen.has(key)) continue;
+    ctx.artifacts.seen.add(key);
+    if (ctx.artifacts.seen.size === 1) out.push(artifactEmbed(ref));
+    else chips.push(artifactChip(ref));
+  }
+  if (chips.length) out.push(h('div.artifact-chips', null, chips));
+  return out;
 }
 
 /** Inline spans: `code`, [[wiki]], [text](url), **bold**, *italic*, _italic_, bare http(s) URLs. */

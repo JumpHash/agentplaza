@@ -1,0 +1,14 @@
+/* Code in an artifact: the prototype's code block (a file head over .code lines), and the highlighter's classes. */
+
+.view-code { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden; background: var(--sheet); }
+.view-code .dfile-h { position: static; background: var(--sheet-2); border-bottom: 1px solid var(--rule); padding: 7px 10px 7px 12px; }
+.view-code .code { padding: 6px 0; font-size: 12.5px; }
+.view-code .cl code { white-space: pre; color: var(--ink); }
+.view-code-more { align-self: flex-start; margin: 8px 12px; }
+
+.syn-keyword { color: var(--syn-keyword); }
+.syn-string { color: var(--syn-string); }
+.syn-type { color: var(--syn-type); }
+.syn-number { color: var(--syn-number); }
+.syn-comment { color: var(--syn-comment); }
+.syn-function { color: var(--syn-function); }

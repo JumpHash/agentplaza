@@ -8,7 +8,8 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import xtermCss from '@xterm/xterm/css/xterm.css';
-import terminalCss from '../styles/ide-terminal.css';
+import moreCss from '../styles/proto/ide-more.css';
+import { button, modal } from '../ui/components';
 import {
   MAX_TERMINALS,
   PING_MS,
@@ -85,19 +86,19 @@ const THEME_TOKENS: Array<[ColorKey, string]> = [
   ['selectionBackground', 'color-mix(in srgb, var(--signal) 28%, transparent)'],
   ['black', 'var(--paper)'],
   ['red', 'var(--crit)'],
-  ['green', 'var(--ok-ink)'],
-  ['yellow', 'var(--warn-ink)'],
-  ['blue', 'var(--info-ink)'],
+  ['green', 'var(--ok)'],
+  ['yellow', 'var(--warn)'],
+  ['blue', 'var(--info)'],
   ['magenta', 'var(--signal-ink)'],
-  ['cyan', 'color-mix(in srgb, var(--info-ink) 55%, var(--ok-ink))'],
+  ['cyan', 'color-mix(in srgb, var(--info) 55%, var(--ok))'],
   ['white', 'var(--ink-2)'],
   ['brightBlack', 'var(--ink-3)'],
   ['brightRed', 'var(--crit)'],
-  ['brightGreen', 'var(--ok-ink)'],
-  ['brightYellow', 'var(--warn-ink)'],
-  ['brightBlue', 'var(--info-ink)'],
+  ['brightGreen', 'var(--ok)'],
+  ['brightYellow', 'var(--warn)'],
+  ['brightBlue', 'var(--info)'],
   ['brightMagenta', 'var(--signal-ink)'],
-  ['brightCyan', 'color-mix(in srgb, var(--info-ink) 55%, var(--ok-ink))'],
+  ['brightCyan', 'color-mix(in srgb, var(--info) 55%, var(--ok))'],
   ['brightWhite', 'var(--ink)'],
 ];
 
@@ -123,14 +124,26 @@ function readTheme(host: HTMLElement): ITheme {
 }
 
 function readFont(host: HTMLElement): string {
-  return resolveCss(host, 'fontFamily', 'var(--mono)') || 'monospace';
+  return resolveCss(host, 'fontFamily', 'var(--font-mono)') || 'monospace';
 }
 
+/** The prototype's IDE rules (styles/proto/ide-more.css), inserted once per page. */
+const MORE_STYLE_ID = 'apz-ide-more-style';
+function ensureMoreStyle(): void {
+  if (document.getElementById(MORE_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = MORE_STYLE_ID;
+  style.textContent = moreCss;
+  document.head.append(style);
+}
+
+/** xterm's own stylesheet, inserted once; the chrome around it is ide-more.css. */
 function ensureStyle(): void {
+  ensureMoreStyle();
   if (document.getElementById(STYLE_ID)) return;
   const style = el('style');
   style.id = STYLE_ID;
-  style.textContent = `${xtermCss}\n${terminalCss}`;
+  style.textContent = xtermCss;
   document.head.append(style);
 }
 
@@ -141,11 +154,33 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return node;
 }
 
-function button(label: string, onClick: () => void, className = 'ide-term-btn'): HTMLButtonElement {
-  const node = el('button', className, label);
+/** A tab of the strip: the prototype's underlined tab, a button with the tab role. */
+function stripTab(label: string, onClick: () => void): HTMLButtonElement {
+  const node = el('button', 'idem-tab', label);
   node.type = 'button';
+  node.setAttribute('role', 'tab');
   node.addEventListener('click', onClick);
   return node;
+}
+
+/**
+ * The console's confirm sheet (the prototype's ask()): the body's text, Cancel and the action in the sheet's foot. Resolves
+ * true for the action, false for Cancel, Escape, the close button or a click on the scrim.
+ */
+function askSheet(title: string, text: string, label: string, danger: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    let answered = false;
+    const answer = (ok: boolean): void => {
+      if (answered) return;
+      answered = true;
+      close();
+      resolve(ok);
+    };
+    const close = modal(title, el('p', 'idem-body', text), () => answer(false), [
+      button('Cancel', () => answer(false), { kind: 'ghost' }),
+      button(label, () => answer(true), { kind: danger ? 'danger' : 'primary' }),
+    ]);
+  });
 }
 
 /** A notice in the terminal's own text: dim, and with no control characters from the hub. */
@@ -165,16 +200,23 @@ export function mountTerminal(container: HTMLElement, workspace: string, opts: T
   const store = browserSession();
   const cwd = opts.cwd;
 
-  const root = el('div', 'ide-term');
-  const bar = el('div', 'ide-term-bar');
-  const idLabel = el('span', 'ide-term-id');
-  const newButton = button('New terminal', () => void restart());
-  const killButton = button('Kill', () => confirmKill());
-  const status = el('div', 'ide-term-status');
+  // The root keeps the console's `ide-term` class (the layout of the terminal host reads it); the prototype's chrome is
+  // `idem-term` with the toolbar, `idem-term-view` in a tab.
+  const toolbar = opts.toolbar !== false;
+  const root = el('div', toolbar ? 'ide-term idem-term' : 'ide-term idem-term-view');
+  const bar = el('div', 'idem-bar');
+  const idLabel = el('span', 'idem-term-id');
+  const newButton = button('New terminal', () => void restart(), { size: 'sm' });
+  const killButton = button('Kill', () => confirmKill(), { size: 'sm', kind: 'danger' });
+  const status = el('div', 'idem-term-status');
   status.setAttribute('role', 'status');
-  const body = el('div', 'ide-term-body');
-  if (opts.toolbar !== false) bar.append(idLabel, newButton, killButton);
-  root.append(...(opts.toolbar !== false ? [bar] : []), status, body);
+  // The xterm frame: the prototype's bordered output box. xterm opens in `body`, inside the frame's border, so the fit
+  // (which reads the element xterm opens in) measures the space the grid really has.
+  const frame = el('div', 'idem-term-out');
+  const body = el('div', 'idem-term-body');
+  frame.append(body);
+  if (toolbar) bar.append(idLabel, el('span', 'idem-sp'), newButton, killButton);
+  root.append(...(toolbar ? [bar] : []), status, frame);
   container.replaceChildren(root);
 
   const term = new Terminal({
@@ -214,10 +256,10 @@ export function mountTerminal(container: HTMLElement, workspace: string, opts: T
   };
 
   function setStatus(text: string, actions: Array<[string, () => void]> = [], tone: 'warn' | 'danger' = 'warn'): void {
-    status.className = `ide-term-status is-${tone}`;
+    status.className = `idem-term-status is-${tone}`;
     status.replaceChildren();
     if (text) status.append(el('span', '', text));
-    for (const [label, run] of actions) status.append(button(label, run));
+    for (const [label, run] of actions) status.append(button(label, run, { size: 'sm' }));
   }
 
   function render(): void {
@@ -428,14 +470,15 @@ export function mountTerminal(container: HTMLElement, workspace: string, opts: T
   }
 
   function confirmKill(): void {
-    if (!window.confirm('Kill this terminal? Its shell ends.')) return;
-    void kill();
+    void askSheet('Kill this terminal?', 'Its shell ends.', 'Kill', true).then((ok) => {
+      if (ok) void kill();
+    });
   }
 
   async function restart(): Promise<void> {
     if (disposed) return;
     if (guest !== undefined && (phase === 'connecting' || phase === 'live' || phase === 'reconnecting' || phase === 'killing')) {
-      if (!window.confirm('Start a new terminal? The current one ends.')) return;
+      if (!(await askSheet('Start a new terminal?', 'The current one ends.', 'Start', false))) return;
       await kill();
       if (disposed) return;
     }
@@ -540,14 +583,18 @@ interface Tab {
 export function terminalTabs(container: HTMLElement, workspace: string, opts: TabsOptions = {}): TabsHandle {
   ensureStyle();
   const store = browserSession();
-  const strip = el('div', 'ide-term-tabs');
-  const panes = el('div', 'ide-term-panes');
+  const root = el('div', 'ide-term idem-term');
+  const strip = el('div', 'idem-tabs');
+  strip.setAttribute('role', 'tablist');
+  const panes = el('div', 'ide-term-panes idem-panes');
+  // The tabs go before "+ New terminal", then the spacer pushes Kill to the end of the strip.
   const addButton = button('+ New terminal', () => {
     add();
-  });
-  const killButton = button('Kill', () => killActive());
-  strip.append(el('span', 'ide-term-spacer'), addButton, killButton);
-  container.replaceChildren(strip, panes);
+  }, { size: 'sm' });
+  const killButton = button('Kill', () => killActive(), { size: 'sm', kind: 'danger' });
+  strip.append(addButton, el('span', 'idem-sp'), killButton);
+  root.append(strip, panes);
+  container.replaceChildren(root);
 
   let tabs: Tab[] = [];
   let active = 0;
@@ -572,11 +619,10 @@ export function terminalTabs(container: HTMLElement, workspace: string, opts: Ta
     if (disposed || tabs.length >= MAX_TERMINALS || tabs.some((tab) => tab.slot === slot)) return false;
     // A new terminal must not pick up a session a slot left behind.
     if (fresh) clearSession(store, sessionKey(workspace, String(slot)));
-    const pane = el('div', 'ide-term-pane');
+    const pane = el('div', 'ide-term-pane idem-pane');
     panes.append(pane);
     const handle = mountTerminal(pane, workspace, { slot: String(slot), toolbar: false, cwd: opts.cwd });
-    const tabButton = button(`Terminal ${slot + 1}`, () => show(tabs.indexOf(tab)), 'ide-term-btn ide-term-tab');
-    tabButton.setAttribute('role', 'tab');
+    const tabButton = stripTab(`Terminal ${slot + 1}`, () => show(tabs.indexOf(tab)));
     const tab: Tab = { slot, pane, button: tabButton, handle };
     const after = tabs.find((other) => other.slot > slot);
     tabs.splice(after ? tabs.indexOf(after) : tabs.length, 0, tab);
@@ -610,9 +656,11 @@ export function terminalTabs(container: HTMLElement, workspace: string, opts: Ta
   function killActive(): void {
     const tab = tabs[active];
     if (!tab) return;
-    if (!window.confirm(`Kill Terminal ${tab.slot + 1}? Its shell ends.`)) return;
-    void tab.handle.kill().then(() => {
-      if (!disposed) removeTab(tab);
+    void askSheet(`Kill Terminal ${tab.slot + 1}?`, 'Its shell ends.', 'Kill', true).then((ok) => {
+      if (!ok || disposed) return;
+      void tab.handle.kill().then(() => {
+        if (!disposed) removeTab(tab);
+      });
     });
   }
 

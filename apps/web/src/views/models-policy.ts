@@ -1,39 +1,44 @@
-// The model policy: which models each tier may run, the defaults, the limits
-// and the prices. One document (apid's /v1/settings), saved whole.
+// The model policy: which models each tier may run, the defaults, the limits, the engines, the sleep settings and the
+// prices. One document (apid's /v1/settings), saved whole by the Save button in the screen's head.
 
-import '../styles/models-policy.css';
+import '../styles/proto/settings-a.css';
 import { api, isContributor, type ModelsView, type Settings } from '../api';
 import { agents } from '../store';
-import { attempt, badge, button, card, dot, empty, field, input, select, table, TRAINS_NOTE, textarea, toast, trainsBadge } from '../ui/components';
+import { attempt, badge, button, dot, empty, field, input, select, textarea, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { modelPicker } from '../ui/model-picker';
 import { tierChoices } from './agent-detail';
-import { DEFAULT_ENGINES, ENGINES, toggleEngine } from './engines-model';
+import { CONTRIBUTOR_NOTE } from './models-providers';
 
 type Tier = 'orchestrator' | 'worker';
 type Price = { input: number; output: number };
 
 const EFFORTS = ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-const LIST_ID = 'models-policy-known';
+const LIST_ID = 'mdl-known';
 
-export function mountModelPolicy(root: HTMLElement): Cleanup {
+export function mountModelPolicy(root: HTMLElement, actions: HTMLElement): Cleanup {
   let alive = true;
-  replace(root, h('p.faint', null, 'Loading…'));
+  replace(root, h('p.mdl-faint', null, 'Loading…'));
   void attempt(() => Promise.all([api.settings(), api.models()])).then((data) => {
     if (!alive) return;
     if (!data) {
       replace(root, empty('alert', 'Models unavailable', 'apid did not answer. Reload to try again.'));
       return;
     }
-    build(root, data[0], data[1]);
+    build(root, actions, data[0], data[1]);
   });
   return () => {
     alive = false;
   };
 }
 
-function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): void {
+/** The checkbox row of the policy's switches (the prototype's `label.check`). */
+function check(box: HTMLInputElement, text: string): HTMLElement {
+  return h('label.check', null, box, h('span', null, text));
+}
+
+function build(root: HTMLElement, actions: HTMLElement, settings: Settings, modelsView: ModelsView): void {
   let saved: Settings = settings;
   let copy: Settings = clone(settings);
   const devModels = settings.dev_models === true;
@@ -48,8 +53,9 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
     { id: LIST_ID },
     ...modelsView.models.map((m) => h('option', { value: `${m.provider}/${m.id}` }, m.name ?? `${m.provider}/${m.id}`)),
   );
-  const body = h('div.stack.models-policy');
-  replace(root, h('div.policy-bar', null, saveBtn), datalist, body);
+  const body = h('div.mdl-stack', null, datalist);
+  replace(actions, saveBtn);
+  replace(root, body);
 
   function sync(): void {
     saveBtn.disabled = errors.size > 0 || JSON.stringify(copy) === JSON.stringify(saved);
@@ -57,7 +63,7 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
 
   function render(): void {
     errors.clear();
-    replace(body, policyCard(), defaultsCard(), limitsCard(), enginesCard(), sleepCard(), pricesCard());
+    replace(body, datalist, policyCard(), defaultsCard(), limitsCard(), enginesCard(), sleepCard(), pricesCard());
     sync();
   }
 
@@ -81,22 +87,19 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
   }
 
   function policyCard(): HTMLElement {
-    return card(
-      'Model policy',
-      h(
-        'div.stack',
-        null,
-        h('p.policy-lead', null, "Agents may only run the models on their tier's list."),
-        h('div.policy-cols', null, tierColumn('orchestrator', 'Orchestrator'), tierColumn('worker', 'Workers')),
-      ),
-      { actions: devModels ? [badge('Development models enabled — policy relaxed', 'warn')] : [] },
+    return h(
+      'div.mdl-card.mdl-stack',
+      null,
+      h('h3.mdl-h3', { style: 'margin:0' }, 'Model policy'),
+      devModels ? badge('Development models enabled — policy relaxed', 'warn') : null,
+      h('p.mdl-faint', null, "Agents may only run the models on their tier's list."),
+      h('div.mdl-two', null, tierColumn('orchestrator', 'Orchestrator'), tierColumn('worker', 'Workers')),
     );
   }
 
   function tierColumn(tier: Tier, title: string): HTMLElement {
-    const list = copy.model_policy[tier];
-    const rows = list.map((entry, index) => policyRow(tier, entry, index));
-    const addInput = input({ placeholder: 'provider/model', list: LIST_ID, autocomplete: 'off', 'aria-label': `${title}: model to add` });
+    const rows = copy.model_policy[tier].map((entry, index) => policyRow(tier, entry, index));
+    const addInput = input({ placeholder: 'provider/model', list: LIST_ID, autocomplete: 'off', 'aria-label': `${title}: model to add`, style: 'flex:1;min-width:160px' });
     const add = (): void => {
       const value = addInput.value.trim();
       if (value === '') return;
@@ -114,11 +117,11 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       }
     });
     return h(
-      'section.policy-col',
+      'div',
       null,
-      h('h3', null, title),
-      h('ul.policy-list', null, ...(rows.length ? rows : [h('li.faint', null, 'No models')])),
-      h('div.policy-add', null, addInput, button('Add model', add, { size: 'sm' })),
+      h('h3.mdl-h3', null, title),
+      h('ul.mdl-policy', null, ...(rows.length ? rows : [h('li.mdl-faint', null, 'No models')])),
+      h('div.mdl-row-a', null, addInput, button('Add model', add, { size: 'sm' })),
     );
   }
 
@@ -127,9 +130,8 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
     const listed = known.has(base);
     const availability = dot(listed ? 'ok' : 'muted');
     availability.title = listed ? 'Listed by its provider' : 'Not listed by its provider';
-    const pinned = effort === null ? null : badge('effort pinned', 'accent');
-    if (pinned) pinned.title = `@${effort}`;
-    const trains = trainers.has(base) ? trainsBadge() : null;
+    const pinned = effort === null ? null : h('span.badge-t.t-accent', { title: `@${effort}` }, 'effort pinned');
+    const trains = trainers.has(base) ? badge('Trains on data', 'warn') : null;
     const remove = button(
       '',
       () => {
@@ -138,7 +140,15 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       },
       { kind: 'ghost', size: 'sm', icon: 'x', title: `Remove ${entry}` },
     );
-    return h('li.policy-row', { 'data-key': `policy-${tier}-${entry}` }, availability, h('span.mono.truncate', { title: entry }, base), pinned, trains, remove);
+    return h(
+      'li',
+      { 'data-key': `policy-${tier}-${entry}` },
+      h('span', { title: availability.title, style: 'display:inline-flex;flex:none' }, availability),
+      h('span.mdl-trunc', { title: entry }, base),
+      pinned,
+      trains,
+      remove,
+    );
   }
 
   function defaultsCard(): HTMLElement {
@@ -169,30 +179,40 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
         ...Object.keys(copy.role_models),
       ]),
     ).sort();
-    const roleRows = roles.length
-      ? table<string>(
-          [
-            { label: 'Role', cell: (role) => h('span.mono', null, role) },
-            { label: 'Model', cell: (role) => roleSelect(role) },
-          ],
-          roles,
-        )
-      : empty('agents', 'No roles connected');
-    return card(
-      'Defaults',
-      h('div.stack', null, trainingField(), field('Orchestrator model', orch.el), field('Worker default', worker.el), h('h3', null, 'Per role'), roleRows),
+    const roleRows = roles.map((role) =>
+      h('tr', { 'data-key': `role-${role}` }, h('td.mono', null, role), h('td', null, roleSelect(role))),
+    );
+    return h(
+      'div.mdl-card',
+      null,
+      h('h3.mdl-h3', { style: 'margin-top:0' }, 'Defaults'),
+      trainingField(),
+      h(
+        'div.mdl-two',
+        null,
+        field('Orchestrator model', orch.el),
+        field('Worker default', worker.el),
+      ),
+      h('h3.mdl-h3', null, 'Per role'),
+      roles.length
+        ? h(
+            'div.tbl-wrap',
+            null,
+            h('table.mdl-table', null, h('thead', null, h('tr', null, h('th', null, 'Role'), h('th', null, 'Model'))), h('tbody', null, roleRows)),
+          )
+        : empty('agents', 'No roles connected', ''),
     );
   }
 
   /** The owner's confirmation for contributor models; off until the owner turns it on. */
   function trainingField(): HTMLElement {
-    const box = input({ type: 'checkbox', style: 'width:auto' });
+    const box = input({ type: 'checkbox' });
     box.checked = copy.allow_training_models === true;
     box.addEventListener('change', () => {
       copy.allow_training_models = box.checked;
       sync();
     });
-    return h('div.stack', null, h('h3', null, 'Contributor models'), h('label', { style: 'display:flex;align-items:center;justify-content:flex-start;gap:8px;width:fit-content' }, box, h('span', null, 'Allow as defaults, role models and policy entries')), h('p.faint', null, TRAINS_NOTE));
+    return h('div', null, check(box, 'Allow as defaults, role models and policy entries'), h('p.mdl-faint', { style: 'margin:8px 0 12px' }, CONTRIBUTOR_NOTE));
   }
 
   function roleSelect(role: string): HTMLElement {
@@ -235,10 +255,12 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
         .filter((s) => s !== '');
       sync();
     });
-    return card(
-      'Limits',
+    return h(
+      'div.mdl-card',
+      null,
+      h('h3.mdl-h3', { style: 'margin-top:0' }, 'Limits'),
       h(
-        'div.stack',
+        'div.mdl-two',
         null,
         field('Max turns', turns),
         field('Max tokens (0 = provider default)', tokens),
@@ -248,37 +270,18 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
     );
   }
 
-  /** The coding engines an agent may run, and how they run. At least one engine stays on (the last box is locked). */
+  /** Engines are providers now: their switches, versions and routes are in the Providers tab. */
   function enginesCard(): HTMLElement {
-    // A hub from before the engine settings sends neither field: it runs the three engines over ACP.
-    copy.engines_enabled ??= [...DEFAULT_ENGINES];
-    const enabled = copy.engines_enabled;
-    const boxes = ENGINES.map((engine) => {
-      const on = enabled.includes(engine.value);
-      const box = input({ type: 'checkbox', style: 'width:auto' });
-      box.checked = on;
-      box.disabled = on && enabled.length === 1;
-      box.title = box.disabled ? 'At least one engine stays on' : '';
-      box.addEventListener('change', () => {
-        copy.engines_enabled = toggleEngine(copy.engines_enabled, engine.value, box.checked);
-        render();
-      });
-      return h(
-        'label',
-        { style: 'display:flex;align-items:center;justify-content:flex-start;gap:8px;width:fit-content' },
-        box,
-        h('span', null, engine.label),
-        h('span.mono.faint', null, engine.value),
-      );
-    });
-    return card(
-      'Engines',
+    return h(
+      'div.mdl-card',
+      null,
+      h('h3.mdl-h3', { style: 'margin-top:0' }, 'Engines'),
       h(
-        'div.stack',
+        'p.mdl-faint',
         null,
-        h('p.faint', null, 'The coding engines an agent may run. At least one stays on. Every engine runs over ACP: a live stream, with every action checked by the laws.'),
-        h('div.stack', null, ...boxes),
+        'The coding engines an agent may run are in the Providers tab now: turn each on or off, pick its version and the model it runs through.',
       ),
+      h('a.btn.sm', { href: '#/settings/models/models' }, 'Open Providers'),
     );
   }
 
@@ -295,22 +298,19 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       copy.sleep_never_roles = sleepRoles(roles.value);
       sync();
     });
-    const auto = input({ type: 'checkbox', style: 'width:auto' });
+    const auto = input({ type: 'checkbox' });
     auto.checked = copy.vm_auto_checkpoints === true;
     auto.addEventListener('change', () => {
       copy.vm_auto_checkpoints = auto.checked;
       sync();
     });
-    return card(
-      'Sleep and checkpoints',
-      h(
-        'div.stack',
-        null,
-        field('Sleep after idle (minutes, 0 = never)', idle),
-        field('Doze after (seconds idle, 0 = never)', doze),
-        field('Roles that never sleep (comma-separated)', roles),
-        h('div.stack', null, h('label', { style: 'display:flex;align-items:center;justify-content:flex-start;gap:8px;width:fit-content' }, auto, h('span', null, 'Checkpoint before irreversible actions')), h('p.faint', null, "A checkpoint of the agent's VM is taken before each irreversible tool call.")),
-      ),
+    return h(
+      'div.mdl-card.mdl-stack',
+      null,
+      h('h3.mdl-h3', { style: 'margin:0' }, 'Sleep and checkpoints'),
+      h('div.mdl-two', null, field('Sleep after idle (minutes, 0 = never)', idle), field('Doze after (seconds idle, 0 = never)', doze), field('Roles that never sleep (comma-separated)', roles)),
+      check(auto, 'Checkpoint before irreversible actions'),
+      h('p.mdl-faint', null, "A checkpoint of the agent's VM is taken before each irreversible tool call."),
     );
   }
 
@@ -342,22 +342,37 @@ function build(root: HTMLElement, settings: Settings, modelsView: ModelsView): v
       });
       return el;
     };
-    const priceTable = keys.length
-      ? table<string>(
-          [
-            { label: 'Model', cell: (k) => h('span', null, h('span.mono.truncate', { title: k }, k), trainers.has(k) ? trainsBadge() : null) },
-            { label: 'Input (credits / 1M)', num: true, cell: (k) => priceInput(k, 'input') },
-            { label: 'Output (credits / 1M)', num: true, cell: (k) => priceInput(k, 'output') },
-          ],
-          keys,
-        )
-      : empty('models', 'No models listed');
-    const details = h('details.prices', null, h('summary', null, 'Models'), priceTable) as HTMLDetailsElement;
+    const priceRows = keys.map((key) =>
+      h(
+        'tr',
+        { 'data-key': `price-${key}` },
+        h('td.mono', { title: key }, key, trainers.has(key) ? ' ' : null, trainers.has(key) ? badge('Trains on data', 'warn') : null),
+        h('td', null, priceInput(key, 'input')),
+        h('td', null, priceInput(key, 'output')),
+      ),
+    );
+    const details = h(
+      'details',
+      null,
+      h('summary', null, 'Models'),
+      keys.length
+        ? h(
+            'div.tbl-wrap',
+            null,
+            h(
+              'table.mdl-table',
+              null,
+              h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Input (credits / 1M)'), h('th', null, 'Output (credits / 1M)'))),
+              h('tbody', null, priceRows),
+            ),
+          )
+        : empty('models', 'No models listed', ''),
+    ) as HTMLDetailsElement;
     details.open = pricesOpen;
     details.addEventListener('toggle', () => {
       pricesOpen = details.open;
     });
-    return card('Prices', details);
+    return h('div.mdl-card', null, details);
   }
 
   render();

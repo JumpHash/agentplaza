@@ -11,6 +11,11 @@
         "body": "AgentPlaza runs your AI agents on machines you own, each in its own isolated VM, under one hub that records what they do."
       },
       {
+        "id": "look",
+        "title": "Choose a look",
+        "body": "Loom is warm paper with mono labels and ink for actions. Graphite is cool neutrals with cobalt. Both come in light and dark, and you can change the look any time in Appearance."
+      },
+      {
         "id": "hub",
         "title": "Your hub",
         "body": "This console is connected to one hub. Check that it is the hub you meant."
@@ -67,6 +72,13 @@
         "weft": "Weft",
         "host": "Docker and containers"
       }
+    },
+    "look": {
+      "loom": "Loom",
+      "loom_about": "Warm paper, mono capital labels, ink for actions",
+      "graphite": "Graphite",
+      "graphite_about": "Cool neutrals, sans labels, cobalt for actions",
+      "open_appearance": "More in Appearance"
     }
   },
   "offer": {

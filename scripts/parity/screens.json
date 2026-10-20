@@ -1,0 +1,23 @@
+[
+  { "name": "overview", "web": "#/overview", "desktop": "Overview", "wait_ms": 3000 },
+  { "name": "agents", "web": "#/agents", "desktop": "Agents", "wait_ms": 2500 },
+  { "name": "projects", "web": "#/projects", "desktop": "Projects", "wait_ms": 2500 },
+  { "name": "work", "web": "#/work", "desktop": "Work", "wait_ms": 2500 },
+  { "name": "tasks", "web": "#/tasks", "desktop": "Tasks", "wait_ms": 2500 },
+  { "name": "history", "web": "#/history", "desktop": "History", "wait_ms": 2500 },
+  { "name": "library", "web": "#/library", "desktop": "Library", "wait_ms": 2500 },
+  { "name": "approvals", "web": "#/approvals", "desktop": "Approvals", "wait_ms": 2500 },
+  { "name": "metrics", "web": "#/metrics", "desktop": "Metrics", "wait_ms": 4000 },
+  { "name": "machines", "web": "#/machines", "desktop": "Machines", "wait_ms": 2500 },
+  { "name": "society", "web": "#/society", "desktop": "Society", "wait_ms": 2500 },
+  { "name": "board", "web": "#/board", "desktop": "Board", "wait_ms": 2500 },
+  { "name": "council", "web": "#/council", "desktop": "Council", "wait_ms": 2500 },
+  { "name": "treasury", "web": "#/treasury", "desktop": "Treasury", "wait_ms": 2500 },
+  { "name": "rules", "web": "#/rules", "desktop": "Rules", "wait_ms": 2500 },
+  { "name": "conversations", "web": "#/conversations", "desktop": "Conversations", "wait_ms": 2500 },
+  { "name": "models", "web": "#/models", "desktop": "Models", "wait_ms": 2500 },
+  { "name": "skills", "web": "#/skills", "desktop": "Skills", "wait_ms": 2500 },
+  { "name": "prompts", "web": "#/prompts", "desktop": "Prompts", "wait_ms": 2500 },
+  { "name": "setup", "web": "#/setup", "desktop": "Setup", "wait_ms": 2500 },
+  { "name": "appearance", "web": "#/appearance", "desktop": "Appearance", "wait_ms": 2500 }
+]

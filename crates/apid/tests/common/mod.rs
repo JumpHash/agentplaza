@@ -21,7 +21,9 @@ const APID: &str = env!("CARGO_BIN_EXE_apid");
 /// Ports the owner's own hub and daemons use. A test never picks one of them.
 const OWNER_PORTS: [u16; 3] = [7700, 8899, 19080];
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
-const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// One request's answer. Generous: a busy CI runner (thousands of tests at once) can take over ten seconds for a
+/// call that compiles a Weft language pack on its first use (review_tree), and a hang still fails.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTEMPTS: u32 = 3;
 
 /// A temp directory removed on drop.
@@ -121,6 +123,17 @@ impl Hub {
             json!({ "type": "work_done", "work": work, "status": status, "summary": summary });
         let (code, body) = self.guest(cid, "message", message);
         assert_eq!(code, 200, "{body}");
+    }
+
+    /// Agent `cid` names itself with plaza_set_name, as an agent does when the hub asks. The hub asks an unnamed idle
+    /// agent two seconds after it connects, and a fake agent never answers: on a slow runner that ask is queued ahead
+    /// of the work a test waits for, so a test whose agents must take work names them first.
+    pub fn name_agent(&self, cid: u64, name: &str) {
+        let request = json!({ "type": "tool_request", "work": 0, "call": format!("toolu_name_{cid}"), "name": "plaza_set_name", "input": { "name": name } });
+        let (code, body) = self.guest(cid, "message", request);
+        assert_eq!(code, 200, "{body}");
+        let (_, agent) = self.call("GET", &format!("/v1/agents/{cid}"), None);
+        assert_eq!(agent["name"], name, "{body}\n{agent}");
     }
 
     /// Waits up to `timeout` for `ready` to hold of the owner's `GET path`; the last answer either way.

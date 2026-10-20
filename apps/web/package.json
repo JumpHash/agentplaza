@@ -11,10 +11,19 @@
     "check": "tsc --noEmit && node build.mjs && node test/run.mjs"
   },
   "devDependencies": {
+    "@tailwindcss/browser": "4.1.13",
+    "d3": "7.9.0",
     "esbuild": "0.28.2",
+    "lodash": "4.17.21",
     "lucide": "^1.55.0",
+    "papaparse": "5.5.3",
+    "prop-types": "15.8.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "recharts": "2.15.4",
     "simple-icons": "^16.35.0",
     "simple-icons-11": "npm:simple-icons@^11.15.0",
+    "three": "0.160.1",
     "typescript": "5.9.3"
   },
   "dependencies": {

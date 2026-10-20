@@ -1,101 +1,70 @@
-//! The register's visual language: the night-navy "Plaza" palette, the same
-//! tokens as the web console (`apps/web/src/styles/tokens.css`), an Inter/Martian Mono pairing, ruled sheets and
-//! stamps — as far as iced's widgets carry it (no rotation, no dot leaders:
-//! the rules and the space between them stand in).
+//! The consoles' visual language on the desktop: the theme a console applies is resolved by `apz-theme` (the same
+//! crate, files and rules the web console reads), so both consoles draw the same colours, radii, shadows and type.
+//! A theme is a skin (Loom or Graphite: shape and type), a palette (every colour token for light and dark) and a
+//! background. [`apply`] resolves the owner's choice for both modes; [`palette()`] and [`skin()`] are what the
+//! style functions and screens read. Token names are the web's (`--ink-3` is `palette().ink_3`); a test fails when
+//! the list in `apz_theme::tokens::TOKENS` and the [`Palette`] fields differ.
 
 use apz_engine::style::Style;
+use apz_theme::{Appearance, Mode, ModeChoice, Resolved, ThemeFile};
 use iced::widget::text::LineHeight;
-use iced::widget::{button, container, rule, text_input};
+use iced::widget::{button, container, rule, text_editor, text_input};
 use iced::{
     Background, Border, Color, Font, Shadow, Theme, Vector, font, theme::Palette as IcedPalette,
 };
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-/// The page behind everything: the console's night navy.
-pub const PAPER: Color = Color::from_rgb8(0x0a, 0x0e, 0x19);
-/// A sheet laid on the page.
-pub const SHEET: Color = Color::from_rgb8(0x11, 0x17, 0x26);
-/// A ruled line.
-pub const RULE: Color = Color::from_rgb8(0x26, 0x30, 0x49);
-/// A fainter rule, for the space between fields.
-pub const RULE_FAINT: Color = Color::from_rgb8(0x1a, 0x21, 0x35);
-/// The red margin rule.
-pub const MARGIN: Color = Color::from_rgb8(0x6e, 0x3a, 0x55);
-/// The ink: light type on the dark page.
-pub const INK: Color = Color::from_rgb8(0xe3, 0xe8, 0xf4);
-/// Secondary ink.
-pub const INK_2: Color = Color::from_rgb8(0xa3, 0xad, 0xc4);
-/// Tertiary ink, for labels.
-pub const INK_3: Color = Color::from_rgb8(0x6c, 0x77, 0x90);
-/// The one hot signal.
-pub const SIGNAL: Color = Color::from_rgb8(0xff, 0x7a, 0x2e);
-/// The signal's ink: a link or a lit label under the pointer (the web's `--signal-ink`, night theme).
-pub const SIGNAL_INK: Color = Color::from_rgb8(0xff, 0x9a, 0x5c);
-/// The ink on a solid signal fill: the primary button's text (the web's `#120800`).
-pub const ON_SIGNAL: Color = Color::from_rgb8(0x12, 0x08, 0x00);
-/// Information: a note, a passive state (the web's `--info-ink`, night theme). The register is
-/// dark only, so there is no light value.
-pub const INFO: Color = Color::from_rgb8(0x6c, 0xc8, 0xff);
-/// A refusal, a kill, a failure.
-pub const CRIT: Color = Color::from_rgb8(0xff, 0x7c, 0x86);
-/// A caution.
-pub const WARN: Color = Color::from_rgb8(0xe2, 0xbd, 0x5a);
-/// Something finished well.
-pub const OK: Color = Color::from_rgb8(0x5f, 0xe0, 0xa0);
-/// A stamped, held state: a dark amber fill.
-pub const TAINT: Color = Color::from_rgb8(0x2e, 0x2a, 0x17);
-/// A hovered row.
-pub const HOVER: Color = Color::from_rgb8(0x18, 0x20, 0x36);
-/// The machine's substrate region on the fleet map: a hair off the sheet, so
-/// the bounded region reads as bounded without becoming a filled block.
-pub const SUBSTRATE: Color = Color::from_rgb8(0x0e, 0x13, 0x21);
-
-/// The interface and reading voice: Inter, embedded by the console (`console::run`) and the
-/// app's default font, so a text with no font of its own is Inter. Its weights are the TTFs
-/// the console embeds (Regular, Medium, SemiBold, Bold, Italic); they share the "Inter" family.
-pub const SANS: Font = Font::with_name("Inter");
-/// Inter at 500: controls and buttons.
+/// The interface and reading voice: Geist, embedded by the console (`console::run`) and the app's default font.
+/// Its weights are the TTFs the console embeds (Regular, Medium, SemiBold, Bold, Italic); they share the family.
+pub const SANS: Font = Font::with_name("Geist");
+/// Geist at 500: controls and buttons.
 pub const SANS_MEDIUM: Font = Font {
     weight: font::Weight::Medium,
     ..SANS
 };
-/// Inter at 600: titles, selected tabs, badges and the labels that were uppercase mono.
+/// Geist at 600: titles, selected tabs and badges.
 pub const SANS_SEMIBOLD: Font = Font {
     weight: font::Weight::Semibold,
     ..SANS
 };
-/// Inter at 700: figures and the empty-state titles.
+/// Geist at 700: figures and the empty-state titles.
 pub const SANS_BOLD: Font = Font {
     weight: font::Weight::Bold,
     ..SANS
 };
-/// Inter in italic: the error line and the notes.
+/// Geist in italic: the error line and the notes.
 pub const SANS_ITALIC: Font = Font {
     style: font::Style::Italic,
     ..SANS
 };
 
-/// The code voice: code, diffs, terminals, raw tool output, and the ids, hashes and paths where
-/// alignment matters. Martian Mono, embedded by the console (`console::run`). Nothing else.
-pub const MONO: Font = Font::with_name("Martian Mono");
+/// The code voice: code, diffs, terminals, raw tool output, the ids, hashes and paths where alignment matters, and
+/// (in the Loom skin) section labels. Geist Mono, embedded by the console.
+pub const MONO: Font = Font::with_name("Geist Mono");
+/// Geist Mono at 500: Loom's section labels.
+pub const MONO_MEDIUM: Font = Font {
+    weight: font::Weight::Medium,
+    ..MONO
+};
 
-/// The type roles (`docs/design/workspace.md`, section 1), in iced points (the web's CSS px).
-/// Page title: 20, line 1.3, 600.
-pub const TYPE_PAGE: f32 = 20.0;
-/// Section title (a card's head): 16, line 1.4, 600.
-pub const TYPE_SECTION: f32 = 16.0;
-/// Item title: 14, line 1.4, 600.
-pub const TYPE_ITEM: f32 = 14.0;
-/// Reading prose (transcripts, board posts, conversations): 15, line 1.6, 400.
-pub const TYPE_PROSE: f32 = 15.0;
+/// The type roles (`docs/design/workspace.md`, section 1), in iced points (the web's CSS px, `styles/tokens.css`).
+/// Page title: 22, line 1.25, 600.
+pub const TYPE_PAGE: f32 = 22.0;
+/// Section title (a card's head): 15, line 1.35, 600.
+pub const TYPE_SECTION: f32 = 15.0;
+/// Item title: 13.5, line 1.4, 600.
+pub const TYPE_ITEM: f32 = 13.5;
+/// Reading prose (transcripts, board posts, conversations): 14.5, line 1.6, 400.
+pub const TYPE_PROSE: f32 = 14.5;
 /// Interface text and controls: 13, line 1.4, 500 (600 when selected).
 pub const TYPE_UI: f32 = 13.0;
 /// Metadata, timestamps, helper text: 12, line 1.4, 400, secondary colour.
 pub const TYPE_META: f32 = 12.0;
 /// Badges and counts: 11, line 1.3, 600.
 pub const TYPE_BADGE: f32 = 11.0;
-/// Code: 13, line 1.5, Martian Mono.
-pub const TYPE_CODE: f32 = 13.0;
+/// Code: 12.5, line 1.5, Geist Mono.
+pub const TYPE_CODE: f32 = 12.5;
 /// The reading line height: 1.6 times the size.
 pub const READING: LineHeight = LineHeight::Relative(1.6);
 
@@ -115,27 +84,347 @@ pub enum Tone {
 }
 
 impl Tone {
-    /// The tone's colour.
+    /// The tone's colour, for text and marks.
     pub fn color(self) -> Color {
+        let p = palette();
         match self {
-            Tone::Neutral => crate::theme::palette().ink_2,
-            Tone::Ok => crate::theme::palette().ok,
-            Tone::Warn => crate::theme::palette().warn,
-            Tone::Crit => crate::theme::palette().crit,
-            Tone::Signal => crate::theme::palette().signal,
+            Tone::Neutral => p.ink_2,
+            Tone::Ok => p.ok,
+            Tone::Warn => p.warn,
+            Tone::Crit => p.crit,
+            Tone::Signal => p.signal_ink,
+        }
+    }
+
+    /// The tone's soft tint, behind chips and notices.
+    pub fn soft(self) -> Color {
+        let p = palette();
+        match self {
+            Tone::Neutral => p.sheet_2,
+            Tone::Ok => p.ok_soft,
+            Tone::Warn => p.warn_soft,
+            Tone::Crit => p.crit_soft,
+            Tone::Signal => p.signal_soft,
+        }
+    }
+
+    /// A solid fill in the tone and the text that reads on it.
+    pub fn fill(self) -> (Color, Color) {
+        let p = palette();
+        match self {
+            Tone::Neutral => (p.action, p.on_action),
+            Tone::Signal => (p.signal_fill, p.on_signal),
+            other => (other.color(), p.sheet),
         }
     }
 }
 
-/// The application theme: the Plaza night palette, dark by default, so
-/// default-styled widgets (icons, selections, scroll rails) match the register.
+macro_rules! palette {
+    ($($field:ident = $name:literal,)*) => {
+        /// One full set of colours, resolved for one mode: a field per token of `apz_theme::tokens::TOKENS`.
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        pub struct Palette {
+            $(pub $field: Color,)*
+        }
+
+        impl Palette {
+            /// The token names, in the list's order.
+            pub const NAMES: &'static [&'static str] = &[$($name),*];
+
+            /// The palette of resolved tokens.
+            pub fn from_tokens(t: &apz_theme::Tokens) -> Palette {
+                Palette { $($field: color(t.get($name)),)* }
+            }
+
+            /// The colour of a token by its name.
+            pub fn get(&self, name: &str) -> Option<Color> {
+                match name {
+                    $($name => Some(self.$field),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+palette! {
+    paper = "paper",
+    paper_side = "paper-side",
+    panel = "panel",
+    sheet = "sheet",
+    raised = "raised",
+    sheet_2 = "sheet-2",
+    hover = "hover",
+    press = "press",
+    pattern = "pattern",
+    amb_1 = "amb-1",
+    amb_2 = "amb-2",
+    amb_3 = "amb-3",
+    rule = "rule",
+    rule_strong = "rule-strong",
+    rule_faint = "rule-faint",
+    ink = "ink",
+    ink_2 = "ink-2",
+    ink_3 = "ink-3",
+    signal = "signal",
+    signal_fill = "signal-fill",
+    signal_ink = "signal-ink",
+    on_signal = "on-signal",
+    signal_soft = "signal-soft",
+    action = "action",
+    on_action = "on-action",
+    ok = "ok",
+    ok_soft = "ok-soft",
+    warn = "warn",
+    warn_soft = "warn-soft",
+    crit = "crit",
+    crit_soft = "crit-soft",
+    info = "info",
+    info_soft = "info-soft",
+    review = "review",
+    review_soft = "review-soft",
+    add_bg = "add-bg",
+    add_fg = "add-fg",
+    add_bar = "add-bar",
+    del_bg = "del-bg",
+    del_fg = "del-fg",
+    del_bar = "del-bar",
+    syn_keyword = "syn-keyword",
+    syn_string = "syn-string",
+    syn_type = "syn-type",
+    syn_number = "syn-number",
+    syn_comment = "syn-comment",
+    syn_function = "syn-function",
+    syn_variable = "syn-variable",
+    term_bg = "term-bg",
+    term_fg = "term-fg",
+    ansi_0 = "ansi-0",
+    ansi_1 = "ansi-1",
+    ansi_2 = "ansi-2",
+    ansi_3 = "ansi-3",
+    ansi_4 = "ansi-4",
+    ansi_5 = "ansi-5",
+    ansi_6 = "ansi-6",
+    ansi_7 = "ansi-7",
+    ansi_8 = "ansi-8",
+    ansi_9 = "ansi-9",
+    ansi_10 = "ansi-10",
+    ansi_11 = "ansi-11",
+    ansi_12 = "ansi-12",
+    ansi_13 = "ansi-13",
+    ansi_14 = "ansi-14",
+    ansi_15 = "ansi-15",
+    chart_1 = "chart-1",
+    chart_2 = "chart-2",
+    chart_3 = "chart-3",
+    chart_4 = "chart-4",
+    chart_5 = "chart-5",
+    chart_6 = "chart-6",
+    chart_7 = "chart-7",
+    chart_8 = "chart-8",
+    chart_other = "chart-other",
+    chart_grid = "chart-grid",
+    chart_axis = "chart-axis",
+    hue_0 = "hue-0",
+    hue_1 = "hue-1",
+    hue_2 = "hue-2",
+    hue_3 = "hue-3",
+    hue_4 = "hue-4",
+    hue_5 = "hue-5",
+    on_hue = "on-hue",
+    toast_bg = "toast-bg",
+    toast_fg = "toast-fg",
+    scrim = "scrim",
+    amb_lit = "amb-lit",
+    amb_line = "amb-line",
+}
+
+/// An `apz_theme` colour as iced's.
+pub fn color(c: apz_theme::Rgba) -> Color {
+    Color {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+        a: c.a,
+    }
+}
+
+/// The skin's shape and type, as the style functions read it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Skin {
+    pub id: String,
+    pub radius_sm: f32,
+    pub radius: f32,
+    pub radius_lg: f32,
+    /// A list row's height, after density.
+    pub row: f32,
+    /// Section labels in mono capitals (Loom) or sans (Graphite).
+    pub label_mono: bool,
+    pub label_upper: bool,
+    pub label_size: f32,
+    /// Primary actions in ink (Loom) or in the signal colour (Graphite).
+    pub action_ink: bool,
+    pub shadow_card: Shadow,
+    pub shadow_pop: Shadow,
+}
+
+/// The first layer of a skin's shadow list as iced's (iced draws one).
+fn shadow(layers: &[apz_theme::skin::Shadow]) -> Shadow {
+    match layers.last() {
+        Some(s) => Shadow {
+            color: Color {
+                a: s.alpha,
+                ..Color::BLACK
+            },
+            offset: Vector::new(0.0, s.y),
+            blur_radius: s.blur,
+        },
+        None => Shadow::default(),
+    }
+}
+
+impl Skin {
+    fn from(r: &Resolved, density: f32) -> Skin {
+        let s = &r.skin;
+        let sh = if r.mode == Mode::Light {
+            &s.light
+        } else {
+            &s.dark
+        };
+        Skin {
+            id: s.id.clone(),
+            radius_sm: (s.radius - 2.0).max(0.0),
+            radius: s.radius,
+            radius_lg: s.radius_lg,
+            row: s.row * density,
+            label_mono: s.label.mono,
+            label_upper: s.label.upper,
+            label_size: s.label.size,
+            action_ink: s.action == apz_theme::skin::ActionFrom::Ink,
+            shadow_card: shadow(&sh.card),
+            shadow_pop: shadow(&sh.pop),
+        }
+    }
+
+    /// The face section labels are set in.
+    pub fn label_font(&self) -> Font {
+        if self.label_mono {
+            MONO_MEDIUM
+        } else {
+            SANS_MEDIUM
+        }
+    }
+
+    /// A label as the skin sets it: capitals in Loom, as written in Graphite.
+    pub fn label_text(&self, text: &str) -> String {
+        if self.label_upper {
+            text.to_uppercase()
+        } else {
+            text.to_string()
+        }
+    }
+}
+
+/// What is on screen: the owner's choice resolved for both modes.
+#[derive(Debug, Clone)]
+pub struct Look {
+    pub appearance: Appearance,
+    pub light: Resolved,
+    pub dark: Resolved,
+    pub light_palette: Palette,
+    pub dark_palette: Palette,
+    pub light_skin: Skin,
+    pub dark_skin: Skin,
+}
+
+impl Look {
+    fn new(appearance: &Appearance, saved: &[ThemeFile]) -> Look {
+        let light = appearance.resolve(saved, true);
+        let dark = appearance.resolve(saved, false);
+        let density = appearance.density.factor();
+        Look {
+            appearance: appearance.clone(),
+            light_palette: Palette::from_tokens(&light.tokens),
+            dark_palette: Palette::from_tokens(&dark.tokens),
+            light_skin: Skin::from(&light, density),
+            dark_skin: Skin::from(&dark, density),
+            light,
+            dark,
+        }
+    }
+}
+
+/// The look in use. Each [`apply`] leaks one small `Look` so readers hold a `&'static` reference after a brief read
+/// lock; the owner changes themes a handful of times per run.
+static LOOK: RwLock<Option<&'static Look>> = RwLock::new(None);
+
+fn look_ref() -> &'static Look {
+    if let Some(l) = *LOOK.read().unwrap_or_else(|e| e.into_inner()) {
+        return l;
+    }
+    let mut slot = LOOK.write().unwrap_or_else(|e| e.into_inner());
+    slot.get_or_insert_with(|| Box::leak(Box::new(Look::new(&Appearance::default(), &[]))))
+}
+
+/// The owner's choice and saved themes: resolves both modes and puts them on screen. The mode follows the choice
+/// (System leaves it to the OS through [`follow_system`]).
+pub fn apply(appearance: &Appearance, saved: &[ThemeFile]) {
+    let fresh: &'static Look = Box::leak(Box::new(Look::new(appearance, saved)));
+    *LOOK.write().unwrap_or_else(|e| e.into_inner()) = Some(fresh);
+    match appearance.mode {
+        ModeChoice::Light => choose(true),
+        ModeChoice::Dark => choose(false),
+        ModeChoice::System => {
+            LIGHT.store(SYSTEM_LIGHT.load(Ordering::Relaxed), Ordering::Relaxed);
+            CHOSEN.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The look in use.
+pub fn look() -> &'static Look {
+    look_ref()
+}
+
+/// The owner's appearance in use.
+pub fn appearance() -> Appearance {
+    look_ref().appearance.clone()
+}
+
+/// The resolved theme in use, for the current mode.
+pub fn resolved() -> &'static Resolved {
+    let l = look_ref();
+    if is_light() { &l.light } else { &l.dark }
+}
+
+/// The palette in use now.
+pub fn palette() -> &'static Palette {
+    let l = look_ref();
+    if is_light() {
+        &l.light_palette
+    } else {
+        &l.dark_palette
+    }
+}
+
+/// The skin in use now.
+pub fn skin() -> &'static Skin {
+    let l = look_ref();
+    if is_light() {
+        &l.light_skin
+    } else {
+        &l.dark_skin
+    }
+}
+
+/// The application theme, so default-styled widgets (icons, selections, scroll rails) match.
 pub fn theme() -> Theme {
     let p = palette();
-    Theme::custom(
+    Theme::custom_with_fn(
         if is_light() {
-            "AgentPlaza register (light)"
+            "AgentPlaza (light)"
         } else {
-            "AgentPlaza register"
+            "AgentPlaza (dark)"
         },
         IcedPalette {
             background: p.paper,
@@ -145,49 +434,73 @@ pub fn theme() -> Theme {
             warning: p.warn,
             danger: p.crit,
         },
+        |base| {
+            // A widget left on iced's default style (a pick list, a scroll rail) takes the kit's colours: the
+            // web's `.select` is on raised with a rule-strong edge and ink-3 placeholders.
+            use iced::theme::palette::{Extended, Pair};
+            let mut x = Extended::generate(base);
+            x.background.weak = Pair::new(p.raised, p.ink);
+            x.background.strong = Pair::new(p.rule_strong, p.ink);
+            x.secondary.base = Pair::new(p.ink_3, p.ink);
+            x.primary.weak = Pair::new(p.signal_soft, p.ink);
+            x
+        },
     )
 }
 
 /// The page.
 pub fn paper(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(crate::theme::palette().ink),
-        background: Some(crate::theme::palette().paper.into()),
+        text_color: Some(palette().ink),
+        background: (!crate::console::backdrop::drawn()).then(|| palette().paper.into()),
         ..container::Style::default()
     }
 }
 
-/// The index column, ruled off from the sheet.
+/// The side column (the sidebar and side panels), ruled off from the page.
 pub fn index(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(crate::theme::palette().ink_2),
-        background: Some(crate::theme::palette().paper.into()),
-        border: Border::default()
-            .width(1.0)
-            .color(crate::theme::palette().rule),
+        text_color: Some(palette().ink_2),
+        background: Some(palette().paper_side.into()),
+        border: Border::default().width(1.0).color(palette().rule),
         snap: true,
         ..container::Style::default()
     }
 }
 
-/// A sheet: a slightly brighter page with a hard print shadow.
+/// A sheet: a card laid on the page, with the skin's radius and card shadow.
 pub fn sheet(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(crate::theme::palette().ink),
-        background: Some(crate::theme::palette().sheet.into()),
+        text_color: Some(palette().ink),
+        background: Some(palette().sheet.into()),
         border: Border::default()
             .width(1.0)
-            .color(crate::theme::palette().rule),
-        shadow: print_shadow(),
+            .color(palette().rule)
+            .rounded(skin().radius_lg),
+        shadow: skin().shadow_card,
         snap: true,
     }
 }
 
-/// The red margin rule down the left of the sheet's content.
+/// A popover or dialog: the sheet lifted with the skin's popover shadow.
+pub fn pop(_theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(palette().ink),
+        background: Some(palette().sheet.into()),
+        border: Border::default()
+            .width(1.0)
+            .color(palette().rule_strong)
+            .rounded(skin().radius_lg),
+        shadow: skin().shadow_pop,
+        snap: true,
+    }
+}
+
+/// An emphasised edge down the left of a block's content (a quoted note, the selected row's edge).
 pub fn margin(_theme: &Theme) -> container::Style {
     container::Style {
         border: Border {
-            color: crate::theme::palette().margin,
+            color: palette().rule_strong,
             width: 2.0,
             ..Border::default()
         },
@@ -196,28 +509,22 @@ pub fn margin(_theme: &Theme) -> container::Style {
     }
 }
 
-/// A solid colour swatch: the floor legend's status ink, a small filled box.
+/// A solid colour swatch: a legend's status colour, a small filled box.
 pub fn swatch(color: Color) -> impl Fn(&Theme) -> container::Style {
     move |_theme: &Theme| container::Style {
         background: Some(Background::Color(color)),
-        border: Border::default()
-            .width(1.0)
-            .color(crate::theme::palette().ink_3),
+        border: Border::default().rounded(2.0),
         snap: true,
         ..container::Style::default()
     }
 }
 
-/// A stamp: a boxed word, pressed in `tone`.
+/// A stamp: a chip in `tone` — its soft tint behind the tone's text.
 pub fn stamp(tone: Tone) -> impl Fn(&Theme) -> container::Style {
     move |_theme| container::Style {
         text_color: Some(tone.color()),
-        background: Some(crate::theme::palette().sheet.into()),
-        border: Border {
-            color: tone.color(),
-            width: 2.0,
-            ..Border::default()
-        },
+        background: Some(tone.soft().into()),
+        border: Border::default().rounded(skin().radius_sm),
         snap: true,
         ..container::Style::default()
     }
@@ -226,150 +533,210 @@ pub fn stamp(tone: Tone) -> impl Fn(&Theme) -> container::Style {
 /// A plain bounded box: the serial pane, a key/value block.
 pub fn boxed(_theme: &Theme) -> container::Style {
     container::Style {
-        text_color: Some(crate::theme::palette().ink),
-        background: Some(crate::theme::palette().sheet.into()),
+        text_color: Some(palette().ink),
+        background: Some(palette().sheet_2.into()),
         border: Border::default()
             .width(1.0)
-            .color(crate::theme::palette().rule_faint),
+            .color(palette().rule_faint)
+            .rounded(skin().radius),
         snap: true,
         ..container::Style::default()
     }
 }
 
-/// The help sheet's scrim: the register dimmed under a sheet that is over it,
-/// not instead of it.
+/// The veil behind a dialog: the console dimmed under the sheet that is over it.
 pub fn scrim(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgba8(0x15, 0x19, 0x16, 0.55).into()),
+        background: Some(palette().scrim.into()),
         snap: true,
         ..container::Style::default()
     }
 }
 
-/// The notice line: the last action's outcome.
+/// The notice line: the last action's outcome, on the tone's soft tint.
 pub fn notice(tone: Tone) -> impl Fn(&Theme) -> container::Style {
     move |_theme| container::Style {
-        text_color: Some(crate::theme::palette().ink),
-        background: Some(
-            if tone == Tone::Crit {
-                Color::from_rgba8(0xa3, 0x18, 0x2b, 0.08)
-            } else {
-                crate::theme::palette().taint
-            }
-            .into(),
-        ),
+        text_color: Some(palette().ink),
+        background: Some(tone.soft().into()),
         border: Border {
-            color: tone.color(),
+            color: Color {
+                a: 0.45,
+                ..tone.color()
+            },
             width: 1.0,
-            ..Border::default()
+            radius: skin().radius.into(),
         },
         snap: true,
         ..container::Style::default()
     }
 }
 
-/// A register row: an entry in the index, or a run in the fleet table.
-///
-/// `selected` presses the row; hover lifts it.
+/// A list row: an entry in the side list, or a run in a table. `selected` presses the row; hover lifts it.
 pub fn register_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_theme, status| {
         let background = match (selected, status) {
-            (true, _) => Some(crate::theme::palette().taint.into()),
+            (true, _) => Some(palette().press.into()),
             (false, button::Status::Hovered | button::Status::Pressed) => {
-                Some(crate::theme::palette().hover.into())
+                Some(palette().hover.into())
             }
             (false, button::Status::Active | button::Status::Disabled) => None,
         };
         button::Style {
             background,
-            text_color: crate::theme::palette().ink,
-            border: Border::default(),
+            text_color: palette().ink,
+            border: Border::default().rounded(skin().radius_sm),
             shadow: Shadow::default(),
             snap: true,
         }
     }
 }
 
-/// A committing press in `tone`: it has to look like one, at every step.
-///
-/// `armed` is the second press's own look — the tone filled, its label spent —
-/// while an unarmed press wears the tone's ink on the sheet. It is the one body
-/// behind every arm-then-confirm press in the register: a run's kill, a task's
-/// withdraw, an agent's stop, and the owner's ratify and veto.
-pub fn act_button(tone: Tone, armed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| button::Style {
-        background: Some(
-            if armed {
-                tone.color()
-            } else {
-                match status {
-                    button::Status::Hovered | button::Status::Pressed => Color {
-                        a: 0.12,
-                        ..tone.color()
-                    },
-                    button::Status::Active | button::Status::Disabled => {
-                        crate::theme::palette().sheet
-                    }
-                }
-            }
-            .into(),
-        ),
-        text_color: if armed {
-            crate::theme::palette().sheet
-        } else {
-            tone.color()
+/// The view's one primary action: the skin's action colour (ink in Loom, the signal in Graphite).
+pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let p = palette();
+    let fill = match status {
+        button::Status::Hovered | button::Status::Pressed => Color {
+            a: 0.88,
+            ..p.action
         },
-        border: Border::default().width(2.0).color(tone.color()),
+        button::Status::Disabled => Color { a: 0.5, ..p.action },
+        button::Status::Active => p.action,
+    };
+    button::Style {
+        background: Some(fill.into()),
+        text_color: p.on_action,
+        border: Border::default()
+            .width(1.0)
+            .color(fill)
+            .rounded(skin().radius),
         shadow: Shadow::default(),
         snap: true,
     }
 }
 
-/// A destructive action: it has to look like one, at every step — [`act_button`]
-/// in the register's red.
+/// A secondary action: bordered on the sheet.
+pub fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let p = palette();
+    let fill = match status {
+        button::Status::Hovered | button::Status::Pressed => p.hover,
+        _ => p.sheet,
+    };
+    button::Style {
+        background: Some(fill.into()),
+        text_color: if status == button::Status::Disabled {
+            p.ink_3
+        } else {
+            p.ink
+        },
+        border: Border::default()
+            .width(1.0)
+            .color(p.rule_strong)
+            .rounded(skin().radius),
+        shadow: Shadow::default(),
+        snap: true,
+    }
+}
+
+/// A committing press in `tone`: it has to look like one, at every step.
+///
+/// `armed` is the second press's own look — the tone filled — while an unarmed press wears the tone's text on its
+/// soft tint. It is the one body behind every arm-then-confirm press: a run's kill, a task's withdraw, an agent's
+/// stop, and the owner's ratify and veto.
+pub fn act_button(tone: Tone, armed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let (fill, on) = tone.fill();
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(
+                if armed {
+                    fill
+                } else if hovered {
+                    tone.soft()
+                } else {
+                    palette().sheet
+                }
+                .into(),
+            ),
+            text_color: if armed { on } else { tone.color() },
+            border: Border::default()
+                .width(1.0)
+                .color(if armed {
+                    fill
+                } else {
+                    Color {
+                        a: 0.55,
+                        ..tone.color()
+                    }
+                })
+                .rounded(skin().radius),
+            shadow: Shadow::default(),
+            snap: true,
+        }
+    }
+}
+
+/// A destructive action: [`act_button`] in the crit tone.
 pub fn kill_button(armed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     act_button(Tone::Crit, armed)
 }
 
-/// A form field: ruled, on the sheet.
+/// The corners of the web's `.input`, `.select` and `.textarea` (8px in both skins).
+pub const INPUT_RADIUS: f32 = 8.0;
+
+/// A form field as the web's `.input`: on raised, with the signal edge while focused.
 pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let p = palette();
+    let focused = matches!(status, text_input::Status::Focused { .. });
     text_input::Style {
-        background: if matches!(
-            status,
-            text_input::Status::Focused { .. } | text_input::Status::Hovered
-        ) {
-            Background::Color(crate::theme::palette().hover)
-        } else {
-            Background::Color(crate::theme::palette().sheet)
-        },
+        background: Background::Color(p.raised),
         border: Border::default()
             .width(1.0)
-            .color(crate::theme::palette().rule),
-        icon: crate::theme::palette().ink_3,
-        placeholder: crate::theme::palette().ink_3,
-        value: crate::theme::palette().ink,
-        selection: crate::theme::palette().signal,
+            .color(if focused {
+                p.signal
+            } else if status == text_input::Status::Hovered {
+                p.ink_3
+            } else {
+                p.rule_strong
+            })
+            .rounded(INPUT_RADIUS),
+        icon: p.ink_3,
+        placeholder: p.ink_3,
+        value: p.ink,
+        selection: p.signal_soft,
     }
 }
 
-/// The hard offset shadow the console prints boxed things with. iced drops the text of a box
-/// whose shadow has exactly zero blur, so a hair of blur keeps it crisp and the text drawn.
-fn print_shadow() -> Shadow {
-    Shadow {
-        color: Color::BLACK,
-        offset: Vector::new(2.0, 2.0),
-        blur_radius: 0.6,
+/// A multi-line field as the web's `.textarea`: the same ground and edge as `input`.
+pub fn editor(_theme: &Theme, status: text_editor::Status) -> text_editor::Style {
+    let p = palette();
+    let focused = matches!(status, text_editor::Status::Focused { .. });
+    let hovered = matches!(status, text_editor::Status::Hovered);
+    text_editor::Style {
+        background: Background::Color(p.raised),
+        border: Border::default()
+            .width(1.0)
+            .color(if focused {
+                p.signal
+            } else if hovered {
+                p.ink_3
+            } else {
+                p.rule_strong
+            })
+            .rounded(INPUT_RADIUS),
+        placeholder: p.ink_3,
+        value: p.ink,
+        selection: p.signal_soft,
     }
 }
 
 /// A ruled line.
 pub fn rule(_theme: &Theme) -> rule::Style {
-    ruled(crate::theme::palette().rule)
+    ruled(palette().rule)
 }
 
-/// A ruled line drawn in ink: under a heading, above a total.
+/// A stronger line: under a heading, above a total.
 pub fn rule_ink(_theme: &Theme) -> rule::Style {
-    ruled(crate::theme::palette().ink)
+    ruled(palette().rule_strong)
 }
 
 /// A full-width ruled line in `color`.
@@ -382,127 +749,49 @@ fn ruled(color: Color) -> rule::Style {
     }
 }
 
-/// The pick list as the web's select: no fill, the value set in ink, the signal rule while open.
-/// iced borders are uniform, so the web's bottom-only rule becomes a full hairline.
+/// The pick list as the web's select: on the sheet, bordered, the signal ring while open.
 pub fn pick_list(
     _theme: &Theme,
     status: iced::widget::pick_list::Status,
 ) -> iced::widget::pick_list::Style {
     use iced::widget::pick_list::Status;
-    let (edge, width) = match status {
-        Status::Opened { .. } => (crate::theme::palette().signal, 2.0),
-        Status::Active | Status::Hovered => (crate::theme::palette().ink, 1.0),
+    let p = palette();
+    let edge = match status {
+        Status::Opened { .. } => p.signal,
+        Status::Hovered => p.ink_3,
+        Status::Active => p.rule_strong,
     };
     iced::widget::pick_list::Style {
-        text_color: crate::theme::palette().ink,
-        placeholder_color: crate::theme::palette().ink_3,
-        handle_color: crate::theme::palette().ink_2,
-        background: Background::Color(Color::TRANSPARENT),
-        border: Border::default().width(width).color(edge),
-    }
-}
-
-/// One full set of the register's colours. [`Palette::dark`] is the night console (the constants above);
-/// [`Palette::light`] maps the same tokens to the web's light register (`tokens.css`, `:root`). The
-/// tokens the web does not carry (`on_signal`, `taint`, `substrate`) get light values with the same role.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Palette {
-    pub paper: Color,
-    pub sheet: Color,
-    pub rule: Color,
-    pub rule_faint: Color,
-    pub margin: Color,
-    pub ink: Color,
-    pub ink_2: Color,
-    pub ink_3: Color,
-    pub signal: Color,
-    pub signal_ink: Color,
-    pub on_signal: Color,
-    pub info: Color,
-    pub crit: Color,
-    pub warn: Color,
-    pub ok: Color,
-    pub taint: Color,
-    pub hover: Color,
-    pub substrate: Color,
-}
-
-impl Palette {
-    /// The night console: exactly the constants above.
-    pub const fn dark() -> Self {
-        Self {
-            paper: PAPER,
-            sheet: SHEET,
-            rule: RULE,
-            rule_faint: RULE_FAINT,
-            margin: MARGIN,
-            ink: INK,
-            ink_2: INK_2,
-            ink_3: INK_3,
-            signal: SIGNAL,
-            signal_ink: SIGNAL_INK,
-            on_signal: ON_SIGNAL,
-            info: INFO,
-            crit: CRIT,
-            warn: WARN,
-            ok: OK,
-            taint: TAINT,
-            hover: HOVER,
-            substrate: SUBSTRATE,
-        }
-    }
-
-    /// The web's light register (`apps/web/src/styles/tokens.css`, `:root`).
-    pub const fn light() -> Self {
-        Self {
-            paper: Color::from_rgb8(0xe9, 0xec, 0xe5),
-            sheet: Color::from_rgb8(0xf4, 0xf6, 0xf1),
-            rule: Color::from_rgb8(0xc7, 0xcf, 0xc3),
-            rule_faint: Color::from_rgb8(0xdb, 0xe1, 0xd7),
-            margin: Color::from_rgb8(0xd0, 0x7a, 0x72),
-            ink: Color::from_rgb8(0x15, 0x19, 0x16),
-            ink_2: Color::from_rgb8(0x4c, 0x54, 0x4d),
-            ink_3: Color::from_rgb8(0x7d, 0x86, 0x7e),
-            signal: Color::from_rgb8(0xe8, 0x59, 0x0c),
-            signal_ink: Color::from_rgb8(0xa6, 0x3c, 0x00),
-            on_signal: Color::from_rgb8(0x12, 0x08, 0x00),
-            info: Color::from_rgb8(0x2d, 0x5f, 0x8a),
-            crit: Color::from_rgb8(0xa3, 0x18, 0x2b),
-            warn: Color::from_rgb8(0x85, 0x64, 0x0e),
-            ok: Color::from_rgb8(0x2e, 0x6a, 0x40),
-            taint: Color::from_rgb8(0xf5, 0xee, 0xd2),
-            hover: Color::from_rgb8(0xe6, 0xea, 0xe2),
-            substrate: Color::from_rgb8(0xec, 0xee, 0xe7),
-        }
+        text_color: p.ink,
+        placeholder_color: p.ink_3,
+        handle_color: p.ink_2,
+        background: Background::Color(p.raised),
+        border: Border::default()
+            .width(1.0)
+            .color(edge)
+            .rounded(INPUT_RADIUS),
     }
 }
 
 /// The palette on screen: light only when the owner chose it, or the OS is light and nothing is chosen.
 static LIGHT: AtomicBool = AtomicBool::new(false);
-/// Whether the owner has chosen a theme; once chosen, the OS appearance no longer decides.
+/// Whether the owner has chosen a mode; once chosen, the OS appearance no longer decides.
 static CHOSEN: AtomicBool = AtomicBool::new(false);
-
-/// The palette in use now.
-pub fn palette() -> Palette {
-    if is_light() {
-        Palette::light()
-    } else {
-        Palette::dark()
-    }
-}
+/// The OS appearance as the shell last reported it (dark until it does). `apply(System)` falls back to it.
+static SYSTEM_LIGHT: AtomicBool = AtomicBool::new(false);
 
 /// Whether the light palette is in use.
 pub fn is_light() -> bool {
     LIGHT.load(Ordering::Relaxed)
 }
 
-/// The owner's choice, from the switch in the top bar. It is kept for the rest of the run.
+/// The owner's choice of light or dark, from the switch in the top bar. It is kept for the rest of the run.
 pub fn choose(light: bool) {
     LIGHT.store(light, Ordering::Relaxed);
     CHOSEN.store(true, Ordering::Relaxed);
 }
 
-/// The saved choice at start (`"light"` or `"dark"` in `desktop.json`); nothing when none is saved.
+/// The mode saved by an older build (`"light"` or `"dark"` in `desktop.json`, key `theme`); nothing when none is saved.
 pub fn choose_saved(value: Option<&str>) {
     match value {
         Some("light") => choose(true),
@@ -513,8 +802,10 @@ pub fn choose_saved(value: Option<&str>) {
 
 /// The OS appearance: it decides only until the owner chooses. An unknown mode stays dark.
 pub fn follow_system(mode: iced::theme::Mode) {
+    let light = matches!(mode, iced::theme::Mode::Light);
+    SYSTEM_LIGHT.store(light, Ordering::Relaxed);
     if !CHOSEN.load(Ordering::Relaxed) {
-        LIGHT.store(matches!(mode, iced::theme::Mode::Light), Ordering::Relaxed);
+        LIGHT.store(light, Ordering::Relaxed);
     }
 }
 
@@ -548,6 +839,34 @@ pub fn saved_machine_style(value: Option<&str>) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The palette has exactly the theme crate's tokens: none missing, none extra.
+    #[test]
+    fn palette_fields_are_the_token_list() {
+        let list: Vec<&str> = apz_theme::tokens::TOKENS.iter().map(|t| t.name).collect();
+        assert_eq!(Palette::NAMES, list.as_slice());
+    }
+
+    /// Applying a built-in resolves the same colours the web's generated CSS carries.
+    #[test]
+    fn apply_resolves_the_builtin_tokens() {
+        let a = Appearance {
+            theme: "graphite-cobalt".into(),
+            mode: ModeChoice::Light,
+            ..Appearance::default()
+        };
+        apply(&a, &[]);
+        let want = apz_theme::resolve(
+            &apz_theme::builtin::builtin("graphite-cobalt").unwrap(),
+            &apz_theme::skin::skin("graphite").unwrap(),
+            Mode::Light,
+        );
+        assert!(is_light());
+        assert_eq!(palette().paper, color(want.tokens.get("paper")));
+        assert_eq!(palette().action, color(want.tokens.get("signal-fill")));
+        assert_eq!(skin().id, "graphite");
+        apply(&Appearance::default(), &[]);
+    }
 
     #[test]
     fn machine_style_round_trips_through_set_and_get() {

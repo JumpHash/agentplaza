@@ -23,6 +23,7 @@ RUN case "$(dpkg --print-architecture)" in \
       ca-certificates curl wget git file xz-utils zstd cpio sudo \
       build-essential pkg-config lld cmake \
       libxkbcommon-dev libwayland-dev libpipewire-0.3-dev libclang-dev \
+      libwebkit2gtk-4.1-dev xvfb libnss3 libgbm1 libasound2 \
       flex bison bc libelf-dev libssl-dev busybox-static \
       ruby ruby-dev rpm libarchive-tools \
       $cross \

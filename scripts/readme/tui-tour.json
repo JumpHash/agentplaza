@@ -1,0 +1,84 @@
+{
+ "width": 120,
+ "height": 34,
+ "fps": 10,
+ "title": "agentplaza tui",
+ "warmup": 3.0,
+ "steps": [
+  {
+   "key": "2"
+  },
+  {
+   "wait": 2.2
+  },
+  {
+   "key": "3"
+  },
+  {
+   "wait": 1.0
+  },
+  {
+   "key": "Down",
+   "repeat": 3,
+   "every": 0.35
+  },
+  {
+   "wait": 0.6
+  },
+  {
+   "key": "Enter"
+  },
+  {
+   "wait": 2.0
+  },
+  {
+   "key": "Enter"
+  },
+  {
+   "key": "5"
+  },
+  {
+   "wait": 1.8
+  },
+  {
+   "key": "6"
+  },
+  {
+   "wait": 1.8
+  },
+  {
+   "ctrl": "k"
+  },
+  {
+   "wait": 0.8
+  },
+  {
+   "type": "mach",
+   "every": 0.22
+  },
+  {
+   "wait": 0.9
+  },
+  {
+   "key": "Enter"
+  },
+  {
+   "wait": 2.2
+  },
+  {
+   "key": "c"
+  },
+  {
+   "wait": 1.0
+  },
+  {
+   "key": "Down",
+   "every": 0.4
+  },
+  {
+   "wait": 2.4
+  }
+ ],
+ "poster": -1,
+ "out": "docs/assets/readme/tui-tour"
+}

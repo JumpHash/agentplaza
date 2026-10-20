@@ -1,7 +1,7 @@
 // DOM helpers. Text only ever reaches the document as textContent or as an
 // attribute value — nothing here accepts markup.
 
-import { ICONS, type IconName } from './icons.gen';
+import { ICONS, LUCIDE, type IconName, type LucideName } from './icons.gen';
 
 type Child = Node | string | number | null | undefined | false;
 type Attrs = Record<string, string | number | boolean | null | undefined | EventListener>;
@@ -137,18 +137,43 @@ function walk(root: Element, visit: (el: Element, path: string) => void): void {
 
 const SVG = 'http://www.w3.org/2000/svg';
 
-/** A UI icon (lucide). */
-export function icon(name: IconName, cls = ''): SVGSVGElement {
+/** Console icon names that the Loom and Graphite consoles draw as another lucide icon (the prototype's own aliases). */
+const ALIAS: Partial<Record<IconName, LucideName>> = {
+  agents: 'bot', alert: 'triangle-alert', approval: 'shield-check', board: 'pin', commit: 'git-commit-horizontal',
+  conversations: 'messages-square', git: 'git-branch', harness: 'cpu', loop: 'repeat', machine: 'server', models: 'cpu',
+  orchestrator: 'bot', projects: 'folder', refresh: 'refresh-cw', society: 'network', stop: 'square', tasks: 'list-checks',
+  file: 'file', settings: 'settings', library: 'library', overview: 'house',
+};
+
+function drawn(nodes: readonly (readonly [string, Record<string, string>])[], size: number, cls: string, stroke: number): SVGSVGElement {
   const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('class', `ic icon ${cls}`.trim());
+  svg.setAttribute('width', String(size));
+  svg.setAttribute('height', String(size));
   svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('class', `icon ${cls}`.trim());
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', String(stroke));
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
   svg.setAttribute('aria-hidden', 'true');
-  for (const [tag, attrs] of ICONS[name]) {
+  for (const [tag, attrs] of nodes) {
     const node = document.createElementNS(SVG, tag);
     for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
     svg.appendChild(node);
   }
   return svg;
+}
+
+/** A UI icon (lucide), drawn as the Loom and Graphite consoles draw it: `svg.ic`, 16 px, a 1.75 stroke. */
+export function icon(name: IconName, cls = '', size = 16): SVGSVGElement {
+  const alias = ALIAS[name];
+  return drawn(alias ? LUCIDE[alias] : ICONS[name], size, cls, 1.75);
+}
+
+/** A lucide icon by its own name, as the prototype names them (`shield-check`, `git-branch`). */
+export function lu(name: LucideName, size = 16, cls = '', stroke = 1.75): SVGSVGElement {
+  return drawn(LUCIDE[name], size, cls, stroke);
 }
 
 /** A filled single-path SVG (brand logos). */

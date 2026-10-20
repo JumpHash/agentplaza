@@ -11,22 +11,22 @@ use iced::widget::operation::snap_to;
 use iced::widget::{
     Space, button, checkbox, column, container, row, scrollable, text, text_editor, text_input,
 };
-use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
+use iced::{Alignment, Border, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Id, agent_side, ide, lab_common, nodes, sanctions};
 use crate::console::engine::roles::{agent_hue, role_hue};
 use crate::console::rich;
-use crate::console::{Ctx, client, events, scope, ui};
+use crate::console::{Ctx, chat_tools, client, events, scope, ui};
 use crate::theme::SANS;
 
 /// The profile and infractions refresh at most this often; the transcript on every poll.
 const EXTRAS_EVERY: Duration = Duration::from_secs(15);
-const SIDE_WIDTH: f32 = 320.0;
+const SIDE_WIDTH: f32 = 300.0;
 const TRANSCRIPT_HEIGHT: f32 = 480.0;
 /// The portrait's square, and the infractions shown before "Show all".
-const PORTRAIT: f32 = 168.0;
+const AVATAR: f32 = 56.0;
 const INFRACTIONS_SHOWN: usize = 10;
 /// The transcript follows new text while the reader is within this many pixels of its bottom (the web's NEAR_BOTTOM_PX).
 const NEAR_BOTTOM_PX: f32 = 80.0;
@@ -116,6 +116,8 @@ struct CheckpointList {
 #[derive(Debug, Default)]
 pub struct State {
     pub cid: u64,
+    /// The chat's model chip and context bar (the hub's context for this agent's work).
+    pub chat_tools: chat_tools::ChatTools,
     /// The rich content of the transcript: the hub's cards and images for its references (`console::rich`).
     pub cards: rich::Cards,
     pub error: Option<String>,
@@ -134,6 +136,8 @@ pub struct State {
     pub busy: bool,
     pub sending: bool,
     pub tab: Tab,
+    /// The More menu under the head is open.
+    pub more: bool,
     pub composer: text_editor::Content,
     pub dialog: Option<Dialog>,
     /// The tool blocks and results the reader has opened, by (entry seq, block index).
@@ -189,6 +193,8 @@ pub enum Msg {
     /// Opens the IDE on a target (the agent's workspace, see `ide::target`).
     OpenIde(String),
     Tab(Tab),
+    /// Opens or closes the More row under the head.
+    ToggleMore,
     Polled(Result<Snapshot, String>),
     Edit(text_editor::Action),
     Send,
@@ -227,6 +233,8 @@ pub enum Msg {
     Moved(Result<Moved, String>),
     /// One event from the hub's stream (only `delta` matters here).
     Event(events::Event),
+    /// The chat's model chip and context bar.
+    ChatTools(chat_tools::ChatToolsMsg),
     /// The transcript was scrolled.
     Scrolled(scrollable::Viewport),
     /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
@@ -345,7 +353,7 @@ pub fn settle(live: &mut Vec<LiveTurn>, work: u64) {
 fn live_views<'a>(
     turn: &'a LiveTurn,
     rctx: &rich::RichCtx,
-    cards: &rich::Cards,
+    cards: &'a rich::Cards,
 ) -> Vec<Element<'a, Msg>> {
     turn.pieces
         .iter()
@@ -413,7 +421,12 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     } else {
         Task::none()
     };
-    Task::batch([poll, side, conduct])
+    let tools = if state.chat_tools.is_loaded() {
+        Task::none()
+    } else {
+        chat_tools::load(&ctx.client, chat_tools::Target::Agent(cid)).map(Msg::ChatTools)
+    };
+    Task::batch([poll, side, conduct, tools])
 }
 
 fn fetch(client: &client::Client, cid: u64, after: u64, extras: bool) -> Result<Snapshot, String> {
@@ -477,6 +490,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     .delete(&format!("/v1/projects/{project}/members/{cid}"))
                     .map(|_| ())
             })
+        }
+        Msg::ToggleMore => {
+            state.more = !state.more;
+            Task::none()
         }
         Msg::Tab(tab) => {
             state.tab = tab;
@@ -554,7 +571,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Task::none()
             }
         }
+        Msg::ChatTools(m) => {
+            chat_tools::update(&mut state.chat_tools, m, &ctx.client).map(Msg::ChatTools)
+        }
         Msg::Event(e) => {
+            if let Some(task) = state.chat_tools.on_event(&ctx.client, &e.kind, &e.data) {
+                return task.map(Msg::ChatTools);
+            }
             if e.kind != "delta"
                 || !apply_delta(&mut state.live, state.cid, &e.data)
                 || state.scrolled_up
@@ -589,7 +612,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Sent(result) => {
             state.sending = false;
             match result {
-                Ok(_) => state.composer = text_editor::Content::new(),
+                Ok(_) => {
+                    state.composer = text_editor::Content::new();
+                    return state.chat_tools.refresh(&ctx.client).map(Msg::ChatTools);
+                }
                 Err(e) => state.error = Some(e),
             }
             Task::none()
@@ -929,6 +955,14 @@ fn dispatch_with(
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
+    // The side panel's dialogs (New loop) lie over the whole page.
+    ui::with_modal(
+        page(state, ctx),
+        agent_side::dialog(&state.side).map(|d| d.map(Msg::Side)),
+    )
+}
+
+fn page<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let name = state
         .agent
         .as_ref()
@@ -949,13 +983,16 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         .agent
         .as_ref()
         .is_some_and(|a| s(a, "status") == "working" || u(a, "queue") > 0);
+    let status = state.agent.as_ref().map(|a| status_label(s(a, "status")));
+    // The head's actions as the web's `.ag-acts-grp`; More opens the rest as a row under the head (the web's menu).
     let mut actions: Vec<Element<'a, Msg>> = Vec::new();
+    let mut more: Vec<Element<'a, Msg>> = Vec::new();
     if state.agent.is_some() {
         let workspace = ide::target(&format!("agent:{}", state.cid), false, None);
         actions.push(ui::btn(
             "Open workspace",
             Some("square-code"),
-            ui::Kind::Ghost,
+            ui::Kind::Primary,
             pick(Msg::OpenIde(workspace)),
         ));
         if working {
@@ -969,52 +1006,67 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         if asleep {
             actions.push(ui::btn(
                 "Wake",
-                None,
+                Some("sun"),
                 ui::Kind::Secondary,
                 pick(Msg::Run(Act::Wake)),
             ));
-        } else {
-            let sleep = if sleep_blocked {
-                None
-            } else {
-                pick(Msg::Run(Act::Sleep))
-            };
-            actions.push(ui::btn("Sleep", None, ui::Kind::Secondary, sleep));
         }
         actions.push(ui::btn(
-            "Restart",
-            None,
+            "More",
+            Some("ellipsis"),
             ui::Kind::Secondary,
-            pick(Msg::Ask(Dialog::Restart)),
-        ));
-        actions.push(ui::btn(
-            "Move…",
-            None,
-            ui::Kind::Secondary,
-            pick(Msg::Ask(Dialog::Move)),
+            pick(Msg::ToggleMore),
         ));
         actions.push(ui::btn(
             "Stop",
             Some("stop"),
-            ui::Kind::Danger,
+            ui::Kind::DangerOutline,
             pick(Msg::Run(Act::Stop)),
         ));
-        actions.push(ui::btn(
-            "Wipe…",
-            None,
-            ui::Kind::Secondary,
-            pick(Msg::Ask(Dialog::Wipe {
-                memory: false,
-                transcript: false,
-                identity: false,
-            })),
-        ));
-        actions.push(ui::btn(
-            "Retire",
-            None,
-            ui::Kind::Danger,
-            pick(Msg::Ask(Dialog::Retire)),
-        ));
+        if state.more {
+            if !asleep {
+                let sleep = if sleep_blocked {
+                    None
+                } else {
+                    pick(Msg::Run(Act::Sleep))
+                };
+                more.push(ui::btn("Sleep", Some("moon"), ui::Kind::Secondary, sleep));
+            }
+            more.push(ui::btn(
+                "Fork…",
+                Some("copy"),
+                ui::Kind::Secondary,
+                pick(Msg::Ask(Dialog::Fork)),
+            ));
+            more.push(ui::btn(
+                "Move…",
+                Some("send"),
+                ui::Kind::Secondary,
+                pick(Msg::Ask(Dialog::Move)),
+            ));
+            more.push(ui::btn(
+                "Restart",
+                Some("refresh"),
+                ui::Kind::Secondary,
+                pick(Msg::Ask(Dialog::Restart)),
+            ));
+            more.push(ui::btn(
+                "Wipe…",
+                Some("trash"),
+                ui::Kind::DangerOutline,
+                pick(Msg::Ask(Dialog::Wipe {
+                    memory: false,
+                    transcript: false,
+                    identity: false,
+                })),
+            ));
+            more.push(ui::btn(
+                "Retire",
+                Some("archive"),
+                ui::Kind::DangerOutline,
+                pick(Msg::Ask(Dialog::Retire)),
+            ));
+        }
     }
 
     let mut body: Vec<Element<'a, Msg>> = Vec::new();
@@ -1033,7 +1085,6 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
                 body.push(ui::error_line(e));
             }
             body.push(profile_card(state, a));
-            body.push(conduct_card(state));
         }
         None => match &state.error {
             Some(e) => body.push(ui::empty("alert", "Could not load this agent", e)),
@@ -1055,17 +1106,22 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     };
     let main = column![tabs, content].spacing(16).width(Length::Fill);
 
-    let mut side: Vec<Element<'a, Msg>> = vec![agent_side::view(&state.side, ctx).map(Msg::Side)];
+    // The side column, as the web's `aside.ag-side`: it starts under the tabs (36 tall, then the 16 gap).
+    let mut side: Vec<Element<'a, Msg>> = vec![
+        Space::new().height(Length::Fixed(36.0)).into(),
+        agent_side::view(&state.side, ctx).map(Msg::Side),
+        conduct_card(state),
+        checkpoints_card(state),
+    ];
     if let Some(a) = state.agent.as_ref() {
         side.push(details_card(a));
         side.push(queue_card(a));
-        side.push(checkpoints_card(state));
     }
     let side = container(column(side).spacing(16)).width(Length::Fixed(SIDE_WIDTH));
-    body.push(row![main, side].spacing(24).into());
+    body.push(row![main, side].spacing(20).into());
 
     ui::sheet(
-        head(actions),
+        head(name, status, actions, more),
         ui::scroll(column(body).spacing(16).width(Length::Fill)).into(),
     )
 }
@@ -1131,11 +1187,16 @@ fn project_line<'a>(state: &'a State, a: &'a Value) -> Option<Element<'a, Msg>> 
     Some(line.into())
 }
 
-/// The web's head: the back link on its own line, the actions right-aligned under it.
-fn head<'a>(actions: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+/// The web's head: the back link, the name and the status badge, the actions right; the More row under them when open.
+fn head<'a>(
+    name: String,
+    status: Option<(&'static str, ui::Tone)>,
+    actions: Vec<Element<'a, Msg>>,
+    more: Vec<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
     let back = button(
-        text("Agents")
-            .font(SANS)
+        text("← Agents")
+            .font(crate::theme::SANS)
             .size(13.0)
             .color(crate::theme::palette().ink_3),
     )
@@ -1147,16 +1208,35 @@ fn head<'a>(actions: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
         ..Default::default()
     })
     .on_press(Msg::Go(Id::Agents));
-    let mut line = row![Space::new().width(Length::Fill)]
-        .spacing(8)
-        .align_y(Alignment::Center);
-    for action in actions {
-        line = line.push(action);
+    let mut title = row![
+        text(name)
+            .font(ui::SANS_SEMIBOLD)
+            .size(ui::TYPE_H1)
+            .line_height(iced::widget::text::LineHeight::Relative(1.25))
+            .color(crate::theme::palette().ink)
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    if let Some((word, tone)) = status {
+        title = title.push(ui::badge_dot::<Msg>(word, tone));
     }
-    container(column![back, line].spacing(8))
-        .padding([24, 0])
-        .width(Length::Fill)
-        .into()
+    let line = row![
+        title,
+        Space::new().width(Length::Fill),
+        iced::widget::Row::with_children(actions)
+            .spacing(8)
+            .align_y(Alignment::Center),
+    ]
+    .align_y(Alignment::Center);
+    let mut stack = column![back, line].spacing(8);
+    if !more.is_empty() {
+        stack = stack.push(
+            iced::widget::Row::with_children(more)
+                .spacing(8)
+                .align_y(Alignment::Center),
+        );
+    }
+    container(stack).padding([8, 0]).width(Length::Fill).into()
 }
 
 fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg> {
@@ -1308,6 +1388,8 @@ fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg>
 /// The profile: the portrait with its stamp, the name and role, the money, standing, conduct and
 /// record tiles, then the infractions (`agent-profile.ts`). The portrait is the agent's hue and
 /// initial until the desktop draws portraits.
+/// The profile card, as the web's: the robot beside the tier, the role, the model and the number; then six tiles
+/// (balance, reputation, conduct, tasks, network, tokens), the record and the infractions.
 fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     let p = state.profile.as_ref();
     let pv = |k: &str| f(p, k);
@@ -1317,45 +1399,33 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     } else {
         role_hue(s(a, "role"))
     };
-    let (status_text, status_tone) = status_label(s(a, "status"));
-
+    let cid = u(a, "cid");
+    let body_hue = agent_hue(cid);
     let name = agent_name(a);
     let initial = name
         .chars()
         .next()
-        .map(String::from)
+        .map(|c| c.to_uppercase().to_string())
         .unwrap_or_else(|| "A".to_string());
-    let stamp = container(
-        text(if orchestrator {
-            "ORCHESTRATOR"
-        } else {
-            "CITIZEN"
-        })
-        .font(ui::SANS_BOLD)
-        .size(11.0)
-        .color(crate::theme::palette().signal),
+    let letter = container(
+        text(initial)
+            .font(ui::SANS_SEMIBOLD)
+            .size(16.0)
+            .color(crate::theme::palette().ink_2),
     )
-    .padding([4, 8])
-    .style(ui::frame(
-        Some(crate::theme::palette().sheet),
-        crate::theme::palette().signal,
-    ));
-    // The web's portrait: the agent's own robot (the shared offscreen render), with the letter tile under it as the fallback.
-    let cid = u(a, "cid");
-    let body_hue = agent_hue(cid);
-    let letter = container(ui::sans(initial, 64.0, crate::theme::palette().ink))
-        .width(Length::Fixed(PORTRAIT))
-        .height(Length::Fixed(PORTRAIT))
-        .center_x(Length::Fixed(PORTRAIT))
-        .center_y(Length::Fixed(PORTRAIT))
-        .style(ui::frame(
-            Some(mix(
-                ui::hsl(body_hue, 0.6, 0.75),
-                crate::theme::palette().sheet,
-                0.45,
-            )),
-            crate::theme::palette().ink,
-        ));
+    .width(Length::Fixed(AVATAR))
+    .height(Length::Fixed(AVATAR))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .style(|_: &Theme| container::Style {
+        background: Some(crate::theme::palette().sheet_2.into()),
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: (AVATAR / 2.0).into(),
+        },
+        ..Default::default()
+    });
     let spec = crate::console::render_card::PortraitSpec {
         cid,
         orchestrator,
@@ -1365,59 +1435,34 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         species: crate::console::engine::robot::species_of(Some(s(a, "species")), cid),
     };
     let layers: Vec<Element<'a, Msg>> =
-        match crate::console::render_card::robot_portrait(7, spec, PORTRAIT) {
+        match crate::console::render_card::robot_portrait(7, spec, AVATAR) {
             Some(robot) => vec![letter.into(), robot],
             None => vec![letter.into()],
         };
     let picture = iced::widget::stack(layers)
-        .width(Length::Fixed(PORTRAIT))
-        .height(Length::Fixed(PORTRAIT));
-    let portrait = column![picture, stamp]
-        .spacing(10)
-        .align_x(Alignment::Center);
-
-    let stripe = ui::hsl(hue, 0.55, 0.4);
-    let role_chip = row![
-        container(Space::new().width(Length::Fixed(4.0)).height(Length::Fill)).style(
-            move |_: &Theme| container::Style {
-                background: Some(stripe.into()),
-                ..Default::default()
-            }
-        ),
-        container(
-            text(s(a, "role_label").to_string())
-                .font(ui::SANS_SEMIBOLD)
-                .size(11.5)
-                .color(crate::theme::palette().ink)
-        )
-        .padding([6, 10])
-        .style(ui::frame(
-            Some(crate::theme::palette().sheet),
-            crate::theme::palette().ink
-        )),
-    ]
-    .height(Length::Shrink);
-    let tags = row![
-        role_chip,
-        ui::sans(s(a, "model"), 12.0, crate::theme::palette().ink_2),
-        ui::faint(format!("agent #{}", u(a, "cid")))
+        .width(Length::Fixed(AVATAR))
+        .height(Length::Fixed(AVATAR));
+    let top = row![
+        picture,
+        column![
+            ui::label(if orchestrator {
+                "ORCHESTRATOR"
+            } else {
+                "CITIZEN"
+            }),
+            row![
+                ui::badge::<Msg>(s(a, "role_label"), ui::Tone::Signal),
+                ui::mono(s(a, "model").to_string(), 12.5, crate::theme::palette().ink),
+                ui::faint(format!("agent #{cid}")),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(4)
+        .width(Length::Fill),
     ]
     .spacing(12)
     .align_y(Alignment::Center);
-    let ident = column![
-        row![
-            text(name)
-                .font(ui::SANS_BOLD)
-                .size(34.0)
-                .color(crate::theme::palette().ink),
-            ui::badge(status_text, status_tone)
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-        tags
-    ]
-    .spacing(12)
-    .width(Length::Fill);
 
     let usage = a.get("usage");
     let tokens = f(usage, "input_tokens") + f(usage, "output_tokens");
@@ -1426,11 +1471,10 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         Some(_) if conf >= 0.05 => meter(
             pv("reputation"),
             100.0,
-            crate::theme::palette().ok,
             format!("{} / 100", pv("reputation").round()),
         ),
-        Some(_) => figure_faint("Unrated"),
-        None => figure("—".into()),
+        Some(_) => figure("Unrated"),
+        None => figure("—"),
     };
     let rep_sub = match p {
         Some(_) if conf >= 0.05 => format!("{}% confident", (conf * 100.0).round()),
@@ -1441,18 +1485,19 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         Some(_) => meter(
             pv("conduct"),
             100.0,
-            conduct_tone(pv("conduct")),
             conduct_text(pv("conduct")).to_string(),
         ),
-        None => figure("—".into()),
+        None => figure("—"),
     };
     let tk = |k: &str| f(p.and_then(|p| p.get("tasks")), k);
     let fines = p.and_then(|p| p.get("fines"));
     let tiles_a = row![
         tile(
             "Balance",
-            p.map(|_| figure(format!("{} cr", compact(pv("wallet")))))
-                .unwrap_or_else(|| figure("—".into())),
+            match p {
+                Some(_) => figure(format!("{} cr", compact(pv("wallet")))),
+                None => figure("—"),
+            },
             match p {
                 Some(_) => format!(
                     "earned {} · spent {}",
@@ -1480,8 +1525,10 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     let tiles_b = row![
         tile(
             "Tasks",
-            p.map(|_| figure(format!("{} verified", tk("verified"))))
-                .unwrap_or_else(|| figure("—".into())),
+            match p {
+                Some(_) => figure(format!("{} verified", tk("verified"))),
+                None => figure("—"),
+            },
             match p {
                 Some(_) => format!(
                     "{} done · {} failed · {} posted",
@@ -1494,8 +1541,10 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
         ),
         tile(
             "Network",
-            p.map(|_| figure(format!("{} contacts", pv("contacts"))))
-                .unwrap_or_else(|| figure("—".into())),
+            match p {
+                Some(_) => figure(format!("{} contacts", pv("contacts"))),
+                None => figure("—"),
+            },
             match p {
                 Some(_) => format!("{} memories", pv("memory_notes")),
                 None => String::new(),
@@ -1515,27 +1564,33 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     let mut record: Vec<Element<'a, Msg>> = Vec::new();
     let viol = violations(p);
     if p.is_some() && (!viol.is_empty() || f(fines, "count") > 0.0) {
-        record.push(ui::label("Record").into());
         for v in viol.iter().take(5) {
-            record.push(
+            record.push(ledger(
                 row![
-                    ui::badge(s(v, "law"), ui::Tone::Danger),
-                    ui::prose(s(v, "detail")),
-                    ui::faint(ago(u(v, "at_ms")))
+                    ui::badge::<Msg>(s(v, "law"), ui::Tone::Danger),
+                    ui::prose(s(v, "detail").to_string()),
                 ]
                 .spacing(8)
+                .align_y(Alignment::Center)
                 .into(),
-            );
+                ui::faint(ago(u(v, "at_ms"))).into(),
+            ));
         }
         if f(fines, "count") > 0.0 {
-            record.push(
-                ui::faint(format!(
-                    "{} fines, {} cr in total",
-                    f(fines, "count"),
-                    compact(f(fines, "total"))
-                ))
+            record.push(ledger(
+                row![
+                    ui::badge::<Msg>("fines", ui::Tone::Warn),
+                    ui::faint(format!(
+                        "{} fines, {} cr in total",
+                        f(fines, "count"),
+                        compact(f(fines, "total"))
+                    )),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
                 .into(),
-            );
+                Space::new().into(),
+            ));
         }
     } else if p.is_some() {
         record.push(ui::faint("A clean record: no violations, no fines.").into());
@@ -1547,64 +1602,66 @@ fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
     } else if state.infractions_failed {
         ui::faint("Infractions unavailable").into()
     } else if n == 0 {
-        ui::badge("No infractions", ui::Tone::Ok)
+        ui::badge::<Msg>("No infractions", ui::Tone::Ok)
     } else {
-        ui::badge(
+        ui::badge::<Msg>(
             &format!("{} infraction{}", n, if n == 1 { "" } else { "s" }),
             ui::Tone::Danger,
         )
     };
-    let mut inf: Vec<Element<'a, Msg>> = vec![ui::label("Infractions").into(), headline];
+    let mut inf: Vec<Element<'a, Msg>> = vec![headline];
     let shown = if state.infractions_all {
         n
     } else {
         INFRACTIONS_SHOWN
     };
     for r in state.infractions.iter().take(shown) {
-        inf.push(
-            row![
+        inf.push(ledger(
+            column![
                 ui::link(
                     pick_str(s(r, "law_title"), s(r, "law")),
                     Msg::Go(Id::Rules),
                     false
                 ),
-                ui::mono(s(r, "tool"), 12.0, crate::theme::palette().ink_2),
-                ui::faint(s(r, "detail")),
-                ui::faint(ago(u(r, "at_ms"))),
+                ui::faint(s(r, "law")),
+                row![
+                    ui::mono(s(r, "tool"), 12.0, crate::theme::palette().ink_2),
+                    ui::faint(s(r, "detail")),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
             ]
-            .spacing(10)
-            .align_y(Alignment::Center)
+            .spacing(2)
             .into(),
-        );
+            ui::faint(ago(u(r, "at_ms"))).into(),
+        ));
     }
     if n > INFRACTIONS_SHOWN {
-        inf.push(ui::link(
+        inf.push(ui::btn_sm::<Msg>(
             if state.infractions_all {
                 "Show fewer"
             } else {
                 "Show all"
             },
-            Msg::ShowAll,
-            false,
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::ShowAll),
         ));
     }
 
-    let info = column![
-        ident,
+    let body = column![
+        top,
         tiles_a,
         tiles_b,
-        column(record).spacing(6),
-        column(inf).spacing(6)
+        column(record),
+        column(inf).spacing(8)
     ]
-    .spacing(14)
+    .spacing(16)
     .width(Length::Fill);
-    container(row![portrait, info].spacing(24))
-        .padding(20)
+    container(body)
+        .padding(16)
         .width(Length::Fill)
-        .style(ui::frame(
-            Some(crate::theme::palette().sheet),
-            crate::theme::palette().ink,
-        ))
+        .style(ui::card_style)
         .into()
 }
 
@@ -1711,78 +1768,97 @@ fn left(until_ms: u64) -> String {
     }
 }
 
-/// A profile tile: its label, its figure (text or a meter) and its caption, on paper.
+/// A profile tile, as the web's `.ag-tile`: a bordered box with its label, its figure and its caption.
 fn tile<'a>(label: &'static str, value: Element<'a, Msg>, sub: String) -> Element<'a, Msg> {
     container(
-        column![
-            text(label.to_string())
-                .font(ui::SANS_SEMIBOLD)
-                .size(11.0)
-                .color(crate::theme::palette().ink_2),
-            value,
-            ui::sans(sub, 11.0, crate::theme::palette().ink_3)
-        ]
-        .spacing(6),
+        column![ui::faint(label), value, ui::faint(sub)]
+            .spacing(4)
+            .width(Length::Fill),
     )
-    .padding([12, 14])
+    .padding(12)
     .width(Length::Fill)
-    .style(ui::frame(
-        Some(crate::theme::palette().paper),
-        crate::theme::palette().rule,
-    ))
+    .style(|_: &Theme| container::Style {
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius.into(),
+        },
+        ..Default::default()
+    })
     .into()
 }
 
-fn figure<'a>(value: String) -> Element<'a, Msg> {
-    text(value)
-        .font(ui::SANS_BOLD)
-        .size(22.0)
+/// A tile's figure: 18 semibold, as the web's `.ag-tile .num`.
+fn figure<'a>(value: impl Into<String>) -> Element<'a, Msg> {
+    text(value.into())
+        .font(ui::SANS_SEMIBOLD)
+        .size(18.0)
         .color(crate::theme::palette().ink)
         .into()
 }
 
-fn figure_faint<'a>(value: &'static str) -> Element<'a, Msg> {
-    ui::faint(value).into()
-}
-
-/// A meter: a 2px-ruled track filled to `value` of `max`, its caption under it.
-fn meter<'a>(value: f64, max: f64, fill: Color, caption: String) -> Element<'a, Msg> {
-    let pct = (value / max * 100.0).clamp(0.0, 100.0).round() as u16;
+/// A meter, as the web's `.ag-meter`: a 6px track in sheet-2, filled to `value` of `max` in signal, its caption under it.
+fn meter<'a>(value: f64, max: f64, caption: String) -> Element<'a, Msg> {
+    let share = (value / max).clamp(0.0, 1.0);
+    let filled = (share * 1000.0).round() as u16;
     let mut bar = row![].height(Length::Fill);
-    if pct > 0 {
+    if filled > 0 {
         bar = bar.push(
             container(Space::new().width(Length::Fill).height(Length::Fill))
-                .width(Length::FillPortion(pct))
+                .width(Length::FillPortion(filled))
                 .height(Length::Fill)
-                .style(move |_: &Theme| container::Style {
-                    background: Some(fill.into()),
+                .style(|_: &Theme| container::Style {
+                    background: Some(crate::theme::palette().signal.into()),
                     ..Default::default()
                 }),
         );
     }
-    if pct < 100 {
+    if filled < 1000 {
         bar = bar.push(
             Space::new()
-                .width(Length::FillPortion(100 - pct))
+                .width(Length::FillPortion(1000 - filled))
                 .height(Length::Fill),
         );
     }
     let track = container(bar)
         .width(Length::Fill)
-        .height(Length::Fixed(14.0))
-        .style(ui::frame(
-            Some(crate::theme::palette().sheet),
-            crate::theme::palette().ink,
-        ));
+        .height(Length::Fixed(6.0))
+        .clip(true)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().sheet_2.into()),
+            border: Border::default().rounded(3.0),
+            ..Default::default()
+        });
     column![
         track,
         text(caption)
             .font(ui::SANS_SEMIBOLD)
-            .size(12.0)
+            .size(14.0)
             .color(crate::theme::palette().ink)
     ]
-    .spacing(4)
+    .spacing(8)
     .width(Length::Fill)
+    .into()
+}
+
+/// A record line, as the web's `.ag-row`: a rule over it, the left part and the right one (a time, or nothing).
+fn ledger<'a>(left: Element<'a, Msg>, right: Element<'a, Msg>) -> Element<'a, Msg> {
+    let rule = container(Space::new().height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().rule.into()),
+            ..Default::default()
+        });
+    column![
+        rule,
+        container(
+            row![left, Space::new().width(Length::Fill), right]
+                .spacing(8)
+                .align_y(Alignment::Center)
+        )
+        .padding([8, 0])
+        .width(Length::Fill),
+    ]
     .into()
 }
 
@@ -1843,13 +1919,14 @@ fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
     )
     .padding(16)
     .width(Length::Fill)
-    .style(ui::frame(None, crate::theme::palette().rule))
+    .style(ui::card_style)
     .into()
 }
 
 fn composer_view<'a>(state: &'a State) -> Element<'a, Msg> {
     let offline = offline(state);
     let mut editor = text_editor(&state.composer)
+        .style(crate::theme::editor)
         .placeholder("Message this agent…")
         .height(Length::Fixed(96.0))
         .key_binding(|kp| {
@@ -1870,9 +1947,23 @@ fn composer_view<'a>(state: &'a State) -> Element<'a, Msg> {
         ui::Kind::Primary,
         if can_send { Some(Msg::Send) } else { None },
     );
-    column![editor, row![Space::new().width(Length::Fill), send]]
-        .spacing(8)
-        .into()
+    let tools = row![
+        chat_tools::chip(&state.chat_tools).map(Msg::ChatTools),
+        Space::new().width(Length::Fill),
+        send,
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    let mut col = column![
+        chat_tools::bar(&state.chat_tools).map(Msg::ChatTools),
+        editor,
+        tools
+    ]
+    .spacing(8);
+    if let Some(notice) = chat_tools::notice(&state.chat_tools) {
+        col = col.push(notice.map(Msg::ChatTools));
+    }
+    col.into()
 }
 
 /// One transcript entry as the web renders it: turns, tool calls and results (collapsed until
@@ -1881,7 +1972,7 @@ fn entry_view<'a>(
     open: &HashSet<(u64, usize)>,
     e: &'a Value,
     rctx: &rich::RichCtx,
-    cards: &rich::Cards,
+    cards: &'a rich::Cards,
 ) -> Vec<Element<'a, Msg>> {
     let d = e.get("data").unwrap_or(&Value::Null);
     let seq = u(e, "seq");
@@ -1951,7 +2042,7 @@ fn block_view<'a>(
     idx: usize,
     b: &'a Value,
     rctx: &rich::RichCtx,
-    cards: &rich::Cards,
+    cards: &'a rich::Cards,
 ) -> Vec<Element<'a, Msg>> {
     match s(b, "type") {
         "text" => vec![rich::view(s(b, "text"), rctx, cards, &on_rich)],
@@ -2053,16 +2144,6 @@ fn queue_card<'a>(a: &'a Value) -> Element<'a, Msg> {
             .spacing(8)
             .into(),
     )
-}
-
-/// Mixes `over` into `base` by `amount` (0 keeps `base`, 1 is `over`).
-fn mix(base: Color, over: Color, amount: f32) -> Color {
-    Color {
-        r: base.r * amount + over.r * (1.0 - amount),
-        g: base.g * amount + over.g * (1.0 - amount),
-        b: base.b * amount + over.b * (1.0 - amount),
-        a: 1.0,
-    }
 }
 
 /// The profile's word and tone for an agent status. Asleep is its own state: its VM is snapshotted and stopped.
@@ -2228,18 +2309,6 @@ fn conduct_text(score: f64) -> &'static str {
         "Under watch"
     } else {
         "In trouble"
-    }
-}
-
-fn conduct_tone(score: f64) -> Color {
-    if score >= 90.0 {
-        crate::theme::palette().ok
-    } else if score >= 70.0 {
-        crate::theme::palette().info
-    } else if score >= 40.0 {
-        crate::theme::palette().warn
-    } else {
-        crate::theme::palette().crit
     }
 }
 

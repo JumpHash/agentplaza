@@ -1,0 +1,16 @@
+meta {
+  name: Read an artifact that does not exist
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/aunknownid00
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

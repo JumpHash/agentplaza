@@ -1,19 +1,21 @@
-//! The memory graph (parity gap 12, the web's `memory-graph.ts`): an agent's notes as bubbles on a canvas, `[[links]]`
-//! as ink curves and shared tags as faint straight lines. The layout is the web's force simulation (same constants,
-//! same cooling: alpha from 1 down by 0.985 to 0.004, repulsion, name-tag collision, springs, a pull to the middle), run
-//! once per note set with a seeded generator, so a given set of notes always lands in the same place. Hovering a note
-//! lights it and its neighbours, a click selects it and opens it in the host's reader, dragging pans, dragging a note
-//! moves it while it is held (the rest settle around it, and it floats back on release, as the web does), the wheel
-//! zooms around the pointer, a right click fits the view again, and the buttons in the top-right corner zoom in, zoom out
-//! and fit (as the web's +, − and Fit do). Tab and Shift+Tab walk the notes in a stable order
-//! (by slug), the focused one is ringed, and Enter or Space opens it. The find text dims the notes whose titles miss it.
+//! The memory graph (the web's `memory-graph.ts` and the `.mg` SVG): an agent's notes as rings on a sheet-2 panel
+//! with the kind's glyph inside and the title under each, `[[links]]` as solid ink-3 lines and shared tags as dashed
+//! ones. The layout is the desktop's force simulation (seeded, so a given set of notes always lands in the same
+//! place). A click opens a note in the host's reader and the open one is ringed in signal; dragging pans, dragging a
+//! note moves it while it is held, the wheel zooms around the pointer, a right click fits the view again, and the
+//! buttons in the top-right corner zoom in, zoom out and fit. Tab and Shift+Tab walk the notes in a stable order (by
+//! slug), the focused one is ringed, and Enter or Space opens it. The find text leaves out the notes whose titles miss it.
 
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 
 use iced::keyboard::{self, key::Named};
-use iced::widget::canvas::{self, Canvas, Event, Frame, Path, Stroke, Text};
-use iced::{Color, Element, Length, Pixels, Point, Rectangle, Renderer, Size, Theme, mouse};
+use iced::widget::canvas::{self, Canvas, Event, Frame, LineDash, Path, Stroke, Text};
+use iced::widget::{container, responsive};
+use iced::{
+    Border, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Size, Theme, alignment,
+    mouse,
+};
 
 use super::agent_side::Note;
 
@@ -81,7 +83,6 @@ struct Node {
     slug: String,
     title: String,
     kind: String,
-    label: String,
     r: f32,
     tag_w: f32,
     x: f32,
@@ -102,7 +103,6 @@ struct Edge {
 pub struct Layout {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
-    neighbours: Vec<Vec<usize>>,
     key: Vec<(String, u64)>,
     /// The note held under the pointer while it is dragged: its index and where it sits.
     held: Option<(usize, f32, f32)>,
@@ -177,7 +177,6 @@ impl Layout {
                     kind: n.kind.clone(),
                     r: 17.0 + 4.0 * ((n.size as f32) / 200.0 + 1.0).log10(),
                     tag_w: label.chars().count() as f32 * 6.7 + 18.0,
-                    label,
                     x,
                     y,
                     vx: 0.0,
@@ -215,21 +214,12 @@ impl Layout {
                 push_edge(&mut edges, &mut seen, w[0], w[1], true);
             }
         }
-        let mut neighbours = vec![Vec::new(); nodes.len()];
-        for e in &edges {
-            if !e.tag {
-                neighbours[e.a].push(e.b);
-                neighbours[e.b].push(e.a);
-            }
-        }
-
         // Cooling: a fresh layout starts hot, a refresh starts warm. Same decay and stop as the web.
         let mut alpha = if prev.is_empty() { 1.0 } else { 0.3 };
         nodes.shrink_to_fit();
         let mut lay = Layout {
             nodes,
             edges,
-            neighbours,
             key,
             held: None,
         };
@@ -357,12 +347,18 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
-fn kind_colour(kind: &str) -> Color {
+/// The glyph inside a note's ring, by kind (the web's `KG`).
+fn glyph(kind: &str) -> &'static str {
     match kind {
-        "person" => Color::from_rgb8(0xf5, 0xa3, 0xc7),
-        "journal" => Color::from_rgb8(0xf7, 0xd1, 0x54),
-        _ => Color::from_rgb8(0x8f, 0xb8, 0xff),
+        "person" => "@",
+        "journal" => "#",
+        _ => "¶",
     }
+}
+
+/// Whether a note takes part in the view: its title holds the find text (the web draws only the notes it is given).
+fn shown(n: &Node, query: &str) -> bool {
+    query.is_empty() || n.title.to_lowercase().contains(query)
 }
 
 fn fade(c: Color, a: f32) -> Color {
@@ -455,11 +451,14 @@ fn button_at(bounds: Rectangle, p: Point) -> Option<Button> {
 }
 
 /// The node under a point (canvas-relative), the nearest one when several overlap.
-fn hit(lay: &Layout, cam: Cam, p: Point) -> Option<usize> {
+fn hit(lay: &Layout, cam: Cam, p: Point, query: &str) -> Option<usize> {
     let mut best: Option<(f32, usize)> = None;
     for (i, n) in lay.nodes.iter().enumerate() {
+        if !shown(n, query) {
+            continue;
+        }
         let d = (p.x - (cam.x + n.x * cam.k)).hypot(p.y - (cam.y + n.y * cam.k));
-        let reach = (n.r * cam.k).max(6.0) + 3.0;
+        let reach = (RING_R * cam.k).max(6.0) + 3.0;
         if d <= reach && best.is_none_or(|(bd, _)| d < bd) {
             best = Some((d, i));
         }
@@ -468,7 +467,7 @@ fn hit(lay: &Layout, cam: Cam, p: Point) -> Option<usize> {
 }
 
 /// The view's own state: the camera (`None` until the user moves it, then the fit is kept), the pointer, the hover,
-/// the selection, the note being dragged and the note the keyboard is on.
+/// the note being dragged and the press that may open a note.
 #[derive(Debug, Default)]
 pub struct View {
     cam: Option<Cam>,
@@ -477,16 +476,20 @@ pub struct View {
     moved: bool,
     grab: Option<String>,
     hover: Option<usize>,
-    selected: Option<usize>,
 }
 
 struct GraphView<'a> {
     layout: &'a Layout,
-    /// The find text, trimmed and lower case: notes whose titles lack it are dimmed.
+    /// The find text, trimmed and lower case: notes whose titles lack it are left out.
     query: String,
     /// The note the keyboard is on (ringed), from the host.
     kb: Option<&'a str>,
+    /// The note being read (filled in signal), from the host.
+    reading: Option<&'a str>,
 }
+
+/// The ring's radius in graph units (the web's `r="18"`).
+const RING_R: f32 = 18.0;
 
 impl GraphView<'_> {
     fn cam(&self, st: &View, bounds: Rectangle) -> Cam {
@@ -528,7 +531,7 @@ impl canvas::Program<Msg> for GraphView<'_> {
                     });
                     return Some(canvas::Action::request_redraw());
                 }
-                let hover = hit(self.layout, self.cam(st, bounds), p);
+                let hover = hit(self.layout, self.cam(st, bounds), p, &self.query);
                 if hover != st.hover {
                     st.hover = hover;
                     return Some(canvas::Action::request_redraw());
@@ -551,7 +554,8 @@ impl canvas::Program<Msg> for GraphView<'_> {
                 st.drag = Some(p);
                 st.moved = false;
                 let cam = self.cam(st, bounds);
-                st.grab = hit(self.layout, cam, p).map(|i| self.layout.nodes[i].slug.clone());
+                st.grab = hit(self.layout, cam, p, &self.query)
+                    .map(|i| self.layout.nodes[i].slug.clone());
                 None
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -562,8 +566,7 @@ impl canvas::Program<Msg> for GraphView<'_> {
                 if was_moved {
                     return grabbed.map(|_| canvas::Action::publish(Msg::Drop));
                 }
-                let i = hit(self.layout, self.cam(st, bounds), press)?;
-                st.selected = Some(i);
+                let i = hit(self.layout, self.cam(st, bounds), press, &self.query)?;
                 Some(canvas::Action::publish(Msg::Open(
                     self.layout.nodes[i].slug.clone(),
                 )))
@@ -597,75 +600,61 @@ impl canvas::Program<Msg> for GraphView<'_> {
     ) -> Vec<canvas::Geometry<Renderer>> {
         let pal = crate::theme::palette();
         let mut frame = Frame::new(renderer, bounds.size());
-        frame.fill_rectangle(Point::ORIGIN, bounds.size(), pal.paper);
         let lay = self.layout;
         if lay.nodes.is_empty() {
             return vec![frame.into_geometry()];
         }
         let cam = self.cam(st, bounds);
         let to_screen = |x: f32, y: f32| Point::new(cam.x + x * cam.k, cam.y + y * cam.k);
-        // Hover wins over the selection; the focus and its neighbours stay bright, the rest fade.
-        let focus = st.hover.or(st.selected);
-        let lit = |i: usize| match focus {
-            None => true,
-            Some(f) => i == f || lay.neighbours[f].contains(&i),
-        };
-        // The find text dims the notes whose titles miss it (the web's `off` class, the strongest fade).
-        let matches =
-            |n: &Node| self.query.is_empty() || n.title.to_lowercase().contains(&self.query);
         let kb = self
             .kb
             .and_then(|s| lay.nodes.iter().position(|n| n.slug == s));
-
+        let open = self
+            .reading
+            .and_then(|s| lay.nodes.iter().position(|n| n.slug == s));
+        let shows = |i: usize| shown(&lay.nodes[i], &self.query);
+        // Links are solid lines, shared tags dashed (the web's `.mg-link` and `.mg-tag`).
         for e in &lay.edges {
+            if !shows(e.a) || !shows(e.b) {
+                continue;
+            }
             let (na, nb) = (&lay.nodes[e.a], &lay.nodes[e.b]);
-            let (a, b) = (to_screen(na.x, na.y), to_screen(nb.x, nb.y));
-            let on = !e.tag && focus.is_some_and(|f| e.a == f || e.b == f);
-            let fade_to = if focus.is_none() || on { 1.0 } else { 0.15 };
-            let path = Path::new(|p| {
-                p.move_to(a);
-                if e.tag {
-                    p.line_to(b);
-                } else {
-                    let (mx, my) = ((na.x + nb.x) / 2.0, (na.y + nb.y) / 2.0);
-                    let (dx, dy) = (nb.x - na.x, nb.y - na.y);
-                    p.quadratic_curve_to(to_screen(mx - dy * 0.12, my + dx * 0.12), b);
-                }
-            });
+            let path = Path::line(to_screen(na.x, na.y), to_screen(nb.x, nb.y));
             let stroke = if e.tag {
-                Stroke::default()
-                    .with_color(fade(pal.ink_3, fade_to * 0.6))
-                    .with_width(1.0)
+                Stroke {
+                    line_dash: LineDash {
+                        segments: &[3.0, 4.0],
+                        offset: 0,
+                    },
+                    ..Stroke::default()
+                }
+                .with_color(fade(pal.ink_3, 0.45))
+                .with_width(1.0)
             } else {
                 Stroke::default()
-                    .with_color(fade(pal.ink, fade_to))
-                    .with_width(1.8)
+                    .with_color(fade(pal.ink_3, 0.8))
+                    .with_width(1.6)
             };
             frame.stroke(&path, stroke);
         }
-
-        // Name tags counter-scale below zoom 1, as the web's do.
-        let ls = (1.0 / cam.k).clamp(1.0, 1.8);
+        // A note: its ring (signal, filled soft when it is the one read), the kind's glyph inside, its title under.
         for (i, n) in lay.nodes.iter().enumerate() {
+            if !shows(i) {
+                continue;
+            }
             let c = to_screen(n.x, n.y);
-            let r = (n.r * cam.k).max(4.0);
-            let a = if !matches(n) {
-                0.08
-            } else if lit(i) {
-                1.0
-            } else {
-                0.3
-            };
-            frame.fill(&Path::circle(c, r), fade(kind_colour(&n.kind), a));
+            let r = RING_R * cam.k;
+            let is_open = open == Some(i);
+            let thick = is_open || st.hover == Some(i);
             frame.fill(
-                &Path::circle(Point::new(c.x - r * 0.35, c.y - r * 0.4), r * 0.28),
-                fade(Color::WHITE, 0.55 * a),
+                &Path::circle(c, r),
+                if is_open { pal.signal_soft } else { pal.panel },
             );
             frame.stroke(
                 &Path::circle(c, r),
                 Stroke::default()
-                    .with_color(fade(pal.ink, a))
-                    .with_width(1.6),
+                    .with_color(pal.signal)
+                    .with_width(if thick { 2.5 } else { 1.5 }),
             );
             if kb == Some(i) {
                 frame.stroke(
@@ -673,56 +662,47 @@ impl canvas::Program<Msg> for GraphView<'_> {
                     Stroke::default().with_color(pal.ink).with_width(2.5),
                 );
             }
-
-            let tw = n.tag_w * ls * cam.k;
-            let top = c.y + (n.r + 7.0 * ls) * cam.k;
-            frame.fill(
-                &Path::rectangle(
-                    Point::new(c.x - tw / 2.0, top),
-                    Size::new(tw, 20.0 * ls * cam.k),
-                ),
-                fade(pal.sheet, 0.92 * a),
-            );
             frame.fill_text(Text {
-                content: n.label.clone(),
-                position: Point::new(c.x - tw / 2.0 + 9.0 * ls * cam.k, top + 3.0 * ls * cam.k),
-                color: fade(pal.ink, a),
-                size: Pixels(12.0 * ls * cam.k),
+                content: glyph(&n.kind).to_string(),
+                position: c,
+                color: pal.ink_2,
+                size: Pixels(13.0 * cam.k),
+                align_x: iced::advanced::text::Alignment::Center,
+                align_y: alignment::Vertical::Center,
+                ..Text::default()
+            });
+            frame.fill_text(Text {
+                content: n.title.clone(),
+                position: Point::new(c.x, c.y + (RING_R + 12.0) * cam.k),
+                color: pal.ink,
+                size: Pixels(11.0 * cam.k),
+                align_x: iced::advanced::text::Alignment::Center,
+                align_y: alignment::Vertical::Center,
                 ..Text::default()
             });
         }
-
+        // The zoom buttons sit in the top-right corner, as rounded controls on the panel.
         for (b, r) in buttons(bounds) {
-            frame.fill(
-                &Path::rectangle(r.position(), r.size()),
-                fade(pal.sheet, 0.95),
-            );
+            let shape = Path::rounded_rectangle(r.position(), r.size(), 7.0.into());
+            frame.fill(&shape, pal.raised);
             frame.stroke(
-                &Path::rectangle(r.position(), r.size()),
-                Stroke::default().with_color(pal.ink_3).with_width(1.0),
+                &shape,
+                Stroke::default()
+                    .with_color(pal.rule_strong)
+                    .with_width(1.0),
             );
             frame.fill_text(Text {
                 content: b.label().to_string(),
-                position: Point::new(r.x + r.width / 2.0, r.y + 5.0),
-                color: pal.ink,
+                position: Point::new(r.x + r.width / 2.0, r.y + r.height / 2.0),
+                color: pal.ink_2,
                 size: Pixels(13.0),
                 align_x: iced::advanced::text::Alignment::Center,
-                ..Text::default()
-            });
-        }
-
-        if let Some(s) = st.selected {
-            frame.fill_text(Text {
-                content: lay.nodes[s].title.clone(),
-                position: Point::new(12.0, bounds.height - 24.0),
-                color: pal.ink,
-                size: Pixels(13.0),
+                align_y: alignment::Vertical::Center,
                 ..Text::default()
             });
         }
         vec![frame.into_geometry()]
     }
-
     fn mouse_interaction(
         &self,
         st: &View,
@@ -742,12 +722,33 @@ impl canvas::Program<Msg> for GraphView<'_> {
     }
 }
 
-/// The graph for the Memory tab: fills the column, 480 px tall like the list it replaces. `query` is the find text:
-/// notes whose titles miss it are dimmed.
-pub fn view<'a>(layout: &'a Layout, query: String, kb: Option<&'a str>) -> Element<'a, Msg> {
+/// The graph for the Memory tab, as the web's `.mg`: the column's full width at the web's 640 by 360 proportion, on a
+/// sheet-2 panel. `query` is the find text (notes whose titles miss it are left out), `kb` the note the keyboard is on
+/// and `reading` the note being read.
+pub fn view<'a>(
+    layout: &'a Layout,
+    query: String,
+    kb: Option<&'a str>,
+    reading: Option<&'a str>,
+) -> Element<'a, Msg> {
     let query = query.trim().to_lowercase();
-    Canvas::new(GraphView { layout, query, kb })
+    responsive(move |size: Size| {
+        let graph = Canvas::new(GraphView {
+            layout,
+            query: query.clone(),
+            kb,
+            reading,
+        })
         .width(Length::Fill)
-        .height(Length::Fixed(480.0))
-        .into()
+        .height(Length::Fixed(size.width * 360.0 / 640.0));
+        container(graph)
+            .width(Length::Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(crate::theme::palette().sheet_2.into()),
+                border: Border::default().rounded(crate::theme::skin().radius),
+                ..Default::default()
+            })
+            .into()
+    })
+    .into()
 }

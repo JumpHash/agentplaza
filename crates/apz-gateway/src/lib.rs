@@ -272,6 +272,16 @@ impl Gateway {
             .unwrap_or_else(|e| e.into_inner()) = map;
     }
 
+    /// The provider `id` when it may take calls: known and enabled.
+    fn callable(&self, id: &str) -> Result<ProviderConfig, GatewayError> {
+        let p = self.provider(id)?;
+        if p.enabled {
+            Ok(p)
+        } else {
+            Err(GatewayError::Disabled(p.id))
+        }
+    }
+
     pub fn provider(&self, id: &str) -> Result<ProviderConfig, GatewayError> {
         let providers = self
             .inner
@@ -316,7 +326,7 @@ impl Gateway {
             _ => req,
         };
         let (provider_id, model) = (name.provider.as_str(), name.model.as_str());
-        let p = self.provider(provider_id)?;
+        let p = self.callable(provider_id)?;
         let ctx = Ctx {
             gw: &self.inner,
             p: &p,
@@ -433,7 +443,7 @@ impl Gateway {
         model: &str,
         req: &DecisionRequest,
     ) -> Result<DecisionResponse, GatewayError> {
-        let p = self.provider(provider_id)?;
+        let p = self.callable(provider_id)?;
         if p.kind.group() != "decisions" {
             return Err(GatewayError::Config(format!(
                 "{provider_id} is a chat model; it does not answer decisions"

@@ -3,13 +3,13 @@
 //! secret bound to the `egress` consumer, so the secret never enters the VM. The form checks a draft the way the hub
 //! does (`crates/apid/src/egress_inject.rs`), so a refusal shows before the request; the hub stays the authority.
 
-use iced::widget::{checkbox, column, row, text_input};
-use iced::{Alignment, Element, Length, Task};
+use iced::widget::{checkbox, column, container, row, text_input};
+use iced::{Alignment, Element, Length, Padding, Task};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
-use super::agent;
+use super::models::mdl_card;
 use super::nodes::Load;
 use crate::console::{Ctx, client, ui};
 
@@ -230,6 +230,7 @@ fn split_list(text: &str) -> Vec<String> {
 }
 
 /// The rule in one line: where it applies, and what header it sets. The secret's value never appears; only its name.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn summary(rule: &Rule) -> String {
     let roles = if rule.roles.is_empty() {
         "all roles".to_string()
@@ -424,23 +425,24 @@ fn gate(busy: bool, msg: Msg) -> Option<Msg> {
     if busy { None } else { Some(msg) }
 }
 
+/// The screen's lede, as the web's page head.
+const LEDE: &str = "The hub adds this header to the agent's HTTPS requests to the host; the secret never enters the VM. Only hosts with a rule are intercepted; every other host stays an opaque tunnel.";
+
 pub fn view(state: &State) -> Element<'_, Msg> {
-    let mut parts: Vec<Element<'_, Msg>> = vec![
-        ui::faint("The hub adds this header to the agent's HTTPS requests to the host; the secret never enters the VM. Only hosts with a rule are intercepted.")
-            .into(),
-    ];
+    let mut parts: Vec<Element<'_, Msg>> = Vec::new();
     if let Some(error) = &state.error {
         parts.push(ui::error_line(error));
     }
     if let Some(notice) = &state.notice {
         parts.push(ui::faint(notice.clone()).into());
     }
+    parts.push(mdl_card("Rules", rules_view(state)));
     if state.adding {
-        parts.push(ui::card("Add a rule", add_form(state)));
+        parts.push(mdl_card("Add a rule", add_form(state)));
     }
-    parts.push(ui::card("Rules", rules_view(state)));
-    let head = ui::view_head(
+    let head = ui::view_head_with_intro(
         "Egress credentials",
+        LEDE,
         vec![ui::btn(
             "Add a rule",
             None,
@@ -448,7 +450,7 @@ pub fn view(state: &State) -> Element<'_, Msg> {
             (!state.adding).then_some(Msg::OpenAdd),
         )],
     );
-    ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
+    ui::sheet(head, column(parts).spacing(20).width(Length::Fill).into())
 }
 
 /// One labelled field of the add form, with a line on what it does.
@@ -478,56 +480,62 @@ fn add_form(state: &State) -> Element<'_, Msg> {
             "Host",
             "api.example.com or *.example.com",
             &d.host,
-            "The name the request goes to. Only this host gets the header.",
+            "An exact host, or *.suffix for every host under it.",
             Field::Host,
         ),
-        field(
-            "Port",
-            "443",
-            &d.port,
-            "The HTTPS port. 80 is refused: a credential is only added over TLS.",
-            Field::Port,
+        pair(
+            field(
+                "Port",
+                "443",
+                &d.port,
+                "Default 443. Port 80 is refused.",
+                Field::Port,
+            ),
+            field(
+                "Path prefix",
+                "/",
+                &d.path_prefix,
+                "Requests whose path starts with this. Default /.",
+                Field::PathPrefix,
+            ),
         ),
-        field(
-            "Roles",
-            "coder, writer",
-            &d.roles,
-            "Comma-separated. Empty means every role.",
-            Field::Roles,
+        pair(
+            field(
+                "Methods",
+                "GET, POST",
+                &d.methods,
+                "Comma-separated. Blank means any method.",
+                Field::Methods,
+            ),
+            field(
+                "Roles",
+                "coder, writer",
+                &d.roles,
+                "Comma-separated role names. Blank means every role.",
+                Field::Roles,
+            ),
         ),
-        field(
-            "Methods",
-            "GET, POST",
-            &d.methods,
-            "Comma-separated. Empty means any method.",
-            Field::Methods,
-        ),
-        field(
-            "Path prefix",
-            "/",
-            &d.path_prefix,
-            "Only requests whose path starts with this.",
-            Field::PathPrefix,
-        ),
-        field(
-            "Header",
-            "Authorization",
-            &d.header,
-            "The header the hub sets on the request.",
-            Field::Header,
-        ),
-        field(
-            "Format",
-            "Bearer ${SECRET}",
-            &d.format,
-            "${SECRET} is replaced by the secret's value when the request goes out.",
-            Field::Format,
+        pair(
+            field(
+                "Header",
+                "Authorization",
+                &d.header,
+                "The header the hub sets. Default Authorization.",
+                Field::Header,
+            ),
+            field(
+                "Format",
+                "Bearer ${SECRET}",
+                &d.format,
+                "The header value; ${SECRET} is replaced by the secret. Default Bearer ${SECRET}.",
+                Field::Format,
+            ),
         ),
         field(
             "Secret",
             "github_token",
             &d.secret,
-            "The vault entry's name. It must be bound to the egress consumer.",
+            "The name of a vault secret bound to the egress consumer.",
             Field::Secret,
         ),
         row![
@@ -546,52 +554,111 @@ fn add_form(state: &State) -> Element<'_, Msg> {
     .into()
 }
 
+/// Two fields side by side, as the web's two-column form.
+fn pair<'a>(a: Element<'a, Msg>, b: Element<'a, Msg>) -> Element<'a, Msg> {
+    row![
+        container(a).width(Length::FillPortion(1)),
+        container(b).width(Length::FillPortion(1)),
+    ]
+    .spacing(16)
+    .width(Length::Fill)
+    .into()
+}
+
+/// The rules as the web's table: a head row in the label voice over a strong rule, then a row per rule with a rule
+/// under it. An empty list, a pending load and a failed load keep their own states.
 fn rules_view(state: &State) -> Element<'_, Msg> {
     match &state.rules {
         Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load the rules.", ""),
+        Load::Failed => ui::empty("alert", "Could not load the rules", ""),
         Load::Ready(list) if list.is_empty() => ui::empty(
-            "external",
-            "No rules yet",
-            "Add a rule to have the hub add a vault credential to an agent's request to a host.",
+            "agents",
+            "No rules",
+            "No host gets a header yet. Until a rule is added, every host is an opaque tunnel.",
         ),
-        Load::Ready(list) => column(
-            list.iter()
-                .map(|rule| rule_row(state, rule))
-                .collect::<Vec<_>>(),
-        )
-        .spacing(16)
-        .width(Length::Fill)
-        .into(),
+        Load::Ready(list) => {
+            let mut lines: Vec<Element<'_, Msg>> = vec![
+                table_row(
+                    COLUMNS
+                        .iter()
+                        .map(|(name, w)| (*w, ui::label(name).into()))
+                        .collect(),
+                ),
+                rule_line(crate::theme::palette().rule_strong),
+            ];
+            for rule in list {
+                lines.push(rule_row(state, rule));
+            }
+            column(lines).spacing(0).width(Length::Fill).into()
+        }
     }
 }
 
+/// The table's columns: the head's label and the share of the row each takes.
+const COLUMNS: [(&str, u16); 9] = [
+    ("Host", 16),
+    ("Port", 7),
+    ("Methods", 12),
+    ("Path", 10),
+    ("Roles", 12),
+    ("Header", 16),
+    ("Secret", 12),
+    ("Enabled", 11),
+    ("Actions", 14),
+];
+
+/// One table row: each cell in its share of the width, padded 9 by 12.
+fn table_row<'a>(cells: Vec<(u16, Element<'a, Msg>)>) -> Element<'a, Msg> {
+    let cells: Vec<Element<'a, Msg>> = cells
+        .into_iter()
+        .map(|(w, cell)| {
+            container(cell)
+                .width(Length::FillPortion(w))
+                .padding(Padding {
+                    top: 9.0,
+                    right: 12.0,
+                    bottom: 9.0,
+                    left: 12.0,
+                })
+                .into()
+        })
+        .collect();
+    row(cells)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .into()
+}
+
+/// A 1px rule across the table.
+fn rule_line<'a>(color: iced::Color) -> Element<'a, Msg> {
+    container(iced::widget::Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(move |_: &iced::Theme| container::Style {
+            background: Some(color.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
 fn rule_row<'a>(state: &State, rule: &Rule) -> Element<'a, Msg> {
-    let (badge, tone) = if rule.enabled {
-        ("on", ui::Tone::Ok)
+    let palette = crate::theme::palette();
+    let methods = if rule.methods.is_empty() {
+        "any".to_string()
     } else {
-        ("off", ui::Tone::Muted)
+        rule.methods.join(", ")
     };
-    let head: Vec<Element<'a, Msg>> = vec![
-        ui::mono(
-            format!("{}:{}", rule.host, rule.port),
-            12.0,
-            crate::theme::palette().ink,
-        )
-        .into(),
-        ui::badge(badge, tone),
-    ];
+    let roles = if rule.roles.is_empty() {
+        "all".to_string()
+    } else {
+        rule.roles.join(", ")
+    };
     let id = rule.id.clone();
     let enabled = checkbox(rule.enabled)
-        .label("Enabled")
+        .label(if rule.enabled { "On" } else { "Off" })
         .on_toggle(move |on| Msg::Toggle { id: id.clone(), on });
-    let actions: Element<'a, Msg> = if state.confirm_delete.as_deref() == Some(rule.id.as_str()) {
-        let confirm: Vec<Element<'a, Msg>> = vec![
-            ui::faint(format!(
-                "Delete the rule for {}? Its requests stop getting the header at once.",
-                rule.host
-            ))
-            .into(),
+    let confirming = state.confirm_delete.as_deref() == Some(rule.id.as_str());
+    let actions: Element<'a, Msg> = if confirming {
+        row(vec![
             ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelDelete)),
             ui::btn_sm(
                 "Delete",
@@ -599,8 +666,10 @@ fn rule_row<'a>(state: &State, rule: &Rule) -> Element<'a, Msg> {
                 ui::Kind::Danger,
                 gate(state.busy, Msg::Delete(rule.id.clone())),
             ),
-        ];
-        row(confirm).spacing(10).align_y(Alignment::Center).into()
+        ])
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into()
     } else {
         ui::btn_sm(
             "Delete",
@@ -609,19 +678,55 @@ fn rule_row<'a>(state: &State, rule: &Rule) -> Element<'a, Msg> {
             Some(Msg::AskDelete(rule.id.clone())),
         )
     };
-    column![
-        row(head).spacing(10).align_y(Alignment::Center),
-        ui::faint(format!(
-            "{} · added {}",
-            summary(rule),
-            agent::ago(rule.created_ms)
-        )),
-        row![enabled, actions]
-            .spacing(16)
-            .align_y(Alignment::Center),
-    ]
-    .spacing(8)
-    .into()
+    let cells: Vec<(u16, Element<'a, Msg>)> = vec![
+        (
+            COLUMNS[0].1,
+            ui::mono(rule.host.clone(), 12.0, palette.ink).into(),
+        ),
+        (
+            COLUMNS[1].1,
+            ui::sans(rule.port.to_string(), 12.5, palette.ink_2).into(),
+        ),
+        (COLUMNS[2].1, ui::sans(methods, 12.5, palette.ink_2).into()),
+        (
+            COLUMNS[3].1,
+            ui::mono(rule.path_prefix.clone(), 12.0, palette.ink).into(),
+        ),
+        (COLUMNS[4].1, ui::sans(roles, 12.5, palette.ink_2).into()),
+        (
+            COLUMNS[5].1,
+            column![
+                ui::mono(rule.header.clone(), 12.0, palette.ink),
+                ui::faint(rule.format.clone()),
+            ]
+            .spacing(2)
+            .into(),
+        ),
+        (
+            COLUMNS[6].1,
+            ui::mono(rule.secret.clone(), 12.0, palette.ink).into(),
+        ),
+        (COLUMNS[7].1, enabled.into()),
+        (COLUMNS[8].1, actions),
+    ];
+    let mut line: Vec<Element<'a, Msg>> = vec![table_row(cells)];
+    if confirming {
+        line.push(
+            container(ui::faint(format!(
+                "Delete the rule for {}? Its requests stop getting the header at once.",
+                rule.host
+            )))
+            .padding(Padding {
+                top: 0.0,
+                right: 12.0,
+                bottom: 9.0,
+                left: 12.0,
+            })
+            .into(),
+        );
+    }
+    line.push(rule_line(palette.rule_strong));
+    column(line).width(Length::Fill).into()
 }
 
 #[cfg(test)]

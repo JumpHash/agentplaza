@@ -2,15 +2,15 @@
 // run here through the hub's API. Rows a browser cannot see (Docker, the containers, the ports,
 // the hypervisor device of this machine) are marked as checked by the desktop app.
 
-import '../styles/setup.css';
+import '../styles/proto/settings-d.css';
 import { api, ApiError, vaultApi, type VaultStatus } from '../api';
 import { weft } from '../api-weft';
-import { COPY } from '../onboarding/flow';
 import { href } from '../router';
 import { badge, button, card, type Tone } from '../ui/components';
 import { h } from '../ui/dom';
 import { offerTour, openWizard, startTour } from '../ui/onboarding';
 import type { Cleanup } from './index';
+import { head } from './workstations-ui';
 
 type Status = 'checking' | 'ok' | 'warning' | 'failed' | 'desktop' | 'pending';
 interface Fix { text: string; to?: string }
@@ -138,21 +138,25 @@ async function collect(): Promise<Row[]> {
 
 function renderRow(row: Row): HTMLElement {
   const fix = row.fix && (row.status === 'warning' || row.status === 'failed') ? row.fix : null;
-  return h('li.setup-row', { 'data-status': row.status },
-    h('div.setup-main', null,
-      h('div.setup-label', null, row.label),
-      h('div.setup-detail', null, row.detail),
-      fix ? (fix.to ? h('a.setup-fix', { href: href(fix.to) }, fix.text) : h('span.setup-fix', null, fix.text)) : null,
+  return h(
+    'div.setup-row',
+    null,
+    h(
+      'div',
+      null,
+      h('div.ws-name', null, row.label),
+      h('div.muted', null, row.detail),
+      fix ? h('div.setup-fix', null, fix.to ? h('a', { href: href(fix.to) }, fix.text) : fix.text) : null,
     ),
-    badge(STAMP[row.status], TONE[row.status]),
+    badge(STAMP[row.status], TONE[row.status], true),
   );
 }
 
 export function mount(root: HTMLElement): Cleanup {
   let alive = true;
   let seq = 0;
-  const list = h('ol.setup-list');
-  const summary = h('p.setup-summary');
+  const list = h('div');
+  const summary = h('p.muted');
 
   const paint = (rows: Row[]) => {
     list.replaceChildren(...rows.map(renderRow));
@@ -173,19 +177,17 @@ export function mount(root: HTMLElement): Cleanup {
   };
 
   root.append(
-    h('div.setup-view', null,
-      h('div.view-head', null, h('h1', null, 'Setup')),
-      h('p.setup-intro', null, 'What the plaza needs before agents can run. The checks ask this hub. Rows marked Desktop are checked by the AgentPlaza app on this machine.'),
-      h('div.setup-bar', null, summary, button('Run checks again', () => void run())),
-      card('Checks', list, { flush: true }),
-      card(
+    head('Setup'),
+    h('p.ws-lede', null, 'What the plaza needs before agents can run. The checks ask this hub. Rows marked Desktop are checked by the AgentPlaza app on this machine.'),
+    h('div.setup-bar', null, summary, button('Run checks again', () => void run())),
+    card('Checks', list, { flush: true }),
+    card(
+      'Onboarding',
+      h(
+        'div.ws-cluster',
         null,
-        h(
-          'div.onboard-actions',
-          null,
-          button(COPY.replay.setup, () => openWizard(offerTour), { kind: 'primary' }),
-          button(COPY.replay.tour, () => startTour()),
-        ),
+        button('Set up AgentPlaza', () => openWizard(offerTour), { kind: 'primary' }),
+        button('Take the tour', () => startTour()),
       ),
     ),
   );

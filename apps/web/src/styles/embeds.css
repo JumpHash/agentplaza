@@ -2,20 +2,7 @@
    corners are the 6px and 8px of the chips and cards. A state is a tone (ui/embed-model.ts) and the tone colours the
    chip's border and icon, or a badge: the label of a chip is always the text colour. */
 
-/* A merged pull request has no token of its own in tokens.css; it is the one colour added here, light and dark. The
-   hover card's shadow is the one more depth the register needs on a sheet over a sheet (light) or a dark panel. */
-:root {
-  --merged: #7a4fd0;
-  --embed-shadow: 0 6px 18px rgb(21 25 22 / 0.16);
-}
-:root:not([data-theme="light"]) {
-  --merged: #b68cff;
-  --embed-shadow: 0 8px 24px rgb(0 0 0 / 0.6);
-}
-:root[data-theme="dark"] {
-  --merged: #b68cff;
-  --embed-shadow: 0 8px 24px rgb(0 0 0 / 0.6);
-}
+/* A merged pull request takes the review tone. */
 
 /* ---- Chips --------------------------------------------------------------------------------------------------------- */
 
@@ -29,23 +16,23 @@
   gap: 5px;
   max-width: 100%;
   padding: 2px 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 6px;
-  background: var(--surface);
-  color: var(--text);
-  font: 500 13px/1.4 var(--sans);
+  background: var(--sheet);
+  color: var(--ink);
+  font: 500 13px/1.4 var(--font);
   text-decoration: none;
   white-space: nowrap;
   vertical-align: baseline;
   cursor: default;
   -webkit-touch-callout: none;
-  --chip-state: var(--text-2);
+  --chip-state: var(--ink-2);
 }
 /* The markdown rule for links (`.md a`) colours every link in the accent; a chip keeps its text colour whatever it is. */
 .md .embed-chip,
 .embed-chip,
 .embed-chip .embed-chip-label {
-  color: var(--text);
+  color: var(--ink);
 }
 button.embed-chip,
 a.embed-chip {
@@ -53,7 +40,7 @@ a.embed-chip {
 }
 a.embed-chip:hover,
 button.embed-chip:hover {
-  background: var(--surface-2);
+  background: var(--sheet-2);
 }
 .embed-chip-label {
   min-width: 0;
@@ -68,8 +55,8 @@ button.embed-chip:hover {
 }
 .embed-hash {
   flex: none;
-  color: var(--text-2);
-  font-family: var(--mono);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
 }
 
 /* The tone of a chip's state or status: its border and icon. Open is success, a draft is secondary, merged is purple,
@@ -84,16 +71,16 @@ button.embed-chip:hover {
   --chip-state: var(--warn);
 }
 .embed-chip[data-tone="danger"] {
-  --chip-state: var(--danger);
+  --chip-state: var(--crit);
 }
 .embed-chip[data-tone="merged"] {
-  --chip-state: var(--merged);
+  --chip-state: var(--review);
 }
 .embed-chip[data-tone="neutral"] {
-  --chip-state: var(--text-2);
+  --chip-state: var(--ink-2);
 }
 .embed-chip[data-tone] {
-  border-color: color-mix(in srgb, var(--chip-state) 45%, var(--border));
+  border-color: color-mix(in srgb, var(--chip-state) 45%, var(--rule));
 }
 
 /* An agent: its palette colour as a dot, and its status as a second, small dot in the status's tone. */
@@ -135,7 +122,7 @@ button.embed-chip:hover {
   max-height: 360px;
   width: auto;
   height: auto;
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 8px;
   object-fit: contain;
 }
@@ -144,9 +131,9 @@ button.embed-chip:hover {
   box-sizing: border-box;
   max-width: 100%;
   max-height: 360px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 8px;
-  background: var(--surface-3);
+  background: var(--rule-faint);
 }
 
 .embed-lightbox {
@@ -163,7 +150,7 @@ button.embed-chip:hover {
   max-width: 100%;
   max-height: 100%;
   border-radius: 8px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
 }
 .embed-lightbox-close {
   position: absolute;
@@ -176,9 +163,9 @@ button.embed-chip:hover {
 .embed-html {
   box-sizing: border-box;
   max-width: 100%;
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 8px;
-  background: var(--surface);
+  background: var(--sheet);
   overflow: hidden;
 }
 .embed-html-head {
@@ -186,14 +173,14 @@ button.embed-chip:hover {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  font: 500 13px/1.4 var(--sans);
-  color: var(--text);
+  font: 500 13px/1.4 var(--font);
+  color: var(--ink);
 }
 .embed-html-head .embed-icon {
   flex: none;
   width: 14px;
   height: 14px;
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 .embed-html-name {
   flex: 1;
@@ -208,8 +195,8 @@ button.embed-chip:hover {
   width: 100%;
   height: 480px;
   border: 0;
-  border-top: 1px solid var(--border);
-  background: var(--bg);
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
 }
 .embed-frame[hidden] {
   display: none;
@@ -221,7 +208,7 @@ button.embed-chip:hover {
   display: flex;
   flex-direction: column;
   max-width: none;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-pop);
 }
 .embed-html.is-panel .embed-frame {
   flex: 1;
@@ -231,15 +218,15 @@ button.embed-chip:hover {
 
 .embed-btn {
   padding: 3px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text);
-  font: 500 12px/1.3 var(--sans);
+  background: var(--sheet-2);
+  color: var(--ink);
+  font: 500 12px/1.3 var(--font);
   cursor: pointer;
 }
 .embed-btn:hover {
-  border-color: var(--border-strong);
+  border-color: var(--rule-strong);
 }
 .embed-btn[hidden] {
   display: none;
@@ -258,12 +245,12 @@ button.embed-chip:hover {
   width: max-content;
   max-width: min(360px, calc(100vw - 32px));
   padding: 12px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--rule-strong);
   border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--embed-shadow), var(--shadow);
-  font: 400 13px/1.45 var(--sans);
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: var(--shadow-pop);
+  font: 400 13px/1.45 var(--font);
   overflow-wrap: anywhere;
   animation: embed-in 120ms ease-out;
 }
@@ -279,18 +266,18 @@ button.embed-chip:hover {
 }
 .embed-pop .embed-kicker {
   margin-bottom: 4px;
-  color: var(--text-2);
-  font: 500 11px/1.3 var(--mono);
+  color: var(--ink-2);
+  font: 500 11px/1.3 var(--font-mono);
   overflow-wrap: anywhere;
 }
 .embed-title {
   margin-bottom: 6px;
-  color: var(--text);
-  font: 600 14px/1.4 var(--sans);
+  color: var(--ink);
+  font: 600 14px/1.4 var(--font);
   overflow-wrap: anywhere;
 }
 .embed-mono-title {
-  font: 500 12px/1.4 var(--mono);
+  font: 500 12px/1.4 var(--font-mono);
 }
 .embed-row {
   display: flex;
@@ -298,11 +285,11 @@ button.embed-chip:hover {
   align-items: center;
   gap: 6px 8px;
   margin: 4px 0;
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 12px;
 }
 .embed-mono {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 11.5px;
 }
 .embed-byline {
@@ -319,11 +306,11 @@ button.embed-chip:hover {
   width: 20px;
   height: 20px;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 50%;
-  background: var(--surface-2);
-  color: var(--text-2);
-  font: 600 10px/1 var(--sans);
+  background: var(--sheet-2);
+  color: var(--ink-2);
+  font: 600 10px/1 var(--font);
 }
 .embed-avatar img {
   display: block;
@@ -333,10 +320,10 @@ button.embed-chip:hover {
 }
 .embed-state {
   padding: 0 6px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--rule-strong);
   border-radius: 6px;
-  color: var(--text-2);
-  font: 600 11px/1.5 var(--sans);
+  color: var(--ink-2);
+  font: 600 11px/1.5 var(--font);
 }
 .embed-state[data-tone="ok"] {
   color: var(--ok);
@@ -351,35 +338,35 @@ button.embed-chip:hover {
   border-color: var(--warn);
 }
 .embed-state[data-tone="danger"] {
-  color: var(--danger);
-  border-color: var(--danger);
+  color: var(--crit);
+  border-color: var(--crit);
 }
 .embed-state[data-tone="merged"] {
-  color: var(--merged);
-  border-color: var(--merged);
+  color: var(--review);
+  border-color: var(--review);
 }
 .embed-add {
   color: var(--ok);
 }
 .embed-del {
-  color: var(--danger);
+  color: var(--crit);
 }
 .embed-label {
   padding: 0 5px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--rule);
   border-radius: 6px;
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 11px;
 }
 .embed-muted,
 .embed-muted-inline {
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 .embed-muted {
   margin: 0;
 }
 .embed-status-text {
-  color: var(--text-2);
+  color: var(--ink-2);
 }
 .embed-excerpt {
   display: -webkit-box;
@@ -387,12 +374,12 @@ button.embed-chip:hover {
   -webkit-box-orient: vertical;
   overflow: hidden;
   margin: 6px 0 0;
-  color: var(--text-2);
+  color: var(--ink-2);
   overflow-wrap: anywhere;
 }
 .embed-meta {
   margin-top: 8px;
-  color: var(--text-2);
+  color: var(--ink-2);
   font-size: 11px;
 }
 .embed-code {
@@ -401,9 +388,9 @@ button.embed-chip:hover {
   padding: 6px 8px;
   overflow: auto;
   border-radius: 6px;
-  background: var(--surface-2);
-  color: var(--text);
-  font: 400 11.5px/1.45 var(--mono);
+  background: var(--sheet-2);
+  color: var(--ink);
+  font: 400 11.5px/1.45 var(--font-mono);
   white-space: pre;
 }
 

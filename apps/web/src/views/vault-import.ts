@@ -1,12 +1,12 @@
 // The Import .env dialog. The file or pasted text is read here for names only, sent once, then cleared.
 // No value is shown, kept after submit, or logged. The raw lines are held only for that one request.
-import '../styles/vault-import.css';
-import { button, clip, field, modal } from '../ui/components';
+import { badge, button, clip, field } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { vaultApi } from '../api';
 import type { VaultConsumer, VaultImportBody, VaultImportResult, VaultScope } from '../api';
 import { VAULT_NAME_RE, bindingLabel, errorText, nodeName } from './vault-common';
 import type { VaultCtx } from './vault-common';
+import { check, dialog, dim, errLine, fieldset, nodeHeading, radio } from './vault-ui';
 
 interface Line {
   raw: string;
@@ -33,13 +33,6 @@ function parseEnv(text: string): Line[] {
 
 const plural = (n: number) => (n === 1 ? 'name' : 'names');
 
-function checkRow(checked: boolean, label: Node, onChange: (on: boolean) => void): HTMLLabelElement {
-  const box = h('input', { type: 'checkbox' });
-  box.checked = checked;
-  box.addEventListener('change', () => onChange(box.checked));
-  return h('label.vimp-check', null, box, label);
-}
-
 export function openImportDialog(ctx: VaultCtx): void {
   const consumers: VaultConsumer[] = ctx.data.consumers;
   const nodes = ctx.data.status.nodes;
@@ -51,12 +44,12 @@ export function openImportDialog(ctx: VaultCtx): void {
   let picked = new Set<string>();
   let ticks = new Set<string>();
   let sourceName: string | null = null;
-  let scopeKind: 'plaza' | 'nodes' = 'plaza';
+  let scopeKind = 'plaza' as 'plaza' | 'nodes';
   const nodeSet = new Set<string>();
   let busy = false;
 
-  const fileInput = h('input', { type: 'file', accept: '.env,text/plain', 'aria-label': 'Choose a .env file' });
-  const ta = h('textarea.textarea.vimp-masked', {
+  const fileInput = h('input', { type: 'file', accept: '.env,text/plain', 'aria-label': 'Choose a .env file', class: 'vlt-file' });
+  const ta = h('textarea.textarea.vlt-mask', {
     rows: 6,
     autocomplete: 'off',
     spellcheck: 'false',
@@ -64,29 +57,28 @@ export function openImportDialog(ctx: VaultCtx): void {
     'aria-label': 'Paste .env contents',
     placeholder: 'NAME=value, one per line',
   });
-  const preview = h('div.vimp-preview', null);
-  const errorBox = h('p.vimp-error', { role: 'alert' });
-  errorBox.hidden = true;
+  const preview = h('div', null);
+  const errorBox = errLine();
   const nodeBox = h(
-    'div.vimp-names',
+    'div',
     null,
-    nodes.map((n) =>
-      checkRow(nodeSet.has(n.id), h('span', null, nodeName(n.id, nodes)), (on) => {
-        if (on) nodeSet.add(n.id);
+    nodes.map((n) => {
+      const row = check(nodeSet.has(n.id), nodeHeading(n.id, nodeName(n.id, nodes)), n.id);
+      row.input.addEventListener('change', () => {
+        if (row.input.checked) nodeSet.add(n.id);
         else nodeSet.delete(n.id);
-      }),
-    ),
+      });
+      return row.row;
+    }),
   );
   nodeBox.hidden = true;
   const submitBtn = button('Import', () => void submit(), { kind: 'primary' });
 
   const fail = (msg: string) => {
     errorBox.textContent = msg;
-    errorBox.hidden = false;
   };
   const hideError = () => {
     errorBox.textContent = '';
-    errorBox.hidden = true;
   };
 
   function refresh(): void {
@@ -95,62 +87,55 @@ export function openImportDialog(ctx: VaultCtx): void {
     submitBtn.disabled = ctx.locked || busy || n === 0;
   }
 
-  const bindRow = (c: VaultConsumer) =>
-    checkRow(
+  const bindRow = (c: VaultConsumer) => {
+    const row = check(
       ticks.has(c.binding),
-      h('span', null, bindingLabel(c.binding, consumers), ' ', h('span.mono.vimp-sub', null, `wants ${c.wants}`)),
-      (on) => {
-        if (on) ticks.add(c.binding);
-        else ticks.delete(c.binding);
-      },
+      h('span', null, bindingLabel(c.binding, consumers), ' ', h('span.vlt-sub.mono', null, `wants ${c.wants}`)),
+      c.binding,
     );
+    row.input.addEventListener('change', () => {
+      if (row.input.checked) ticks.add(c.binding);
+      else ticks.delete(c.binding);
+    });
+    return row.row;
+  };
 
   function renderPreview(): void {
     const parts: Node[] = [];
     if (!valid.length && !invalid.length && !problems.length) {
-      parts.push(h('p.vimp-muted', null, 'Choose a file or paste the contents to see the names.'));
+      parts.push(dim('Choose a file or paste the contents to see the names.'));
     } else {
-      const from = sourceName ? `from ${sourceName}` : 'from the pasted text';
-      parts.push(h('p.vimp-count', null, `${valid.length} ${plural(valid.length)} found ${from}. Values are not shown.`));
+      const from = sourceName ? sourceName : 'the pasted text';
+      parts.push(h('p', null, `${valid.length} ${plural(valid.length)} found from ${from}. Values are not shown.`));
       if (valid.length) {
         parts.push(
           h(
-            'div.vimp-names',
+            'div.vlt-list',
             null,
-            valid.map((n) =>
-              checkRow(picked.has(n), h('span.mono', null, n), (on) => {
-                if (on) picked.add(n);
+            valid.map((n) => {
+              const row = check(picked.has(n), h('span.mono', null, n), n);
+              row.input.addEventListener('change', () => {
+                if (row.input.checked) picked.add(n);
                 else picked.delete(n);
                 refresh();
-              }),
-            ),
+              });
+              return row.row;
+            }),
           ),
         );
       }
       if (invalid.length) {
-        parts.push(
-          h(
-            'p.vimp-muted',
-            null,
-            'Not valid names, so skipped: ',
-            invalid.map((n) => h('span.mono.vimp-chip', null, clip(n, 40))),
-          ),
-        );
+        parts.push(h('p.vlt-dim', null, 'Not valid names, so skipped: ', ...invalid.map((n) => badge(clip(n, 40), 'muted'))));
       }
       if (problems.length) {
-        parts.push(h('p.vimp-muted', null, `Skipped ${problems.length} ${problems.length === 1 ? 'line' : 'lines'}: ${problems.join(', ')}.`));
+        parts.push(dim(`Skipped ${problems.length} line(s): ${problems.join(', ')}.`));
       }
       if (valid.length) {
         parts.push(
-          h(
-            'div.vimp-section.vimp-bindings',
-            null,
-            h('h3.vimp-h', null, 'Bindings'),
-            h('p.vimp-muted', null, 'A name gets the ticked bindings that want it.'),
-            consumers.length
-              ? h('div.vimp-names', null, consumers.map(bindRow))
-              : h('p.vimp-muted', null, 'Nothing asks for a secret yet. The names import without bindings.'),
-          ),
+          fieldset('Bindings', [
+            h('p.vlt-sub', null, 'A name gets the ticked bindings that want it.'),
+            consumers.length ? h('div', null, ...consumers.map(bindRow)) : dim('Nothing asks for a secret yet. The names import without bindings.'),
+          ]),
         );
       }
     }
@@ -188,25 +173,25 @@ export function openImportDialog(ctx: VaultCtx): void {
   function showResult(res: VaultImportResult): void {
     const n = res.imported.length;
     replace(
-      body,
-      h('p.vimp-count', null, n ? `Imported ${n} ${plural(n)}.` : 'Nothing was imported.'),
+      slot,
+      h('p', null, n ? `Imported ${n} ${plural(n)}.` : 'Nothing was imported.'),
       n
         ? h(
-            'ul.vimp-list',
+            'div.vlt-list',
             null,
-            res.imported.map((i) => h('li', null, h('span.mono', null, i.name), ' ', h('span.mono.vimp-sub', null, i.id))),
+            res.imported.map((i) => h('div', null, h('span.mono', null, i.name), ' ', h('span.vlt-sub.mono', null, i.id))),
           )
         : null,
-      res.skipped.length ? h('h3.vimp-h', null, `Skipped ${res.skipped.length}`) : null,
+      res.skipped.length ? h('p', null, h('strong', null, `Skipped ${res.skipped.length}`)) : null,
       res.skipped.length
         ? h(
-            'ul.vimp-list',
+            'div.vlt-list',
             null,
-            res.skipped.map((s) => h('li', null, h('span.mono', null, s.name), ` ${s.reason}`)),
+            res.skipped.map((s) => h('div', null, h('span.mono', null, s.name), ` ${s.reason}`)),
           )
         : null,
-      h('div.vimp-foot', null, button('Done', () => close(), { kind: 'primary' })),
     );
+    footer()?.replaceChildren(h('div.vlt-res', null, button('Done', () => close(), { kind: 'primary' })));
   }
 
   async function submit(): Promise<void> {
@@ -264,50 +249,33 @@ export function openImportDialog(ctx: VaultCtx): void {
     );
   });
 
-  const radio = (value: 'plaza' | 'nodes', text: string) => {
-    const r = h('input', { type: 'radio', name: 'vimp-scope', value });
-    r.checked = value === scopeKind;
-    r.addEventListener('change', () => {
-      scopeKind = value;
-      nodeBox.hidden = value !== 'nodes';
-    });
-    return h('label.vimp-check', null, r, text);
-  };
+  const plazaRadio = radio('vlt-imp-scope', 'plaza', scopeKind === 'plaza', 'Plaza (every node)', () => {
+    scopeKind = 'plaza';
+    nodeBox.hidden = true;
+  });
+  const nodesRadio = radio('vlt-imp-scope', 'nodes', scopeKind === 'nodes', 'Specific nodes', () => {
+    scopeKind = 'nodes';
+    nodeBox.hidden = false;
+  });
 
-  const body = h(
-    'div.vimp-body',
+  const slot = h(
+    'div.vlt-form',
     null,
     h(
-      'div.vimp-warn',
+      'div.vlt-banner',
       { role: 'note' },
-      h('p', null, '.env files are discouraged. A file can be copied, synced or kept in backups. Delete it after the import.'),
-      h(
-        'p',
-        null,
-        'The clean path is ',
-        h('code', null, 'apz vault import FILE.env --shred'),
-        ', which overwrites and deletes the file after a verified import.',
-      ),
+      h('span', null, '.env files are discouraged. A file can be copied, synced or kept in backups. Delete it after the import.'),
+      h('span', null, 'The clean path is ', h('code', null, 'apz vault import FILE.env --shred'), ', which overwrites and deletes the file after a verified import.'),
     ),
-    ctx.locked ? h('p.vimp-muted', null, 'Unseal the vault to import.') : null,
-    h(
-      'div.vimp-section',
-      null,
-      field('.env file', fileInput, 'Read on this device. Nothing is sent until you import.'),
-      field('Or paste the contents', ta, 'Typed and pasted values show as dots.'),
-    ),
+    ctx.locked ? dim('Unseal the vault to import.') : null,
+    field('.env file', fileInput, 'Read on this device. Nothing is sent until you import.'),
+    field('Or paste the contents', ta, 'Typed and pasted values show as dots.'),
     preview,
-    h(
-      'div.vimp-section',
-      null,
-      h('h3.vimp-h', null, 'Scope'),
-      h('div.vimp-names', null, radio('plaza', 'Plaza (every node)'), radio('nodes', 'Specific nodes')),
-      nodeBox,
-    ),
+    fieldset('Scope', [plazaRadio.row, nodesRadio.row, nodeBox]),
     errorBox,
-    h('div.vimp-foot', null, button('Cancel', () => close(), { kind: 'ghost' }), submitBtn),
   );
 
-  const close = modal('Import .env', body, () => clearSource());
+  const footer = () => slot.closest('.sheet')?.querySelector('footer.sheet-f') ?? null;
+  const close = dialog('Import .env', [slot], [h('div.vlt-res', null, button('Cancel', () => close(), { kind: 'ghost' }), submitBtn)], () => clearSource());
   renderPreview();
 }

@@ -409,10 +409,20 @@ fn the_owner_authorizes_github_gitlab_and_forgejo_and_connects_what_they_chose()
         "{exported}\n{}",
         hub.log()
     );
-    let log = git(
-        &site_bare,
-        &["log", "-1", "--format=%an <%ae>|%cn <%ce>|%s"],
-    );
+    // The export records where it began (the imported commit) before it pushes, so `exported` can count 1 while
+    // the push is still going: wait for the commit itself on the remote.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut log = String::new();
+    while std::time::Instant::now() < deadline {
+        log = git(
+            &site_bare,
+            &["log", "-1", "--format=%an <%ae>|%cn <%ce>|%s"],
+        );
+        if log.ends_with("|Add the roadmap") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     assert_eq!(
         log,
         "Irfan S <irfan@x.test>|Irfan S <irfan@x.test>|Add the roadmap"

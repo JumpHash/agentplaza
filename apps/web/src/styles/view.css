@@ -1,0 +1,24 @@
+/* An artifact page and its panels. The head is the prototype's view-head; each panel is a Metrics card (mt-card, from
+   styles/proto/metrics.css); this file gives the artifact-only bodies (image, lightbox, still card) their look. */
+
+.view-artifact { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.view-artifact .view-grid { row-gap: 14px; }
+.view-artifact .mt-card { min-width: 0; }
+.view-artifact .view-head .cluster { align-self: flex-start; }
+
+.view-image { margin: 0; min-width: 0; cursor: zoom-in; }
+.view-image img { display: block; max-width: 100%; height: auto; border-radius: var(--radius); border: 1px solid var(--rule); }
+.view-image figcaption { margin-top: 6px; }
+.view-image:focus-visible { outline: 2px solid var(--signal); outline-offset: 4px; border-radius: var(--radius); }
+
+.view-lightbox { cursor: zoom-out; }
+.view-lightbox img { max-width: min(96vw, 1400px); max-height: 90vh; border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); }
+.view-lightbox-close { position: absolute; top: 16px; right: 16px; background: var(--raised); border: 1px solid var(--rule); }
+
+.view-still { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px; border: 1px dashed var(--rule-strong); border-radius: var(--radius-lg); }
+.view-still-img img { display: block; width: 100%; height: auto; border-radius: var(--radius); border: 1px solid var(--rule); }
+.view-still-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.view-still-meta code { overflow-wrap: anywhere; }
+.view-run { align-self: flex-start; }
+
+.view-doc { min-width: 0; }

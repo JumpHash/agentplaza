@@ -2,7 +2,6 @@
 // conversation is compressed), controls for its running work (compress, steer, more
 // turns) and its loops.
 
-import '../styles/agent-harness.css';
 import { api, type HarnessLimits, type HarnessLoop } from '../api';
 import { on } from '../store';
 import { ago, attempt, badge, button, clip, field, input, modal, textarea, toast, type Tone } from '../ui/components';
@@ -82,7 +81,7 @@ export function harnessCard(cid: number): HarnessCard {
   const saveLimitsBtn = button('Save limits', () => void saveLimits(), { kind: 'primary', size: 'sm', title: 'Save the filled limits' });
 
   // ---- Running work: enabled only while the agent is working ----
-  const idle = h('p.faint', null, 'Available while the agent is working.');
+  const idle = h('p.hint', null, 'Available while the agent is working.');
 
   const control = async (body: ControlBody, fallback: string): Promise<boolean> => {
     try {
@@ -112,7 +111,7 @@ export function harnessCard(cid: number): HarnessCard {
   const busy: (HTMLButtonElement | HTMLInputElement)[] = [compressBtn, extendBtn, steerIn, steerBtn];
 
   // ---- Loops: this agent's, newest first ----
-  const loopHost = h('div.harness-loops-host', null, h('p.faint', null, 'Loading…'));
+  const loopHost = h('div', null, h('p.muted', null, 'Loading…'));
 
   const stopLoop = async (loop: HarnessLoop): Promise<void> => {
     await attempt(() => api.stopLoop(loop.id), 'Loop stopped');
@@ -122,19 +121,23 @@ export function harnessCard(cid: number): HarnessCard {
   const loopRow = (loop: HarnessLoop): HTMLElement => {
     const runs = `${loop.runs}/${loop.max_runs > 0 ? loop.max_runs : '∞'}`;
     return h(
-      'li.harness-loop',
+      'div.ag-row',
       null,
-      h('p.harness-prompt', { title: loop.prompt }, clip(loop.prompt, 80)),
       h(
-        'div.harness-loop-meta',
-        null,
-        badge(loop.state, STATE_TONE[loop.state]),
-        h('span', null, `every ${Math.round(loop.every_secs / 60)} min`),
-        h('span', { title: 'Runs so far / maximum (∞ until the agent says LOOP DONE)' }, `runs ${runs}`),
-        loop.last_work != null ? h('span', null, `last ${ago(loop.last_work)}`) : null,
-        loop.state === 'running' ? button('Stop', () => void stopLoop(loop), { kind: 'danger', size: 'sm', title: 'Stop this loop' }) : null,
+        'div',
+        { style: 'min-width:0' },
+        h('div.ag-clip', { title: loop.prompt }, clip(loop.prompt, 80)),
+        h(
+          'div.ag-row-sub',
+          null,
+          badge(loop.state, STATE_TONE[loop.state]),
+          ` every ${Math.round(loop.every_secs / 60)} min · `,
+          h('span', { title: 'Runs so far / maximum (∞ until the agent says LOOP DONE)' }, `runs ${runs}`),
+          loop.last_work != null ? ` · last ${ago(loop.last_work)}` : null,
+        ),
+        loop.last_summary ? h('div.ag-row-sub', { title: loop.last_summary }, clip(loop.last_summary, 120)) : null,
       ),
-      loop.last_summary ? h('p.harness-summary', { title: loop.last_summary }, clip(loop.last_summary, 120)) : null,
+      loop.state === 'running' ? button('Stop', () => void stopLoop(loop), { kind: 'danger', size: 'sm', title: 'Stop this loop' }) : null,
     );
   };
 
@@ -144,7 +147,7 @@ export function harnessCard(cid: number): HarnessCard {
       const all = await api.loops();
       if (!alive || seq !== loopSeq) return;
       const mine = all.filter((loop) => loop.cid === cid).sort((a, b) => b.created_ms - a.created_ms);
-      replace(loopHost, mine.length ? h('ul.harness-loops', null, mine.map(loopRow)) : h('p.faint', null, 'No loops for this agent.'));
+      replace(loopHost, mine.length ? mine.map(loopRow) : h('p.muted', null, 'No loops for this agent.'));
     } catch (err) {
       if (!alive || seq !== loopSeq) return;
       replace(loopHost, h('p.danger', null, message(err)));
@@ -169,46 +172,31 @@ export function harnessCard(cid: number): HarnessCard {
       }
     };
     const body = h(
-      'div.harness-new',
+      'div.ag-stack',
       null,
       field('Prompt', prompt),
-      h(
-        'div.harness-limits',
-        null,
-        field('Every (minutes)', every),
-        field('Max runs', maxRuns, '0 = until the agent says LOOP DONE'),
-      ),
-      h('div.harness-row', null, h('span.harness-grow'), button('Start loop', () => void start(), { kind: 'primary', size: 'sm' })),
+      field('Every (minutes)', every),
+      field('Max runs', maxRuns, '0 = until the agent says LOOP DONE'),
+      h('div.cluster', { style: 'justify-content:flex-end' }, button('Start loop', () => void start(), { kind: 'primary', size: 'sm' })),
     );
     const close = modal('New loop', body);
   };
 
-  const newLoopBtn = button('New loop', () => openNewLoop(), { size: 'sm', title: 'Start a recurring prompt for this agent' });
+  const newLoopBtn = button('New loop', () => openNewLoop(), { title: 'Start a recurring prompt for this agent' });
 
   const el = h(
-    'div.harness',
+    'div.ag-stack',
     null,
-    h(
-      'div.harness-group',
-      null,
-      h('h3.harness-label', null, 'Limits'),
-      h('div.harness-limits', null, field('Turns per work item', turnsIn), field('Compress at (KB)', compressIn), field('Keep recent turns', keepIn)),
-      h('div.harness-row', null, h('span.harness-grow'), saveLimitsBtn),
-    ),
-    h(
-      'div.harness-group',
-      null,
-      h('h3.harness-label', null, 'Running work'),
-      idle,
-      h('div.harness-row', null, compressBtn, extendBtn),
-      h('div.harness-steer', null, steerIn, steerBtn),
-    ),
-    h(
-      'div.harness-group',
-      null,
-      h('div.harness-row', null, h('h3.harness-label.harness-grow', null, 'Loops'), newLoopBtn),
-      loopHost,
-    ),
+    h('h4', null, 'Limits'),
+    h('div.ag-grid3', null, field('Turns per work item', turnsIn), field('Compress at (KB)', compressIn), field('Keep recent turns', keepIn)),
+    h('div.cluster', { style: 'justify-content:flex-end' }, saveLimitsBtn),
+    h('h4', null, 'Running work'),
+    idle,
+    h('div.cluster', null, compressBtn, extendBtn),
+    h('div.ag-compose', null, steerIn, steerBtn),
+    h('h4', null, 'Loops'),
+    h('div', null, newLoopBtn),
+    loopHost,
   );
 
   const off = on('loop', () => void loadLoops());

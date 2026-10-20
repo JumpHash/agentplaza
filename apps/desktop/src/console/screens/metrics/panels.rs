@@ -15,7 +15,9 @@ use super::grid_row::GridRow;
 use super::measure::{self, ColumnWidth};
 use super::{Msg, State, charts, figures, panels_ops, status, tone};
 use crate::console::ui::{self, Kind};
-use crate::theme::{MONO, SANS, SANS_SEMIBOLD, TYPE_BADGE, TYPE_META, TYPE_UI, palette};
+use crate::theme::{
+    MONO, SANS, SANS_SEMIBOLD, TYPE_BADGE, TYPE_META, TYPE_SECTION, TYPE_UI, palette,
+};
 
 /// Bar and split widths are counted in thousandths of the track.
 const PORTIONS: u16 = 1000;
@@ -91,9 +93,9 @@ pub fn panel<'a>(p: &'a Panel, state: &'a State) -> Element<'a, Msg> {
     }
 
     container(column(lines).spacing(8).width(Length::Fill))
-        .padding([12.0, 14.0])
+        .padding([12.0, 16.0])
         .width(Length::Fill)
-        .style(ui::frame(Some(pal.sheet), pal.rule))
+        .style(card_surface)
         .into()
 }
 
@@ -137,6 +139,12 @@ fn body<'a>(p: &'a Panel, state: &'a State) -> Element<'a, Msg> {
         Body::Traces(t) => panels_ops::traces(t, state),
         Body::Events { kinds, rows } => panels_ops::events(kinds, rows, state),
         Body::Empty { text: message } => empty_line(message.as_str()),
+        Body::Image(_)
+        | Body::Graph(_)
+        | Body::Dataset(_)
+        | Body::Document { .. }
+        | Body::Code(_)
+        | Body::Html(_) => crate::console::view::body(&p.body),
     }
 }
 
@@ -218,9 +226,33 @@ fn surface(edged: bool, lit: bool) -> button::Style {
     }
 }
 
-/// A bordered button, for health cells, tiles and flags.
-fn boxed(_: &Theme, st: button::Status) -> button::Style {
-    surface(true, hovered(st))
+/// The web's `.mt-card`: the sheet fill, a 1 px rule edge, the large radius.
+fn card_surface(_: &Theme) -> container::Style {
+    let pal = palette();
+    container::Style {
+        background: Some(pal.sheet.into()),
+        border: Border {
+            color: pal.rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// The web's `.mt-tile` and `.mt-hi`: a raised fill with the rule edge, the large radius, no hover tint.
+fn raised_tile(_: &Theme, _st: button::Status) -> button::Style {
+    let pal = palette();
+    button::Style {
+        background: Some(pal.raised.into()),
+        text_color: pal.ink,
+        border: Border {
+            color: pal.rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
+        ..Default::default()
+    }
 }
 
 /// A row button with no edge: the hover tint marks it, and a selected row stays tinted.
@@ -308,45 +340,65 @@ fn change_line<'a>(t: &'a Tile, compare: Option<&'a str>) -> Element<'a, Msg> {
 
 /// The health row: one button per area, with its status dot, the area and its text. A press opens the tab.
 fn health<'a>(items: &'a [HealthItem]) -> Element<'a, Msg> {
+    // As the web's `.mt-health` (auto-fit, 200 px minimum, gap 12): as many columns as fit, every cell as tall as
+    // the tallest in its row.
+    responsive(move |size: Size| {
+        let per_row = (((size.width + GAP) / (HEALTH_MIN_W + GAP)).floor() as usize)
+            .clamp(1, items.len().max(1));
+        let cells: Vec<Element<'a, Msg>> = items.iter().map(health_cell).collect();
+        let mut rows: Vec<Element<'a, Msg>> = Vec::new();
+        let mut cells = cells;
+        while !cells.is_empty() {
+            let rest = cells.split_off(per_row.min(cells.len()));
+            rows.push(GridRow::even(cells, per_row, GAP).into());
+            cells = rest;
+        }
+        column(rows).spacing(GAP).width(Length::Fill).into()
+    })
+    .width(Length::Fill)
+    .height(Length::Shrink)
+    .into()
+}
+
+/// The narrowest a health cell may be before it wraps to the next row.
+const HEALTH_MIN_W: f32 = 200.0;
+
+/// The gap between tiles and health cells (the web's `--gap`).
+const GAP: f32 = 12.0;
+
+/// One health cell, as the web's `.mt-hi`: a status dot with the area, the status text under it; a press opens its tab.
+fn health_cell<'a>(item: &'a HealthItem) -> Element<'a, Msg> {
     let pal = palette();
-    let cells: Vec<Element<'a, Msg>> = items
-        .iter()
-        .map(|item| {
-            let color = status(item.status);
-            let dot = container(Space::new())
-                .width(Length::Fixed(8.0))
-                .height(Length::Fixed(8.0))
-                .style(move |_: &Theme| container::Style {
-                    background: Some(color.into()),
-                    border: Border {
-                        radius: 4.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                });
-            let label = row![
-                dot,
-                text(item.area.as_str())
-                    .font(SANS_SEMIBOLD)
-                    .size(TYPE_UI)
-                    .color(pal.ink)
-            ]
-            .spacing(7)
-            .align_y(Alignment::Center);
-            let content = column![label, meta(item.text.as_str(), pal.ink_3)]
-                .spacing(4)
-                .width(Length::Fill);
-            let cell = button(content)
-                .width(Length::Fill)
-                .padding([10.0, 12.0])
-                .style(boxed)
-                .on_press(Msg::Tab(item.tab.clone()));
-            cell.into()
-        })
-        .collect();
-    // One equal column per area, every cell as tall as the tallest.
-    let n = cells.len();
-    GridRow::even(cells, n, 8.0).into()
+    let color = status(item.status);
+    let dot = container(Space::new())
+        .width(Length::Fixed(8.0))
+        .height(Length::Fixed(8.0))
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            border: Border {
+                radius: 4.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    let label = row![
+        dot,
+        text(item.area.as_str())
+            .font(SANS_SEMIBOLD)
+            .size(TYPE_UI)
+            .color(pal.ink)
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    let content = column![label, meta(item.text.as_str(), pal.ink_3)]
+        .spacing(4)
+        .width(Length::Fill);
+    button(content)
+        .width(Length::Fill)
+        .padding([14.0, 16.0])
+        .style(raised_tile)
+        .on_press(Msg::Tab(item.tab.clone()))
+        .into()
 }
 
 /// The tiles, sharing each row equally. Under 1000 px the row holds three tiles, so the tiles wrap; the last row is
@@ -363,9 +415,9 @@ fn tiles_row<'a>(tiles: &'a [Tile], compare: Option<&'a str>) -> Element<'a, Msg
         // Every tile in a row as tall as the tallest, as the web's grid stretches them.
         for chunk in tiles.chunks(per_row) {
             let cells: Vec<Element<'a, Msg>> = chunk.iter().map(|t| tile(t, compare)).collect();
-            rows.push(GridRow::even(cells, per_row, 8.0).into());
+            rows.push(GridRow::even(cells, per_row, GAP).into());
         }
-        column(rows).spacing(8).width(Length::Fill).into()
+        column(rows).spacing(GAP).width(Length::Fill).into()
     })
     .width(Length::Fill)
     .height(Length::Shrink)
@@ -393,7 +445,7 @@ fn tile<'a>(t: &'a Tile, compare: Option<&'a str>) -> Element<'a, Msg> {
         meta(t.label.as_str(), pal.ink_3).into(),
         text(t.value.as_str())
             .font(SANS_SEMIBOLD)
-            .size(22.0)
+            .size(TYPE_SECTION)
             .color(pal.ink)
             .into(),
         change_line(t, compare),
@@ -401,8 +453,8 @@ fn tile<'a>(t: &'a Tile, compare: Option<&'a str>) -> Element<'a, Msg> {
     ];
     let body = button(column(lines).spacing(4).width(Length::Fill))
         .width(Length::Fill)
-        .padding([10.0, 12.0])
-        .style(boxed);
+        .padding([14.0, 16.0])
+        .style(raised_tile);
     let tile: Element<'a, Msg> = match &t.tab {
         Some(tab) => body.on_press(Msg::Tab(tab.clone())).into(),
         None => body.into(),

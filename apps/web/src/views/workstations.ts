@@ -5,15 +5,14 @@
 // settings (the takeover policy, recording and rate) and its audit. `#/workstations/<id>/recordings/<rid>` plays
 // one recording. Refreshes on the station, lease and sync frames, and every few seconds.
 
-import '../styles/workstations.css';
+import '../styles/proto/settings-d.css';
 import { api, ApiError, type Agent, type StationAuditRow, type StationCode, type StationLease, type StationView, type Takeover } from '../api';
 import { href } from '../router';
 import { on } from '../store';
-import { ago, attempt, badge, button, card, empty, field, input, modal, select, table, toast, type Column } from '../ui/components';
+import { attempt, badge, card, field, input, select, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import {
   accountBadge,
-  accountText,
   auditLabel,
   codeChip,
   countdown,
@@ -28,7 +27,6 @@ import {
   nameProblem,
   osText,
   pictureNote,
-  ramText,
   RATE_MAX,
   RECORD_FPS,
   rateText,
@@ -50,6 +48,7 @@ import { liveView, type LiveHandle } from './workstations-live';
 import { playbackScreen, recordingDefaultsCard, recordingsCard } from './workstations-recordings';
 import { syncCard } from './workstations-sync';
 import { vmsSection } from './workstations-vms';
+import { ago, btn, check, dialog, empty, head, kv, muted, ptable, type PCol } from './workstations-ui';
 import type { Cleanup } from './index';
 
 const POLL_MS = 10_000;
@@ -70,6 +69,9 @@ const EVENTS = [
   'station_sync_paused',
 ];
 
+/** The OS's name alone, as a picture box shows it. */
+const OS_NAME: Record<string, string> = { macos: 'macOS', windows: 'Windows', linux: 'Linux' };
+
 /** Calls `fn` a moment after the last change frame, so a burst of them is one refresh. Returns the unsubscribe. */
 function onChanges(fn: () => void): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -87,14 +89,20 @@ function onChanges(fn: () => void): () => void {
   };
 }
 
+/** A copy button for one piece of text. */
+function copyButton(value: string): HTMLButtonElement {
+  return btn('Copy', () => void attempt(() => navigator.clipboard.writeText(value), 'Copied'), { kind: 'ghost', sm: true });
+}
+
 /** A value to copy: a mono box with a Copy button. */
 function copyBox(value: string): HTMLElement {
-  return h(
-    'div.ws-copy',
-    null,
-    h('code', null, value),
-    button('Copy', () => void attempt(() => navigator.clipboard.writeText(value), 'Copied'), { kind: 'ghost', size: 'sm' }),
-  );
+  return h('div.ws-cluster', null, h('div.ws-code', null, value), copyButton(value));
+}
+
+/** Puts a hint under a field (the hint's words change as the owner types). */
+function withHint(f: HTMLLabelElement, hint: HTMLElement): HTMLLabelElement {
+  f.append(hint);
+  return f;
 }
 
 export function mount(root: HTMLElement, params: string[]): Cleanup {
@@ -111,9 +119,8 @@ function listScreen(root: HTMLElement): Cleanup {
   // null: the last request failed.
   let stations: StationView[] | null = null;
   let codes: StationCode[] | null = null;
-  // The open dialog and the countdown it runs, closed on leaving the screen.
+  // The open dialog, closed on leaving the screen.
   let closeDialog: (() => void) | null = null;
-  let stopTick: (() => void) | null = null;
   // The last picture of each online workstation, as an object URL, and when the pictures were last asked for.
   const pictures = new Map<string, string>();
   let picturesAt = 0;
@@ -122,31 +129,31 @@ function listScreen(root: HTMLElement): Cleanup {
   const codesBody = h('div');
   const defaults: Section = recordingDefaultsCard();
   const vms = vmsSection();
+
   root.append(
+    head('Workstations', [btn('New VM', () => vms.openNew()), btn('Add workstation', () => openAdd(), { kind: 'primary' })]),
+    h('p.ws-lede', null, 'The machines agents work on through this hub. A workstation gives its screen to agents one lease at a time, and you can take it over at any moment.'),
     h(
-      'div.view-head.ws-head',
+      'div.ws-stack',
       null,
-      h('h1', null, 'Workstations'),
-      h('div.ws-actions', null, button('New VM', () => vms.openNew()), button('Add workstation', () => openAdd(), { kind: 'primary' })),
+      card('Workstations', listBody, { flush: true }),
+      vms.el,
+      card('Join codes', codesBody, { flush: true }),
+      defaults.el,
     ),
-    h('p.ws-lede', null, 'Machines that agents operate through the hub: their screen, shell, files and every program installed there.'),
-    card('Workstations', listBody, { flush: true }),
-    vms.el,
-    card('Join codes', codesBody, { flush: true }),
-    defaults.el,
   );
 
   /**
-   * A row's picture box, always there so the rows line up: the screen as it was last asked for, or a neutral box with
-   * the OS and why there is no picture (no session open, offline, revoked).
+   * A row's picture box, always there so the rows line up: the screen as it was last asked for, or the OS and why there
+   * is no picture (no session open, offline, revoked).
    */
-  const thumb = (s: StationView): HTMLElement => {
+  const picture = (s: StationView): HTMLElement => {
     const url = s.online && !s.revoked ? pictures.get(s.id) : undefined;
     return h(
-      'span.ws-row-thumb',
-      null,
-      h('img', { 'data-thumb': s.id, alt: `Screen of ${s.name}`, src: url ?? null, hidden: url === undefined }),
-      h('span.ws-thumb-empty', null, h('span.ws-thumb-os', null, osText(s.facts)), h('span.ws-thumb-note', null, pictureNote(s))),
+      'div',
+      { class: url ? 'ws-pic on' : 'ws-pic' },
+      url ? h('img', { 'data-thumb': s.id, alt: `Screen of ${s.name}`, src: url, role: 'img' }) : null,
+      url ? null : h('span', null, OS_NAME[s.facts.os] ?? '', h('br'), pictureNote(s)),
     );
   };
 
@@ -158,20 +165,15 @@ function listScreen(root: HTMLElement): Cleanup {
       stations
         .filter((s) => s.online && !s.revoked)
         .map(async (s) => {
-          const picture = await api.stationThumbnail(s.id);
+          const shot = await api.stationThumbnail(s.id);
           if (!alive) return;
           const previous = pictures.get(s.id);
-          if (picture) pictures.set(s.id, URL.createObjectURL(picture));
+          if (shot) pictures.set(s.id, URL.createObjectURL(shot));
           else pictures.delete(s.id);
           if (previous) URL.revokeObjectURL(previous);
-          const url = pictures.get(s.id);
-          listBody.querySelectorAll<HTMLImageElement>('img[data-thumb]').forEach((img) => {
-            if (img.dataset.thumb !== s.id) return;
-            if (url) img.src = url;
-            img.hidden = !url;
-          });
         }),
     );
+    if (alive) renderList();
   };
 
   const row = (s: StationView): HTMLElement => {
@@ -179,21 +181,17 @@ function listScreen(root: HTMLElement): Cleanup {
     const owner = accountBadge(s.facts.account);
     const leases = leaseCount(s.leases);
     return h(
-      'li.ws-row',
+      'div.ws-row',
       null,
+      picture(s),
       h(
-        'a.ws-row-link',
-        { href: href('workstations', s.id) },
-        thumb(s),
-        h(
-          'span.ws-row-main',
-          null,
-          h('strong', null, s.name),
-          h('span.faint', null, stationSummary(s.facts)),
-          h('span.ws-row-meta', null, `${leases.holding} active · ${leases.waiting} queued · seen ${ago(s.last_seen_ms)}`),
-        ),
-        h('span.ws-row-side', null, badge(chip.label, chip.tone, true), owner ? badge(owner.text, owner.tone) : null),
+        'div.ws-info',
+        null,
+        h('a.ws-name', { href: href('workstations', s.id) }, s.name),
+        h('div.ws-sum', null, stationSummary(s.facts)),
+        h('div.ws-meta', null, `${leases.holding} active · ${leases.waiting} queued · seen ${ago(s.last_seen_ms)}`),
       ),
+      h('div.ws-chips', null, badge(chip.label, chip.tone, true), owner ? badge(owner.text, owner.tone) : null),
     );
   };
 
@@ -203,7 +201,7 @@ function listScreen(root: HTMLElement): Cleanup {
     if (!stations.length) {
       return replace(listBody, empty('machine', 'No workstations yet', 'Add one here, then run the join command on the machine.'));
     }
-    replace(listBody, h('ul.ws-list', null, sortStations(stations).map(row)));
+    replace(listBody, sortStations(stations).map(row));
   };
 
   const revokeCode = async (c: StationCode): Promise<void> => {
@@ -211,79 +209,77 @@ function listScreen(root: HTMLElement): Cleanup {
     void load();
   };
 
+  const codeColumns = (): PCol<StationCode>[] => [
+    { label: 'Label', cell: (c) => (c.label ? h('b', null, c.label) : 'no label') },
+    { label: 'ID', cell: (c) => h('span.ws-mono.muted', null, c.id) },
+    { label: 'Created', cell: (c) => ago(c.created_ms) },
+    {
+      label: 'Expires',
+      cell: (c) => (c.state === 'active' ? ['in ', h('span', { 'data-cd': c.expires_ms }, countdown(c.expires_ms - Date.now()))] : ago(c.expires_ms)),
+    },
+    {
+      label: 'State',
+      cell: (c) => {
+        const chip = codeChip(c.state);
+        return [badge(chip.label, chip.tone, true), ...(c.used_by ? [h('span.muted', null, ` by ${c.used_by}`)] : [])];
+      },
+    },
+    { label: '', cls: 'num', cell: (c) => (c.state === 'active' ? btn('Revoke', () => void revokeCode(c), { kind: 'danger', sm: true }) : '') },
+  ];
+
   const renderCodes = (): void => {
     if (!ready) return;
-    const columns: Column<StationCode>[] = [
-      { label: 'Label', cell: (c) => h('strong', null, c.label || 'no label') },
-      { label: 'ID', cell: (c) => h('span.faint', null, c.id) },
-      { label: 'Created', cell: (c) => ago(c.created_ms) },
-      { label: 'Expires', cell: (c) => (c.state === 'active' ? `in ${countdown(c.expires_ms - Date.now())}` : ago(c.expires_ms)) },
-      {
-        label: 'State',
-        cell: (c) => {
-          const chip = codeChip(c.state);
-          return h('span', null, badge(chip.label, chip.tone, true), c.used_by ? h('span.faint', null, ` by ${c.used_by}`) : null);
-        },
-      },
-      { label: '', cell: (c) => (c.state === 'active' ? button('Revoke', () => void revokeCode(c), { kind: 'danger', size: 'sm' }) : null) },
-    ];
-    replace(
-      codesBody,
-      codes === null
-        ? empty('alert', 'Could not load the join codes.')
-        : codes.length
-          ? h('div.ws-scroll', null, table(columns, [...codes].sort((a, b) => b.created_ms - a.created_ms)))
-          : empty('link', 'No join codes yet', 'Codes made with "Add workstation" are listed here.'),
-    );
+    if (codes === null) return replace(codesBody, empty('alert', 'Could not load the join codes.'));
+    if (!codes.length) return replace(codesBody, empty('link', 'No join codes yet', 'Codes made with "Add workstation" are listed here.'));
+    replace(codesBody, ptable(codeColumns(), [...codes].sort((a, b) => b.created_ms - a.created_ms)));
   };
 
-  /** Opens the add dialog's countdown on the issued code: mm:ss until it expires. */
-  const issued = (token: string, expiresMs: number): HTMLElement => {
-    const left = h('span');
-    const paint = (): void => {
-      left.textContent = countdown(expiresMs - Date.now());
-    };
-    paint();
-    stopTick?.();
-    const timer = setInterval(paint, 1000);
-    stopTick = () => clearInterval(timer);
-    return h(
-      'div.stack',
-      null,
-      h('p.ws-warn', null, 'Shown once. Single use. Anyone with it can enroll a machine until it expires.'),
-      copyBox(token),
-      h('p.faint', null, 'Expires in ', left),
-      h('p', null, 'On the machine, run:'),
-      copyBox(joinCommand(token)),
-      h('p.faint', null, 'The machine appears in the list once it joins.'),
+  /** The add dialog once a code is made: the token shown once, the command to run on the machine. */
+  const showIssued = (token: string, expiresMs: number): void => {
+    closeDialog?.();
+    const close = dialog(
+      'Add a workstation',
+      [
+        muted('Shown once. Single use. Anyone with it can enroll a machine until it expires.'),
+        copyBox(token),
+        h('p', null, 'Expires in ', h('span', { 'data-cd': expiresMs }, countdown(expiresMs - Date.now()))),
+        h('p', null, 'On the machine, run:'),
+        copyBox(joinCommand(token)),
+        muted('The machine appears in the list once it joins.'),
+      ],
+      [btn('Close', () => close(), { kind: 'ghost' })],
+      () => {
+        closeDialog = null;
+      },
     );
+    closeDialog = close;
   };
 
   const openAdd = (): void => {
+    closeDialog?.();
     const label = input({ placeholder: 'studio-mac', maxlength: MAX_NAME_CHARS, 'aria-label': 'Label', autocomplete: 'off' });
     const minutes = select(
       TTL_OPTIONS.map((m) => ({ value: String(m), label: `${m} minutes` })),
       '30',
     );
-    const pane = h('div.stack');
     const create = async (): Promise<void> => {
       const made = await attempt(() => api.issueStationCode(label.value.trim(), Number(minutes.value)));
       if (!made) return;
-      replace(pane, issued(made.token, made.expires_ms));
+      showIssued(made.token, made.expires_ms);
       void load();
     };
-    replace(
-      pane,
-      field('Label', label, 'What the machine is called in this list until it names itself. Optional.'),
-      field('Valid for', minutes, 'How long the code can enroll a machine.'),
-      h('div.ws-buttons', null, button('Create join code', () => void create(), { kind: 'primary' })),
+    const close = dialog(
+      'Add a workstation',
+      [
+        field('Label', label, 'What the machine is called in this list until it names itself. Optional.'),
+        field('Valid for', minutes, 'How long the code can enroll a machine.'),
+      ],
+      [btn('Cancel', () => close(), { kind: 'ghost' }), btn('Create join code', () => void create(), { kind: 'primary' })],
+      () => {
+        closeDialog = null;
+      },
     );
-    closeDialog?.();
-    closeDialog = modal('Add a workstation', pane, () => {
-      stopTick?.();
-      stopTick = null;
-      closeDialog = null;
-    });
+    closeDialog = close;
   };
 
   const load = async (): Promise<void> => {
@@ -304,13 +300,19 @@ function listScreen(root: HTMLElement): Cleanup {
   const pictureTimer = setInterval(() => {
     if (document.visibilityState === 'visible') void refreshPictures();
   }, THUMB_MS);
+  // The countdowns of the join codes (the list's and an open dialog's) tick every second.
+  const ticker = setInterval(() => {
+    document.querySelectorAll<HTMLElement>('[data-cd]').forEach((el) => {
+      el.textContent = countdown(Number(el.dataset.cd) - Date.now());
+    });
+  }, 1000);
   const offChanges = onChanges(() => void load());
   return () => {
     alive = false;
     clearInterval(poll);
     clearInterval(pictureTimer);
+    clearInterval(ticker);
     offChanges();
-    stopTick?.();
     closeDialog?.();
     defaults.dispose();
     vms.dispose();
@@ -335,8 +337,8 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
 
   const back = h('a.ws-back', { href: href('workstations') }, 'All workstations');
   const title = h('h1');
-  const chipBox = h('span.ws-chips');
-  const actionsBox = h('div.ws-actions');
+  const chipBox = h('div.ws-chips-l');
+  const actionsBox = h('div.page-actions');
   const factsBody = h('div');
   const leasesBody = h('div');
   const auditBody = h('div');
@@ -349,52 +351,48 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
 
   // ---- settings: built once, filled from the station on each refresh unless the owner is editing ----
   const takeover = select(TAKEOVER_OPTIONS.map((o) => ({ value: o.value, label: o.label })));
-  const takeoverHint = h('span.hint');
+  const takeoverHint = h('small.hint');
   const record = h('input', { type: 'checkbox' });
   const takeovers = h('input', { type: 'checkbox' });
   const snapshot = h('input', { type: 'checkbox' });
   const retention = input({ type: 'number', min: RETENTION_DAYS.min, max: RETENTION_DAYS.max, step: 1, inputmode: 'numeric', 'aria-label': 'Keep recordings for, in days' });
   const fps = input({ type: 'number', min: RECORD_FPS.min, max: RECORD_FPS.max, step: 1, inputmode: 'numeric', 'aria-label': 'Frames per second' });
   const rate = input({ type: 'number', min: 0, max: RATE_MAX, step: 1, inputmode: 'numeric', 'aria-label': 'Rate, in credits an hour' });
-  const rateHint = h('span.hint');
+  const rateHint = h('small.hint');
   const folder = input({ maxlength: WORK_FOLDER_MAX, placeholder: '~/AgentPlaza', 'aria-label': 'Work folder', autocomplete: 'off', spellcheck: 'false' });
-  const settingsError = h('p.error-text');
-  const saveButton = button('Save settings', () => void save(), { kind: 'primary' });
+  const settingsError = h('div.ws-problem');
+  const saveButton = btn('Save settings', () => void save(), { kind: 'primary' });
   const settingsFields = h(
-    'fieldset.ws-settings',
+    'fieldset.ws-fieldset',
     null,
-    h(
-      'label.field',
-      null,
-      h('span', null, 'Takeover policy'),
-      takeover,
-      takeoverHint,
-    ),
-    h(
-      'div.ws-form',
-      null,
-      h('label.ws-check', null, record, h('span', null, 'Record screen sessions')),
-      h('label.ws-check', null, takeovers, h('span', null, "Record the owner's takeovers too")),
-      field('Keep recordings for (days)', retention, `${RETENTION_DAYS.min} to ${RETENTION_DAYS.max}. Older recordings are deleted.`),
-      field('Frames per second', fps, `${RECORD_FPS.min} to ${RECORD_FPS.max}. What a recording keeps.`),
-      h('label.field', null, h('span', null, 'Rate, credits an hour'), rate, rateHint),
-    ),
+    withHint(field('Takeover policy', takeover), takeoverHint),
+    check(record, 'Record screen sessions'),
+    check(takeovers, "Record the owner's takeovers too"),
+    field('Keep recordings for (days)', retention, `${RETENTION_DAYS.min} to ${RETENTION_DAYS.max}. Older recordings are deleted.`),
+    field('Frames per second', fps, `${RECORD_FPS.min} to ${RECORD_FPS.max}. What a recording keeps.`),
+    withHint(field('Rate, credits an hour', rate), rateHint),
     field('Work folder', folder, "Under the agent's OS account. It syncs with the hub both ways."),
-    h('label.ws-check', null, snapshot, h('span', null, 'Snapshot and reset (VMs)'), h('span.hint', null, 'Restore a clean snapshot after each lease.')),
-    h('div.ws-buttons', null, saveButton),
+    check(snapshot, 'Snapshot and reset (VMs)'),
+    h('p.hint', null, 'Restore a clean snapshot after each lease.'),
+    h('div.ws-cluster', null, saveButton),
     settingsError,
   );
-  const settingsBody = h('div', null, settingsFields);
 
   root.append(
-    h('div.view-head.ws-head', null, h('div.ws-heading', null, back, h('div.ws-title', null, title, chipBox)), actionsBox),
-    card('Facts', factsBody),
-    card('Live view', liveBody),
-    card('Leases', leasesBody, { flush: true }),
-    sync.el,
-    recordings.el,
-    card('Settings', settingsBody),
-    card('Audit', auditBody, { flush: true }),
+    back,
+    h('header.page-head', null, h('div.page-head-row', null, title, h('span.sp'), actionsBox)),
+    chipBox,
+    h(
+      'div.ws-stack',
+      null,
+      card('Facts', factsBody),
+      card('Live view', liveBody),
+      card('Leases', leasesBody, { flush: true }),
+      sync.el,
+      recordings.el,
+      card('Settings', settingsFields),
+      card('Audit', auditBody, { flush: true }),
+    ),
   );
 
   /** The rate's hint: what the credits come to in dollars an hour, as the owner types them. */
@@ -469,15 +467,10 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
 
   // ---- dialogs: confirm, rename ----
 
-  const confirmDialog = (heading: string, text: string, action: string, run: () => Promise<void>): void => {
+  /** Opens the one dialog of this page; `foot` gets the close function for its buttons. */
+  const openDialog = (heading: string, body: Node | Node[], foot: (close: () => void) => Node[]): void => {
     closeDialog?.();
-    const pane = h(
-      'div.stack',
-      null,
-      h('p', null, text),
-      h('div.ws-buttons', null, button('Cancel', () => close()), button(action, () => { close(); void run(); }, { kind: 'danger' })),
-    );
-    const close = modal(heading, pane, () => {
+    const close = dialog(heading, body, foot(() => close()), () => {
       closeDialog = null;
     });
     closeDialog = close;
@@ -485,28 +478,27 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
 
   const openRename = (s: StationView): void => {
     const name = input({ value: s.name, maxlength: MAX_NAME_CHARS, 'aria-label': 'Name', autocomplete: 'off' });
-    const problem = h('p.error-text');
-    const rename = async (): Promise<void> => {
-      const wrong = nameProblem(name.value);
-      problem.textContent = wrong ?? '';
-      if (wrong) return;
-      const saved = await attempt(() => api.renameStation(id, name.value.trim()), 'Renamed');
-      if (!saved) return;
-      close();
-      void load();
-    };
-    const pane = h(
-      'div.stack',
-      null,
-      field('Name', name, 'Shown on the list and in the audit.'),
-      problem,
-      h('div.ws-buttons', null, button('Save name', () => void rename(), { kind: 'primary' }), button('Cancel', () => close())),
+    const problem = h('div.ws-problem');
+    openDialog(
+      'Rename workstation',
+      [field('Name', name, 'Shown on the list and in the audit.'), problem],
+      (close) => [
+        btn('Cancel', close, { kind: 'ghost' }),
+        btn(
+          'Save name',
+          async () => {
+            const wrong = nameProblem(name.value);
+            problem.textContent = wrong ?? '';
+            if (wrong) return;
+            const saved = await attempt(() => api.renameStation(id, name.value.trim()), 'Renamed');
+            if (!saved) return;
+            close();
+            void load();
+          },
+          { kind: 'primary' },
+        ),
+      ],
     );
-    closeDialog?.();
-    const close = modal('Rename workstation', pane, () => {
-      closeDialog = null;
-    });
-    closeDialog = close;
   };
 
   const drain = async (s: StationView): Promise<void> => {
@@ -526,33 +518,52 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
 
   const confirmRelease = (lease: StationLease): void => {
     const who = names.get(lease.agent) ?? `agent ${lease.agent}`;
-    confirmDialog(
+    openDialog(
       'Release this lease?',
-      `${who} gives the machine back: its session here ends, or its place in the queue is given up.`,
-      'Release',
-      () => release(lease),
+      h('p', null, `${who} gives the machine back: its session here ends, or its place in the queue is given up.`),
+      (close) => [
+        btn('Cancel', close, { kind: 'ghost' }),
+        btn(
+          'Release',
+          () => {
+            close();
+            void release(lease);
+          },
+          { kind: 'danger' },
+        ),
+      ],
     );
   };
 
   const confirmRevoke = (s: StationView): void => {
-    confirmDialog(
+    openDialog(
       `Revoke ${s.name}?`,
-      'Its link closes at once and its leases end. This cannot be undone.',
-      'Revoke',
-      () => revoke(s),
+      h('p', null, 'Its link closes at once and its leases end. This cannot be undone.'),
+      (close) => [
+        btn('Cancel', close, { kind: 'ghost' }),
+        btn(
+          'Revoke',
+          () => {
+            close();
+            void revoke(s);
+          },
+          { kind: 'danger' },
+        ),
+      ],
     );
   };
 
   // ---- rendering ----
 
-  const actions = (s: StationView): HTMLElement[] => {
-    if (s.revoked) return [h('span.faint', null, 'Revoked: its link is closed.')];
+  const actions = (s: StationView): Node[] => {
+    if (s.revoked) return [h('span.muted', null, 'Revoked: its link is closed.')];
     return [
-      button('Rename', () => openRename(s)),
-      button(s.draining ? 'Resume' : 'Drain', () => void drain(s), {
+      btn('Rename', () => openRename(s), { kind: 'ghost' }),
+      btn(s.draining ? 'Resume' : 'Drain', () => void drain(s), {
+        kind: 'ghost',
         title: s.draining ? 'Back in service: it takes new work again.' : 'Takes no new work; its link closes once its current answers are in.',
       }),
-      button('Revoke', () => confirmRevoke(s), { kind: 'danger' }),
+      btn('Revoke', () => confirmRevoke(s), { kind: 'danger' }),
     ];
   };
 
@@ -567,34 +578,36 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   const renderFacts = (s: StationView): void => {
     const f = s.facts;
     const gpus = f.gpus.length ? f.gpus.map((g) => h('div', null, gpuLine(g))) : 'none';
-    const pairs: [string, Node | string | Node[]][] = [
-      ['System', `${osText(f)} · ${f.arch}`],
-      ['Machine', formLabel(f.form)],
-      ['Hostname', f.hostname || '—'],
-      ['CPUs', `${f.cpus} cores`],
-      ['Memory', ramText(f.ram_mb)],
-      ['GPUs', gpus],
-      ['Displays', displaysText(f.displays)],
-      ['Account', accountText(f.account)],
-      ['Apps found', String(f.apps)],
-      ['Virtual displays', f.virtual_displays ? 'yes' : 'no'],
-      ['UI tree', f.ui_tree ? 'yes' : 'no'],
-      ['Version', s.version || '—'],
-      ['Address', s.address || '—'],
-      ['Joined', ago(s.joined_ms)],
-      ['Last seen', ago(s.last_seen_ms)],
-      ['Join code', s.code || '—'],
-    ];
-    replace(factsBody, h('dl.node-facts', null, pairs.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])));
+    replace(
+      factsBody,
+      kv([
+        ['System', `${osText(f)} · ${f.arch}`],
+        ['Machine', formLabel(f.form)],
+        ['Hostname', f.hostname || '—'],
+        ['CPUs', `${f.cpus} cores`],
+        ['Memory', `${Math.round(f.ram_mb / 1024)} GB`],
+        ['GPUs', gpus],
+        ['Displays', displaysText(f.displays)],
+        ['Account', f.account.mode === 'owner' ? `Your account (${f.account.name})` : `A separate agent account: ${f.account.name}`],
+        ['Apps found', String(f.apps)],
+        ['Virtual displays', f.virtual_displays ? 'yes' : 'no'],
+        ['UI tree', f.ui_tree ? 'yes' : 'no'],
+        ['Version', s.version || '—'],
+        ['Address', s.address || '—'],
+        ['Joined', ago(s.joined_ms)],
+        ['Last seen', ago(s.last_seen_ms)],
+        ['Join code', s.code || '—'],
+      ]),
+    );
   };
 
   const renderLeases = (s: StationView): void => {
     if (!s.leases.length) {
       return replace(leasesBody, empty('machine', 'No leases', 'An agent holds a lease while it works here. Leases show up as agents start.'));
     }
-    const columns: Column<StationLease>[] = [
-      { label: 'Agent', cell: (l) => names.get(l.agent) ?? `agent ${l.agent}` },
-      { label: 'Task', cell: (l) => l.task || h('span.faint', null, '—') },
+    const columns: PCol<StationLease>[] = [
+      { label: 'Agent', cell: (l) => nameOf(l.agent) },
+      { label: 'Task', cell: (l) => l.task || h('span.muted', null, '—') },
       { label: 'Kind', cell: (l) => leaseKindLabel(l.kind) },
       {
         label: 'State',
@@ -604,21 +617,21 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
         },
       },
       { label: 'Started', cell: (l) => ago(l.started_ms) },
-      { label: '', cell: (l) => button('Release', () => confirmRelease(l), { kind: 'danger', size: 'sm' }) },
+      { label: '', cls: 'num', cell: (l) => btn('Release', () => confirmRelease(l), { kind: 'danger', sm: true }) },
     ];
-    replace(leasesBody, h('div.ws-scroll', null, table(columns, s.leases)));
+    replace(leasesBody, ptable(columns, s.leases));
   };
 
   const renderAudit = (): void => {
     if (audit === null) return replace(auditBody, empty('alert', 'Could not load the audit.'));
     if (!audit.length) return replace(auditBody, empty('clock', 'No events yet'));
-    const columns: Column<StationAuditRow>[] = [
+    const columns: PCol<StationAuditRow>[] = [
       { label: 'When', cell: (r) => h('span', { title: new Date(r.at_ms).toLocaleString() }, ago(r.at_ms)) },
       { label: 'Event', cell: (r) => auditLabel(r.kind) },
-      { label: 'Agent', cell: (r) => (r.agent === null ? '—' : (names.get(r.agent) ?? `agent ${r.agent}`)) },
+      { label: 'Agent', cell: (r) => (r.agent === null ? '—' : nameOf(r.agent)) },
       { label: 'By', cell: (r) => r.actor },
     ];
-    replace(auditBody, h('div.ws-scroll', null, table(columns, audit)));
+    replace(auditBody, ptable(columns, audit));
   };
 
   const renderAll = (s: StationView): void => {

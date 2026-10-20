@@ -1,23 +1,24 @@
-// The approvals queue: tool calls an agent has asked to make and is waiting on
-// the owner's yes or no. Pending ones sit on top as cards, longest wait first;
-// decided ones follow as a compact history. Refetches on each `approval` frame.
-// Above them, the agents the orchestrator has proposed to spawn, to review or reject.
+// The approvals inbox, in the prototype's layout: the waiting list on the left (the orchestrator's proposed agents
+// first, then the calls agents have asked to make), the chosen one's card on the right, and the decided ones folded
+// under the list. Refetches on each `approval` frame.
 
-import '../styles/approvals.css';
+import '../styles/proto/overview.css';
 import { inScope, projectTitle, scope } from '../scope';
 import { api, type AgentProposal, type Approval, type ApprovalAction } from '../api';
-import { review, type ReviewChoice, type ReviewReading } from '../api-review';
+import { review, type ReviewReading } from '../api-review';
 import { href } from '../router';
 import { agentName } from '../roles';
 import { agents, on } from '../store';
-import { ago, attempt, badge, button, card, dot, empty, textarea, type Tone } from '../ui/components';
+import { ago, attempt, badge, button, dot, empty, modal, textarea, type Tone } from '../ui/components';
 import { embedContextFromStore } from '../ui/embeds';
-import { h, replace } from '../ui/dom';
+import { h, lu, replace } from '../ui/dom';
+import type { LucideName } from '../ui/icons.gen';
 import { renderMarkdown } from '../ui/markdown';
 import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 import { reviewPanel } from './review-graph';
 import { readingTone } from './review-model';
+import { waitTitle } from './overview';
 
 const DEBOUNCE_MS = 300;
 
@@ -46,6 +47,23 @@ function readingDot(level: number | null): Tone {
   return t === 'better' ? 'ok' : t === 'worse' ? 'danger' : 'muted';
 }
 
+/** The share request an `artifact.share` approval is about: the artifact's title, the reason, and the options asked for. */
+function shareOptions(a: Approval): { title: string; reason: string; options: string[] } {
+  const d = a.detail as { artifact?: { title?: unknown }; options?: { expires_in_days?: unknown; allow_download?: unknown; version?: unknown }; reason?: unknown } | null;
+  const artifactTitle = d?.artifact?.title;
+  const days = d?.options?.expires_in_days;
+  const version = d?.options?.version;
+  return {
+    title: typeof artifactTitle === 'string' && artifactTitle !== '' ? artifactTitle : a.subject,
+    reason: typeof d?.reason === 'string' ? d.reason : '',
+    options: [
+      typeof days === 'number' && days ? `Expires in ${days} ${days === 1 ? 'day' : 'days'}` : 'Never expires',
+      d?.options?.allow_download === true ? 'Downloading allowed' : 'View only',
+      typeof version === 'number' && version ? `Pinned to v${version}` : 'Follows the latest version',
+    ],
+  };
+}
+
 /** The sanction a sanction escalation is about: `sanction_id` in its detail. */
 function sanctionIdOf(a: Approval): number | null {
   const d = a.detail as { sanction_id?: unknown } | null;
@@ -66,31 +84,24 @@ const LABEL: Record<Approval['state'], string> = {
   used: 'Used',
   withdrawn: 'Withdrawn',
 };
-const PROPOSAL_TONE: Record<AgentProposal['state'], 'warn' | 'ok' | 'danger'> = {
+const PROPOSAL_TONE: Record<AgentProposal['state'], 'ok' | 'danger' | 'warn'> = {
   pending: 'warn',
   approved: 'ok',
   rejected: 'danger',
 };
-const PROPOSAL_LABEL: Record<AgentProposal['state'], string> = {
-  pending: 'Waiting',
-  approved: 'Approved',
-  rejected: 'Rejected',
-};
+const KIND_ICON: Record<string, LucideName> = { review: 'git-pull-request', tool: 'terminal', deploy: 'rocket', payment: 'credit-card', sanction: 'gavel' };
 
-export function mount(root: HTMLElement, _params: string[]): Cleanup {
+type Item = Approval | AgentProposal;
+const isProposal = (x: Item): x is AgentProposal => 'role' in x;
+
+export function mount(root: HTMLElement, params: string[]): Cleanup {
   // Under a project, the approvals its agents asked for (and the orchestrator's, which works on every project).
   const inProject = scope.get();
-  const proposals = h('section.proposals', { style: 'display:none' });
-  const pending = h('div.approvals-pending');
-  const decided = h('div.approvals-history');
-  root.append(
-    h('div.view-head', null, h('h1', null, 'Approvals', inProject ? h('span.faint', null, ` · ${projectTitle(inProject)}`) : null)),
-    proposals,
-    pending,
-    h('h2.approvals-subhead', null, 'Decided'),
-    decided,
-  );
+  const inbox = h('div.inbox');
+  root.append(inbox);
 
+  // The item on the right: the route's, or the first waiting one until the owner picks another.
+  let selected: string | null = params[0] ?? null;
   let items: Approval[] = [];
   let loaded = false;
   let failed = false;
@@ -108,201 +119,256 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     const agent = agents.get().find((a) => a.cid === cid);
     return agent ? agentName(agent) : `agent ${cid}`;
   };
+  const agentLink = (cid: number): HTMLElement => h('a.ap-agent', { href: href('agents', cid) }, nameOf(cid));
+
+  const shownHere = (a: Approval): boolean => {
+    if (!inProject || a.cid === 0) return true;
+    const agent = agents.get().find((x) => x.cid === a.cid);
+    return !agent || inScope(agent, inProject);
+  };
 
   const render = (): void => {
     if (!loaded) return;
-    if (failed) return replace(pending, empty('alert', 'Could not load approvals.'));
-    const roster = agents.get();
-    const shown = items.filter((a) => {
-      if (!inProject || a.cid === 0) return true;
-      const agent = roster.find((x) => x.cid === a.cid);
-      return !agent || inScope(agent, inProject);
-    });
+    const shown = items.filter(shownHere);
     const waiting = shown.filter((a) => a.state === 'pending').sort((x, y) => x.created_ms - y.created_ms);
-    const past = shown.filter((a) => a.state !== 'pending').sort((x, y) => y.created_ms - x.created_ms);
-    replace(
-      pending,
-      waiting.length
-        ? waiting.map((a) => entry(a))
-        : empty('approval', 'Nothing is waiting', 'Agents ask here before acts that need your approval, and the orchestrator proposes new agents here.'),
+    const decided = shown.filter((a) => a.state !== 'pending').sort((x, y) => y.created_ms - x.created_ms);
+    const pendingP = agentProposals.filter((p) => p.state === 'pending').sort((x, y) => x.created_ms - y.created_ms);
+    const decidedP = agentProposals.filter((p) => p.state !== 'pending').sort((x, y) => (y.decided_ms || y.created_ms) - (x.decided_ms || x.created_ms));
+    const open: Item[] = [...pendingP, ...waiting];
+    const sel: Item | null = open.find((x) => x.id === selected) ?? open[0] ?? null;
+
+    const list: (HTMLElement | null)[] = [];
+    if (pendingP.length || agentProposals.length) {
+      list.push(h('div.ibx-sec', null, 'New agents proposed by the orchestrator'));
+      if (pendingP.length) list.push(...pendingP.map((p) => proposalItem(p, sel?.id === p.id)));
+      else list.push(h('p.muted.ap-none', null, 'No proposals waiting.'));
+      list.push(h('div.ibx-sec', null, 'Waiting'));
+    }
+    if (failed) list.push(h('div.ap-none', { role: 'alert' }, 'Could not load approvals.'));
+    else list.push(...waiting.map((a) => approvalItem(a, sel?.id === a.id)));
+    if (decidedP.length) list.push(h('details.ibx-dec', null, h('summary', null, lu('chevron-right', 13), `Decided proposals (${decidedP.length})`), ...decidedP.map((p) => proposalRow(p))));
+    list.push(
+      h(
+        'details.ibx-dec',
+        null,
+        h('summary', null, lu('chevron-right', 13), `Decided (${decided.length})`),
+        decided.length ? decided.map((a) => row(a)) : h('p.muted.ap-none', null, 'No decisions yet.'),
+      ),
     );
-    replace(decided, past.length ? past.map((a) => row(a)) : h('p.approvals-none', null, 'No decisions yet.'));
+
+    const detail = sel
+      ? h('div.col', null, isProposal(sel) ? proposalCard(sel) : waitingCard(sel))
+      : h('div.inbox-empty', null, empty('approval', 'Nothing is waiting', 'Agents ask here before acts that need your approval, and the orchestrator proposes new agents here.'));
+    replace(inbox, h('div.inbox-list', { 'aria-label': 'Waiting' }, list), h('div.inbox-detail', null, detail));
   };
 
-  // One waiting approval: who, what, and the owner's call. A tool call shows its input; a sanction
-  // escalation and a held payment show their subject, with the buttons their kind allows.
-  const entry = (a: Approval): HTMLElement => {
-    const reason = textarea({ rows: 2, placeholder: 'Reason (optional)', 'aria-label': 'Reason' });
-    reason.value = drafts.get(a.id) ?? '';
-    reason.addEventListener('input', () => drafts.set(a.id, reason.value));
+  // One line of the list: the kind's icon, the title, and who asked and when, opening it on the right.
+  const item = (id: string, cur: boolean, icon: LucideName, kind: string, title: string, who: string, pj: string | null, created: number): HTMLElement => {
+    const a = h(
+      'a.ibx',
+      { href: href('approvals', id), title, 'aria-current': cur ? 'page' : null },
+      h('span.ii', { class: `k-${kind}` }, lu(icon, 16)),
+      h(
+        'span',
+        { style: 'min-width:0' },
+        h('b', null, title),
+        h('small', null, pj ? h('span.ibx-pj', null, pj) : null, pj ? '·' : null, h('span', null, who), '·', h('span', null, ago(created))),
+      ),
+    );
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      selected = id;
+      history.replaceState(null, '', href('approvals', id));
+      render();
+    });
+    return a;
+  };
+  const approvalItem = (a: Approval, cur: boolean): HTMLElement => {
+    const pid = agents.get().find((x) => x.cid === a.cid)?.project ?? null;
+    return item(a.id, cur, KIND_ICON[a.kind] ?? 'shield-check', a.kind, waitTitle(a), nameOf(a.cid), pid ? projectTitle(pid) : null, a.created_ms);
+  };
+  const proposalItem = (p: AgentProposal, cur: boolean): HTMLElement =>
+    item(p.id, cur, 'user-plus', 'proposal', p.role.title || p.role.id, p.by, null, p.created_ms);
 
-    // Every button of this card, so one decision disables them all while it runs.
-    const choices: HTMLButtonElement[] = [];
-    const decide = async (approve: boolean, action: ApprovalAction | undefined, done: string): Promise<void> => {
-      for (const b of choices) b.disabled = true;
-      const text = reason.value.trim();
-      const ok = await attempt(() => api.decideApproval(a.id, approve, text || undefined, action), done);
+  // The card's head: the kind's tile, the title, its chips, and the age on the right. Every card uses it.
+  const detailHead = (created: number, icon: LucideName, kind: string, title: string, chips: Node[]): HTMLElement =>
+    h(
+      'header.ibd-head',
+      null,
+      h('span.ibd-ico', { class: `k-${kind}` }, lu(icon, 18)),
+      h('div.ibd-titles', null, h('h3.ap-title.ibd-title', null, title), chips.length ? h('div.ibd-chips', null, chips) : null),
+      h('span.ap-age.muted', null, ago(created)),
+    );
+
+  // The reason box of a card. The text typed survives a redraw.
+  const reasonBox = (a: Approval): HTMLTextAreaElement => {
+    const t = textarea({ rows: 2, placeholder: 'Reason (optional)', 'aria-label': 'Reason' });
+    t.classList.add('ap-reason');
+    t.value = drafts.get(a.id) ?? '';
+    t.addEventListener('input', () => drafts.set(a.id, t.value));
+    return t;
+  };
+
+  // A ruling: its button runs `act`, and every button of the card is disabled while it runs.
+  const ruling = (group: HTMLButtonElement[], a: Approval, label: string, kind: 'primary' | 'danger' | undefined, act: () => Promise<unknown>, done: string): HTMLButtonElement => {
+    const b = button(label, () => void settle(), { kind });
+    group.push(b);
+    const settle = async (): Promise<void> => {
+      for (const x of group) x.disabled = true;
+      const ok = await attempt(act, done);
       if (ok !== undefined) drafts.delete(a.id);
       void load();
     };
-    const choice = (label: string, o: { approve: boolean; action?: ApprovalAction; done: string; kind?: 'primary' | 'danger' }): HTMLButtonElement => {
-      const b = button(label, () => void decide(o.approve, o.action, o.done), { kind: o.kind });
-      choices.push(b);
-      return b;
-    };
-    const who = h('a.approval-agent', { href: href('agents', a.cid) }, nameOf(a.cid));
-    const age = h('time.approval-age', null, ago(a.created_ms));
-
-    let el: HTMLElement;
-    const rv = reviewOf(a);
-    if (rv) {
-      // The owner's call on one review round: pass (the owner's hand), send it back, or fail. The review opens under the card.
-      const reviewDecide = async (verdict: ReviewChoice, done: string): Promise<void> => {
-        for (const b of choices) b.disabled = true;
-        const ok = await attempt(() => review.decide(a.id, verdict, reason.value), done);
-        if (ok !== undefined) drafts.delete(a.id);
-        void load();
-      };
-      const fail = button('Fail', () => void reviewDecide('fail', 'Failed'), { kind: 'danger' });
-      const sendBack = button('Send back', () => void reviewDecide('rework', 'Sent back'));
-      const pass = button('Pass', () => void reviewDecide('pass', 'Passed'), { kind: 'primary' });
-      choices.push(fail, sendBack, pass);
-      const isOpen = openReviews.has(a.id);
-      const panel = h('div.review-panel', isOpen ? null : { hidden: true }, isOpen ? reviewPanel(rv.task, rv.run) : null);
-      const see = button(isOpen ? 'Hide the review' : 'See the review', () => {
-        const now = !openReviews.has(a.id);
-        if (now) openReviews.add(a.id);
-        else openReviews.delete(a.id);
-        panel.hidden = !now;
-        replace(panel, now ? reviewPanel(rv.task, rv.run) : null);
-        see.textContent = now ? 'Hide the review' : 'See the review';
-      }, { kind: 'ghost', size: 'sm' });
-      see.classList.add('review-see');
-      const chips = (rv.readings ?? []).map((r) => h('span.review-chip', null, dot(readingDot(r.level)), r.name));
-      const worker = rv.worker?.trim() ? rv.worker : nameOf(a.cid);
-      el = card(
-        null,
-        h(
-          'div.stack',
-          null,
-          h('header.approval-head', null, who, badge('Review', 'accent'), h('strong', null, rv.goal || `Review of ${rv.task}`), age),
-          rv.verdict ? h('p.review-verdict', null, rv.verdict) : null,
-          rv.needs_you ? h('p.review-needs', null, h('strong', null, 'Needs you: '), rv.needs_you) : null,
-          chips.length ? h('div.review-readings', null, chips) : null,
-          h('p.review-meta', null, [`Worker: ${worker}`, rv.change ? `change ${rv.change}` : null, rv.round ? `round ${rv.round}` : null].filter(Boolean).join(' · ')),
-          see,
-          panel,
-          h('div.approval-decide', null, reason, h('div.approval-buttons', null, fail, sendBack, pass)),
-        ),
-      );
-      el.classList.add('review-card');
-    } else if (a.kind === 'sanction') {
-      const sid = sanctionIdOf(a);
-      const lift = sid !== null && suspended.has(sid) ? choice('Lift', { approve: false, action: 'lift', done: 'Lifted' }) : null;
-      const acknowledge = choice('Acknowledge', { approve: true, action: 'acknowledge', done: 'Acknowledged', kind: 'primary' });
-      const retire = choice('Retire', { approve: false, action: 'retire', done: 'Recorded', kind: 'danger' });
-      el = card(null, [
-        h('header.approval-head', null, who, h('strong', null, `Escalation: ${a.subject}`), age),
-        h('div.approval-decide', null, reason, h('div.approval-buttons', null, retire, lift, acknowledge)),
-        h('p.faint', null, 'Retire only records your decision. apid does not retire the agent.'),
-      ]);
-    } else if (a.kind === 'payment') {
-      const deny = choice('Deny', { approve: false, done: 'Denied', kind: 'danger' });
-      const approve = choice('Approve', { approve: true, done: 'Approved', kind: 'primary' });
-      el = card(null, [
-        h('header.approval-head', null, who, h('strong', null, `Payment awaiting approval: ${a.subject}`), age),
-        h('pre.approval-input', null, JSON.stringify(a.detail, null, 2) ?? 'null'),
-        h('div.approval-decide', null, reason, h('div.approval-buttons', null, deny, approve)),
-      ]);
-    } else {
-      const no = choice('Deny', { approve: false, done: 'Denied', kind: 'danger' });
-      const yes = choice('Approve', { approve: true, done: 'Approved', kind: 'primary' });
-      el = card(null, [
-        h('header.approval-head', null, who, h('code.approval-tool', null, a.tool), age),
-        h('pre.approval-input', null, JSON.stringify(a.input, null, 2) ?? 'null'),
-        h('div.approval-decide', null, reason, h('div.approval-buttons', null, no, yes)),
-      ]);
-    }
-    el.classList.add('approval-card');
-    el.setAttribute('data-key', `ap-${a.id}`);
-    return el;
+    return b;
   };
 
-  // One decided approval, as a single line of the history.
+  // The review: the owner's call on one review round, with the review opened under the card.
+  const reviewCard = (a: Approval, rv: ReviewDetail): HTMLElement => {
+    const group: HTMLButtonElement[] = [];
+    const reason = reasonBox(a);
+    const isOpen = openReviews.has(a.id);
+    const chips = (rv.readings ?? []).map((r) => h('span.ap-chip', null, dot(readingDot(r.level)), r.name));
+    const worker = rv.worker?.trim() ? rv.worker : nameOf(a.cid);
+    const meta = [`Worker: ${worker}`, rv.change ? `change ${rv.change}` : null, rv.round ? `round ${rv.round}` : null].filter(Boolean).join(' · ');
+    const see = button(isOpen ? 'Hide the review' : 'See the review', () => {
+      if (openReviews.has(a.id)) openReviews.delete(a.id);
+      else openReviews.add(a.id);
+      render();
+    }, { size: 'sm' });
+    const fail = ruling(group, a, 'Fail', 'danger', () => review.decide(a.id, 'fail', reason.value), 'Failed');
+    const sendBack = ruling(group, a, 'Send back', undefined, () => review.decide(a.id, 'rework', reason.value), 'Sent back');
+    const pass = ruling(group, a, 'Pass', 'primary', () => review.decide(a.id, 'pass', reason.value), 'Passed');
+    return h(
+      'article.card.ap-card.ibd.ap-review',
+      { 'data-key': a.id },
+      detailHead(a.created_ms, 'git-pull-request', 'review', rv.goal || `Review of ${rv.task}`, [agentLink(a.cid), badge('Review', 'accent')]),
+      h(
+        'div.ibd-body',
+        null,
+        rv.verdict ? h('p.review-verdict.ap-verdict', null, rv.verdict) : null,
+        rv.needs_you ? h('p.ap-needs', null, h('strong', null, 'Needs you: '), rv.needs_you) : null,
+        chips.length ? h('div.ap-chips', null, chips) : null,
+        h('p.ap-meta', null, meta),
+        h('div.ap-actions', null, see),
+        isOpen ? h('div.ap-panel', null, reviewPanel(rv.task, rv.run)) : null,
+      ),
+      h('footer.ibd-foot', null, reason, h('div.ap-actions', null, fail, sendBack, pass)),
+    );
+  };
+
+  // The sanction: Retire, Lift while the suspension stands, and Acknowledge.
+  const sanctionCard = (a: Approval): HTMLElement => {
+    const group: HTMLButtonElement[] = [];
+    const reason = reasonBox(a);
+    const sid = sanctionIdOf(a);
+    const decide = (action: ApprovalAction, approve: boolean) => () => api.decideApproval(a.id, approve, reason.value.trim() || undefined, action);
+    const lift = sid !== null && suspended.has(sid) ? ruling(group, a, 'Lift', undefined, decide('lift', false), 'Lifted') : null;
+    const retire = ruling(group, a, 'Retire', 'danger', decide('retire', false), 'Recorded');
+    const acknowledge = ruling(group, a, 'Acknowledge', 'primary', decide('acknowledge', true), 'Acknowledged');
+    return h(
+      'article.card.ap-card.ibd',
+      { 'data-key': a.id },
+      detailHead(a.created_ms, 'gavel', 'sanction', waitTitle(a), [agentLink(a.cid)]),
+      h('div.ibd-body', null, h('p.ap-foot', null, 'Retire only records your decision. apid does not retire the agent.')),
+      h('footer.ibd-foot', null, reason, h('div.ap-actions', null, retire, lift, acknowledge)),
+    );
+  };
+
+  // A tool call, a payment or a share: Deny and Approve, with what the agent asked for above them.
+  const plainCard = (a: Approval, chips: Node[], body: Node): HTMLElement => {
+    const group: HTMLButtonElement[] = [];
+    const reason = reasonBox(a);
+    const deny = ruling(group, a, 'Deny', 'danger', () => api.decideApproval(a.id, false, reason.value.trim() || undefined), 'Denied');
+    const approve = ruling(group, a, 'Approve', 'primary', () => api.decideApproval(a.id, true, reason.value.trim() || undefined), 'Approved');
+    return h(
+      'article.card.ap-card.ibd',
+      { 'data-key': a.id },
+      detailHead(a.created_ms, KIND_ICON[a.kind] ?? 'shield-check', a.kind, waitTitle(a), chips),
+      h('div.ibd-body', null, body),
+      h('footer.ibd-foot', null, reason, h('div.ap-actions', null, deny, approve)),
+    );
+  };
+
+  const waitingCard = (a: Approval): HTMLElement => {
+    const d = a.detail;
+    const rv = reviewOf(a);
+    if (rv) return reviewCard(a, rv);
+    if (a.kind === 'sanction') return sanctionCard(a);
+    if (a.kind === 'payment') return plainCard(a, [agentLink(a.cid)], h('pre.ap-pre', null, JSON.stringify(d, null, 2) ?? 'null'));
+    if (a.kind === 'artifact.share') {
+      const ask = shareOptions(a);
+      return plainCard(
+        a,
+        [agentLink(a.cid), badge('Share', 'accent')],
+        h('div.stack', null, ask.reason ? h('p.ap-md', null, ask.reason) : null, h('div.ap-chips', null, ask.options.map((o) => h('span.ap-chip', null, o)))),
+      );
+    }
+    return plainCard(a, [agentLink(a.cid), h('code.ap-tool', null, a.tool)], h('pre.ap-pre', null, JSON.stringify(a.input, null, 2) ?? 'null'));
+  };
+
+  // A decided approval, as one line of the history.
   const row = (a: Approval): HTMLElement =>
     h(
-      'div.approval-row',
-      { 'data-key': `ap-${a.id}` },
+      'div.ap-row',
+      { 'data-key': a.id },
       badge(LABEL[a.state], TONE[a.state]),
-      h('code.approval-row-tool', null, a.subject || a.tool),
-      h('span.approval-row-agent', null, nameOf(a.cid)),
-      a.reason ? h('span.approval-row-reason', null, a.reason) : null,
-      h('time.approval-row-age', null, ago(a.created_ms)),
+      h('div.ap-row-main', null, h('code.ap-row-tool', null, a.subject || a.tool), h('span', null, agentLink(a.cid)), a.reason ? h('span.muted', null, a.reason) : null),
+      h('span.muted.ap-age', null, ago(a.created_ms)),
     );
 
   // One proposed agent, waiting: what it is for, why the orchestrator wants it, and the owner's call.
   const proposalCard = (p: AgentProposal): HTMLElement => {
     const title = p.role.title || p.role.id;
-    const review = button('Review…', () => openAgentWizard({ proposal: p, prefill: p.role, onDone: () => void loadProposals() }), { kind: 'primary' });
-    const reject = button('Reject', () => void rejectProposal(p), { kind: 'danger' });
-    const el = card(
-      null,
-      h(
-        'div.stack',
-        null,
-        h(
-          'header.approval-head',
-          null,
-          h('strong', null, title),
-          p.new_role ? badge('new role', 'accent') : null,
-          badge(`${p.count} ${p.count === 1 ? 'agent' : 'agents'}`, 'info'),
-          h('time.approval-age', null, ago(p.created_ms)),
-        ),
-        // The orchestrator's rationale is agent-written text: rich content applies.
-        renderMarkdown(p.reason, { embeds: embedContextFromStore() }),
-        p.instruction ? h('blockquote.proposal-instruction', null, `“${p.instruction}”`) : null,
-        h('p.faint', null, `Proposed by ${p.by}`),
-        h('div.approval-buttons', null, reject, review),
-      ),
+    const badges = [p.new_role ? badge('new role', 'accent') : null, badge(p.count === 1 ? '1 agent' : `${p.count} agents`, 'info')].filter(
+      (x): x is HTMLElement => x !== null,
     );
-    el.classList.add('approval-card');
-    el.setAttribute('data-key', `pp-${p.id}`);
-    return el;
+    const reject = button('Reject', () => void rejectProposal(p), { kind: 'danger' });
+    const reviewIt = button('Review…', () => openAgentWizard({ proposal: p, prefill: p.role, onDone: () => void loadProposals() }), { kind: 'primary' });
+    return h(
+      'article.card.ap-card.ibd',
+      { 'data-key': `pp-${p.id}` },
+      detailHead(p.created_ms, 'user-plus', 'proposal', title, badges),
+      h(
+        'div.ibd-body',
+        null,
+        // The orchestrator's rationale is agent-written text: rich content applies.
+        h('div.ap-md', null, renderMarkdown(p.reason, { embeds: embedContextFromStore() })),
+        p.instruction ? h('blockquote.ap-quote', null, `“${p.instruction}”`) : null,
+        h('p.ap-by', null, `Proposed by ${p.by}`),
+      ),
+      h('footer.ibd-foot', null, h('div.ap-actions', null, reject, reviewIt)),
+    );
   };
 
   // One decided proposal, as a line of the collapsed history.
-  const proposalRow = (p: AgentProposal): HTMLElement =>
-    h(
-      'div.approval-row',
+  const proposalRow = (p: AgentProposal): HTMLElement => {
+    const label = p.state === 'approved' ? 'Approved' : 'Rejected';
+    return h(
+      'div.ap-row',
       { 'data-key': `pp-${p.id}` },
-      badge(PROPOSAL_LABEL[p.state], PROPOSAL_TONE[p.state]),
-      h('strong', null, p.role.title || p.role.id),
-      p.note ? h('span.approval-row-reason', null, p.note) : null,
-      h('time.approval-row-age', null, ago(p.decided_ms || p.created_ms)),
-    );
-
-  const renderProposals = (): void => {
-    proposals.style.display = agentProposals.length ? '' : 'none';
-    const waiting = agentProposals.filter((p) => p.state === 'pending').sort((x, y) => x.created_ms - y.created_ms);
-    const past = agentProposals.filter((p) => p.state !== 'pending').sort((x, y) => y.created_ms - x.created_ms);
-    replace(
-      proposals,
-      h('h2.approvals-subhead', null, 'New agents proposed by the orchestrator'),
-      waiting.length ? waiting.map((p) => proposalCard(p)) : h('p.approvals-none', null, 'No proposals waiting.'),
-      past.length ? h('details.proposals-decided', null, h('summary', null, `Decided (${past.length})`), past.map((p) => proposalRow(p))) : null,
+      badge(label, PROPOSAL_TONE[p.state]),
+      h('div.ap-row-main', null, h('strong', null, p.role.title || p.role.id), p.note ? h('span.muted', null, p.note) : null),
+      h('span.muted.ap-age', null, ago(p.decided_ms || p.created_ms)),
     );
   };
 
-  // A rejection needs a reason, as the wizard requires: a blank answer asks the same question again,
-  // and Cancel gives up without sending anything.
-  const rejectProposal = async (p: AgentProposal): Promise<void> => {
-    const question = `Reject ${p.role.title || p.role.id}? Give a reason.`;
-    let reason = window.prompt(question);
-    while (reason !== null && reason.trim() === '') reason = window.prompt(question);
-    if (reason === null) return;
-    const note = reason.trim();
-    await attempt(() => api.rejectAgentProposal(p.id, note), 'Rejected');
-    void loadProposals();
+  // A rejection needs a reason, as the wizard requires: a blank answer keeps the dialog open, and Cancel gives up.
+  const rejectProposal = (p: AgentProposal): void => {
+    const title = p.role.title || p.role.id;
+    const ta = textarea({ rows: 3, 'aria-label': 'Reason' });
+    ta.classList.add('ap-reason');
+    let close: () => void = () => undefined;
+    const confirm = button('Reject', () => {
+      const note = ta.value.trim();
+      if (!note) {
+        ta.focus();
+        return;
+      }
+      close();
+      void attempt(() => api.rejectAgentProposal(p.id, note), 'Rejected').then(() => void loadProposals());
+    }, { kind: 'danger' });
+    const cancel = button('Cancel', () => close());
+    close = modal(`Reject ${title}? Give a reason.`, h('div.stack', null, ta, h('div.ap-actions', null, cancel, confirm)));
   };
 
   const loadProposals = async (): Promise<void> => {
@@ -311,7 +377,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     } catch {
       agentProposals = [];
     }
-    if (alive) renderProposals();
+    if (alive) render();
   };
 
   const load = async (): Promise<void> => {

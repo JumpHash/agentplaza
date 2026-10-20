@@ -1,0 +1,15 @@
+/* The Share dialog: a sheet of the prototype's own parts (switch, fields, inputs, buttons, notes and an activity card).
+   This file only sets the layout inside the sheet body. */
+
+.share-dialog { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.share-dialog .stack { min-width: 0; }
+.share-dialog .cluster { min-width: 0; }
+.share-dialog .cluster .input { flex: 1 1 180px; min-width: 0; font-family: var(--font-mono); font-size: 12.5px; }
+.share-dialog .cluster .input[type="password"] { font-family: var(--font); font-size: 13px; }
+.share-dialog .cluster .input[type="date"] { flex: 0 0 auto; }
+.share-dialog .field { min-width: 0; }
+.share-dialog .check { align-self: flex-start; }
+.share-dialog .card { margin-top: 0; }
+.share-dialog .card .card-b { gap: 10px; }
+.share-dialog .notice { margin: 0; }
+.share-dialog .num { font-variant-numeric: tabular-nums; }

@@ -143,7 +143,21 @@ pub struct Settings {
     /// Shared data volumes (noded's `/v1/volumes`) by role: every agent of the role spawned from now
     /// on mounts them read-only at `/data/<name>`. At most four per role.
     pub role_volumes: BTreeMap<String, Vec<String>>,
+    /// Seconds between the hub's background checks of every provider (`provider_health.rs`): its key,
+    /// its model listing, its latency. 0: no background checks; the owner checks by hand.
+    pub health_interval_s: u32,
+    /// The owner's favourite models, `<provider>/<model>`: the model pickers list them first.
+    pub favourite_models: Vec<String>,
 }
+
+/// The default for `health_interval_s`: five minutes.
+pub const DEFAULT_HEALTH_INTERVAL_S: u32 = 300;
+
+/// The most `health_interval_s` may be: a day.
+pub const MAX_HEALTH_INTERVAL_S: u32 = 86_400;
+
+/// The most favourite models the owner may keep.
+pub const MAX_FAVOURITE_MODELS: usize = 200;
 
 /// The owner's pauses of the board's deliveries: the whole board, and the projects whose boards are
 /// paused. A paused board's posts are stored, and their mentions are not delivered until it resumes.
@@ -263,6 +277,8 @@ impl Default for Settings {
             sleep_never_roles: vec![ORCHESTRATOR_ROLE.into()],
             doze_idle_s: DEFAULT_DOZE_IDLE_S,
             role_volumes: BTreeMap::new(),
+            health_interval_s: DEFAULT_HEALTH_INTERVAL_S,
+            favourite_models: Vec::new(),
         }
     }
 }
@@ -615,7 +631,37 @@ fn check_engines(new: &Settings) -> Result<(), String> {
     Ok(())
 }
 
+/// Favourite models are `<provider>/<model>` names, each at most once, at most [`MAX_FAVOURITE_MODELS`].
+fn check_favourites(favourites: &[String]) -> Result<(), String> {
+    if favourites.len() > MAX_FAVOURITE_MODELS {
+        return Err(format!(
+            "favourite_models holds at most {MAX_FAVOURITE_MODELS} models"
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for model in favourites {
+        let named = model
+            .split_once('/')
+            .is_some_and(|(provider, rest)| !provider.is_empty() && !rest.is_empty());
+        if !named || model.len() > 200 || model.chars().any(char::is_whitespace) {
+            return Err(format!(
+                "favourite model {model:?} is not a <provider>/<model> name"
+            ));
+        }
+        if !seen.insert(model.as_str()) {
+            return Err(format!("favourite model {model} is listed twice"));
+        }
+    }
+    Ok(())
+}
+
 fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
+    if new.health_interval_s > MAX_HEALTH_INTERVAL_S {
+        return Err(format!(
+            "health_interval_s is at most {MAX_HEALTH_INTERVAL_S} (a day); 0 turns the checks off"
+        ));
+    }
+    check_favourites(&new.favourite_models)?;
     if !new.allow_training_models {
         // A contributor model trains Meta's future models on what it is sent: never a default, a role
         // model or a policy entry until the owner says so (`allow_training_models`).
@@ -1080,6 +1126,24 @@ pub fn check_role_volumes(role: &str, volumes: &[String]) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn favourites_and_the_health_interval_are_checked() {
+        let mut s = Settings::default();
+        assert_eq!(s.health_interval_s, DEFAULT_HEALTH_INTERVAL_S);
+        s.favourite_models = vec!["anthropic/claude-sonnet-5-5".into()];
+        assert!(check_settings(&s, false).is_ok());
+        s.favourite_models
+            .push("anthropic/claude-sonnet-5-5".into());
+        assert!(check_settings(&s, false).unwrap_err().contains("twice"));
+        s.favourite_models = vec!["no-slash".into()];
+        assert!(check_settings(&s, false).is_err());
+        s.favourite_models.clear();
+        s.health_interval_s = MAX_HEALTH_INTERVAL_S + 1;
+        assert!(check_settings(&s, false).is_err());
+        s.health_interval_s = 0;
+        assert!(check_settings(&s, false).is_ok());
+    }
 
     #[test]
     fn role_volumes_are_checked_and_bad_entries_dropped_on_load() {

@@ -1,5 +1,8 @@
-// Shared by the MCP screen (mcp.ts, mcp-logs.ts, mcp-wizard.ts, mcp-wizard-secrets.ts). Pure helpers.
+// Shared by the MCP screens (mcp.ts, mcp-hub.ts, mcp-logs.ts, mcp-wizard*.ts) and the Git platforms screen: the pure
+// rules, and the prototype's markup helpers (btn, iconBtn, pageHead, kv, seg, toggle, check, emptyBox, tbl, dialog).
 import type { McpPick, McpPreset, McpRisk, McpServerConfig, McpServerView, McpSetting, McpSpec, McpStatus, McpTransport } from '../api';
+import { h, lu } from '../ui/dom';
+import type { LucideName } from '../ui/icons.gen';
 
 /** A server id: lower-case, starts with a letter, 2 to 32 characters. */
 export const MCP_ID_RE = /^[a-z][a-z0-9-]{1,31}$/;
@@ -104,4 +107,141 @@ export function blankConfig(id: string, name: string, transport: McpTransport): 
 export function statusSummary(s: McpServerView): string {
   if (s.status !== 'running' && s.last_error) return s.last_error.split('\n')[0] ?? '';
   return '';
+}
+
+// ---- Markup the prototype's screens use (core.js h.btn, h.iconBtn, h.head, h.kv, h.seg, h.toggle, h.check, h.empty,
+// h.table, the sheet dialog). The console's components do not emit these exact shapes, so the Settings screens use them.
+
+export type BtnKind = 'primary' | 'ghost' | 'danger';
+export interface BtnOpts {
+  kind?: BtnKind;
+  sm?: boolean;
+  icon?: LucideName;
+  title?: string;
+  disabled?: boolean;
+}
+
+/** A button as the prototype draws it: `button.btn(.primary|.ghost|.danger)(.sm)` with a lucide icon and a span. */
+export function btn(label: string, onClick: (ev: MouseEvent) => void, o: BtnOpts = {}): HTMLButtonElement {
+  const classes = [o.kind, o.sm ? 'sm' : '', label ? '' : 'icon-only'].filter(Boolean).join(' ');
+  const b = h(
+    'button.btn',
+    { class: classes, type: 'button', title: o.title ?? null, 'aria-label': label ? null : (o.title ?? null), disabled: !!o.disabled },
+    o.icon ? lu(o.icon, o.sm ? 14 : 15) : null,
+    label ? h('span', null, label) : null,
+  );
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+/** An icon-only button (`button.iconbtn`), titled for the reader. */
+export function iconBtn(name: LucideName, onClick: (ev: MouseEvent) => void, title: string, o: { pressed?: boolean; cls?: string } = {}): HTMLButtonElement {
+  const b = h('button.iconbtn', { class: o.cls ?? '', type: 'button', title, 'aria-label': title, 'aria-pressed': o.pressed == null ? null : String(o.pressed) }, lu(name, 16));
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+/** The page head: the title on the left, the actions on the right. */
+export function pageHead(title: string, actions: Node[] = []): HTMLElement {
+  return h('header.page-head', null, h('div.page-head-row', null, h('h1', null, title), h('span.sp'), h('div.page-actions', null, ...actions)));
+}
+
+/** A definition list of facts: `dl.kv`. */
+export function kv(pairs: [string, Node | string][]): HTMLElement {
+  return h('dl.kv', null, pairs.map(([k, v]) => h('div', null, h('dt', null, k), h('dd', null, v))));
+}
+
+/** A segmented choice: `div.seg`, the chosen option pressed. */
+export function seg(options: [string, string][], current: string, onPick: (value: string) => void): HTMLElement {
+  return h(
+    'div.seg',
+    { role: 'group' },
+    options.map(([value, label]) => {
+      const b = h('button', { type: 'button', 'aria-pressed': String(value === current) }, label);
+      b.addEventListener('click', () => onPick(value));
+      return b;
+    }),
+  );
+}
+
+/** A switch: `button.tgl` with role switch. */
+export function toggle(on: boolean, onChange: (on: boolean) => void, label: string): HTMLButtonElement {
+  const b = h('button.tgl', { type: 'button', role: 'switch', 'aria-checked': String(on), 'aria-label': label });
+  b.addEventListener('click', () => onChange(b.getAttribute('aria-checked') !== 'true'));
+  return b;
+}
+
+/** A labelled checkbox: `label.check` around the input and its text. */
+export function check(label: string, o: { checked?: boolean; disabled?: boolean; id?: string; onChange?: (on: boolean) => void } = {}): HTMLLabelElement {
+  const box = h('input', { type: 'checkbox', id: o.id ?? null, disabled: !!o.disabled }) as HTMLInputElement;
+  box.checked = !!o.checked;
+  box.addEventListener('change', () => o.onChange?.(box.checked));
+  return h('label.check', null, box, h('span', null, label));
+}
+
+/** An empty state: `div.empty` with an icon, a bold title and a line of text. */
+export function emptyBox(name: LucideName, title: string, text?: string, action?: Node): HTMLElement {
+  return h('div.empty', null, lu(name, 22), h('b', null, title), text ? h('span', null, text) : null, action ?? null);
+}
+
+export interface TblCol<T> {
+  label: string;
+  cls?: string;
+  cell: (row: T) => Node | string | null;
+}
+
+/** A plain table in the prototype's wrapper: `div.tbl-wrap > table.tbl`. */
+export function tbl<T>(cols: TblCol<T>[], rows: T[], key?: (row: T) => string): HTMLElement {
+  return h(
+    'div.tbl-wrap',
+    null,
+    h(
+      'table.tbl',
+      null,
+      h('thead', null, h('tr', null, cols.map((c) => h('th', { class: c.cls ?? null }, c.label)))),
+      h(
+        'tbody',
+        null,
+        rows.map((r) => h('tr', { 'data-key': key?.(r) ?? null }, cols.map((c) => h('td', { class: c.cls ?? null }, c.cell(r))))),
+      ),
+    ),
+  );
+}
+
+export interface DialogOpts {
+  cls?: string;
+  onClose?: () => void;
+}
+
+/** A sheet over a scrim with a header, a body and a footer of buttons (the prototype's modal). Returns its close. */
+export function dialog(title: string, body: Node | Node[], foot: Node[] = [], o: DialogOpts = {}): () => void {
+  let closed = false;
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') close();
+  };
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    scrim.remove();
+    document.removeEventListener('keydown', onKey);
+    o.onClose?.();
+  };
+  const scrim = h(
+    'div.scrim',
+    null,
+    h(
+      'div.sheet',
+      { class: o.cls ?? null, role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+      h('header.sheet-h', null, h('h2', null, title), iconBtn('x', close, 'Close')),
+      h('div.sheet-b', null, body),
+      foot.length ? h('footer.sheet-f', null, foot) : null,
+    ),
+  );
+  scrim.addEventListener('mousedown', (e) => {
+    if (e.target === scrim) close();
+  });
+  document.addEventListener('keydown', onKey);
+  document.body.append(scrim);
+  setTimeout(() => scrim.querySelector<HTMLElement>('input:not([type=checkbox]), textarea, select')?.focus(), 0);
+  return close;
 }

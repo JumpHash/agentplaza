@@ -13,18 +13,18 @@ use std::time::{Duration, Instant};
 use iced::widget::operation::snap_to;
 use iced::widget::scrollable::RelativeOffset;
 use iced::widget::{
-    Id as WidgetId, Space, button, checkbox, column, container, pick_list, row, text, text_editor,
+    Id as WidgetId, Space, button, checkbox, column, container, pick_list, row, text_editor,
     text_input,
 };
-use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
+use iced::{Alignment, Border, Color, Element, Length, Subscription, Task, Theme};
 use serde_json::Value;
 
 use super::Id;
 use super::lab::{self, Section};
 use super::lab_common;
 use crate::console::lab_api::{
-    self, Dataset, DeviceMachine, DeviceRequest, Island, JobDocument, JobPlan, JobSummary, JobView,
-    Recipe, SubmitError,
+    self, Dataset, DeviceMachine, DeviceRequest, JobDocument, JobPlan, JobSummary, JobView, Recipe,
+    SubmitError,
 };
 use crate::console::{
     Ctx,
@@ -47,14 +47,8 @@ const ANIM: Duration = Duration::from_millis(450);
 /// A `training` frame reloads the list at most this often.
 const LIVE_EVERY: Duration = Duration::from_secs(1);
 const SCROLL: &str = "lab-jobs-scroll";
-const BAR_WIDTH: f32 = 96.0;
-const TRACK_HEIGHT: f32 = 6.0;
-const PLAN_NOTE_SINGLE: &str =
-    "One island on one machine: the job trains in a single process group.";
-const PLAN_NOTE_TIGHT: &str =
-    "The islands train as one group, synchronised every step over the leader’s rendezvous.";
-const PLAN_NOTE_LOOSE: &str =
-    "Each island trains on its own and the islands average through the hub between inner rounds.";
+/// The job cards per row, as the web's `.lab-cards` grid at the page's width.
+const CARDS_PER_ROW: usize = 3;
 
 // ---- Options and filters ----
 
@@ -721,288 +715,171 @@ fn tinted(c: Color, alpha: f32) -> Color {
     }
 }
 
-/// A budget bar: the share of the budget the runs have used, red once it is over.
-fn budget_bar<'a>(used: f64, budget: f64) -> Element<'a, Msg> {
-    let ratio = if budget > 0.0 {
-        (used / budget).clamp(0.0, 1.0)
+/// A job's status word as the web's chip: its first letter capitalised.
+fn cap(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// The budget cell as the web's `budgetCell`: the used and the budget, then a meter that turns red
+/// over budget (the figure too).
+fn budget_cell<'a>(job: &JobSummary, alpha: f32) -> Element<'a, Msg> {
+    let over = job.budget_gpu_hours > 0.0 && job.gpu_hours > job.budget_gpu_hours;
+    let ratio = if job.budget_gpu_hours > 0.0 {
+        job.gpu_hours / job.budget_gpu_hours
     } else {
         0.0
     };
-    let over = budget > 0.0 && used > budget;
-    let fill = if over {
+    let figure = format!(
+        "{} of {}",
+        lab_common::number(job.gpu_hours, 2),
+        lab_common::number(job.budget_gpu_hours, 0)
+    );
+    let ink = if over {
         crate::theme::palette().crit
     } else {
-        crate::theme::palette().signal
+        tinted(crate::theme::palette().ink, alpha)
     };
-    let filled = (BAR_WIDTH * ratio as f32).max(0.0);
-    container(
-        row![
-            container(
-                Space::new()
-                    .width(Length::Fixed(filled))
-                    .height(Length::Fixed(TRACK_HEIGHT))
-            )
-            .style(move |_: &Theme| container::Style {
-                background: Some(fill.into()),
-                ..Default::default()
-            }),
-            Space::new()
-                .width(Length::Fill)
-                .height(Length::Fixed(TRACK_HEIGHT)),
-        ]
-        .width(Length::Fixed(BAR_WIDTH)),
-    )
-    .width(Length::Fixed(BAR_WIDTH))
-    .height(Length::Fixed(TRACK_HEIGHT))
-    .style(|_: &Theme| container::Style {
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    })
-    .into()
-}
-
-/// `used / budget` in GPU-hours, with its bar.
-fn used_cell<'a>(job: &JobSummary, alpha: f32) -> Element<'a, Msg> {
-    let figure = format!(
-        "{} / {}",
-        lab_common::number(job.gpu_hours, 2),
-        lab_common::number(job.budget_gpu_hours, 2)
-    );
     column![
-        ui::sans(figure, 12.0, tinted(crate::theme::palette().ink, alpha)),
-        budget_bar(job.gpu_hours, job.budget_gpu_hours)
+        ui::sans(figure, 13.0, ink),
+        container(lab_common::meter(ratio, over)).width(Length::Fixed(140.0)),
     ]
     .spacing(4)
-    .align_x(Alignment::End)
-    .into()
-}
-
-/// A text that stays on one line (the table's cells never wrap; the row's width is the share it gets).
-fn single_line<'a>(content: text::Text<'a>) -> Element<'a, Msg> {
-    content.wrapping(text::Wrapping::None).into()
-}
-
-/// One table cell: a fixed share of the row, its content right-aligned when `right`.
-fn cell<'a>(portion: u16, right: bool, content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content.into())
-        .clip(true)
-        .width(Length::FillPortion(portion))
-        .align_x(if right {
-            Alignment::End
-        } else {
-            Alignment::Start
-        })
-        .into()
-}
-
-fn head_cell<'a>(label: &str, portion: u16, right: bool) -> Element<'a, Msg> {
-    cell(
-        portion,
-        right,
-        ui::sans(label.to_string(), 11.0, crate::theme::palette().ink_3),
-    )
-}
-
-/// `text` cut to `max` characters, the last of them an ellipsis when it had to be cut.
-fn clip(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    if max == 0 {
-        return String::new();
-    }
-    let kept: String = text.chars().take(max - 1).collect();
-    format!("{}…", kept.trim_end())
-}
-
-fn job_row<'a>(job: &JobSummary, alpha: f32, now: u64) -> Element<'a, Msg> {
-    let id = job.id.clone();
-    let content = row![
-        cell(
-            3,
-            false,
-            single_line(ui::mono(
-                job.id.clone(),
-                12.0,
-                tinted(crate::theme::palette().ink, alpha)
-            ))
-        ),
-        cell(
-            3,
-            false,
-            ui::badge::<Msg>(&job.status, tone_of(&job.status))
-        ),
-        cell(
-            2,
-            false,
-            single_line(ui::sans(
-                job.mode.clone(),
-                12.0,
-                tinted(crate::theme::palette().ink_2, alpha)
-            ))
-        ),
-        cell(
-            4,
-            false,
-            single_line(ui::sans(
-                job.recipe.clone(),
-                12.0,
-                tinted(crate::theme::palette().ink_2, alpha)
-            ))
-        ),
-        cell(
-            2,
-            true,
-            single_line(ui::sans(
-                job.datasets.len().to_string(),
-                12.0,
-                tinted(crate::theme::palette().ink, alpha)
-            ))
-        ),
-        cell(
-            4,
-            false,
-            single_line(ui::sans(
-                lab_common::time(job.created_ms),
-                12.0,
-                tinted(crate::theme::palette().ink_3, alpha)
-            ))
-        ),
-        cell(
-            2,
-            true,
-            single_line(ui::sans(
-                lab_common::duration(duration_of(job, now)),
-                12.0,
-                tinted(crate::theme::palette().ink, alpha)
-            ))
-        ),
-        cell(3, true, used_cell(job, alpha)),
-        cell(
-            4,
-            false,
-            single_line(ui::sans(
-                clip(job.error.as_deref().unwrap_or("—"), 40),
-                12.0,
-                tinted(crate::theme::palette().crit, alpha)
-            ))
-        ),
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center)
-    .width(Length::Fill);
-    button(
-        container(content)
-            .padding(Padding {
-                top: 9.0,
-                right: 0.0,
-                bottom: 9.0,
-                left: 0.0,
-            })
-            .width(Length::Fill),
-    )
-    .style(theme::register_row(false))
-    .padding(0)
     .width(Length::Fill)
-    .on_press(Msg::Go(Id::LabJobDetail(id)))
     .into()
 }
 
-/// A label and its value on one line of a card; the label fades with the card.
-fn kv<'a>(label: &str, value: impl Into<Element<'a, Msg>>, alpha: f32) -> Element<'a, Msg> {
-    let name = ui::sans(
-        label.to_string(),
-        10.5,
-        tinted(crate::theme::palette().ink_3, alpha),
-    );
-    row![cell(1, false, name), cell(3, false, value)]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .into()
+/// The cells of one job's row, in the web's table order: id, status, mode, recipe, datasets,
+/// created, duration, GPU-h and error. A fresh row eases in through `alpha`.
+fn job_cells<'a>(job: &JobSummary, alpha: f32, now: u64) -> Vec<Element<'a, Msg>> {
+    let ink = tinted(crate::theme::palette().ink, alpha);
+    let ink_2 = tinted(crate::theme::palette().ink_2, alpha);
+    let ink_3 = tinted(crate::theme::palette().ink_3, alpha);
+    let error: Element<'a, Msg> = match job.error.as_deref() {
+        Some(message) if !message.is_empty() => ui::sans(
+            message.to_string(),
+            13.0,
+            tinted(crate::theme::palette().crit, alpha),
+        )
+        .into(),
+        _ => ui::sans("—", 13.0, ink_3).into(),
+    };
+    vec![
+        ui::mono(job.id.clone(), 12.0, ink).into(),
+        ui::badge(&cap(&job.status), tone_of(&job.status)),
+        ui::sans(job.mode.clone(), 13.0, ink_2).into(),
+        ui::mono(job.recipe.clone(), 12.0, ink_2).into(),
+        ui::sans(job.datasets.len().to_string(), 13.0, ink).into(),
+        ui::sans(lab_common::ago_text(job.created_ms, now), 13.0, ink_2).into(),
+        ui::sans(lab_common::run_time(duration_of(job, now)), 13.0, ink).into(),
+        budget_cell(job, alpha),
+        error,
+    ]
 }
 
-/// One job's card. A card that arrived on a poll eases in: its text and border take `alpha`.
+/// The columns of the jobs table, as the web's `tableOf`.
+const JOB_COLS: [lab_common::Col; 9] = [
+    lab_common::Col {
+        head: "ID",
+        portion: 3,
+        right: false,
+    },
+    lab_common::Col {
+        head: "Status",
+        portion: 2,
+        right: false,
+    },
+    lab_common::Col {
+        head: "Mode",
+        portion: 2,
+        right: false,
+    },
+    lab_common::Col {
+        head: "Recipe",
+        portion: 3,
+        right: false,
+    },
+    lab_common::Col {
+        head: "Datasets",
+        portion: 2,
+        right: true,
+    },
+    lab_common::Col {
+        head: "Created",
+        portion: 2,
+        right: false,
+    },
+    lab_common::Col {
+        head: "Duration",
+        portion: 2,
+        right: true,
+    },
+    lab_common::Col {
+        head: "GPU-h",
+        portion: 3,
+        right: false,
+    },
+    lab_common::Col {
+        head: "Error",
+        portion: 3,
+        right: false,
+    },
+];
+
+/// One job as the web's card: its id and status on the head, the recipe, the datasets, the times,
+/// the budget and any error, the whole card a link to the job.
 fn job_card<'a>(job: &JobSummary, now: u64, alpha: f32) -> Element<'a, Msg> {
-    let body = column![
+    let ink_2 = tinted(crate::theme::palette().ink_2, alpha);
+    let ink_3 = tinted(crate::theme::palette().ink_3, alpha);
+    let datasets = job.datasets.len();
+    let mut lines: Vec<Element<'a, Msg>> = vec![
         row![
-            ui::mono(
-                job.id.clone(),
-                13.0,
-                tinted(crate::theme::palette().ink, alpha)
-            ),
-            Space::new().width(Length::Fill),
-            ui::badge::<Msg>(&job.status, tone_of(&job.status))
+            ui::sans("Recipe", 12.5, ink_3),
+            ui::mono(job.recipe.clone(), 12.0, ink_2),
+            ui::sans(format!("· {}", job.mode), 12.5, ink_2),
         ]
-        .align_y(Alignment::Center),
-        kv(
-            "Recipe",
-            ui::sans(
-                job.recipe.clone(),
-                12.0,
-                tinted(crate::theme::palette().ink_2, alpha)
-            ),
-            alpha
-        ),
-        kv(
-            "Mode",
-            ui::sans(
-                job.mode.clone(),
-                12.0,
-                tinted(crate::theme::palette().ink_2, alpha)
-            ),
-            alpha
-        ),
-        kv(
-            "Datasets",
-            ui::sans(
-                job.datasets.len().to_string(),
-                12.0,
-                tinted(crate::theme::palette().ink, alpha)
-            ),
-            alpha
-        ),
-        kv(
-            "Created",
-            ui::sans(
-                lab_common::time(job.created_ms),
-                12.0,
-                tinted(crate::theme::palette().ink_3, alpha)
-            ),
-            alpha
-        ),
-        kv(
-            "Duration",
-            ui::sans(
-                lab_common::duration(duration_of(job, now)),
-                12.0,
-                tinted(crate::theme::palette().ink, alpha)
-            ),
-            alpha
-        ),
-        kv("GPU-h used", used_cell(job, alpha), alpha),
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into(),
         ui::sans(
-            clip(job.error.as_deref().unwrap_or(""), 120),
-            12.0,
-            tinted(crate::theme::palette().crit, alpha)
-        ),
-    ]
-    .spacing(8);
-    let boxed = move |_: &Theme| container::Style {
-        text_color: Some(tinted(crate::theme::palette().ink, alpha)),
-        background: Some(tinted(crate::theme::palette().sheet, alpha).into()),
-        border: Border {
-            color: tinted(crate::theme::palette().rule_faint, alpha),
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    };
-    button(container(body).padding(14).width(Length::Fill).style(boxed))
-        .style(theme::register_row(false))
+            format!(
+                "{} dataset{} · created {} · {}",
+                datasets,
+                if datasets == 1 { "" } else { "s" },
+                lab_common::ago_text(job.created_ms, now),
+                lab_common::run_time(duration_of(job, now))
+            ),
+            12.5,
+            ink_3,
+        )
+        .into(),
+        budget_cell(job, alpha),
+    ];
+    if let Some(message) = job.error.as_deref().filter(|m| !m.is_empty()) {
+        lines.push(
+            ui::sans(
+                message.to_string(),
+                12.5,
+                tinted(crate::theme::palette().crit, alpha),
+            )
+            .into(),
+        );
+    }
+    let card = ui::card_with(
+        &job.id,
+        vec![ui::badge(&cap(&job.status), tone_of(&job.status))],
+        column(lines).spacing(8).width(Length::Fill).into(),
+    );
+    button(card)
+        .style(|_: &Theme, _: button::Status| button::Style {
+            background: None,
+            text_color: crate::theme::palette().ink,
+            border: Border::default(),
+            ..Default::default()
+        })
         .padding(0)
         .width(Length::Fill)
         .on_press(Msg::Go(Id::LabJobDetail(job.id.clone())))
@@ -1023,28 +900,21 @@ fn visible(state: &State) -> Vec<&JobSummary> {
         .collect()
 }
 
-fn list_card<'a>(state: &'a State) -> Element<'a, Msg> {
-    let all = &state.jobs;
-    let labels: Vec<(Status, String)> = STATUSES
+/// The filter chips (one per status, each with its count), the recipe and mode pickers, the search
+/// by id and the Table / Cards switch, as the web's `.lab-tools`.
+fn tools<'a>(state: &'a State) -> Element<'a, Msg> {
+    let chips: Vec<Element<'a, Msg>> = STATUSES
         .iter()
         .map(|(s, label)| {
-            let n = if *s == Status::All {
-                all.len()
+            let count = if *s == Status::All {
+                state.jobs.len()
             } else {
-                all.iter().filter(|j| j.status == s.key()).count()
+                state.jobs.iter().filter(|j| j.status == s.key()).count()
             };
-            (*s, format!("{label} {n}"))
+            lab_common::chip(label, count, state.status == *s, Msg::Filter(*s))
         })
         .collect();
-    let status_refs: Vec<(Status, &str)> = labels.iter().map(|(s, l)| (*s, l.as_str())).collect();
-    let status_strip = ui::seg(&status_refs, state.status, Msg::Filter);
-    let view_strip = ui::seg(
-        &[(View::Table, "Table"), (View::Cards, "Cards")],
-        state.view,
-        Msg::View,
-    );
-
-    let mut recipe_names: Vec<String> = all.iter().map(|j| j.recipe.clone()).collect();
+    let mut recipe_names: Vec<String> = state.jobs.iter().map(|j| j.recipe.clone()).collect();
     recipe_names.sort();
     recipe_names.dedup();
     let mut recipe_options = vec![Opt {
@@ -1059,9 +929,9 @@ fn list_card<'a>(state: &'a State) -> Element<'a, Msg> {
         .iter()
         .find(|o| o.value == state.recipe_filter)
         .cloned();
-    let recipe_pick =
-        pick_list(recipe_options, recipe_selected, Msg::RecipeFilter).width(Length::Fixed(240.0));
-
+    let recipe_pick = pick_list(recipe_options, recipe_selected, Msg::RecipeFilter)
+        .style(crate::theme::pick_list)
+        .width(Length::Fixed(200.0));
     let mode_options: Vec<Opt<Option<String>>> = vec![
         Opt {
             value: None,
@@ -1084,69 +954,94 @@ fn list_card<'a>(state: &'a State) -> Element<'a, Msg> {
         .iter()
         .find(|o| o.value == state.mode_filter)
         .cloned();
-    let mode_pick =
-        pick_list(mode_options, mode_selected, Msg::ModeFilter).width(Length::Fixed(200.0));
-
+    let mode_pick = pick_list(mode_options, mode_selected, Msg::ModeFilter)
+        .style(crate::theme::pick_list)
+        .width(Length::Fixed(160.0));
     let search = text_input("Search by job id", &state.query)
         .on_input(Msg::Query)
-        .padding([8, 10])
+        .padding([6, 10])
         .size(13.0)
-        .width(Length::Fill)
+        .width(Length::Fixed(220.0))
         .style(theme::input);
+    let view_seg = ui::seg(
+        &[(View::Table, "Table"), (View::Cards, "Cards")],
+        state.view,
+        Msg::View,
+    );
+    let right = row![recipe_pick, mode_pick, search, view_seg]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .wrap();
+    row![
+        row(chips).spacing(6).align_y(Alignment::Center).wrap(),
+        right,
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .wrap()
+    .into()
+}
 
+/// The jobs list under the tools: the count line, any load error, then the table, the cards, or the
+/// empty state.
+fn list<'a>(state: &'a State) -> Element<'a, Msg> {
     let rows = visible(state);
     let now = lab_common::now_ms();
     let fresh_at = &state.fresh;
+    let total = state.jobs.len();
+    let count_line = lab_common::note(if state.loaded {
+        format!("{} of {} shown", rows.len(), total)
+    } else {
+        String::new()
+    });
+    let errors: Element<'a, Msg> = match state.error.as_deref() {
+        Some(message) => lab_common::err(message),
+        None => Space::new().into(),
+    };
     let body: Element<'a, Msg> = if !state.loaded {
-        ui::loading()
-    } else if all.is_empty() {
-        column![
-            ui::empty("play", "No jobs yet", "Pick a vetted recipe and a dataset, set a budget, and preview the plan before you submit."),
-            container(ui::btn("New job", Some("plus"), ui::Kind::Primary, Some(Msg::ScrollToForm))).center_x(Length::Fill),
-        ]
-        .spacing(14)
-        .into()
+        lab_common::note(if state.error.is_some() {
+            ""
+        } else {
+            "Loading jobs…"
+        })
+    } else if total == 0 {
+        lab_common::empty(
+            "flask-conical",
+            "No jobs yet",
+            None,
+            Some(ui::btn_sm(
+                "New job",
+                Some("plus"),
+                ui::Kind::Primary,
+                Some(Msg::ScrollToForm),
+            )),
+        )
     } else if rows.is_empty() {
-        column![
-            ui::empty(
-                "search",
-                "No jobs match",
-                "Clear the filters to see every job."
-            ),
-            container(ui::btn(
+        lab_common::empty(
+            "search",
+            "No jobs match",
+            None,
+            Some(ui::btn_sm(
                 "Clear filters",
                 None,
-                ui::Kind::Secondary,
-                Some(Msg::ClearFilters)
-            ))
-            .center_x(Length::Fill),
-        ]
-        .spacing(14)
-        .into()
+                ui::Kind::Ghost,
+                Some(Msg::ClearFilters),
+            )),
+        )
     } else if state.view == View::Table {
-        let header = row![
-            head_cell("ID", 3, false),
-            head_cell("Status", 2, false),
-            head_cell("Mode", 2, false),
-            head_cell("Recipe", 4, false),
-            head_cell("Datasets", 2, true),
-            head_cell("Created", 3, false),
-            head_cell("Duration", 2, true),
-            head_cell("GPU-h used", 3, true),
-            head_cell("Error", 4, false),
-        ]
-        .spacing(12)
-        .width(Length::Fill);
-        let lines: Vec<Element<'a, Msg>> = rows
+        let rows: Vec<lab_common::Row<'a, Msg>> = rows
             .iter()
-            .map(|j| job_row(j, fade(fresh_at, &j.id), now))
+            .map(|j| lab_common::Row {
+                cells: job_cells(j, fade(fresh_at, &j.id), now),
+                on_press: Some(Msg::Go(Id::LabJobDetail(j.id.clone()))),
+            })
             .collect();
-        column![header, column(lines).spacing(0)].spacing(4).into()
+        lab_common::table(&JOB_COLS, rows)
     } else {
         let cards: Vec<Element<'a, Msg>> = rows
-            .chunks(2)
-            .map(|pair| {
-                let cards: Vec<Element<'a, Msg>> = pair
+            .chunks(CARDS_PER_ROW)
+            .map(|chunk| {
+                let mut cells: Vec<Element<'a, Msg>> = chunk
                     .iter()
                     .map(|j| {
                         container(job_card(j, now, fade(fresh_at, &j.id)))
@@ -1154,41 +1049,28 @@ fn list_card<'a>(state: &'a State) -> Element<'a, Msg> {
                             .into()
                     })
                     .collect();
-                row(cards).spacing(16).into()
+                while cells.len() < CARDS_PER_ROW {
+                    cells.push(Space::new().width(Length::FillPortion(1)).into());
+                }
+                row(cells).spacing(12).width(Length::Fill).into()
             })
             .collect();
-        column(cards).spacing(16).into()
+        column(cards).spacing(12).width(Length::Fill).into()
     };
-
-    let count_line = ui::faint(format!("{} of {} shown", rows.len(), all.len()));
-    let errors: Option<Element<'a, Msg>> = state.error.as_deref().map(ui::error_line);
-    let toolbar = column![
-        row![status_strip, Space::new().width(Length::Fill), view_strip]
-            .spacing(12)
-            .align_y(Alignment::Center),
-        row![recipe_pick, mode_pick, search]
-            .spacing(12)
-            .align_y(Alignment::Center),
-    ]
-    .spacing(12);
-    ui::card(
-        "Job list",
-        column![
-            count_line,
-            toolbar,
-            errors.unwrap_or_else(|| Space::new().into()),
-            body
-        ]
-        .spacing(14)
-        .into(),
-    )
+    column![count_line, errors, body]
+        .spacing(12)
+        .width(Length::Fill)
+        .into()
 }
 
-/// One field of the form: its name in mono caps, the control, and a faint hint.
+/// A form field: its label, its control and, when there is one, its hint (the web's `.field-l`,
+/// the control, and `small.hint`).
 fn field<'a>(title: &str, control: Element<'a, Msg>, hint: &str) -> Element<'a, Msg> {
-    column![ui::label(title), control, ui::faint(hint.to_string())]
-        .spacing(6)
-        .into()
+    let mut parts: Vec<Element<'a, Msg>> = vec![ui::label(title).into(), control];
+    if !hint.is_empty() {
+        parts.push(ui::faint(hint.to_string()).size(12.0).into());
+    }
+    column(parts).spacing(6).width(Length::Fill).into()
 }
 
 fn recipe_options(state: &State) -> Vec<Opt<String>> {
@@ -1203,6 +1085,7 @@ fn recipe_options(state: &State) -> Vec<Opt<String>> {
         .collect()
 }
 
+/// The recipe's hint, as the web's `recipeHint`: the recipes not vetted yet, or that none is.
 fn unvetted_note(state: &State) -> String {
     let vetted = recipe_options(state).len();
     let unvetted: Vec<&str> = state
@@ -1212,17 +1095,23 @@ fn unvetted_note(state: &State) -> String {
         .map(|r| r.id.as_str())
         .collect();
     if vetted == 0 {
-        "No vetted recipe yet. The owner vets one on the Recipes tab.".to_string()
+        "No vetted recipe yet. Vet one under Recipes.".to_string()
     } else if unvetted.is_empty() {
         String::new()
     } else {
-        format!("Not vetted, so not selectable: {}.", unvetted.join(", "))
+        format!(
+            "Not listed until vetted: {}. Vet {} under Recipes.",
+            unvetted.join(", "),
+            if unvetted.len() == 1 { "it" } else { "them" }
+        )
     }
 }
 
-fn dataset_rows<'a>(state: &'a State) -> Element<'a, Msg> {
+/// The datasets to pick from, as the web's `.lab-checks`: a checkbox, the name, the id, kind and rows
+/// and a frozen chip; a scroll past 200 pixels.
+fn dataset_checks<'a>(state: &'a State) -> Element<'a, Msg> {
     if state.datasets.is_empty() {
-        return ui::faint("No datasets yet. Make one on the Datasets tab.").into();
+        return lab_common::note("No datasets yet. Make one on the Datasets tab.");
     }
     let rows: Vec<Element<'a, Msg>> = state
         .datasets
@@ -1234,106 +1123,67 @@ fn dataset_rows<'a>(state: &'a State) -> Element<'a, Msg> {
                 checkbox(picked)
                     .label(d.name.clone())
                     .on_toggle(move |on| Msg::ToggleDataset(id.clone(), on)),
-                ui::mono(d.id.clone(), 11.0, crate::theme::palette().ink_3),
-                Space::new().width(Length::Fill),
-                ui::faint(format!("{} · {} rows", d.kind, lab_common::count(d.rows))),
+                lab_common::note(format!(
+                    "{} · {} · {} rows",
+                    d.id,
+                    d.kind,
+                    lab_common::count(d.rows)
+                )),
             ]
-            .spacing(12)
+            .spacing(10)
             .align_y(Alignment::Center);
             if d.frozen_rows > 0 {
-                line = line.push(ui::badge::<Msg>(
-                    &format!("frozen {}", lab_common::count(d.frozen_rows)),
-                    ui::Tone::Signal,
-                ));
+                line = line.push(ui::badge::<Msg>("frozen", ui::Tone::Info));
             }
-            container(line).padding([8, 12]).width(Length::Fill).into()
+            line.into()
         })
         .collect();
-    scroll_box(column(rows).spacing(0).into())
+    scroll_box(column(rows).spacing(6).width(Length::Fill).into(), 200.0)
 }
 
-fn machine_rows<'a>(state: &'a State) -> Element<'a, Msg> {
+/// The machines to pick from, as the web's machine checks: a checkbox per machine, an offline one
+/// marked so.
+fn machine_checks<'a>(state: &'a State) -> Element<'a, Msg> {
     if state.machines.is_empty() {
-        return ui::faint("No machines report devices.").into();
+        return lab_common::note("No machines report devices.");
     }
-    let rows: Vec<Element<'a, Msg>> = state
+    let boxes: Vec<Element<'a, Msg>> = state
         .machines
         .iter()
         .map(|m| {
             let id = m.id.clone();
             let picked = state.form.machines.contains(&m.id);
-            let devices = m.devices.len();
-            let line = row![
-                checkbox(picked)
-                    .label(m.id.clone())
-                    .on_toggle(move |on| Msg::ToggleMachine(id.clone(), on)),
-                Space::new().width(Length::Fill),
-                ui::faint(format!(
-                    "{devices} device{}",
-                    if devices == 1 { "" } else { "s" }
-                )),
-                ui::badge::<Msg>(
-                    if m.online { "online" } else { "offline" },
-                    if m.online {
-                        ui::Tone::Ok
-                    } else {
-                        ui::Tone::Muted
-                    }
-                ),
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center);
-            container(line).padding([8, 12]).width(Length::Fill).into()
+            let label = if m.online {
+                m.id.clone()
+            } else {
+                format!("{} · offline", m.id)
+            };
+            checkbox(picked)
+                .label(label)
+                .on_toggle(move |on| Msg::ToggleMachine(id.clone(), on))
+                .into()
         })
         .collect();
-    scroll_box(column(rows).spacing(0).into())
+    row(boxes)
+        .spacing(16)
+        .align_y(Alignment::Center)
+        .wrap()
+        .into()
 }
 
-/// A bordered box that scrolls past 240 px.
-fn scroll_box<'a>(body: Element<'a, Msg>) -> Element<'a, Msg> {
+/// A bordered box that scrolls past `max` pixels, the web's `.lab-checks` scroller.
+fn scroll_box<'a>(body: Element<'a, Msg>, max: f32) -> Element<'a, Msg> {
     container(ui::scroll(body).width(Length::Fill))
-        .max_height(240.0)
-        .style(theme::boxed)
+        .max_height(max)
+        .padding(4)
         .width(Length::Fill)
         .into()
 }
 
-fn device_pin<'a>(state: &'a State) -> Element<'a, Msg> {
+/// The device pin: the backends the job may run on (none picked means any).
+fn backend_checks<'a>(state: &'a State) -> Element<'a, Msg> {
     let f = &state.form;
-    let min = text_input("e.g. 1", &f.min_devices)
-        .on_input(Msg::MinDevices)
-        .padding([8, 10])
-        .size(13.0)
-        .width(Length::Fill)
-        .style(theme::input);
-    let max = text_input("e.g. 4", &f.max_devices)
-        .on_input(Msg::MaxDevices)
-        .padding([8, 10])
-        .size(13.0)
-        .width(Length::Fill)
-        .style(theme::input);
-    let mem = text_input("e.g. 16384", &f.min_memory)
-        .on_input(Msg::MinMemory)
-        .padding([8, 10])
-        .size(13.0)
-        .width(Length::Fill)
-        .style(theme::input);
-    let counts = row![
-        field(
-            "Min devices",
-            min.into(),
-            "Optional. Whole number, 1 or more."
-        ),
-        field("Max devices", max.into(), "Optional. Defaults to the min."),
-        field(
-            "Min memory (MiB)",
-            mem.into(),
-            "Optional. Each device must have at least this much."
-        ),
-    ]
-    .spacing(16)
-    .width(Length::Fill);
-    let backends = row(BACKENDS
+    row(BACKENDS
         .iter()
         .map(|b| {
             let name: &'static str = b;
@@ -1343,168 +1193,300 @@ fn device_pin<'a>(state: &'a State) -> Element<'a, Msg> {
                 .into()
         })
         .collect::<Vec<Element<'a, Msg>>>())
-    .spacing(16)
-    .wrap();
-    let mode_options: Vec<Opt<Option<String>>> = MODE_LABELS
-        .iter()
-        .map(|(label, value)| Opt {
-            value: value.map(|v| v.to_string()),
-            label: (*label).to_string(),
-        })
-        .collect();
-    let mode_selected = mode_options.iter().find(|o| o.value == f.mode).cloned();
-    let mode = pick_list(mode_options, mode_selected, Msg::PickMode).width(Length::Fill);
-    let allow = checkbox(f.allow_cpu)
-        .label("Allow CPU devices")
-        .on_toggle(Msg::AllowCpu);
-    container(
-        column![
-            ui::label("Device pin (optional)"),
-            counts,
-            field(
-                "Backends",
-                backends.into(),
-                "None picked means any backend the planner allows."
-            ),
-            field(
-                "Mode",
-                mode.into(),
-                "Auto lets the planner choose between single, tight and loose."
-            ),
-            field(
-                "Machines",
-                machine_rows(state),
-                "None picked means any machine."
-            ),
-            allow,
-        ]
-        .spacing(16),
-    )
-    .padding(14)
-    .width(Length::Fill)
-    .style(theme::boxed)
-    .into()
-}
-
-/// A plan as a diagram: the facts, then one box per island with its leader and machines' device indexes.
-pub fn plan_view<'a>(plan: &JobPlan) -> Element<'a, Msg> {
-    let fact = |label: &str, value: String| -> Element<'a, Msg> {
-        container(
-            column![
-                ui::label(label),
-                ui::sans(value, 13.0, crate::theme::palette().ink).wrapping(text::Wrapping::Glyph)
-            ]
-            .spacing(4),
-        )
-        .padding([10, 12])
-        .width(Length::FillPortion(1))
-        .style(theme::boxed)
-        .into()
-    };
-    let mut facts = vec![
-        fact("Mode", plan.mode.clone()),
-        fact("Devices", lab_common::count(plan.devices_total)),
-        fact("Inner steps", lab_common::count(plan.inner_steps)),
-        fact("Staleness", lab_common::count(plan.staleness)),
-    ];
-    if let Some(rounds) = plan.rounds {
-        facts.push(fact("Rounds", lab_common::count(rounds)));
-    }
-    facts.push(fact(
-        "Frozen",
-        plan.frozen.clone().unwrap_or_else(|| "none".to_string()),
-    ));
-    let note = match plan.mode.as_str() {
-        "single" => Some(PLAN_NOTE_SINGLE),
-        "tight" => Some(PLAN_NOTE_TIGHT),
-        "loose" => Some(PLAN_NOTE_LOOSE),
-        _ => None,
-    };
-    let islands: Vec<Element<'a, Msg>> = plan.islands.iter().map(island_box).collect();
-    let note_line: Element<'a, Msg> = match note {
-        Some(n) => ui::faint(n.to_string()).into(),
-        None => Space::new().into(),
-    };
-    let island_row: Element<'a, Msg> = if islands.is_empty() {
-        ui::faint("The plan has no islands.").into()
-    } else {
-        row(islands).spacing(12).wrap().into()
-    };
-    column![
-        row(facts).spacing(10).width(Length::Fill),
-        note_line,
-        island_row,
-        row![
-            ui::label("Output"),
-            ui::mono(plan.output_dir.clone(), 12.0, crate::theme::palette().ink_2)
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center),
-    ]
     .spacing(14)
+    .align_y(Alignment::Center)
+    .wrap()
     .into()
 }
 
-/// A plan's text field, or a dash when the plan leaves it empty (as the web shows it).
-fn dash_if_empty(value: &str) -> &str {
-    if value.is_empty() { "—" } else { value }
+/// The form's cells in the web's `.lab-form` grid: four to a row, a wide cell takes a row of its own.
+fn form_grid<'a>(cells: Vec<(Element<'a, Msg>, bool)>) -> Element<'a, Msg> {
+    const COLS: usize = 4;
+    let mut rows: Vec<Element<'a, Msg>> = Vec::new();
+    let mut current: Vec<Element<'a, Msg>> = Vec::new();
+    let flush = |current: &mut Vec<Element<'a, Msg>>, rows: &mut Vec<Element<'a, Msg>>| {
+        if current.is_empty() {
+            return;
+        }
+        while current.len() < COLS {
+            current.push(Space::new().width(Length::FillPortion(1)).into());
+        }
+        rows.push(
+            row(std::mem::take(current))
+                .spacing(12)
+                .width(Length::Fill)
+                .into(),
+        );
+    };
+    for (cell, wide) in cells {
+        if wide {
+            flush(&mut current, &mut rows);
+            rows.push(container(cell).width(Length::Fill).into());
+        } else {
+            if current.len() == COLS {
+                flush(&mut current, &mut rows);
+            }
+            current.push(container(cell).width(Length::FillPortion(1)).into());
+        }
+    }
+    flush(&mut current, &mut rows);
+    column(rows).spacing(12).width(Length::Fill).into()
 }
 
-fn island_box<'a>(island: &Island) -> Element<'a, Msg> {
-    let machines: Vec<Element<'a, Msg>> = island
-        .machines
-        .iter()
-        .map(|m| {
-            let devices: Vec<Element<'a, Msg>> = m
-                .devices
+/// The plan of a dry run as the web's `planDiagram`: a key-value list (mode, devices, inner steps,
+/// staleness, rounds, frozen, islands and the output directory).
+pub fn plan_view<'a, M: 'a>(plan: &JobPlan) -> Element<'a, M> {
+    let backend = plan
+        .islands
+        .first()
+        .map(|i| i.backend.clone())
+        .unwrap_or_else(|| "—".to_string());
+    let loose = plan.mode == "loose";
+    let rounds = plan
+        .rounds
+        .map_or_else(|| "—".to_string(), lab_common::count);
+    let mode = if loose {
+        format!(
+            "loose, {} rounds, staleness {}",
+            lab_common::count(plan.rounds.unwrap_or(0)),
+            lab_common::count(plan.staleness)
+        )
+    } else {
+        plan.mode.clone()
+    };
+    let islands: Element<'a, M> = if plan.islands.is_empty() {
+        ui::sans("—", 13.0, crate::theme::palette().ink).into()
+    } else {
+        column(
+            plan.islands
                 .iter()
-                .map(|d| {
-                    container(ui::mono(
-                        format!("device {d}"),
-                        11.0,
-                        crate::theme::palette().ink_2,
-                    ))
-                    .padding([2, 6])
-                    .style(chip)
+                .map(|i| {
+                    let machines = i
+                        .machines
+                        .iter()
+                        .map(|m| {
+                            format!(
+                                "{} (devices {})",
+                                m.id,
+                                m.devices
+                                    .iter()
+                                    .map(|d| d.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    ui::sans(
+                        format!(
+                            "Island {}: {}, leader {}, rendezvous {}, machines {}",
+                            i.id, i.backend, i.leader, i.rdzv, machines
+                        ),
+                        13.0,
+                        crate::theme::palette().ink,
+                    )
                     .into()
                 })
-                .collect();
-            column![
-                ui::mono(m.id.clone(), 12.0, crate::theme::palette().ink),
-                row(devices).spacing(4).wrap()
-            ]
-            .spacing(6)
-            .into()
-        })
-        .collect();
-    container(
-        column![
-            row![
-                ui::mono(island.id.clone(), 13.0, crate::theme::palette().ink),
-                Space::new().width(Length::Fill),
-                ui::badge::<Msg>(&island.backend, ui::Tone::Signal)
-            ]
-            .align_y(Alignment::Center),
-            ui::faint(format!("Leader {}", dash_if_empty(&island.leader))),
-            ui::faint(format!("Rendezvous {}", dash_if_empty(&island.rdzv))),
-            column(machines).spacing(10),
-        ]
-        .spacing(10),
+                .collect::<Vec<Element<'a, M>>>(),
+        )
+        .spacing(4)
+        .into()
+    };
+    let pairs: Vec<(&str, Element<'a, M>)> = vec![
+        (
+            "Mode",
+            ui::sans(mode, 13.0, crate::theme::palette().ink).into(),
+        ),
+        (
+            "Devices",
+            ui::sans(
+                format!("{} on {}", lab_common::count(plan.devices_total), backend),
+                13.0,
+                crate::theme::palette().ink,
+            )
+            .into(),
+        ),
+        (
+            "Inner steps",
+            ui::sans(
+                lab_common::count(plan.inner_steps),
+                13.0,
+                crate::theme::palette().ink,
+            )
+            .into(),
+        ),
+        (
+            "Staleness",
+            ui::sans(
+                if loose {
+                    lab_common::count(plan.staleness)
+                } else {
+                    "—".to_string()
+                },
+                13.0,
+                crate::theme::palette().ink,
+            )
+            .into(),
+        ),
+        (
+            "Rounds",
+            ui::sans(rounds, 13.0, crate::theme::palette().ink).into(),
+        ),
+        (
+            "Frozen",
+            ui::sans(
+                plan.frozen.clone().unwrap_or_else(|| "none".to_string()),
+                13.0,
+                crate::theme::palette().ink,
+            )
+            .into(),
+        ),
+        ("Islands", islands),
+        (
+            "Output dir",
+            ui::mono(
+                if plan.output_dir.is_empty() {
+                    "—".to_string()
+                } else {
+                    plan.output_dir.clone()
+                },
+                12.0,
+                crate::theme::palette().ink,
+            )
+            .into(),
+        ),
+    ];
+    column(
+        pairs
+            .into_iter()
+            .map(|(label, value)| {
+                row![
+                    container(ui::sans(
+                        label.to_string(),
+                        12.5,
+                        crate::theme::palette().ink_3
+                    ))
+                    .width(Length::Fixed(140.0)),
+                    container(value).width(Length::Fill),
+                ]
+                .spacing(12)
+                .align_y(Alignment::Start)
+                .into()
+            })
+            .collect::<Vec<Element<'a, M>>>(),
     )
-    .padding(12)
-    .width(Length::FillPortion(1))
-    .style(theme::boxed)
+    .spacing(8)
+    .width(Length::Fill)
     .into()
 }
 
-fn chip(_: &Theme) -> container::Style {
-    container::Style {
-        border: Border {
-            color: crate::theme::palette().rule_faint,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
+/// The panel of a plan (the web's `.lab-confirm`): a sheet-2 ground, a summary and two actions.
+fn panel<'a>(content: Element<'a, Msg>) -> Element<'a, Msg> {
+    container(content)
+        .padding(12)
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(crate::theme::palette().sheet_2.into()),
+            border: Border::default().rounded(crate::theme::skin().radius),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The plan zone under the form, as the web's `planZone`: the preview state, the plan's list, then
+/// the submit (or its confirm strip) and any submit error.
+fn plan_zone<'a>(state: &'a State, fresh_now: bool, doc_ok: bool) -> Element<'a, Msg> {
+    if state.previewing {
+        return lab_common::note("Planning the job…");
+    }
+    let key = current_key(&state.form);
+    if let (Some((k, message)), Some(now)) = (&state.preview_error, &key)
+        && k == now
+    {
+        return lab_common::err(message);
+    }
+    let Some(p) = &state.preview else {
+        return lab_common::note(if doc_ok {
+            "Preview the plan to see where the job would run. Submit unlocks for the previewed plan only."
+        } else {
+            "Fill in the form, then preview the plan. The plan shows where the job would run."
+        });
+    };
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    if !fresh_now {
+        parts.push(lab_common::note(
+            "The form changed since this preview. Preview it again to submit.",
+        ));
+    }
+    parts.push(plan_view(&p.plan));
+    if let Some(note) = submit_area(state) {
+        parts.push(note);
+    }
+    let busy = state.submitting;
+    if state.confirming && fresh_now && doc_ok {
+        if let Ok(doc) = build(&state.form) {
+            let n = doc.datasets.len();
+            parts.push(panel(
+                column![
+                    ui::sans(
+                        format!(
+                            "Submit {} on {n} dataset{} with a budget of {} GPU-hours? The job is queued and dispatches to the fleet now.",
+                            doc.recipe,
+                            if n == 1 { "" } else { "s" },
+                            doc.budget_gpu_hours
+                        ),
+                        13.0,
+                        crate::theme::palette().ink,
+                    ),
+                    row![
+                        ui::btn("Keep editing", None, ui::Kind::Ghost, Some(Msg::CancelConfirm)),
+                        ui::btn(
+                            "Submit job",
+                            None,
+                            ui::Kind::Primary,
+                            (!busy).then_some(Msg::ConfirmSubmit),
+                        ),
+                    ]
+                    .spacing(8),
+                ]
+                .spacing(10)
+                .into(),
+            ));
+        }
+    } else {
+        parts.push(
+            row![ui::btn(
+                "Submit job",
+                None,
+                ui::Kind::Primary,
+                (fresh_now && !busy && doc_ok).then_some(Msg::AskSubmit),
+            )]
+            .into(),
+        );
+    }
+    column(parts).spacing(12).width(Length::Fill).into()
+}
+
+/// The submit state's line: a planner refusal, or the job recorded as failed with its link.
+fn submit_area<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
+    if state.submitting {
+        return Some(lab_common::note("Submitting…"));
+    }
+    match &state.submit_error {
+        None => None,
+        Some((message, Some(job))) => Some(
+            column![
+                lab_common::err(&format!("The job was recorded as failed: {message}")),
+                ui::link(
+                    &format!("Open job {job}"),
+                    Msg::Go(Id::LabJobDetail(job.clone())),
+                    true
+                ),
+            ]
+            .spacing(6)
+            .into(),
+        ),
+        Some((message, None)) => Some(lab_common::err(message)),
     }
 }
 
@@ -1516,33 +1498,65 @@ fn form_card<'a>(state: &'a State) -> Element<'a, Msg> {
         .as_ref()
         .and_then(|id| options.iter().find(|o| &o.value == id).cloned());
     let recipe = pick_list(options, selected, Msg::PickRecipe)
+        .style(crate::theme::pick_list)
         .placeholder("Choose a vetted recipe")
         .width(Length::Fill);
-
     let search = text_editor(&f.search)
-        .placeholder("{\"lr\": [0.001, 0.01]}  or one key: value per line")
+        .style(crate::theme::editor)
         .font(SANS)
         .size(13.0)
-        .height(Length::Fixed(120.0))
+        .height(Length::Fixed(96.0))
         .on_action(Msg::Search);
-    let budget = text_input("e.g. 1.5", &f.budget)
+    let budget = text_input("", &f.budget)
         .on_input(Msg::Budget)
         .padding([8, 10])
         .size(13.0)
         .width(Length::Fill)
         .style(theme::input);
+    let min = text_input("", &f.min_devices)
+        .on_input(Msg::MinDevices)
+        .padding([8, 10])
+        .size(13.0)
+        .width(Length::Fill)
+        .style(theme::input);
+    let max = text_input("", &f.max_devices)
+        .on_input(Msg::MaxDevices)
+        .padding([8, 10])
+        .size(13.0)
+        .width(Length::Fill)
+        .style(theme::input);
+    let mem = text_input("", &f.min_memory)
+        .on_input(Msg::MinMemory)
+        .padding([8, 10])
+        .size(13.0)
+        .width(Length::Fill)
+        .style(theme::input);
     let train = text_editor(&f.train)
-        .placeholder("{\"steps\": 500}")
+        .style(crate::theme::editor)
         .font(SANS)
         .size(13.0)
-        .height(Length::Fixed(90.0))
+        .height(Length::Fixed(72.0))
         .on_action(Msg::Train);
+    let mode_options: Vec<Opt<Option<String>>> = MODE_LABELS
+        .iter()
+        .map(|(label, value)| Opt {
+            value: value.map(|v| v.to_string()),
+            label: (*label).to_string(),
+        })
+        .collect();
+    let mode_selected = mode_options.iter().find(|o| o.value == f.mode).cloned();
+    let mode = pick_list(mode_options, mode_selected, Msg::PickMode)
+        .style(crate::theme::pick_list)
+        .width(Length::Fill);
+    let allow = checkbox(f.allow_cpu)
+        .label("Allow CPU")
+        .on_toggle(Msg::AllowCpu);
 
     let errors = build(f).err().unwrap_or_default();
     let doc_ok = errors.is_empty();
     let fresh_now = fresh(state);
     let busy = state.previewing || state.submitting;
-    let problem_list: Option<Element<'a, Msg>> = (state.attempted && !doc_ok).then(|| {
+    let problems: Option<Element<'a, Msg>> = (state.attempted && !doc_ok).then(|| {
         column(
             errors
                 .iter()
@@ -1552,164 +1566,63 @@ fn form_card<'a>(state: &'a State) -> Element<'a, Msg> {
         .spacing(4)
         .into()
     });
-
-    let hint: Element<'a, Msg> = if fresh_now {
-        Space::new().into()
-    } else {
-        ui::faint("Preview the plan for these inputs first.").into()
-    };
-    let actions = row![
-        ui::btn(
-            "Preview plan",
-            None,
-            ui::Kind::Primary,
-            (!busy).then_some(Msg::Preview)
+    let cells: Vec<(Element<'a, Msg>, bool)> = vec![
+        (field("Recipe", recipe.into(), &unvetted_note(state)), false),
+        (field("Datasets", dataset_checks(state), ""), true),
+        (
+            field(
+                "Search space",
+                search.into(),
+                "JSON, or one key: value per line.",
+            ),
+            true,
         ),
-        ui::btn(
-            "Submit",
-            None,
-            ui::Kind::Secondary,
-            (fresh_now && !busy).then_some(Msg::AskSubmit)
+        (field("Budget (GPU-h)", budget.into(), ""), false),
+        (field("Min devices", min.into(), ""), false),
+        (field("Max devices", max.into(), ""), false),
+        (field("Min memory (MiB)", mem.into(), ""), false),
+        (field("Device pin", backend_checks(state), ""), false),
+        (field("Mode", mode.into(), ""), false),
+        (field("Machines", machine_checks(state), ""), true),
+        (
+            column![ui::label("Allow CPU"), allow]
+                .spacing(6)
+                .width(Length::Fill)
+                .into(),
+            false,
         ),
-        hint,
-    ]
-    .spacing(12)
+        (
+            field("Train overrides", train.into(), "JSON object, optional."),
+            true,
+        ),
+    ];
+    let actions = row![ui::btn(
+        "Preview plan",
+        Some("eye"),
+        ui::Kind::Ghost,
+        (!busy).then_some(Msg::Preview),
+    )]
+    .spacing(8)
     .align_y(Alignment::Center);
     let options_note: Element<'a, Msg> = match &state.options_error {
-        Some(message) => ui::error_line(message),
+        Some(message) => lab_common::err(message),
         None => Space::new().into(),
     };
-
-    let preview = preview_area(state, &errors, fresh_now);
-    let confirm = confirm_area(state, fresh_now, doc_ok);
-    let submit_note = submit_area(state);
-
     let body = column![
+        problems.unwrap_or_else(|| Space::new().into()),
+        form_grid(cells),
         options_note,
-        field("Recipe", recipe.into(), &unvetted_note(state)),
-        field(
-            "Datasets",
-            dataset_rows(state),
-            "Pick one or more. A frozen count is the rows the dataset has frozen."
-        ),
-        field(
-            "Search space",
-            search.into(),
-            "Optional. A JSON object, or one key: value per line."
-        ),
-        field(
-            "Budget (GPU-hours)",
-            budget.into(),
-            "The job stops once it has used this much GPU time."
-        ),
-        device_pin(state),
-        field(
-            "Train overrides",
-            train.into(),
-            "Optional. A JSON object, such as {\"steps\": 500}. Empty keeps the recipe defaults."
-        ),
-        problem_list.unwrap_or_else(|| Space::new().into()),
         actions,
-        preview,
-        confirm,
-        submit_note,
+        plan_zone(state, fresh_now, doc_ok),
     ]
-    .spacing(18);
-    ui::card("New job", body.into())
-}
-
-fn preview_area<'a>(state: &'a State, errors: &[String], fresh_now: bool) -> Element<'a, Msg> {
-    let key = current_key(&state.form);
-    if state.previewing {
-        return ui::faint("Planning the job…").into();
-    }
-    if let (Some((k, message)), Some(now)) = (&state.preview_error, &key)
-        && k == now
-    {
-        return ui::error_line(message);
-    }
-    if let Some(p) = &state.preview {
-        if fresh_now {
-            return plan_view(&p.plan);
-        }
-        return ui::faint(
-            "The inputs changed since the last preview. Preview again before you submit.",
-        )
-        .into();
-    }
-    if !errors.is_empty() {
-        return ui::faint(
-            "Fill in the form, then preview the plan. The plan shows where the job would run.",
-        )
-        .into();
-    }
-    ui::faint("Preview the plan to see where the job would run. Submit unlocks after a preview of these inputs.").into()
-}
-
-fn confirm_area<'a>(state: &'a State, fresh_now: bool, doc_ok: bool) -> Element<'a, Msg> {
-    if !(state.confirming && fresh_now && doc_ok) {
-        return Space::new().into();
-    }
-    let Ok(doc) = build(&state.form) else {
-        return Space::new().into();
-    };
-    let n = doc.datasets.len();
-    let summary = format!(
-        "Submit {} on {n} dataset{} with a budget of {} GPU-hours? The job dispatches to the owner's GPU machines now.",
-        doc.recipe,
-        if n == 1 { "" } else { "s" },
-        doc.budget_gpu_hours
-    );
-    container(
-        column![
-            ui::faint(summary),
-            row![
-                ui::btn(
-                    "Confirm submit",
-                    None,
-                    ui::Kind::Primary,
-                    (!state.submitting).then_some(Msg::ConfirmSubmit)
-                ),
-                ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelConfirm)),
-            ]
-            .spacing(12),
-        ]
-        .spacing(12),
-    )
-    .padding(14)
-    .width(Length::Fill)
-    .style(theme::boxed)
-    .into()
-}
-
-fn submit_area<'a>(state: &'a State) -> Element<'a, Msg> {
-    if state.submitting {
-        return ui::faint("Submitting…").into();
-    }
-    match &state.submit_error {
-        None => Space::new().into(),
-        Some((message, Some(job))) => column![
-            ui::error_line(&format!("The job was recorded as failed: {message}")),
-            ui::link("Open the job", Msg::Go(Id::LabJobDetail(job.clone())), true),
-        ]
-        .spacing(6)
-        .into(),
-        Some((message, None)) => ui::error_line(message),
-    }
+    .spacing(12)
+    .width(Length::Fill);
+    ui::card_with("New job", Vec::new(), body.into())
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let head = ui::view_head(
-        "Jobs",
-        vec![ui::btn(
-            "New job",
-            Some("plus"),
-            ui::Kind::Primary,
-            Some(Msg::ScrollToForm),
-        )],
-    );
-    let body = column![head, list_card(state), form_card(state)]
-        .spacing(22)
+    let body = column![tools(state), list(state), form_card(state)]
+        .spacing(16)
         .width(Length::Fill);
     lab::frame(
         Section::Jobs,

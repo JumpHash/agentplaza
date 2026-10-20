@@ -58,6 +58,10 @@ const ALWAYS: &[&str] = &[
     "todo_write",
     "code_engine",
     "deliver_file",
+    "artifact_create",
+    "artifact_update",
+    "artifact_attach_data",
+    "artifact_share_request",
     "tool_package",
     "checkpoint_diff",
     "checkpoint_restore",
@@ -138,10 +142,32 @@ const GATED: &[&str] = &[
 pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
-        "bash" | "read_file" | "write_file" | "edit_file" | "list" | "search" | "share_file"
-        | "fetch_url" | "download" | "install_packages" | "glob" | "grep" | "multi_edit"
-        | "bash_start" | "bash_output" | "bash_kill" | "todo_write" | "code_engine"
-        | "deliver_file" | "tool_package" | "checkpoint_diff" | "checkpoint_restore"
+        "bash"
+        | "read_file"
+        | "write_file"
+        | "edit_file"
+        | "list"
+        | "search"
+        | "share_file"
+        | "fetch_url"
+        | "download"
+        | "install_packages"
+        | "glob"
+        | "grep"
+        | "multi_edit"
+        | "bash_start"
+        | "bash_output"
+        | "bash_kill"
+        | "todo_write"
+        | "code_engine"
+        | "deliver_file"
+        | "artifact_create"
+        | "artifact_update"
+        | "artifact_attach_data"
+        | "artifact_share_request"
+        | "tool_package"
+        | "checkpoint_diff"
+        | "checkpoint_restore"
         | "checkpoint_list" => Some(Runs::Guest),
         "transcript_search"
         | "submit_claim"
@@ -225,8 +251,9 @@ pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
         (maintained || !crate::maintenance::TOOLS.contains(&spec.name.as_str()))
             && (has_envs || !crate::environments::TOOLS.contains(&spec.name.as_str()))
     });
-    // The engines offered are the owner's enabled ones (`engines_enabled`).
-    let enabled = app.settings.get().engines_enabled;
+    // The engines offered are the owner's enabled ones: the built-in ones in `engines_enabled`, then the
+    // instances the owner added (`engine_instances.rs`).
+    let enabled = enabled_engines(app);
     for spec in specs.iter_mut().filter(|spec| spec.name == "code_engine") {
         restrict_engines(&mut spec.input_schema, &enabled);
     }
@@ -368,7 +395,14 @@ fn engine_provider(input: &Value, model: &str) -> Result<(), String> {
 /// Refuses a `code_engine` call that names an engine the owner has not enabled (`engines_enabled`).
 /// The guest arm of `internal::dispatch` calls it beside `code_engine_model`.
 pub(crate) fn code_engine_enabled(app: &App, input: &Value) -> Result<(), String> {
-    engine_enabled(&app.settings.get().engines_enabled, input)
+    engine_enabled(&enabled_engines(app), input)
+}
+
+/// The engine ids a `code_engine` call may name: the enabled built-in engines, then the enabled instances.
+fn enabled_engines(app: &App) -> Vec<String> {
+    let mut enabled = app.settings.get().engines_enabled;
+    enabled.extend(app.engines.enabled_extras());
+    enabled
 }
 
 /// Whether the `engine` named by `input` is one of `enabled`.
@@ -438,6 +472,37 @@ fn offered(role: &str, granted: &[String]) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// The body kinds an artifact panel takes, for the model: each one's JSON shape and its caps.
+const ARTIFACT_BODIES: &str = "The body's type is one of: chart {unit: count|usd|ms|percent|bytes|tokens|ratio, x: {type: 'time', start_ms, step_ms} or {type: 'labels', labels: [...]}, series: [{name, tone, values: [number or null]}], height: 240} (at most 5,000 points a series); tiles {tiles: [{label, value (text), spark: [numbers], tone, change_pct?, up_bad?, note?}]}; bars {rows: [{label, value (text), frac: 0 to 1, status: ok|warn|crit|info|mute, note?}]}; table {columns: [{head, num?}], rows: [{cells: [{type: 'text'|'mono'|'muted'|'num', text} or {type: 'status'|'pill', text, status}]}]} (at most 1,000 rows); graph {nodes: [{id, label, group?}], edges: [{from, to, label?}], layout: 'layered' or 'force', directed: true|false}; dataset {columns: [{key, label, kind: 'text'|'number'|'time'|'bool', unit?}], rows: [[values in column order]] (at most 2,000 rows inline) or blob: {id}, total}; document {markdown}; code {language, text, filename?}; image {blob: {id}, alt, caption?}; html {entry: 'index.html' or 'App.tsx', files: [{path, text}], height?}, a web page or one React component that runs in a sandbox with no network, importing only react, react-dom, prop-types, recharts, d3, three, lodash, papaparse, lucide and tailwindcss. Tones: chart-1 to chart-8, ok, warn, crit, info, signal, ink-3, rule.";
+
+/// The input of `artifact_create` and `artifact_update`: the title, subtitle and panels, and the id and project each takes.
+fn artifact_props() -> Value {
+    json!({
+        "id": {"type": "string", "description": "The artifact's id, from its ref (artifact_update only)."},
+        "title": {"type": "string", "description": "A short title, at most 120 characters."},
+        "sub": {"type": "string"},
+        "project": {"type": "string", "description": "The project the artifact belongs to (artifact_create only)."},
+        "panels": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 24,
+            "description": "The panels, drawn on a 12-column grid, in order.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Unique within the artifact."},
+                    "title": {"type": "string"},
+                    "sub": {"type": "string"},
+                    "right": {"type": "string", "description": "Small text at the right of the title."},
+                    "span": {"type": "integer", "enum": [3, 4, 6, 8, 12], "description": "Width in twelfths."},
+                    "body": {"type": "object", "description": ARTIFACT_BODIES}
+                },
+                "required": ["id", "title", "span", "body"]
+            }
+        }
+    })
 }
 
 /// The spec for `name`: a one-line description and a JSON Schema input.
@@ -520,6 +585,38 @@ fn spec(name: &str) -> Option<ToolSpec> {
             obj(
                 json!({"path": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "task": {"type": "string"}}),
                 &["path", "title"],
+            ),
+        ),
+        "artifact_create" => (
+            "Show your work: make an artifact, a titled page of panels (charts, tables, graphs, documents, code, images, datasets or a small web page) that the owner and other agents can open. Use it for results, comparisons, measurements, dependency graphs and small dashboards; a short answer is just text. A refusal lists the spec's problems: fix them and call again. Put the returned artifact:<id> in your reply where the artifact should appear. Data beyond the inline caps goes in a CSV attached with artifact_attach_data.",
+            obj(artifact_props(), &["title", "panels"]),
+        ),
+        "artifact_update" => (
+            "Make a new version of one of your artifacts (its id is in its ref, artifact:<id>), with the same title, sub and panels as artifact_create. The artifact keeps its id; the reply gives the new ref, artifact:<id>@<version>.",
+            obj(artifact_props(), &["id", "title", "panels"]),
+        ),
+        "artifact_attach_data" => (
+            "Store a file of your workspace (path) or a text (text) as a blob of your artifact store, for an image, dataset or html body to refer to. Returns the blob's id: refer to it as {\"blob\": {\"id\": \"<id>\"}}. A blob holds up to 256 MiB.",
+            obj(
+                json!({
+                    "content_type": {"type": "string", "description": "A media type such as text/csv, image/png or application/json."},
+                    "path": {"type": "string", "description": "A file in your workspace."},
+                    "text": {"type": "string"}
+                }),
+                &["content_type"],
+            ),
+        ),
+        "artifact_share_request" => (
+            "Ask the owner to share an artifact you made outside the plaza. The request goes to the owner's Approvals; the owner decides, and you never receive the link. The reply gives the request's id and says it is pending. Give the artifact's id (from its ref, artifact:<id>) and a reason the owner can read.",
+            obj(
+                json!({
+                    "id": {"type": "string", "description": "The artifact's id, from its ref (artifact:<id>)."},
+                    "reason": {"type": "string", "description": "Why the owner should share it, at most 500 characters."},
+                    "expires_in_days": {"type": "integer", "minimum": 1, "maximum": 365, "description": "How long the share lasts, in days."},
+                    "allow_download": {"type": "boolean", "description": "Whether the people it is shared with may download it."},
+                    "version": {"type": "integer", "minimum": 1, "description": "The version to share; the latest when left out."}
+                }),
+                &["id", "reason"],
             ),
         ),
         "tool_package" => (
@@ -1908,6 +2005,72 @@ mod tests {
             }
         }
         assert!(runs("bash") == Some(Runs::Guest));
+    }
+
+    #[test]
+    fn artifact_tools_are_offered_with_schemas_that_parse() {
+        for name in ["artifact_create", "artifact_update", "artifact_attach_data"] {
+            assert!(
+                offered("worker", &[]).iter().any(|n| n == name),
+                "{name} is offered to every role"
+            );
+            assert!(runs(name) == Some(Runs::Guest), "{name} runs in the VM");
+            let tool = spec(name).expect("a spec for each artifact tool");
+            assert_eq!(tool.name, name);
+            assert!(!tool.description.is_empty(), "{name} is described");
+            assert!(
+                tool.input_schema["type"] == "object",
+                "{name} takes an object"
+            );
+            assert!(
+                tool.input_schema["properties"].is_object(),
+                "{name} names its properties"
+            );
+        }
+        let create = spec("artifact_create").expect("the create spec");
+        assert_eq!(create.input_schema["required"], json!(["title", "panels"]));
+        // The shapes the description teaches are the hub's own: a dashboard parses as a Spec and passes its
+        // validation, and each other body kind parses as a Body.
+        let dashboard = json!({
+            "title": "Build times",
+            "sub": "last three runs",
+            "panels": [
+                {"id": "runs", "title": "Duration", "span": 8, "body": {
+                    "type": "chart", "unit": "ms",
+                    "x": {"type": "labels", "labels": ["run 1", "run 2", "run 3"]},
+                    "series": [{"name": "build", "tone": "chart-1", "values": [1200, 1100, null]}],
+                    "height": 240}},
+                {"id": "now", "title": "Latest", "span": 4, "body": {
+                    "type": "tiles",
+                    "tiles": [{"label": "Median", "value": "1.2 s", "spark": [1.2, 1.1], "tone": "chart-1"}]}},
+                {"id": "steps", "title": "Steps", "span": 6, "body": {
+                    "type": "table",
+                    "columns": [{"head": "Step"}, {"head": "ms", "num": true}],
+                    "rows": [{"cells": [{"type": "mono", "text": "compile"}, {"type": "num", "text": "800"}]}]}},
+                {"id": "deps", "title": "Dependencies", "span": 6, "body": {
+                    "type": "graph",
+                    "nodes": [{"id": "core", "label": "core"}, {"id": "api", "label": "api"}],
+                    "edges": [{"from": "api", "to": "core"}], "layout": "layered", "directed": true}},
+                {"id": "notes", "title": "Notes", "span": 12, "body": {
+                    "type": "document", "markdown": "Compile time fell."}}
+            ]
+        });
+        let parsed: apz_view::artifact::Spec =
+            serde_json::from_value(dashboard).expect("a spec the hub reads");
+        assert_eq!(
+            apz_view::artifact::validate(&parsed, &apz_view::artifact::Caps::default()),
+            Vec::<String>::new()
+        );
+        let bodies = [
+            json!({"type": "bars", "rows": [{"label": "api", "value": "4.2k", "frac": 0.8, "status": "ok"}]}),
+            json!({"type": "dataset", "columns": [{"key": "name", "label": "Name"}, {"key": "ms", "label": "ms", "kind": "number", "unit": "ms"}], "rows": [["compile", 800]], "total": 1}),
+            json!({"type": "image", "blob": {"id": "b1"}, "alt": "A chart of build times"}),
+            json!({"type": "code", "language": "rust", "text": "fn main() {}", "filename": "main.rs"}),
+            json!({"type": "html", "entry": "index.html", "files": [{"path": "index.html", "text": "<p>hi</p>"}], "height": 240}),
+        ];
+        for body in bodies {
+            serde_json::from_value::<apz_view::model::Body>(body).expect("a body the hub reads");
+        }
     }
 
     #[test]

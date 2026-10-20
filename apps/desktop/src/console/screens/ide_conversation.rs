@@ -14,7 +14,7 @@ use super::Id;
 use super::ide_panels;
 use crate::console::files::{self, Attachment};
 use crate::console::shell;
-use crate::console::{Ctx, client, roles, scope, ui};
+use crate::console::{Ctx, chat_tools, client, roles, scope, ui};
 use crate::theme;
 
 /// The longest message the hub takes from the owner.
@@ -212,6 +212,8 @@ pub struct Conversation {
     /// What each pending answer has streamed so far, as (work, text) in arrival order.
     pub deltas: Vec<(u64, String)>,
     pub edit: Option<DraftEdit>,
+    /// The composer's model chip and context bar (the orchestrator's work in this conversation).
+    pub chat_tools: chat_tools::ChatTools,
 }
 
 impl Conversation {
@@ -228,6 +230,7 @@ impl Conversation {
             starting: false,
             deltas: Vec::new(),
             edit: None,
+            chat_tools: chat_tools::ChatTools::default(),
         }
     }
 
@@ -241,6 +244,8 @@ impl Conversation {
 pub enum Msg {
     /// The conversation as the hub answered, for the id it was asked for.
     Loaded(String, Result<Value, String>),
+    /// The composer's model chip and context bar.
+    ChatTools(chat_tools::ChatToolsMsg),
     Compose(text_editor::Action),
     /// The paperclip: opens the file picker.
     Pick,
@@ -295,11 +300,21 @@ pub fn update(conv: &mut Conversation, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     Ok(data) => {
                         adopt(conv, data);
                         conv.error = None;
+                        if !conv.chat_tools.is_loaded() {
+                            return chat_tools::load(
+                                &ctx.client,
+                                chat_tools::Target::Conversation(conv.id.clone()),
+                            )
+                            .map(Msg::ChatTools);
+                        }
                     }
                     Err(e) => conv.error = Some(e),
                 }
             }
             Task::none()
+        }
+        Msg::ChatTools(m) => {
+            chat_tools::update(&mut conv.chat_tools, m, &ctx.client).map(Msg::ChatTools)
         }
         Msg::Compose(action) => {
             conv.composer.perform(action);
@@ -382,6 +397,7 @@ pub fn update(conv: &mut Conversation, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     conv.composer = text_editor::Content::new();
                     conv.attachments.retain(|a| !sent.contains(&a.id));
                     conv.error = None;
+                    return conv.chat_tools.refresh(&ctx.client).map(Msg::ChatTools);
                 }
                 Err(e) => conv.error = Some(e),
             }
@@ -557,14 +573,19 @@ fn owner_bubble<'a, M: 'a>(body: &str, files: &[Value]) -> Element<'a, M> {
         inner = inner.push(ui::faint(format!("{name} · {size}")).size(11.5));
     }
     let bubble = container(inner)
-        .padding([8, 12])
-        .max_width(520.0)
+        .padding([11, 15])
+        .max_width(600.0)
         .style(move |_| container::Style {
             background: Some(p.hover.into()),
             border: iced::Border {
                 color: p.rule,
                 width: 1.0,
-                radius: 12.0.into(),
+                radius: iced::border::Radius {
+                    top_left: 16.0,
+                    top_right: 16.0,
+                    bottom_right: 4.0,
+                    bottom_left: 16.0,
+                },
             },
             ..Default::default()
         });
@@ -677,6 +698,7 @@ pub fn chat<'a, M: Clone + 'a>(
         .as_ref()
         .is_some_and(|c| c["archived"].as_bool().unwrap_or(false));
     let editor = text_editor(&conv.composer)
+        .style(crate::theme::editor)
         .placeholder("Write to the orchestrator. Enter sends, Shift+Enter starts a new line.")
         .height(Length::Fixed(88.0))
         .on_action(move |action| wrap(Msg::Compose(action)))
@@ -698,6 +720,8 @@ pub fn chat<'a, M: Clone + 'a>(
     let mut foot = row![
         ui::sans(format!("Sending to: {who}"), 11.5, p.ink_3),
         Space::new().width(Length::Fill),
+        container(chat_tools::chip(&conv.chat_tools).map(move |m| wrap(Msg::ChatTools(m))))
+            .width(Length::Fixed(260.0)),
         ui::btn(
             "Attach",
             Some("file"),
@@ -725,9 +749,17 @@ pub fn chat<'a, M: Clone + 'a>(
         composer = composer.push(chips);
     }
     composer = composer.push(editor).push(foot);
+    if let Some(e) = chat_tools::notice(&conv.chat_tools) {
+        composer = composer.push(e.map(move |m| wrap(Msg::ChatTools(m))));
+    }
     if let Some(e) = &conv.error {
         composer = composer.push(ui::error_line(e));
     }
+    composer = column![
+        chat_tools::bar(&conv.chat_tools).map(move |m| wrap(Msg::ChatTools(m))),
+        composer
+    ]
+    .spacing(8);
     column![
         scroll,
         container(container(composer).max_width(760.0))

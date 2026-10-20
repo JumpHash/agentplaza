@@ -56,9 +56,9 @@ export const READING_AXES: Record<string, readonly string[]> = {
 };
 
 const AXIS_NAMES: Record<string, string> = {
-  fea: 'Feature', ux: 'UI/UX', val: 'Value', con: 'Contract', mem: 'Memory', cpu: 'Compute', prf: 'Performance',
-  sec: 'Security', cmp: 'Compatibility', div: 'Divergence', leg: 'Legacy', tst: 'Tests', cln: 'Clean code',
-  dbt: 'Tech debt', mnt: 'Maintenance', acc: 'Accuracy', src: 'Sourcing', cov: 'Coverage', cost: 'Cost',
+  fea: 'Feature fit', ux: 'Usability', val: 'Value', con: 'Consistency', mem: 'Memory', cpu: 'CPU', prf: 'Performance',
+  cost: 'Running cost', sec: 'Security', cmp: 'Compliance', div: 'Divergence', leg: 'Licensing', tst: 'Tests', cln: 'Cleanliness',
+  dbt: 'Technical debt', mnt: 'Maintainability', acc: 'Accuracy', src: 'Sources', cov: 'Coverage',
 };
 
 /** An axis's name for people; an unknown axis shows its id. */
@@ -374,10 +374,9 @@ export function rowX(i: number, n: number, left: number, right: number): number 
   return n <= 1 ? (left + right) / 2 : left + (i * (right - left)) / (n - 1);
 }
 
-/** The kind of intent as a word. */
+/** The kind of intent as the prototype writes it: its own word, lower case; `Change` when it has none. */
 export function kindLabel(kind: string): string {
-  const names: Record<string, string> = { fix: 'Fix', docs: 'Docs', feat: 'Feature', refactor: 'Refactor', test: 'Tests', chore: 'Chore' };
-  return names[kind] ?? (kind ? kind.replace(/^./, (c) => c.toUpperCase()) : 'Change');
+  return kind ? String(kind).toLowerCase() : 'Change';
 }
 
 /** The basis as a word: measured by a check, or estimated by a reviewer. */

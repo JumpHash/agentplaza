@@ -34,13 +34,13 @@
 .skills-empty { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; padding: 24px 18px; border: 1px dashed var(--rule); background: var(--sheet); }
 .skills-empty h3 { margin: 0; font-size: 17px; }
 .skills-empty p { margin: 0; max-width: 62ch; color: var(--ink-2); font-size: 14px; line-height: 1.6; }
-.skills-error { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: 0; padding: 16px 18px; border: 1px solid var(--crit); background: var(--danger-bg); color: var(--ink); font-size: 14px; }
+.skills-error { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: 0; padding: 16px 18px; border: 1px solid var(--crit); background: var(--crit-soft); color: var(--ink); font-size: 14px; }
 .skills-error p { margin: 0; color: var(--ink); font-size: 14px; }
 
 /* The dialogs */
 .skills-form { display: flex; flex-direction: column; gap: 14px; min-width: 0; width: min(600px, 100%); }
 .skills-form .field { min-width: 0; }
-.skills-form textarea { font-family: var(--mono); font-size: 13px; line-height: 1.5; resize: vertical; min-height: 200px; }
+.skills-form textarea { font-family: var(--font-mono); font-size: 13px; line-height: 1.5; resize: vertical; min-height: 200px; }
 .skills-form input[type="file"] { max-width: 100%; font: inherit; font-size: 14px; }
 .skills-binding { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .skills-check { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink); cursor: pointer; }
@@ -55,7 +55,7 @@
 .skills-pick { padding-top: 2px; cursor: pointer; }
 .skills-found { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .skills-found-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 14px; }
-.skills-path { font-family: var(--mono); font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
+.skills-path { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); overflow-wrap: anywhere; }
 .skills-meta { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .skills-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--ink-2); }
 

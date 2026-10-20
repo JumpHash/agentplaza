@@ -2,14 +2,19 @@
 //! agents that held its tasks before it had members, with one step to put them all on it. New agents can be spawned
 //! for it; they join at their first hello.
 
-use iced::widget::{Space, column, container, row, text};
-use iced::{Alignment, Border, Element, Length, Task, Theme};
+use iced::widget::{Space, button, column, container, row, stack, text};
+use iced::{Alignment, Background, Border, Color, Element, Length, Task, Theme};
 use serde_json::{Value, json};
 
 use super::Id;
 use super::wizard::{self, WizardMsg};
-use crate::console::{Ctx, client, roles, ui};
+use crate::console::engine::robot::species_of;
+use crate::console::engine::roles::{agent_hue, role_hue};
+use crate::console::{Ctx, client, render_card, roles, ui};
 use crate::theme;
+
+/// An agent's portrait, as the web's `avatar(a, 28)`.
+const AVATAR: f32 = 28.0;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -180,6 +185,151 @@ fn name_of(list: &[&Value], cid: u64) -> String {
         .unwrap_or_else(|| format!("Agent {cid}"))
 }
 
+/// A capitalised word (the web's `cap`).
+fn cap(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// A hairline across, in `color`.
+fn rule<'a>(color: Color) -> Element<'a, Msg> {
+    container(Space::new().height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(Background::Color(color)),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// An agent's name, bold, to its page: ink, signal-ink under the pointer (the web's `.pj-clip` link).
+fn name_link<'a>(name: String, cid: u64) -> Element<'a, Msg> {
+    button(text(name).font(ui::SANS_SEMIBOLD).size(13.5))
+        .padding(0)
+        .style(|_: &Theme, status: button::Status| button::Style {
+            background: None,
+            text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                theme::palette().signal_ink
+            } else {
+                theme::palette().ink
+            },
+            border: Border::default(),
+            ..Default::default()
+        })
+        .on_press(Msg::Go(Id::Agent(cid)))
+        .into()
+}
+
+/// The agent's portrait: its robot over the letter tile, which shows where the GPU cannot draw.
+fn avatar<'a>(a: &Value, slot: usize) -> Element<'a, Msg> {
+    let cid = a["cid"].as_u64().unwrap_or(0);
+    let name = agent_name(a);
+    let initial = name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
+    let tile = container(
+        text(initial)
+            .font(ui::SANS_SEMIBOLD)
+            .size(12.0)
+            .color(theme::palette().ink_2),
+    )
+    .width(Length::Fixed(AVATAR))
+    .height(Length::Fixed(AVATAR))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .style(|_: &Theme| container::Style {
+        background: Some(Background::Color(theme::palette().sheet_2)),
+        border: Border {
+            color: theme::palette().rule,
+            width: 1.0,
+            radius: (AVATAR / 2.0).into(),
+        },
+        ..Default::default()
+    });
+    let orchestrator = a["tier"].as_str() == Some("orchestrator");
+    let status = a["status"].as_str().unwrap_or("offline");
+    let spec = render_card::PortraitSpec {
+        cid,
+        orchestrator,
+        role_hue: if orchestrator {
+            25.0
+        } else {
+            role_hue(a["role"].as_str().unwrap_or(""))
+        },
+        body_hue: agent_hue(cid),
+        offline: matches!(status, "offline" | "asleep" | "dozing"),
+        species: species_of(a["species"].as_str(), cid),
+    };
+    let mut layers: Vec<Element<'a, Msg>> = vec![tile.into()];
+    if let Some(robot) = render_card::robot_portrait(slot, spec, AVATAR) {
+        layers.push(robot);
+    }
+    stack(layers)
+        .width(Length::Fixed(AVATAR))
+        .height(Length::Fixed(AVATAR))
+        .into()
+}
+
+/// The status chip (the web's `badge(word, tone, true)`): asleep and dozing say so, the rest their status word.
+fn status_chip<'a>(status: &str) -> Element<'a, Msg> {
+    let (word, tone) = match status {
+        "working" => ("Working".to_string(), ui::Tone::Info),
+        "idle" => ("Idle".to_string(), ui::Tone::Ok),
+        "asleep" => ("Asleep".to_string(), ui::Tone::Muted),
+        "dozing" => ("Asleep (light)".to_string(), ui::Tone::Muted),
+        other => (cap(other), ui::Tone::Muted),
+    };
+    ui::badge_dot(&word, tone)
+}
+
+/// One agent's line (the web's `.pj-mrow`): its portrait, its name to its page over its role and note, its status, and
+/// its action; a rule above it.
+fn person<'a>(
+    a: &Value,
+    slot: usize,
+    note: Option<String>,
+    action: Option<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
+    let cid = a["cid"].as_u64().unwrap_or(0);
+    let role = roles::label(a["role"].as_str().unwrap_or(""));
+    let sub = match note {
+        Some(n) if !n.is_empty() => format!("{role} · {n}"),
+        _ => role,
+    };
+    let mut line = row![
+        avatar(a, slot),
+        column![name_link(agent_name(a), cid), ui::faint(sub)]
+            .spacing(4)
+            .width(Length::Fill),
+        status_chip(a["status"].as_str().unwrap_or("offline")),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    if let Some(action) = action {
+        line = line.push(action);
+    }
+    column![
+        rule(theme::palette().rule),
+        container(line).padding([8, 0]).width(Length::Fill),
+    ]
+    .into()
+}
+
+/// Puts one agent on the project.
+fn add_btn<'a>(cid: u64, busy: bool) -> Element<'a, Msg> {
+    ui::btn_sm(
+        "Add",
+        Some("plus"),
+        ui::Kind::Secondary,
+        (!busy).then_some(Msg::Add(vec![cid])),
+    )
+}
+
 /// The tab, for the project `project` (`live`: it still takes agents).
 pub fn view<'a>(state: &'a State, project: &str, live: bool) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
@@ -191,47 +341,50 @@ pub fn view<'a>(state: &'a State, project: &str, live: bool) -> Element<'a, Msg>
     }
     let Some(members) = &state.members else {
         parts.push(ui::loading());
-        return column(parts).spacing(16).into();
+        return column(parts).spacing(20).into();
     };
     let busy = state.busy;
     // Working on it: each with Back to the bench, and why it waits if it does.
-    let mut working: Vec<Element<'a, Msg>> = Vec::new();
-    if live {
-        working.push(
-            row![ui::btn_sm(
-                "New agents for this project",
-                Some("plus"),
-                ui::Kind::Secondary,
-                Some(Msg::Wizard(WizardMsg::OpenFor(project.to_string())))
-            )]
-            .into(),
-        );
-    }
-    if members.is_empty() {
-        working.push(
-            ui::faint(if live {
-                "Nobody yet: add agents from the bench, or spawn new ones for this project."
-            } else {
-                "Nobody: the project is over, and its agents went back to the bench."
-            })
-            .into(),
-        );
-    }
-    for a in members {
-        let cid = a["cid"].as_u64().unwrap_or(0);
-        let action = live.then(|| {
-            ui::btn_sm(
-                "Back to the bench",
-                None,
-                ui::Kind::Ghost,
-                (!busy).then_some(Msg::Remove(cid)),
-            )
-        });
-        working.push(agent_row(a, action, a["held"].as_str().map(str::to_string)));
-    }
-    parts.push(ui::card(
+    let working: Vec<Element<'a, Msg>> = members
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let cid = a["cid"].as_u64().unwrap_or(0);
+            let action = live.then(|| {
+                ui::btn_sm(
+                    "Back to the bench",
+                    None,
+                    ui::Kind::Ghost,
+                    (!busy).then_some(Msg::Remove(cid)),
+                )
+            });
+            person(a, i, a["held"].as_str().map(str::to_string), action)
+        })
+        .collect();
+    let body: Element<'a, Msg> = if members.is_empty() {
+        ui::faint(if live {
+            "Nobody yet: add agents from the bench, or spawn new ones for this project."
+        } else {
+            "Nobody: the project is over, and its agents went back to the bench."
+        })
+        .into()
+    } else {
+        column(working).spacing(12).into()
+    };
+    let head_actions = if live {
+        vec![ui::btn_sm(
+            "New agents for this project",
+            Some("plus"),
+            ui::Kind::Secondary,
+            Some(Msg::Wizard(WizardMsg::OpenFor(project.to_string()))),
+        )]
+    } else {
+        Vec::new()
+    };
+    parts.push(ui::card_with(
         &format!("Working on it ({})", members.len()),
-        column(working).spacing(10).into(),
+        head_actions,
+        body,
     ));
     // The agents that held its tasks before membership, with Add all.
     if !state.suggested.is_empty() {
@@ -247,15 +400,8 @@ pub fn view<'a>(state: &'a State, project: &str, live: bool) -> Element<'a, Msg>
         };
         let mut lines: Vec<Element<'a, Msg>> = vec![
             ui::faint("These agents hold tasks of this project from before agents worked on one project at a time. Put them on it, and its tasks run again.").into(),
-            row![ui::btn_sm(
-                &label,
-                Some("plus"),
-                ui::Kind::Primary,
-                (!busy).then_some(Msg::Add(all))
-            )]
-            .into(),
         ];
-        for a in &state.suggested {
+        for (i, a) in state.suggested.iter().enumerate() {
             let cid = a["cid"].as_u64().unwrap_or(0);
             let holds = a["tasks"]
                 .as_array()
@@ -266,109 +412,42 @@ pub fn view<'a>(state: &'a State, project: &str, live: bool) -> Element<'a, Msg>
                         .join(", ")
                 })
                 .unwrap_or_default();
-            lines.push(agent_row(
+            lines.push(person(
                 a,
-                Some(ui::btn_sm(
-                    "Add",
-                    Some("plus"),
-                    ui::Kind::Secondary,
-                    (!busy).then_some(Msg::Add(vec![cid])),
-                )),
+                i,
                 Some(format!("holds {holds}")),
+                Some(add_btn(cid, busy)),
             ));
         }
-        parts.push(ui::card(
+        let add_all = ui::btn_sm(
+            &label,
+            Some("plus"),
+            ui::Kind::Primary,
+            (!busy).then_some(Msg::Add(all)),
+        );
+        parts.push(ui::card_with(
             "Worked on its tasks before",
-            column(lines).spacing(10).into(),
+            vec![add_all],
+            column(lines).spacing(12).into(),
         ));
     }
+    // The bench, to add from.
     if live {
-        let mut lines: Vec<Element<'a, Msg>> = Vec::new();
-        if state.bench.is_empty() {
-            lines.push(ui::faint("Nobody is on the bench.").into());
+        let body: Element<'a, Msg> = if state.bench.is_empty() {
+            ui::faint("Nobody is on the bench.").into()
         } else {
-            lines.push(ui::faint("Agents on no project do nothing, and sleep. Adding one stops nothing: it has no work.").into());
-            for a in &state.bench {
+            let mut lines: Vec<Element<'a, Msg>> = vec![
+                ui::faint("Agents on no project do nothing, and sleep. Adding one stops nothing: it has no work.").into(),
+            ];
+            for (i, a) in state.bench.iter().enumerate() {
                 let cid = a["cid"].as_u64().unwrap_or(0);
-                lines.push(agent_row(
-                    a,
-                    Some(ui::btn_sm(
-                        "Add",
-                        Some("plus"),
-                        ui::Kind::Secondary,
-                        (!busy).then_some(Msg::Add(vec![cid])),
-                    )),
-                    None,
-                ));
+                lines.push(person(a, i, None, Some(add_btn(cid, busy))));
             }
-        }
-        parts.push(ui::card("The bench", column(lines).spacing(10).into()));
+            column(lines).spacing(12).into()
+        };
+        parts.push(ui::card("The bench", body));
     }
-    column(parts).spacing(16).into()
-}
-
-/// One agent's line: its initial, its name (to its page) and role, a note, its status, and the action.
-pub fn agent_row<'a, M>(
-    a: &Value,
-    action: Option<Element<'a, M>>,
-    note: Option<String>,
-) -> Element<'a, M>
-where
-    M: Clone + From<Id> + 'a,
-{
-    let cid = a["cid"].as_u64().unwrap_or(0);
-    let name = agent_name(a);
-    let initial = name
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_default();
-    let tile = container(
-        text(initial)
-            .font(ui::SANS_SEMIBOLD)
-            .size(12.0)
-            .color(theme::palette().ink),
-    )
-    .width(Length::Fixed(28.0))
-    .height(Length::Fixed(28.0))
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .style(|_: &Theme| container::Style {
-        background: Some(theme::palette().sheet.into()),
-        border: Border {
-            color: theme::palette().ink,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    });
-    let role = roles::label(a["role"].as_str().unwrap_or(""));
-    let sub = match note {
-        Some(n) if !n.is_empty() => format!("{role} · {n}"),
-        _ => role,
-    };
-    let status = a["status"].as_str().unwrap_or("offline");
-    let tone = match status {
-        "working" => ui::Tone::Info,
-        "idle" => ui::Tone::Ok,
-        _ => ui::Tone::Muted,
-    };
-    let mut line = row![
-        tile,
-        column![
-            ui::text_link(&name, M::from(Id::Agent(cid))),
-            ui::faint(sub)
-        ]
-        .spacing(2)
-        .width(Length::Fill),
-        ui::badge(status, tone),
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center);
-    if let Some(action) = action {
-        line = line.push(action);
-    }
-    column![line, Space::new().height(2.0)].into()
+    column(parts).spacing(20).into()
 }
 
 impl From<Id> for Msg {

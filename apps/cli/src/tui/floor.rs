@@ -12,6 +12,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
+use super::app::Palette;
+use super::style::panel;
+
 /// How long a packet takes to travel from its source to its target, in seconds.
 const PACKET_SECS: f32 = 1.0;
 /// The most packets in flight at once; the oldest is dropped past this.
@@ -147,8 +150,11 @@ impl FloorView {
         self.packets.retain(|p| p.age < PACKET_SECS);
     }
 
-    /// Draws the floor into `area`.
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    /// Draws the floor into `outer`, in a rounded panel titled with the agents it holds.
+    pub fn render(&self, frame: &mut Frame, outer: Rect, p: Palette) {
+        let block = panel(&format!("Floor · {}", self.agents.len()), &p, false);
+        let area = block.inner(outer);
+        frame.render_widget(block, outer);
         if area.width < 10 || area.height < 4 {
             return;
         }
@@ -199,7 +205,7 @@ impl FloorView {
         }
 
         if legend {
-            draw_legend(buf, area);
+            draw_legend(buf, area, &p);
         }
     }
 
@@ -555,10 +561,11 @@ fn draw_box(buf: &mut Buffer, r: Rect, label: &str, color: Color) {
         put(buf, x0, y, "│", style);
         put(buf, x1, y, "│", style);
     }
-    put(buf, x0, y0, "┌", style);
-    put(buf, x1, y0, "┐", style);
-    put(buf, x0, y1, "└", style);
-    put(buf, x1, y1, "┘", style);
+    // Rounded corners, as the panels around the floor have.
+    put(buf, x0, y0, "╭", style);
+    put(buf, x1, y0, "╮", style);
+    put(buf, x0, y1, "╰", style);
+    put(buf, x1, y1, "╯", style);
     let max = (r.width as usize).saturating_sub(4);
     if max > 2 && !label.is_empty() {
         let text = format!(" {} ", trunc(label, max - 2));
@@ -613,25 +620,25 @@ fn put_cell(buf: &mut Buffer, floor: Rect, x: f32, y: f32, s: &str, style: Style
     put(buf, x as u16, y as u16, s, style);
 }
 
-fn draw_legend(buf: &mut Buffer, area: Rect) {
+/// The legend under the floor: each glyph in its colour, its word in muted.
+fn draw_legend(buf: &mut Buffer, area: Rect, p: &Palette) {
+    let word = Style::default().fg(p.muted);
     let line = Line::from(vec![
         Span::styled("● ", Style::default().fg(Kind::Message.color())),
-        Span::raw("message  "),
+        Span::styled("message  ", word),
         Span::styled("◆ ", Style::default().fg(Kind::ModelCall.color())),
-        Span::raw("model call  "),
+        Span::styled("model call  ", word),
         Span::styled("■ ", Style::default().fg(Kind::ToolRun.color())),
-        Span::raw("tool run  "),
+        Span::styled("tool run  ", word),
         Span::styled(
             "● ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(p.ink()).add_modifier(Modifier::BOLD),
         ),
-        Span::raw("working  "),
-        Span::styled("● ", Style::default().fg(Color::Gray)),
-        Span::raw("idle  "),
-        Span::styled("○ ", Style::default().fg(Color::DarkGray)),
-        Span::raw("offline"),
+        Span::styled("working  ", word),
+        Span::styled("● ", Style::default().fg(p.ink2())),
+        Span::styled("idle  ", word),
+        Span::styled("○ ", word),
+        Span::styled("offline", word),
     ]);
     buf.set_line(area.x, area.bottom() - 1, &line, area.width);
 }

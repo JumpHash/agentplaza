@@ -7,7 +7,7 @@
 //! pins, the find palette) is the consoles' own, driven by the same fields.
 //!
 //! * [`model`] — the types (serde; the web mirrors them in `apps/web/src/metrics/model.ts`).
-//! * [`format`] — value formatting by unit, axis ticks and time labels; `tests/format_golden.json` pins it and
+//! * [`format`] — re-exported from `apz-view` (value formatting by unit; `apz-view/tests/format_golden.json` pins it and
 //!   the web test suite checks its own formatter against the same file.
 //! * [`tabs`] — the tab list, groups and which tabs apply to a scope kind.
 //! * [`compare`] — comparison overlays and change percentages.
@@ -21,7 +21,7 @@
 pub mod compare;
 pub mod compose;
 pub mod fixture;
-pub mod format;
+pub use apz_view::format;
 pub mod model;
 pub mod source;
 pub mod tabs;

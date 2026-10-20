@@ -1,13 +1,17 @@
-//! A project's Environments tab (the web's `project-environments.ts`): where the project runs. Each environment says
-//! what it runs (every landing on main, each signed release, or what is deployed by hand), what was deployed there,
-//! and what it has: its variables and the names of its secrets. The owner adds, edits and removes environments,
-//! deploys to them and adds secrets; a secret's value is sent once and never shown again.
+//! A project's Environments tab (the web's `project-environments.ts`): where the project runs. Each environment is a
+//! card: its address, what it runs, what is deployed there now, whether it has a deploy hook, its secrets (names only),
+//! its variables, its notes and its last five deploys, with Remove, Edit and Deploy under it. The cards sit two to a
+//! row when the window is wide enough. Adding, editing, deploying, the secrets and the confirmations are the web's
+//! dialogs. A secret's value is sent once and never shown again.
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use iced::widget::{checkbox, column, pick_list, row, text_editor, text_input};
-use iced::{Alignment, Element, Length, Task};
+use iced::widget::text_editor::Content;
+use iced::widget::{
+    Space, checkbox, column, container, pick_list, responsive, row, text, text_editor, text_input,
+};
+use iced::{Alignment, Element, Length, Size, Task};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -49,6 +53,17 @@ impl EnvKind {
     /// Production is protected by default: the plaza never deploys there on its own.
     pub fn default_protected(self) -> bool {
         self == EnvKind::Production
+    }
+
+    /// The kind's name as the cards and the form show it.
+    fn label(self) -> &'static str {
+        match self {
+            EnvKind::Production => "Production",
+            EnvKind::Staging => "Staging",
+            EnvKind::Preview => "Preview",
+            EnvKind::Development => "Development",
+            EnvKind::Other => "Other",
+        }
     }
 }
 
@@ -137,9 +152,11 @@ impl fmt::Debug for Hidden {
     }
 }
 
-/// The add or edit form, inline above the cards.
+/// The add or edit form, in its dialog.
 #[derive(Debug)]
 pub struct Form {
+    /// "Add an environment", or "Edit" and its name.
+    pub title: String,
     /// The environment being edited; None while a new one is added.
     pub editing: Option<String>,
     pub name: String,
@@ -155,20 +172,42 @@ pub struct Form {
     pub remove_hook: bool,
     /// One NAME=value per line.
     pub variables: text_editor::Content,
-    pub notes: String,
+    pub notes: text_editor::Content,
     pub error: Option<String>,
 }
 
-/// The add-a-secret form under an environment's card.
+/// The dialog that asks for a deploy: the environment, and its title.
+#[derive(Debug, Clone, Default)]
+pub struct Deploying {
+    pub env: String,
+    pub title: String,
+}
+
+/// The add-a-secret dialog under an environment.
 #[derive(Debug, Default)]
 pub struct SecretDraft {
     pub env: String,
+    pub title: String,
     pub name: String,
     pub value: Hidden,
     pub error: Option<String>,
 }
 
-/// The tab's state: the environments, the open form, and what is in flight.
+/// A removal the owner has to confirm.
+#[derive(Debug)]
+pub struct Confirm {
+    pub title: String,
+    pub text: String,
+    pub action: Remove,
+}
+
+#[derive(Debug, Clone)]
+pub enum Remove {
+    Env(String),
+    Secret { env: String, name: String },
+}
+
+/// The tab's state: the environments, the dialog open, and what is in flight.
 #[derive(Debug, Default)]
 pub struct State {
     /// The environments, sorted; None until the first load.
@@ -179,10 +218,11 @@ pub struct State {
     /// A request is in flight: nothing else starts until it answers.
     pub busy: bool,
     pub form: Option<Form>,
-    /// What is typed into each environment's Deploy field (empty: the default version).
+    /// What is typed into each environment's Deploy dialog (empty: the default version).
     pub versions: BTreeMap<String, String>,
-    /// The environment whose removal waits for the owner's confirmation.
-    pub confirming: Option<String>,
+    pub deploying: Option<Deploying>,
+    /// The removal waiting for the owner's confirmation.
+    pub confirming: Option<Confirm>,
     pub secret: Option<SecretDraft>,
 }
 
@@ -192,7 +232,8 @@ pub enum Msg {
     Loaded(Result<Vec<Environment>, String>),
     Add,
     Edit(String),
-    CloseForm,
+    /// Closes whichever dialog is open over the tab.
+    CloseDialog,
     Name(String),
     Kind(EnvKind),
     Url(String),
@@ -201,22 +242,25 @@ pub enum Msg {
     Hook(Hidden),
     RemoveHook(bool),
     Variables(text_editor::Action),
-    Notes(String),
+    Notes(text_editor::Action),
     Save,
     Saved(Result<String, String>),
     Version(String, String),
+    OpenDeploy(String),
     Deploy(String),
     Deployed(Result<(String, Deploy), String>),
     AskRemove(String),
     CancelRemove,
-    Remove(String),
+    Confirm,
     Removed(Result<String, String>),
     OpenSecret(String),
-    CloseSecret,
     SecretName(String),
     SecretValue(Hidden),
     SaveSecret,
     SecretSaved(Result<String, String>),
+    AskRemoveSecret(String, String),
+    /// Opens a link in the browser.
+    OpenUrl(String),
 }
 
 /// The navigation this tab asks for.
@@ -227,9 +271,11 @@ pub fn go(msg: &Msg) -> Option<Id> {
     }
 }
 
-/// The rule for an environment's name, as the form and the adopt dialog say it.
+/// The rule for an environment's name, as the form says it.
 pub const NAME_RULE: &str =
     "An environment's name is lower-case letters, digits and dashes, starting with a letter.";
+/// The rule for a variable's or a secret's name, as the dialogs say it.
+const VAR_RULE: &str = "Letters, digits and underscores, starting with a letter.";
 
 /// An environment's name: lower-case letters, digits and dashes, starting with a letter, 40 characters at most.
 pub fn valid_name(name: &str) -> bool {
@@ -286,6 +332,7 @@ impl Form {
     fn add() -> Form {
         let kind = EnvKind::Staging;
         Form {
+            title: "Add an environment".into(),
             editing: None,
             name: String::new(),
             kind,
@@ -295,8 +342,8 @@ impl Form {
             has_hook: false,
             hook: Hidden::default(),
             remove_hook: false,
-            variables: text_editor::Content::new(),
-            notes: String::new(),
+            variables: Content::new(),
+            notes: Content::new(),
             error: None,
         }
     }
@@ -310,6 +357,7 @@ impl Form {
             .collect::<Vec<_>>()
             .join("\n");
         Form {
+            title: format!("Edit {}", env.name),
             editing: Some(env.name.clone()),
             name: env.name.clone(),
             kind: env.kind,
@@ -319,8 +367,8 @@ impl Form {
             has_hook: env.hook,
             hook: Hidden::default(),
             remove_hook: false,
-            variables: text_editor::Content::with_text(&variables),
-            notes: env.notes.clone(),
+            variables: Content::with_text(&variables),
+            notes: Content::with_text(&env.notes),
             error: None,
         }
     }
@@ -357,7 +405,7 @@ impl Form {
             "track": self.track,
             "protected": self.protected,
             "variables": variables,
-            "notes": self.notes.trim(),
+            "notes": self.notes.text().trim(),
         });
         if self.remove_hook {
             body["hook"] = Value::Null;
@@ -367,6 +415,8 @@ impl Form {
         Ok((name, body))
     }
 }
+
+// ---- The hub: reads and writes -------------------------------------------------------------------------------------
 
 /// Reads the project's environments.
 pub fn load(project: &str, ctx: &Ctx) -> Task<Msg> {
@@ -402,16 +452,25 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
                 .map(Form::edit);
             Task::none()
         }
-        Msg::CloseForm => {
+        Msg::CloseDialog => {
             state.form = None;
+            state.deploying = None;
+            state.secret = None;
+            state.confirming = None;
+            state.error = None;
             Task::none()
         }
         Msg::Name(s) => edit_form(state, |f| f.name = s),
-        // A new kind takes its own track and protection; the owner can change either after.
+        // A new kind takes its own track and protection, when the owner has kept the last kind's; else theirs stay.
         Msg::Kind(kind) => edit_form(state, |f| {
+            let prev = f.kind;
+            if f.track == prev.default_track() {
+                f.track = kind.default_track();
+            }
+            if f.protected == prev.default_protected() {
+                f.protected = kind.default_protected();
+            }
             f.kind = kind;
-            f.track = kind.default_track();
-            f.protected = kind.default_protected();
         }),
         Msg::Url(s) => edit_form(state, |f| f.url = s),
         Msg::Track(track) => edit_form(state, |f| f.track = track),
@@ -419,7 +478,7 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
         Msg::Hook(hook) => edit_form(state, |f| f.hook = hook),
         Msg::RemoveHook(on) => edit_form(state, |f| f.remove_hook = on),
         Msg::Variables(action) => edit_form(state, |f| f.variables.perform(action)),
-        Msg::Notes(s) => edit_form(state, |f| f.notes = s),
+        Msg::Notes(action) => edit_form(state, |f| f.notes.perform(action)),
         Msg::Save => save(state, project, ctx),
         Msg::Saved(Ok(line)) => {
             state.busy = false;
@@ -438,6 +497,14 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
         }
         Msg::Version(env, text) => {
             state.versions.insert(env, text);
+            Task::none()
+        }
+        Msg::OpenDeploy(env) => {
+            state.deploying = Some(Deploying {
+                title: format!("Deploy {env}"),
+                env,
+            });
+            state.error = None;
             Task::none()
         }
         Msg::Deploy(env) => {
@@ -471,8 +538,15 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
         Msg::Deployed(Ok((env, deploy))) => {
             state.busy = false;
             state.versions.remove(&env);
-            state.note = Some(deploy_line(&env, &deploy));
-            state.error = None;
+            state.deploying = None;
+            let (line, failed) = deploy_outcome(&env, &deploy.status);
+            if failed {
+                state.error = Some(line);
+                state.note = None;
+            } else {
+                state.note = Some(line);
+                state.error = None;
+            }
             load(project, ctx)
         }
         Msg::Deployed(Err(e)) => {
@@ -481,27 +555,57 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
             load(project, ctx)
         }
         Msg::AskRemove(env) => {
-            state.confirming = Some(env);
+            state.confirming = Some(Confirm {
+                title: format!("Remove {env} and its secrets?"),
+                text: "This cannot be undone.".into(),
+                action: Remove::Env(env),
+            });
+            Task::none()
+        }
+        Msg::AskRemoveSecret(env, name) => {
+            state.secret = None;
+            state.confirming = Some(Confirm {
+                title: format!("Remove {name} from the vault?"),
+                text: format!("{name} is taken out of {env}. Its value is removed too."),
+                action: Remove::Secret { env, name },
+            });
             Task::none()
         }
         Msg::CancelRemove => {
             state.confirming = None;
             Task::none()
         }
-        Msg::Remove(env) => {
+        Msg::Confirm => {
             if state.busy {
                 return Task::none();
             }
+            let Some(confirm) = state.confirming.take() else {
+                return Task::none();
+            };
             state.busy = true;
-            state.confirming = None;
+            state.error = None;
             let c = ctx.client.clone();
-            let path = format!(
-                "/v1/projects/{}/environments/{}",
-                client::enc(project),
-                client::enc(&env)
-            );
-            let line = format!("{env} removed");
-            client::task(move || c.delete(&path).map(|_| line), Msg::Removed)
+            match confirm.action {
+                Remove::Env(env) => {
+                    let path = format!(
+                        "/v1/projects/{}/environments/{}",
+                        client::enc(project),
+                        client::enc(&env)
+                    );
+                    let line = format!("{env} removed");
+                    client::task(move || c.delete(&path).map(|_| line), Msg::Removed)
+                }
+                Remove::Secret { env, name } => {
+                    let path = format!(
+                        "/v1/projects/{}/environments/{}/secrets/{}",
+                        client::enc(project),
+                        client::enc(&env),
+                        client::enc(&name)
+                    );
+                    let line = format!("{name} removed from {env}");
+                    client::task(move || c.delete(&path).map(|_| line), Msg::Removed)
+                }
+            }
         }
         Msg::Removed(Ok(line)) => {
             state.busy = false;
@@ -516,13 +620,10 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
         }
         Msg::OpenSecret(env) => {
             state.secret = Some(SecretDraft {
+                title: format!("A secret for {env}"),
                 env,
                 ..SecretDraft::default()
             });
-            Task::none()
-        }
-        Msg::CloseSecret => {
-            state.secret = None;
             Task::none()
         }
         Msg::SecretName(s) => {
@@ -550,6 +651,12 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
             match state.secret.as_mut() {
                 Some(draft) => draft.error = Some(e),
                 None => state.error = Some(e),
+            }
+            Task::none()
+        }
+        Msg::OpenUrl(url) => {
+            if let Err(e) = ui::open_url(&url) {
+                state.error = Some(e);
             }
             Task::none()
         }
@@ -624,7 +731,7 @@ fn save_secret(state: &mut State, project: &str, ctx: &Ctx) -> Task<Msg> {
         client::enc(&env),
         client::enc(&name)
     );
-    let line = format!("{name} saved on {env}. Its value is never shown again.");
+    let line = format!("{name} is in the vault");
     client::task(
         move || {
             c.put::<Value>(&path, &json!({ "value": value }))
@@ -634,154 +741,244 @@ fn save_secret(state: &mut State, project: &str, ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-/// The line for a deploy the hub answered: "production: v1.4 is sent".
-fn deploy_line(env: &str, deploy: &Deploy) -> String {
-    let mut line = format!(
-        "{env}: {} is {}",
-        deploy.version,
-        status_label(&deploy.status)
-    );
-    if !deploy.detail.is_empty() {
-        line.push_str(" · ");
-        line.push_str(&deploy.detail);
+/// What a deploy that has just been asked for says, and whether it is a failure to show as one (the web's words).
+fn deploy_outcome(env: &str, status: &str) -> (String, bool) {
+    match status {
+        "sent" => (format!("Sent to {env}."), false),
+        "recorded" => (format!("Recorded for {env}."), false),
+        "sending" => (format!("Sending to {env}."), false),
+        "waiting" => (
+            format!("Waiting for an approval before it goes to {env}."),
+            false,
+        ),
+        "failed" => (format!("The deploy to {env} failed."), true),
+        "refused" => (format!("The deploy to {env} was refused."), true),
+        other => (format!("Deploy to {env}: {other}."), false),
     }
-    line
 }
 
-/// A deploy's status in words.
-fn status_label(status: &str) -> &str {
+/// A deploy's status in words, as its badge says it.
+fn status_text(status: &str) -> &str {
     match status {
-        "waiting" => "waiting for approval",
+        "recorded" => "Recorded",
+        "sending" => "Sending",
+        "sent" => "Sent",
+        "failed" => "Failed",
+        "waiting" => "Waiting",
+        "refused" => "Refused",
         other => other,
     }
 }
 
+/// A deploy's badge tone: done is ok, still going or waiting is warn, failed or refused is danger.
 fn status_tone(status: &str) -> ui::Tone {
     match status {
-        "sent" => ui::Tone::Ok,
+        "recorded" | "sent" => ui::Tone::Ok,
         "failed" | "refused" => ui::Tone::Danger,
-        "waiting" => ui::Tone::Warn,
-        "sending" => ui::Tone::Info,
+        "sending" | "waiting" => ui::Tone::Warn,
         _ => ui::Tone::Muted,
     }
 }
 
-/// How long ago an instant was, in the words the cards use ("3h ago").
+/// How long ago an instant was, in the words the web uses ("just now", "5 min ago", "3 h ago", "2 d ago").
 fn ago(ms: u64, now: u64) -> String {
-    let s = now.saturating_sub(ms) / 1000;
+    if ms == 0 {
+        return "—".into();
+    }
+    let s = (now.saturating_sub(ms) as f64 / 1000.0).round() as u64;
     match s {
-        0..=59 => format!("{s}s ago"),
-        60..=3599 => format!("{}m ago", s / 60),
-        3600..=86_399 => format!("{}h ago", s / 3600),
-        _ => format!("{}d ago", s / 86_400),
+        0..=44 => "just now".into(),
+        45..=3599 => format!("{} min ago", ((s as f64) / 60.0).round().max(1.0) as u64),
+        3600..=86_399 => format!("{} h ago", ((s as f64) / 3600.0).round() as u64),
+        _ => format!("{} d ago", ((s as f64) / 86_400.0).round() as u64),
     }
 }
 
-/// The tab: the intro, the add button, the open form, then one card per environment, production first.
+// ---- The view ------------------------------------------------------------------------------------------------------
+
+/// A card's width below which the cards stack in one column (two of them at 360 and a gap fit a row).
+const CARD_MIN: f32 = 360.0;
+const GAP: f32 = 16.0;
+
+/// The tab: the intro and the add button, one card per environment (production first), two to a row when wide.
 pub fn view<'a>(state: &'a State, _project: &'a str) -> Element<'a, Msg> {
     let now = rich::now_ms();
     let mut parts: Vec<Element<'a, Msg>> = vec![
-        ui::faint("Where this project runs. Each environment says what it runs, and what was deployed there.").into(),
-        row![ui::btn(
-            "Add an environment",
-            Some("plus"),
-            ui::Kind::Secondary,
-            Some(Msg::Add)
-        )]
+        row![
+            ui::prose("Where this project runs. Each environment says what it runs, and what was deployed there."),
+            Space::new().width(Length::Fill),
+            ui::btn("Add an environment", Some("plus"), ui::Kind::Primary, Some(Msg::Add)),
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center)
+        .wrap()
         .into(),
     ];
-    if let Some(e) = &state.error {
+    let dialog = dialog_view(state);
+    if let (None, Some(e)) = (&dialog, &state.error) {
         parts.push(ui::error_line(e));
     }
     if let Some(n) = &state.note {
         parts.push(ui::faint(n.clone()).into());
     }
-    if let Some(form) = &state.form {
-        parts.push(form_card(form, state.busy));
+    match &state.envs {
+        None => parts.push(ui::loading()),
+        Some(envs) if envs.is_empty() => parts.push(ui::empty(
+            "box",
+            "No environments yet",
+            "Add production, staging or a preview: its address, what it runs, and how it is deployed.",
+        )),
+        Some(envs) => parts.push(grid(envs, now)),
     }
-    let Some(envs) = &state.envs else {
-        parts.push(ui::loading());
-        return column(parts).spacing(16).into();
-    };
-    if envs.is_empty() && state.form.is_none() {
-        parts.push(
-            ui::faint("No environments yet. An environment is somewhere the project runs: production, staging, a preview, or a machine you deploy to by hand.")
-                .into(),
-        );
-    }
-    for env in envs {
-        parts.push(env_card(state, env, now));
-    }
-    column(parts).spacing(16).into()
+    ui::with_modal(column(parts).spacing(16).into(), dialog)
 }
 
-/// The add or edit form, as a card.
-fn form_card(form: &Form, busy: bool) -> Element<'_, Msg> {
-    let p = theme::palette();
-    let enabled = move |msg: Msg| (!busy).then_some(msg);
-    let mut body: Vec<Element<'_, Msg>> = Vec::new();
-    match &form.editing {
-        None => {
-            body.push(ui::label("Name").into());
-            body.push(
-                text_input("production, staging, pr-42", &form.name)
-                    .on_input(Msg::Name)
-                    .padding(8)
-                    .style(theme::input)
-                    .into(),
-            );
+/// The cards: two to a row when the tab is wide enough for two, else one under another.
+fn grid<'a>(envs: &'a [Environment], now: u64) -> Element<'a, Msg> {
+    responsive(move |size: Size| {
+        let cards: Vec<Element<'a, Msg>> = envs.iter().map(|e| env_card(e, now)).collect();
+        if size.width < 2.0 * CARD_MIN + GAP {
+            return column(cards).spacing(GAP).into();
         }
-        Some(name) => {
-            body.push(ui::label("Name").into());
-            body.push(ui::sans(name.clone(), 13.0, p.ink).into());
+        let mut rows: Vec<Element<'a, Msg>> = Vec::new();
+        let mut it = cards.into_iter();
+        while let Some(a) = it.next() {
+            let b: Element<'a, Msg> = match it.next() {
+                Some(b) => b,
+                None => Space::new().width(Length::Fill).into(),
+            };
+            rows.push(row![a, b].spacing(GAP).into());
         }
+        column(rows).spacing(GAP).into()
+    })
+    .into()
+}
+
+/// The dialog open over the tab, if one is: the confirmation, the secret, the deploy, or the form, in that order.
+fn dialog_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
+    if let Some(c) = &state.confirming {
+        return Some(modal_of(
+            state,
+            &c.title,
+            vec![ui::sans(c.text.clone(), theme::TYPE_UI, theme::palette().ink).into()],
+            vec![
+                ui::btn("Keep", None, ui::Kind::Ghost, Some(Msg::CancelRemove)),
+                ui::btn(
+                    "Remove",
+                    None,
+                    ui::Kind::Danger,
+                    (!state.busy).then_some(Msg::Confirm),
+                ),
+            ],
+        ));
     }
-    body.push(ui::label("Kind").into());
-    body.push(
+    if let Some(s) = &state.secret {
+        return Some(secret_dialog(state, s));
+    }
+    if let Some(d) = &state.deploying {
+        return Some(deploy_dialog(state, d));
+    }
+    state.form.as_ref().map(|f| form_dialog(state, f))
+}
+
+/// The dialog's frame: the title, the body with the open error above it, and the buttons in the foot.
+fn modal_of<'a>(
+    state: &'a State,
+    title: &'a str,
+    mut body: Vec<Element<'a, Msg>>,
+    foot: Vec<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
+    if let Some(e) = &state.error {
+        body.insert(0, ui::error_line(e));
+    }
+    ui::modal(
+        title,
+        column(body).spacing(14).into(),
+        foot,
+        Msg::CloseDialog,
+        520.0,
+    )
+}
+
+/// A dialog's field: its label, the control, and its hint under it.
+fn field<'a>(label: &str, control: Element<'a, Msg>, hint: Option<&str>) -> Element<'a, Msg> {
+    let mut lines: Vec<Element<'a, Msg>> = vec![ui::label(label).into(), control];
+    if let Some(h) = hint {
+        lines.push(ui::faint(h.to_string()).into());
+    }
+    column(lines).spacing(6).into()
+}
+
+/// The add or edit form: name, kind, URL, what it runs, protection, the deploy hook, variables and notes.
+fn form_dialog<'a>(state: &'a State, form: &'a Form) -> Element<'a, Msg> {
+    let adding = form.editing.is_none();
+    let mut body: Vec<Element<'a, Msg>> = Vec::new();
+    body.push(field(
+        "Name",
+        match &form.editing {
+            None => text_input("production, staging, pr-42", &form.name)
+                .on_input(Msg::Name)
+                .padding(8)
+                .style(theme::input)
+                .into(),
+            Some(name) => text_input("", name).padding(8).style(theme::input).into(),
+        },
+        Some(if adding {
+            NAME_RULE
+        } else {
+            "A name is fixed once it is made."
+        }),
+    ));
+    body.push(field(
+        "Kind",
         pick_list(EnvKind::ALL.to_vec(), Some(form.kind), Msg::Kind)
             .style(theme::pick_list)
             .text_size(13.0)
             .into(),
-    );
-    body.push(ui::label("URL").into());
-    body.push(
-        text_input("https://example.com", &form.url)
+        None,
+    ));
+    body.push(field(
+        "URL",
+        text_input("https://", &form.url)
             .on_input(Msg::Url)
             .padding(8)
             .style(theme::input)
             .into(),
-    );
-    body.push(ui::label("Runs").into());
-    body.push(
+        Some("Where it is reached. Optional."),
+    ));
+    body.push(field(
+        "Runs",
         pick_list(Track::ALL.to_vec(), Some(form.track), Msg::Track)
             .style(theme::pick_list)
             .text_size(13.0)
             .into(),
-    );
+        Some("What lands here: each landing on main, each signed release, or what you deploy by hand."),
+    ));
     body.push(
         checkbox(form.protected)
-            .label("Protected")
+            .label("Protected. A deploy here waits for an approval, unless you start it yourself.")
             .on_toggle(Msg::Protected)
             .size(14.0)
             .text_size(13.0)
             .into(),
     );
-    body.push(ui::faint("The plaza never deploys here on its own or for an agent: a tracked landing or release waits for the owner.").into());
-    body.push(ui::label("Deploy hook URL").into());
-    let hook_hint = if form.has_hook {
-        "Empty keeps the current hook"
-    } else {
-        "Empty for none: deploys are recorded only"
-    };
-    body.push(
-        text_input(hook_hint, &form.hook.0)
-            .secure(true)
-            .on_input(|v| Msg::Hook(Hidden(v)))
-            .padding(8)
-            .style(theme::input)
-            .into(),
-    );
-    body.push(ui::faint("Kept in the vault. Its URL carries a token, so it is not shown.").into());
+    body.push(field(
+        "Deploy hook URL",
+        text_input(
+            if form.has_hook {
+                "Set — leave empty to keep it"
+            } else {
+                "https://"
+            },
+            &form.hook.0,
+        )
+        .secure(true)
+        .on_input(|v| Msg::Hook(Hidden(v)))
+        .padding(8)
+        .style(theme::input)
+        .into(),
+        Some("Where a deploy is sent. It is kept in the vault: the console shows only that it is set."),
+    ));
     if form.has_hook {
         body.push(
             checkbox(form.remove_hook)
@@ -792,256 +989,328 @@ fn form_card(form: &Form, busy: bool) -> Element<'_, Msg> {
                 .into(),
         );
     }
-    body.push(ui::label("Variables").into());
-    body.push(
-        ui::faint("NAME=value, one per line. A name is letters, digits and underscores.").into(),
-    );
-    body.push(
+    body.push(field(
+        "Variables",
         text_editor(&form.variables)
-            .placeholder("API_BASE=https://example.com")
+            .style(crate::theme::editor)
+            .placeholder("NAME=value")
             .size(13.0)
-            .height(Length::Fixed(120.0))
+            .height(Length::Fixed(100.0))
             .on_action(Msg::Variables)
             .into(),
-    );
-    body.push(ui::label("Notes").into());
-    body.push(
-        text_input("What this environment is for", &form.notes)
-            .on_input(Msg::Notes)
-            .padding(8)
-            .style(theme::input)
+        Some("One NAME=value per line. Letters, digits and underscores, starting with a letter. Variables show on the card: keep private values in a secret."),
+    ));
+    body.push(field(
+        "Notes",
+        text_editor(&form.notes)
+            .style(crate::theme::editor)
+            .size(13.0)
+            .height(Length::Fixed(60.0))
+            .on_action(Msg::Notes)
             .into(),
-    );
+        None,
+    ));
     if let Some(e) = &form.error {
         body.push(ui::error_line(e));
     }
-    body.push(
-        row![
-            ui::btn(
-                "Save environment",
-                Some("check"),
-                ui::Kind::Primary,
-                enabled(Msg::Save)
-            ),
-            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseForm)),
-        ]
-        .spacing(8)
-        .into(),
-    );
-    let title = match &form.editing {
-        Some(name) => format!("Edit {name}"),
-        None => "Add an environment".to_string(),
-    };
-    ui::card(&title, column(body).spacing(10).into())
+    modal_of(
+        state,
+        &form.title,
+        body,
+        vec![ui::btn(
+            "Save",
+            None,
+            ui::Kind::Primary,
+            (!state.busy).then_some(Msg::Save),
+        )],
+    )
 }
 
-/// One environment's card: what it is and runs, what was deployed, its settings, and its actions.
-fn env_card<'a>(state: &'a State, env: &'a Environment, now: u64) -> Element<'a, Msg> {
-    let p = theme::palette();
-    let busy = state.busy;
-    let name = env.name.clone();
-    let mut lines: Vec<Element<'a, Msg>> = Vec::new();
-
-    let mut head = row![ui::sans(env.kind.to_string(), 13.0, p.ink_2)]
-        .spacing(10)
-        .align_y(Alignment::Center);
-    if env.protected {
-        head = head.push(ui::badge("Protected", ui::Tone::Info));
-    }
-    lines.push(head.into());
-    if let Some(url) = env.url.as_deref().filter(|u| !u.is_empty()) {
-        lines.push(ui::mono(url.to_string(), 12.0, p.ink_2).into());
-    }
-    lines.push(ui::sans(format!("Runs: {}", env.track.runs()), 13.0, p.ink).into());
-    let now_line = match env.version.as_deref().filter(|v| !v.is_empty()) {
-        Some(version) if env.deployed_ms > 0 => {
-            format!("Now: {version} · {}", ago(env.deployed_ms, now))
-        }
-        _ => "Nothing deployed yet".to_string(),
-    };
-    lines.push(ui::sans(now_line, 13.0, p.ink).into());
-    lines.push(
-        ui::faint(if env.hook {
-            "Deploy hook: set"
-        } else {
-            "No deploy hook: deploys are recorded only"
-        })
-        .into(),
-    );
-    lines.push(
-        ui::faint(if env.secrets.is_empty() {
-            "No secrets".to_string()
-        } else {
-            format!("Secrets: {}", env.secrets.join(", "))
-        })
-        .into(),
-    );
-    if env.variables.is_empty() {
-        lines.push(ui::faint("No variables").into());
+/// The deploy dialog: what the deploy does (at once for a protected one), and the version to deploy.
+fn deploy_dialog<'a>(state: &'a State, d: &'a Deploying) -> Element<'a, Msg> {
+    let protected = state
+        .envs
+        .iter()
+        .flatten()
+        .find(|e| e.name == d.env)
+        .is_some_and(|e| e.protected);
+    let line = if protected {
+        "You are the owner: this deploys at once."
     } else {
-        let vars = env
-            .variables
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        lines.push(
-            column![ui::label("Variables"), ui::mono(vars, 12.0, p.ink_2)]
-                .spacing(4)
+        "It goes to its deploy hook when it has one, and is only recorded when it has none."
+    };
+    let version = state
+        .versions
+        .get(&d.env)
+        .map(String::as_str)
+        .unwrap_or_default();
+    let env = d.env.clone();
+    modal_of(
+        state,
+        &d.title,
+        vec![
+            ui::prose(line).into(),
+            field(
+                "Version",
+                text_input("Empty: the newest signed release or main’s head", version)
+                    .on_input(move |v| Msg::Version(env.clone(), v))
+                    .padding(8)
+                    .style(theme::input)
+                    .into(),
+                None,
+            ),
+        ],
+        vec![ui::btn(
+            "Deploy",
+            Some("play"),
+            ui::Kind::Primary,
+            (!state.busy).then(|| Msg::Deploy(d.env.clone())),
+        )],
+    )
+}
+
+/// The secrets of one environment: names are listed (each removable), and a value is typed in once, never read back.
+fn secret_dialog<'a>(state: &'a State, s: &'a SecretDraft) -> Element<'a, Msg> {
+    let pal = theme::palette();
+    let mut body: Vec<Element<'a, Msg>> =
+        vec![ui::prose("The value goes into the vault and is never shown again.").into()];
+    let names: Vec<String> = state
+        .envs
+        .iter()
+        .flatten()
+        .find(|e| e.name == s.env)
+        .map(|e| e.secrets.clone())
+        .unwrap_or_default();
+    if !names.is_empty() {
+        let chips: Vec<Element<'a, Msg>> = names
+            .into_iter()
+            .map(|n| {
+                row![
+                    ui::mono(n.clone(), theme::TYPE_CODE, pal.ink_2),
+                    ui::btn_sm(
+                        "Remove…",
+                        None,
+                        ui::Kind::Ghost,
+                        Some(Msg::AskRemoveSecret(s.env.clone(), n)),
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .into()
+            })
+            .collect();
+        body.push(
+            row![ui::faint("In the vault"), row(chips).spacing(12).wrap()]
+                .spacing(12)
+                .align_y(Alignment::Center)
                 .into(),
         );
     }
-    if !env.notes.is_empty() {
-        lines.push(ui::prose(env.notes.clone()).into());
-    }
-    if !env.deploys.is_empty() {
-        let mut history: Vec<Element<'a, Msg>> = vec![ui::label("Recent deploys").into()];
-        // The hub keeps oldest first: the newest five, newest first.
-        for deploy in env.deploys.iter().rev().take(5) {
-            history.push(deploy_row(deploy, now));
-        }
-        lines.push(column(history).spacing(8).into());
-    }
-
-    let typed = state
-        .versions
-        .get(&env.name)
-        .map(String::as_str)
-        .unwrap_or("");
-    let version_name = name.clone();
-    let deploy_name = name.clone();
-    lines.push(
-        row![
-            text_input("Version, or empty for the default", typed)
-                .on_input(move |v| Msg::Version(version_name.clone(), v))
-                .padding(8)
-                .style(theme::input)
-                .width(Length::Fill),
-            ui::btn_sm(
-                "Deploy",
-                Some("play"),
-                ui::Kind::Primary,
-                (!busy).then_some(Msg::Deploy(deploy_name))
-            ),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .into(),
-    );
-
-    let mut actions = row![ui::btn_sm(
-        "Edit",
-        Some("edit"),
-        ui::Kind::Secondary,
-        Some(Msg::Edit(name.clone()))
-    )]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    let confirming = state.confirming.as_deref() == Some(env.name.as_str());
-    if !confirming {
-        actions = actions.push(ui::btn_sm(
-            "Remove",
-            Some("trash"),
-            ui::Kind::Ghost,
-            Some(Msg::AskRemove(name.clone())),
-        ));
-    }
-    let secret_open = state.secret.as_ref().filter(|d| d.env == env.name);
-    if secret_open.is_none() {
-        actions = actions.push(ui::btn_sm(
-            "Add a secret",
-            Some("key"),
-            ui::Kind::Secondary,
-            Some(Msg::OpenSecret(name.clone())),
-        ));
-    }
-    lines.push(actions.into());
-    if confirming {
-        lines.push(
-            column![
-                ui::faint(format!(
-                    "Remove {}? Its settings, deploy record, secrets and deploy hook go with it.",
-                    env.name
-                )),
-                row![
-                    ui::btn_sm(
-                        "Remove",
-                        Some("trash"),
-                        ui::Kind::Danger,
-                        (!busy).then(|| Msg::Remove(name.clone()))
-                    ),
-                    ui::btn_sm("Keep it", None, ui::Kind::Ghost, Some(Msg::CancelRemove)),
-                ]
-                .spacing(8),
-            ]
-            .spacing(8)
-            .into(),
-        );
-    }
-    if let Some(draft) = secret_open {
-        lines.push(secret_form(draft, busy));
-    }
-    ui::card(&env.name, column(lines).spacing(10).into())
-}
-
-/// One deploy in an environment's history: its version and status, who and when, and its detail.
-fn deploy_row<'a>(deploy: &'a Deploy, now: u64) -> Element<'a, Msg> {
-    let mut meta = ago(deploy.at_ms, now);
-    if !deploy.by.is_empty() {
-        meta = format!("{} · {meta}", deploy.by);
-    }
-    let mut lines = column![
-        row![
-            ui::sans(deploy.version.clone(), 13.0, theme::palette().ink),
-            ui::badge(status_label(&deploy.status), status_tone(&deploy.status)),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center),
-        ui::faint(meta),
-    ]
-    .spacing(2);
-    if !deploy.detail.is_empty() {
-        lines = lines.push(ui::faint(deploy.detail.clone()));
-    }
-    lines.into()
-}
-
-/// The add-a-secret form: a name, a secure value, and the promise that the value is not shown again.
-fn secret_form(draft: &SecretDraft, busy: bool) -> Element<'_, Msg> {
-    let mut body: Vec<Element<'_, Msg>> = vec![
-        ui::label("Add a secret").into(),
-        ui::faint("Its value goes to the vault and is never shown again. Its name is letters, digits and underscores, starting with a letter.")
-            .into(),
-        text_input("API_TOKEN", &draft.name)
+    body.push(field(
+        "Name",
+        text_input("STRIPE_KEY", &s.name)
             .on_input(Msg::SecretName)
             .padding(8)
             .style(theme::input)
             .into(),
-        text_input("Value", &draft.value.0)
+        Some(VAR_RULE),
+    ));
+    body.push(field(
+        "Value",
+        text_input("", &s.value.0)
             .secure(true)
             .on_input(|v| Msg::SecretValue(Hidden(v)))
             .on_submit(Msg::SaveSecret)
             .padding(8)
             .style(theme::input)
             .into(),
-    ];
-    if let Some(e) = &draft.error {
+        None,
+    ));
+    if let Some(e) = &s.error {
         body.push(ui::error_line(e));
     }
-    body.push(
+    modal_of(
+        state,
+        &s.title,
+        body,
+        vec![ui::btn(
+            "Save secret",
+            None,
+            ui::Kind::Primary,
+            (!state.busy).then_some(Msg::SaveSecret),
+        )],
+    )
+}
+
+/// One environment's card: its name and kind, its address, what it runs and what is deployed there, its deploy hook,
+/// its secrets, variables and notes, its last five deploys, and Remove, Edit and Deploy.
+fn env_card<'a>(e: &'a Environment, now: u64) -> Element<'a, Msg> {
+    let pal = theme::palette();
+    let mut chips: Vec<Element<'a, Msg>> = vec![ui::badge::<Msg>(e.kind.label(), ui::Tone::Muted)];
+    if e.protected {
+        chips.push(ui::badge::<Msg>("Protected", ui::Tone::Info));
+    }
+    let mut lines: Vec<Element<'a, Msg>> = vec![
         row![
-            ui::btn_sm(
-                "Save secret",
-                Some("key"),
-                ui::Kind::Primary,
-                (!busy).then_some(Msg::SaveSecret)
+            text(e.name.clone())
+                .font(ui::SANS_SEMIBOLD)
+                .size(15.0)
+                .color(pal.ink),
+            Space::new().width(Length::Fill),
+            row(chips).spacing(8).align_y(Alignment::Center),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .wrap()
+        .into(),
+    ];
+    if let Some(url) = e.url.as_deref().filter(|u| !u.is_empty()) {
+        lines.push(if is_web_url(url) {
+            ui::link(url, Msg::OpenUrl(url.to_string()), true)
+        } else {
+            ui::mono(url.to_string(), theme::TYPE_META, pal.ink_2).into()
+        });
+    }
+    let version = match &e.version {
+        Some(v) if !v.is_empty() => format!("{v} · {}", ago(e.deployed_ms, now)),
+        _ => "Nothing deployed yet".into(),
+    };
+    lines.push(
+        column![
+            kv("Runs", e.track.runs().to_string()),
+            kv("Now", version),
+            kv(
+                "Deploy hook",
+                if e.hook {
+                    "set".into()
+                } else {
+                    "not set: deploys are recorded only".into()
+                }
             ),
-            ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseSecret)),
         ]
         .spacing(8)
         .into(),
     );
-    column(body).spacing(8).into()
+    let mut secrets: Vec<Element<'a, Msg>> = vec![ui::faint("Secrets").into()];
+    if e.secrets.is_empty() {
+        secrets.push(ui::faint("None").into());
+    }
+    for n in &e.secrets {
+        secrets.push(
+            container(ui::mono(n.clone(), theme::TYPE_BADGE, pal.ink_2))
+                .padding([2, 6])
+                .style(ui::frame(Some(pal.sheet_2), pal.sheet_2))
+                .into(),
+        );
+    }
+    secrets.push(ui::btn_sm(
+        "Secret…",
+        Some("key-round"),
+        ui::Kind::Ghost,
+        Some(Msg::OpenSecret(e.name.clone())),
+    ));
+    lines.push(
+        row(secrets)
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .wrap()
+            .into(),
+    );
+    if !e.variables.is_empty() {
+        let rows: Vec<Element<'a, Msg>> =
+            e.variables.iter().map(|(k, v)| kv(k, v.clone())).collect();
+        lines.push(column(rows).spacing(8).into());
+    }
+    if !e.notes.is_empty() {
+        lines.push(ui::sans(e.notes.clone(), theme::TYPE_UI, pal.ink_2).into());
+    }
+    lines.push(deploys(e, now));
+    lines.push(
+        row![
+            Space::new().width(Length::Fill),
+            ui::btn_sm(
+                "Remove…",
+                Some("trash"),
+                ui::Kind::Ghost,
+                Some(Msg::AskRemove(e.name.clone())),
+            ),
+            ui::btn_sm(
+                "Edit…",
+                Some("edit"),
+                ui::Kind::Secondary,
+                Some(Msg::Edit(e.name.clone())),
+            ),
+            ui::btn_sm(
+                "Deploy…",
+                Some("play"),
+                ui::Kind::Primary,
+                Some(Msg::OpenDeploy(e.name.clone())),
+            ),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .wrap()
+        .into(),
+    );
+    container(column(lines).spacing(12))
+        .padding(16)
+        .width(Length::Fill)
+        .style(ui::frame(Some(pal.raised), pal.rule))
+        .into()
+}
+
+/// A label and its value on one line: the label in the mono caps, the value beside it.
+fn kv<'a>(label: &str, value: String) -> Element<'a, Msg> {
+    let pal = theme::palette();
+    row![
+        ui::mono(label.to_uppercase(), 11.0, pal.ink_3).width(Length::Fixed(110.0)),
+        ui::sans(value, theme::TYPE_UI, pal.ink).width(Length::Fill),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Start)
+    .into()
+}
+
+/// The last five deploys, newest first, each with its version, its status, who and when, and its detail.
+fn deploys<'a>(e: &'a Environment, now: u64) -> Element<'a, Msg> {
+    let pal = theme::palette();
+    let mut lines: Vec<Element<'a, Msg>> = vec![ui::faint("Recent deploys").into()];
+    if e.deploys.is_empty() {
+        lines.push(ui::faint("No deploys yet").into());
+    }
+    for (i, d) in e.deploys.iter().rev().take(5).enumerate() {
+        if i > 0 {
+            lines.push(ui::hairline());
+        }
+        let head: Vec<Element<'a, Msg>> = vec![
+            container(ui::mono(
+                if d.version.is_empty() {
+                    "—".into()
+                } else {
+                    d.version.clone()
+                },
+                theme::TYPE_CODE,
+                pal.ink_2,
+            ))
+            .padding([2, 8])
+            .style(ui::frame(Some(pal.sheet_2), pal.sheet_2))
+            .into(),
+            ui::badge::<Msg>(status_text(&d.status), status_tone(&d.status)),
+            ui::faint(format!("{} · {}", d.by, ago(d.at_ms, now))).into(),
+        ];
+        let mut block: Vec<Element<'a, Msg>> = vec![
+            row(head)
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .wrap()
+                .into(),
+        ];
+        if !d.detail.is_empty() {
+            block.push(ui::faint(d.detail.clone()).into());
+        }
+        lines.push(column(block).spacing(4).padding([8, 0]).into());
+    }
+    column(lines).spacing(4).into()
 }
 
 impl From<Id> for Msg {
@@ -1204,5 +1473,27 @@ mod tests {
         form.remove_hook = true;
         let (_, body) = form.body().expect("a valid form");
         assert!(body["hook"].is_null(), "the toggle sends hook: null");
+    }
+
+    #[test]
+    fn a_deploy_says_what_became_of_it_and_a_failure_is_one() {
+        assert_eq!(
+            deploy_outcome("production", "sent"),
+            ("Sent to production.".to_string(), false)
+        );
+        assert_eq!(
+            deploy_outcome("staging", "refused"),
+            ("The deploy to staging was refused.".to_string(), true)
+        );
+    }
+
+    #[test]
+    fn the_cards_say_how_long_ago_in_the_web_words() {
+        let now: u64 = 1_800_000_000_000;
+        assert_eq!(ago(now - 20_000, now), "just now");
+        assert_eq!(ago(now - 5 * 60_000, now), "5 min ago");
+        assert_eq!(ago(now - 3 * 3_600_000, now), "3 h ago");
+        assert_eq!(ago(now - 2 * 86_400_000, now), "2 d ago");
+        assert_eq!(ago(0, now), "—");
     }
 }

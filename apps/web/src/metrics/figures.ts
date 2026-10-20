@@ -27,8 +27,8 @@ const LANE_W = 70;
 const LANE_H = 22;
 const AXIS_H = 18;
 const SWIM_MIN_W = 560;
-const LANE_TEXT = 'font:400 11px var(--mono);fill:var(--ink-2)';
-const AXIS_TEXT = 'font:400 10px var(--sans);fill:var(--ink-3)';
+const LANE_TEXT = 'font:400 11px var(--font-mono);fill:var(--ink-2)';
+const AXIS_TEXT = 'font:400 10px var(--font);fill:var(--ink-3)';
 
 /** A handle whose redraw re-renders the figure, and whose destroy empties its host (nothing draws after that). */
 function figureHandle(host: HTMLElement, redraw: () => void): FigureHandle {
@@ -53,9 +53,9 @@ function svgEl(tag: string, attrs: Record<string, string | number> = {}): SVGEle
 
 /** Counts per time column and log-scale duration row, on a canvas; hover shows the cell, click opens what changed. */
 export function heatmap(host: HTMLElement, h: Heatmap, ctx: ChartCtx): FigureHandle {
-  const wrap = el('div.mx-hm-wrap', { style: 'position:relative' });
-  const cv = el('canvas.mx-hm', { role: 'img', 'aria-label': 'Latency heatmap: calls per time and duration bucket' });
-  const tip = el('div.mx-tip', { style: 'position:absolute;display:none;pointer-events:none' });
+  const wrap = el('div.mt-plot', { style: 'position:relative' });
+  const cv = el('canvas.mt-hm', { role: 'img', 'aria-label': 'Latency heatmap: calls per time and duration bucket' });
+  const tip = el('div.mt-tip', { style: 'position:absolute;display:none;pointer-events:none' });
   wrap.append(cv, tip);
   host.appendChild(wrap);
 
@@ -202,7 +202,7 @@ export function splitTreemap(items: TreeItem[]): TreeCell[] {
 
 /** A squarified-by-halves treemap; small cells drop their text and keep a title. */
 export function treemap(host: HTMLElement, unit: Unit, items: TreeItem[]): FigureHandle {
-  const box = el('div.mx-treemap', { style: `position:relative;height:${TREE_H}px` });
+  const box = el('div.mt-tm', { style: `position:relative;height:${TREE_H}px` });
   host.appendChild(box);
   const total = items.reduce((s, it) => s + Math.max(0, it.value), 0);
 
@@ -211,6 +211,7 @@ export function treemap(host: HTMLElement, unit: Unit, items: TreeItem[]): Figur
     box.replaceChildren(
       ...splitTreemap(items).map((c) => {
         const d = document.createElement('div');
+        d.className = 'mt-tmi';
         Object.assign(d.style, {
           position: 'absolute',
           left: `${c.x}%`,
@@ -237,30 +238,19 @@ export function treemap(host: HTMLElement, unit: Unit, items: TreeItem[]): Figur
 /** One half-circle gauge: the arc fills to `frac`, coloured by its status, with the label in the arc and the sub text under. */
 function gaugeCell(g: GaugeItem): HTMLElement {
   const frac = Number.isFinite(g.frac) ? Math.min(1, Math.max(0, g.frac)) : 0;
-  const r = 52;
-  const cx = 64;
-  const cy = 62;
-  const a0 = Math.PI;
-  const a1 = Math.PI + Math.PI * frac;
-  const p = (a: number): string => `${(cx + r * Math.cos(a)).toFixed(2)},${(cy + r * Math.sin(a)).toFixed(2)}`;
-  const svg = svgEl('svg', {
-    width: 128,
-    height: 78,
-    role: 'img',
-    'aria-label': `${g.label} ${g.sub}`,
-    style: 'display:block;margin:0 auto',
-  });
-  svg.appendChild(svgEl('path', { d: `M${p(a0)} A${r},${r} 0 0 1 ${p(2 * Math.PI)}`, fill: 'none', 'stroke-width': 10, style: 'stroke:var(--rule-faint)' }));
-  svg.appendChild(svgEl('path', { d: `M${p(a0)} A${r},${r} 0 0 1 ${p(a1)}`, fill: 'none', 'stroke-width': 10, style: `stroke:${statusVar(g.status)}` }));
-  const label = svgEl('text', { x: cx, y: cy - 6, 'text-anchor': 'middle', style: 'font:600 17px var(--sans);fill:var(--ink)' });
-  label.textContent = g.label;
-  svg.appendChild(label);
-  return el('div', null, svg, el('div', { style: 'text-align:center;font-size:11.5px;color:var(--ink-3)' }, g.sub));
+  // The prototype's bar gauge: the label and its sub line, a track filled to the fraction, then the percentage.
+  return el(
+    'div.mt-gauge',
+    null,
+    el('div.mt-gl2', null, el('b', null, g.label), el('span.mt-sub', null, g.sub)),
+    el('div.mt-track', null, el('i', { style: `width:${Math.min(100, frac * 100).toFixed(0)}%;background:${statusVar(g.status)}` })),
+    el('span.mt-sub', null, `${Math.round(frac * 100)}%`),
+  );
 }
 
 /** Half-circle gauges side by side. */
 export function gauges(host: HTMLElement, items: GaugeItem[]): FigureHandle {
-  const box = el('div.mx-gauges', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px' });
+  const box = el('div.mt-gauges');
   host.appendChild(box);
   const render = (): void => {
     box.replaceChildren(...items.map(gaugeCell));
@@ -271,8 +261,8 @@ export function gauges(host: HTMLElement, items: GaugeItem[]): FigureHandle {
 
 /** One lane per VM, coloured segments by state, hover text per segment; a click on a lane name narrows to it. */
 export function swimlanes(host: HTMLElement, s: Swimlanes, go: (scope: string) => void, tz: number): FigureHandle {
-  const scroll = el('div.mx-swim', { style: 'overflow-x:auto' });
-  const legend = el('div.mx-legend', { style: 'margin-top:8px' });
+  const scroll = el('div.mt-swim');
+  const legend = el('div.mt-legend');
   host.append(scroll, legend);
   const span = Math.max(1, s.end_ms - s.start_ms);
 
@@ -282,7 +272,7 @@ export function swimlanes(host: HTMLElement, s: Swimlanes, go: (scope: string) =
     const plot = width - LANE_W - 4;
     const height = s.lanes.length * LANE_H + AXIS_H;
     const x = (t: number): number => LANE_W + Math.min(1, Math.max(0, (t - s.start_ms) / span)) * plot;
-    const svg = svgEl('svg', { width, height, role: 'img', 'aria-label': 'VM timeline' });
+    const svg = svgEl('svg', { class: 'mt-svg', width, height, role: 'img', 'aria-label': 'VM timeline' });
 
     s.lanes.forEach((lane, row) => {
       const y = row * LANE_H;
@@ -324,16 +314,16 @@ export function swimlanes(host: HTMLElement, s: Swimlanes, go: (scope: string) =
     }
 
     scroll.replaceChildren(svg);
-    legend.replaceChildren(...s.legend.map((item) => el('span', null, el('i', { style: `background:${toneVar(item.tone)};height:8px` }), item.label)));
+    legend.replaceChildren(...s.legend.map((item) => el('span.mt-leg', null, el('i.mt-sw', { style: `background:${toneVar(item.tone)}` }), item.label)));
   };
 
   render();
   return figureHandle(host, render);
 }
 
-/** A small inline sparkline (SVG), filled under the line. */
-export function spark(values: number[], tone: Tone, width = 90, height = 22): SVGSVGElement {
-  const svg = svgEl('svg', { width, height, 'aria-hidden': 'true', style: 'display:inline-block;vertical-align:middle' }) as SVGSVGElement;
+/** A small inline sparkline (SVG), drawn as the prototype does: a line in the tone, stretched to its box. */
+export function spark(values: number[], tone: Tone, width = 90, height = 22, cls = 'mt-spark'): SVGSVGElement {
+  const svg = svgEl('svg', { class: cls, viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' }) as SVGSVGElement;
   const n = values.length;
   if (n === 0) return svg;
   const lo = values.reduce((m, v) => Math.min(m, v), Infinity);
@@ -346,7 +336,6 @@ export function spark(values: number[], tone: Tone, width = 90, height = 22): SV
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   });
   const color = toneVar(tone);
-  svg.appendChild(svgEl('path', { d: `M0,${height} L${pts.join(' L')} L${width},${height}Z`, style: `fill:${color};opacity:0.15` }));
-  svg.appendChild(svgEl('polyline', { points: pts.join(' '), fill: 'none', 'stroke-width': 1.3, style: `stroke:${color}` }));
+  svg.appendChild(svgEl('polyline', { points: pts.join(' '), fill: 'none', 'stroke-width': 1.6, 'vector-effect': 'non-scaling-stroke', style: `stroke:${color}` }));
   return svg;
 }

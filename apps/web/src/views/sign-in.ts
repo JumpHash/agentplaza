@@ -3,6 +3,7 @@
 // The hub's identity is pinned for this origin at the first successful sign-in (hub-pin.ts). When
 // a later visit finds another identity, the token is not sent until the owner trusts the new one.
 
+import '../styles/proto/onboard.css';
 import { api, ApiError } from '../api';
 import type { HubIdentity } from '../api';
 import { brandMark } from '../ui/brand';
@@ -17,9 +18,10 @@ export function signInScreen(onSignedIn: () => void): HTMLElement {
   const warning = h('div.signin-warning', { role: 'alert' });
   warning.hidden = true;
 
-  const token = input({ type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Owner token' });
-  const error = h('p.signin-error', { role: 'alert' });
+  const token = input({ id: 'owner-token', type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': 'Owner token' });
+  const error = h('p.signin-error', { id: 'sign-msg', role: 'alert' });
   const submit = button('Sign in', () => undefined, { kind: 'primary' });
+  submit.id = 'sign-go';
   submit.type = 'submit';
 
   // The token is held back until the hub's identity is checked: a pinned origin whose identity is
@@ -34,6 +36,11 @@ export function signInScreen(onSignedIn: () => void): HTMLElement {
     submit.disabled = on;
   }
 
+  function setLabel(text: string): void {
+    const label = submit.querySelector('span');
+    if (label) label.textContent = text;
+  }
+
   function renderPinLine(): void {
     const pin = pinFor(origin);
     if (!pin) {
@@ -43,27 +50,39 @@ export function signInScreen(onSignedIn: () => void): HTMLElement {
     pinLine.replaceChildren(
       h('span', null, `Pinned since ${pin.since}`),
       ' · ',
-      button('Forget pin', () => {
-        forgetPin(origin);
-        renderPinLine();
-      }, { kind: 'ghost' }),
+      button(
+        'Forget pin',
+        () => {
+          forgetPin(origin);
+          renderPinLine();
+        },
+        { kind: 'ghost', size: 'sm' },
+      ),
     );
   }
 
   function showMismatch(pin: HubPin, received: string | null): void {
     setBlocked(true);
-    const trust = button('Trust the new identity', () => {
-      if (received) setPin(origin, received);
-      else forgetPin(origin);
-      warning.hidden = true;
-      error.textContent = '';
-      setBlocked(false);
-      renderPinLine();
-    }, { kind: 'primary' });
-    const cancel = button('Cancel', () => {
-      warning.hidden = true;
-      error.textContent = "Not signed in: this hub's identity is not trusted. Reload the page to check it again.";
-    }, { kind: 'ghost' });
+    const trust = button(
+      'Trust the new identity',
+      () => {
+        if (received) setPin(origin, received);
+        else forgetPin(origin);
+        warning.hidden = true;
+        error.textContent = '';
+        setBlocked(false);
+        renderPinLine();
+      },
+      { kind: 'primary', size: 'sm' },
+    );
+    const cancel = button(
+      'Cancel',
+      () => {
+        warning.hidden = true;
+        error.textContent = "Not signed in: this hub's identity is not trusted. Reload the page to check it again.";
+      },
+      { kind: 'ghost', size: 'sm' },
+    );
     warning.replaceChildren(
       h(
         'p',
@@ -79,7 +98,7 @@ export function signInScreen(onSignedIn: () => void): HTMLElement {
   api.hubIdentity().then(
     (id) => {
       seen = id;
-      replace(who, h('span', null, id.name), id.fingerprint ? [' · ', h('span', null, `${id.fingerprint.slice(0, 16)}…`)] : null);
+      replace(who, h('span', null, id.name), id.fingerprint ? [' · ', h('span.mono', null, `${id.fingerprint.slice(0, 16)}…`)] : null);
       const check = checkPin(origin, id);
       if (check.kind === 'mismatch') {
         showMismatch(check.pin, check.received);
@@ -110,7 +129,7 @@ export function signInScreen(onSignedIn: () => void): HTMLElement {
     sheet.setAttribute('aria-busy', 'true');
     token.disabled = true;
     submit.disabled = true;
-    submit.textContent = 'Signing in…';
+    setLabel('Signing in…');
     try {
       await api.signIn(token.value);
       // The first successful sign-in pins the identity that was checked.
@@ -125,21 +144,28 @@ export function signInScreen(onSignedIn: () => void): HTMLElement {
       sheet.removeAttribute('aria-busy');
       token.disabled = blocked;
       submit.disabled = blocked;
-      submit.textContent = 'Sign in';
+      setLabel('Sign in');
     }
   }
 
   const sheet = h(
     'form.signin-sheet',
     {
+      novalidate: true,
       onsubmit: (ev: Event) => {
         ev.preventDefault();
         void signIn();
       },
     },
-    h('header.signin-brand', null, brandMark(36), h('span.signin-name', null, 'AgentPlaza')),
+    h('header.signin-brand', null, brandMark(28), h('span.signin-name', null, 'AgentPlaza')),
     h('h1', null, 'Sign in to this hub'),
-    h('p.signin-lede', null, "Paste the owner token. The hub keeps it in the owner-token file in its state directory, on the hub's own machine; `agentplaza hub login` reads it from there."),
+    h(
+      'p.signin-lede',
+      null,
+      "Paste the owner token. The hub keeps it in the owner-token file in its state directory, on the hub's own machine; ",
+      h('code', null, 'agentplaza hub login'),
+      ' reads it from there.',
+    ),
     who,
     pinLine,
     warning,

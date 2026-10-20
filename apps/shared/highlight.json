@@ -1,0 +1,173 @@
+{
+  "languages": {
+    "rust": {
+      "aliases": ["rs"],
+      "keywords": ["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "type", "unsafe", "use", "where", "while"],
+      "types": ["bool", "char", "str", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize"],
+      "constants": ["true", "false"],
+      "line_comments": ["//"],
+      "block_comments": [["/*", "*/"]],
+      "strings": ["\""],
+      "multiline_strings": [],
+      "type_case": true
+    },
+    "typescript": {
+      "aliases": ["ts", "tsx", "javascript", "js", "jsx"],
+      "keywords": ["abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger", "declare", "default", "delete", "do", "else", "enum", "export", "extends", "finally", "for", "from", "function", "if", "implements", "import", "in", "instanceof", "interface", "keyof", "let", "namespace", "new", "of", "override", "private", "protected", "public", "readonly", "return", "satisfies", "static", "super", "switch", "this", "throw", "try", "type", "typeof", "var", "void", "while", "with", "yield"],
+      "types": ["any", "bigint", "boolean", "never", "number", "object", "string", "symbol", "unknown"],
+      "constants": ["true", "false", "null", "undefined", "NaN", "Infinity"],
+      "line_comments": ["//"],
+      "block_comments": [["/*", "*/"]],
+      "strings": ["\"", "'"],
+      "multiline_strings": ["`"],
+      "type_case": true
+    },
+    "python": {
+      "aliases": ["py"],
+      "keywords": ["and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with", "yield"],
+      "types": ["bool", "bytearray", "bytes", "complex", "dict", "float", "frozenset", "int", "list", "object", "set", "str", "tuple"],
+      "constants": ["True", "False", "None"],
+      "line_comments": ["#"],
+      "block_comments": [],
+      "strings": ["\"", "'"],
+      "multiline_strings": ["\"\"\"", "'''"],
+      "type_case": true
+    },
+    "go": {
+      "aliases": ["golang"],
+      "keywords": ["break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough", "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range", "return", "select", "struct", "switch", "type", "var"],
+      "types": ["any", "bool", "byte", "complex64", "complex128", "error", "float32", "float64", "int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr"],
+      "constants": ["true", "false", "nil", "iota"],
+      "line_comments": ["//"],
+      "block_comments": [["/*", "*/"]],
+      "strings": ["\"", "'"],
+      "multiline_strings": ["`"],
+      "type_case": false
+    },
+    "json": {
+      "aliases": [],
+      "keywords": [],
+      "types": [],
+      "constants": ["true", "false", "null"],
+      "line_comments": [],
+      "block_comments": [],
+      "strings": ["\""],
+      "multiline_strings": [],
+      "type_case": false
+    },
+    "bash": {
+      "aliases": ["sh", "shell", "zsh"],
+      "keywords": ["break", "case", "continue", "declare", "do", "done", "elif", "else", "esac", "eval", "exec", "exit", "export", "fi", "for", "function", "if", "in", "local", "readonly", "return", "select", "set", "shift", "then", "trap", "typeset", "unset", "until", "while"],
+      "types": [],
+      "constants": ["true", "false"],
+      "line_comments": ["#"],
+      "block_comments": [],
+      "strings": [],
+      "multiline_strings": ["\"", "'"],
+      "type_case": false
+    },
+    "sql": {
+      "aliases": [],
+      "ignore_case": true,
+      "keywords": ["add", "all", "alter", "and", "as", "asc", "begin", "between", "by", "case", "check", "commit", "constraint", "create", "cross", "declare", "default", "delete", "desc", "distinct", "drop", "else", "end", "except", "exists", "foreign", "from", "full", "function", "grant", "group", "having", "if", "in", "index", "inner", "insert", "intersect", "into", "is", "join", "key", "left", "like", "limit", "not", "offset", "on", "or", "order", "outer", "primary", "procedure", "references", "restrict", "returning", "returns", "revoke", "right", "rollback", "select", "set", "table", "then", "to", "transaction", "trigger", "union", "unique", "update", "using", "values", "view", "when", "where", "with"],
+      "types": ["bigint", "bigserial", "boolean", "char", "date", "decimal", "double", "float", "int", "integer", "json", "jsonb", "numeric", "real", "serial", "smallint", "text", "timestamp", "uuid", "varchar"],
+      "constants": ["true", "false", "null"],
+      "line_comments": ["--"],
+      "block_comments": [["/*", "*/"]],
+      "strings": ["\""],
+      "multiline_strings": ["'"],
+      "type_case": false
+    },
+    "html": {
+      "aliases": [],
+      "keywords": ["DOCTYPE", "html", "head", "body", "title", "meta", "link", "script", "style", "template", "div", "span", "a", "p", "img", "ul", "ol", "li", "table", "tr", "td", "th", "form", "input", "button", "section", "header", "footer", "nav", "main"],
+      "types": [],
+      "constants": [],
+      "line_comments": [],
+      "block_comments": [["<!--", "-->"]],
+      "strings": ["\"", "'"],
+      "multiline_strings": [],
+      "type_case": false
+    },
+    "css": {
+      "aliases": [],
+      "ident_extra": "-",
+      "keywords": ["important", "import", "media", "supports", "keyframes", "font-face", "charset", "inherit", "initial", "unset", "revert", "auto", "none"],
+      "types": [],
+      "constants": [],
+      "line_comments": [],
+      "block_comments": [["/*", "*/"]],
+      "strings": ["\"", "'"],
+      "multiline_strings": [],
+      "type_case": false
+    },
+    "yaml": {
+      "aliases": ["yml"],
+      "ident_extra": "-",
+      "keywords": [],
+      "types": [],
+      "constants": ["true", "false", "null", "yes", "no", "on", "off", "True", "False", "Null", "Yes", "No", "On", "Off", "TRUE", "FALSE", "NULL", "YES", "NO", "ON", "OFF"],
+      "line_comments": ["#"],
+      "block_comments": [],
+      "strings": ["\"", "'"],
+      "multiline_strings": [],
+      "type_case": false
+    },
+    "toml": {
+      "aliases": [],
+      "ident_extra": "-",
+      "keywords": [],
+      "types": [],
+      "constants": ["true", "false"],
+      "line_comments": ["#"],
+      "block_comments": [],
+      "strings": ["\"", "'"],
+      "multiline_strings": ["\"\"\"", "'''"],
+      "type_case": false
+    },
+    "c": {
+      "aliases": ["h"],
+      "keywords": ["auto", "break", "case", "const", "continue", "default", "define", "do", "elif", "else", "endif", "enum", "extern", "for", "goto", "if", "ifdef", "ifndef", "include", "inline", "pragma", "register", "restrict", "return", "sizeof", "static", "struct", "switch", "typedef", "undef", "union", "volatile", "while", "_Alignas", "_Alignof", "_Atomic", "_Generic", "_Noreturn", "_Static_assert", "_Thread_local"],
+      "types": ["bool", "char", "double", "float", "int", "long", "short", "signed", "unsigned", "void", "size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "FILE", "_Bool", "_Complex"],
+      "constants": ["NULL", "true", "false"],
+      "line_comments": ["//"],
+      "block_comments": [["/*", "*/"]],
+      "strings": ["\"", "'"],
+      "multiline_strings": [],
+      "type_case": false
+    },
+    "cpp": {
+      "aliases": ["c++", "cc", "hpp"],
+      "keywords": ["auto", "break", "case", "const", "continue", "default", "define", "do", "elif", "else", "endif", "enum", "extern", "for", "goto", "if", "ifdef", "ifndef", "include", "inline", "pragma", "register", "restrict", "return", "sizeof", "static", "struct", "switch", "typedef", "undef", "union", "volatile", "while", "alignas", "alignof", "and", "and_eq", "asm", "bitand", "bitor", "catch", "class", "compl", "concept", "const_cast", "consteval", "constexpr", "constinit", "co_await", "co_return", "co_yield", "decltype", "delete", "dynamic_cast", "explicit", "export", "final", "friend", "mutable", "namespace", "new", "noexcept", "not", "not_eq", "operator", "or", "or_eq", "override", "private", "protected", "public", "reinterpret_cast", "requires", "static_assert", "static_cast", "template", "this", "thread_local", "throw", "try", "typeid", "typename", "using", "virtual", "xor", "xor_eq"],
+      "types": ["bool", "char", "char8_t", "char16_t", "char32_t", "double", "float", "int", "long", "short", "signed", "unsigned", "void", "wchar_t", "size_t", "ptrdiff_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t"],
+      "constants": ["NULL", "nullptr", "true", "false"],
+      "line_comments": ["//"],
+      "block_comments": [["/*", "*/"]],
+      "strings": ["\"", "'"],
+      "multiline_strings": [],
+      "type_case": true
+    },
+    "java": {
+      "aliases": [],
+      "keywords": ["abstract", "assert", "break", "case", "catch", "class", "const", "continue", "default", "do", "else", "enum", "extends", "final", "finally", "for", "goto", "if", "implements", "import", "instanceof", "interface", "native", "new", "package", "private", "protected", "public", "return", "static", "strictfp", "super", "switch", "synchronized", "this", "throw", "throws", "transient", "try", "var", "volatile", "while", "yield"],
+      "types": ["boolean", "byte", "char", "double", "float", "int", "long", "short", "void"],
+      "constants": ["true", "false", "null"],
+      "line_comments": ["//"],
+      "block_comments": [["/*", "*/"]],
+      "strings": ["\"", "'"],
+      "multiline_strings": ["\"\"\""],
+      "type_case": true
+    },
+    "markdown": {
+      "aliases": ["md"],
+      "keywords": [],
+      "types": [],
+      "constants": [],
+      "line_comments": [],
+      "block_comments": [],
+      "strings": [],
+      "multiline_strings": [],
+      "type_case": false
+    }
+  }
+}

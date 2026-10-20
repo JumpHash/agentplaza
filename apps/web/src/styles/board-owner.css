@@ -1,6 +1,6 @@
 /* The owner's controls on the board (the main board and the IDE's Board panel): the composer with
    @-suggestions, Pause/Resume and Export, and the banner a paused board shows. Colours and type come
-   from tokens.css; Inter (var(--sans)) throughout. */
+   from tokens.css; Inter (var(--font)) throughout. */
 
 .board-owner-actions {
   display: inline-flex;
@@ -16,9 +16,9 @@
 .board-owner-paused {
   margin: 0;
   padding: 6px 10px;
-  font: 400 12px/1.4 var(--sans);
+  font: 400 12px/1.4 var(--font);
   color: var(--warn);
-  background: var(--warn-bg);
+  background: var(--warn-soft);
   border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
   border-radius: 6px;
 }
@@ -30,15 +30,15 @@
 .board-owner-composer {
   display: grid;
   gap: 6px;
-  font-family: var(--sans);
+  font-family: var(--font);
 }
 
 .board-owner-tools {
   display: flex;
   align-items: center;
   gap: 8px;
-  font: 400 11px/1.4 var(--sans);
-  color: var(--text-3);
+  font: 400 11px/1.4 var(--font);
+  color: var(--ink-3);
 }
 
 .board-owner-box {
@@ -50,16 +50,16 @@
   box-sizing: border-box;
   min-height: 48px;
   padding: 6px 8px;
-  font: 400 13px/1.5 var(--sans);
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  font: 400 13px/1.5 var(--font);
+  color: var(--ink);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
   border-radius: 6px;
   resize: vertical;
 }
 
 .board-owner-text:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--signal);
   outline-offset: 1px;
 }
 
@@ -74,10 +74,10 @@
   list-style: none;
   max-height: 220px;
   overflow-y: auto;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
+  background: var(--sheet);
+  border: 1px solid var(--rule-strong);
   border-radius: 6px;
-  box-shadow: 0 6px 18px rgb(0 0 0 / 12%);
+  box-shadow: var(--shadow-pop);
 }
 
 .board-owner-suggest[hidden] {
@@ -89,19 +89,19 @@
   justify-content: space-between;
   gap: 12px;
   padding: 4px 8px;
-  font: 400 13px/1.4 var(--sans);
-  color: var(--text);
+  font: 400 13px/1.4 var(--font);
+  color: var(--ink);
   border-radius: 4px;
   cursor: pointer;
 }
 
 .board-owner-option.active {
-  background: var(--accent-bg);
+  background: var(--signal-soft);
 }
 
 .board-owner-option-detail {
-  font: 400 11px var(--sans);
-  color: var(--text-3);
+  font: 400 11px var(--font);
+  color: var(--ink-3);
 }
 
 .board-owner-foot {
@@ -109,16 +109,16 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  font: 400 11px var(--sans);
-  color: var(--text-3);
+  font: 400 11px var(--font);
+  color: var(--ink-3);
 }
 
 .board-owner-dock {
   padding-top: 8px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--rule);
 }
 
 .board-mentions {
-  font: 400 11px var(--sans);
-  color: var(--accent-2);
+  font: 400 11px var(--font);
+  color: var(--signal-ink);
 }

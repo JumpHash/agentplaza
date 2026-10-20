@@ -309,19 +309,24 @@ pub const REFUSED_MODES_EVERYWHERE: &[&str] = &[
     "autopilot",
 ];
 
-impl Entry {
-    /// True when the harness must never select `mode`: its id contains one of the refused words, the
-    /// global ones or the engine's own, ignoring case, so `Allow-All` and `allow_all_tools` are refused
-    /// like `allow-all`.
-    pub fn refuses(&self, mode: &str) -> bool {
-        let mode = mode.to_ascii_lowercase();
-        self.refused_exact_modes
+/// True when the harness must never select `mode`: its id contains one of the refused words (`words`,
+/// with the global ones), or is exactly one of `exact`, ignoring case, so `Allow-All` and
+/// `allow_all_tools` are refused like `allow-all`.
+pub fn refused_mode(mode: &str, exact: &[&str], words: &[&str]) -> bool {
+    let mode = mode.to_ascii_lowercase();
+    exact.iter().any(|word| mode == word.to_ascii_lowercase())
+        || REFUSED_MODES_EVERYWHERE
             .iter()
-            .any(|word| mode == word.to_ascii_lowercase())
-            || REFUSED_MODES_EVERYWHERE
-                .iter()
-                .chain(self.refused_modes)
-                .any(|word| mode.contains(&word.to_ascii_lowercase()))
+            .chain(words)
+            .any(|word| mode.contains(&word.to_ascii_lowercase()))
+}
+
+#[cfg(test)]
+impl Entry {
+    /// True when the harness must never select `mode` (see [`refused_mode`]). Tests check the catalogue's
+    /// lists with it; the launch asks its [`super::instance::Instance`].
+    pub fn refuses(&self, mode: &str) -> bool {
+        refused_mode(mode, self.refused_exact_modes, self.refused_modes)
     }
 }
 

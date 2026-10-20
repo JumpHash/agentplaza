@@ -480,3 +480,137 @@ export function latestRevision(change: Pick<WeftChange, 'rounds' | 'drafts' | 'l
 export function intentChips(change: Pick<WeftChangeSummary, 'intents'>, max = 3): { title: string; kind: string }[] {
   return change.intents.slice(0, max);
 }
+
+/** A syntax error found while reading a query: its message and the position it is at. */
+class SyntaxFail extends Error {
+  constructor(
+    message: string,
+    readonly pos: number,
+  ) {
+    super(message);
+  }
+}
+
+// ---- The query box: the grammar of crates/weft/src/query.rs, checked for its syntax before the hub reads it ----
+
+/** The query help: each function or operator, what it means, and an example the box runs. */
+export const QUERY_HELP: { title: string; items: [string, string, string][] }[] = [
+  {
+    title: 'Operators',
+    items: [
+      ['a | b', 'either term', 'lane(w-209) | needs(owner)'],
+      ['a & b', 'both terms', 'open() & since(7d)'],
+      ['a ~ b', 'a but not b', 'all() ~ landed()'],
+      ['~a', 'not a', '~imported()'],
+      ['( … )', 'group terms', '(open() | conflicts()) & kind(fix)'],
+    ],
+  },
+  {
+    title: 'Functions',
+    items: [
+      ['all()', 'every change', 'all()'],
+      ['open()', 'not landed and not dropped', 'open()'],
+      ['sealed()', 'sealed and in review', 'sealed()'],
+      ['queued()', 'in the queue to land', 'queued()'],
+      ['conflicts()', 'in conflict with main', 'conflicts()'],
+      ['landed()', 'landed on main', 'landed()'],
+      ['abandoned()', 'dropped', 'abandoned()'],
+      ['lane(t13)', 'the lane of a task or change', 'lane(t13)'],
+      ['task(t13)', 'the change of a task', 'task(t13)'],
+      ['change(w-209)', 'a change by name', 'change(w-209)'],
+      ['touches(path)', 'changing a path or glob, or path::symbol', 'touches(src/**)'],
+      ['by(actor)', 'written in part by an actor', 'by(agent:211)'],
+      ['author(actor)', 'whose lane belongs to an actor', 'author(agent:211)'],
+      ['since(7d)', 'opened after a time, a release or a change', 'since(7d)'],
+      ['imported()', 'imported from git', 'imported()'],
+      ['reverts()', 'reverts', 'reverts()'],
+      ['edits()', 'the owner’s direct edits', 'edits()'],
+      ['reviewed()', 'with a review record', 'reviewed()'],
+      ['needs(owner)', 'waiting for the owner’s ruling', 'needs(owner)'],
+      ['diverges(t13)', 'sharing a file with another open change', 'diverges(t13)'],
+      ['kind(fix)', 'with an intent of that kind', 'kind(fix)'],
+      ['component(name)', 'changing a component of the project map', 'component(pricing)'],
+    ],
+  },
+];
+
+/** The first syntax error in a query, with the 0-based position it is at; null when the query reads. An empty query is all(). */
+export function queryError(text: string): { pos: number; message: string } | null {
+  const src = text.trim();
+  if (src === '') return null;
+  // Tokens: the operators and parentheses, and a name with its argument in parentheses.
+  const tokens: { kind: string; pos: number; text: string }[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const c = src.charAt(i);
+    if (/\s/.test(c)) {
+      i += 1;
+    } else if ('&|~()'.includes(c)) {
+      tokens.push({ kind: c, pos: i, text: c });
+      i += 1;
+    } else if (/[A-Za-z]/.test(c)) {
+      const start = i;
+      while (i < src.length && /[A-Za-z0-9_]/.test(src.charAt(i))) i += 1;
+      const name = src.slice(start, i);
+      if (src.charAt(i) !== '(') return { pos: start, message: `\`${name}\` needs its arguments in parentheses, like \`${name}()\`` };
+      i += 1;
+      let inner = 0;
+      while (i < src.length && !(src.charAt(i) === ')' && inner === 0)) {
+        if (src.charAt(i) === '(') inner += 1;
+        else if (src.charAt(i) === ')') inner -= 1;
+        i += 1;
+      }
+      if (i >= src.length) return { pos: start, message: `\`${name}(\` is not closed` };
+      i += 1;
+      tokens.push({ kind: 'call', pos: start, text: src.slice(start, i) });
+    } else {
+      return { pos: i, message: `unexpected \`${c}\`` };
+    }
+  }
+  // Recursive descent: `|` binds loosest, then `&` and `~` (minus), then prefix `~`.
+  let at = 0;
+  const fail = (message: string, pos: number): never => {
+    throw new SyntaxFail(message, pos);
+  };
+  const isOp = (k: string): boolean => at < tokens.length && tokens[at]?.kind === k;
+  const factor = (): void => {
+    const t = tokens[at];
+    if (!t) return fail('the query ends too soon', src.length);
+    if (t.kind === '~') {
+      at += 1;
+      factor();
+    } else if (t.kind === '(') {
+      at += 1;
+      expr();
+      if (!isOp(')')) fail('a `(` is not closed', t.pos);
+      at += 1;
+    } else if (t.kind === 'call') {
+      at += 1;
+    } else {
+      fail(`unexpected \`${t.text}\``, t.pos);
+    }
+  };
+  const term = (): void => {
+    factor();
+    while (isOp('&') || isOp('~')) {
+      at += 1;
+      factor();
+    }
+  };
+  function expr(): void {
+    term();
+    while (isOp('|')) {
+      at += 1;
+      term();
+    }
+  }
+  try {
+    expr();
+    const extra = tokens[at];
+    if (extra) fail(`unexpected \`${extra.text}\``, extra.pos);
+  } catch (e) {
+    if (e instanceof SyntaxFail) return { pos: e.pos, message: e.message };
+    throw e;
+  }
+  return null;
+}

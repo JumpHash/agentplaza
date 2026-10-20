@@ -6,6 +6,9 @@
 pub enum GatewayError {
     #[error("unknown provider `{0}`")]
     UnknownProvider(String),
+    /// The owner turned the provider off: it keeps its settings but takes no calls.
+    #[error("the provider `{0}` is disabled")]
+    Disabled(String),
     #[error("bad model name `{0}` (expected `<provider>/<model>`)")]
     BadModelName(String),
     /// The credential could not be obtained (the message names its source,

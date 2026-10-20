@@ -6,6 +6,7 @@
 //! The hub answers each call with the workspace it was asked for, so a late answer for a workspace
 //! the owner has left is dropped (the same rule as the screen's `is_current`).
 
+use crate::console::chat_tools;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -412,6 +413,8 @@ pub struct State {
     pub steer: text_editor::Content,
     pub steer_busy: bool,
     pub steer_notice: Option<String>,
+    /// The chat's model chip and context bar (the workspace's agent, loaded when its chat opens).
+    pub chat_tools: chat_tools::ChatTools,
     /// The files the composer sends with its next note: uploaded, and how many are still going up.
     pub attachments: Vec<Attachment>,
     pub uploading: usize,
@@ -438,6 +441,8 @@ pub enum Msg {
     },
     Steer(text_editor::Action),
     SteerSend,
+    /// The chat's model chip and context bar.
+    ChatTools(chat_tools::ChatToolsMsg),
     Steered {
         ws: String,
         /// The attachments the note carried, so a sent one leaves the composer.
@@ -605,11 +610,17 @@ pub fn show(st: &mut State, panel: Panel, client: &Client, ws: &WorkspaceId) -> 
     let Some(cid) = agent_of(ws) else {
         return Task::none();
     };
-    match panel {
+    let tools = if matches!(panel, Panel::Agent) && !st.chat_tools.is_loaded() {
+        chat_tools::load(client, chat_tools::Target::Agent(cid)).map(Msg::ChatTools)
+    } else {
+        Task::none()
+    };
+    let rest = match panel {
         Panel::Agent if !st.entries_loaded => transcript_task(client, ws, cid),
         Panel::Approvals => approvals_task(client, ws),
         _ => Task::none(),
-    }
+    };
+    Task::batch([tools, rest])
 }
 
 /// A transcript entry the hub published live (the workspace's agent only; the screen checks that).
@@ -738,8 +749,9 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
                 }
                 Err(e) => st.steer_notice = Some(format!("The note was not sent: {e}")),
             }
-            Task::none()
+            st.chat_tools.refresh(client).map(Msg::ChatTools)
         }
+        Msg::ChatTools(m) => chat_tools::update(&mut st.chat_tools, m, client).map(Msg::ChatTools),
         Msg::Pick => Task::perform(pick_files(), move |paths| Msg::Attach {
             ws: here.clone(),
             paths,

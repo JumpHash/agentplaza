@@ -7,24 +7,24 @@
   background: var(--crit);
   border-color: var(--crit);
   color: var(--sheet);
-  font-family: var(--sans);
+  font-family: var(--font);
   font-weight: 700;
   letter-spacing: 0.08em;
   border-radius: 0;
-  box-shadow: var(--print);
+  box-shadow: var(--shadow-card);
 }
-.btn.plaza-stop:hover { background: color-mix(in srgb, var(--crit) 80%, #000); color: var(--sheet); }
+.btn.plaza-stop:hover { background: color-mix(in srgb, var(--crit) 80%, var(--ink)); color: var(--sheet); }
 
 .btn.plaza-resume {
   background: var(--ok);
   border-color: var(--ok);
   color: var(--sheet);
-  font-family: var(--sans);
+  font-family: var(--font);
   font-weight: 700;
   letter-spacing: 0.08em;
   border-radius: 0;
 }
-.btn.plaza-resume:hover { background: color-mix(in srgb, var(--ok) 80%, #000); color: var(--sheet); }
+.btn.plaza-resume:hover { background: color-mix(in srgb, var(--ok) 80%, var(--ink)); color: var(--sheet); }
 
 .held-banner {
   display: flex;
@@ -35,7 +35,7 @@
   border-bottom: 1px solid var(--crit);
   background: color-mix(in srgb, var(--crit) 7%, var(--sheet));
   color: var(--crit);
-  font: 600 12px/1.5 var(--sans);
+  font: 600 12px/1.5 var(--font);
 }
 .held-banner[hidden] { display: none; }
 .held-banner > svg { flex: none; width: 14px; height: 14px; }

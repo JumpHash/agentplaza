@@ -1,6 +1,6 @@
 //! The Rules screen (parity with the web console's `rules` view): the plaza's laws (JHRL) by tier
 //! with filters, each built-in statute with its override, the owner's own rules in a checked JHRL
-//! editor, the violations by law beside the latest infractions, and the strict permits switch.
+//! editor, each statute's recent refusals, the latest infractions beside them, and the strict permits switch.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -8,26 +8,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::font::{self, Font};
 use iced::widget::{
-    Space, button, column, container, pick_list, row, text, text_editor, text_input,
+    Space, button, column, container, pick_list, row, text, text_editor, text_input, toggler,
 };
 use iced::{Alignment, Border, Color, Element, Length, Padding, Subscription, Task, Theme};
 use serde_json::{Value, json};
 
 use super::Id;
 use super::tools::encode;
-use crate::console::ui::{self, INK, INK_2, INK_3, Kind, RULE, RULE_FAINT, SHEET, SIGNAL, Tone};
+use crate::console::ui::{self, Kind, Tone};
 use crate::console::{Ctx, client, events};
 use crate::theme::SANS;
 
 /// The tier of the constitution: switching one of its laws off needs its id typed in.
 const CONSTITUTION: &str = "constitution";
+/// The gap between the screen's cards and rows (the web's `--gap`).
+const GAP: f32 = 16.0;
 
 const SANS_SEMIBOLD: Font = Font {
     weight: font::Weight::Semibold,
-    ..SANS
-};
-const SANS_BOLD: Font = Font {
-    weight: font::Weight::Bold,
     ..SANS
 };
 
@@ -35,7 +33,9 @@ const DAY_MS: i64 = 86_400_000;
 const INFRACTION_FETCH: usize = 200;
 const LATEST_SHOWN: usize = 20;
 const VIOLATION_LIMIT: usize = 50;
-const INTRO: &str = "These are the plaza's laws. Every action an agent takes is checked against them before it happens; a law that forbids an action stops it, and the attempt is recorded as a violation.";
+const INTRO: &str = "The laws the plaza ships with, and the owner’s own JHRL rules.";
+const OWNER_DESC: &str = "Laws you write in JHRL. A rule takes effect once its source compiles; its laws stop applying when the rule is disabled or deleted.";
+const BUILTIN_DESC: &str = "The laws the plaza ships with. Disabling one asks for a reason, and the reason stays with the override until the statute is enabled again.";
 const STRICT_HELP: &str = "Strict permits: when on, an operation that has permit laws is refused unless one of those permits allows it. Off (the default): only forbids refuse, and a permit only allows.";
 const JHRL_SHAPE: &str = "law \"ID\" \"Title\" {\n  tier statute | operations | constitution\n  enforcement preventive | detective\n  severity info | minor | major | critical\n  statement \"What the law says.\"\n  permit OP | forbid OP\n  principal is Agent\n  resource is Tool\n  when CONDITION\n}";
 const JHRL_EXAMPLE: &str = r#"law "R-100" "No reading files with read_file" {
@@ -131,6 +131,7 @@ pub struct Rule {
     source: String,
     enabled: bool,
     updated_ms: i64,
+    author: String,
 }
 
 /// A diagnostic from the JHRL checker: a position and the message.
@@ -227,7 +228,12 @@ pub struct State {
     /// The last check's answer, and the last failed save.
     check: Option<Checked>,
     save_failure: Option<SaveFailure>,
-    confirm_delete: bool,
+    /// The owner rule whose delete dialog is open.
+    confirm_delete: Option<Named>,
+    /// The statute whose disable dialog is open.
+    disable: Option<Named>,
+    /// Whether the rule editor is open (New rule, or Edit on a rule).
+    editor_open: bool,
     /// The law whose violations are open, and its rows (None while they load).
     selected_law: Option<String>,
     violations: Option<Result<Vec<Violation>, String>>,
@@ -240,6 +246,14 @@ pub struct State {
 pub struct SwitchOff {
     id: String,
     typed: String,
+    heading: String,
+}
+
+/// A dialog about one law or rule: its id, and the heading the dialog shows.
+#[derive(Debug, Clone, Default)]
+struct Named {
+    id: String,
+    heading: String,
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +284,9 @@ pub enum Msg {
     /// Opens the switch-off dialog of a constitutional law, or closes it.
     AskSwitchOff(String),
     CancelSwitchOff,
+    /// Opens the disable dialog of a built-in statute, or closes it.
+    AskDisable(String),
+    CancelDisable,
     /// The id typed into the open switch-off dialog.
     TypeConfirm(String),
     /// A hub event: a law, agent or violation change reloads the screen.
@@ -277,13 +294,17 @@ pub enum Msg {
     SelectLaw(String),
     NewRule,
     SelectRule(String),
+    /// Closes the rule editor.
+    CloseEditor,
     Title(String),
     Source(text_editor::Action),
     Check,
     Save,
-    /// Enables or disables the rule open in the editor.
-    SetRuleEnabled(bool),
-    ArmDelete(bool),
+    /// Enables or disables an owner rule.
+    SetRuleEnabled(String, bool),
+    /// Opens the delete dialog of an owner rule, or closes it.
+    AskDelete(String),
+    CancelDelete,
     DeleteRule,
     Strict(bool),
 }
@@ -357,6 +378,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     state.notice = Some(line);
                     state.action_error = None;
                     state.switch_off = None;
+                    state.disable = None;
                     return load(state, ctx);
                 }
                 Err(e) => state.action_error = Some(e),
@@ -364,10 +386,13 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Deleted(result) => {
             state.busy = false;
-            state.confirm_delete = false;
+            state.confirm_delete = None;
             match result {
                 Ok(id) => {
-                    clear_editor(state);
+                    if state.editing.as_deref() == Some(id.as_str()) {
+                        clear_editor(state);
+                        state.editor_open = false;
+                    }
                     state.notice = Some(format!("Deleted {id}."));
                     state.action_error = None;
                     return load(state, ctx);
@@ -419,11 +444,31 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.reasons.insert(id, text);
         }
         Msg::AskSwitchOff(id) => {
+            let title = state
+                .laws
+                .iter()
+                .find(|l| l.id == id)
+                .map(|l| l.title.clone())
+                .unwrap_or_default();
             state.switch_off = Some(SwitchOff {
+                heading: format!("Switch off \"{title}\"?"),
                 id,
                 typed: String::new(),
             })
         }
+        Msg::AskDisable(id) => {
+            let title = state
+                .laws
+                .iter()
+                .find(|l| l.id == id)
+                .map(|l| l.title.clone())
+                .unwrap_or_default();
+            state.disable = Some(Named {
+                heading: format!("Disable {title}"),
+                id,
+            });
+        }
+        Msg::CancelDisable => state.disable = None,
         Msg::CancelSwitchOff => state.switch_off = None,
         Msg::TypeConfirm(typed) => {
             if let Some(dialog) = state.switch_off.as_mut() {
@@ -493,13 +538,20 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 return fetch_violations(ctx, id);
             }
         }
-        Msg::NewRule => clear_editor(state),
+        Msg::NewRule => {
+            clear_editor(state);
+            state.editor_open = true;
+        }
+        Msg::CloseEditor => {
+            clear_editor(state);
+            state.editor_open = false;
+        }
         Msg::SelectRule(id) => {
             if let Some(rule) = state.rules.iter().find(|r| r.id == id).cloned() {
                 state.editing = Some(rule.id);
                 state.title = rule.title;
                 state.source = text_editor::Content::with_text(&rule.source);
-                state.confirm_delete = false;
+                state.editor_open = true;
                 state.check = None;
                 state.save_failure = None;
                 state.notice = None;
@@ -558,10 +610,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Msg::Saved,
             );
         }
-        Msg::SetRuleEnabled(enable) => {
-            let Some(id) = state.editing.clone() else {
-                return Task::none();
-            };
+        Msg::SetRuleEnabled(id, enable) => {
             if state.busy {
                 return Task::none();
             }
@@ -577,9 +626,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Msg::Done,
             );
         }
-        Msg::ArmDelete(armed) => state.confirm_delete = armed,
+        Msg::AskDelete(id) => {
+            let title = state
+                .rules
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.title.clone())
+                .unwrap_or_else(|| id.clone());
+            state.confirm_delete = Some(Named {
+                heading: format!("Delete {title}"),
+                id,
+            });
+        }
+        Msg::CancelDelete => state.confirm_delete = None,
         Msg::DeleteRule => {
-            let Some(id) = state.editing.clone() else {
+            let Some(id) = state.confirm_delete.as_ref().map(|d| d.id.clone()) else {
                 return Task::none();
             };
             if state.busy {
@@ -625,7 +686,7 @@ fn with_retry<'a>(line: Element<'a, Msg>) -> Element<'a, Msg> {
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     let now = now_ms();
-    let mut body: Vec<Element<'a, Msg>> = vec![container(ui::prose(INTRO)).max_width(620).into()];
+    let mut body: Vec<Element<'a, Msg>> = Vec::new();
     if !state.loaded {
         body.push(match &state.error {
             Some(e) => with_retry(ui::error_line(&format!(
@@ -634,6 +695,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
             None => ui::loading(),
         });
     } else {
+        if let Some(banner) = constitution_banner(state) {
+            body.push(banner);
+        }
         if let Some(e) = &state.error {
             body.push(with_retry(ui::error_line(&format!(
                 "The rules could not be refreshed: {e}"
@@ -645,28 +709,93 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         if let Some(line) = &state.notice {
             body.push(ui::faint(line.clone()).into());
         }
-        if let Some(banner) = constitution_banner(state) {
-            body.insert(0, banner);
-        }
-        if let Some(dialog) = state
-            .switch_off
-            .as_ref()
-            .and_then(|d| switch_off_dialog(state, d))
-        {
-            body.push(dialog);
-        }
         body.push(stats(state, now));
-        body.push(ui::card("Built-in statutes", statutes(state, now)));
-        body.push(ui::card("Owner rules", owner_rules(state, now)));
-        body.push(ui::card("Violations by law", violations(state, now)));
-        body.push(ui::card("Strict permits", strict_permits(state)));
+        // The web's two columns: the screen's cards on the left, the latest infractions on the right.
+        let main = column![
+            panel(
+                panel_head("Strict permits", Some(strict_switch(state))),
+                ui::faint(STRICT_HELP).into()
+            ),
+            panel(
+                panel_head("Built-in statutes", None),
+                column![ui::faint(BUILTIN_DESC), statutes(state, now)]
+                    .spacing(12)
+                    .into()
+            ),
+            panel(
+                panel_head(
+                    "Owner rules",
+                    Some(ui::btn(
+                        "New rule",
+                        None,
+                        Kind::Secondary,
+                        Some(Msg::NewRule)
+                    ))
+                ),
+                owner_rules(state, now)
+            ),
+        ]
+        .spacing(GAP)
+        .width(Length::Fill);
+        let side = container(panel(
+            panel_head("Latest infractions", None),
+            infractions(state, now),
+        ))
+        .width(Length::Fixed(340.0));
+        body.push(
+            row![main, side]
+                .spacing(GAP)
+                .align_y(Alignment::Start)
+                .into(),
+        );
     }
-    ui::sheet(
-        ui::view_head("Rules", vec![]),
-        ui::scroll(column(body).spacing(22))
-            .height(Length::Fill)
-            .into(),
+    // The web's dialogs lay over the screen: the switch-off, the disable and the delete.
+    let dialog = state
+        .switch_off
+        .as_ref()
+        .and_then(|d| switch_off_dialog(state, d))
+        .or_else(|| {
+            state
+                .disable
+                .as_ref()
+                .and_then(|d| disable_dialog(state, d))
+        })
+        .or_else(|| {
+            state
+                .confirm_delete
+                .as_ref()
+                .and_then(|d| delete_dialog(state, d))
+        });
+    ui::with_modal(
+        ui::sheet(
+            ui::view_head_with_intro("Rules", INTRO, vec![]),
+            ui::scroll(column(body).spacing(GAP).width(Length::Fill))
+                .height(Length::Fill)
+                .into(),
+        ),
+        dialog,
     )
+}
+
+/// A card of the Rules screen, as the web's `.rl-card`: its head (title and actions), then its body.
+fn panel<'a>(head: Element<'a, Msg>, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    container(column![head, body].spacing(12).width(Length::Fill))
+        .padding(Padding::from(16.0))
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
+}
+
+/// A card head: its title, and its action on the right when it has one.
+fn panel_head<'a>(title: &str, action: Option<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = vec![
+        ui::card_title(title).into(),
+        Space::new().width(Length::Fill).into(),
+    ];
+    if let Some(a) = action {
+        parts.push(a);
+    }
+    row(parts).spacing(12).align_y(Alignment::Center).into()
 }
 
 /// The banner while any constitutional law is switched off, with a link to each one.
@@ -727,6 +856,16 @@ fn constitution_banner<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
 
 /// The switch-off dialog of a constitutional law: what it protects, a reason, and its id typed in.
 /// The switch stays disabled until both are given.
+/// The field of a dialog: its label, the input, and a hint under it when there is one.
+fn dialog_field<'a>(title: &str, input: Element<'a, Msg>, hint: &str) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = vec![ui::label(title).into(), input];
+    if !hint.is_empty() {
+        parts.push(ui::faint(hint.to_string()).into());
+    }
+    column(parts).spacing(6).into()
+}
+
+/// The web's dialog for switching off a constitutional law: what it protects, a reason, and its id typed in.
 fn switch_off_dialog<'a>(state: &'a State, dialog: &'a SwitchOff) -> Option<Element<'a, Msg>> {
     let law = state.laws.iter().find(|l| l.id == dialog.id)?;
     let reason = state.reasons.get(&law.id).map(String::as_str).unwrap_or("");
@@ -739,53 +878,105 @@ fn switch_off_dialog<'a>(state: &'a State, dialog: &'a SwitchOff) -> Option<Elem
         body.push(ui::faint(law.rationale.clone()).into());
     }
     body.push(
-        ui::faint("While it is off, agents may do what it forbids. The change is recorded with the time, and this screen flags it until the law is switched back on.").into(),
+        ui::prose("While it is off, agents may do what it forbids. The change is recorded with the time, and this screen flags it until the law is switched back on.").into(),
     );
     let reason_id = law.id.clone();
-    body.push(
-        column![
-            ui::label("Reason (required)"),
-            text_input("Why this law is off", reason)
-                .on_input(move |t| Msg::Reason(reason_id.clone(), t))
-                .padding([7, 10])
-                .size(13.0)
-                .width(Length::Fill)
-                .style(crate::theme::input),
-        ]
-        .spacing(6)
-        .into(),
-    );
-    body.push(
-        column![
-            ui::label(&format!("Type {} to confirm", law.id)),
-            text_input(&law.id, &dialog.typed)
-                .on_input(Msg::TypeConfirm)
-                .padding([7, 10])
-                .size(13.0)
-                .width(Length::Fill)
-                .style(crate::theme::input),
-        ]
-        .spacing(6)
-        .into(),
-    );
-    body.push(
-        row![
-            Space::new().width(Length::Fill),
+    let reason_in: Element<'a, Msg> = text_input("Why this law is off", reason)
+        .on_input(move |t| Msg::Reason(reason_id.clone(), t))
+        .padding([7, 10])
+        .size(13.0)
+        .width(Length::Fill)
+        .style(crate::theme::input)
+        .into();
+    body.push(dialog_field("Reason (required)", reason_in, ""));
+    let typed_in: Element<'a, Msg> = text_input(&law.id, &dialog.typed)
+        .on_input(Msg::TypeConfirm)
+        .padding([7, 10])
+        .size(13.0)
+        .width(Length::Fill)
+        .style(crate::theme::input)
+        .into();
+    body.push(dialog_field(
+        "Type the law’s id to confirm",
+        typed_in,
+        &format!("Exactly {}, as written", law.id),
+    ));
+    Some(ui::modal(
+        &dialog.heading,
+        column(body).spacing(12).into(),
+        vec![
             ui::btn("Cancel", None, Kind::Ghost, Some(Msg::CancelSwitchOff)),
             ui::btn(
                 "Switch off constitutional law",
-                Some("ban"),
+                None,
                 Kind::Danger,
-                ready.then(|| Msg::SetOverride(law.id.clone(), true))
+                ready.then(|| Msg::SetOverride(law.id.clone(), true)),
             ),
+        ],
+        Msg::CancelSwitchOff,
+        480.0,
+    ))
+}
+
+/// The web's dialog for disabling a built-in statute: its reason, which the override keeps.
+fn disable_dialog<'a>(state: &'a State, dialog: &'a Named) -> Option<Element<'a, Msg>> {
+    let law = state.laws.iter().find(|l| l.id == dialog.id)?;
+    let reason = state.reasons.get(&law.id).map(String::as_str).unwrap_or("");
+    let ready = !state.busy && !reason.trim().is_empty();
+    let id = law.id.clone();
+    let reason_in: Element<'a, Msg> = text_input("Why this statute is off", reason)
+        .on_input(move |t| Msg::Reason(id.clone(), t))
+        .padding([7, 10])
+        .size(13.0)
+        .width(Length::Fill)
+        .style(crate::theme::input)
+        .into();
+    Some(ui::modal(
+        &dialog.heading,
+        column![
+            ui::faint(format!(
+                "{} stops applying until it is enabled again. The reason is kept with the override.",
+                law.id
+            )),
+            dialog_field("Reason (required)", reason_in, ""),
         ]
-        .spacing(8)
-        .align_y(Alignment::Center)
+        .spacing(12)
         .into(),
-    );
-    Some(ui::card(
-        &format!("Switch off \"{}\"?", law.title),
-        column(body).spacing(12).into(),
+        vec![
+            ui::btn("Cancel", None, Kind::Ghost, Some(Msg::CancelDisable)),
+            ui::btn(
+                "Disable statute",
+                None,
+                Kind::Danger,
+                ready.then(|| Msg::SetOverride(law.id.clone(), true)),
+            ),
+        ],
+        Msg::CancelDisable,
+        480.0,
+    ))
+}
+
+/// The web's dialog for deleting an owner rule: its laws stop applying, and it cannot be undone.
+fn delete_dialog<'a>(state: &'a State, dialog: &'a Named) -> Option<Element<'a, Msg>> {
+    let rule = state.rules.iter().find(|r| r.id == dialog.id)?;
+    Some(ui::modal(
+        &dialog.heading,
+        ui::prose(format!(
+            "Delete {} ({})? Its laws stop applying. This cannot be undone.",
+            rule.title, rule.id
+        ))
+        .into(),
+        vec![
+            ui::btn("Cancel", None, Kind::Ghost, Some(Msg::CancelDelete)),
+            ui::btn(
+                "Delete rule",
+                None,
+                Kind::Danger,
+                (!state.busy).then_some(Msg::DeleteRule),
+            ),
+        ],
+        Msg::CancelDelete,
+        480.0,
     ))
 }
 
@@ -877,7 +1068,6 @@ fn clear_editor(state: &mut State) {
     state.editing = None;
     state.title.clear();
     state.source = text_editor::Content::new();
-    state.confirm_delete = false;
     clear_verdict(state);
 }
 
@@ -975,6 +1165,7 @@ fn parse_rule(v: &Value) -> Rule {
         source: text_of(v, "source"),
         enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(false),
         updated_ms: int_of(v, "updated_ms"),
+        author: text_of(v, "author"),
     }
 }
 
@@ -1167,7 +1358,7 @@ fn severity_tone(s: &str) -> Tone {
 fn boxed(_: &Theme) -> container::Style {
     container::Style {
         border: Border {
-            color: RULE,
+            color: crate::theme::palette().rule,
             width: 1.0,
             radius: 0.0.into(),
         },
@@ -1177,9 +1368,9 @@ fn boxed(_: &Theme) -> container::Style {
 
 fn sheet_box(_: &Theme) -> container::Style {
     container::Style {
-        background: Some(SHEET.into()),
+        background: Some(crate::theme::palette().sheet.into()),
         border: Border {
-            color: RULE,
+            color: crate::theme::palette().rule,
             width: 1.0,
             radius: 0.0.into(),
         },
@@ -1188,103 +1379,49 @@ fn sheet_box(_: &Theme) -> container::Style {
 }
 
 /// A row that opens something: the selected one (and the one under the pointer) in the hover fill.
-fn pick_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_: &Theme, status: button::Status| {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        button::Style {
-            background: (selected || hovered)
-                .then_some(crate::theme::palette().hover)
-                .map(Into::into),
-            text_color: INK,
-            border: Border {
-                color: if selected { INK } else { RULE },
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        }
-    }
-}
-
 fn link_style(_: &Theme, _: button::Status) -> button::Style {
     button::Style {
-        text_color: INK,
+        text_color: crate::theme::palette().ink,
         ..Default::default()
     }
 }
 
 /// A mono text link to an agent or a law's source toggle.
 fn link<'a>(label: &str, msg: Msg) -> Element<'a, Msg> {
-    button(ui::sans(label.to_string(), 12.0, INK))
-        .padding([0, 0])
-        .style(link_style)
-        .on_press(msg)
-        .into()
-}
-
-/// A segmented control's segment (the web's `.rules-chip`): ink-filled when active.
-fn seg<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
-    let (color, bg) = if active {
-        (crate::theme::palette().paper, INK)
-    } else {
-        (INK_2, SHEET)
-    };
-    button(text(label.to_string()).font(SANS).size(13.0).color(color))
-        .padding([7, 14])
-        .style(move |_: &Theme, _| button::Style {
-            background: Some(bg.into()),
-            text_color: color,
-            ..Default::default()
-        })
-        .on_press(msg)
-        .into()
-}
-
-/// A tier tab (the web's `tabs`): mono caps, the active one ink with a signal underline.
-fn tab<'a>(label: &str, active: bool, msg: Msg) -> Element<'a, Msg> {
-    let color = if active { INK } else { INK_3 };
-    let underline = if active { SIGNAL } else { Color::TRANSPARENT };
-    let face = button(
-        text(label.to_string())
-            .font(SANS_BOLD)
-            .size(12.0)
-            .color(color),
-    )
-    .padding([8, 12])
-    .style(move |_: &Theme, _| button::Style {
-        text_color: color,
-        ..Default::default()
-    })
-    .on_press(msg);
-    column![
-        face,
-        container(Space::new().height(2.0))
-            .width(Length::Fill)
-            .style(move |_: &Theme| container::Style {
-                background: Some(underline.into()),
-                ..Default::default()
-            }),
-    ]
+    button(ui::sans(
+        label.to_string(),
+        12.0,
+        crate::theme::palette().ink,
+    ))
+    .padding([0, 0])
+    .style(link_style)
+    .on_press(msg)
     .into()
 }
 
 fn stat_cell<'a>(label: &'static str, value: String) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
     container(
         column![
-            text(label.to_string()).font(SANS).size(12.0).color(INK_3),
-            text(value).font(SANS_SEMIBOLD).size(26.0).color(INK),
+            ui::label(label),
+            text(value).font(SANS_SEMIBOLD).size(24.0).color(p.ink),
         ]
         .spacing(4),
     )
     .padding(Padding {
         top: 14.0,
-        right: 18.0,
+        right: 16.0,
         bottom: 14.0,
-        left: 18.0,
+        left: 16.0,
     })
     .width(Length::FillPortion(1))
     .style(|_: &Theme| container::Style {
-        background: Some(SHEET.into()),
+        background: Some(crate::theme::palette().raised.into()),
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: crate::theme::skin().radius_lg.into(),
+        },
         ..Default::default()
     })
     .into()
@@ -1301,26 +1438,15 @@ fn stats<'a>(state: &State, now: i64) -> Element<'a, Msg> {
     } else {
         n30.to_string()
     };
-    // The rule colour shows through the 1px gaps between the cells: the dividers.
-    container(
-        row![
-            stat_cell("Laws", figure(state.laws.len().to_string())),
-            stat_cell("Allows", figure((state.laws.len() - forbids).to_string())),
-            stat_cell("Forbids", figure(forbids.to_string())),
-            stat_cell("Infractions, 30 days", figure(n30_text)),
-        ]
-        .spacing(1),
-    )
+    // The web's `.rl-strip`: four stat cards in a row.
+    row![
+        stat_cell("Laws", figure(state.laws.len().to_string())),
+        stat_cell("Allows", figure((state.laws.len() - forbids).to_string())),
+        stat_cell("Forbids", figure(forbids.to_string())),
+        stat_cell("Infractions, 30 days", figure(n30_text)),
+    ]
+    .spacing(GAP)
     .width(Length::Fill)
-    .style(|_: &Theme| container::Style {
-        background: Some(RULE.into()),
-        border: Border {
-            color: RULE,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    })
     .into()
 }
 
@@ -1344,55 +1470,37 @@ fn toolbar<'a>(state: &'a State) -> Element<'a, Msg> {
         .iter()
         .find(|o| o.value == state.severity)
         .cloned();
-    let severity = column![
-        ui::label("Severity"),
-        pick_list(sev_options, selected, |c: SevChoice| Msg::Severity(c.value)),
+    let severity = pick_list(sev_options, selected, |c: SevChoice| Msg::Severity(c.value))
+        .style(crate::theme::pick_list);
+    let search_row = row![search, severity]
+        .spacing(12)
+        .align_y(Alignment::Center);
+
+    // The web's chips (the effect) and the tier tabs, on one row.
+    let effects = ui::seg(
+        &[
+            (Effect::All, "All"),
+            (Effect::Permit, "Allows"),
+            (Effect::Forbid, "Forbids"),
+        ],
+        state.effect,
+        Msg::Effect,
+    );
+    let mut tier_options: Vec<(Option<&'static str>, &'static str)> = vec![(None, "All")];
+    tier_options.extend(
+        TIERS
+            .iter()
+            .take(4)
+            .map(|&(key, label, _)| (Some(key), label)),
+    );
+    let tiers = ui::tabs(&tier_options, state.tier, Msg::Tier);
+
+    column![
+        search_row,
+        row![effects, tiers].spacing(16).align_y(Alignment::Center),
     ]
-    .spacing(6);
-    let search_row = row![search, severity].spacing(14).align_y(Alignment::End);
-
-    let effects: Vec<Element<'a, Msg>> = [
-        (Effect::All, "All"),
-        (Effect::Permit, "Allows"),
-        (Effect::Forbid, "Forbids"),
-    ]
-    .into_iter()
-    .map(|(e, label)| seg(label, state.effect == e, Msg::Effect(e)))
-    .collect();
-    // The ink shows through the 1px gaps between the segments: their dividers.
-    let segmented = container(row(effects).spacing(1)).style(|_: &Theme| container::Style {
-        background: Some(INK.into()),
-        border: Border {
-            color: INK,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    });
-
-    let mut tabs: Vec<Element<'a, Msg>> = vec![tab("All", state.tier.is_none(), Msg::Tier(None))];
-    for &(key, label, _) in TIERS.iter().take(4) {
-        tabs.push(tab(label, state.tier == Some(key), Msg::Tier(Some(key))));
-    }
-
-    container(
-        column![
-            ui::faint("The filters apply to the built-in statutes."),
-            search_row,
-            row![segmented, row(tabs).spacing(4)]
-                .spacing(18)
-                .align_y(Alignment::Center),
-        ]
-        .spacing(14),
-    )
-    .padding(Padding {
-        top: 16.0,
-        right: 18.0,
-        bottom: 16.0,
-        left: 18.0,
-    })
+    .spacing(12)
     .width(Length::Fill)
-    .style(sheet_box)
     .into()
 }
 
@@ -1446,27 +1554,26 @@ fn statutes<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
 fn group_head<'a>(label: &'static str, desc: &'static str, n: usize) -> Element<'a, Msg> {
     let head = row![
         text(label.to_string())
-            .font(SANS_BOLD)
-            .size(20.0)
-            .color(INK),
-        text(n.to_string()).font(SANS).size(12.0).color(INK_3),
+            .font(SANS_SEMIBOLD)
+            .size(15.0)
+            .color(crate::theme::palette().ink),
+        text(n.to_string())
+            .font(SANS)
+            .size(13.0)
+            .color(crate::theme::palette().ink_3),
     ]
-    .spacing(10)
+    .spacing(8)
     .align_y(Alignment::Center);
-    let mut col = column![head].spacing(6);
+    let mut col = column![head].spacing(4);
     if !desc.is_empty() {
-        col = col.push(text(desc).font(SANS).size(14.0).color(INK_2));
+        col = col.push(
+            text(desc)
+                .font(SANS)
+                .size(13.0)
+                .color(crate::theme::palette().ink_2),
+        );
     }
-    col.push(Space::new().height(8.0))
-        .push(
-            container(Space::new().height(1.0))
-                .width(Length::Fill)
-                .style(|_: &Theme| container::Style {
-                    background: Some(INK.into()),
-                    ..Default::default()
-                }),
-        )
-        .into()
+    col.into()
 }
 
 fn labelled<'a>(name: &str, value: &str) -> Element<'a, Msg> {
@@ -1474,21 +1581,25 @@ fn labelled<'a>(name: &str, value: &str) -> Element<'a, Msg> {
         text(format!("{name}: "))
             .font(SANS_SEMIBOLD)
             .size(15.0)
-            .color(INK),
+            .color(crate::theme::palette().ink),
         text(value.to_string())
             .font(SANS)
             .size(15.0)
-            .color(INK_2)
+            .color(crate::theme::palette().ink_2)
             .width(Length::Fill),
     ]
     .into()
 }
 
 fn op_tag<'a>(op: &str) -> Element<'a, Msg> {
-    container(ui::sans(op.to_string(), 11.5, INK_2))
-        .padding([2, 6])
-        .style(boxed)
-        .into()
+    container(ui::sans(
+        op.to_string(),
+        11.5,
+        crate::theme::palette().ink_2,
+    ))
+    .padding([2, 6])
+    .style(boxed)
+    .into()
 }
 
 fn applies<'a>(l: &Law) -> Element<'a, Msg> {
@@ -1497,7 +1608,8 @@ fn applies<'a>(l: &Law) -> Element<'a, Msg> {
         or(&l.principal, "any principal"),
         or(&l.resource, "any resource")
     );
-    let mut col: Vec<Element<'a, Msg>> = vec![ui::sans(scope, 12.0, INK).into()];
+    let mut col: Vec<Element<'a, Msg>> =
+        vec![ui::sans(scope, 12.0, crate::theme::palette().ink).into()];
     if !l.ops.is_empty() {
         let tags: Vec<Element<'a, Msg>> = l.ops.iter().map(|o| op_tag(o)).collect();
         col.push(row(tags).spacing(6).into());
@@ -1506,7 +1618,7 @@ fn applies<'a>(l: &Law) -> Element<'a, Msg> {
         text("Applies to")
             .font(SANS)
             .size(12.0)
-            .color(INK_3)
+            .color(crate::theme::palette().ink_3)
             .width(Length::Fixed(96.0)),
         column(col).spacing(6).width(Length::Fill),
     ]
@@ -1557,10 +1669,14 @@ fn source_block<'a>(l: &Law, open: bool) -> Element<'a, Msg> {
         toggle,
         ui::faint(format!("File: {}", or(&l.file, "—"))),
         conds,
-        container(ui::sans(or(&l.source, "—"), 12.0, INK))
-            .padding(10)
-            .width(Length::Fill)
-            .style(sheet_box),
+        container(ui::sans(
+            or(&l.source, "—"),
+            12.0,
+            crate::theme::palette().ink
+        ))
+        .padding(10)
+        .width(Length::Fill)
+        .style(sheet_box),
     ]
     .spacing(10)
     .into()
@@ -1591,22 +1707,19 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
         tags.push(ui::badge("Switched off", Tone::Warn));
     }
     let head = row![
-        column![
-            text(l.title.clone())
-                .font(SANS_SEMIBOLD)
-                .size(18.0)
-                .color(INK),
-            ui::mono(l.id.clone(), 12.0, INK_3),
-        ]
-        .spacing(4)
-        .width(Length::Fill),
-        row(tags).spacing(6).align_y(Alignment::Center),
+        text(l.title.clone())
+            .font(SANS_SEMIBOLD)
+            .size(16.0)
+            .color(crate::theme::palette().ink)
+            .width(Length::Fill),
+        ui::mono(l.id.clone(), 12.0, crate::theme::palette().ink_3),
     ]
     .spacing(12)
     .align_y(Alignment::Center);
 
     let mut body: Vec<Element<'a, Msg>> = vec![
         head.into(),
+        row(tags).spacing(6).align_y(Alignment::Center).into(),
         ui::prose(l.statement.clone()).into(),
         labelled("In short", &l.explanation),
     ];
@@ -1617,98 +1730,77 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
     if l.refusals > 0 {
         body.push(usage(l, now));
     }
+    body.push(recent_refusals(state, l, now));
     body.push(override_control(state, l, now));
     body.push(source_block(l, open));
 
-    // The web's 4px left border: the accent shows in the strip left of the card.
-    let accent = if forbid {
-        crate::theme::palette().crit
-    } else {
-        crate::theme::palette().ok
-    };
-    let card = container(column(body).spacing(12))
-        .padding(Padding {
-            top: 20.0,
-            right: 22.0,
-            bottom: 18.0,
-            left: 22.0,
-        })
+    // The web's `.rl-law` card: a raised card, ruled, with its parts a row apart.
+    container(column(body).spacing(8).width(Length::Fill))
+        .padding(Padding::from(16.0))
         .width(Length::Fill)
-        .style(sheet_box);
-    container(card)
-        .padding(Padding {
-            top: 0.0,
-            right: 0.0,
-            bottom: 0.0,
-            left: 4.0,
-        })
-        .width(Length::Fill)
-        .style(move |_: &Theme| container::Style {
-            background: Some(accent.into()),
-            ..Default::default()
-        })
+        .style(ui::card_style)
         .into()
+}
+
+/// The law's recent refusals, as the web's expander: its count, and the list once it is the selected law.
+fn recent_refusals<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, Msg> {
+    let open = state.selected_law.as_deref() == Some(l.id.as_str());
+    let toggle = ui::link(
+        &format!("Recent refusals ({})", l.refusals),
+        Msg::SelectLaw(l.id.clone()),
+        false,
+    );
+    if open {
+        column![
+            toggle,
+            container(violation_list(state, now)).padding(Padding {
+                top: 0.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 16.0,
+            }),
+        ]
+        .spacing(8)
+        .into()
+    } else {
+        toggle
+    }
 }
 
 /// The switch for a statute: a reason field and "Switch off" while it is on; who switched it off,
 /// why, and "Switch on" while it is off.
 fn override_control<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, Msg> {
     match &l.overridden {
-        Some(o) => row![
+        // The web's override line: who turned the statute off, when and why, and Enable.
+        Some(o) => column![
             ui::faint(format!(
-                "Switched off by {} {}: {}",
+                "Disabled by {}, {}: {}",
                 or(&o.disabled_by, "the owner"),
                 ago(o.at_ms, now),
-                o.reason
-            ))
-            .width(Length::Fill),
-            ui::btn(
-                "Switch on",
+                or(&o.reason, "no reason given")
+            )),
+            ui::btn_sm(
+                "Enable",
                 None,
                 Kind::Secondary,
                 (!state.busy).then(|| Msg::SetOverride(l.id.clone(), false))
             ),
         ]
-        .spacing(12)
-        .align_y(Alignment::Center)
+        .spacing(8)
         .into(),
-        // A constitutional law goes off through its dialog: the reason and the typed id are asked there.
-        None if l.tier == CONSTITUTION => row![
-            ui::faint(
-                "Constitutional: switching it off asks for a reason and for its id to be typed."
-            )
-            .width(Length::Fill),
-            ui::btn(
-                "Switch off",
+        // Both kinds go off from a dialog: the reason, and for a constitutional law its id typed in.
+        None => {
+            let msg = if l.tier == CONSTITUTION {
+                Msg::AskSwitchOff(l.id.clone())
+            } else {
+                Msg::AskDisable(l.id.clone())
+            };
+            ui::btn_sm(
+                "Disable",
                 None,
                 Kind::Secondary,
-                (!state.busy).then(|| Msg::AskSwitchOff(l.id.clone()))
-            ),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .into(),
-        None => {
-            let reason = state.reasons.get(&l.id).map(String::as_str).unwrap_or("");
-            let id = l.id.clone();
-            let ready = !reason.trim().is_empty() && !state.busy;
-            row![
-                text_input("Reason for switching this statute off", reason)
-                    .on_input(move |t| Msg::Reason(id.clone(), t))
-                    .padding([7, 10])
-                    .size(13.0)
-                    .width(Length::Fill)
-                    .style(crate::theme::input),
-                ui::btn(
-                    "Switch off",
-                    None,
-                    Kind::Secondary,
-                    ready.then(|| Msg::SetOverride(l.id.clone(), true))
-                ),
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center)
-            .into()
+                (!state.busy).then_some(msg),
+            )
         }
     }
 }
@@ -1726,96 +1818,140 @@ fn divided<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
 }
 
 fn owner_rules<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
-    let list: Element<'a, Msg> = if state.rules.is_empty() {
-        ui::faint("No rules of your own yet. Write one below, check it, then save it.").into()
-    } else {
-        divided(
-            state
-                .rules
-                .iter()
-                .map(|r| rule_row(state, r, now))
-                .collect(),
-        )
-    };
-    column![
-        row![
-            ui::faint("Your own rules are checked as they are written, and apply like the built-in statutes once enabled."),
-            Space::new().width(Length::Fill),
-            ui::btn("New rule", None, Kind::Secondary, Some(Msg::NewRule)),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-        list,
-        ui::hairline::<Msg>(),
-        editor(state, now),
-    ]
-    .spacing(16)
-    .into()
+    let mut col: Vec<Element<'a, Msg>> = vec![ui::faint(OWNER_DESC).into()];
+    // The editor opens above the list (New rule, or Edit on a rule), as the web's editor slot does.
+    if state.editor_open {
+        col.push(editor(state, now));
+    }
+    if state.rules.is_empty() {
+        col.push(ui::faint("No owner rules yet. Write one with New rule.").into());
+    }
+    col.extend(state.rules.iter().map(|r| rule_card(state, r, now)));
+    column(col).spacing(12).width(Length::Fill).into()
 }
 
-fn rule_row<'a>(state: &'a State, r: &'a Rule, now: i64) -> Element<'a, Msg> {
-    let declared: Vec<&str> = state
-        .laws
-        .iter()
-        .filter(|l| l.rule_id == r.id)
-        .map(|l| l.id.as_str())
-        .collect();
-    let declares = if declared.is_empty() {
-        "No laws declared".to_string()
+/// One owner rule, as the web's rule card: its title and id, its state and law count, when it was updated and
+/// by whom, its actions, and the laws it declares.
+fn rule_card<'a>(state: &'a State, r: &'a Rule, now: i64) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let declared: Vec<&'a Law> = state.laws.iter().filter(|l| l.rule_id == r.id).collect();
+    let count = if declared.len() == 1 {
+        "1 law".to_string()
     } else {
-        format!("Declares {}", declared.join(", "))
+        format!("{} laws", declared.len())
     };
     let state_tag = if r.enabled {
         ui::badge("Enabled", Tone::Ok)
     } else {
         ui::badge("Disabled", Tone::Muted)
     };
-    let body = column![
-        row![
-            text(r.title.clone())
-                .font(SANS_SEMIBOLD)
-                .size(16.0)
-                .color(INK),
-            state_tag
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-        row![
-            ui::mono(r.id.clone(), 12.0, INK_3),
-            ui::faint(declares),
-            ui::faint(format!("Updated {}", ago(r.updated_ms, now))),
-        ]
-        .spacing(14)
-        .align_y(Alignment::Center),
+    let head = row![
+        text(r.title.clone())
+            .font(SANS_SEMIBOLD)
+            .size(16.0)
+            .color(p.ink)
+            .width(Length::Fill),
+        ui::mono(r.id.clone(), 12.0, p.ink_3),
     ]
-    .spacing(6);
-    let selected = state.editing.as_deref() == Some(r.id.as_str());
-    let row_press: Element<'a, Msg> = button(body)
-        .on_press(Msg::SelectRule(r.id.clone()))
-        .width(Length::Fill)
-        .padding([10, 12])
-        .style(pick_style(selected))
-        .into();
-    // Every row here is the owner's own rule (`state.rules`), so each one gets the web's explicit Edit button.
-    row![
-        row_press,
+    .spacing(12)
+    .align_y(Alignment::Center);
+    let by = if r.author.is_empty() {
+        String::new()
+    } else {
+        format!(" by {}", r.author)
+    };
+    let acts = row![
         ui::btn_sm(
             "Edit",
-            Some("edit"),
-            Kind::Ghost,
+            None,
+            Kind::Secondary,
             Some(Msg::SelectRule(r.id.clone()))
-        )
+        ),
+        ui::btn_sm(
+            if r.enabled { "Disable" } else { "Enable" },
+            None,
+            Kind::Secondary,
+            (!state.busy).then(|| Msg::SetRuleEnabled(r.id.clone(), !r.enabled)),
+        ),
+        ui::btn_sm(
+            "Delete",
+            None,
+            Kind::Danger,
+            Some(Msg::AskDelete(r.id.clone()))
+        ),
     ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .into()
+    .spacing(8);
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        head.into(),
+        row![state_tag, ui::badge(&count, Tone::Muted)]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into(),
+        ui::faint(format!("Updated {}{}", ago(r.updated_ms, now), by)).into(),
+        acts.into(),
+    ];
+    if declared.is_empty() {
+        body.push(ui::faint("Declares no laws.").into());
+    } else {
+        body.extend(declared.into_iter().map(declared_law));
+    }
+    container(column(body).spacing(8).width(Length::Fill))
+        .padding(Padding::from(16.0))
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
+}
+
+/// A law a rule declares (the web's law row inside a rule): its title and id, its tags, and what it says.
+fn declared_law<'a>(l: &'a Law) -> Element<'a, Msg> {
+    let forbid = l.effect == "forbid";
+    let mut tags: Vec<Element<'a, Msg>> = vec![
+        ui::badge(
+            if forbid { "Forbids" } else { "Allows" },
+            if forbid { Tone::Danger } else { Tone::Ok },
+        ),
+        ui::badge(
+            &format!("Severity: {}", cap(&l.severity)),
+            severity_tone(&l.severity),
+        ),
+        ui::badge(
+            &enforcement_label(&l.enforcement),
+            if l.enforcement == "preventive" {
+                Tone::Info
+            } else {
+                Tone::Muted
+            },
+        ),
+    ];
+    if !l.enabled {
+        tags.push(ui::badge("Rule disabled", Tone::Warn));
+    }
+    let head = row![
+        text(l.title.clone())
+            .font(SANS_SEMIBOLD)
+            .size(15.0)
+            .color(crate::theme::palette().ink)
+            .width(Length::Fill),
+        ui::mono(l.id.clone(), 12.0, crate::theme::palette().ink_3),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        head.into(),
+        row(tags).spacing(6).align_y(Alignment::Center).into(),
+        ui::prose(l.statement.clone()).into(),
+    ];
+    if !l.explanation.is_empty() {
+        body.push(labelled("In short", &l.explanation));
+    }
+    if !l.rationale.is_empty() {
+        body.push(labelled("Why", &l.rationale));
+    }
+    body.push(applies(l));
+    column(body).spacing(6).width(Length::Fill).into()
 }
 
 fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
-    let current = state
-        .editing
-        .as_deref()
-        .and_then(|id| state.rules.iter().find(|r| r.id == id));
     let heading = match &state.editing {
         Some(id) => format!("Editing {id}"),
         None => "New rule".to_string(),
@@ -1832,6 +1968,7 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
     let source = column![
         ui::label("Source (JHRL)"),
         text_editor(&state.source)
+            .style(crate::theme::editor)
             .placeholder("law \"R-100\" \"Title\" { ... }")
             .font(SANS)
             .size(13.0)
@@ -1842,9 +1979,9 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
     let reference = container(
         column![
             ui::label("JHRL reference"),
-            ui::sans(JHRL_SHAPE, 12.0, INK_2),
+            ui::sans(JHRL_SHAPE, 12.0, crate::theme::palette().ink_2),
             ui::label("Example"),
-            ui::sans(JHRL_EXAMPLE, 12.0, INK_2),
+            ui::sans(JHRL_EXAMPLE, 12.0, crate::theme::palette().ink_2),
         ]
         .spacing(8),
     )
@@ -1852,7 +1989,7 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
     .width(Length::Fill)
     .style(sheet_box);
 
-    let mut actions: Vec<Element<'a, Msg>> = vec![
+    let actions: Vec<Element<'a, Msg>> = vec![
         ui::btn(
             "Check",
             None,
@@ -1865,49 +2002,14 @@ fn editor<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
             Kind::Primary,
             (!state.busy).then_some(Msg::Save),
         ),
+        ui::btn("Cancel", None, Kind::Ghost, Some(Msg::CloseEditor)),
     ];
-    if let Some(rule) = current {
-        let (label, enable) = if rule.enabled {
-            ("Disable rule", false)
-        } else {
-            ("Enable rule", true)
-        };
-        actions.push(ui::btn(
-            label,
-            None,
-            Kind::Secondary,
-            (!state.busy).then_some(Msg::SetRuleEnabled(enable)),
-        ));
-    }
-    if state.editing.is_some() {
-        if state.confirm_delete {
-            actions.push(ui::btn(
-                "Cancel",
-                None,
-                Kind::Ghost,
-                Some(Msg::ArmDelete(false)),
-            ));
-            actions.push(ui::btn(
-                "Confirm delete",
-                None,
-                Kind::Danger,
-                (!state.busy).then_some(Msg::DeleteRule),
-            ));
-        } else {
-            actions.push(ui::btn(
-                "Delete",
-                None,
-                Kind::Ghost,
-                Some(Msg::ArmDelete(true)),
-            ));
-        }
-    }
 
     let mut items: Vec<Element<'a, Msg>> = vec![
         text(heading)
             .font(SANS_SEMIBOLD)
             .size(15.0)
-            .color(INK)
+            .color(crate::theme::palette().ink)
             .into(),
         title.into(),
         source.into(),
@@ -1966,7 +2068,7 @@ fn refusal_row<'a>(w: &Refusal, now: i64) -> Element<'a, Msg> {
         format!("Agent {} as {}", w.cid, w.role)
     };
     column![
-        ui::sans(who, 12.0, INK_2),
+        ui::sans(who, 12.0, crate::theme::palette().ink_2),
         ui::faint(format!(
             "{} · {} · {}",
             or(&w.tool, "a tool"),
@@ -1976,64 +2078,6 @@ fn refusal_row<'a>(w: &Refusal, now: i64) -> Element<'a, Msg> {
     ]
     .spacing(2)
     .into()
-}
-
-/// The violations by law (each law's refusals, and its rows when open), beside the latest infractions.
-fn violations<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
-    let list: Element<'a, Msg> = if state.laws.is_empty() {
-        ui::faint("No laws yet.").into()
-    } else {
-        column![
-            ui::faint("Select a law to see its recent violations."),
-            divided(state.laws.iter().map(|l| law_row(state, l, now)).collect()),
-        ]
-        .spacing(14)
-        .into()
-    };
-    row![
-        container(list).width(Length::Fill),
-        container(infractions(state, now)).width(Length::Fixed(340.0)),
-    ]
-    .spacing(28)
-    .into()
-}
-
-fn law_row<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, Msg> {
-    let selected = state.selected_law.as_deref() == Some(l.id.as_str());
-    let head = button(
-        column![
-            text(l.title.clone())
-                .font(SANS_SEMIBOLD)
-                .size(15.0)
-                .color(INK),
-            row![
-                ui::mono(l.id.clone(), 12.0, INK_3),
-                ui::faint(format!("Refused {} {}", l.refusals, times(l.refusals))),
-            ]
-            .spacing(14)
-            .align_y(Alignment::Center),
-        ]
-        .spacing(6),
-    )
-    .on_press(Msg::SelectLaw(l.id.clone()))
-    .width(Length::Fill)
-    .padding([10, 12])
-    .style(pick_style(selected));
-    if selected {
-        column![
-            head,
-            container(violation_list(state, now)).padding(Padding {
-                top: 0.0,
-                right: 0.0,
-                bottom: 0.0,
-                left: 16.0
-            })
-        ]
-        .spacing(8)
-        .into()
-    } else {
-        head.into()
-    }
 }
 
 fn violation_list<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
@@ -2055,17 +2099,22 @@ fn violation_row<'a>(v: &Violation, now: i64) -> Element<'a, Msg> {
     };
     let mut meta: Vec<Element<'a, Msg>> = Vec::new();
     if !v.tool.is_empty() {
-        meta.push(ui::mono(v.tool.clone(), 12.0, INK_3).into());
+        meta.push(ui::mono(v.tool.clone(), 12.0, crate::theme::palette().ink_3).into());
     }
     if !v.detail.is_empty() {
         meta.push(ui::faint(v.detail.clone()).into());
     }
     meta.push(ui::faint(ago(v.at_ms, now)).into());
     column![
-        button(text(agent).font(SANS).size(14.0).color(INK))
-            .padding([0, 0])
-            .style(link_style)
-            .on_press(Msg::Go(Id::Agent(v.cid))),
+        button(
+            text(agent)
+                .font(SANS)
+                .size(14.0)
+                .color(crate::theme::palette().ink)
+        )
+        .padding([0, 0])
+        .style(link_style)
+        .on_press(Msg::Go(Id::Agent(v.cid))),
         row(meta).spacing(10).align_y(Alignment::Center),
     ]
     .spacing(4)
@@ -2089,7 +2138,7 @@ fn infractions<'a>(state: &State, now: i64) -> Element<'a, Msg> {
                         container(Space::new().height(1.0))
                             .width(Length::Fill)
                             .style(|_: &Theme| container::Style {
-                                background: Some(RULE_FAINT.into()),
+                                background: Some(crate::theme::palette().rule_faint.into()),
                                 ..Default::default()
                             }),
                     );
@@ -2099,23 +2148,7 @@ fn infractions<'a>(state: &State, now: i64) -> Element<'a, Msg> {
             rows.into()
         }
     };
-    container(column![
-        text("Latest infractions")
-            .font(SANS_BOLD)
-            .size(16.0)
-            .color(INK),
-        Space::new().height(12.0),
-        body,
-    ])
-    .padding(Padding {
-        top: 16.0,
-        right: 18.0,
-        bottom: 16.0,
-        left: 18.0,
-    })
-    .width(Length::Fill)
-    .style(sheet_box)
-    .into()
+    body
 }
 
 fn infraction_row<'a>(i: &Infraction, now: i64) -> Element<'a, Msg> {
@@ -2131,14 +2164,14 @@ fn infraction_row<'a>(i: &Infraction, now: i64) -> Element<'a, Msg> {
     };
     let mut meta: Vec<Element<'a, Msg>> = Vec::new();
     if !i.tool.is_empty() {
-        meta.push(ui::mono(i.tool.clone(), 12.0, INK_3).into());
+        meta.push(ui::mono(i.tool.clone(), 12.0, crate::theme::palette().ink_3).into());
     }
     if !i.detail.is_empty() {
         meta.push(
             text(i.detail.clone())
                 .font(SANS)
                 .size(12.0)
-                .color(INK_3)
+                .color(crate::theme::palette().ink_3)
                 .into(),
         );
     }
@@ -2146,16 +2179,27 @@ fn infraction_row<'a>(i: &Infraction, now: i64) -> Element<'a, Msg> {
         text(ago(i.at_ms, now))
             .font(SANS)
             .size(12.0)
-            .color(INK_3)
+            .color(crate::theme::palette().ink_3)
             .into(),
     );
     let line = row![
-        button(text(agent).font(SANS).size(14.0).color(INK))
-            .padding(0.0)
-            .style(link_style)
-            .on_press(Msg::Go(Id::Agent(i.cid))),
-        text("violated").font(SANS).size(14.0).color(INK_2),
-        text(law).font(SANS).size(14.0).color(INK),
+        button(
+            text(agent)
+                .font(SANS)
+                .size(14.0)
+                .color(crate::theme::palette().ink)
+        )
+        .padding(0.0)
+        .style(link_style)
+        .on_press(Msg::Go(Id::Agent(i.cid))),
+        text("violated")
+            .font(SANS)
+            .size(14.0)
+            .color(crate::theme::palette().ink_2),
+        text(law)
+            .font(SANS)
+            .size(14.0)
+            .color(crate::theme::palette().ink),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -2170,11 +2214,12 @@ fn infraction_row<'a>(i: &Infraction, now: i64) -> Element<'a, Msg> {
         .into()
 }
 
-fn strict_permits<'a>(state: &'a State) -> Element<'a, Msg> {
-    column![
-        ui::seg(&[(true, "On"), (false, "Off")], state.strict, Msg::Strict),
-        ui::prose(STRICT_HELP),
-    ]
-    .spacing(12)
-    .into()
+/// The strict permits switch, in the card's head as the web's: its state as the label, off while an action runs.
+fn strict_switch<'a>(state: &'a State) -> Element<'a, Msg> {
+    let t = toggler(state.strict).label(if state.strict { "On" } else { "Off" });
+    if state.busy {
+        t.into()
+    } else {
+        t.on_toggle(Msg::Strict).into()
+    }
 }

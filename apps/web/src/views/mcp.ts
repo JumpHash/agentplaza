@@ -1,18 +1,18 @@
-// Setup > MCP: the MCP servers the hub runs for agents. A list of servers with their
-// status, and row actions: start or stop, logs, test, edit, delete. The Add and Edit
-// flows are the wizard (mcp-wizard.ts). Laid out like Vault's tables: a card with a
-// table that turns into stacked cards on narrow screens.
+// Settings > Connections > MCP: the MCP servers the hub runs for agents. A table of servers with their status and row
+// actions (start or stop, logs, test, edit, delete), the catalogue of presets, and the tab "This hub as a server". The
+// Add and Edit flows are the wizard (mcp-wizard.ts); the logs are a drawer (mcp-logs.ts). The table turns into stacked
+// rows on narrow screens (mcp.css is the prototype's settings-b.css).
 
-import '../styles/mcp.css';
+import '../styles/proto/settings-b.css';
 import { mcpApi, type McpPreset, type McpServerView, type McpTestResult, type McpToolRow } from '../api';
-import { ago, attempt, badge, button, clip, empty, modal, tabs, type Tone } from '../ui/components';
+import { ago, attempt, badge, card, clip, tabs, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
 import type { Cleanup } from './index';
 import { openLogsDrawer } from './mcp-logs';
 import { openWizard } from './mcp-wizard';
 import { mountHubTab } from './mcp-hub';
-import { STATUS_LABEL, STATUS_TONE, statusSummary, transportText } from './mcp-common';
+import { STATUS_LABEL, STATUS_TONE, btn, dialog, emptyBox, iconBtn, kv, pageHead, statusSummary, tbl, transportText } from './mcp-common';
 import { errorText } from './vault-common';
 
 const RISK_TONE: Record<string, Tone> = { read: 'ok', write: 'info', irreversible: 'danger' };
@@ -22,101 +22,34 @@ function annotationChips(a: unknown): HTMLElement[] {
   if (!a || typeof a !== 'object') return [];
   return Object.entries(a as Record<string, unknown>)
     .filter(([, v]) => v === true)
-    .map(([k]) => badge(k, 'muted'));
+    .map(([k]) => h('span.mcp-chip', { title: k }, k));
 }
 
-/**
- * The delete dialog. A server with a storage volume gets a box that also deletes the volume; the volume is kept
- * unless the box is ticked. `onConfirm` gets whether to purge.
- */
-function deleteDialog(s: McpServerView, onConfirm: (purge: boolean) => void): void {
-  const purgeBox = h('input', { type: 'checkbox' });
-  const close = modal(
-    `Delete ${s.name}`,
-    h(
-      'div.mcp-confirm',
-      null,
-      h('p', null, `This stops ${s.name} and removes it. Its vault secrets stay, but lose the mcp:${s.id} binding.`),
-      s.storage.volume
-        ? h(
-            'div',
-            null,
-            h('label.mcpw-check', null, purgeBox, h('span', null, 'Also delete its storage volume')),
-            h('p.mcp-muted', null, 'The volume keeps what the server stored between runs. It is deleted only when this is ticked.'),
-          )
-        : null,
-      h(
-        'div.mcp-actions',
-        null,
-        button('Cancel', () => close()),
-        button(
-          'Delete',
-          () => {
-            const purge = purgeBox.checked;
-            close();
-            onConfirm(purge);
-          },
-          { kind: 'danger' },
-        ),
-      ),
-    ),
-  );
-}
-
-/** A server's tools as the owner reads them: the name, its risk, whether the allow list offers it, and the description. */
-function toolsBody(rows: McpToolRow[] | undefined): HTMLElement {
-  if (!rows) return h('p.mcp-danger', null, 'The tools could not load.');
-  if (!rows.length) return h('p.mcp-muted', null, 'This server offers no tools.');
+/** One tool as the prototype draws it: its name and risk, the chips, and the description. `extra` follows the risk. */
+function toolRow(t: { name: string; risk: string; description?: string; annotations?: unknown }, extra: Node | null = null): HTMLElement {
   return h(
-    'ul.mcp-tools',
+    'div.mcp-tool',
     null,
-    rows.map((t) =>
-      h(
-        'li',
-        null,
-        h('strong', null, t.name.replace(/_/g, '_\u200b')),
-        h('span.mcp-chips', null, badge(t.risk, RISK_TONE[t.risk] ?? 'muted'), t.allowed ? null : badge('Not offered', 'muted')),
-        t.description ? h('span.mcp-muted', null, clip(t.description, 160)) : null,
-      ),
-    ),
+    h('div.mcp-row', null, h('code.mcp-tn', null, t.name), badge(t.risk, RISK_TONE[t.risk] ?? 'muted'), extra),
+    h('div.mcp-row', null, ...annotationChips(t.annotations)),
+    h('p.muted', null, clip(t.description ?? '', 160)),
   );
 }
 
-/** The test result for one server: the server's name, version and protocol, then the tools; or the error and stderr. */
-function testBody(r: McpTestResult | undefined): HTMLElement {
-  if (!r) return h('p.mcp-muted', null, 'The test could not run.');
+/** The test result for one server: the error and stderr, or the server's facts and its tools. */
+function testBody(r: McpTestResult | undefined): Node[] {
+  if (!r) return [h('p.mcp-danger', null, 'The test could not run.')];
   if (!r.ok) {
-    return h(
-      'div.mcp-test',
-      null,
-      h('p.mcp-danger', null, r.error ?? 'The server did not start.'),
-      r.stderr?.length ? h('pre.mcp-mono', null, r.stderr.map((l) => l.line).join('\n')) : null,
-    );
+    const err: (HTMLElement | null)[] = [h('p.mcp-danger', null, r.error ?? 'The server did not start.'), r.stderr?.length ? h('pre.mcp-pre.mono', null, r.stderr.map((l) => l.line).join('\n')) : null];
+    return err.filter((x): x is HTMLElement => x !== null);
   }
-  const info = r.server_info;
-  return h(
-    'div.mcp-test',
-    null,
-    info
-      ? h('dl.mcp-facts', null, h('dt', null, 'Server'), h('dd', null, info.name), h('dt', null, 'Version'), h('dd', null, info.version), h('dt', null, 'Protocol'), h('dd', null, info.protocol))
-      : null,
-    h('h3', null, `Tools (${r.tools?.length ?? 0})`),
-    r.tools?.length
-      ? h(
-          'ul.mcp-tools',
-          null,
-          r.tools.map((t) =>
-            h(
-              'li',
-              null,
-              h('strong', null, t.name.replace(/_/g, '_\u200b')),
-              h('span.mcp-chips', null, badge(t.risk, RISK_TONE[t.risk] ?? 'muted'), ...annotationChips(t.annotations)),
-              t.description ? h('span.mcp-muted', null, clip(t.description, 160)) : null,
-            ),
-          ),
-        )
-      : h('p.mcp-muted', null, 'This server offers no tools.'),
-  );
+  const tools = r.tools ?? [];
+  const out: (Node | null)[] = [
+    r.server_info ? kv([['Server', r.server_info.name], ['Version', r.server_info.version], ['Protocol', r.server_info.protocol]]) : null,
+    h('h4', null, `Tools (${tools.length})`),
+    ...(tools.length ? tools.map((t) => toolRow(t)) : [h('p.muted', null, 'This server offers no tools.')]),
+  ];
+  return out.filter((x): x is Node => x !== null);
 }
 
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
@@ -158,55 +91,75 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const openAdd = (presetId: string | null = null): void => openWizard(null, () => void reload(), presetId);
 
-  /** One server's tools, loaded when the dialog opens: the hub's own list, the same one the wizard's step 4 reads. */
+  /** The dialog that shows a server's tools: the hub's own list, the same one the wizard's step 4 reads. */
   const openTools = (s: McpServerView): void => {
-    const box = h('div.mcp-test', null, h('p.mcp-muted', null, 'Loading the tools'));
-    modal(`Tools of ${s.name}`, box);
-    void attempt(() => mcpApi.serverTools(s.id)).then((rows) => {
+    const box = h('div', null, h('p.muted', null, 'Loading the tools'));
+    const close = dialog(`Tools of ${s.name}`, box, [btn('Close', () => close(), { kind: 'ghost' })]);
+    void attempt(() => mcpApi.serverTools(s.id)).then((rows: McpToolRow[] | undefined) => {
       if (!alive) return;
       replace(box, toolsBody(rows));
     });
   };
 
-  const addButton = (): HTMLElement => button('Add server', () => openAdd(), { kind: 'primary', icon: 'plus' });
+  function toolsBody(rows: McpToolRow[] | undefined): Node[] | HTMLElement {
+    if (!rows) return h('p.mcp-danger', null, 'The tools could not load.');
+    if (!rows.length) return h('p.muted', null, 'This server offers no tools.');
+    return rows.map((t) => toolRow(t, t.allowed ? null : badge('Not offered', 'muted')));
+  }
+
+  function deleteDialog(s: McpServerView, onConfirm: (purge: boolean) => void): void {
+    const purgeBox = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    const bodyNodes: Node[] = [h('p', null, `This stops ${s.name} and removes it. Its vault secrets stay, but lose the mcp:${s.id} binding.`)];
+    if (s.storage?.volume) {
+      bodyNodes.push(h('label.check', null, purgeBox, h('span', null, 'Also delete its storage volume')));
+      bodyNodes.push(h('p.muted', null, 'The volume keeps what the server stored between runs. It is deleted only when this is ticked.'));
+    }
+    const close = dialog(
+      `Delete ${s.name}`,
+      bodyNodes,
+      [
+        btn('Cancel', () => close(), { kind: 'ghost' }),
+        btn(
+          'Delete',
+          () => {
+            const purge = purgeBox.checked;
+            close();
+            onConfirm(purge);
+          },
+          { kind: 'danger' },
+        ),
+      ],
+    );
+  }
+
+  const addButton = (): HTMLElement => btn('Add server', () => openAdd(), { kind: 'primary', icon: 'plus' });
 
   /** The hub's presets: each opens the wizard with that preset chosen; the custom button opens it empty. */
   const catalogueCard = (): HTMLElement =>
     h(
-      'div.card.mcp-catalogue',
+      'div.mcp-cat',
       null,
-      h('header.card-head', null, h('h2', null, 'Catalogue')),
-      h(
-        'div.card-body',
-        null,
-        button('Custom server', () => openAdd(), { kind: 'ghost' }),
+      card(
+        'Catalogue',
         catalog.length
-          ? h(
-              'ul.mcp-presets',
-              null,
-              catalog.map((p) =>
-                h(
-                  'li',
-                  null,
-                  h(
-                    'div.mcp-preset-info',
-                    null,
-                    h('strong.mcp-mono', null, p.name),
-                    h('p', null, p.description),
-                    h('span.mcp-muted', null, [p.transport, p.note].filter(Boolean).join(' · ')),
-                  ),
-                  button('Add', () => openAdd(p.id), { kind: 'ghost', size: 'sm' }),
-                ),
+          ? catalog.map((p) =>
+              h(
+                'div.mcp-cat-row',
+                null,
+                h('div', null, h('strong.mono', null, p.name), h('p.muted', null, p.description), h('p.muted', null, [p.transport, p.note].filter(Boolean).join(' · '))),
+                btn('Add', () => openAdd(p.id), { kind: 'ghost', sm: true }),
               ),
             )
-          : empty('terminal', 'No presets', 'The catalogue is empty on this hub.'),
+          : emptyBox('terminal', 'No presets', 'The catalogue is empty on this hub.'),
+        { actions: [btn('Custom server', () => openAdd(), { kind: 'ghost' })] },
       ),
     );
 
   // The two tabs: the servers, and this hub as a server. Leaving the hub tab empties its page, token included.
   let tab: 'servers' | 'hub' = 'servers';
   let hubCleanup: Cleanup | null = null;
-  const hubBody = h('div.mcp-hub-host');
+  /** The body under the tabs: the servers, or the hub's own cards (mountHubTab draws into it). */
+  const bodyEl = h('div.mcp-body', null);
   const tabBar = (): HTMLElement =>
     tabs(
       [
@@ -223,105 +176,82 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       hubCleanup = null;
     }
     tab = next;
-    if (next === 'hub') hubCleanup = mountHubTab(hubBody);
     draw();
+    if (next === 'hub') hubCleanup = mountHubTab(bodyEl);
   };
 
   function actionsFor(s: McpServerView): HTMLElement {
-    const running = s.status === 'running';
     return h(
-      'div.mcp-row-actions',
+      'div.mcp-row',
       null,
-      running
-        ? button('Stop', () => act(() => mcpApi.stopServer(s.id), `${s.name} stopped`), { kind: 'ghost', size: 'sm', icon: 'stop', title: `Stop ${s.name}` })
-        : button('Start', () => act(() => mcpApi.startServer(s.id), `${s.name} started`), { kind: 'ghost', size: 'sm', icon: 'play', title: `Start ${s.name}` }),
-      button('', () => { openLogsDrawer(s); }, { kind: 'ghost', size: 'sm', icon: 'file', title: `Logs for ${s.name}` }),
-      button('', () => runTest(s), { kind: 'ghost', size: 'sm', icon: 'check', title: `Test ${s.name}` }),
-      button('', () => openWizard(s, () => void reload()), { kind: 'ghost', size: 'sm', icon: 'edit', title: `Edit ${s.name}` }),
-      button('', () => deleteDialog(s, (purge) => act(() => mcpApi.deleteServer(s.id, purge), `${s.name} deleted`)), {
-        kind: 'danger',
-        size: 'sm',
-        icon: 'trash',
-        title: `Delete ${s.name}`,
-      }),
+      s.status === 'running'
+        ? btn('Stop', () => act(() => mcpApi.stopServer(s.id), `${s.name} stopped`), { kind: 'ghost', sm: true, icon: 'square', title: `Stop ${s.name}` })
+        : btn('Start', () => act(() => mcpApi.startServer(s.id), `${s.name} started`), { kind: 'ghost', sm: true, icon: 'play', title: `Start ${s.name}` }),
+      iconBtn('file-text', () => openLogsDrawer(s), `Logs for ${s.name}`),
+      iconBtn('check', () => runTest(s), `Test ${s.name}`),
+      iconBtn('pencil', () => openWizard(s, () => void reload()), `Edit ${s.name}`),
+      iconBtn('trash-2', () => deleteDialog(s, (purge) => act(() => mcpApi.deleteServer(s.id, purge), `${s.name} deleted`)), `Delete ${s.name}`),
     );
   }
 
   function runTest(s: McpServerView): void {
-    const box = h('div.mcp-test', null, h('p.mcp-muted', null, 'Testing'));
-    modal(`Test ${s.name}`, box);
+    const box = h('div', null, h('p.muted', null, 'Testing'));
+    const close = dialog(`Test ${s.name}`, box, [btn('Close', () => close(), { kind: 'ghost' })]);
     void attempt(() => mcpApi.testServer(s.id)).then((r) => {
       if (!alive) return;
       replace(box, testBody(r));
     });
   }
 
-  function row(s: McpServerView): HTMLElement {
-    const transport = transportText(s.transport);
-    const summary = statusSummary(s);
+  function serversTable(): HTMLElement {
     return h(
-      'tr',
+      'div.mcp-tbl',
       null,
-      h(
-        'td',
-        { 'data-label': 'Server' },
-        h('strong.mcp-name', null, s.name),
-        h('span.mcp-id', null, s.id),
+      tbl<McpServerView>(
+        [
+          { label: 'Server', cell: (s) => h('div', null, h('strong', null, s.name), h('div.mono.muted', null, s.id)) },
+          { label: 'Transport', cls: 'mcp-tr', cell: (s) => h('span.mono.mcp-trunc', { title: transportText(s.transport) }, transportText(s.transport)) },
+          {
+            label: 'Status',
+            cell: (s) => {
+              const summary = statusSummary(s);
+              return h(
+                'div',
+                null,
+                h('div.mcp-row', null, badge(STATUS_LABEL[s.status], STATUS_TONE[s.status]), s.enabled ? null : badge('Disabled', 'muted')),
+                summary ? h('div.mcp-err', { title: s.last_error ?? '' }, summary) : null,
+                summary ? btn('View logs', () => openLogsDrawer(s), { kind: 'ghost', sm: true, icon: 'file-text', title: `Logs for ${s.name}` }) : null,
+              );
+            },
+          },
+          { label: 'Tools', cell: (s) => btn(String(s.tools_count), () => openTools(s), { kind: 'ghost', sm: true, title: `Tools of ${s.name}` }) },
+          { label: 'Last used', cell: (s) => (s.last_used_ms ? ago(s.last_used_ms) : 'never') },
+          { label: 'Actions', cell: (s) => actionsFor(s) },
+        ],
+        servers ?? [],
+        (s) => s.id,
       ),
-      h('td', { 'data-label': 'Transport' }, h('span.mcp-mono.mcp-truncate', { title: transport }, transport)),
-      h(
-        'td',
-        { 'data-label': 'Status' },
-        h('span.mcp-status', null, badge(STATUS_LABEL[s.status], STATUS_TONE[s.status], true), s.enabled ? null : badge('Disabled', 'muted')),
-        summary
-          ? h(
-              'span.mcp-err',
-              null,
-              h('span.mcp-danger.mcp-summary', { title: s.last_error ?? '' }, summary),
-              button('View logs', () => openLogsDrawer(s), { kind: 'ghost', size: 'sm', icon: 'file', title: `Logs for ${s.name}` }),
-            )
-          : null,
-      ),
-      h('td', { 'data-label': 'Tools' }, button(String(s.tools_count), () => openTools(s), { kind: 'ghost', size: 'sm', title: `Tools of ${s.name}` })),
-      h('td', { 'data-label': 'Last used' }, s.last_used_ms ? ago(s.last_used_ms) : 'never'),
-      h('td', { 'data-label': 'Actions', class: 'mcp-actions-cell' }, actionsFor(s)),
     );
   }
 
-  function draw(): void {
-    let body: HTMLElement;
+  /** The servers tab: the add button, the table (or the empty state), and the catalogue. */
+  function serversTab(): (Node | null)[] {
     if (loadError) {
-      body = empty('alert', 'Could not load MCP servers', errorText(loadError), button('Try again', () => void reload(), { kind: 'ghost' }));
-    } else if (!servers) {
-      body = h('p.mcp-loading', null, 'Loading MCP servers...');
-    } else if (!servers.length) {
-      body = empty(
-        'terminal',
-        'No MCP servers',
-        'Add one to give agents outside tools. The hub runs each server, and agents never see its credentials.',
-        addButton(),
-      );
-    } else {
-      body = h(
-        'div.mcp-table-wrap',
-        null,
-        h(
-          'table.mcp-table',
-          null,
-          h('thead', null, h('tr', null, h('th', null, 'Server'), h('th', null, 'Transport'), h('th', null, 'Status'), h('th', null, 'Tools'), h('th', null, 'Last used'), h('th', null, 'Actions'))),
-          h('tbody', null, servers.map(row)),
-        ),
-      );
+      return [emptyBox('triangle-alert', 'Could not load MCP servers', errorText(loadError), btn('Try again', () => void reload(), { kind: 'ghost' }))];
     }
-    replace(
-      root,
-      h(
-        'div.mcp-page',
-        null,
-        tabBar(),
-        tab === 'hub' ? hubBody : [h('div.mcp-toolbar', null, servers?.length ? addButton() : null), body, servers && !loadError ? catalogueCard() : null],
-      ),
-    );
+    if (!servers) return [h('p.mcp-muted', null, 'Loading MCP servers...')];
+    if (!servers.length) {
+      return [
+        emptyBox('server', 'No MCP servers', 'Add one to give agents outside tools. The hub runs each server, and agents never see its credentials.', addButton()),
+        catalogueCard(),
+      ];
+    }
+    return [h('div.mcp-row', null, addButton()), serversTable(), catalogueCard()];
+  }
+
+  function draw(): void {
+    if (tab === 'servers') replace(bodyEl, serversTab());
+    replace(root, pageHead('MCP servers'), tabBar(), bodyEl);
   }
 
   const offs = [on('mcp.changed', later), on('mcp.status', later)];

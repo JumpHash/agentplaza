@@ -1,18 +1,23 @@
-//! The Nodes screen (parity with the web console's `nodes` view): the machines in the plaza
-//! (stop, resume, rebalance, revoke), the join codes that bring new ones in (each token shown
-//! once), and this hub's identity with the owner-token rotation. Reloads on the screen's poll.
+//! The Nodes screen, drawn as the web console's `nodes` view (the Loom/Graphite prototype): the machines in
+//! the plaza (each one's picture, state and facts, opened into its tallies, runs, VMs and technical details;
+//! stop, resume, move, revoke), the join card that lends this machine to another network, the join codes that
+//! bring new ones in (each token shown once), and this hub's identity with the owner-token rotation. Reloads
+//! on the screen's poll.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, checkbox, column, container, row, text_input};
-use iced::{Alignment, Border, Element, Length, Task, Theme};
+use iced::widget::{
+    Space, Stack, checkbox, column, container, mouse_area, row, svg, text, text_input,
+};
+use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
 use crate::console::services::{self, Mode};
 use crate::console::{Ctx, client, ui};
+use crate::theme;
 
 /// The hub's own node: it can be stopped and resumed from here, but not revoked.
 const HUB_NODE: &str = "n0";
@@ -23,6 +28,7 @@ pub struct Machine {
     pub cpus: Option<u64>,
     pub memory_mib: Option<u64>,
     pub host: Option<String>,
+    pub version: Option<String>,
 }
 
 /// An agent that cannot leave a stopping machine yet, and why.
@@ -125,10 +131,15 @@ pub struct RotatedToken {
     pub token: String,
 }
 
-/// A plaza machine's hardware, GPUs and runs (`GET /v1/machines`, the web's machine list).
+/// A plaza machine's hardware, GPUs, runs and live stats (`GET /v1/machines`, the web's machine list).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PlazaMachine {
     pub id: String,
+    /// `server`, `workstation`, `laptop`, `edge` or `phone`.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub class: String,
     #[serde(default)]
@@ -140,6 +151,8 @@ pub struct PlazaMachine {
     #[serde(default)]
     pub vsock_mode: String,
     #[serde(default)]
+    pub noded_port: Option<u64>,
+    #[serde(default)]
     pub cpus: u64,
     #[serde(default)]
     pub memory_mib: u64,
@@ -147,6 +160,37 @@ pub struct PlazaMachine {
     pub gpus: Vec<Gpu>,
     #[serde(default)]
     pub runs: Vec<Run>,
+    #[serde(default)]
+    pub stats: Option<Stats>,
+}
+
+/// A machine's live stats: its CPU now and over the last samples, its memory, load and uptime, and the VMs its
+/// agents run (the web's `stats`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Stats {
+    #[serde(default)]
+    pub cpu_percent: f64,
+    #[serde(default)]
+    pub load: Vec<f64>,
+    #[serde(default)]
+    pub mem_total_mib: f64,
+    #[serde(default)]
+    pub mem_used_mib: f64,
+    #[serde(default)]
+    pub uptime_s: f64,
+    #[serde(default)]
+    pub vms_running: u64,
+    #[serde(default)]
+    pub guest_mem_mib: f64,
+    #[serde(default)]
+    pub history: Vec<Sample>,
+}
+
+/// One CPU sample of a machine's history.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Sample {
+    #[serde(default)]
+    pub cpu_percent: f64,
 }
 
 /// A GPU a machine reported.
@@ -171,7 +215,18 @@ pub struct Run {
     #[serde(default)]
     pub created_at: f64,
     #[serde(default)]
-    pub vms: Vec<Value>,
+    pub vms: Vec<Vm>,
+}
+
+/// A VM of a run: its index in the run, its state, and its guest CID.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Vm {
+    #[serde(default)]
+    pub index: u64,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub guest_cid: Option<u64>,
 }
 
 /// One of the list loads: pending until the first answer, failed when the last request did.
@@ -234,9 +289,15 @@ pub struct State {
     /// The leave confirmation is open, and whether the network is forgotten too.
     pub leaving: bool,
     pub forget: bool,
-    /// The plaza's machines, and the node whose detail is open.
+    /// The plaza's machines, and the node whose detail is open. Until the owner opens or closes one, the hub's
+    /// detail is the open one (as the web's).
     pub machines: Load<Vec<PlazaMachine>>,
     pub selected: Option<String>,
+    pub touched: bool,
+    /// The runs whose VMs are open under the machine's runs table.
+    pub open_runs: Vec<String>,
+    /// The technical details of the open machine are shown.
+    pub tech_open: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -309,6 +370,12 @@ pub enum Msg {
     /// Open a node's detail, or close it.
     Select(String),
     Deselect,
+    /// Open a run's VMs, or close them.
+    ToggleRun(String),
+    /// Show a machine's technical details, or hide them.
+    ToggleTech,
+    /// Kill a run on its machine.
+    KillRun(String),
 }
 
 /// The navigation this message asks for, if any.
@@ -617,12 +684,46 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Select(id) => {
-            state.selected = Some(id);
+            // A press on the open node closes it; a press on another opens that one.
+            let open = if state.touched {
+                state.selected.clone()
+            } else {
+                Some(HUB_NODE.to_string())
+            };
+            state.selected = if open.as_deref() == Some(id.as_str()) {
+                None
+            } else {
+                Some(id)
+            };
+            state.touched = true;
+            state.tech_open = false;
             Task::none()
         }
         Msg::Deselect => {
             state.selected = None;
+            state.touched = true;
             Task::none()
+        }
+        Msg::ToggleRun(id) => {
+            if let Some(at) = state.open_runs.iter().position(|open| *open == id) {
+                state.open_runs.remove(at);
+            } else {
+                state.open_runs.push(id);
+            }
+            Task::none()
+        }
+        Msg::ToggleTech => {
+            state.tech_open = !state.tech_open;
+            Task::none()
+        }
+        Msg::KillRun(id) => {
+            let path = format!("/v1/runs/{id}");
+            let notice = format!("Killed run {id}");
+            let client = ctx.client.clone();
+            client::task(
+                move || client.call("DELETE", &path, None),
+                move |r| Msg::Acted(r, notice.clone()),
+            )
         }
         Msg::Left(result) => {
             state.node_busy = false;
@@ -672,25 +773,26 @@ fn node_run(state: &mut State, start: bool) -> Task<Msg> {
     )
 }
 
+// ---- View --------------------------------------------------------------------------------------
+
+/// The screen: the machines in the plaza, the join card, the join codes and this hub, with the open dialog over them.
+/// As the web's: the open node's detail sits under its own block.
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let local = ctx.client.base() == crate::console::boot::LOCAL_HUB;
+    let dialog = dialog_layer(state);
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
-    if let Some(error) = &state.error {
+    if dialog.is_none()
+        && let Some(error) = &state.error
+    {
         parts.push(ui::error_line(error.as_str()));
     }
     if let Some(notice) = &state.notice {
         parts.push(ui::faint(notice.as_str()).into());
     }
-    if let Some(dialog) = &state.dialog {
-        parts.push(dialog_view(dialog));
-    }
-    parts.push(ui::card("Machines in this plaza", nodes_view(&state.nodes)));
-    if let Some(detail) = detail_view(state) {
-        parts.push(detail);
-    }
-    parts.push(network_view(state, local));
-    parts.push(ui::card("Join codes", codes_view(&state.codes)));
-    parts.push(ui::card("This hub", hub_view(&state.hub)));
+    parts.push(machines_card(state));
+    parts.push(join_card(state, local));
+    parts.push(codes_card(&state.codes));
+    parts.push(hub_card(&state.hub));
 
     let head = ui::view_head(
         "Nodes",
@@ -699,99 +801,312 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
             ui::btn("Add a node", None, ui::Kind::Primary, Some(Msg::OpenAdd)),
         ],
     );
-    ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
+    let body: Element<'a, Msg> = column(parts).spacing(16).width(Length::Fill).into();
+    let page = ui::scroll(ui::sheet(head, body)).height(Length::Fill);
+    match dialog {
+        Some(layer) => Stack::with_children(vec![page.into(), layer]).into(),
+        None => page.into(),
+    }
 }
 
-/// The machines' table, or its empty or failed state.
-fn nodes_view<'a>(nodes: &'a Load<Vec<NodeView>>) -> Element<'a, Msg> {
-    match nodes {
-        Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load the machines.", ""),
+/// The machine of a node, from the plaza's machine list (joined by id).
+fn machine_of<'a>(state: &'a State, id: &str) -> Option<&'a PlazaMachine> {
+    match &state.machines {
+        Load::Ready(list) => list.iter().find(|m| m.id == id),
+        _ => None,
+    }
+}
+
+/// Whether a node's detail is open: this hub's by default, else the one the owner opened (a press closes it).
+fn is_open(state: &State, id: &str) -> bool {
+    if state.touched {
+        state.selected.as_deref() == Some(id)
+    } else {
+        id == HUB_NODE
+    }
+}
+
+/// The plaza's machines: one block per node, its detail under the block when open.
+fn machines_card<'a>(state: &'a State) -> Element<'a, Msg> {
+    let body: Element<'a, Msg> = match &state.nodes {
+        Load::Pending => padded(ui::loading()),
+        Load::Failed => padded(ui::prose("Could not load the machines.")),
         Load::Ready(list) if list.is_empty() => ui::empty(
-            "link",
+            "machine",
             "No machines yet",
             "Add a node here to bring a machine into this network, or join this hub to another network below.",
         ),
-        Load::Ready(list) => table(
-            &[
-                (3, "Name"),
-                (2, "State"),
-                (2, "Address"),
-                (1, "Agents"),
-                (1, "CIDs"),
-                (3, "Machine"),
-                (2, "Last seen"),
-                (3, ""),
-            ],
-            list.iter().map(node_row).collect(),
-        ),
+        Load::Ready(list) => {
+            let mut blocks: Vec<Element<'a, Msg>> = Vec::new();
+            for (i, node) in list.iter().enumerate() {
+                if i > 0 {
+                    blocks.push(ui::hairline());
+                }
+                blocks.push(node_block(state, node));
+            }
+            column(blocks).width(Length::Fill).into()
+        }
+    };
+    flush_card("Machines in this plaza", body)
+}
+
+/// One node's block: its picture, name, state and facts. A press on it opens or closes its detail.
+fn node_block<'a>(state: &'a State, n: &'a NodeView) -> Element<'a, Msg> {
+    let m = machine_of(state, &n.id);
+    let (state_text, tone) = node_state(n);
+    let live = match m {
+        Some(m) => machine_live(m),
+        None => n.online,
+    };
+    let kind = m.map(|m| m.kind.as_str()).unwrap_or("workstation");
+    let sub = match m {
+        Some(m) => [kind_label(&m.kind), m.model.as_deref().unwrap_or("")]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · "),
+        None => n.id.clone(),
+    };
+    let facts: Vec<(&'static str, String)> = vec![
+        ("Address", or_dash(&n.address).to_string()),
+        ("Agents", n.agents.to_string()),
+        ("CIDs", cids(n)),
+        ("Machine", machine_text(&n.machine)),
+        ("Last seen", ago(n.last_seen_ms)),
+    ];
+    let p = theme::palette();
+    let picture = container(svg_view(art_svg(kind, live), Length::Fill, Length::Fill))
+        .width(Length::Fixed(64.0))
+        .height(Length::Fixed(48.0))
+        .padding(2)
+        .style(move |_: &Theme| container::Style {
+            background: Some(p.sheet_2.into()),
+            border: Border {
+                color: if live { p.ok } else { p.rule_strong },
+                width: 1.0,
+                radius: theme::skin().radius.into(),
+            },
+            ..Default::default()
+        });
+    let head = row![
+        picture,
+        column![
+            row![
+                text(n.name.clone())
+                    .font(theme::SANS_SEMIBOLD)
+                    .size(theme::TYPE_UI)
+                    .color(p.ink),
+                ui::badge_dot(&state_text, tone),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            ui::faint(sub),
+            fact_grid(facts),
+        ]
+        .spacing(4)
+        .width(Length::Fill),
+    ]
+    .spacing(16)
+    .align_y(Alignment::Start);
+    let mut items: Vec<Element<'a, Msg>> =
+        vec![mouse_area(head).on_press(Msg::Select(n.id.clone())).into()];
+    if is_open(state, &n.id) {
+        items.push(node_detail(state, n, m));
+    }
+    container(column(items).spacing(16).width(Length::Fill))
+        .padding(16)
+        .width(Length::Fill)
+        .into()
+}
+
+/// Whether a machine has a VM running: the web's live test on its runs' VM states.
+fn machine_live(m: &PlazaMachine) -> bool {
+    m.runs
+        .iter()
+        .any(|r| r.vms.iter().any(|v| is_live_word(&v.state)))
+}
+
+/// A run or VM state that counts as live.
+fn is_live_word(s: &str) -> bool {
+    let s = s.to_ascii_lowercase();
+    ["run", "ready", "up", "active"]
+        .iter()
+        .any(|w| s.contains(w))
+}
+
+/// A run or VM state's tone, as the web's: live is ok, starting is info, failure is danger, the rest muted.
+fn tone_of(s: &str) -> ui::Tone {
+    let s = s.to_ascii_lowercase();
+    if is_live_word(&s) {
+        ui::Tone::Ok
+    } else if ["start", "boot", "pend", "creat", "launch"]
+        .iter()
+        .any(|w| s.contains(w))
+    {
+        ui::Tone::Info
+    } else if ["fail", "err", "crash", "kill", "dead"]
+        .iter()
+        .any(|w| s.contains(w))
+    {
+        ui::Tone::Danger
+    } else {
+        ui::Tone::Muted
     }
 }
 
-fn node_row<'a>(n: &'a NodeView) -> Element<'a, Msg> {
-    let (state, tone) = node_state(n);
-    cells(vec![
-        (
-            3,
-            column![
-                ui::link(n.name.as_str(), Msg::Select(n.id.clone()), false),
-                ui::faint(n.id.as_str())
-            ]
-            .spacing(2)
-            .into(),
-        ),
-        (2, ui::badge(&state, tone)),
-        (
-            2,
-            ui::mono(
-                if n.address.is_empty() {
-                    "—"
-                } else {
-                    n.address.as_str()
-                },
-                12.0,
-                crate::theme::palette().ink,
-            )
-            .into(),
-        ),
-        (
-            1,
-            ui::sans(n.agents.to_string(), 12.0, crate::theme::palette().ink).into(),
-        ),
-        (
-            1,
-            ui::mono(cids(n), 12.0, crate::theme::palette().ink).into(),
-        ),
-        (3, ui::faint(machine_text(&n.machine)).into()),
-        (2, ui::faint(ago(n.last_seen_ms)).into()),
-        (3, node_actions(n)),
-    ])
+/// The kind of machine, as the web names it.
+fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        "server" => "Server",
+        "workstation" => "Workstation",
+        "laptop" => "Laptop",
+        "edge" => "Edge",
+        "phone" => "Phone",
+        _ => "Machine",
+    }
 }
 
-/// A node's stop, resume and revoke buttons; the hub's own node is noted, and never revoked.
-fn node_actions<'a>(n: &'a NodeView) -> Element<'a, Msg> {
+/// The node's open detail: the machine's picture, its sentence, tallies, runs and VMs, the technical details, the
+/// node's facts, what waits to move, and its actions.
+fn node_detail<'a>(
+    state: &'a State,
+    n: &'a NodeView,
+    m: Option<&'a PlazaMachine>,
+) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    if let Some(m) = m {
+        let live = machine_live(m);
+        parts.push(art_view(&m.kind, live));
+        parts.push(ui::sans(sentence(m), theme::TYPE_UI, p.ink_2).into());
+        match &m.stats {
+            Some(stats) => {
+                parts.push(tallies(stats));
+                parts.push(ui::faint(format!("Up {}", uptime(stats.uptime_s))).into());
+            }
+            None => parts.push(ui::faint("No live stats.").into()),
+        }
+        parts.push(ui::label("Runs").into());
+        parts.push(runs_table(&m.runs));
+        for run in m.runs.iter().filter(|r| state.open_runs.contains(&r.id)) {
+            parts.push(vms_box(run));
+        }
+        parts.push(ui::disclosure(
+            "Technical details".to_string(),
+            p.ink_3,
+            state.tech_open,
+            Msg::ToggleTech,
+        ));
+        if state.tech_open {
+            parts.push(
+                column![
+                    fact_row("Class", ui::mono(or_dash(&m.class), 12.0, p.ink).into()),
+                    fact_row("Arch", ui::mono(or_dash(&m.arch), 12.0, p.ink).into()),
+                    fact_row("Backend", ui::mono(or_dash(&m.backend), 12.0, p.ink).into()),
+                    fact_row("Irqchip", ui::mono(or_dash(&m.irqchip), 12.0, p.ink).into()),
+                    fact_row(
+                        "vsock",
+                        ui::mono(or_dash(&m.vsock_mode), 12.0, p.ink).into()
+                    ),
+                    fact_row(
+                        "noded port",
+                        ui::mono(
+                            m.noded_port
+                                .map_or("—".to_string(), |port| port.to_string()),
+                            12.0,
+                            p.ink,
+                        )
+                        .into(),
+                    ),
+                ]
+                .spacing(8)
+                .into(),
+            );
+        }
+    }
+    let mc = n.machine.as_ref();
+    parts.push(
+        column![
+            fact_row("Address", ui::mono(or_dash(&n.address), 12.0, p.ink).into()),
+            fact_row("CIDs", ui::mono(cids(n), 12.0, p.ink).into()),
+            fact_row(
+                "Last seen",
+                ui::sans(ago(n.last_seen_ms), 12.0, p.ink).into()
+            ),
+            fact_row("Agents", ui::sans(n.agents.to_string(), 12.0, p.ink).into()),
+            fact_row(
+                "Host",
+                ui::mono(
+                    mc.and_then(|m| m.host.as_deref()).unwrap_or("—"),
+                    12.0,
+                    p.ink
+                )
+                .into(),
+            ),
+            fact_row(
+                "Version",
+                ui::mono(
+                    mc.and_then(|m| m.version.as_deref()).unwrap_or("—"),
+                    12.0,
+                    p.ink
+                )
+                .into(),
+            ),
+        ]
+        .spacing(8)
+        .into(),
+    );
+    if !n.waiting.is_empty() {
+        let lines: Vec<Element<'a, Msg>> = n
+            .waiting
+            .iter()
+            .map(|w| ui::sans(waiting_line(w), 12.0, p.ink).into())
+            .collect();
+        parts.push(
+            column![ui::label("Waiting to move"), column(lines).spacing(6)]
+                .spacing(8)
+                .into(),
+        );
+    }
+    parts.push(
+        row(node_actions(n))
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+    );
+    column(parts).spacing(16).width(Length::Fill).into()
+}
+
+/// The node's buttons by its state, as the web's: Resume or Stop, Move now while it stops, Revoke, or the hub's note.
+fn node_actions<'a>(n: &'a NodeView) -> Vec<Element<'a, Msg>> {
     if n.revoked {
-        return Space::new().width(Length::Fill).into();
+        return Vec::new();
     }
     let (id, name) = (n.id.clone(), n.name.clone());
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
-    if n.id == HUB_NODE {
-        parts.push(ui::faint("this hub").into());
-    }
-    if service_state(n) == "stopping" {
-        parts.push(ui::btn(
-            "Move now",
-            None,
-            ui::Kind::Secondary,
-            Some(Msg::Stop {
-                id: id.clone(),
-                name: name.clone(),
-                now: true,
-            }),
-        ));
-    }
-    if matches!(service_state(n), "stopping" | "stopped") {
-        parts.push(ui::btn(
+    match service_state(n) {
+        "stopping" => {
+            parts.push(ui::btn(
+                "Resume",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::Resume {
+                    id: id.clone(),
+                    name: name.clone(),
+                }),
+            ));
+            parts.push(ui::btn(
+                "Move now",
+                None,
+                ui::Kind::Secondary,
+                Some(Msg::Stop {
+                    id: id.clone(),
+                    name: name.clone(),
+                    now: true,
+                }),
+            ));
+        }
+        "stopped" => parts.push(ui::btn(
             "Resume",
             None,
             ui::Kind::Secondary,
@@ -799,406 +1114,293 @@ fn node_actions<'a>(n: &'a NodeView) -> Element<'a, Msg> {
                 id: id.clone(),
                 name: name.clone(),
             }),
-        ));
-    } else {
-        parts.push(ui::btn(
+        )),
+        _ => parts.push(ui::btn(
             "Stop",
             None,
-            ui::Kind::DangerOutline,
+            ui::Kind::Secondary,
             Some(Msg::AskStop {
                 id: id.clone(),
                 name: name.clone(),
                 agents: n.agents,
             }),
-        ));
+        )),
     }
-    if n.id != HUB_NODE {
+    if n.id == HUB_NODE {
+        parts.push(ui::faint("this hub").into());
+    } else {
         parts.push(ui::btn(
             "Revoke",
             None,
-            ui::Kind::Danger,
+            ui::Kind::Secondary,
             Some(Msg::AskRevoke { id, name }),
         ));
     }
-    row(parts).spacing(8).align_y(Alignment::Center).into()
+    parts
 }
 
-/// The join codes, newest first, or the empty or failed state.
-fn codes_view<'a>(codes: &'a Load<Vec<JoinCode>>) -> Element<'a, Msg> {
-    match codes {
-        Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load the join codes.", ""),
-        Load::Ready(list) if list.is_empty() => ui::empty(
-            "link",
-            "No join codes yet",
-            "Codes made with \"Add a node\" are listed here.",
+/// The four tallies of a machine: its CPU (a sparkline of the last samples, or a bar), its memory, its load and the
+/// VMs its agents run, each with its caption.
+fn tallies<'a>(s: &Stats) -> Element<'a, Msg> {
+    let cpu_visual = if s.history.is_empty() {
+        bar(s.cpu_percent)
+    } else {
+        spark(&s.history)
+    };
+    let mem_pct = 100.0 * s.mem_used_mib / s.mem_total_mib.max(1.0);
+    let load = if s.load.is_empty() {
+        "–".to_string()
+    } else {
+        s.load
+            .iter()
+            .map(|x| fx1(*x))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    row![
+        tally(
+            "CPU",
+            format!("{}%", s.cpu_percent.round() as i64),
+            String::new(),
+            Some(cpu_visual)
         ),
-        Load::Ready(list) => {
-            let mut sorted: Vec<&JoinCode> = list.iter().collect();
-            sorted.sort_by(|a, b| b.created_ms.total_cmp(&a.created_ms));
-            table(
-                &[
-                    (3, "Label"),
-                    (2, "ID"),
-                    (2, "Created"),
-                    (2, "Expires"),
-                    (3, "State"),
-                    (1, ""),
-                ],
-                sorted.into_iter().map(code_row).collect(),
-            )
-        }
-    }
+        tally(
+            "Memory",
+            format!("{} / {}", gib(s.mem_used_mib), gib(s.mem_total_mib)),
+            "GiB used of GiB".to_string(),
+            Some(bar(mem_pct)),
+        ),
+        tally("Load", load, "1 / 5 / 15 min".to_string(), None),
+        tally(
+            "Agents' VMs",
+            s.vms_running.to_string(),
+            format!("{} GiB reserved", gib(s.guest_mem_mib)),
+            None,
+        ),
+    ]
+    .spacing(16)
+    .width(Length::Fill)
+    .into()
 }
 
-fn code_row<'a>(c: &'a JoinCode) -> Element<'a, Msg> {
-    let (label, tone) = code_state(&c.state);
-    let state_cell: Element<'a, Msg> = match &c.used_by {
-        Some(by) => row![ui::badge(&label, tone), ui::faint(format!(" by {by}"))]
-            .spacing(6)
+/// One tally: its label, figure, visual and caption.
+fn tally<'a>(
+    label: &str,
+    fig: String,
+    caption: String,
+    visual: Option<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
+    let mut items: Vec<Element<'a, Msg>> = vec![
+        ui::label(label).into(),
+        ui::mono(fig, 18.0, theme::palette().ink).into(),
+    ];
+    if let Some(visual) = visual {
+        items.push(visual);
+    }
+    if !caption.is_empty() {
+        items.push(ui::faint(caption).into());
+    }
+    column(items)
+        .spacing(4)
+        .width(Length::FillPortion(1))
+        .into()
+}
+
+/// A bar filled to `pct` per cent of its width, as the web's `.nd-bar`.
+fn bar<'a>(pct: f64) -> Element<'a, Msg> {
+    let p = pct.clamp(0.0, 100.0).round() as u16;
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    if p > 0 {
+        parts.push(
+            container(Space::new().height(Length::Fixed(6.0)))
+                .width(Length::FillPortion(p))
+                .style(|_: &Theme| container::Style {
+                    background: Some(theme::palette().signal.into()),
+                    ..Default::default()
+                })
+                .into(),
+        );
+    }
+    if p < 100 {
+        parts.push(
+            Space::new()
+                .width(Length::FillPortion(100 - p))
+                .height(Length::Fixed(6.0))
+                .into(),
+        );
+    }
+    container(row(parts).width(Length::Fill))
+        .height(Length::Fixed(6.0))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::palette().sheet_2.into()),
+            border: Border::default().rounded(3.0),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The CPU history as a sparkline of the last 60 samples on a ruled baseline (the web's `mt-spark`).
+fn spark<'a>(history: &[Sample]) -> Element<'a, Msg> {
+    let values: Vec<f64> = history
+        .iter()
+        .map(|s| s.cpu_percent)
+        .filter(|v| v.is_finite())
+        .collect();
+    let values = &values[values.len().saturating_sub(60)..];
+    let (w, h) = (160.0_f64, 48.0_f64);
+    let p = theme::palette();
+    let points = values
+        .iter()
+        .enumerate()
+        .map(|(i, y)| {
+            let x = if values.len() == 1 {
+                w / 2.0
+            } else {
+                i as f64 * w / (values.len() - 1) as f64
+            };
+            let yy = h - 4.0 - (y.clamp(0.0, 100.0) / 100.0) * (h - 8.0);
+            format!("{x:.1},{yy:.1}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let markup = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" preserveAspectRatio="none"><line x1="0" y1="{b}" x2="{w}" y2="{b}" stroke="{rule}" stroke-width="1"/><polyline points="{points}" fill="none" stroke="{ink}" stroke-width="1.5"/></svg>"#,
+        b = h - 4.0,
+        rule = hex(p.rule_strong),
+        ink = hex(p.ink_2),
+    );
+    svg_view(markup, Length::Fill, Length::Fixed(48.0))
+}
+
+/// The runs table: a row per run (its id, role, state, VMs and start, and Kill); a press opens its VMs.
+fn runs_table<'a>(runs: &'a [Run]) -> Element<'a, Msg> {
+    if runs.is_empty() {
+        return ui::faint("No runs.").into();
+    }
+    let p = theme::palette();
+    let head: [(u16, &str); 6] = [
+        (3, "Run"),
+        (2, "Role"),
+        (2, "State"),
+        (1, "VMs"),
+        (2, "Started"),
+        (1, ""),
+    ];
+    let rows: Vec<Element<'a, Msg>> = runs
+        .iter()
+        .map(|r| {
+            let line: Element<'a, Msg> = cells(vec![
+                (3, ui::mono(r.id.clone(), 12.0, p.ink).into()),
+                (
+                    2,
+                    ui::faint(r.role.clone().unwrap_or_else(|| "fleet".to_string())).into(),
+                ),
+                (2, ui::badge(&r.state, tone_of(&r.state))),
+                (1, ui::sans(r.vms.len().to_string(), 12.0, p.ink).into()),
+                (2, ui::faint(ago(r.created_at)).into()),
+                (
+                    1,
+                    ui::btn_sm(
+                        "Kill",
+                        Some("stop"),
+                        ui::Kind::Danger,
+                        Some(Msg::KillRun(r.id.clone())),
+                    ),
+                ),
+            ]);
+            mouse_area(line)
+                .on_press(Msg::ToggleRun(r.id.clone()))
+                .into()
+        })
+        .collect();
+    table(&head, rows)
+}
+
+/// A run's VMs, under its row: each VM's index, state and guest CID.
+fn vms_box<'a>(run: &'a Run) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let mut lines: Vec<Element<'a, Msg>> = vec![ui::label(&run.id).into()];
+    if run.vms.is_empty() {
+        lines.push(ui::faint("No VMs.").into());
+    }
+    for vm in &run.vms {
+        lines.push(
+            row![
+                ui::sans(format!("VM {}", vm.index), 12.0, p.ink),
+                ui::badge(&vm.state, tone_of(&vm.state)),
+                ui::faint(format!(
+                    "guest CID {}",
+                    vm.guest_cid.map_or("—".to_string(), |c| c.to_string())
+                )),
+            ]
+            .spacing(8)
             .align_y(Alignment::Center)
             .into(),
-        None => ui::badge(&label, tone),
-    };
-    let active = c.state == "active";
-    let expires = if active {
-        format!("in {}", countdown(c.expires_ms - now_ms()))
-    } else {
-        ago(c.expires_ms)
-    };
-    let action: Element<'a, Msg> = if active {
-        ui::btn(
-            "Revoke",
-            None,
-            ui::Kind::Danger,
-            Some(Msg::RevokeCode(c.id.clone())),
-        )
-    } else {
-        Space::new().width(Length::Fill).into()
-    };
-    cells(vec![
-        (
-            3,
-            ui::sans(c.label.as_str(), 13.0, crate::theme::palette().ink).into(),
-        ),
-        (
-            2,
-            ui::mono(c.id.as_str(), 11.0, crate::theme::palette().ink_3).into(),
-        ),
-        (2, ui::faint(ago(c.created_ms)).into()),
-        (
-            2,
-            ui::sans(expires, 12.0, crate::theme::palette().ink).into(),
-        ),
-        (3, state_cell),
-        (1, action),
-    ])
-}
-
-/// The hub's identity and the owner-token rotation.
-fn hub_view<'a>(hub: &'a Load<HubIdentity>) -> Element<'a, Msg> {
-    match hub {
-        Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load this hub.", ""),
-        Load::Ready(id) => {
-            let fingerprint: Element<'a, Msg> = match &id.fingerprint {
-                Some(fp) => ui::mono(fp.as_str(), 11.0, crate::theme::palette().ink).into(),
-                None => ui::faint("no TLS (loopback only)").into(),
-            };
-            column![
-                fact(
-                    "Name",
-                    ui::mono(id.name.as_str(), 13.0, crate::theme::palette().ink).into()
-                ),
-                fact(
-                    "URL",
-                    ui::mono(id.url.as_str(), 12.0, crate::theme::palette().ink).into()
-                ),
-                fact(
-                    "Version",
-                    ui::mono(id.version.as_str(), 12.0, crate::theme::palette().ink).into()
-                ),
-                fact("TLS fingerprint", fingerprint),
-                ui::btn(
-                    "Rotate owner token",
-                    None,
-                    ui::Kind::Danger,
-                    Some(Msg::AskRotate)
-                ),
-            ]
-            .spacing(12)
-            .into()
-        }
+        );
     }
+    container(column(lines).spacing(6))
+        .padding([8, 12])
+        .width(Length::Fill)
+        .style(theme::boxed)
+        .into()
 }
 
-/// The open dialog, as a card.
-fn dialog_view<'a>(dialog: &'a Dialog) -> Element<'a, Msg> {
-    match dialog {
-        Dialog::Add {
-            label,
-            minutes,
-            issued: None,
-        } => ui::card("Add a node", add_form(label.as_str(), *minutes)),
-        Dialog::Add {
-            issued: Some(made), ..
-        } => ui::card("Add a node", issued_view(made)),
-        Dialog::ConfirmStop { id, name, agents } => ui::card(
-            &format!("Stop {name}?"),
-            column![
-                ui::prose(agents_move_line(*agents)),
-                ui::prose(if id == HUB_NODE {
-                    "This is the hub’s own machine: the hub keeps running, only its agents leave."
-                } else {
-                    "Once it is stopped, its machine can be turned off. Resume brings it back, and agents move onto it again."
-                }),
-                ui::faint(
-                    "Stop now interrupts the turns in progress; each one resumes on its agent’s new machine. Otherwise an agent that is working moves when its turn ends."
-                ),
-                row![
-                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Close)),
-                    ui::btn(
-                        "Stop after their turns",
-                        None,
-                        ui::Kind::Secondary,
-                        Some(Msg::Stop {
-                            id: id.clone(),
-                            name: name.clone(),
-                            now: false
-                        })
-                    ),
-                    ui::btn(
-                        "Stop now",
-                        None,
-                        ui::Kind::Danger,
-                        Some(Msg::Stop {
-                            id: id.clone(),
-                            name: name.clone(),
-                            now: true
-                        })
-                    ),
-                ]
-                .spacing(8),
-            ]
-            .spacing(12)
-            .into(),
-        ),
-        Dialog::ConfirmRevoke { id, name } => ui::card(
-            &format!("Revoke {name}?"),
-            column![
-                ui::faint("Its signatures stop working at once and its agents go offline."),
-                row![
-                    ui::btn("Cancel", None, ui::Kind::Secondary, Some(Msg::Close)),
-                    ui::btn(
-                        "Revoke",
-                        None,
-                        ui::Kind::Danger,
-                        Some(Msg::Revoke {
-                            id: id.clone(),
-                            name: name.clone()
-                        })
-                    ),
-                ]
-                .spacing(8),
-            ]
-            .spacing(12)
-            .into(),
-        ),
-        Dialog::ConfirmRotate => ui::card(
-            "Rotate the owner token?",
-            column![
-                ui::faint("The current owner token stops working at once."),
-                row![
-                    ui::btn("Cancel", None, ui::Kind::Secondary, Some(Msg::Close)),
-                    ui::btn("Rotate", None, ui::Kind::Danger, Some(Msg::Rotate)),
-                ]
-                .spacing(8),
-            ]
-            .spacing(12)
-            .into(),
-        ),
-        Dialog::Rotated(token) => ui::card(
-            "New owner token",
-            column![
-                ui::prose("The new owner token, shown once:"),
-                copy_box(token),
-                ui::faint("Every signed-in browser must sign in again."),
-                ui::btn("Close", None, ui::Kind::Secondary, Some(Msg::Close)),
-            ]
-            .spacing(12)
-            .into(),
-        ),
-    }
-}
-
-/// The label and validity of a new join code.
-fn add_form<'a>(label: &'a str, minutes: u64) -> Element<'a, Msg> {
-    let choice = |m: u64| {
-        let kind = if m == minutes {
-            ui::Kind::Primary
-        } else {
-            ui::Kind::Secondary
-        };
-        ui::btn(
-            &format!("{m} minutes"),
-            None,
-            kind,
-            Some(Msg::PickMinutes(m)),
-        )
-    };
-    column![
-        ui::label("Label"),
-        text_input("studio-pc", label)
-            .on_input(Msg::LabelEdit)
-            .on_submit(Msg::CreateCode)
-            .padding(8.0),
-        ui::faint("What the machine is called here."),
-        ui::label("Valid for"),
-        row![choice(15), choice(30), choice(60)].spacing(8),
-        ui::faint("How long the code can be used to join."),
-        ui::btn(
-            "Create join code",
-            None,
-            ui::Kind::Primary,
-            Some(Msg::CreateCode)
-        ),
-    ]
-    .spacing(10)
-    .into()
-}
-
-/// The token just issued, shown once, with the command to run on the new machine.
-fn issued_view<'a>(made: &'a IssuedCode) -> Element<'a, Msg> {
-    column![
-        ui::faint("Shown once. Single use. Anyone with it can join until it expires.")
-            .color(crate::theme::palette().warn),
-        copy_box(&made.token),
-        row![
-            ui::faint("Expires in "),
-            ui::sans(
-                countdown(made.expires_ms - now_ms()),
-                12.0,
-                crate::theme::palette().ink
-            ),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center),
-        ui::faint("On the new machine, run:"),
-        copy_box(&format!("apz-link join {}", made.token)),
-        ui::faint("or paste it into the desktop app's Join a hub."),
-        ui::btn("Close", None, ui::Kind::Secondary, Some(Msg::Close)),
-    ]
-    .spacing(10)
-    .into()
-}
-
-/// A value to copy: a mono box with a Copy button.
-fn copy_box<'a>(value: &str) -> Element<'a, Msg> {
-    container(
-        row![
-            ui::sans(value.to_string(), 12.0, crate::theme::palette().ink).width(Length::Fill),
-            ui::btn(
-                "Copy",
-                None,
-                ui::Kind::Ghost,
-                Some(Msg::Copy(value.to_string()))
-            ),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    )
-    .padding([8, 12])
-    .width(Length::Fill)
-    .style(boxed)
-    .into()
-}
-
-/// A labelled line of the hub's identity.
-fn fact<'a>(name: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
-    row![
-        container(ui::label(name)).width(Length::Fixed(150.0)),
-        value
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-/// A table: a mono header row, then the rows, each under a hairline. Columns are proportional.
-fn table<'a>(head: &[(u16, &str)], rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let heads: Vec<(u16, Element<'a, Msg>)> = head
-        .iter()
-        .map(|(p, l)| (*p, ui::label(l).into()))
-        .collect();
-    let mut lines: Vec<Element<'a, Msg>> = vec![cells(heads), ui::hairline()];
-    for r in rows {
-        lines.push(r);
-        lines.push(ui::hairline());
-    }
-    column(lines).width(Length::Fill).into()
-}
-
-/// One table row: its cells in proportional columns.
-fn cells<'a>(parts: Vec<(u16, Element<'a, Msg>)>) -> Element<'a, Msg> {
-    let laid: Vec<Element<'a, Msg>> = parts
-        .into_iter()
-        .map(|(portion, cell)| container(cell).width(Length::FillPortion(portion)).into())
-        .collect();
-    row(laid).spacing(12).align_y(Alignment::Center).into()
-}
-
-/// The "Join a network" card: the join form while this machine is no node, else the network it
-/// joined, with its services and Leave. Progress and errors show under either.
-fn network_view<'a>(state: &'a State, local: bool) -> Element<'a, Msg> {
+/// The join card: this machine's network link, its state and Leave when it is joined; the join form when not.
+fn join_card<'a>(state: &'a State, local: bool) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = vec![ui::prose(
         "Make this hub's machine a node of another network: it lends its machine to that network's agents. Its own plaza keeps running.",
     )
     .into()];
     parts.push(match &state.node {
         Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load the network link.", ""),
+        Load::Failed => ui::prose("Could not load the network link.").into(),
         Load::Ready(node) if node.joined => joined_view(node, state, local),
         Load::Ready(_) => join_form(state),
     });
     for line in &state.progress {
-        parts.push(ui::mono(line.as_str(), 11.0, crate::theme::palette().ink_3).into());
+        parts.push(ui::mono(line.as_str(), 11.0, theme::palette().ink_3).into());
     }
     if let Some(error) = &state.node_error {
         parts.push(ui::error_line(error.as_str()));
     }
     ui::card(
-        "This machine",
+        "Join another network",
         column(parts).spacing(12).width(Length::Fill).into(),
     )
 }
 
-/// The join form: the code (monospace) and the Join button.
+/// The join form: the code, its hint and the Join button.
 fn join_form<'a>(state: &'a State) -> Element<'a, Msg> {
     let busy = state.node_busy;
+    let code = text_input("Paste the join code", &state.code)
+        .font(theme::MONO)
+        .style(theme::input)
+        .padding(8.0)
+        .on_input(Msg::CodeEdit)
+        .on_submit(Msg::Join);
     column![
-        ui::label("Join code"),
-        text_input("Paste the join code", &state.code)
-            .font(crate::theme::SANS)
-            .style(crate::theme::input)
-            .padding(8.0)
-            .on_input(Msg::CodeEdit)
-            .on_submit(Msg::Join),
-        ui::faint("Get a code from the other network's Nodes screen (Add a node)."),
-        ui::btn(
+        field(
+            "Join code",
+            code.into(),
+            Some("Get a code from the other network's Nodes screen (Add a node)."),
+        ),
+        row![ui::btn(
             if busy { "Joining…" } else { "Join" },
             None,
             ui::Kind::Primary,
-            (!busy).then_some(Msg::Join)
-        ),
+            (!busy).then_some(Msg::Join),
+        )],
     ]
     .spacing(10)
     .into()
 }
 
-/// The joined network: its hub, node and CIDs, the node service's state with Start or Stop, and
-/// Leave (confirmed, with the choice to forget the network).
+/// The joined network: its hub, this node's id and CIDs, the node service's state with Start or Stop (on this
+/// machine), and Leave (confirmed, with the choice to forget the network).
 fn joined_view<'a>(node: &'a NodeLink, state: &'a State, local: bool) -> Element<'a, Msg> {
     let busy = state.node_busy;
+    let p = theme::palette();
     let (badge_text, tone) = if node.running {
         ("running", ui::Tone::Ok)
     } else {
@@ -1221,222 +1423,633 @@ fn joined_view<'a>(node: &'a NodeLink, state: &'a State, local: bool) -> Element
             (!busy).then_some(Msg::NodeStart),
         )
     };
-    let leave: Element<'a, Msg> = if state.leaving {
-        column![
-            ui::faint("This node stops lending its machine to that network, and its agents there go offline."),
-            checkbox(state.forget).label("Forget this network: remove the saved hub, so joining again needs a new code.").on_toggle(Msg::ToggleForget),
-            row![
-                ui::btn("Cancel", None, ui::Kind::Secondary, Some(Msg::CancelLeave)),
-                ui::btn("Leave", None, ui::Kind::Danger, (!busy).then_some(Msg::Leave)),
-            ]
-            .spacing(8),
-        ]
-        .spacing(10)
-        .into()
-    } else {
-        ui::btn(
-            "Leave",
-            None,
-            ui::Kind::Danger,
-            (!busy).then_some(Msg::AskLeave),
-        )
-    };
     let mut status = row![ui::badge(badge_text, tone)]
         .spacing(10)
         .align_y(Alignment::Center);
     if let Some(pid) = node.pid {
         status = status.push(ui::faint(format!("pid {pid}")).wrapping(Wrapping::None));
     }
-    let service: Element<'a, Msg> = status.push(toggle).into();
+    status = status.push(toggle);
     column![
-        fact(
+        fact_row(
             "Hub",
-            ui::mono(
-                or_dash(node.hub.as_deref().unwrap_or("")),
-                12.0,
-                crate::theme::palette().ink
-            )
-            .into()
+            ui::mono(or_dash(node.hub.as_deref().unwrap_or("")), 12.0, p.ink).into(),
         ),
-        fact(
+        fact_row(
             "This node",
-            ui::mono(
-                or_dash(node.node_id.as_deref().unwrap_or("")),
-                12.0,
-                crate::theme::palette().ink
-            )
-            .into()
+            ui::mono(or_dash(node.node_id.as_deref().unwrap_or("")), 12.0, p.ink).into(),
         ),
-        fact(
+        fact_row(
             "CIDs",
-            ui::mono(
-                or_dash(node.cids.as_deref().unwrap_or("")),
-                12.0,
-                crate::theme::palette().ink
-            )
-            .into()
+            ui::mono(or_dash(node.cids.as_deref().unwrap_or("")), 12.0, p.ink).into(),
         ),
-        fact("Status", service),
-        leave,
+        fact_row("Status", status.into()),
+        row![ui::btn(
+            "Leave",
+            None,
+            ui::Kind::Secondary,
+            (!busy).then_some(Msg::AskLeave)
+        )],
     ]
     .spacing(12)
     .into()
 }
 
-/// The selected node's detail under the machines table: its machine's facts and its runs.
-fn detail_view<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
-    let id = state.selected.as_ref()?;
-    let Load::Ready(nodes) = &state.nodes else {
-        return None;
+/// The join codes, newest first, as a flush table: the label, id, when made, when it ends, its state and Revoke.
+fn codes_card<'a>(codes: &'a Load<Vec<JoinCode>>) -> Element<'a, Msg> {
+    let body: Element<'a, Msg> = match codes {
+        Load::Pending => padded(ui::loading()),
+        Load::Failed => padded(ui::prose("Could not load the join codes.")),
+        Load::Ready(list) if list.is_empty() => ui::empty(
+            "key",
+            "No join codes yet",
+            "Codes made with \"Add a node\" are listed here.",
+        ),
+        Load::Ready(list) => {
+            let mut sorted: Vec<&JoinCode> = list.iter().collect();
+            sorted.sort_by(|a, b| b.created_ms.total_cmp(&a.created_ms));
+            let head: [(u16, &str); 6] = [
+                (3, "Label"),
+                (2, "ID"),
+                (2, "Created"),
+                (2, "Expires"),
+                (3, "State"),
+                (1, ""),
+            ];
+            table(&head, sorted.into_iter().map(code_row).collect())
+        }
     };
-    let node = nodes.iter().find(|n| &n.id == id)?;
-    let body: Element<'a, Msg> = match &state.machines {
-        Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load this machine.", ""),
-        Load::Ready(list) => match list.iter().find(|m| &m.id == id) {
-            Some(machine) => column![machine_facts(node, machine), runs_table(&machine.runs)]
-                .spacing(16)
-                .width(Length::Fill)
-                .into(),
-            None => ui::faint("This machine reports no facts.").into(),
-        },
-    };
-    let close = ui::btn("Close", None, ui::Kind::Secondary, Some(Msg::Deselect));
-    let mut parts: Vec<Element<'a, Msg>> = vec![body];
-    if !node.waiting.is_empty() {
-        parts.push(waiting_view(&node.waiting));
-    }
-    parts.push(close);
-    Some(ui::card(
-        &node.name,
-        column(parts).spacing(16).width(Length::Fill).into(),
-    ))
+    flush_card("Join codes", body)
 }
 
-/// The agents a stopping machine cannot move off yet, one line each with the reason.
-fn waiting_view<'a>(waiting: &'a [Waiting]) -> Element<'a, Msg> {
-    let lines: Vec<Element<'a, Msg>> = waiting
-        .iter()
-        .map(|w| ui::sans(waiting_line(w), 12.0, crate::theme::palette().ink).into())
-        .collect();
-    column![ui::label("Waiting to move"), column(lines).spacing(6)]
-        .spacing(8)
+fn code_row<'a>(c: &'a JoinCode) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let (label, tone) = code_state(&c.state);
+    let state_cell: Element<'a, Msg> = match &c.used_by {
+        Some(by) => row![ui::badge(&label, tone), ui::faint(format!(" by {by}"))]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into(),
+        None => ui::badge(&label, tone),
+    };
+    let active = c.state == "active";
+    let expires: Element<'a, Msg> = if active {
+        row![
+            ui::faint("in "),
+            ui::sans(countdown(c.expires_ms - now_ms()), 12.0, p.ink),
+        ]
+        .into()
+    } else {
+        ui::faint(ago(c.expires_ms)).into()
+    };
+    let action: Element<'a, Msg> = if active {
+        ui::btn_sm(
+            "Revoke",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::RevokeCode(c.id.clone())),
+        )
+    } else {
+        Space::new().width(Length::Fill).into()
+    };
+    cells(vec![
+        (
+            3,
+            text(c.label.clone())
+                .font(theme::SANS_SEMIBOLD)
+                .size(theme::TYPE_UI)
+                .color(p.ink)
+                .into(),
+        ),
+        (2, ui::mono(c.id.clone(), 11.0, p.ink_3).into()),
+        (2, ui::faint(ago(c.created_ms)).into()),
+        (2, expires),
+        (3, state_cell),
+        (1, action),
+    ])
+}
+
+/// This hub's identity and the owner-token rotation.
+fn hub_card<'a>(hub: &'a Load<HubIdentity>) -> Element<'a, Msg> {
+    let body: Element<'a, Msg> = match hub {
+        Load::Pending => ui::loading(),
+        Load::Failed => ui::prose("Could not load this hub.").into(),
+        Load::Ready(id) => {
+            let p = theme::palette();
+            let fingerprint: String = id
+                .fingerprint
+                .clone()
+                .unwrap_or_else(|| "no TLS (loopback only)".to_string());
+            column![
+                fact_row("Name", ui::mono(id.name.clone(), 13.0, p.ink).into()),
+                fact_row("URL", ui::mono(id.url.clone(), 12.0, p.ink).into()),
+                fact_row("Version", ui::mono(id.version.clone(), 12.0, p.ink).into()),
+                fact_row("TLS fingerprint", ui::mono(fingerprint, 11.0, p.ink).into()),
+                row![ui::btn(
+                    "Rotate owner token",
+                    None,
+                    ui::Kind::Danger,
+                    Some(Msg::AskRotate)
+                )],
+            ]
+            .spacing(12)
+            .into()
+        }
+    };
+    ui::card("This hub", body)
+}
+
+// ---- Dialogs ------------------------------------------------------------------------------------
+
+/// The dialog over the screen: the leave confirmation, or the open dialog.
+fn dialog_layer<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
+    if state.leaving {
+        return Some(leave_layer(state));
+    }
+    state
+        .dialog
+        .as_ref()
+        .map(|dialog| dialog_view(state, dialog))
+}
+
+/// A dialog, as the web's modal: a sheet on a scrim, its title, body and actions. The screen's error shows in it.
+fn layer<'a>(
+    title: &str,
+    mut body: Vec<Element<'a, Msg>>,
+    actions: Vec<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let mut foot: Vec<Element<'a, Msg>> = vec![Space::new().width(Length::Fill).into()];
+    foot.extend(actions);
+    body.push(row(foot).spacing(8).align_y(Alignment::Center).into());
+    let sheet = container(
+        column![
+            text(title.to_string())
+                .font(theme::SANS_SEMIBOLD)
+                .size(theme::TYPE_SECTION)
+                .color(p.ink),
+            column(body).spacing(14).width(Length::Fill),
+        ]
+        .spacing(16)
+        .width(Length::Fill),
+    )
+    .padding(20)
+    .width(Length::Fixed(520.0))
+    .style(theme::pop);
+    container(sheet)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center(Length::Fill)
+        .style(theme::scrim)
         .into()
 }
 
-/// The machine's facts, laid out like the web's detail: CPU, memory, GPUs, arch and backend, then the rest.
-fn machine_facts<'a>(node: &'a NodeView, m: &'a PlazaMachine) -> Element<'a, Msg> {
-    let cpus = if m.cpus > 0 {
-        format!("{} cores", m.cpus)
-    } else {
-        "?".to_string()
-    };
-    let memory = if m.memory_mib > 0 {
-        format!("{:.1} GiB", m.memory_mib as f64 / 1024.0)
-    } else {
-        "?".to_string()
-    };
-    let gpus = if m.gpus.is_empty() {
-        "None".to_string()
-    } else {
-        m.gpus.iter().map(gpu_text).collect::<Vec<_>>().join(", ")
-    };
-    let host = node
-        .machine
-        .as_ref()
-        .and_then(|x| x.host.as_deref())
-        .unwrap_or("?");
-    column![
-        fact(
-            "CPU",
-            ui::sans(cpus, 12.0, crate::theme::palette().ink).into()
-        ),
-        fact(
-            "Memory",
-            ui::sans(memory, 12.0, crate::theme::palette().ink).into()
-        ),
-        fact(
-            "GPUs",
-            ui::sans(gpus, 12.0, crate::theme::palette().ink).into()
-        ),
-        fact(
-            "Arch",
-            ui::mono(or_dash(&m.arch), 12.0, crate::theme::palette().ink).into()
-        ),
-        fact(
-            "Backend",
-            ui::mono(or_dash(&m.backend), 12.0, crate::theme::palette().ink).into()
-        ),
-        fact(
-            "Host",
-            ui::mono(host, 12.0, crate::theme::palette().ink).into()
-        ),
-        fact(
-            "Class",
-            ui::mono(or_dash(&m.class), 12.0, crate::theme::palette().ink).into()
-        ),
-        fact(
-            "Irqchip",
-            ui::mono(or_dash(&m.irqchip), 12.0, crate::theme::palette().ink).into()
-        ),
-        fact(
-            "vsock",
-            ui::mono(or_dash(&m.vsock_mode), 12.0, crate::theme::palette().ink).into()
-        ),
-    ]
-    .spacing(12)
-    .into()
+/// The screen's error, for a dialog to show (empty when there is none).
+fn dialog_error<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
+    state.error.as_deref().map(ui::error_line)
 }
 
-/// A GPU as the web's list shows it: its vendor and name, with its memory when it reports one.
-fn gpu_text(g: &Gpu) -> String {
-    let name = format!("{} {}", g.vendor, g.name).trim().to_string();
-    match g.memory_mib {
-        Some(mib) if mib > 0 => format!("{name} ({:.0} GiB)", mib as f64 / 1024.0),
-        _ => name,
+/// The open dialog: add a node (its label and validity, then the token once issued), the stop and revoke
+/// confirmations, the owner token's rotation and the new token.
+fn dialog_view<'a>(state: &'a State, dialog: &'a Dialog) -> Element<'a, Msg> {
+    let error = dialog_error(state);
+    match dialog {
+        Dialog::Add {
+            label,
+            minutes,
+            issued: None,
+        } => {
+            let label_input = text_input("studio-pc", label)
+                .on_input(Msg::LabelEdit)
+                .on_submit(Msg::CreateCode)
+                .padding(8.0)
+                .style(theme::input);
+            let mut body: Vec<Element<'a, Msg>> = vec![
+                field(
+                    "Label",
+                    label_input.into(),
+                    Some("What the machine is called here."),
+                ),
+                field(
+                    "Valid for",
+                    ui::seg(
+                        &[
+                            (15u64, "15 minutes"),
+                            (30u64, "30 minutes"),
+                            (60u64, "60 minutes"),
+                        ],
+                        *minutes,
+                        Msg::PickMinutes,
+                    ),
+                    Some("How long the code can be used to join."),
+                ),
+            ];
+            body.extend(error);
+            layer(
+                "Add a node",
+                body,
+                vec![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Close)),
+                    ui::btn(
+                        "Create join code",
+                        None,
+                        ui::Kind::Primary,
+                        Some(Msg::CreateCode),
+                    ),
+                ],
+            )
+        }
+        Dialog::Add {
+            issued: Some(made), ..
+        } => {
+            let p = theme::palette();
+            let mut body: Vec<Element<'a, Msg>> = vec![
+                ui::faint("Shown once. Single use. Anyone with it can join until it expires.")
+                    .color(p.warn)
+                    .into(),
+                copy_box(&made.token),
+                row![
+                    ui::faint("Expires in "),
+                    ui::sans(countdown(made.expires_ms - now_ms()), 12.0, p.ink),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center)
+                .into(),
+                ui::faint("On the new machine, run:").into(),
+                copy_box(&format!("apz-link join {}", made.token)),
+                ui::faint("or paste it into the desktop app's Join a hub.").into(),
+            ];
+            body.extend(error);
+            layer(
+                "Add a node",
+                body,
+                vec![ui::btn(
+                    "Close",
+                    None,
+                    ui::Kind::Secondary,
+                    Some(Msg::Close),
+                )],
+            )
+        }
+        Dialog::ConfirmStop { id, name, agents } => {
+            let mut body: Vec<Element<'a, Msg>> = vec![
+                ui::prose(agents_move_line(*agents)).into(),
+                ui::prose(if id == HUB_NODE {
+                    "This is the hub’s own machine: the hub keeps running, only its agents leave."
+                } else {
+                    "Once it is stopped, its machine can be turned off. Resume brings it back, and agents move onto it again."
+                })
+                .into(),
+                ui::faint("Stop now interrupts the turns in progress; each one resumes on its agent’s new machine. Otherwise an agent that is working moves when its turn ends.").into(),
+            ];
+            body.extend(error);
+            layer(
+                &format!("Stop {name}?"),
+                body,
+                vec![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Close)),
+                    ui::btn(
+                        "Stop after their turns",
+                        None,
+                        ui::Kind::Secondary,
+                        Some(Msg::Stop {
+                            id: id.clone(),
+                            name: name.clone(),
+                            now: false,
+                        }),
+                    ),
+                    ui::btn(
+                        "Stop now",
+                        None,
+                        ui::Kind::Danger,
+                        Some(Msg::Stop {
+                            id: id.clone(),
+                            name: name.clone(),
+                            now: true,
+                        }),
+                    ),
+                ],
+            )
+        }
+        Dialog::ConfirmRevoke { id, name } => {
+            let mut body: Vec<Element<'a, Msg>> = vec![
+                ui::prose("Its signatures stop working at once and its agents go offline.").into(),
+            ];
+            body.extend(error);
+            layer(
+                &format!("Revoke {name}?"),
+                body,
+                vec![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Close)),
+                    ui::btn(
+                        "Revoke",
+                        None,
+                        ui::Kind::Danger,
+                        Some(Msg::Revoke {
+                            id: id.clone(),
+                            name: name.clone(),
+                        }),
+                    ),
+                ],
+            )
+        }
+        Dialog::ConfirmRotate => {
+            let mut body: Vec<Element<'a, Msg>> =
+                vec![ui::prose("The current owner token stops working at once.").into()];
+            body.extend(error);
+            layer(
+                "Rotate the owner token?",
+                body,
+                vec![
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Close)),
+                    ui::btn("Rotate", None, ui::Kind::Danger, Some(Msg::Rotate)),
+                ],
+            )
+        }
+        Dialog::Rotated(token) => {
+            let mut body: Vec<Element<'a, Msg>> = vec![
+                ui::prose("The new owner token, shown once:").into(),
+                copy_box(token),
+                ui::faint("Every signed-in browser must sign in again.").into(),
+            ];
+            body.extend(error);
+            layer(
+                "Rotate the owner token?",
+                body,
+                vec![ui::btn(
+                    "Close",
+                    None,
+                    ui::Kind::Secondary,
+                    Some(Msg::Close),
+                )],
+            )
+        }
     }
 }
 
-/// The machine's runs: id, kind, state, its VMs, and when it started; a faint line when it has none.
-fn runs_table<'a>(runs: &'a [Run]) -> Element<'a, Msg> {
-    if runs.is_empty() {
-        return ui::faint("No runs.").into();
-    }
-    table(
-        &[
-            (3, "ID"),
-            (2, "Kind"),
-            (2, "State"),
-            (1, "VMs"),
-            (3, "Started"),
+/// The leave confirmation: this node stops lending its machine, and the choice to forget the network too.
+fn leave_layer<'a>(state: &'a State) -> Element<'a, Msg> {
+    let forget = checkbox(state.forget)
+        .label("Forget this network: remove the saved hub, so joining again needs a new code.")
+        .on_toggle(Msg::ToggleForget);
+    let mut body: Vec<Element<'a, Msg>> = vec![
+        ui::prose(
+            "This node stops lending its machine to that network, and its agents there go offline.",
+        )
+        .into(),
+        forget.into(),
+    ];
+    body.extend(dialog_error(state));
+    layer(
+        "Leave this network?",
+        body,
+        vec![
+            ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelLeave)),
+            ui::btn(
+                "Leave",
+                None,
+                ui::Kind::Danger,
+                (!state.node_busy).then_some(Msg::Leave),
+            ),
         ],
-        runs.iter()
-            .map(|r| {
-                cells(vec![
-                    (
-                        3,
-                        ui::mono(r.id.as_str(), 12.0, crate::theme::palette().ink).into(),
-                    ),
-                    (2, ui::faint(r.role.as_deref().unwrap_or("fleet")).into()),
-                    (2, ui::badge(r.state.as_str(), run_tone(&r.state))),
-                    (
-                        1,
-                        ui::sans(r.vms.len().to_string(), 12.0, crate::theme::palette().ink).into(),
-                    ),
-                    (3, ui::faint(ago(r.created_at)).into()),
-                ])
-            })
-            .collect(),
     )
 }
 
-/// A run's state tone: running is ok, failed is a danger, anything else is muted.
-fn run_tone(state: &str) -> ui::Tone {
-    match state {
-        "running" => ui::Tone::Ok,
-        "failed" => ui::Tone::Danger,
-        _ => ui::Tone::Muted,
+// ---- Shared pieces -------------------------------------------------------------------------------
+
+/// A plain card body's padding of 16 around one element.
+fn padded<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
+    container(content).padding(16).width(Length::Fill).into()
+}
+
+/// A machine's one-line sentence, as the web's: its kind, model, chip and cores, memory, then its GPUs.
+fn sentence(m: &PlazaMachine) -> String {
+    let cores = if m.cpus > 0 {
+        let arch = if m.arch.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", m.arch)
+        };
+        format!("{}-core{arch}", m.cpus)
+    } else {
+        m.arch.clone()
+    };
+    let backend = if m.backend.is_empty() {
+        String::new()
+    } else {
+        format!(" on {}", m.backend.to_ascii_uppercase())
+    };
+    let memory = if m.memory_mib > 0 {
+        format!(
+            " · {} GiB memory",
+            (m.memory_mib as f64 / 1024.0).round() as u64
+        )
+    } else {
+        String::new()
+    };
+    let chip = format!("{cores}{backend}{memory}");
+    let mut head: Vec<&str> = vec![kind_label(&m.kind)];
+    if let Some(model) = m.model.as_deref().filter(|s| !s.is_empty()) {
+        head.push(model);
     }
+    head.push(chip.as_str());
+    let head = head
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if m.gpus.is_empty() {
+        head
+    } else {
+        let names: Vec<&str> = m.gpus.iter().map(|g| g.name.as_str()).collect();
+        format!("{head} · {}", names.join(", "))
+    }
+}
+
+/// A labelled line: its label in the label voice, its control, then a hint line when there is one.
+fn field<'a>(label: &str, control: Element<'a, Msg>, hint: Option<&str>) -> Element<'a, Msg> {
+    let mut items: Vec<Element<'a, Msg>> = vec![ui::label(label).into(), control];
+    if let Some(hint) = hint {
+        items.push(ui::faint(hint.to_string()).into());
+    }
+    column(items).spacing(6).width(Length::Fill).into()
+}
+
+/// A labelled fact of the hub's or a node's details: the label at a fixed width, the value beside it.
+fn fact_row<'a>(name: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
+    row![
+        container(ui::label(name)).width(Length::Fixed(150.0)),
+        value
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// A node's facts in a grid of three to a row, as the web's `.nd-grid`: each label and its value.
+fn fact_grid<'a>(facts: Vec<(&'static str, String)>) -> Element<'a, Msg> {
+    let mut lines: Vec<Element<'a, Msg>> = Vec::new();
+    for chunk in facts.chunks(3) {
+        let mut cells_row: Vec<Element<'a, Msg>> = chunk
+            .iter()
+            .map(|(k, v)| {
+                container(
+                    row![
+                        ui::faint(*k),
+                        Space::new().width(Length::Fill),
+                        ui::sans(v.clone(), 12.0, theme::palette().ink),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .width(Length::FillPortion(1))
+                .into()
+            })
+            .collect();
+        while cells_row.len() < 3 {
+            cells_row.push(Space::new().width(Length::FillPortion(1)).into());
+        }
+        lines.push(row(cells_row).spacing(16).into());
+    }
+    column(lines).spacing(8).width(Length::Fill).into()
+}
+
+/// A card whose body is flush (a table or a list under its head), as the web's flush card.
+fn flush_card<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    let head = container(ui::card_title(title))
+        .padding([8, 16])
+        .width(Length::Fill)
+        .center_y(Length::Fixed(44.0));
+    let rule = container(Space::new().height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::palette().rule.into()),
+            ..Default::default()
+        });
+    container(column![head, rule, body])
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
+}
+
+/// A table: a head row in the label voice over a strong rule, each row under a faint rule. Columns are proportional.
+fn table<'a>(head: &[(u16, &str)], rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let heads: Vec<(u16, Element<'a, Msg>)> = head
+        .iter()
+        .map(|(portion, label)| (*portion, ui::label(label).into()))
+        .collect();
+    let strong = container(Space::new().height(Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::palette().rule_strong.into()),
+            ..Default::default()
+        });
+    let mut lines: Vec<Element<'a, Msg>> = vec![cells(heads), strong.into()];
+    for line in rows {
+        lines.push(line);
+        lines.push(ui::hairline());
+    }
+    column(lines).width(Length::Fill).into()
+}
+
+/// One table row: its cells in proportional columns, padded 9 by 12.
+fn cells<'a>(parts: Vec<(u16, Element<'a, Msg>)>) -> Element<'a, Msg> {
+    let laid: Vec<Element<'a, Msg>> = parts
+        .into_iter()
+        .map(|(portion, cell)| container(cell).width(Length::FillPortion(portion)).into())
+        .collect();
+    container(row(laid).spacing(12).align_y(Alignment::Center))
+        .padding([9, 12])
+        .width(Length::Fill)
+        .into()
+}
+
+/// A value to copy: a mono box with a Copy button.
+fn copy_box<'a>(value: &str) -> Element<'a, Msg> {
+    container(
+        row![
+            ui::mono(value.to_string(), 12.0, theme::palette().ink).width(Length::Fill),
+            ui::btn_sm(
+                "Copy",
+                None,
+                ui::Kind::Ghost,
+                Some(Msg::Copy(value.to_string()))
+            ),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    )
+    .padding([8, 12])
+    .width(Length::Fill)
+    .style(theme::boxed)
+    .into()
+}
+
+/// A machine's picture as an SVG widget of the given size.
+fn svg_view<'a>(markup: String, width: Length, height: Length) -> Element<'a, Msg> {
+    svg(svg::Handle::from_memory(markup.into_bytes()))
+        .width(width)
+        .height(height)
+        .into()
+}
+
+/// The machine's art, large, in the view box of the node's detail.
+fn art_view<'a>(kind: &str, live: bool) -> Element<'a, Msg> {
+    container(svg_view(
+        art_svg(kind, live),
+        Length::Fill,
+        Length::Fixed(260.0),
+    ))
+    .width(Length::Fill)
+    .height(Length::Fixed(360.0))
+    .center_x(Length::Fill)
+    .center_y(Length::Fixed(360.0))
+    .style(|_: &Theme| container::Style {
+        background: Some(theme::palette().sheet_2.into()),
+        border: Border {
+            color: theme::palette().rule,
+            width: 1.0,
+            radius: theme::skin().radius_lg.into(),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// The machine's line art: a chassis sized by its kind, LEDs lit while a VM runs, a vent line.
+fn art_svg(kind: &str, active: bool) -> String {
+    let p = theme::palette();
+    let (w, hg) = match kind {
+        "edge" => (44.0, 44.0),
+        "server" => (56.0, 96.0),
+        "laptop" => (96.0, 64.0),
+        _ => (64.0, 96.0),
+    };
+    let x = (160.0 - w) / 2.0;
+    let y = (120.0 - hg) / 2.0;
+    let led = if active {
+        hex(p.ok)
+    } else {
+        hex(p.rule_strong)
+    };
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120"><rect x="{x}" y="{y}" width="{w}" height="{hg}" rx="4" fill="{chassis}" stroke="{stroke}" stroke-width="1.5"/><circle cx="{c1}" cy="{cy}" r="3" fill="{led}"/><circle cx="{c2}" cy="{cy}" r="3" fill="{led}"/><line x1="{vx1}" y1="{vy}" x2="{vx2}" y2="{vy}" stroke="{vent}" stroke-width="1.5"/></svg>"#,
+        chassis = hex(p.sheet_2),
+        stroke = hex(p.ink_3),
+        vent = hex(p.rule_strong),
+        c1 = x + 10.0,
+        c2 = x + 20.0,
+        cy = y + 10.0,
+        vx1 = x + 8.0,
+        vx2 = x + w - 8.0,
+        vy = y + hg - 16.0,
+    )
+}
+
+/// A colour as the SVG's `#rrggbb`.
+fn hex(c: Color) -> String {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", b(c.r), b(c.g), b(c.b))
 }
 
 /// A value, or a dash when there is none.
@@ -1551,6 +2164,41 @@ fn countdown(left_ms: f64) -> String {
     format!("{:02}:{:02}", s / 60, s % 60)
 }
 
+/// Gibibytes from mebibytes, to one decimal; "?" for a figure the node did not report.
+fn gib(mib: f64) -> String {
+    if mib.is_finite() {
+        format!("{:.1}", mib / 1024.0)
+    } else {
+        "?".to_string()
+    }
+}
+
+/// One decimal, or a dash for a figure the node did not report.
+fn fx1(n: f64) -> String {
+    if n.is_finite() {
+        format!("{n:.1}")
+    } else {
+        "–".to_string()
+    }
+}
+
+/// A machine's uptime as the web words it: "42s", "17m", "3h 5m", "2d 4h".
+fn uptime(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    if s < 60 {
+        return format!("{s}s");
+    }
+    let mins = s / 60;
+    if mins < 60 {
+        return format!("{mins}m");
+    }
+    let hours = mins / 60;
+    if hours < 48 {
+        return format!("{hours}h {}m", mins % 60);
+    }
+    format!("{}d {}h", hours / 24, hours % 24)
+}
+
 /// A relative time since `ms` (the web's `ago`); "—" for no time.
 fn ago(ms: f64) -> String {
     if ms <= 0.0 {
@@ -1574,18 +2222,6 @@ fn now_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// A card's frame: a 1px rule border, square corners.
-fn boxed(_: &Theme) -> container::Style {
-    container::Style {
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1598,7 +2234,7 @@ mod tests {
         assert_eq!((m.cpus, m.memory_mib), (16, 65536));
         assert_eq!(m.gpus[0].name, "RTX 4090");
         assert_eq!(m.gpus[0].memory_mib, Some(24576));
-        assert_eq!(gpu_text(&m.gpus[0]), "nvidia RTX 4090 (24 GiB)");
+        assert_eq!(m.gpus[0].vendor, "nvidia");
         assert_eq!(m.runs[0].role.as_deref(), Some("worker"));
         assert_eq!(m.runs[0].vms.len(), 1);
     }

@@ -37,9 +37,9 @@ const SANS_BOLD: Font = Font {
     weight: font::Weight::Bold,
     ..theme::SANS
 };
-/// Inter italic, for the line an empty lane shows.
-const ITALIC: Font = Font {
-    style: font::Style::Italic,
+/// Semibold, for the lane names and the waits line's label.
+const SANS_SEMIBOLD: Font = Font {
+    weight: font::Weight::Semibold,
     ..theme::SANS
 };
 
@@ -50,6 +50,9 @@ const LANES: [(&str, &str); 4] = [
     ("Done", "Nothing finished yet."),
     ("Failed or withdrawn", "Nothing failed or withdrawn."),
 ];
+
+/// Each lane's mark, as the web's board draws it in front of the lane's name.
+const MARKS: [&str; 4] = ["○", "●", "✓", "×"];
 
 /// The transcript entries that make up a task's timeline.
 const TIMELINE_KINDS: [&str; 4] = ["work_start", "tool_request", "work_end", "error"];
@@ -1007,9 +1010,6 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
             ui::Kind::Primary,
             Some(Msg::NewTask),
         ));
-        if let Some(d) = state.draft.as_ref() {
-            parts.push(draft_form(state, d));
-        }
         parts.push(summary(state));
         if let Some(line) = waits(state) {
             parts.push(line);
@@ -1028,7 +1028,11 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         Some(p) => format!("Tasks · {}", scope::title_in(&state.projects, p)),
         None => "Tasks".to_string(),
     };
-    ui::sheet(ui::view_head(&title, actions), ui::scroll(page).into())
+    let dialog = state.draft.as_ref().map(|d| draft_modal(state, d));
+    ui::with_modal(
+        ui::sheet(ui::view_head(&title, actions), ui::scroll(page).into()),
+        dialog,
+    )
 }
 
 /// The head strip: a figure for each lane, and how many agents are working now.
@@ -1052,7 +1056,8 @@ fn summary<'a>(state: &'a State) -> Element<'a, Msg> {
         fig("Failed", count(3)),
         fig("Agents working", working),
     ]
-    .spacing(28)
+    .spacing(14)
+    .width(Length::Fill)
     .into()
 }
 
@@ -1184,12 +1189,14 @@ fn waits_on<'a>(t: &TaskRecord) -> Option<Element<'a, Msg>> {
     Some(line.wrap().into())
 }
 
+/// One figure of the summary: the web's `.stat`, a label over the number, one fifth of the row.
 fn fig<'a>(label: &str, value: usize) -> Element<'a, Msg> {
     column![
-        ui::sans(value.to_string(), 22.0, crate::theme::palette().ink),
-        ui::label(label)
+        ui::label(label),
+        ui::sans(value.to_string(), 22.0, crate::theme::palette().ink)
     ]
     .spacing(2)
+    .width(Length::FillPortion(1))
     .into()
 }
 
@@ -1211,13 +1218,9 @@ fn board<'a>(state: &'a State) -> Element<'a, Msg> {
                 .collect();
             let count = items.len();
             let body: Element<'a, Msg> = if items.is_empty() {
-                text(*idle)
-                    .font(ITALIC)
-                    .size(15.0)
-                    .color(crate::theme::palette().ink_3)
-                    .into()
+                ui::sans(*idle, 13.0, crate::theme::palette().ink_3).into()
             } else {
-                column(items).spacing(10).into()
+                column(items).spacing(8).into()
             };
             lane(i, label, count, body)
         })
@@ -1225,28 +1228,49 @@ fn board<'a>(state: &'a State) -> Element<'a, Msg> {
     row(lanes).spacing(14).width(Length::Fill).into()
 }
 
+/// A lane: its mark and name, the count at the right, and its cards; the web's `.tk-lane` on the sheet ground, with the
+/// skin's large radius and no rule.
 fn lane<'a>(i: usize, label: &str, count: usize, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    let mark =
-        container(Space::new().width(10.0).height(10.0)).style(theme::swatch(lane_tone(i).color()));
+    let pal = crate::theme::palette();
     let head = row![
-        mark,
+        text(MARKS[i])
+            .font(theme::SANS)
+            .size(13.0)
+            .color(lane_tone(i).color()),
         text(label.to_string())
-            .font(SANS_BOLD)
-            .size(11.5)
-            .color(crate::theme::palette().ink),
+            .font(SANS_SEMIBOLD)
+            .size(13.0)
+            .color(pal.ink),
         Space::new().width(Length::Fill),
         text(count.to_string())
-            .font(SANS_BOLD)
-            .size(12.0)
-            .color(crate::theme::palette().ink_2),
+            .font(theme::SANS)
+            .size(13.0)
+            .color(pal.ink_3),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    container(column![head, ui::hairline(), body].spacing(12))
-        .padding(12.0)
+    container(column![head, body].spacing(8))
+        .padding(Padding {
+            top: 12.0,
+            right: 16.0,
+            bottom: 12.0,
+            left: 16.0,
+        })
         .width(Length::FillPortion(1))
-        .style(theme::boxed)
+        .height(Length::Shrink)
+        .style(lane_box)
         .into()
+}
+
+/// The lane's ground: the sheet's second tier, with the skin's large radius.
+fn lane_box(_theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(crate::theme::palette().ink),
+        background: Some(crate::theme::palette().sheet_2.into()),
+        border: Border::default().rounded(crate::theme::skin().radius_lg),
+        snap: true,
+        ..container::Style::default()
+    }
 }
 
 /// One card, drawn as the web draws it: the id and role on top, the goal in serif semibold
@@ -1255,12 +1279,13 @@ fn lane<'a>(i: usize, label: &str, count: usize, body: Element<'a, Msg>) -> Elem
 fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'a, Msg> {
     let now = now_ms();
     let status = status_of(&state.agents, t.agent_cid);
-    let dot =
-        container(Space::new().width(8.0).height(8.0)).style(theme::swatch(status_color(&status)));
-    let who = row![dot, assignee_link(state, t.agent_cid)]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .width(Length::Fill);
+    let who = row![
+        ui::dot(status_color(&status)),
+        assignee_link(state, t.agent_cid)
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .width(Length::Fill);
     let role = t
         .role
         .as_deref()
@@ -1273,42 +1298,36 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
                 .and_then(|cid| state.activity.get(&cid).cloned())
                 .unwrap_or_else(|| "waiting for the first step…".to_string());
             column![
-                stripe(),
-                container(sans_text(
-                    clip(&line, 36),
-                    11.5,
-                    crate::theme::palette().ink_2
-                ))
-                .width(Length::Fill)
-                .clip(true),
-                meta_row(
+                mono_text(line, 11.5, crate::theme::palette().ink_2),
+                row![
                     meta_text("elapsed".to_string()),
                     ui::sans(
                         fmt_elapsed(now - t.updated_at),
-                        12.0,
-                        crate::theme::palette().ink
+                        11.5,
+                        crate::theme::palette().ink_3
                     )
-                    .into()
-                ),
+                ]
+                .spacing(4),
             ]
-            .spacing(8)
+            .spacing(6)
             .width(Length::Fill)
             .into()
         }
         2 => {
             let mut items: Vec<Element<'a, Msg>> = Vec::new();
             if let Some(note) = t.note.as_deref() {
-                items.push(serif_text(
-                    clip(note, 110),
-                    13.5,
+                items.push(mono_text(
+                    clip(note, 120),
+                    11.5,
                     crate::theme::palette().ink_2,
                 ));
             }
-            items.push(meta_row(
-                meta_text(format!("took {}", fmt_span(t.updated_at - t.created_at))),
-                meta_text(ago(t.updated_at)),
-            ));
-            column(items).spacing(8).width(Length::Fill).into()
+            items.push(meta_text(format!(
+                "took {} · {}",
+                fmt_span(t.updated_at - t.created_at),
+                ago(t.updated_at)
+            )));
+            column(items).spacing(6).width(Length::Fill).into()
         }
         3 => {
             let reason = t
@@ -1317,19 +1336,20 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
                 .or_else(|| t.note.clone())
                 .unwrap_or_else(|| label_of(&t.state));
             column![
-                serif_text(clip(&reason, 160), 13.0, crate::theme::palette().crit),
-                meta_row(meta_text(label_of(&t.state)), meta_text(ago(t.updated_at))),
+                mono_text(clip(&reason, 120), 11.5, crate::theme::palette().crit),
+                meta_text(format!("{} · {}", label_of(&t.state), ago(t.updated_at))),
             ]
-            .spacing(8)
+            .spacing(6)
             .into()
         }
         _ => {
-            let meta = meta_row(
-                meta_text(format!("budget {}", fmt_num(t.budget))),
-                meta_text(format!("created {}", ago(t.created_at))),
-            );
+            let meta = meta_text(format!(
+                "budget {} · created {}",
+                fmt_num(t.budget),
+                ago(t.created_at)
+            ));
             match waits_on(t) {
-                Some(waits) => column![waits, meta].spacing(8).width(Length::Fill).into(),
+                Some(waits) => column![waits, meta].spacing(6).width(Length::Fill).into(),
                 None => meta,
             }
         }
@@ -1353,7 +1373,7 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
     .height(Length::Fixed(41.0))
     .clip(true);
     let body = column![top, title, who, container(detail).width(Length::Fill)]
-        .spacing(10)
+        .spacing(6)
         .width(Length::Fill);
     mouse_area(
         container(body)
@@ -1366,51 +1386,44 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
     .into()
 }
 
-/// The card's box: the paper colour under a rule, as the web's task card. A card the keyboard
-/// has picked takes the register's selected-row fill (the one `theme::register_row(true)` uses).
+/// The card's box: the raised surface under a rule with the skin's radius, as the web's `.task-card`. A card the keyboard
+/// has picked takes the warn tint (the register's selected row).
 fn card_box(picked: bool) -> impl Fn(&Theme) -> container::Style {
     move |_theme: &Theme| container::Style {
         text_color: Some(crate::theme::palette().ink),
         background: Some(
             if picked {
-                crate::theme::palette().taint
+                crate::theme::palette().warn_soft
             } else {
-                crate::theme::palette().paper
+                crate::theme::palette().raised
             }
             .into(),
         ),
         border: Border {
             color: crate::theme::palette().rule,
             width: 1.0,
-            radius: 0.0.into(),
+            radius: crate::theme::skin().radius.into(),
         },
         ..container::Style::default()
     }
 }
 
-/// A solid fill with no border, for the running stripe.
-fn solid(color: Color) -> impl Fn(&Theme) -> container::Style {
-    move |_theme: &Theme| container::Style {
-        background: Some(color.into()),
-        ..container::Style::default()
-    }
+/// Mono text, for the card's activity lines.
+fn mono_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
+    // A line the card is too narrow for is cut at the card's edge, as the web's `.tk-line` does.
+    container(
+        text(s)
+            .font(theme::MONO)
+            .size(size)
+            .color(color)
+            .wrapping(Wrapping::None),
+    )
+    .width(Length::Fill)
+    .clip(true)
+    .into()
 }
 
-/// The orange dashed rule under a running card; the web's stripe, drawn still and clipped.
-fn stripe<'a>() -> Element<'a, Msg> {
-    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
-    for _ in 0..9 {
-        parts.push(
-            container(Space::new().width(10.0).height(3.0))
-                .style(solid(crate::theme::palette().signal))
-                .into(),
-        );
-        parts.push(Space::new().width(10.0).height(3.0).into());
-    }
-    container(row(parts)).width(Length::Fill).clip(true).into()
-}
-
-/// Mono text, for the card's labels and figures.
+/// Sans text, for the card's labels and figures.
 fn sans_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
     text(s)
         .font(theme::SANS)
@@ -1420,29 +1433,9 @@ fn sans_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
         .into()
 }
 
-/// The faint mono of a card's footer.
+/// The faint text of a card's footer.
 fn meta_text<'a>(s: String) -> Element<'a, Msg> {
     sans_text(s, 11.5, crate::theme::palette().ink_3)
-}
-
-/// Interface text that wraps at word boundaries and, failing that, at glyphs, so a long token cannot
-/// run past the card.
-fn serif_text<'a>(s: String, size: f32, color: Color) -> Element<'a, Msg> {
-    text(s)
-        .font(theme::SANS)
-        .size(size)
-        .color(color)
-        .wrapping(Wrapping::WordOrGlyph)
-        .into()
-}
-
-/// A footer line: the left item at the left edge, the right item at the right edge.
-fn meta_row<'a>(left: Element<'a, Msg>, right: Element<'a, Msg>) -> Element<'a, Msg> {
-    row![left, Space::new().width(Length::Fill), right]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .width(Length::Fill)
-        .into()
 }
 
 /// The assignee's name, which opens the agent; "Unassigned" when there is none.
@@ -1461,20 +1454,16 @@ fn assignee_link<'a>(state: &'a State, cid: Option<u64>) -> Element<'a, Msg> {
     }
 }
 
-/// The new-task form, shown above the board.
-fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
+/// The new-task dialog, as the web's `openCreate` sheet: the project and title side by side, then details, acceptance,
+/// role and budget, and the assignee (one of the project's idle agents). Its head closes; the foot creates the task.
+fn draft_modal<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
     let Some(project) = d.project.as_ref() else {
-        return ui::card(
+        return ui::modal(
             "New task",
-            column![
-                ui::prose("A task belongs to a project, and no project takes tasks yet. Open one first: New project, in the project switcher."),
-                row![
-                    Space::new().width(Length::Fill),
-                    ui::btn("Close", None, ui::Kind::Ghost, Some(Msg::CloseForm))
-                ],
-            ]
-            .spacing(14)
-            .into(),
+            ui::prose("A task belongs to a project, and no project takes tasks yet. Open one first: New project, in the project switcher.").into(),
+            vec![ui::btn("Close", None, ui::Kind::Ghost, Some(Msg::CloseForm))],
+            Msg::CloseForm,
+            560.0,
         );
     };
     let project_pick = pick_list(
@@ -1482,16 +1471,19 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
         Some(project.clone()),
         Msg::FormProject,
     )
+    .style(crate::theme::pick_list)
     .width(Length::Fill);
     let title = text_input("What should get done?", &d.title)
         .on_input(Msg::FormTitle)
         .style(theme::input)
         .padding(8.0);
     let details = text_editor(&d.details)
+        .style(crate::theme::editor)
         .placeholder("Details")
         .on_action(Msg::FormDetails)
         .height(120.0);
     let acceptance = text_editor(&d.acceptance)
+        .style(crate::theme::editor)
         .placeholder("Acceptance")
         .on_action(Msg::FormAcceptance)
         .height(80.0);
@@ -1500,6 +1492,7 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
         Some(d.role.clone()),
         Msg::FormRole,
     )
+    .style(crate::theme::pick_list)
     .width(Length::Fill);
     let budget_hint = format!("{DEFAULT_TASK_BUDGET} (hub default)");
     let budget = text_input(&budget_hint, &d.budget)
@@ -1520,17 +1513,14 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
         Some(d.assignee.clone()),
         Msg::FormAssignee,
     )
+    .style(crate::theme::pick_list)
     .width(Length::Fill);
-    let cancel = ui::btn("Cancel", None, ui::Kind::Secondary, Some(Msg::CloseForm));
-    let submit = ui::btn(
-        "Create task",
-        Some("plus"),
-        ui::Kind::Primary,
-        (!d.posting).then_some(Msg::Submit),
-    );
     let body = column![
-        section("Project", project_pick.into()),
-        section("Title", title.into()),
+        row![
+            section("Project", project_pick.into()),
+            section("Title", title.into())
+        ]
+        .spacing(14),
         section("Details", details.into()),
         section("Acceptance", acceptance.into()),
         row![
@@ -1539,24 +1529,22 @@ fn draft_form<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
         ]
         .spacing(14),
         section("Assign to", assignee.into()),
-        row![Space::new().width(Length::Fill), cancel, submit]
-            .spacing(8)
-            .align_y(Alignment::Center),
     ]
     .spacing(14);
-    ui::card("New task", body.into())
+    let submit = ui::btn(
+        "Create task",
+        Some("plus"),
+        ui::Kind::Primary,
+        (!d.posting).then_some(Msg::Submit),
+    );
+    ui::modal("New task", body.into(), vec![submit], Msg::CloseForm, 560.0)
 }
 
 /// One task in full: the goal, acceptance and result, the facts (with assign and withdraw while
 /// it is open), and the timeline of its assignee's work.
 fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
     let rctx = rich::context(&state.cards, None, None);
-    let back: Element<'a, Msg> = ui::btn(
-        "Tasks",
-        Some("chevronRight"),
-        ui::Kind::Ghost,
-        Some(Msg::Back),
-    );
+    let back: Element<'a, Msg> = ui::text_link("‹ Tasks", Msg::Back);
     let Some(detail) = state.detail.as_ref() else {
         return column![back, ui::loading()].spacing(14).into();
     };
@@ -1622,6 +1610,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
             if !into.is_empty() {
                 outside = outside.push(
                     pick_list(into, None::<scope::Pick>, Msg::Move)
+                        .style(crate::theme::pick_list)
                         .placeholder("Move into a project…")
                         .width(Length::Fill),
                 );
@@ -1652,33 +1641,31 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
                 .into(),
         ));
     }
-    let mut side_parts: Vec<Element<'a, Msg>> = vec![facts.into()];
-    if let Some(cid) = t.agent_cid {
-        // The work's changes since it began, in review mode (the IDE's default base).
+    // The work's changes since it began, in review mode (the IDE's default base), at the head's right.
+    let review_btn: Option<Element<'a, Msg>> = t.agent_cid.map(|cid| {
         let review = ide::target(&format!("agent:{cid}"), true, None);
-        side_parts.push(ui::btn(
+        ui::btn(
             "Review changes",
             Some("square-code"),
             ui::Kind::Secondary,
             Some(Msg::OpenIde(review)),
-        ));
-    }
-    if open {
-        side_parts.push(
+        )
+    });
+    // The open task's actions: assign to an idle member, and withdraw, in one row.
+    let controls: Option<Element<'a, Msg>> = open.then(|| {
+        row![
             pick_list(assign_options, None::<Pick>, Msg::Assign)
+                .style(crate::theme::pick_list)
                 .placeholder("Assign to…")
-                .width(Length::Fill)
-                .into(),
-        );
-        side_parts.push(
-            row![
-                Space::new().width(Length::Fill),
-                ui::btn("Withdraw", Some("x"), ui::Kind::Danger, Some(Msg::Withdraw)),
-            ]
-            .align_y(Alignment::Center)
-            .into(),
-        );
-    }
+                .width(Length::Fill),
+            ui::btn("Withdraw", Some("x"), ui::Kind::Danger, Some(Msg::Withdraw)),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+    });
+    let mut side_parts: Vec<Element<'a, Msg>> = vec![facts.into()];
+    side_parts.extend(controls);
 
     let steps: Element<'a, Msg> = if detail.timeline.is_empty() {
         let line = if t.agent_cid.is_none() {
@@ -1693,37 +1680,65 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
             .into()
     };
 
-    let mut main_parts: Vec<Element<'a, Msg>> = vec![section(
+    let mut main_parts: Vec<Element<'a, Msg>> = vec![tk_block(
         "Goal",
         rich::view(&t.goal, &rctx, &state.cards, &on_rich),
     )];
     if let Some(a) = t.acceptance.as_deref().filter(|a| !a.is_empty()) {
-        main_parts.push(section(
+        main_parts.push(tk_block(
             "Acceptance",
             rich::view(a, &rctx, &state.cards, &on_rich),
         ));
     }
     if let Some(n) = t.note.as_deref().filter(|n| !n.is_empty()) {
-        main_parts.push(section(
+        main_parts.push(tk_block(
             "Result",
             rich::view(n, &rctx, &state.cards, &on_rich),
         ));
     }
+    if let Some(o) = t
+        .outcome
+        .as_deref()
+        .filter(|o| !o.is_empty() && Some(*o) != t.note.as_deref())
+    {
+        main_parts.push(tk_block(
+            "Outcome",
+            rich::view(o, &rctx, &state.cards, &on_rich),
+        ));
+    }
 
-    let head = column![
+    // The head: the id over the title, the review at the right (the web's `.view-head`).
+    let title_line = column![
         ui::mono(t.id.clone(), 11.0, crate::theme::palette().ink_3),
         ui::sans(title_of(&t.goal), 22.0, crate::theme::palette().ink)
     ]
-    .spacing(4);
-    let main = column(main_parts).spacing(22).width(Length::FillPortion(3));
-    let side = column![
-        section("Facts", column(side_parts).spacing(10).into()),
-        section("Timeline", steps)
-    ]
-    .spacing(22)
-    .width(Length::FillPortion(2));
-    column![back, head, row![main, side].spacing(28)]
+    .spacing(4)
+    .width(Length::Fill);
+    let mut head = row![title_line].spacing(14).align_y(Alignment::Center);
+    if let Some(review) = review_btn {
+        head = head.push(review);
+    }
+    // The two columns of the web's `.tk-cols`: the body on the left, the facts and the timeline in a 320 px column.
+    let main = column(main_parts).spacing(14).width(Length::Fill);
+    let facts_block: Element<'a, Msg> = container(column(side_parts).spacing(12))
+        .padding(16)
+        .width(Length::Fill)
+        .style(theme::sheet)
+        .into();
+    let side = column![facts_block, tk_block("Timeline", steps)]
+        .spacing(14)
+        .width(Length::Fixed(320.0));
+    column![back, head, row![main, side].spacing(14)]
         .spacing(18)
+        .into()
+}
+
+/// A block of the task page: a bordered sheet with its label over its body, as the web's `.tk-block`.
+fn tk_block<'a>(label: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    container(column![ui::label(label), body].spacing(8))
+        .padding(16)
+        .width(Length::Fill)
+        .style(theme::sheet)
         .into()
 }
 
@@ -1734,23 +1749,31 @@ fn timeline_row<'a>(e: &'a EntryRecord) -> Element<'a, Msg> {
         crate::theme::palette().ink
     };
     row![
-        ui::sans(clock(e.at_ms), 11.0, crate::theme::palette().ink_3),
-        ui::sans(describe(e), 12.0, color)
+        container(ui::mono(
+            clock(e.at_ms),
+            11.0,
+            crate::theme::palette().ink_3
+        ))
+        .width(Length::Fixed(72.0)),
+        ui::sans(describe(e), 12.0, color).width(Length::Fill)
     ]
-    .spacing(12)
+    .spacing(8)
     .into()
 }
 
 /// A labelled section: a label over its body.
 fn section<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    column![ui::label(title), body].spacing(10).into()
+    column![ui::label(title), body]
+        .spacing(10)
+        .width(Length::Fill)
+        .into()
 }
 
-/// A key and its value on one line.
+/// A fact: its key over its value, as the web's `.tk-fact`.
 fn kv<'a>(key: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
-    row![container(ui::label(key)).width(Length::Fixed(96.0)), value]
-        .spacing(8)
-        .align_y(Alignment::Center)
+    column![ui::label(key), value]
+        .spacing(4)
+        .width(Length::Fill)
         .into()
 }
 

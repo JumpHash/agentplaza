@@ -1,0 +1,17 @@
+meta {
+  name: List the artifacts
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}

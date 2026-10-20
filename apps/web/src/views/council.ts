@@ -1,10 +1,11 @@
 import { roleLabel } from '../roles';
-// The council: motions the plaza's roles vote on, and the owner's decisions on them.
+// The council, as the Loom console draws it (the cn-* rules in styles/proto/social.css): the motions
+// the plaza's roles vote on, each with its tally and its votes, and the owner's decisions on them.
 
-import '../styles/ops.css';
+import '../styles/proto/social.css';
 import { api, type Motion } from '../api';
 import { on } from '../store';
-import { ago, attempt, badge, button, card, empty, modal, select, textarea, type Tone } from '../ui/components';
+import { ago, attempt, button, empty, field, modal, select, textarea, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 
@@ -30,12 +31,21 @@ const stateTone = (m: Motion): Tone => STATE_TONE[m.state] ?? 'muted';
 
 const VOTE_TONE: Record<string, Tone> = { yes: 'ok', no: 'danger', abstain: 'muted' };
 
-const share = (n: number, of: number): string => `${of > 0 ? (n / of) * 100 : 0}%`;
+const pct = (n: number, of: number): string => (of ? ((n / of) * 100).toFixed(2) : '0');
 
 export function mount(root: HTMLElement, _params: string[]): Cleanup {
-  const list = h('div.stack');
+  const list = h('div.cn-list');
   const stateSel = select([{ value: '', label: 'All states' }, ...STATES.map((s) => ({ value: s, label: s.replace(/_/g, ' ') }))]);
-  root.append(h('div.view-head', null, h('h1', null, 'Council'), h('div.actions', null, stateSel)), list);
+  stateSel.setAttribute('aria-label', 'State');
+  stateSel.setAttribute('data-input', 'cn-filter');
+  root.append(
+    h(
+      'header.page-head',
+      null,
+      h('div.page-head-row', null, h('h1', null, 'Council'), h('span.sp'), h('div.page-actions', null, h('div.cn-bar', null, stateSel))),
+    ),
+    list,
+  );
 
   let alive = true;
   let motions: Motion[] = [];
@@ -71,47 +81,52 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 function motionCard(m: Motion, changed: () => void): HTMLElement {
   const t = m.tally;
   const bar = h(
-    'div.tally',
+    'div.cn-tally',
     { role: 'img', 'aria-label': `${t.yes} yes, ${t.no} no, ${t.abstain} abstain of ${t.seats}` },
-    h('span.tally-seg.yes', { style: `width:${share(t.yes, t.seats)}` }),
-    h('span.tally-seg.no', { style: `width:${share(t.no, t.seats)}` }),
-    h('span.tally-seg.abstain', { style: `width:${share(t.abstain, t.seats)}` }),
+    h('i.y', { style: `width:${pct(t.yes, t.seats)}%` }),
+    h('i.n', { style: `width:${pct(t.no, t.seats)}%` }),
+    h('i.a', { style: `width:${pct(t.abstain, t.seats)}%` }),
   );
   const votes = m.votes?.length
     ? h(
-        'ul.votes',
+        'div.cn-votes',
         null,
-        m.votes.map((v) => h('li', { 'data-key': `v-${v.seat}` }, h('span.muted', null, roleLabel(v.seat)), badge(v.vote, VOTE_TONE[v.vote] ?? 'muted'), h('span', null, v.reason))),
+        m.votes.map((v) =>
+          h(
+            'div.cn-vote',
+            { 'data-key': `v-${v.seat}` },
+            h('span.muted', null, roleLabel(v.seat)),
+            h('span.chip', { class: `t-${VOTE_TONE[v.vote] ?? 'muted'}` }, v.vote),
+            h('span', null, v.reason ?? ''),
+          ),
+        ),
       )
     : null;
   const actions = needsOwner(m)
     ? h(
-        'div.motion-actions',
+        'div.cn-act',
         null,
-        button('Reject', () => decide(m, false, changed), { kind: 'danger', icon: 'x' }),
-        button('Approve', () => decide(m, true, changed), { kind: 'primary', icon: 'check' }),
+        button('Reject', () => decide(m, false, changed), { kind: 'danger', size: 'sm', icon: 'x' }),
+        button('Approve', () => decide(m, true, changed), { kind: 'primary', size: 'sm', icon: 'check' }),
       )
     : null;
-  const el = card(
-    h('div.motion-head', null, badge(m.kind, 'accent'), badge(m.state, stateTone(m), true), h('span.faint', null, ago(m.created_at))),
-    h(
-      'div.stack',
-      null,
-      h('p.motion-text', null, m.text),
-      bar,
-      h('div.tally-legend.faint', null, `${t.yes} yes · ${t.no} no · ${t.abstain} abstain · ${t.voted}/${t.seats}`),
-      h('div.tally-legend.faint', null, `Quorum: ${m.quorum.rule}`),
-      votes,
-      actions,
-    ),
+  const el = h(
+    'article.cn-card',
+    { 'data-key': `m-${m.id}` },
+    h('div.bd-top', null, h('span.chip.t-accent', null, m.kind), h('span.chip', { class: `t-${stateTone(m)}` }, m.state), h('span.bd-time', null, ago(m.created_at))),
+    h('p.cn-text', null, m.text),
+    bar,
+    h('p.cn-leg', null, `${t.yes} yes · ${t.no} no · ${t.abstain} abstain · ${t.voted}/${t.seats}`),
+    h('p.hint', null, `Quorum: ${m.quorum.rule}`),
+    votes,
+    actions,
   );
-  el.setAttribute('data-key', `m-${m.id}`);
   return el;
 }
 
 function decide(m: Motion, approve: boolean, changed: () => void): void {
   const verb = approve ? 'Approve' : 'Reject';
-  const reason = textarea({ rows: 3, placeholder: 'Reason' });
+  const reason = textarea({ id: 'cn-reason', rows: 3, placeholder: 'Reason', 'aria-label': 'Reason' });
   const submit = button(
     verb,
     () => {
@@ -130,11 +145,11 @@ function decide(m: Motion, approve: boolean, changed: () => void): void {
   const close = modal(
     `${verb} motion`,
     h(
-      'div.stack',
+      'div',
       null,
       h('p.muted', null, m.text),
-      reason,
-      h('div.motion-actions', null, button('Cancel', () => close(), { kind: 'ghost' }), submit),
+      field('Reason', reason),
+      h('footer.sheet-f', null, button('Cancel', () => close(), { kind: 'ghost' }), submit),
     ),
   );
 }

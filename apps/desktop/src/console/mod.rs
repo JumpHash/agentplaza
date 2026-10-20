@@ -6,12 +6,14 @@
 //! `apps/web/DESIGN.md` ([`ui`]). Every screen talks to the hub through [`client`]. The legacy
 //! register (fleet, runs, map, telemetry) stays reachable with `--legacy`.
 
+pub mod backdrop;
 pub mod boot;
 pub mod brands;
 pub mod cli_link;
 // The 3D engine (`crates/apz-engine`), shared with the web's wasm build.
 pub use apz_engine as engine;
 pub mod chart;
+pub mod chat_tools;
 pub mod client;
 pub mod events;
 pub mod files;
@@ -32,9 +34,11 @@ pub mod scope;
 pub mod screens;
 pub mod services;
 pub mod setup;
+pub mod share;
 pub mod shell;
 pub mod toast;
 pub mod ui;
+pub mod view;
 pub mod workstation_setup;
 
 use iced::{Element, Subscription, Task};
@@ -65,6 +69,10 @@ pub struct Console {
     /// `APZ_PICK=<machine id>` (a capture hook): the machine the Machines screen picks once after its first load.
     pick: Option<String>,
     pub onboard: onboard::State,
+    /// The theme's background under the shell: its clock and pointer.
+    pub backdrop: backdrop::State,
+    /// The window has focus and is not minimised; the backdrop's clock ticks only then.
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -81,14 +89,21 @@ pub enum Msg {
     Shot(iced::window::Screenshot),
     /// The graphics backend and adapter in use.
     System(iced::system::Information),
+    /// The backdrop under the shell: a frame tick, and the pointer over the window.
+    Backdrop(backdrop::Msg),
+    /// The window gained (true) or lost (false) focus, or was minimised (false).
+    Focus(bool),
 }
 
 fn boot() -> (Console, Task<Msg>) {
-    crate::theme::choose_saved(
-        boot::saved_setting("theme")
-            .as_ref()
-            .and_then(|value| value.as_str()),
-    );
+    // The look cached from the hub (or this device's own look) is applied first; the mode an older build saved is the fallback.
+    if !screens::appearance::startup() {
+        crate::theme::choose_saved(
+            boot::saved_setting("theme")
+                .as_ref()
+                .and_then(|value| value.as_str()),
+        );
+    }
     crate::theme::set_machine_style(crate::theme::saved_machine_style(
         boot::saved_setting("machine_style")
             .as_ref()
@@ -108,6 +123,8 @@ fn boot() -> (Console, Task<Msg>) {
         screens: screens::Screens::default(),
         pick,
         onboard: onboard::State::default(),
+        backdrop: backdrop::State::default(),
+        focused: true,
     };
     // For development and captures: `APZ_CONNECT=<hub url>` (and `APZ_TOKEN`) skips the chooser,
     // `APZ_SCREEN=<screen label>` opens that screen.
@@ -164,6 +181,10 @@ fn boot() -> (Console, Task<Msg>) {
         .and_then(|v| v.trim().parse::<u64>().ok())
     {
         console.shell.current = screens::Id::Agent(cid);
+    }
+    // `APZ_ARTIFACT=<id>` opens that artifact's page (a capture hook, as `APZ_AGENT`).
+    if let Ok(id) = std::env::var("APZ_ARTIFACT") {
+        console.shell.current = screens::Id::Artifact(id);
     }
     // `APZ_JOB=<id>` opens that Lab job's page: its `Id::LabJobDetail` is the current screen, as `APZ_AGENT` does for an agent.
     if let Ok(job) = std::env::var("APZ_JOB") {
@@ -239,8 +260,8 @@ fn boot() -> (Console, Task<Msg>) {
         screens::lab_jobs::capture_cards(&mut console.screens.lab_jobs);
     }
     let first = onboard::first_start(&mut console.onboard, &ctx).map(Msg::Onboard);
-    // `APZ_ONBOARD=tour|checks|deps|off`: the tour, the wizard's last step, its dependencies step, or
-    // neither, for captures.
+    // `APZ_ONBOARD=tour|off|<step>` (welcome, look, hub, deps, keys, checks): the tour, neither, or the wizard on
+    // that step, for captures.
     let mut capture = Task::none();
     match std::env::var("APZ_ONBOARD").as_deref() {
         Ok("tour") => {
@@ -249,17 +270,29 @@ fn boot() -> (Console, Task<Msg>) {
             console.shell.highlight = onboard::highlighted(&console.onboard);
         }
         Ok("off") => console.onboard.wizard = None,
-        Ok("checks") | Ok("deps") => {
-            let step = std::env::var("APZ_ONBOARD").unwrap_or_default();
-            console.onboard.wizard = Some(onboard::step_index(&step));
+        Ok(step @ ("welcome" | "look" | "hub" | "deps" | "keys" | "checks")) => {
+            console.onboard.wizard = Some(onboard::step_index(step));
             capture = onboard::local_task().map(|checks| Msg::Onboard(onboard::Msg::Local(checks)));
         }
         _ => {}
+    }
+    // `APZ_WIZARD=1` (a capture hook): the Agents screen opens with its spawn wizard.
+    if std::env::var_os("APZ_WIZARD").is_some() {
+        console.shell.current = screens::Id::Agents;
+        capture = Task::batch([
+            capture,
+            Task::done(Msg::Screen(screens::Msg::Agents(
+                screens::agents::Msg::Wizard(screens::wizard::WizardMsg::Open),
+            ))),
+        ]);
     }
     let reveal = onboard::reveal::<Msg>(&console.onboard, true);
     let tasks = Task::batch([
         screens::open(&mut console.screens, console.shell.current.clone(), &ctx).map(Msg::Screen),
         shell::load(&ctx).map(Msg::Shell),
+        screens::appearance::sync(&ctx)
+            .map(screens::Msg::Appearance)
+            .map(Msg::Screen),
         first,
         capture,
         reveal,
@@ -306,6 +339,11 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
                         .map(Msg::Screen),
                 );
                 tasks.push(shell::load(&ctx).map(Msg::Shell));
+                tasks.push(
+                    screens::appearance::sync(&ctx)
+                        .map(screens::Msg::Appearance)
+                        .map(Msg::Screen),
+                );
                 tasks.push(onboard::first_start(&mut console.onboard, &ctx).map(Msg::Onboard));
                 console.ctx = Some(ctx);
             }
@@ -341,6 +379,12 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
                     tasks.push(screens::open(&mut console.screens, id, &ctx).map(Msg::Screen));
                 }
                 // "Change hub": the chooser again; the wizard waits and resumes once connected.
+                // The wizard's look: saved to the hub, and the answer is cached.
+                onboard::Effect::Save(look) => tasks.push(
+                    screens::appearance::save(&ctx, look)
+                        .map(screens::Msg::Appearance)
+                        .map(Msg::Screen),
+                ),
                 onboard::Effect::Chooser => {
                     console.ctx = None;
                     console.boot = boot::init().0;
@@ -363,6 +407,7 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
         }
         // New project, from a screen (the Projects screen, the IDE): the shell's dialog opens.
         Msg::Screen(screens::Msg::Projects(screens::projects::Msg::NewProject))
+        | Msg::Screen(screens::Msg::Overview(screens::overview::Msg::NewProject))
         | Msg::Screen(screens::Msg::Ide(screens::ide::Msg::NewProject)) => {
             console.shell.new_project = Some(new_project::Form::default());
             Task::none()
@@ -404,8 +449,20 @@ fn update_app(console: &mut Console, msg: Msg) -> Task<Msg> {
                 "agentplaza-desktop: graphics {} on {}",
                 info.graphics_backend, info.graphics_adapter
             );
-            console.shell.software_gpu =
-                is_software(&info.graphics_adapter).then(|| info.graphics_adapter.clone());
+            // `APZ_RECORDING=1` (a capture hook): the README's recordings run on a GPU-less virtual display, where
+            // the software-rendering banner would sit over every frame.
+            console.shell.software_gpu = (is_software(&info.graphics_adapter)
+                && std::env::var_os("APZ_RECORDING").is_none())
+            .then(|| info.graphics_adapter.clone());
+            backdrop::renderer(&mut console.backdrop, &info.graphics_backend);
+            Task::none()
+        }
+        Msg::Backdrop(msg) => {
+            backdrop::update(&mut console.backdrop, msg);
+            Task::none()
+        }
+        Msg::Focus(on) => {
+            console.focused = on;
             Task::none()
         }
         Msg::Snapshot => {
@@ -469,27 +526,36 @@ fn pick_after_layout(id: String) -> Task<Msg> {
 }
 
 fn view(console: &Console) -> Element<'_, Msg> {
+    // Only the shell's view draws the backdrop; the chooser and the wizard keep the page paper.
+    backdrop::clear();
     match &console.ctx {
         None => boot::view(&console.boot).map(Msg::Boot),
         Some(ctx) => {
-            // The wizard takes the window; the tour and its offer lay over the shell.
-            if console.onboard.wizard.is_some() {
-                return onboard::wizard_view(&console.onboard, ctx.client.base()).map(Msg::Onboard);
-            }
+            // The wizard, the tour and its offer lay over the shell (the web's dialog over the console).
             // The IDE's header shows the plaza's hold and the events link, which the shell keeps.
             let plaza = screens::ide::Plaza {
                 held: console.shell.paused,
                 live: console.shell.live,
             };
-            let base = shell::view(
+            let shell = shell::view(
                 &console.shell,
                 screens::view(&console.screens, &console.shell.current, ctx, plaza)
                     .map(Msg::Screen),
                 screens::scrolls_itself(&console.screens, &console.shell.current),
                 Msg::Shell,
             );
+            // The theme's background lies under the shell (the page ground is clear over it).
+            let base: Element<'_, Msg> = match backdrop::layer(&console.backdrop, Msg::Backdrop) {
+                Some(under) => iced::widget::stack([under, shell]).into(),
+                None => shell,
+            };
             let open = console.shell.mode == shell::Mode::Open;
             let width = if open { console.shell.width } else { 60.0 };
+            if console.onboard.wizard.is_some() {
+                let dialog =
+                    onboard::wizard_dialog(&console.onboard, ctx.client.base()).map(Msg::Onboard);
+                return iced::widget::stack([base, dialog]).into();
+            }
             match onboard::overlay(&console.onboard, width, open) {
                 Some(layer) => iced::widget::stack([base, layer.map(Msg::Onboard)]).into(),
                 None => base,
@@ -511,16 +577,33 @@ fn subscription(console: &Console) -> Subscription<Msg> {
         }
         _ => Subscription::none(),
     };
+    let focus = iced::event::listen_with(window_event);
     let Some(ctx) = console.ctx.as_ref() else {
-        return boot::subscription(&console.boot).map(Msg::Boot);
+        return Subscription::batch([boot::subscription(&console.boot).map(Msg::Boot), focus]);
     };
     Subscription::batch([
         snapshot,
+        focus,
         iced::time::every(std::time::Duration::from_secs(4)).map(|_| Msg::Tick),
         shell::subscription(&console.shell).map(Msg::Shell),
+        backdrop::subscription(&console.backdrop, console.focused).map(Msg::Backdrop),
         iced::system::theme_changes().map(|mode| Msg::Shell(shell::Msg::Appearance(mode))),
         screens::subscription(&console.screens, &console.shell.current, ctx).map(Msg::Screen),
     ])
+}
+
+/// The window's focus, and its minimising: a window resized to nothing is minimised, so it counts as unfocused.
+fn window_event(event: iced::Event, _: iced::event::Status, _: iced::window::Id) -> Option<Msg> {
+    match event {
+        iced::Event::Window(iced::window::Event::Focused) => Some(Msg::Focus(true)),
+        iced::Event::Window(iced::window::Event::Unfocused) => Some(Msg::Focus(false)),
+        iced::Event::Window(iced::window::Event::Resized(size))
+            if size.width <= 0.0 || size.height <= 0.0 =>
+        {
+            Some(Msg::Focus(false))
+        }
+        _ => None,
+    }
 }
 
 /// Runs the console until the window closes.
@@ -529,17 +612,17 @@ pub fn run() -> iced::Result {
         .title(|_: &Console| "AgentPlaza".to_string())
         .theme(|_: &Console| crate::theme::theme())
         .subscription(subscription)
-        // The register's faces (assets/fonts, SIL OFL 1.1): embedded, so the app needs no install.
-        // Inter is the interface and reading face, and the default font; Martian Mono is for code only.
+        // The consoles' faces (assets/fonts, SIL OFL 1.1): embedded, so the app needs no install. Geist is the
+        // interface and reading face, and the default font; Geist Mono is for code and Loom's section labels.
         .default_font(crate::theme::SANS)
-        .font(include_bytes!("../../../../assets/fonts/Inter-Regular.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/Inter-Medium.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/Inter-SemiBold.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/Inter-Bold.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/Inter-Italic.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/MartianMono-Regular.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/MartianMono-Medium.ttf").as_slice())
-        .font(include_bytes!("../../../../assets/fonts/MartianMono-Bold.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Geist-Regular.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Geist-Medium.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Geist-SemiBold.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Geist-Bold.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/Geist-Italic.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/GeistMono-Regular.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/GeistMono-Medium.ttf").as_slice())
+        .font(include_bytes!("../../../../assets/fonts/GeistMono-Bold.ttf").as_slice())
         // With `APZ_SNAPSHOT` the window stays hidden: the app captures its own frame.
         .window(iced::window::Settings {
             size: snapshot_size().unwrap_or(iced::Size::new(1360.0, 880.0)),

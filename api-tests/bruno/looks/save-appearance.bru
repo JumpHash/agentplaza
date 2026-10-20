@@ -1,0 +1,27 @@
+meta {
+  name: Save a chosen built-in look
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/appearance
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "theme": "graphite-cobalt",
+    "mode": "dark",
+    "density": "default",
+    "code_size": 13,
+    "chosen": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.choice.theme: eq graphite-cobalt
+}

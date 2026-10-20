@@ -1,10 +1,9 @@
-// The agent wizard: define a role properly and spawn agents of it — or review and approve an
-// orchestrator's proposal. Steps: Purpose → Role → Tools & limits → Prompt → Review & spawn.
+// The agent wizard: define a role properly and spawn agents of it, or review and decide on an orchestrator's proposal.
+// Steps: Purpose → Role → Tools & limits → Prompt → Review. A proposal walks The proposal → The role → Decide.
 
-import '../styles/agent-wizard.css';
 import { api, type AgentProposal, type ModelInfo, type RoleDef, type RoleView, type Settings } from '../api';
-import { attempt, badge, button, clip, input, modal, select, textarea } from '../ui/components';
-import { h, replace } from '../ui/dom';
+import { attempt, badge, button, clip, field, input, modal, select, textarea } from '../ui/components';
+import { h, lu, replace } from '../ui/dom';
 import { modelPicker, type ModelChoice, type ModelPicker } from '../ui/model-picker';
 import { renderMarkdown } from '../ui/markdown';
 import { tierChoices } from './agent-detail';
@@ -21,6 +20,7 @@ export interface WizardOptions {
 }
 
 const STEPS = ['Purpose', 'Role', 'Tools & limits', 'Prompt', 'Review'];
+const PROPOSAL_STEPS = ['The proposal', 'The role', 'Decide'];
 const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
 const EFFORT_OPTS: { value: string; label: string }[] = [{ value: '', label: 'Model default' }, ...EFFORTS.map((e) => ({ value: e, label: e }))];
 const TOOL_GROUPS: { group: string; tools: string[] }[] = [
@@ -34,6 +34,7 @@ const MAX_AGENTS = 8;
 const ID_OK = /^[a-z0-9-]+$/;
 
 type Mode = 'existing' | 'new';
+type ListKey = 'responsibilities' | 'deliverables' | 'boundaries';
 
 /** The wizard's working copy: an existing role's id, or a new role's fields, plus the spawn settings. */
 interface Draft {
@@ -150,17 +151,15 @@ function workerChoices(settings: Settings, models: ModelInfo[], current: string)
   return out;
 }
 
-/** A block of label, control and hint, as the console's forms lay them out. */
-function block(label: string, control: Node, hint?: string): HTMLElement {
-  return h('div.field', null, h('span', null, label), control, hint ? h('span.hint', null, hint) : null);
+/** A read-only row: a muted label over its value, as the prototype's previews lay them out. */
+function ro(label: string, value: string | Node): HTMLElement {
+  return h('div', null, h('div.muted', null, label), h('div', null, value));
 }
 
-function readOnly(label: string, body: string | Node): HTMLElement {
-  return h('div.wiz-ro', null, h('span.wiz-kicker', null, label), typeof body === 'string' ? h('p', null, body || '—') : body);
-}
-
-function listNode(items: string[]): HTMLElement {
-  return items.length ? h('ul', null, items.map((x) => h('li', null, x))) : h('p', null, '—');
+/** A list of the items, or a dash when there are none. */
+function listNode(items: string[]): string | Node {
+  const xs = nonEmpty(items);
+  return xs.length ? h('ul', null, xs.map((x) => h('li', null, x))) : '—';
 }
 
 /** Opens the wizard in a modal. */
@@ -197,6 +196,10 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
   let step = 0;
   let editing = false;
   let rejecting = false;
+  let rejectReason = '';
+  let delConfirm: string | null = null;
+  /** Runs once after the next redraw (focus a field the reader just opened). */
+  let afterRender: (() => void) | null = null;
   let roles: RoleView[] = [];
   let settings: Settings | null = null;
   let models: ModelInfo[] = [];
@@ -204,23 +207,34 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
   let picker: ModelPicker | null = null;
   let loadError: string | null = null;
 
+  const stepNames = (): string[] => (proposal ? PROPOSAL_STEPS : STEPS);
   const stepsHost = h('div');
-  const bodyHost = h('div.wiz-body');
-  const navHost = h('div.wiz-nav');
-  const root = h('div.wizard', null, stepsHost, bodyHost, navHost);
+  const bodyHost = h('div.ag-wiz-body');
+  const navHost = h('div.cluster', { style: 'justify-content:flex-end;width:100%' });
+  const root = h('div', null, stepsHost, bodyHost);
 
   const choicesFor = (current: string): ModelChoice[] => (settings ? workerChoices(settings, models, current) : []);
   const existingDef = (): RoleDef | undefined =>
     roles.find((r) => r.id === d.roleId)?.def ?? (proposal && proposal.role.id === d.roleId ? proposal.role : undefined);
+  /** The step's fields allow Next. A proposal's steps are read-only, so they always do. */
+  const canAdvance = (): boolean => proposal !== undefined || isValid(d, step);
+  const modelLabelOf = (): string => modelChoices.find((c) => c.value === d.model)?.label ?? (d.model || 'Model default');
 
   function renderNav(): void {
-    const last = step === STEPS.length - 1;
+    const last = step === stepNames().length - 1;
     const nodes: Node[] = [button('Back', () => go(step - 1), { kind: 'ghost', disabled: step === 0 || busy })];
-    if (!last) {
-      nodes.push(button('Next', () => go(step + 1), { kind: 'primary', disabled: !loaded || busy || !isValid(d, step) }));
-    } else if (proposal) {
-      nodes.push(button('Reject…', () => { rejecting = !rejecting; render(); }, { kind: 'danger', disabled: busy }));
-      nodes.push(button('Approve and spawn', approve, { kind: 'primary', disabled: busy }));
+    if (proposal) {
+      if (!last) {
+        nodes.push(button('Next', () => go(step + 1), { kind: 'primary', disabled: !loaded || busy }));
+      } else if (rejecting) {
+        nodes.push(button('Keep it', keepIt, { kind: 'ghost' }));
+        nodes.push(button('Reject', rejectNow, { kind: 'danger', disabled: busy || rejectReason.trim() === '' }));
+      } else {
+        nodes.push(button('Reject...', openReject, { kind: 'ghost', disabled: busy }));
+        nodes.push(button('Approve and spawn', approve, { kind: 'primary', disabled: busy }));
+      }
+    } else if (!last) {
+      nodes.push(button('Next', () => go(step + 1), { kind: 'primary', disabled: !loaded || busy || !canAdvance() }));
     } else {
       const label = d.mode === 'new' ? `Create role and spawn ${plural(d.count, 'agent')}` : `Spawn ${plural(d.count, 'agent')}`;
       nodes.push(button(label, spawn, { kind: 'primary', disabled: busy }));
@@ -228,25 +242,27 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
     replace(navHost, nodes);
   }
 
-  function render(focus?: string): void {
+  function render(): void {
     replace(stepsHost, stepper());
     if (!loaded || !picker) {
       replace(
         bodyHost,
         loadError
-          ? h('div.wiz-ro', null, h('p', null, `Could not load roles and models: ${loadError}`), button('Retry', () => { loadError = null; render(); void load(); }, { kind: 'ghost' }))
-          : h('p.wiz-muted', null, 'Loading roles…'),
+          ? h('div.ag-stack', null, h('p', null, `Could not load roles and models: ${loadError}`), button('Retry', () => { loadError = null; render(); void load(); }, { kind: 'ghost' }))
+          : h('p.muted', null, 'Loading roles…'),
       );
       replace(navHost);
       return;
     }
     replace(bodyHost, bodyFor(step));
-    if (focus) bodyHost.querySelector<HTMLElement>(focus)?.focus();
+    const after = afterRender;
+    afterRender = null;
+    after?.();
     renderNav();
   }
 
   const go = (to: number): void => {
-    if (to < 0 || to >= STEPS.length || (to > step && !isValid(d, step))) return;
+    if (to < 0 || to >= stepNames().length || (to > step && !canAdvance())) return;
     step = to;
     editing = false;
     rejecting = false;
@@ -269,11 +285,12 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
     renderNav();
   };
 
-  /** Deletes a custom role after a confirm, then reloads the list. The hub's refusal (a role in use) shows as the toast. */
+  /** Deletes a custom role after the inline confirm, then reloads the list. The hub's refusal (a role in use) shows as the toast. */
   const removeRole = async (r: RoleView): Promise<void> => {
-    if (busy || !window.confirm(`Delete the role ${r.title} (${r.id})? Its definition is removed for good.`)) return;
+    if (busy) return;
     busy = true;
-    renderNav();
+    delConfirm = null;
+    render();
     const gone = await attempt(async () => {
       await api.deleteRole(r.id);
       return true;
@@ -309,132 +326,181 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
     void finish(() => api.approveAgentProposal(id, edits), 'Proposal approved; agents spawned');
   };
 
+  const rejectNow = (): void => {
+    if (!proposal) return;
+    const id = proposal.id;
+    const reason = rejectReason.trim();
+    if (!reason) return;
+    void finish(() => api.rejectAgentProposal(id, reason), 'Proposal rejected');
+  };
+
+  const openReject = (): void => {
+    rejecting = true;
+    afterRender = () => bodyHost.querySelector<HTMLElement>('textarea[aria-label="Reason"]')?.focus();
+    render();
+  };
+
+  const keepIt = (): void => {
+    rejecting = false;
+    rejectReason = '';
+    render();
+  };
+
   function stepper(): HTMLElement {
     return h(
-      'ol.wiz-steps',
+      'ol.ag-wiz-steps',
       { 'aria-label': 'Wizard steps' },
-      STEPS.map((name, i) =>
-        h(
-          'li',
-          {
-            class: i === step ? 'on' : i < step ? 'done' : '',
-            'aria-current': i === step ? 'step' : null,
-            onclick: i < step ? () => go(i) : null,
-          },
-          h('span.wiz-num', null, String(i + 1)),
-          h('span', null, name),
-        ),
-      ),
+      stepNames().map((name, i) => {
+        const label = `${i + 1}. ${name}`;
+        return h('li', { 'aria-current': i === step ? 'step' : null }, i < step ? button(label, () => go(i), { kind: 'ghost', size: 'sm' }) : label);
+      }),
     );
   }
 
-  /** A list of text rows that edit `items` in place; `Add` and the × remove rows. */
-  function listEditor(key: string, items: string[], placeholder: string): HTMLElement {
-    const list = h('div.wiz-list', { 'data-list': key });
+  /** A list of text rows that edit the draft's `key` in place; `Add` and the × remove rows (one row always stays). */
+  function listEditor(key: ListKey, label: string, placeholder: string): HTMLElement {
+    const items = d[key];
+    const list = h('div.ag-stack', { 'data-list': key });
     items.forEach((value, i) => {
-      const el = input({ placeholder, 'aria-label': `${key} ${i + 1}` });
+      const el = input({ placeholder, 'aria-label': `${label} ${i + 1}` });
       el.value = value;
       el.addEventListener('input', () => {
         items[i] = el.value;
         renderNav();
       });
-      list.appendChild(
-        h('div.wiz-row', null, el, button('', () => {
-          items.splice(i, 1);
-          render();
-        }, { kind: 'ghost', icon: 'x', title: `Remove ${key} ${i + 1}` })),
-      );
+      const remove = `Remove ${label.toLowerCase()} ${i + 1}`;
+      const rm = h('button.btn.ghost.sm.icon-only', { type: 'button', title: remove, 'aria-label': remove }, lu('x', 14));
+      rm.addEventListener('click', () => {
+        items.splice(i, 1);
+        if (!items.length) items.push('');
+        render();
+      });
+      list.appendChild(h('div.cluster', null, el, rm));
     });
     list.appendChild(
-      button('Add', () => {
-        items.push('');
-        render(`[data-list="${key}"] .wiz-row:last-of-type input`);
-      }, { kind: 'ghost', size: 'sm' }),
+      h(
+        'div',
+        null,
+        button('Add', () => {
+          items.push('');
+          afterRender = () => {
+            const boxes = bodyHost.querySelectorAll<HTMLInputElement>(`[data-list="${key}"] input`);
+            boxes[boxes.length - 1]?.focus();
+          };
+          render();
+        }, { kind: 'ghost', size: 'sm' }),
+      ),
     );
     return list;
   }
 
-  function roleList(): HTMLElement {
-    if (!roles.length) return h('p.wiz-muted', null, 'The plaza has no roles yet. Define a new one.');
+  function pick(r: RoleView): void {
+    d.roleId = r.id;
+    // The role's own model becomes the default; the user can still change it in step 3.
+    const m = splitModel(r.def.model || '');
+    if (m.base && picker) {
+      d.model = m.base;
+      d.effort = EFFORTS.includes(m.effort) ? m.effort : '';
+      picker.setChoices(choicesFor(m.base));
+      picker.value = m.base;
+    }
+    render();
+  }
+
+  function roleCard(r: RoleView): HTMLElement {
+    const on = d.roleId === r.id;
     return h(
-      'div.wiz-roles',
-      { role: 'radiogroup', 'aria-label': 'Roles' },
-      // A custom role gets a Delete button right after its card; the grid keeps both full width.
-      roles.flatMap((r) => [
-        h(
-          'button.wiz-role',
-          {
-            type: 'button',
-            role: 'radio',
-            'aria-checked': d.roleId === r.id ? 'true' : 'false',
-            class: d.roleId === r.id ? 'on' : '',
-            onclick: () => {
-              d.roleId = r.id;
-              // The role's own model becomes the default; the user can still change it in step 3.
-              const m = splitModel(r.def.model || '');
-              if (m.base && picker) {
-                d.model = m.base;
-                d.effort = EFFORTS.includes(m.effort) ? m.effort : '';
-                picker.setChoices(choicesFor(m.base));
-                picker.value = m.base;
-              }
+      'div.ag-choice',
+      {
+        role: 'radio',
+        tabindex: '0',
+        'aria-checked': on ? 'true' : 'false',
+        onclick: () => pick(r),
+        onkeydown: (e: Event) => {
+          const key = (e as KeyboardEvent).key;
+          if (key === 'Enter' || key === ' ') {
+            e.preventDefault();
+            pick(r);
+          }
+        },
+      },
+      h('div.cluster', null, h('strong', null, r.title), badge(r.source === 'builtin' ? 'built-in' : 'custom'), h('span.mono.muted', null, r.id)),
+      h('span.muted', null, clip(r.def.purpose, 180)),
+      h('span.muted', null, `${plural(r.agents, 'agent')} run this role`),
+      r.source === 'custom'
+        ? h(
+            'div',
+            null,
+            button('Delete role', (ev) => {
+              ev.stopPropagation();
+              delConfirm = r.id;
               render();
-            },
-          },
-          h('span.wiz-role-head', null, h('strong', null, r.title), badge(r.source === 'builtin' ? 'built-in' : 'custom')),
-          h('span.wiz-role-id', null, r.id),
-          h('span', null, clip(r.def.purpose, 180)),
-          h('span.wiz-muted', null, `${plural(r.agents, 'agent')} run this role`),
-        ),
-        ...(r.source === 'builtin' ? [] : [button('Delete role', () => void removeRole(r), { kind: 'ghost', size: 'sm', disabled: busy, title: `Delete ${r.title}` })]),
-      ]),
+            }, { kind: 'ghost', size: 'sm', disabled: busy, title: `Delete ${r.title}` }),
+          )
+        : null,
+    );
+  }
+
+  function roleList(): HTMLElement {
+    if (!roles.length) return h('p.muted', null, 'The plaza has no roles yet. Define a new one.');
+    return h('div.ag-stack', { role: 'radiogroup', 'aria-label': 'Roles' }, roles.map(roleCard));
+  }
+
+  /** The inline confirm for deleting a custom role (the prototype's, not a native dialog). */
+  function confirmRow(): HTMLElement | null {
+    const r = roles.find((x) => x.id === delConfirm);
+    if (!r) return null;
+    return h(
+      'div.ag-row',
+      null,
+      h('p', null, `Delete the role ${r.title} (${r.id})? Its definition is removed for good.`),
+      h(
+        'div.cluster',
+        null,
+        button('Delete role', () => void removeRole(r), { kind: 'danger', size: 'sm', disabled: busy }),
+        button('Keep', () => {
+          delConfirm = null;
+          render();
+        }, { kind: 'ghost', size: 'sm' }),
+      ),
     );
   }
 
   function purposeNodes(): Node[] {
-    const nodes: Node[] = [];
-    if (proposal) {
-      nodes.push(
-        h(
-          'div.wiz-proposal',
-          null,
-          h('span.wiz-kicker', null, 'The orchestrator proposes'),
-          h('p', null, proposal.reason),
-          h('span.wiz-kicker', null, "The owner's instruction"),
-          h('blockquote', null, proposal.instruction),
-        ),
-      );
-    }
     const choice = (mode: Mode, name: string, text: string): HTMLElement =>
       h(
-        'button.wiz-choice',
+        'button.ag-choice',
         {
           type: 'button',
-          class: d.mode === mode ? 'on' : '',
           'aria-pressed': d.mode === mode ? 'true' : 'false',
           onclick: () => {
             d.mode = mode;
+            delConfirm = null;
             render();
           },
         },
         h('strong', null, name),
-        h('span', null, text),
+        h('span.muted', null, text),
       );
-    nodes.push(
+    const nodes: Node[] = [
       h('h3', null, 'What should this agent do?'),
       h(
-        'div.wiz-choices',
+        'div.ag-stack',
         null,
         choice('existing', 'Use an existing role', 'Start agents of a role the plaza already has.'),
         choice('new', 'Define a new role', 'Write the role properly first, then start agents of it.'),
       ),
-    );
-    if (d.mode === 'existing') nodes.push(roleList());
+    ];
+    if (d.mode === 'existing') {
+      nodes.push(roleList());
+      const confirm = confirmRow();
+      if (confirm) nodes.push(confirm);
+    }
     return nodes;
   }
 
   function roleForm(): Node[] {
-    const idEl = input({ 'aria-label': 'Role id', placeholder: 'api-builder', spellcheck: false, autocomplete: 'off' });
+    const idEl = input({ 'aria-label': 'Id', placeholder: 'api-builder', spellcheck: 'false', autocomplete: 'off' });
     idEl.value = d.id;
     idEl.addEventListener('input', () => {
       idTouched = true;
@@ -442,7 +508,7 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
       d.id = idEl.value;
       renderNav();
     });
-    const titleEl = input({ 'aria-label': 'Role title', placeholder: 'API builder' });
+    const titleEl = input({ 'aria-label': 'Title', placeholder: 'API builder' });
     titleEl.value = d.title;
     titleEl.addEventListener('input', () => {
       d.title = titleEl.value;
@@ -466,46 +532,41 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
     });
     return [
       h('h3', null, 'Describe the role'),
-      block('Id', idEl, 'Lowercase letters, digits and hyphens. It follows the title until you edit it by hand.'),
-      block('Title', titleEl, 'What this role is called, e.g. "API builder".'),
-      block('Purpose', purposeEl, 'Why the role exists, in a sentence or two. Good: "Builds and tests the plaza HTTP API." Vague: "helps with the project."'),
-      block(
+      field('Id', idEl, 'Lowercase letters, digits and hyphens. It follows the title until you edit it by hand.'),
+      field('Title', titleEl, 'What this role is called, e.g. "API builder".'),
+      field('Purpose', purposeEl, 'Why the role exists, in a sentence or two. Good: "Builds and tests the plaza HTTP API." Vague: "helps with the project."'),
+      field(
         'Responsibilities',
-        listEditor('responsibilities', d.responsibilities, 'Write and test the API server'),
+        listEditor('responsibilities', 'Responsibilities', 'Write and test the API server'),
         'Concrete, checkable duties: "Write and test the API server", not "help with code". At least one.',
       ),
-      block('Deliverables', listEditor('deliverables', d.deliverables, 'A merged change with tests'), 'What the agent hands over when it is done. At least one.'),
-      block('Working with others', collabEl, 'Who this role takes work from, and who reviews what it produces.'),
-      block('Boundaries', listEditor('boundaries', d.boundaries, 'Does not merge to main'), 'What it must not do. Optional, but a clear edge keeps roles from overlapping.'),
+      field('Deliverables', listEditor('deliverables', 'Deliverables', 'A merged change with tests'), 'What the agent hands over when it is done. At least one.'),
+      field('Working with others', collabEl, 'Who this role takes work from, and who reviews what it produces.'),
+      field('Boundaries', listEditor('boundaries', 'Boundaries', 'Does not merge to main'), 'What it must not do. Optional, but a clear edge keeps roles from overlapping.'),
     ];
   }
 
   function toolsBlock(): HTMLElement {
-    const groups = TOOL_GROUPS.map((g) =>
-      h(
-        'div.wiz-group',
-        null,
-        h('span.wiz-kicker', null, g.group),
-        g.tools.map((tool) => {
-          const cb = h('input', { type: 'checkbox' });
-          cb.checked = d.tools.includes(tool);
-          cb.addEventListener('change', () => {
-            d.tools = cb.checked ? [...d.tools, tool] : d.tools.filter((t) => t !== tool);
-          });
-          return h('label.wiz-check', null, cb, h('code', null, tool));
-        }),
-      ),
-    );
     return h(
-      'fieldset.wiz-tools',
+      'fieldset',
       null,
       h('legend', null, 'Extra tools'),
-      h(
-        'p.wiz-muted',
-        null,
-        "Every agent already gets its workspace tools, the board, messages, memory and the toolbox; the plaza's laws decide the rest.",
+      h('p.muted', null, "Every agent already gets its workspace tools, the board, messages, memory and the toolbox; the plaza's laws decide the rest."),
+      TOOL_GROUPS.map((g) =>
+        h(
+          'div',
+          null,
+          h('div.muted', null, g.group),
+          g.tools.map((tool) => {
+            const cb = h('input', { type: 'checkbox' });
+            cb.checked = d.tools.includes(tool);
+            cb.addEventListener('change', () => {
+              d.tools = cb.checked ? [...d.tools, tool] : d.tools.filter((t) => t !== tool);
+            });
+            return h('label.cluster', null, cb, tool);
+          }),
+        ),
       ),
-      groups,
     );
   }
 
@@ -516,31 +577,35 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
       d.budget = Number(el.value);
       renderNav();
     });
-    return block('Task budget', el, 'The most one task may spend: 200 to 50,000 (default 2,000).');
+    return field('Task budget', el, 'The most one task may spend: 200 to 50,000 (default 2,000).');
   }
 
-  function countBlock(): HTMLElement {
+  function countSelect(): HTMLSelectElement {
     const sel = select(
       Array.from({ length: MAX_AGENTS }, (_, i) => ({ value: String(i + 1), label: String(i + 1) })),
       String(d.count),
     );
-    sel.setAttribute('aria-label', 'Agents to spawn');
+    sel.setAttribute('aria-label', 'Agents');
     sel.addEventListener('change', () => {
       d.count = Number(sel.value);
       renderNav();
     });
-    return block('Agents', sel, 'How many agents of this role to start (1 to 8).');
+    return sel;
+  }
+
+  function countBlock(): HTMLElement {
+    return field('Agents', countSelect(), 'How many agents of this role to start (1 to 8).');
   }
 
   function modelBlock(): HTMLElement {
     const effort = select(EFFORT_OPTS, d.effort);
-    effort.setAttribute('aria-label', 'Reasoning effort');
+    effort.setAttribute('aria-label', 'Effort');
     effort.addEventListener('change', () => {
       d.effort = effort.value;
     });
-    return block(
+    return field(
       'Model and effort',
-      h('div.wiz-model', null, picker?.el ?? h('span.wiz-muted', null, 'No models available'), effort),
+      h('div.cluster', null, picker?.el ?? h('span.muted', null, 'No models available'), effort),
       'Worker models only. Effort is saved with the model as model@effort; "Model default" leaves it to the model.',
     );
   }
@@ -555,59 +620,57 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
         }, { kind: 'ghost', size: 'sm' })
       : null;
     if (editing) {
-      const ta = textarea({ 'aria-label': 'Role prompt' });
+      const ta = textarea({ 'aria-label': 'Role prompt', rows: 18 });
       ta.value = currentPrompt(d);
-      ta.rows = 18;
-      ta.classList.add('wiz-prompt-edit');
       ta.addEventListener('input', () => {
         d.promptEdited = ta.value;
         renderNav();
       });
       return [
         h(
-          'div.wiz-prompt-bar',
+          'div.cluster',
           null,
-          h('span.wiz-muted', null, 'Markdown. This text is saved as the role prompt.'),
-          reset,
+          h('span.muted', null, 'Markdown. This text is saved as the role prompt.'),
           button('Done', () => {
             editing = false;
             render();
           }, { kind: 'ghost', size: 'sm' }),
+          reset,
         ),
         ta,
       ];
     }
     return [
       h(
-        'div.wiz-prompt-bar',
+        'div.cluster',
         null,
-        h('span.wiz-muted', null, edited ? 'Edited by hand.' : 'Generated from the fields in steps 2 and 3.'),
-        reset,
+        h('span.muted', null, edited ? 'Edited by hand.' : 'Generated from the fields in steps 2 and 3.'),
         button('Edit', () => {
           editing = true;
-          render('.wiz-prompt-edit');
+          afterRender = () => bodyHost.querySelector<HTMLElement>('textarea[aria-label="Role prompt"]')?.focus();
+          render();
         }, { kind: 'ghost', size: 'sm' }),
+        reset,
       ),
-      h('div.wiz-prompt', null, renderMarkdown(currentPrompt(d))),
+      h('div.prose', null, renderMarkdown(currentPrompt(d))),
     ];
   }
 
   function previewRole(def: RoleDef | undefined): Node[] {
-    if (!def) return [h('p.wiz-muted', null, 'No role selected. Go back and choose one.')];
+    if (!def) return [h('p.muted', null, 'No role selected. Go back and choose one.')];
     return [
       h('h3', null, def.title),
-      h('p.wiz-muted', null, `${def.id}, an existing role`),
-      readOnly('Purpose', def.purpose),
-      readOnly('Responsibilities', listNode(def.responsibilities)),
-      readOnly('Deliverables', listNode(def.deliverables)),
-      readOnly('Working with others', def.collaboration),
-      readOnly('Boundaries', listNode(def.boundaries)),
+      h('p.muted', null, `${def.id}, an existing role`),
+      ro('Purpose', def.purpose || '—'),
+      ro('Responsibilities', listNode(def.responsibilities)),
+      ro('Deliverables', listNode(def.deliverables)),
+      ro('Working with others', def.collaboration || '—'),
+      ro('Boundaries', listNode(def.boundaries)),
     ];
   }
 
   function reviewNodes(): Node[] {
     const def = d.mode === 'existing' ? existingDef() : undefined;
-    const modelLabel = modelChoices.find((c) => c.value === d.model)?.label ?? (d.model || 'Model default');
     const effort = d.effort ? ` · ${d.effort} effort` : '';
     const rows: [string, string | Node][] = [];
     if (d.mode === 'existing') {
@@ -616,58 +679,97 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
       rows.push(
         ['New role', `${d.title.trim()} (${d.id})`],
         ['Purpose', d.purpose.trim()],
-        ['Responsibilities', listNode(nonEmpty(d.responsibilities))],
-        ['Deliverables', listNode(nonEmpty(d.deliverables))],
+        ['Responsibilities', nonEmpty(d.responsibilities).join('; ')],
+        ['Deliverables', nonEmpty(d.deliverables).join('; ')],
         ['Working with others', d.collaboration.trim()],
-        ['Boundaries', listNode(nonEmpty(d.boundaries))],
+        ['Boundaries', nonEmpty(d.boundaries).join('; ') || '—'],
         ['Tools', d.tools.join(', ') || 'Workspace tools only'],
         ['Budget', String(d.budget)],
       );
     }
-    rows.push(['Agents', plural(d.count, 'agent')], ['Model', `${modelLabel}${effort}`]);
-    const summary = h(
-      'dl.wiz-summary',
-      null,
-      rows.map(([k, v]) => h('div', null, h('dt', null, k), h('dd', null, v))),
-    );
-    const nodes: Node[] = [h('h3', null, proposal ? 'Approve it, or reject it with a reason' : 'Review and spawn'), summary];
-    if (proposal && rejecting) nodes.push(rejectPanel(proposal.id));
-    return nodes;
+    rows.push(['Agents', plural(d.count, 'agent')], ['Model', `${modelLabelOf()}${effort}`]);
+    return [
+      h('h3', null, 'Review and spawn'),
+      h(
+        'dl.ag-kv',
+        null,
+        rows.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)]),
+      ),
+    ];
   }
 
-  function rejectPanel(id: string): HTMLElement {
-    const reason = textarea({ 'aria-label': 'Reason for rejecting', rows: 3, placeholder: 'Why this agent is not needed' });
-    const send = button('Reject proposal', () => {
-      void finish(() => api.rejectAgentProposal(id, reason.value.trim()), 'Proposal rejected');
-    }, { kind: 'danger', disabled: true });
-    reason.addEventListener('input', () => {
-      send.disabled = reason.value.trim() === '';
+  /** The proposal's steps: the proposal and its reason, the role it defines (with the count and model), then the decision. */
+  function proposalBody(i: number): Node[] {
+    if (!proposal) return [];
+    const role = proposal.role;
+    const rid = role.id ?? '';
+    const title = role.title || rid || 'Role';
+    const ex = roles.find((r) => r.id === rid);
+    switch (i) {
+      case 0:
+        return [
+          h('h3', null, 'The orchestrator proposes'),
+          h('p', null, proposal.reason || '—'),
+          h('h4', null, "The owner's instruction"),
+          proposal.instruction ? h('blockquote.prose', null, proposal.instruction) : h('p.muted', null, 'No instruction was quoted with this proposal.'),
+        ];
+      case 1:
+        return [
+          h('h3', null, title),
+          h('p.muted', null, `${rid}, ${ex ? 'an existing role' : 'a new role'}`),
+          ex
+            ? h('p.hint', null, `${plural(ex.agents, 'agent')} already run this role. The proposal adds agents of it.`)
+            : h('p.hint', null, 'Approving it writes the role into the plaza with this definition.'),
+          ro('Purpose', role.purpose || '—'),
+          ro('Responsibilities', listNode(role.responsibilities)),
+          ro('Deliverables', listNode(role.deliverables)),
+          ro('Working with others', role.collaboration || '—'),
+          ro('Boundaries', listNode(role.boundaries)),
+          field('Agents', countSelect()),
+          field('Model', picker?.el ?? h('span.muted', null, 'No models available')),
+        ];
+      default:
+        return [
+          h('h3', null, 'Approve it, or reject it with a reason'),
+          h('p.muted', null, `Approving starts ${plural(d.count, 'agent')} of ${title} on ${modelLabelOf()}.`),
+          ...(rejecting ? [rejectPanel()] : []),
+        ];
+    }
+  }
+
+  function rejectPanel(): HTMLElement {
+    const ta = textarea({ 'aria-label': 'Reason', rows: 3, placeholder: 'Why the proposal is rejected' });
+    ta.value = rejectReason;
+    ta.addEventListener('input', () => {
+      rejectReason = ta.value;
+      renderNav();
     });
-    return h('div.wiz-reject', null, h('h3', null, 'Reject this proposal'), block('Reason', reason, 'The orchestrator reads this note.'), send);
+    return h('div.ag-stack', null, h('h4', null, 'Reject it with a reason'), ta);
   }
 
   function bodyFor(i: number): Node[] {
+    if (proposal) return proposalBody(i);
     const existing = d.mode === 'existing';
     const def = existing ? existingDef() : undefined;
     switch (i) {
       case 0:
         return purposeNodes();
       case 1:
-        return existing ? [h('h3', null, 'The role'), ...previewRole(def)] : roleForm();
+        return existing ? previewRole(def) : roleForm();
       case 2:
         if (existing) {
           return [
             h('h3', null, 'Tools & limits'),
-            h('p.wiz-muted', null, "This role's tools and budget are fixed by its definition; choose how many agents to start and on which model."),
-            readOnly('Tools', def ? def.tools.join(', ') || 'Workspace tools only' : '—'),
-            readOnly('Budget', def ? String(def.budget) : '—'),
+            h('p.muted', null, "This role's tools and budget are fixed by its definition; choose how many agents to start and on which model."),
+            ro('Tools', def && def.tools.length ? def.tools.join(', ') : 'Workspace tools only'),
+            ro('Budget', def ? String(def.budget) : '—'),
             countBlock(),
             modelBlock(),
           ];
         }
         return [h('h3', null, 'Tools & limits'), toolsBlock(), budgetBlock(), countBlock(), modelBlock()];
       case 3:
-        if (existing) return [h('h3', null, 'Prompt'), h('div.wiz-prompt', null, renderMarkdown(def ? def.prompt || promptFor(def) : ''))];
+        if (existing) return [h('h3', null, 'Prompt'), def ? h('div.prose', null, renderMarkdown(def.prompt || promptFor(def))) : h('p.muted', null, '—')];
         return [h('h3', null, 'Prompt'), ...promptForm()];
       default:
         return reviewNodes();
@@ -704,6 +806,8 @@ export function openAgentWizard(opts: WizardOptions = {}): void {
   }
 
   close = modal(proposal ? "Review the orchestrator's proposal" : 'Spawn agents', root);
-  root.closest('.modal')?.classList.add('wizard');
+  // The modal's sheet has no footer of its own: the navigation goes in one under the body, as the prototype's does.
+  (root.closest('.sheet') ?? root).appendChild(h('footer.sheet-f', null, navHost));
+  render();
   void load();
 }

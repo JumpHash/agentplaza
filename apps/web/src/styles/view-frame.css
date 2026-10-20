@@ -1,0 +1,18 @@
+/* A live HTML panel in an artifact: a still (or its entry card) that becomes a sandboxed frame on Run. The frame sits in
+   the panel's card, under the prototype's own confirm notice and foot bar. */
+
+.vf { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden; background: var(--sheet); }
+.vf [hidden] { display: none !important; }
+.vf-stage { position: relative; min-width: 0; }
+.vf-still { display: block; width: 100%; height: auto; }
+.vf-panel { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-height: 120px; padding: 16px; justify-content: center; }
+.vf-entry { font-family: var(--font-mono); font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
+.vf-libs { display: flex; flex-wrap: wrap; gap: 6px; }
+.vf-size { font-size: var(--fs-xs); color: var(--ink-3); }
+.vf-frame { display: block; width: 100%; border: 0; background: var(--sheet); }
+.vf-confirm { margin: 0; border-radius: 0; border-width: 0 0 1px; }
+.vf-q { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vf-foot { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px 10px 8px 12px; border-top: 1px solid var(--rule); background: var(--sheet-2); }
+.vf-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.vf-note { font-size: var(--fs-xs); color: var(--crit); }
+.vf-foot .vf-note:empty { display: none; }

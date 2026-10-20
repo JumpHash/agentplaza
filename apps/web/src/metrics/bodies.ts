@@ -31,14 +31,24 @@ function clamp(frac: number): number {
 
 /** A table of rows. Rows that name a scope, tab or trace open it on a click or on Enter. When `more` is set, a
  * "Load older" button under the rows fetches the next page and appends its rows. */
+/** The status word a flag carries, as the prototype's chips read it. */
+const STATUS_WORD: Record<string, string> = { ok: 'OK', warn: 'Warning', crit: 'Critical', info: 'Info', mute: 'Muted' };
+/** The chip tone of a status: the prototype's danger for crit, muted for mute. */
+const STATUS_TONE: Record<string, string> = { ok: 'ok', warn: 'warn', crit: 'danger', info: 'info', mute: 'muted' };
+
+/** A status as a chip with its dot, the prototype's badge. */
+function badgeFor(status: string, text: string): HTMLElement {
+  return h('span', { class: `chip t-${STATUS_TONE[status] ?? 'muted'}` }, h('i', { class: 'dot' }), text);
+}
+
 export function table(host: HTMLElement, t: Table, ctx: PanelCtx): void {
   if (t.rows.length === 0) {
-    replace(host, h('div.mx-empty', null, t.empty || 'Nothing here yet.'));
+    replace(host, h('div.mt-empty', null, t.empty || 'Nothing here yet.'));
     return;
   }
-  const head = h('tr', null, t.columns.map((c) => h('th', { class: c.num ? 'mx-r' : null }, c.head)));
+  const head = h('tr', null, t.columns.map((c) => h('th', { class: c.num ? 'num' : null }, c.head)));
   const tbody = h('tbody', null, t.rows.map((row) => tableRow(row, t.columns, ctx)));
-  const moreHost = h('div.mx-more');
+  const moreHost = h('div.mt-more');
   let current = t;
 
   const paintMore = (): void => {
@@ -65,7 +75,7 @@ export function table(host: HTMLElement, t: Table, ctx: PanelCtx): void {
     }
   };
 
-  replace(host, h('div.mx-tablewrap', null, h('table.mx-t', null, h('thead', null, head), tbody)), moreHost);
+  replace(host, h('div.tbl-wrap.mt-scroll', null, h('table.tbl', null, h('thead', null, head), tbody)), moreHost);
   paintMore();
 }
 
@@ -76,13 +86,13 @@ export function appendPage(t: Table, page: Table): Table {
 
 function tableRow(row: Row, columns: Column[], ctx: PanelCtx): HTMLTableRowElement {
   const clickable = !!(row.scope || row.tab || row.trace);
-  const classes = [row.selected ? 'mx-sel' : '', clickable ? 'mx-click' : ''].filter(Boolean).join(' ');
+  const classes = [row.selected ? 'mt-sel' : '', clickable ? 'mt-click' : ''].filter(Boolean).join(' ');
   const tr = h('tr', { class: classes || null, tabindex: clickable ? 0 : null });
   row.cells.forEach((cell, i) => {
     const numeric = columns[i]?.num ?? false;
     // Only free text wraps; names, ids, numbers and pills stay on one line (the desktop sizes its columns the same way).
     const wraps = !numeric && (cell.type === 'text' || cell.type === 'muted');
-    const cellClasses = [numeric ? 'mx-r' : '', numeric || cell.type === 'num' ? 'mx-num' : '', wraps ? 'mx-wrap' : ''].filter(Boolean).join(' ');
+    const cellClasses = [numeric ? 'num' : '', wraps ? 'mt-wrap' : ''].filter(Boolean).join(' ');
     tr.appendChild(h('td', { class: cellClasses || null }, cellContent(cell)));
   });
   if (clickable) {
@@ -112,15 +122,15 @@ function cellContent(cell: Cell): Node | string {
     case 'num':
       return cell.text;
     case 'mono':
-      return h('span.mx-mono', null, cell.text);
+      return h('span.mt-mono', null, cell.text);
     case 'named':
-      return h('span', null, cell.name, ' ', h('span.mx-mono.mx-mute', null, cell.id));
+      return h('span', null, cell.name, ' ', h('span.mt-mono.muted', null, cell.id));
     case 'status':
-      return h('span', { class: `mx-${cell.status}` }, cell.text);
+      return badgeFor(cell.status, cell.text);
     case 'pill':
-      return h('span.mx-pill', { class: `mx-${cell.status}` }, cell.text);
+      return badgeFor(cell.status, cell.text);
     case 'muted':
-      return h('span.mx-mute', null, wrapsAtSpaces(cell.text));
+      return h('span.muted', null, wrapsAtSpaces(cell.text));
     case 'spark':
       return spark(cell.values, cell.tone);
     case 'bar':
@@ -142,31 +152,30 @@ function miniBar(parts: [number, Tone, string][]): HTMLSpanElement {
 /** A column of flags. Each one is a button that opens its tab or scope. */
 export function flags(host: HTMLElement, list: Flag[], ctx: PanelCtx): void {
   if (list.length === 0) {
-    replace(host, h('div.mx-empty', null, 'Nothing here yet.'));
+    replace(host, h('div.mt-empty', null, 'Nothing here yet.'));
     return;
   }
   const buttons = list.map((f) => {
-    const button = h('button.mx-flag', { type: 'button', class: `mx-${f.status}` }, f.text, h('span.mx-when', null, f.when));
+    const button = h('button.mt-flag', { type: 'button' }, badgeFor(f.status, STATUS_WORD[f.status] ?? 'Info'), h('span', null, f.text), h('span.mt-sub', null, f.when));
     button.addEventListener('click', () => ctx.go(targetOf(f)));
     return button;
   });
-  replace(host, h('div.mx-flags', null, buttons));
+  replace(host, h('div.mt-flags', null, buttons));
 }
 
 /** Budget rows: each has its label and value, a bar filled by its fraction and a status colour, and a muted note. */
 export function bars(host: HTMLElement, rows: BarRow[], note: string): void {
-  replace(host, h('div.mx-budget', null, rows.map(barRow)), note ? h('div.mx-sub', null, note) : null);
+  replace(host, h('div.mt-bars', null, rows.map(barRow)), note ? h('div.mt-sub.mt-foot', null, note) : null);
 }
 
 function barRow(row: BarRow): HTMLDivElement {
   const fill = h('i', { style: `width: ${clamp(row.frac) * 100}%; background: ${statusVar(row.status)}` });
   return h(
-    'div.mx-brow',
+    'div',
     null,
-    h('span', null, row.label),
-    h('span.mx-num', null, row.value),
-    h('div.mx-bar', null, fill),
-    row.note ? h('div.mx-mute', null, row.note) : null,
+    h('div.mt-bar-h', null, h('span', null, row.label), h('span.num', null, row.value)),
+    h('div.mt-track', null, fill),
+    row.note ? h('div.mt-sub', null, row.note) : null,
   );
 }
 
@@ -178,10 +187,10 @@ export function split(host: HTMLElement, rows: SplitRow[], legend: LegendItem[])
   const largest = Math.max(0, ...rows.map(splitTotal));
   replace(
     host,
-    h('div.mx-split', null, rows.map((row) => splitRow(row, largest))),
+    h('div.mt-split', null, rows.map((row) => splitRow(row, largest))),
     legend.length
       ? h(
-          'div.mx-legend',
+          'div.mt-legend',
           null,
           legend.map((item) => h('span', null, h('i', { style: `background: ${toneVar(item.tone)}` }), item.label)),
         )
@@ -205,11 +214,10 @@ function splitRow(row: SplitRow, largest: number): HTMLDivElement {
     ),
   );
   return h(
-    'div.mx-split-row',
-    { style: 'display: grid; grid-template-columns: 80px 1fr auto; gap: 10px; align-items: center; margin-bottom: 6px' },
-    h('span.mx-mute', null, row.label),
+    'div',
+    null,
+    h('div.mt-bar-h', null, h('span', null, row.label), h('span.num', null, row.total)),
     track,
-    h('span.mx-num', null, row.total),
   );
 }
 
@@ -218,18 +226,18 @@ export function stats(host: HTMLElement, list: StatLine[]): void {
   replace(
     host,
     h(
-      'div.mx-stats',
+      'div.mt-stats',
       { style: 'display: grid; gap: 10px; margin-top: 6px' },
       list.map((s) =>
         h(
           'div',
           null,
-          h('div.mx-mute', { style: 'font-size: 11px' }, s.label),
+          h('div.mt-sub', null, s.label),
           h(
             'div',
-            { style: 'font: 600 22px var(--sans)' },
+            { style: 'font: 600 22px var(--font)' },
             s.value,
-            s.note ? [' ', h('span.mx-mute', { style: 'font: 400 12px var(--sans)' }, s.note)] : null,
+            s.note ? [' ', h('span.mt-sub', null, s.note)] : null,
           ),
         ),
       ),

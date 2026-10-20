@@ -289,6 +289,50 @@ pub struct FileIn {
     pub executable: bool,
 }
 
+/// The SKILL.md of the built-in show-your-work skill, which the hub ships with.
+const BUILTIN_SHOW_YOUR_WORK: &str = include_str!("builtin/show-your-work/SKILL.md");
+
+/// The built-in skills the hub seeds into the library, each by its slug and the SKILL.md it is made from.
+const BUILTIN: &[(&str, &str)] = &[("show-your-work", BUILTIN_SHOW_YOUR_WORK)];
+
+/// Imports each built-in skill the library does not hold yet: a built skill bound to the whole plaza, published at
+/// once. A skill is seeded once. One the library holds, archived or not, is left as the owner left it, so a restart
+/// never undoes an archive. Returns how many were imported.
+pub fn seed_builtins(skills: &Skills, actor: &str, now_ms: u64) -> Result<usize, String> {
+    let store = skills.store();
+    let mut imported = 0;
+    for &(id, skill_md) in BUILTIN {
+        let held =
+            store.get(id)?.is_some() || store.list(false)?.iter().any(|skill| skill.name == id);
+        if held {
+            continue;
+        }
+        let first = skills
+            .prepare(
+                skill_md.to_string(),
+                Vec::new(),
+                "built in with the hub".into(),
+                None,
+            )
+            .map_err(|err| format!("{id}: {err:?}"))?;
+        let new = NewSkill {
+            id: id.into(),
+            title: "Show your work".into(),
+            tags: vec!["builtin".into()],
+            bindings: vec!["plaza".into()],
+            source: Source::Built,
+        };
+        let skill = store
+            .create(&new, &first, actor, now_ms)
+            .map_err(|err| format!("{id}: {err:?}"))?;
+        skills
+            .publish(id, skill.latest_version, actor, now_ms)
+            .map_err(|err| format!("{id}: {err:?}"))?;
+        imported += 1;
+    }
+    Ok(imported)
+}
+
 /// The library as apid uses it.
 pub struct Skills {
     store: Arc<dyn SkillStore>,

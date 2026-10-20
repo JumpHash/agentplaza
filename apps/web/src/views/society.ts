@@ -3,16 +3,17 @@
 // the graph shows the selected agent's opinions in both directions, or a summary
 // of a selected group. Past GROUP_AT agents the graph opens at the family level:
 // a family is a box that pops open into its roles, and a role into its agents.
+// The markup is the prototype's (styles/proto/society.css): discs with initials,
+// group boxes with member chips, and the panel's stats, rows and legend.
 
-import '../styles/society.css';
+import '../styles/proto/society.css';
 import { api, type Bond, type Opinion, type Society, type SocietyAgent } from '../api';
 import { agentName, FAMILIES, type Family, familyLabel, roleFamily, roleLabel } from '../roles';
 import { attempt, badge, button, clip, compact, empty, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
-import { agentHue } from './floor';
 import type { Cleanup } from './index';
 
-// The layout's world box: the first layout spreads the nodes over all of it, and the view
+// The layout's world box: the first layout places the nodes round all of it, and the view
 // shows the box, so the graph grows and shrinks with the panel.
 const W = 760;
 const H = 700;
@@ -29,10 +30,11 @@ const DISAGREE = 0.25;
 export const GROUP_AT = 24;
 /** How long the members of a group take to pop out of it. */
 const POP_MS = 250;
-const INK = '#2b2420';
+/** An agent's disc radius, as drawn. */
+const DISC = 20;
+/** How far an agent's name tag reaches below its centre. */
+const TAG_DOWN = 40;
 const SVG = 'http://www.w3.org/2000/svg';
-const COLOUR = { red: '#e5533d', amber: '#f2b84b', green: '#3fae6a' } as const;
-type Band = keyof typeof COLOUR;
 const KIND_TONE: Record<Bond['kind'], Tone> = { met: 'muted', hired: 'accent', 'was-hired': 'info', added: 'ok' };
 
 /** A node's key: 'a:<cid>' an agent, 'f:<family>' a family, 'r:<family>/<role>' a role. */
@@ -56,9 +58,9 @@ export interface Level { marks: Mark[]; edges: Edge[]; /** The mark each agent i
 interface Pt { x: number; y: number }
 /** What a node takes up around its centre, in world units. */
 interface Foot {
-  /** Half the width: the robot, or its tag when that is wider. */
+  /** Half the width: the disc, or its tag when that is wider. */
   half: number;
-  /** The room above the centre: the antenna and its tip. */
+  /** The room above the centre: the disc, or a group's top edge. */
   up: number;
   /** The room below the centre: the name tag. */
   down: number;
@@ -78,9 +80,8 @@ interface Actions {
 const TOP: Open = { family: null, role: null };
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
-const band = (e: number): Band => (e < 0.4 ? 'red' : e <= 0.6 ? 'amber' : 'green');
-const reputation = (a: SocietyAgent): number => clamp(a.reputation / 100, 0, 1);
-const side = (a: SocietyAgent): number => 46 + 12 * reputation(a);
+/** The band of an opinion: below 0.4 red (crit), up to 0.6 amber (warn), above green (ok). */
+const band = (e: number): 'crit' | 'warn' | 'ok' => (e < 0.4 ? 'crit' : e <= 0.6 ? 'warn' : 'ok');
 const agentKey = (cid: number): Key => `a:${cid}`;
 const familyKey = (family: Family): Key => `f:${family}`;
 const roleKey = (family: Family, role: string): Key => `r:${family}/${role}`;
@@ -206,10 +207,9 @@ function validOpen(agents: SocietyAgent[], o: Open): Open {
 export function mount(root: HTMLElement): Cleanup {
   const graph = h('div.soc-graph');
   const aside = h('aside.soc-panel', { 'aria-label': 'Selected agent' });
-  const soc = h('div.soc', null, graph, aside);
-  root.append(h('div.view-head', null, h('h1', null, 'Society')), soc);
-  // Like the Floor, the Society fills the window and never scrolls the page.
-  document.body.classList.add('floor-mode');
+  const wrap = h('div.soc-wrap');
+  const host = h('div');
+  root.append(h('header.view-head', null, h('div', null, h('h1', null, 'Society'))), host);
 
   const pos = new Map<Key, Pt>();
   let data: Society | null = null;
@@ -223,6 +223,8 @@ export function mount(root: HTMLElement): Cleanup {
   let popFrom: Pt | null = null;
   /** The agents with an active suspension, from the sanctions register, read once per refresh. */
   let suspended: ReadonlySet<number> = new Set();
+  /** The contact notes the reader has opened, by 'from-to', kept across refreshes. */
+  const expanded = new Set<string>();
 
   const isGrouped = (d: Society | null): boolean => grouped ?? (d !== null && d.agents.length > GROUP_AT);
 
@@ -231,10 +233,11 @@ export function mount(root: HTMLElement): Cleanup {
     const d = data;
     // With no agents, one empty state replaces the two panels (and their borders).
     if (d && !d.agents.length) {
-      replace(soc, empty('society', 'No agents yet', 'Spawn agents and they show up here, with what they think of one another.'));
+      replace(host, empty('society', 'No agents yet', 'Spawn agents and they show up here, with what they think of one another.'));
       return;
     }
-    replace(soc, graph, aside);
+    replace(host, wrap);
+    replace(wrap, graph, aside);
     if (!d) {
       replace(graph, empty('alert', 'Could not load the society.'));
       replace(aside);
@@ -255,8 +258,8 @@ export function mount(root: HTMLElement): Cleanup {
       ? { from: popFrom, fresh: new Set(lv.marks.map((m) => m.key).filter((k) => !known.has(k))) }
       : null;
     popFrom = null;
-    replace(graph, controls(on, open, act), drawGraph(d, lv, selected, pos, enter, act, suspended));
-    replace(aside, panel(d, selected, act, suspended));
+    replace(graph, toolbar(on, open, act), on ? crumbs(open, act) : null, drawGraph(d, lv, selected, pos, enter, act, suspended));
+    replace(aside, panel(d, selected, act, suspended, expanded));
   };
 
   /** Selects a node; an agent is zoomed to (its family and role open), so it is on the graph. */
@@ -332,38 +335,24 @@ export function mount(root: HTMLElement): Cleanup {
     alive = false;
     window.clearInterval(timer);
     document.removeEventListener('keydown', onKey);
-    document.body.classList.remove('floor-mode');
   };
 }
 
 // ---- Layout ----------------------------------------------------------------
 
-/** The room an agent takes up, from its centre; the name tag is part of it. */
-const foot = (a: SocietyAgent): Foot => {
-  const half = side(a) / 2;
-  const tag = tagWidth(agentName(a));
-  return { half: Math.max(half, tag / 2), up: half + 18, down: half + 30 };
-};
-
-/** The room a mark takes up: an agent's robot, or a group's box and its tag. */
+/** The room a mark takes up: an agent's disc and its name tag, or a group's box and its tag. */
 function markFoot(m: Mark): Foot {
   const only = m.kind === 'agent' ? m.members[0] : undefined;
-  if (only) return foot(only);
+  if (only) return { half: Math.max(DISC, tagWidth(agentName(only)) / 2), up: DISC, down: TAG_DOWN };
   const half = boxSide(m.members.length) / 2;
-  return { half: Math.max(half, tagWidth(m.label) / 2), up: half + 6, down: half + 30 };
-}
-
-/** How far an edge stops short of a mark's centre. */
-function radius(m: Mark): number {
-  const only = m.kind === 'agent' ? m.members[0] : undefined;
-  return only ? side(only) / 2 + 8 : boxSide(m.members.length) / 2 + 4;
+  return { half: Math.max(half, tagWidth(m.label) / 2), up: half, down: half + 20 };
 }
 
 /** How far two footprints overlap on each axis; they clash only when both are positive. */
 function overlap(p: Pt, fp: Foot, q: Pt, fq: Foot): [number, number] {
   const dx = q.x - p.x;
   const dy = q.y - p.y;
-  // Stacked vertically, the lower node's name tag must clear the upper node's antenna.
+  // Stacked vertically, the lower node's name tag must clear the upper node's disc.
   const stack = dy >= 0 ? fp.down + fq.up : fq.down + fp.up;
   return [fp.half + fq.half + GAP - Math.abs(dx), stack + GAP - Math.abs(dy)];
 }
@@ -405,23 +394,6 @@ function clearest(item: Item, items: Item[], edges: Edge[], pos: Map<Key, Pt>): 
   return best;
 }
 
-/** Stretches the nodes over the box, each axis on its own, so a first layout uses all of it. */
-function stretch(bodies: Body[]): void {
-  const xs = bodies.map((b) => b.x);
-  const ys = bodies.map((b) => b.y);
-  const x0 = Math.min(...xs);
-  const x1 = Math.max(...xs);
-  const y0 = Math.min(...ys);
-  const y1 = Math.max(...ys);
-  // A single row or column of nodes goes to the middle of its axis.
-  const map = (v: number, lo: number, hi: number, outLo: number, outHi: number): number =>
-    hi - lo < 1 ? (outLo + outHi) / 2 : outLo + ((v - lo) / (hi - lo)) * (outHi - outLo);
-  for (const b of bodies) {
-    b.x = map(b.x, x0, x1, 60, W - 60);
-    b.y = map(b.y, y0, y1, 70, H - 70);
-  }
-}
-
 /** Pushes footprints apart until none clash, or the passes run out. A clash moves both nodes
  *  along the axis where they overlap least; a placed node holds still. Nodes stay in the box. */
 function separate(bodies: Body[]): void {
@@ -458,9 +430,11 @@ function separate(bodies: Body[]): void {
   }
 }
 
-/** Places the nodes. Nodes already placed stay where they are; only new ones move, under the
- *  springs and repulsion of the whole graph, and then clear of everyone's footprint. A new node
- *  starts around `anchor` when a group has just popped open there. Departed nodes are dropped. */
+/** Places the nodes. Nodes already placed stay where they are; only new ones move. The first
+ *  layout puts them round a ring, as the prototype does; a newcomer takes the clearest spot near
+ *  its contacts, and a group's members pop out round where the group was. Then the springs and
+ *  repulsion of the whole graph settle the newcomers, and everyone is kept clear of each other.
+ *  Departed nodes are dropped. */
 function layout(items: Item[], edges: Edge[], pos: Map<Key, Pt>, anchor: Pt | null): void {
   const live = new Set(items.map((i) => i.key));
   for (const key of Array.from(pos.keys())) if (!live.has(key)) pos.delete(key);
@@ -469,6 +443,7 @@ function layout(items: Item[], edges: Edge[], pos: Map<Key, Pt>, anchor: Pt | nu
 
   const isFresh = new Set(fresh);
   const placed = pos.size > 0;
+  const ringed = !placed && !anchor;
   if (anchor) {
     fresh.forEach((key, i) => {
       const angle = i * 2.39996; // golden angle, so the members fan out evenly
@@ -479,10 +454,11 @@ function layout(items: Item[], edges: Edge[], pos: Map<Key, Pt>, anchor: Pt | nu
     // A newcomer takes the clearest spot near its contacts; the nodes already placed do not move.
     for (const item of items) if (isFresh.has(item.key)) pos.set(item.key, clearest(item, items, edges, pos));
   } else {
-    fresh.forEach((key, i) => {
-      const angle = i * 2.39996; // golden angle, so a crowd fans out evenly
-      const r = 70 + 26 * Math.sqrt(i);
-      pos.set(key, { x: W / 2 + Math.cos(angle) * r, y: H / 2 + Math.sin(angle) * r });
+    const n = items.length;
+    const R = n <= 1 ? 0 : Math.min(280, 120 + n * 22);
+    items.forEach((item, i) => {
+      const ang = -Math.PI / 2 + (i * 2 * Math.PI) / Math.max(n, 1);
+      pos.set(item.key, { x: W / 2 + R * Math.cos(ang), y: H / 2 + R * Math.sin(ang) * 0.85 });
     });
   }
 
@@ -492,63 +468,64 @@ function layout(items: Item[], edges: Edge[], pos: Map<Key, Pt>, anchor: Pt | nu
   });
   const index = new Map(bodies.map((b, i) => [b.key, i] as const));
 
-  // One spring per unordered pair; stronger contacts pull harder.
-  const springs = new Map<string, { a: number; b: number; k: number }>();
-  for (const e of edges) {
-    const a = index.get(e.from);
-    const b = index.get(e.to);
-    if (a === undefined || b === undefined || a === b) continue;
-    const lo = Math.min(a, b);
-    const hi = Math.max(a, b);
-    const key = `${lo}:${hi}`;
-    const k = 0.01 + 0.02 * clamp(e.strength / 10, 0, 1);
-    springs.set(key, { a: lo, b: hi, k: Math.max(k, springs.get(key)?.k ?? 0) });
-  }
+  if (!ringed) {
+    // One spring per unordered pair; stronger contacts pull harder.
+    const springs = new Map<string, { a: number; b: number; k: number }>();
+    for (const e of edges) {
+      const a = index.get(e.from);
+      const b = index.get(e.to);
+      if (a === undefined || b === undefined || a === b) continue;
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      const key = `${lo}:${hi}`;
+      const k = 0.01 + 0.02 * clamp(e.strength / 10, 0, 1);
+      springs.set(key, { a: lo, b: hi, k: Math.max(k, springs.get(key)?.k ?? 0) });
+    }
 
-  const steps = fresh.length === items.length ? FIRST_STEPS : LATER_STEPS;
-  for (let step = 0; step < steps; step++) {
-    for (let i = 0; i < bodies.length; i++) {
-      for (let j = i + 1; j < bodies.length; j++) {
-        const p = bodies[i];
-        const q = bodies[j];
+    const steps = fresh.length === items.length ? FIRST_STEPS : LATER_STEPS;
+    for (let step = 0; step < steps; step++) {
+      for (let i = 0; i < bodies.length; i++) {
+        for (let j = i + 1; j < bodies.length; j++) {
+          const p = bodies[i];
+          const q = bodies[j];
+          if (!p || !q) continue;
+          const dx = q.x - p.x;
+          const dy = q.y - p.y;
+          const d = Math.max(Math.hypot(dx, dy), 1);
+          const f = 16000 / (d * d);
+          const fx = (f * dx) / d;
+          const fy = (f * dy) / d;
+          p.vx -= fx;
+          p.vy -= fy;
+          q.vx += fx;
+          q.vy += fy;
+        }
+      }
+      for (const { a, b, k } of springs.values()) {
+        const p = bodies[a];
+        const q = bodies[b];
         if (!p || !q) continue;
         const dx = q.x - p.x;
         const dy = q.y - p.y;
         const d = Math.max(Math.hypot(dx, dy), 1);
-        const f = 16000 / (d * d);
+        const f = k * (d - REST);
         const fx = (f * dx) / d;
         const fy = (f * dy) / d;
-        p.vx -= fx;
-        p.vy -= fy;
-        q.vx += fx;
-        q.vy += fy;
+        p.vx += fx;
+        p.vy += fy;
+        q.vx -= fx;
+        q.vy -= fy;
+      }
+      for (const p of bodies) {
+        // Centring, then damping; placed nodes keep their coordinates.
+        p.vx = clamp((p.vx + (W / 2 - p.x) * 0.004) * 0.8, -25, 25);
+        p.vy = clamp((p.vy + (H / 2 - p.y) * 0.004) * 0.8, -25, 25);
+        if (p.fixed) continue;
+        p.x = clamp(p.x + p.vx, p.fp.half, W - p.fp.half);
+        p.y = clamp(p.y + p.vy, p.fp.up, H - p.fp.down);
       }
     }
-    for (const { a, b, k } of springs.values()) {
-      const p = bodies[a];
-      const q = bodies[b];
-      if (!p || !q) continue;
-      const dx = q.x - p.x;
-      const dy = q.y - p.y;
-      const d = Math.max(Math.hypot(dx, dy), 1);
-      const f = k * (d - REST);
-      const fx = (f * dx) / d;
-      const fy = (f * dy) / d;
-      p.vx += fx;
-      p.vy += fy;
-      q.vx -= fx;
-      q.vy -= fy;
-    }
-    for (const p of bodies) {
-      // Centring, then damping; placed nodes keep their coordinates.
-      p.vx = clamp((p.vx + (W / 2 - p.x) * 0.004) * 0.8, -25, 25);
-      p.vy = clamp((p.vy + (H / 2 - p.y) * 0.004) * 0.8, -25, 25);
-      if (p.fixed) continue;
-      p.x = clamp(p.x + p.vx, p.fp.half, W - p.fp.half);
-      p.y = clamp(p.y + p.vy, p.fp.up, H - p.fp.down);
-    }
   }
-  if (!placed) stretch(bodies);
   separate(bodies);
   for (const p of bodies) pos.set(p.key, { x: p.x, y: p.y });
 }
@@ -567,28 +544,32 @@ function s<K extends keyof SVGElementTagNameMap>(
   return node;
 }
 
-/** The level's toolbar, above the graph: the family toggle, then the breadcrumb and Back. */
-function controls(on: boolean, at: Open, act: Actions): HTMLElement {
-  const toggle = h(
-    'button.soc-toggle',
-    { type: 'button', 'aria-pressed': on ? 'true' : 'false', title: 'Draw the families as boxes that open into roles and agents' },
-    'Group by family',
-  );
-  toggle.addEventListener('click', () => act.group());
-  if (!on) return h('div.soc-top', null, toggle);
+/** An SVG element holding text, set as text. */
+function st<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>, text: string): SVGElementTagNameMap[K] {
+  const node = s(tag, attrs);
+  node.textContent = text;
+  return node;
+}
 
-  const crumbs = h('nav.soc-crumbs', { 'aria-label': 'Groups' });
-  trailOf(at).forEach((c, i, all) => {
-    if (i) crumbs.append(h('span.soc-sep', { 'aria-hidden': 'true' }, '›'));
-    if (i === all.length - 1) {
-      crumbs.append(h('span.soc-crumb', { 'aria-current': 'page' }, c.label));
-      return;
-    }
-    const link = h('button.soc-crumb', { type: 'button' }, c.label);
-    link.addEventListener('click', () => act.to(c.open));
-    crumbs.append(link);
+/** The toolbar above the graph: the family toggle, and Back when a family is open. */
+function toolbar(on: boolean, at: Open, act: Actions): HTMLElement {
+  const toggle = button('Group by family', () => act.group(), {
+    size: 'sm',
+    title: 'Draw the families as boxes that open into roles and agents',
   });
-  return h('div.soc-top', null, toggle, crumbs, at.family !== null ? button('Back', () => act.up(), { size: 'sm' }) : null);
+  toggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+  return h('div.soc-toolbar', null, toggle, on && at.family !== null ? button('Back', () => act.up(), { size: 'sm' }) : null);
+}
+
+/** The breadcrumb, shown only when grouped: each step above the open one is a button back to it. */
+function crumbs(at: Open, act: Actions): HTMLElement {
+  const nav = h('nav.soc-crumbs', { 'aria-label': 'Breadcrumb' });
+  const trail = trailOf(at);
+  trail.forEach((c, i) => {
+    if (i === trail.length - 1) nav.append(h('span', { 'aria-current': 'page' }, c.label));
+    else nav.append(button(c.label, () => act.to(c.open), { kind: 'ghost', size: 'sm' }));
+  });
+  return nav;
 }
 
 function drawGraph(d: Society, lv: Level, selected: Key | null, pos: Map<Key, Pt>, enter: Enter | null, act: Actions, suspended: ReadonlySet<number>): SVGSVGElement {
@@ -616,90 +597,72 @@ function drawGraph(d: Society, lv: Level, selected: Key | null, pos: Map<Key, Pt
     }
   }
 
-  const bg = s('rect', { class: 'soc-bg', x: -W, y: -H, width: 3 * W, height: 3 * H });
+  const bg = s('rect', { class: 'soc-bg', width: W, height: H, fill: 'transparent' });
   bg.addEventListener('click', () => act.pick(null));
-  const dots = s('rect', { class: 'soc-dots', x: -W, y: -H, width: 3 * W, height: 3 * H, fill: 'url(#soc-dots)' });
   const defs = s(
     'defs',
     {},
-    s('pattern', { id: 'soc-dots', width: 24, height: 24, patternUnits: 'userSpaceOnUse' }, s('circle', { cx: 2, cy: 2, r: 1.3, class: 'soc-dot' })),
-    ...(Object.keys(COLOUR) as Band[]).map((c) =>
+    ...(['ok', 'warn', 'crit'] as const).map((t) =>
       s(
         'marker',
-        { id: `soc-arrow-${c}`, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 12, markerHeight: 12, markerUnits: 'userSpaceOnUse', orient: 'auto' },
-        s('path', { d: 'M0 0 L10 5 L0 10 z', fill: COLOUR[c] }),
+        { id: `soc-arr-${t}`, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto' },
+        s('path', { d: 'M0,0 L10,5 L0,10 z', style: `fill:var(--${t})` }),
       ),
     ),
   );
 
   const edges = s('g');
-  for (const e of lv.edges) {
+  lv.edges.forEach((e, k) => {
     const from = pos.get(e.from);
     const to = pos.get(e.to);
-    const a = byKey.get(e.from);
-    const z = byKey.get(e.to);
-    if (!from || !to || !a || !z) continue;
-    const path = s('path', { d: edgePath(from, to, radius(a), radius(z)) });
-    const width = 1.5 + 4 * clamp(e.strength / (lv.grouped ? 30 : 10), 0, 1);
+    if (!from || !to || !byKey.has(e.from) || !byKey.has(e.to)) return;
     const first = lv.grouped ? undefined : e.bonds[0];
+    const out = first !== undefined && sel !== null && first.from === sel;
+    const cls = ['soc-edge', `soc-e${k}`, `t-${band(e.trust)}`];
     if (selected === null) {
-      path.setAttribute('class', first && mutual(first) ? 'soc-edge soc-mutual' : 'soc-edge');
-      if (lv.grouped) path.style.strokeWidth = String(width);
+      if (first && mutual(first)) cls.push('soc-mutual');
     } else if (!lit(e)) {
-      path.setAttribute('class', 'soc-edge soc-faded');
-      if (lv.grouped) path.style.strokeWidth = String(width);
-    } else if (lv.grouped) {
-      path.setAttribute('class', 'soc-edge soc-agg');
-      path.style.stroke = COLOUR[band(e.trust)];
-      path.style.strokeWidth = String(width);
+      cls.push('soc-faded');
     } else {
-      // Flat, one bond: the selected agent's own opinions run out (arrowhead), the ones held of it run in.
-      const b = e.bonds[0];
-      if (b) {
-        const out = b.from === sel;
-        const c = band(b.opinion.e);
-        path.setAttribute('class', out ? 'soc-edge soc-out' : 'soc-edge soc-in');
-        path.style.stroke = COLOUR[c];
-        path.style.strokeWidth = String(width);
-        if (out) path.setAttribute('marker-end', `url(#soc-arrow-${c})`);
-      }
+      cls.push('soc-lit');
+      if (first && !out) cls.push('soc-in');
     }
+    const width = 1.5 + 4 * clamp(e.strength / (lv.grouped ? 30 : 10), 0, 1);
+    const attrs: Record<string, string | number> = { class: cls.join(' '), d: edgePath(from, to), style: `--sw:${width}` };
+    if (selected !== null && lit(e) && out) attrs['marker-end'] = `url(#soc-arr-${band(e.trust)})`;
+    const path = s('path', attrs);
+    path.append(st('title', {}, lv.grouped ? 'grouped contacts' : `trust ${e.trust.toFixed(2)}`));
     edges.appendChild(path);
-  }
+  });
 
   const nodes = s('g');
-  for (const m of lv.marks) {
+  // Hovering a node lights the edges that touch it (the edges carry soc-e<index>).
+  const hov = lv.marks
+    .map((m, i) => {
+      const ks = lv.edges.reduce<string[]>((o, e, k) => (e.from === m.key || e.to === m.key ? o.concat(`.soc-e${k}`) : o), []);
+      return ks.length ? `.soc-svg:has(.soc-n${i}:hover) :is(${ks.join(',')}){opacity:1;stroke-width:2px}` : '';
+    })
+    .join('');
+  nodes.appendChild(st('style', {}, hov));
+  lv.marks.forEach((m, i) => {
     const p = pos.get(m.key);
     const first = m.members[0];
-    if (!p || !first) continue;
+    if (!p || !first) return;
     const grp = m.kind !== 'agent';
-    const sz = grp ? boxSide(m.members.length) : side(first);
-    const half = sz / 2;
     const label = grp ? m.label : agentName(first);
-    const w = tagWidth(label);
-    const classes = ['soc-node'];
-    if (grp) classes.push('soc-group');
+    const hasSuspended = m.members.some((a) => suspended.has(a.cid));
+    const classes = ['soc-node', `soc-n${i}`];
     if (selected !== null && !bright.has(m.key)) classes.push('soc-dim');
     if (m.key === selected) classes.push('soc-sel');
-
     const node = s('g', {
       class: classes.join(' '),
       transform: `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`,
       tabindex: 0,
       role: 'button',
-      'aria-label': label,
+      'aria-label': grp ? `${label}, ${m.members.length} agents${hasSuspended ? ', suspended' : ''}` : `${label}${hasSuspended ? ', suspended' : ''}`,
     });
-    const tag = s('rect', { class: 'soc-tag', x: -w / 2, y: half + 8, width: w, height: 22, rx: 6 });
-    const text = s('text', { class: 'soc-name', x: 0, y: half + 23, 'text-anchor': 'middle' });
-    text.textContent = clip(label, 16);
-    // A node with a suspended agent in it gets the ring at its top-right corner, inside the body so it bounces with it.
-    const hasSuspended = m.members.some((a) => suspended.has(a.cid));
-    const body = grp ? groupBody(m, sz) : robotBody(first, sz);
-    if (hasSuspended) {
-      body.append(suspendedRing(half));
-      node.setAttribute('aria-label', `${label}, suspended`);
-    }
-    node.append(body, tag, text);
+    if (grp) node.append(...groupBody(m, boxSide(m.members.length), label, hasSuspended));
+    else node.append(...agentBody(first, label, hasSuspended));
 
     const activate = (): void => {
       if (m.opens) act.open(m);
@@ -726,119 +689,67 @@ function drawGraph(d: Society, lv: Level, selected: Key | null, pos: Map<Key, Pt
       );
     }
     nodes.appendChild(node);
-  }
-
-  // Frame the layout box: the agents are spread over all of it, footprints included.
-  const box = `0 0 ${W} ${H}`;
-  return s('svg', { class: 'soc-svg', viewBox: box, preserveAspectRatio: 'xMidYMid meet', 'aria-label': 'Society graph' }, defs, bg, dots, edges, nodes);
-}
-
-/** The ring segment at a node's top-right corner, for a suspended agent: red-orange, with a tooltip. */
-function suspendedRing(half: number): SVGElement {
-  const r = 9;
-  const ring = s('path', {
-    class: 'soc-suspended',
-    d: `M${half} ${(-half - r).toFixed(1)} A${r} ${r} 0 0 1 ${half + r} ${-half}`,
-    fill: 'none',
-    'stroke-width': 3.5,
-    'stroke-linecap': 'round',
   });
-  ring.style.stroke = 'var(--danger)';
-  const title = s('title', {});
-  title.textContent = 'suspended';
-  ring.append(title);
-  return ring;
+
+  return s('svg', { class: 'soc-svg', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Society graph' }, defs, bg, edges, nodes);
 }
 
-/** A cartoon robot head, drawn around its centre: the body of an agent node. */
-function robotBody(a: SocietyAgent, sz: number): SVGElement {
-  const half = sz / 2;
-  const hue = agentHue(a.cid);
-  return s(
-    'g',
-    { class: 'soc-body' },
-    s('rect', { class: 'soc-shadow', x: -half + 3, y: -half + 3, width: sz, height: sz, rx: 12 }),
-    s('line', { x1: 0, y1: -half, x2: 0, y2: -half - 12, stroke: INK, 'stroke-width': 3 }),
-    s('circle', { cx: 0, cy: -half - 13, r: 4.5, fill: `hsl(${hue} 70% 55%)`, stroke: INK, 'stroke-width': 2.5 }),
-    s('rect', { x: -half, y: -half, width: sz, height: sz, rx: 12, fill: `hsl(${hue} 60% 64%)`, stroke: INK, 'stroke-width': 3 }),
-    ...eyes(sz),
-    s('path', {
-      d: `M${(-sz * 0.16).toFixed(1)} ${(sz * 0.22).toFixed(1)} Q0 ${(sz * 0.34).toFixed(1)} ${(sz * 0.16).toFixed(1)} ${(sz * 0.22).toFixed(1)}`,
-      fill: 'none',
-      stroke: INK,
-      'stroke-width': 2.5,
-      'stroke-linecap': 'round',
-    }),
-  );
+/** The ring a suspended agent's node carries, as the prototype draws it. */
+function suspendedDot(cx: number, cy: number): SVGElement {
+  const dot = s('circle', { class: 'soc-susp', cx, cy, r: 5 });
+  dot.append(st('title', {}, 'suspended'));
+  return dot;
 }
 
-/** A group's box: a rounded square, up to three of its members' colours stacked on top, and the count. */
-function groupBody(m: Mark, sz: number): SVGElement {
-  const half = sz / 2;
-  const shown = m.members.slice(0, 3);
-  const faces = shown.map((a, i) =>
-    s('rect', {
-      x: (i - (shown.length - 1) / 2) * 14 - 7,
-      y: -sz * 0.24 - 7,
-      width: 14,
-      height: 14,
-      rx: 4,
-      fill: `hsl(${agentHue(a.cid)} 60% 64%)`,
-      stroke: INK,
-      'stroke-width': 2,
-    }),
-  );
-  const count = s('text', { class: 'soc-count', x: 0, y: sz * 0.22, 'text-anchor': 'middle' });
-  count.textContent = String(m.members.length);
-  return s(
-    'g',
-    { class: 'soc-body' },
-    s('rect', { class: 'soc-shadow', x: -half + 3, y: -half + 3, width: sz, height: sz, rx: 16 }),
-    s('rect', { class: 'soc-group-box', x: -half, y: -half, width: sz, height: sz, rx: 16 }),
-    ...faces,
-    count,
-  );
-}
-
-/** A curved path from a's edge to z's edge, bowed to one side. Reversed bonds bow apart. */
-function edgePath(a: Pt, z: Pt, ra: number, rz: number): string {
-  const dx = z.x - a.x;
-  const dy = z.y - a.y;
-  const len = Math.max(Math.hypot(dx, dy), 1);
-  const ux = dx / len;
-  const uy = dy / len;
-  const x1 = a.x + ux * ra;
-  const y1 = a.y + uy * ra;
-  const x2 = z.x - ux * rz;
-  const y2 = z.y - uy * rz;
-  const cx = (x1 + x2) / 2 - uy * len * 0.16;
-  const cy = (y1 + y2) / 2 + ux * len * 0.16;
-  return `M${x1.toFixed(1)} ${y1.toFixed(1)} Q${cx.toFixed(1)} ${cy.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`;
-}
-
-/** The two eyes: white sclera with an ink pupil each. */
-function eyes(sz: number): SVGElement[] {
-  const out: SVGElement[] = [];
-  for (const dir of [-1, 1]) {
-    const x = dir * sz * 0.2;
-    const y = -sz * 0.08;
-    out.push(
-      s('circle', { cx: x, cy: y, r: sz * 0.14, fill: '#fff', stroke: INK, 'stroke-width': 2 }),
-      s('circle', { cx: x + 1.5, cy: y + 1.5, r: sz * 0.06, fill: INK }),
-    );
-  }
+/** An agent's disc with its initials, the name below it, and a dot when it is suspended. */
+function agentBody(a: SocietyAgent, label: string, suspendedNow: boolean): SVGElement[] {
+  const w = a.name.trim().split(/\s+/);
+  const ini = (w.length > 1 ? `${w[0]?.[0] ?? ''}${w[1]?.[0] ?? ''}` : (w[0] ?? '').slice(0, 2)).toUpperCase();
+  const out: SVGElement[] = [
+    s('circle', { class: 'soc-disc', r: DISC }),
+    st('text', { class: 'soc-ini', 'text-anchor': 'middle', 'dominant-baseline': 'central' }, ini),
+    st('text', { class: 'soc-lbl', y: DISC + 15, 'text-anchor': 'middle' }, clip(label, 16)),
+  ];
+  if (suspendedNow) out.push(suspendedDot(DISC * 0.7, -DISC * 0.7));
   return out;
+}
+
+/** A group's box: a rounded square with up to three of its members' chips, and the count; its tag below. */
+function groupBody(m: Mark, side: number, label: string, suspendedNow: boolean): SVGElement[] {
+  const half = side / 2;
+  const chips = m.members.slice(0, 3).map((_, i) => s('rect', { class: 'soc-chip', x: 8 + i * 14, y: 8, width: 10, height: 10, rx: 2 }));
+  const inner = s(
+    'g',
+    { transform: `translate(${-half} ${-half})` },
+    s('rect', { class: 'soc-group', width: side, height: side, rx: 12 }),
+    ...chips,
+    st('text', { class: 'soc-tag', x: side / 2, y: side / 2 + 5, 'text-anchor': 'middle' }, String(m.members.length)),
+    suspendedNow ? suspendedDot(side - 4, 4) : null,
+  );
+  return [inner, st('text', { class: 'soc-lbl', x: 0, y: half + 14, 'text-anchor': 'middle' }, clip(label, 16))];
+}
+
+/** The curve from one node's centre to another's, bowed to one side; reversed bonds bow apart. */
+function edgePath(a: Pt, z: Pt): string {
+  const mx = (a.x + z.x) / 2 - (z.y - a.y) * 0.15;
+  const my = (a.y + z.y) / 2 + (z.x - a.x) * 0.15;
+  return `M${a.x.toFixed(1)},${a.y.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${z.x.toFixed(1)},${z.y.toFixed(1)}`;
 }
 
 // ---- Panel -----------------------------------------------------------------
 
-function panel(d: Society, selected: Key | null, act: Actions, suspended: ReadonlySet<number>): HTMLElement {
+/** The panel's head: the title, and under it the subtitle, as the prototype's view head. */
+function viewHead(title: string, sub: string | null, extra: Node | null = null): HTMLElement {
+  return h('div.view-head', null, h('div', null, h('h2', null, title, extra ? ' ' : null, extra), sub === null ? null : h('p.view-sub', null, sub)));
+}
+
+function panel(d: Society, selected: Key | null, act: Actions, suspended: ReadonlySet<number>, expanded: Set<string>): Node[] {
   if (selected === null) return legend();
-  if (selected.startsWith('a:')) return detail(d, Number(selected.slice(2)), act, suspended);
+  if (selected.startsWith('a:')) return detail(d, Number(selected.slice(2)), act, suspended, expanded);
   return groupDetail(d, selected, act);
 }
 
-function detail(d: Society, cid: number, act: Actions, suspended: ReadonlySet<number>): HTMLElement {
+function detail(d: Society, cid: number, act: Actions, suspended: ReadonlySet<number>, expanded: Set<string>): Node[] {
   const me = d.agents.find((a) => a.cid === cid);
   if (!me) return legend();
 
@@ -857,49 +768,45 @@ function detail(d: Society, cid: number, act: Actions, suspended: ReadonlySet<nu
   const pick = (peer: number): void => act.pick(agentKey(peer));
 
   const name = agentName(me);
+  const rated = me.confidence >= 0.05;
   const rep = clamp(me.reputation, 0, 100);
-  const fill = h('span.soc-meter-fill');
-  fill.style.width = me.confidence >= 0.05 ? `${rep}%` : '0%'; // unrated: an empty bar
   const meter = h(
-    'div.soc-meter',
-    { role: 'meter', 'aria-label': 'Reputation', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(rep) },
-    fill,
+    'div.soc-bar',
+    { role: 'meter', 'aria-label': 'Reputation', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(rated ? rep : 0) },
+    h('i.soc-fill.t-ok', { style: `width:${rated ? rep : 0}%` }),
   );
 
   const outgoing = d.bonds
     .filter((b) => b.from === me.cid && agent.has(b.to))
-    .map((b) => row(b.to, nameOf(b.to), b, gap(b.to), pick));
+    .map((b) => row(b.to, nameOf(b.to), b, gap(b.to), pick, expanded));
   const incoming = d.bonds
     .filter((b) => b.to === me.cid && agent.has(b.from))
-    .map((b) => row(b.from, nameOf(b.from), b, gap(b.from), pick));
+    .map((b) => row(b.from, nameOf(b.from), b, gap(b.from), pick, expanded));
 
-  return h(
-    'div.soc-detail',
-    null,
-    h('header.soc-head', null, h('h2', null, name), h('p.soc-role', null, roleLabel(me.role)), suspended.has(me.cid) ? badge('suspended', 'danger') : null),
+  return [
+    viewHead(name, roleLabel(me.role), suspended.has(me.cid) ? badge('suspended', 'danger') : null),
     h(
       'div.soc-stats',
       null,
-      h('div.soc-stat', null, h('span.soc-k', null, 'Reputation'), h('span.soc-v', null, me.confidence >= 0.05 ? `${Math.round(rep)} / 100` : 'Unrated')),
-      meter,
-      h('div.soc-stat', null, h('span.soc-k', null, 'Confidence'), h('span.soc-v', null, `${Math.round(clamp(me.confidence, 0, 1) * 100)}%`)),
-      h('div.soc-stat', null, h('span.soc-k', null, 'Wallet'), h('span.soc-v', null, compact(me.wallet))),
+      h('div.stat', null, h('span.muted', null, 'Reputation'), h('b.num', null, rated ? `${Math.round(rep)} / 100` : 'Unrated'), meter),
+      h('div.stat', null, h('span.muted', null, 'Confidence'), h('b.num', null, `${Math.round(clamp(me.confidence, 0, 1) * 100)}%`)),
+      h('div.stat', null, h('span.muted', null, 'Wallet'), h('b.num', null, compact(me.wallet))),
     ),
     h(
-      'div.soc-owner',
+      'div.cluster',
       null,
       button('Trust more', () => void act.rate(me.cid, 1), { kind: 'primary', size: 'sm' }),
       button('Trust less', () => void act.rate(me.cid, -1), { size: 'sm' }),
     ),
-    h('h3.soc-h', null, `How ${name} sees others`),
-    outgoing.length ? h('ul.soc-list', null, outgoing) : h('p.soc-none', null, 'No contacts yet.'),
-    h('h3.soc-h', null, `How others see ${name}`),
-    incoming.length ? h('ul.soc-list', null, incoming) : h('p.soc-none', null, 'Nobody has met them yet.'),
-  );
+    h('h3', null, `How ${name} sees others`),
+    ...(outgoing.length ? outgoing : [h('p.muted', null, 'No contacts yet.')]),
+    h('h3', null, `How others see ${name}`),
+    ...(incoming.length ? incoming : [h('p.muted', null, 'Nobody has met them yet.')]),
+  ];
 }
 
 /** The summary of a selected group: its members, its trust across the edge, and its strongest outside ties. */
-function groupDetail(d: Society, key: Key, act: Actions): HTMLElement {
+function groupDetail(d: Society, key: Key, act: Actions): Node[] {
   const members = membersOf(d.agents, key);
   const first = members[0];
   if (!first) return legend();
@@ -922,101 +829,112 @@ function groupDetail(d: Society, key: Key, act: Actions): HTMLElement {
   }
   const mean = (bs: Bond[]): number | null => (bs.length ? bs.reduce((sum, b) => sum + b.opinion.e, 0) / bs.length : null);
   const trust = (label: string, m: number | null): HTMLElement =>
-    h(
-      'div.soc-trust',
-      null,
-      h('span.soc-k', null, label),
-      m === null ? h('span.soc-none', null, 'none yet') : bar({ e: m, u: 0 }),
-      m === null ? null : h('span.soc-val', null, m.toFixed(2)),
-    );
+    h('div.stat', null, h('span.muted', null, label), h('b.num', null, m === null ? 'none yet' : m.toFixed(2)), m === null ? null : bar({ e: m, u: 0 }));
   const nameOf = (cid: number): string => {
     const a = agent.get(cid);
     return a ? agentName(a) : `agent ${cid}`;
   };
   const ties = [...outs, ...ins].sort((x, y) => y.strength - x.strength).slice(0, 3);
 
-  return h(
-    'div.soc-detail',
-    null,
-    h('header.soc-head', null, h('h2', null, title), h('p.soc-role', null, sub)),
+  return [
+    viewHead(title, sub),
     h('div.soc-stats', null, trust('Mean trust in', mean(ins)), trust('Mean trust out', mean(outs))),
-    h('h3.soc-h', null, 'Members'),
-    h('ul.soc-list', null, members.map((m) => memberRow(m, act))),
-    h('h3.soc-h', null, 'Strongest outside ties'),
-    ties.length
-      ? h(
-          'ul.soc-list',
-          null,
-          ties.map((b) => {
-            const peer = inside.has(b.from) ? b.to : b.from;
-            return row(peer, nameOf(peer), b, false, (cid) => act.pick(agentKey(cid)));
-          }),
-        )
-      : h('p.soc-none', null, 'No contacts across the edge.'),
-  );
+    h('h3', null, 'Members'),
+    ...members.map((m) => memberRow(m, act)),
+    h('h3', null, 'Strongest outside ties'),
+    ...(ties.length
+      ? ties.map((b) => {
+          const peer = inside.has(b.from) ? b.to : b.from;
+          return tieRow(peer, nameOf(peer), b, act);
+        })
+      : [h('p.muted', null, 'No contacts across the edge.')]),
+  ];
 }
 
 function memberRow(m: SocietyAgent, act: Actions): HTMLElement {
-  const who = h('button.soc-peer', { type: 'button' }, agentName(m));
-  who.addEventListener('click', () => act.pick(agentKey(m.cid)));
-  return h('li.soc-row', { 'data-key': `member-${m.cid}` }, h('div.soc-row-top', null, who, h('span.soc-k', null, roleLabel(m.role))));
+  return h(
+    'div.soc-row',
+    null,
+    h('div', null, button(agentName(m), () => act.pick(agentKey(m.cid)), { kind: 'ghost', size: 'sm' })),
+    h('span.muted', null, roleLabel(m.role)),
+  );
 }
 
-function row(peer: number, peerName: string, bond: Bond, gap: boolean, pick: (cid: number) => void): HTMLElement {
-  const who = h('button.soc-peer', { type: 'button' }, peerName);
-  who.addEventListener('click', () => pick(peer));
+/** A tie across a group's edge: the peer, the kind, the opinion and its note. */
+function tieRow(peer: number, peerName: string, bond: Bond, act: Actions): HTMLElement {
   return h(
-    'li.soc-row',
-    { 'data-key': `peer-${peer}` },
-    h('div.soc-row-top', null, who, badge(bond.kind, KIND_TONE[bond.kind]), gap ? badge('they disagree', 'warn') : null),
+    'div.soc-row',
+    null,
+    h('div', null, button(peerName, () => act.pick(agentKey(peer)), { kind: 'ghost', size: 'sm' }), ' ', badge(bond.kind, 'muted')),
+    h('span.num', null, bond.opinion.e.toFixed(2)),
     bar(bond.opinion),
-    bond.note ? noteEl(bond.note) : null,
+    bond.note ? h('p.soc-note', null, bond.note) : null,
   );
+}
+
+function row(peer: number, peerName: string, bond: Bond, gap: boolean, pick: (cid: number) => void, expanded: Set<string>): HTMLElement {
+  const key = `${bond.from}-${bond.to}`;
+  return h(
+    'div.soc-row',
+    null,
+    h(
+      'div',
+      null,
+      button(peerName, () => pick(peer), { kind: 'ghost', size: 'sm' }),
+      ' ',
+      badge(bond.kind, KIND_TONE[bond.kind]),
+      gap ? ' ' : null,
+      gap ? badge('they disagree', 'warn') : null,
+    ),
+    h('span.num', null, bond.opinion.e.toFixed(2)),
+    bar(bond.opinion),
+    bond.note ? noteEl(bond.note, key, expanded) : null,
+  );
+}
+
+/** A private note, clamped to two lines; a click shows all of it, and the click is remembered. */
+function noteEl(text: string, key: string, expanded: Set<string>): HTMLElement {
+  const el = h('p.soc-note', { title: 'Click to expand', class: expanded.has(key) ? 'open' : null }, text);
+  el.addEventListener('click', () => {
+    if (expanded.has(key)) expanded.delete(key);
+    else expanded.add(key);
+    el.classList.toggle('open', expanded.has(key));
+  });
+  return el;
 }
 
 /** An opinion: the filled part is the expected trust e; the hatched tail runs on by the uncertainty u. */
 function bar(o: Pick<Opinion, 'e' | 'u'>): HTMLElement {
   const e = clamp(o.e, 0, 1);
   const u = clamp(o.u, 0, 1);
-  const fill = h('span.soc-bar-fill');
+  const fill = h('i.soc-fill', { class: `t-${band(e)}` });
   fill.style.width = `${e * 100}%`;
-  fill.style.background = COLOUR[band(e)];
-  const tail = h('span.soc-bar-tail');
+  const tail = h('i.soc-tail');
   tail.style.left = `${e * 100}%`;
   tail.style.width = `${Math.min(u, 1 - e) * 100}%`;
-  return h(
-    'div.soc-bar-row',
-    { title: `trust ${e.toFixed(2)}, uncertainty ${u.toFixed(2)}` },
-    h('div.soc-bar', null, fill, tail),
-    h('span.soc-bar-v', null, e.toFixed(2)),
-  );
+  return h('div.soc-bar', { title: `trust ${e.toFixed(2)}, uncertainty ${u.toFixed(2)}` }, fill, tail);
 }
 
-function legend(): HTMLElement {
-  return h(
-    'div.soc-detail',
-    null,
-    h('header.soc-head', null, h('h2', null, 'Nothing selected'), h('p.soc-role', null, 'Pick an agent to see how it sees the others, and how they see it.')),
-    h('h3.soc-h', null, 'Reading the graph'),
+function legend(): Node[] {
+  return [
+    viewHead('Nothing selected', 'Pick an agent to see how it sees the others, and how they see it.'),
+    h('h3', null, 'Reading the graph'),
     h(
       'ul.soc-legend',
       null,
-      h('li', null, h('span.soc-sw.soc-sw-red'), 'trust below 0.4'),
-      h('li', null, h('span.soc-sw.soc-sw-amber'), 'trust from 0.4 to 0.6'),
-      h('li', null, h('span.soc-sw.soc-sw-green'), 'trust above 0.6'),
-      h('li', null, h('span.soc-sw'), 'solid, with an arrowhead: its own opinions'),
-      h('li', null, h('span.soc-sw.soc-sw-dash'), 'dashed: the opinions held of it'),
-      h('li', null, h('span.soc-sw.soc-sw-thin'), 'thicker line: a stronger contact'),
-      h('li', null, h('span.soc-sw.soc-sw-mutual'), 'darker grey: a mutual pair'),
-      h('li', null, h('span.soc-sw.soc-sw-box'), 'a box: a group of agents, sized by its count; click to open it'),
+      legendItem('background:var(--crit)', 'trust below 0.4'),
+      legendItem('background:var(--warn)', 'trust from 0.4 to 0.6'),
+      legendItem('background:var(--ok)', 'trust above 0.6'),
+      legendItem('', 'solid, with an arrowhead: its own opinions'),
+      legendItem('background:repeating-linear-gradient(90deg,var(--ink-3) 0 6px,transparent 6px 10px)', 'dashed: the opinions held of it'),
+      legendItem('height:8px', 'thicker line: a stronger contact'),
+      legendItem('background:var(--ink-2)', 'darker grey: a mutual pair'),
+      legendItem('height:14px;width:14px;border:1px dashed var(--rule-strong)', 'a box: a group of agents, sized by its count; click to open it'),
     ),
-    h('p.soc-note', null, 'Trusting an agent more or less moves the opinions held of it.'),
-  );
+    h('p.hint', null, 'Trusting an agent more or less moves the opinions held of it.'),
+  ];
 }
 
-/** A private note, clamped to a few lines; a click shows all of it. */
-function noteEl(text: string): HTMLElement {
-  const el = h('p.soc-note.clamped', { title: 'Click to expand' }, text);
-  el.addEventListener('click', () => el.classList.toggle('clamped'));
-  return el;
+function legendItem(style: string, text: string): HTMLElement {
+  return h('li', null, h('span.soc-sw', style ? { style } : null), text);
 }

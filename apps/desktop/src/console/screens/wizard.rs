@@ -2,17 +2,23 @@
 //! its tools and its prompt, then spawn — a modal over the Agents screen.
 
 use iced::widget::text_editor::Content;
-use iced::widget::{checkbox, column, container, row, text_editor, text_input};
-use iced::{Alignment, Background, Border, Color, Element, Length, Shadow, Task, Theme, Vector};
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, text, text_editor, text_input,
+};
+use iced::{Alignment, Background, Border, Element, Length, Shadow, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::console::Ctx;
 use crate::console::client;
 use crate::console::picker::{self, Choice, PickerMsg};
-use crate::console::ui::{self, Kind};
+use crate::console::ui::{self, Kind, Tone};
+use crate::theme::{
+    SANS_MEDIUM, SANS_SEMIBOLD, TYPE_ITEM, TYPE_META, TYPE_SECTION, TYPE_UI, palette, skin,
+};
 
 const STEPS: [&str; 5] = ["Purpose", "Role", "Tools & limits", "Prompt", "Review"];
+const PROPOSAL_STEPS: [&str; 3] = ["The proposal", "The role", "Decide"];
 const EFFORTS: [&str; 6] = ["none", "low", "medium", "high", "xhigh", "max"];
 const TOOL_GROUPS: &[(&str, &[&str])] = &[
     ("Code & files", &["code_engine", "tool_package"]),
@@ -196,6 +202,8 @@ pub enum WizardMsg {
     /// The role is deleted and the list reloaded, or the hub refused (a role in use) and said why.
     RoleDeleted(Result<Vec<RoleView>, String>),
     Picker(PickerMsg),
+    /// The owner's favourites after a star in the picker.
+    Favourited(Result<Vec<String>, String>),
     Field(Field, String),
     Area(Area, text_editor::Action),
     ListEdit(ListKey, usize, String),
@@ -494,6 +502,7 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
             }
             wizard.worker_policy = loaded.settings.model_policy.worker;
             wizard.models = loaded.models;
+            picker::sync(&mut wizard.picker, &wizard.models);
             if wizard.model.is_empty() {
                 wizard.model = fallback;
             }
@@ -515,13 +524,20 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
             return load(ctx);
         }
         WizardMsg::Go(to) => {
-            if to < STEPS.len() && (to <= wizard.step || wizard.valid(wizard.step)) {
+            // A proposal's steps are read-only, so they always move (as the web's do).
+            let count = step_names(wizard).len();
+            if to < count
+                && (to <= wizard.step || wizard.proposal.is_some() || wizard.valid(wizard.step))
+            {
                 wizard.step = to;
                 wizard.editing_prompt = false;
                 wizard.rejecting = false;
             }
         }
-        WizardMsg::SetMode(mode) => wizard.mode = mode,
+        WizardMsg::SetMode(mode) => {
+            wizard.mode = mode;
+            wizard.deleting_role = None;
+        }
         WizardMsg::PickRole(id) => {
             let model = wizard
                 .roles
@@ -572,9 +588,21 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
             match m {
                 PickerMsg::Pick(id) => wizard.model = split_model(&id).0,
                 PickerMsg::Effort(effort) => wizard.effort = effort,
+                PickerMsg::Favourite(id) => {
+                    let c = ctx.client.clone();
+                    return client::task(
+                        move || picker::save_favourite(&c, &id),
+                        WizardMsg::Favourited,
+                    );
+                }
                 _ => {}
             }
         }
+        WizardMsg::Favourited(Ok(favourites)) => {
+            picker::mark_favourites(&mut wizard.models, &favourites);
+            picker::sync(&mut wizard.picker, &wizard.models);
+        }
+        WizardMsg::Favourited(Err(e)) => wizard.error = Some(e),
         WizardMsg::Field(field, value) => match field {
             Field::Id => {
                 wizard.id_touched = true;
@@ -647,7 +675,13 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
             wizard.open_proposal(p);
             return load(ctx);
         }
-        WizardMsg::RejectToggle => wizard.rejecting = !wizard.rejecting,
+        WizardMsg::RejectToggle => {
+            // "Keep it" closes the form and drops the typed reason, as the web's does.
+            if wizard.rejecting {
+                wizard.reject_reason = Content::new();
+            }
+            wizard.rejecting = !wizard.rejecting;
+        }
         WizardMsg::RejectEdit(action) => wizard.reject_reason.perform(action),
         WizardMsg::Reject => {
             if !wizard.busy {
@@ -658,319 +692,463 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
     Task::none()
 }
 
-/// The modal (the caller stacks it over its screen while `open`).
+/// The modal (the caller stacks it over its screen while `open`): the web's `modal()`, with the stepper and the step
+/// above the foot, and the navigation in the foot.
 pub fn view<'a>(wizard: &'a Wizard, ctx: &'a Ctx) -> Element<'a, WizardMsg> {
     let _ = ctx;
-    let last = wizard.step + 1 == STEPS.len();
-    let head = row![
-        ui::sans("Spawn agents", 13.0, crate::theme::palette().ink),
-        ui::btn("Close", None, Kind::Ghost, Some(WizardMsg::Close))
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center);
-    let steps = row(STEPS.iter().enumerate().map(|(i, name)| {
-        let kind = if i == wizard.step {
-            Kind::Secondary
+    let mut body = column![stepper(wizard, step_names(wizard)), body_host(wizard)].spacing(14);
+    if let Some(e) = &wizard.error {
+        body = body.push(ui::error_line(e));
+    }
+    ui::modal(
+        if wizard.proposal.is_some() {
+            "Review the orchestrator's proposal"
         } else {
-            Kind::Ghost
-        };
-        let go = if i < wizard.step {
-            Some(WizardMsg::Go(i))
-        } else {
-            None
-        };
-        ui::btn(&format!("{} {}", i + 1, name), None, kind, go)
-    }))
-    .spacing(4);
-    let body: Element<'a, WizardMsg> = if wizard.loaded {
-        body_for(wizard)
+            "Spawn agents"
+        },
+        body.into(),
+        nav(wizard),
+        WizardMsg::Close,
+        560.0,
+    )
+}
+
+/// The step names: the spawn wizard's five, or a proposal's three.
+fn step_names(w: &Wizard) -> &'static [&'static str] {
+    if w.proposal.is_some() {
+        &PROPOSAL_STEPS
     } else {
-        match &wizard.load_error {
-            Some(e) => column![
-                ui::error_line(&format!("Could not load roles and models: {e}")),
-                ui::btn("Retry", None, Kind::Ghost, Some(WizardMsg::Retry)),
-            ]
-            .spacing(12)
-            .into(),
-            None => ui::loading(),
+        &STEPS
+    }
+}
+
+/// The stepper (`ol.ag-wiz-steps`): the steps passed are ghost buttons back to them, the current one sits on the
+/// signal ground, the rest are muted.
+fn stepper<'a>(w: &'a Wizard, names: &[&str]) -> Element<'a, WizardMsg> {
+    let p = palette();
+    let (ink, ink_3, soft) = (p.ink, p.ink_3, p.signal_soft);
+    row(names.iter().enumerate().map(|(i, name)| {
+        let label = format!("{}. {name}", i + 1);
+        if i < w.step {
+            ui::btn_sm(&label, None, Kind::Ghost, Some(WizardMsg::Go(i)))
+        } else {
+            let current = i == w.step;
+            container(ui::sans(label, TYPE_UI, if current { ink } else { ink_3 }))
+                .padding([4, 8])
+                .style(move |_: &Theme| container::Style {
+                    background: current.then_some(Background::Color(soft)),
+                    border: Border {
+                        radius: skin().radius.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .into()
         }
-    };
-    let back = wizard
-        .step
-        .checked_sub(1)
-        .filter(|_| !wizard.busy)
-        .map(WizardMsg::Go);
-    let next = (!last && wizard.loaded && !wizard.busy && wizard.valid(wizard.step))
-        .then(|| WizardMsg::Go(wizard.step + 1));
-    let count = plural(wizard.count, "agent");
-    let forward = if last {
-        let label = match (wizard.proposal.is_some(), wizard.mode) {
-            (true, _) => "Approve and spawn".to_string(),
-            (false, Mode::New) => format!("Create role and spawn {count}"),
-            (false, Mode::Existing) => format!("Spawn {count}"),
+    }))
+    .spacing(8)
+    .into()
+}
+
+/// The navigation in the foot, right-aligned: Back, then Next or the last step's action (the spawn, or a proposal's
+/// approve and reject).
+fn nav<'a>(w: &'a Wizard) -> Vec<Element<'a, WizardMsg>> {
+    let last = w.step + 1 == step_names(w).len();
+    let back = w.step.checked_sub(1).filter(|_| !w.busy).map(WizardMsg::Go);
+    let mut out = vec![ui::btn("Back", None, Kind::Ghost, back)];
+    if w.proposal.is_some() {
+        if !last {
+            let next = (w.loaded && !w.busy).then_some(WizardMsg::Go(w.step + 1));
+            out.push(ui::btn("Next", None, Kind::Primary, next));
+        } else if w.rejecting {
+            out.push(ui::btn(
+                "Keep it",
+                None,
+                Kind::Ghost,
+                Some(WizardMsg::RejectToggle),
+            ));
+            let send = !w.busy && !w.reject_reason.text().trim().is_empty();
+            out.push(ui::btn(
+                "Reject",
+                None,
+                Kind::Danger,
+                send.then_some(WizardMsg::Reject),
+            ));
+        } else {
+            out.push(ui::btn(
+                "Reject...",
+                None,
+                Kind::Ghost,
+                (!w.busy).then_some(WizardMsg::RejectToggle),
+            ));
+            out.push(ui::btn(
+                "Approve and spawn",
+                None,
+                Kind::Primary,
+                (!w.busy).then_some(WizardMsg::Spawn),
+            ));
+        }
+    } else if !last {
+        let next = (w.loaded && !w.busy && w.valid(w.step)).then_some(WizardMsg::Go(w.step + 1));
+        out.push(ui::btn("Next", None, Kind::Primary, next));
+    } else {
+        let count = plural(w.count, "agent");
+        let label = match w.mode {
+            Mode::New => format!("Create role and spawn {count}"),
+            Mode::Existing => format!("Spawn {count}"),
         };
-        ui::btn(
+        out.push(ui::btn(
             &label,
             None,
             Kind::Primary,
-            (!wizard.busy).then_some(WizardMsg::Spawn),
-        )
-    } else {
-        ui::btn("Next", None, Kind::Primary, next)
-    };
-    let mut nav = row![ui::btn("Back", None, Kind::Ghost, back)];
-    if last && wizard.proposal.is_some() {
-        nav = nav.push(ui::btn(
-            "Reject…",
-            None,
-            Kind::Danger,
-            (!wizard.busy).then_some(WizardMsg::RejectToggle),
+            (!w.busy).then_some(WizardMsg::Spawn),
         ));
     }
-    let nav = nav.push(forward).spacing(8);
+    out
+}
 
-    let mut card = column![head, steps, ui::scroll(body).height(Length::Fixed(440.0))].spacing(16);
-    if let Some(e) = &wizard.error {
-        card = card.push(ui::error_line(e));
+/// The step's body while the roles and models load (or after they failed, with a retry).
+fn body_host<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+    if w.loaded {
+        return body_for(w);
     }
-    let card = card.push(nav);
-    let sheet = container(card)
-        .padding(24)
-        .width(Length::Fill)
-        .max_width(720.0)
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(crate::theme::palette().sheet)),
-            border: Border {
-                color: crate::theme::palette().rule,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            shadow: Shadow {
-                color: Color {
-                    a: 0.35,
-                    ..crate::theme::palette().ink
-                },
-                offset: Vector::new(4.0, 4.0),
-                blur_radius: 0.5,
-            },
-            ..Default::default()
-        });
-    container(sheet)
-        .padding(24)
-        .center(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(Background::Color(Color {
-                a: 0.4,
-                ..Color::BLACK
-            })),
-            ..Default::default()
-        })
-        .into()
+    match &w.load_error {
+        Some(e) => column![
+            ui::sans(
+                format!("Could not load roles and models: {e}"),
+                TYPE_ITEM,
+                palette().ink
+            ),
+            ui::btn("Retry", None, Kind::Ghost, Some(WizardMsg::Retry)),
+        ]
+        .spacing(12)
+        .into(),
+        None => muted("Loading roles…"),
+    }
 }
 
 fn body_for<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
-    let existing = w.mode == Mode::Existing;
-    let (heading, content) = match w.step {
-        0 => (
-            "What should this agent do?",
-            column![proposal_card(w), purpose_step(w)]
-                .spacing(14)
-                .into(),
-        ),
-        1 if existing => ("The role", role_preview(w)),
-        1 => ("Describe the role", role_form(w)),
-        2 if existing => ("Tools & limits", existing_limits(w)),
-        2 => ("Tools & limits", new_limits(w)),
-        3 if existing => ("Prompt", existing_prompt(w)),
-        3 => ("Prompt", prompt_step(w)),
-        _ => (
-            if w.proposal.is_some() {
-                "Approve it, or reject it with a reason"
-            } else {
-                "Review and spawn"
-            },
-            column![review_step(w), reject_panel(w)].spacing(14).into(),
-        ),
-    };
-    column![
-        ui::sans(heading, 14.0, crate::theme::palette().ink),
-        content
-    ]
-    .spacing(14)
-    .into()
-}
-
-/// The orchestrator's reason and the owner's instruction, shown above the purpose step.
-fn proposal_card<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
-    let Some(p) = &w.proposal else {
-        return column![].into();
-    };
-    column![
-        ui::label("The orchestrator proposes"),
-        ui::prose(p.reason.clone()),
-        ui::label("The owner's instruction"),
-        ui::prose(p.instruction.clone()),
-    ]
-    .spacing(6)
-    .into()
-}
-
-/// The reject form: a reason is required, and the button stays off until one is typed.
-fn reject_panel<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
-    if w.proposal.is_none() || !w.rejecting {
-        return column![].into();
+    if w.proposal.is_some() {
+        return proposal_body(w);
     }
-    let send = ui::btn(
-        "Reject proposal",
-        None,
-        Kind::Danger,
-        (!w.busy && !w.reject_reason.text().trim().is_empty()).then_some(WizardMsg::Reject),
-    );
-    let reason = text_editor(&w.reject_reason)
-        .placeholder("Why this agent is not needed")
-        .height(Length::Fixed(96.0))
-        .on_action(WizardMsg::RejectEdit);
-    column![
-        ui::sans("Reject this proposal", 13.0, crate::theme::palette().ink),
-        field("Reason", reason.into(), "The orchestrator reads this note."),
-        send,
-    ]
-    .spacing(14)
-    .into()
+    let existing = w.mode == Mode::Existing;
+    match w.step {
+        0 => purpose_step(w),
+        1 if existing => role_preview(w),
+        1 => role_form(w),
+        2 if existing => existing_limits(w),
+        2 => new_limits(w),
+        3 if existing => existing_prompt(w),
+        3 => prompt_step(w),
+        _ => review_step(w),
+    }
 }
 
-fn purpose_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+// ---- Text helpers, as the web's classes -------------------------------------------------------------------------
+
+/// A heading (`h3`): semibold, in ink.
+fn heading<'a>(s: &str) -> Element<'a, WizardMsg> {
+    text(s.to_string())
+        .font(SANS_SEMIBOLD)
+        .size(TYPE_SECTION)
+        .color(palette().ink)
+        .into()
+}
+
+/// A sub-heading (`h4`).
+fn subheading<'a>(s: &str) -> Element<'a, WizardMsg> {
+    text(s.to_string())
+        .font(SANS_SEMIBOLD)
+        .size(TYPE_UI)
+        .color(palette().ink)
+        .into()
+}
+
+/// Muted text (`.muted`).
+fn muted<'a>(s: impl Into<String>) -> Element<'a, WizardMsg> {
+    ui::sans(s.into(), TYPE_UI, palette().ink_3).into()
+}
+
+/// Body text in ink (a paragraph, a read-only value).
+fn ink_text<'a>(s: impl Into<String>) -> Element<'a, WizardMsg> {
+    ui::sans(s.into(), TYPE_ITEM, palette().ink).into()
+}
+
+/// The hint under a field (`.hint`): small, muted.
+fn hint<'a>(s: &str) -> Element<'a, WizardMsg> {
+    ui::sans(s.to_string(), TYPE_META, palette().ink_3)
+        .line_height(1.4)
+        .into()
+}
+
+/// A read-only pair (the web's `ro()`): the muted label over its value.
+fn ro<'a>(label: &str, value: &str) -> Element<'a, WizardMsg> {
+    let value = if value.trim().is_empty() {
+        "—"
+    } else {
+        value
+    };
+    column![muted(label.to_string()), ink_text(value.to_string())]
+        .spacing(2)
+        .into()
+}
+
+/// A read-only list (the web's `ul`): one bullet a line, or a dash when there are none.
+fn ro_list<'a>(label: &str, items: &[String]) -> Element<'a, WizardMsg> {
+    let xs = nonempty(items);
+    let value: Element<'a, WizardMsg> = if xs.is_empty() {
+        ink_text("—")
+    } else {
+        column(xs.into_iter().map(|x| ink_text(format!("• {x}"))))
+            .spacing(2)
+            .into()
+    };
+    column![muted(label.to_string()), value].spacing(2).into()
+}
+
+/// A form field (`label.field`): the label, the control, and the hint under it.
+fn field<'a>(
+    label: &str,
+    control: Element<'a, WizardMsg>,
+    hint_text: &str,
+) -> Element<'a, WizardMsg> {
     let mut col = column![
-        row![
+        text(label.to_string())
+            .font(SANS_MEDIUM)
+            .size(12.5)
+            .color(palette().ink_2),
+        control
+    ]
+    .spacing(5);
+    if !hint_text.is_empty() {
+        col = col.push(hint(hint_text));
+    }
+    col.into()
+}
+
+/// A single-line input (`.input`).
+fn input<'a>(
+    placeholder: &'a str,
+    value: &'a str,
+    on: impl Fn(String) -> WizardMsg + 'a,
+) -> Element<'a, WizardMsg> {
+    text_input(placeholder, value)
+        .on_input(on)
+        .padding([6, 10])
+        .style(crate::theme::input)
+        .into()
+}
+
+/// A multi-line editor (`.textarea`) of `height` pixels.
+fn area<'a>(
+    content: &'a Content,
+    placeholder: &'a str,
+    which: Area,
+    height: f32,
+) -> Element<'a, WizardMsg> {
+    text_editor(content)
+        .style(crate::theme::editor)
+        .placeholder(placeholder)
+        .height(Length::Fixed(height))
+        .padding(8)
+        .on_action(move |a| WizardMsg::Area(which, a))
+        .into()
+}
+
+/// A choice card (`.ag-choice`): a bordered block on the sheet, the signal ring and ground when it is on.
+fn choice_card<'a>(
+    on: bool,
+    content: Element<'a, WizardMsg>,
+    msg: WizardMsg,
+) -> Element<'a, WizardMsg> {
+    button(container(content).padding(12).width(Length::Fill))
+        .on_press(msg)
+        .padding(0)
+        .width(Length::Fill)
+        .style(move |_: &Theme, status: button::Status| choice_style(on, status))
+        .into()
+}
+
+fn choice_style(on: bool, status: button::Status) -> button::Style {
+    let p = palette();
+    let edge = if on {
+        p.signal
+    } else if matches!(status, button::Status::Hovered) {
+        p.ink_3
+    } else {
+        p.rule
+    };
+    button::Style {
+        background: Some(Background::Color(if on { p.signal_soft } else { p.sheet })),
+        text_color: p.ink,
+        border: Border::default()
+            .width(1.0)
+            .color(edge)
+            .rounded(skin().radius),
+        shadow: Shadow::default(),
+        snap: true,
+    }
+}
+
+// ---- The spawn wizard's steps -----------------------------------------------------------------------------------
+
+/// Step 1: use an existing role (and pick it below) or define a new one; a custom role's delete confirm sits under
+/// the list.
+fn purpose_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+    let choice = |mode: Mode, name: &'static str, hint_text: &'static str| {
+        choice_card(
+            w.mode == mode,
+            column![
+                text(name)
+                    .font(SANS_SEMIBOLD)
+                    .size(TYPE_ITEM)
+                    .color(palette().ink),
+                muted(hint_text)
+            ]
+            .spacing(4)
+            .into(),
+            WizardMsg::SetMode(mode),
+        )
+    };
+    let mut col = column![
+        heading("What should this agent do?"),
+        column![
             choice(
-                w.mode == Mode::Existing,
+                Mode::Existing,
                 "Use an existing role",
-                "Start agents of a role the plaza already has.",
-                WizardMsg::SetMode(Mode::Existing)
+                "Start agents of a role the plaza already has."
             ),
             choice(
-                w.mode == Mode::New,
+                Mode::New,
                 "Define a new role",
-                "Write the role properly first, then start agents of it.",
-                WizardMsg::SetMode(Mode::New)
+                "Write the role properly first, then start agents of it."
             ),
         ]
-        .spacing(12)
+        .spacing(12),
     ]
-    .spacing(14);
+    .spacing(12);
     if w.mode == Mode::Existing {
         if w.roles.is_empty() {
-            col = col.push(ui::faint("The plaza has no roles yet. Define a new one."));
+            col = col.push(muted("The plaza has no roles yet. Define a new one."));
+        } else {
+            col = col.push(column(w.roles.iter().map(|r| role_card(w, r))).spacing(12));
         }
-        for r in &w.roles {
-            let source = if r.source == "builtin" {
-                "built-in"
-            } else {
-                "custom"
-            };
-            let kind = if w.role_id == r.id {
-                Kind::Primary
-            } else {
-                Kind::Secondary
-            };
-            let mut cell = column![
-                ui::btn(
-                    &format!("{} · {}", r.title, r.id),
-                    None,
-                    kind,
-                    Some(WizardMsg::PickRole(r.id.clone()))
-                ),
-                ui::faint(format!(
-                    "{source} · {} · {}",
-                    clip(&r.def.purpose, 180),
-                    plural(r.agents, "agent")
-                ))
-                .size(11.0),
-            ]
-            .spacing(4);
-            if r.source != "builtin" {
-                cell = cell.push(delete_role_panel(w, r));
-            }
-            col = col.push(cell);
+        if let Some(confirm) = confirm_row(w) {
+            col = col.push(confirm);
         }
     }
     col.into()
 }
 
-/// A custom role's delete: the first click asks, the second confirms. The hub's refusal (a role in use) shows at the top.
-fn delete_role_panel<'a>(w: &'a Wizard, r: &'a RoleView) -> Element<'a, WizardMsg> {
-    if w.deleting_role.as_deref() == Some(r.id.as_str()) {
+/// A role as a choice (`.ag-choice`): its name, built-in or custom, its id, its purpose and its agents; a custom
+/// role carries its own Delete role.
+fn role_card<'a>(w: &'a Wizard, r: &RoleView) -> Element<'a, WizardMsg> {
+    let source = if r.source == "builtin" {
+        "built-in"
+    } else {
+        "custom"
+    };
+    let mut body = column![
         row![
-            ui::faint(format!(
-                "Delete {}? Its definition is removed for good.",
-                r.id
-            )),
-            ui::btn(
-                "Cancel",
-                None,
-                Kind::Ghost,
-                (!w.busy).then_some(WizardMsg::AskDeleteRole(None))
-            ),
-            ui::btn(
-                "Delete role",
-                None,
-                Kind::Danger,
-                (!w.busy).then_some(WizardMsg::DeleteRole)
-            ),
+            text(r.title.clone())
+                .font(SANS_SEMIBOLD)
+                .size(TYPE_ITEM)
+                .color(palette().ink),
+            ui::badge(source, Tone::Muted),
+            ui::mono(r.id.clone(), TYPE_UI, palette().ink_3),
         ]
         .spacing(8)
-        .align_y(Alignment::Center)
-        .into()
-    } else {
-        ui::btn(
+        .align_y(Alignment::Center),
+        muted(clip(&r.def.purpose, 180)),
+        muted(format!("{} run this role", plural(r.agents, "agent"))),
+    ]
+    .spacing(4);
+    if r.source != "builtin" {
+        body = body.push(ui::btn_sm(
             "Delete role",
             None,
             Kind::Ghost,
             (!w.busy).then(|| WizardMsg::AskDeleteRole(Some(r.id.clone()))),
-        )
+        ));
     }
+    choice_card(
+        w.role_id == r.id,
+        body.into(),
+        WizardMsg::PickRole(r.id.clone()),
+    )
 }
 
-fn choice<'a>(on: bool, name: &str, hint: &str, msg: WizardMsg) -> Element<'a, WizardMsg> {
-    let kind = if on { Kind::Primary } else { Kind::Secondary };
-    column![
-        ui::btn(name, None, kind, Some(msg)),
-        ui::faint(hint.to_string()).size(11.0)
-    ]
-    .spacing(6)
-    .width(Length::FillPortion(1))
-    .into()
+/// The delete confirm for the custom role the owner asked to delete (the web's inline confirm, a rule above it).
+fn confirm_row<'a>(w: &'a Wizard) -> Option<Element<'a, WizardMsg>> {
+    let id = w.deleting_role.as_deref()?;
+    let r = w.roles.iter().find(|r| r.id == id)?;
+    Some(
+        column![
+            ui::hairline(),
+            column![
+                ink_text(format!(
+                    "Delete the role {} ({})? Its definition is removed for good.",
+                    r.title, r.id
+                )),
+                row![
+                    ui::btn_sm(
+                        "Delete role",
+                        None,
+                        Kind::Danger,
+                        (!w.busy).then_some(WizardMsg::DeleteRole)
+                    ),
+                    ui::btn_sm(
+                        "Keep",
+                        None,
+                        Kind::Ghost,
+                        Some(WizardMsg::AskDeleteRole(None))
+                    ),
+                ]
+                .spacing(8),
+            ]
+            .spacing(8)
+            .padding([8, 0]),
+        ]
+        .into(),
+    )
 }
 
+/// An existing role's read-only preview (step 2).
 fn role_preview<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     let Some(role) = w.role() else {
-        return ui::faint("No role selected. Go back and choose one.").into();
+        return muted("No role selected. Go back and choose one.");
     };
     let d = &role.def;
     column![
-        ui::sans(d.title.clone(), 13.0, crate::theme::palette().ink),
-        ui::faint(format!("{}, an existing role", role.id)),
-        read_only("Purpose", d.purpose.clone()),
-        read_only("Responsibilities", list_text(&d.responsibilities)),
-        read_only("Deliverables", list_text(&d.deliverables)),
-        read_only("Working with others", d.collaboration.clone()),
-        read_only("Boundaries", list_text(&d.boundaries)),
+        heading(&d.title),
+        muted(format!("{}, an existing role", role.id)),
+        ro("Purpose", &d.purpose),
+        ro_list("Responsibilities", &d.responsibilities),
+        ro_list("Deliverables", &d.deliverables),
+        ro("Working with others", &d.collaboration),
+        ro_list("Boundaries", &d.boundaries),
     ]
     .spacing(12)
     .into()
 }
 
+/// A new role's fields (step 2).
 fn role_form<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     column![
+        heading("Describe the role"),
         field(
             "Id",
             input("api-builder", &w.id, |s| WizardMsg::Field(Field::Id, s)),
             "Lowercase letters, digits and hyphens. It follows the title until you edit it by hand.",
         ),
-        field("Title", input("API builder", &w.title, |s| WizardMsg::Field(Field::Title, s)), "What this role is called, e.g. \"API builder\"."),
+        field(
+            "Title",
+            input("API builder", &w.title, |s| WizardMsg::Field(Field::Title, s)),
+            "What this role is called, e.g. \"API builder\".",
+        ),
         field(
             "Purpose",
-            area(&w.purpose, "Builds and tests the plaza HTTP API.", Area::Purpose, 90.0),
+            area(&w.purpose, "Builds and tests the plaza HTTP API.", Area::Purpose, 80.0),
             "Why the role exists, in a sentence or two. Good: \"Builds and tests the plaza HTTP API.\" Vague: \"helps with the project.\"",
         ),
         field(
@@ -985,7 +1163,7 @@ fn role_form<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
         ),
         field(
             "Working with others",
-            area(&w.collaboration, "", Area::Collaboration, 90.0),
+            area(&w.collaboration, "", Area::Collaboration, 80.0),
             "Who this role takes work from, and who reviews what it produces.",
         ),
         field(
@@ -994,10 +1172,11 @@ fn role_form<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
             "What it must not do. Optional, but a clear edge keeps roles from overlapping.",
         ),
     ]
-    .spacing(14)
+    .spacing(12)
     .into()
 }
 
+/// An existing role's tools and budget, fixed by its definition, with the count and the model (step 3).
 fn existing_limits<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     let tools = w
         .role()
@@ -1009,32 +1188,22 @@ fn existing_limits<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
         .map(|r| r.def.budget.to_string())
         .unwrap_or_else(|| "—".into());
     column![
-        ui::faint("This role's tools and budget are fixed by its definition; choose how many agents to start and on which model."),
-        read_only("Tools", tools),
-        read_only("Budget", budget),
+        heading("Tools & limits"),
+        muted("This role's tools and budget are fixed by its definition; choose how many agents to start and on which model."),
+        ro("Tools", &tools),
+        ro("Budget", &budget),
         count_block(w),
         model_block(w),
     ]
-    .spacing(14)
+    .spacing(12)
     .into()
 }
 
+/// A new role's extra tools, budget, count and model (step 3).
 fn new_limits<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
-    let mut tools = column![ui::label("Extra tools"), ui::faint("Every agent already gets its workspace tools, the board, messages, memory and the toolbox; the plaza's laws decide the rest.")].spacing(10);
-    for &(group, names) in TOOL_GROUPS {
-        let mut g = column![ui::label(group)].spacing(6);
-        for &tool in names {
-            let on = w.tools.iter().any(|t| t.as_str() == tool);
-            g = g.push(
-                checkbox(on)
-                    .label(tool)
-                    .on_toggle(move |v| WizardMsg::ToggleTool(tool, v)),
-            );
-        }
-        tools = tools.push(g);
-    }
     column![
-        tools,
+        heading("Tools & limits"),
+        tools_block(w),
         field(
             "Task budget",
             input("2000", &w.budget_text, |s| WizardMsg::Field(
@@ -1046,50 +1215,74 @@ fn new_limits<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
         count_block(w),
         model_block(w),
     ]
-    .spacing(14)
+    .spacing(12)
     .into()
 }
 
-fn count_block<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
-    let stepper = row![
-        ui::btn(
-            "−",
-            None,
-            Kind::Secondary,
-            (w.count > 1).then_some(WizardMsg::Count(w.count.saturating_sub(1)))
-        ),
-        ui::sans(w.count.to_string(), 13.0, crate::theme::palette().ink),
-        ui::btn(
-            "+",
-            None,
-            Kind::Secondary,
-            (w.count < MAX_AGENTS).then_some(WizardMsg::Count(w.count + 1))
-        ),
+/// The extra tools, in their groups, as the web's fieldset.
+fn tools_block<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+    let mut groups = column![].spacing(8);
+    for &(group, names) in TOOL_GROUPS {
+        let mut g = column![muted(group)].spacing(6);
+        for &tool in names {
+            let on = w.tools.iter().any(|t| t.as_str() == tool);
+            g = g.push(
+                checkbox(on)
+                    .label(tool)
+                    .on_toggle(move |v| WizardMsg::ToggleTool(tool, v)),
+            );
+        }
+        groups = groups.push(g);
+    }
+    column![
+        text("Extra tools")
+            .font(SANS_MEDIUM)
+            .size(12.5)
+            .color(palette().ink_2),
+        muted("Every agent already gets its workspace tools, the board, messages, memory and the toolbox; the plaza's laws decide the rest."),
+        groups,
     ]
     .spacing(8)
-    .align_y(Alignment::Center);
+    .into()
+}
+
+/// The agents' count, 1 to 8.
+fn count_pick<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+    let options: Vec<u32> = (1..=MAX_AGENTS).collect();
+    pick_list(options, Some(w.count), WizardMsg::Count)
+        .width(Length::Fill)
+        .style(crate::theme::pick_list)
+        .into()
+}
+
+fn count_block<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     field(
         "Agents",
-        stepper.into(),
+        count_pick(w),
         "How many agents of this role to start (1 to 8).",
     )
 }
 
-fn model_block<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
-    let picked = picker::view(
+/// The worker model and, for a spawn, its effort (the picker's own selector).
+fn model_pick<'a>(w: &'a Wizard, effort: bool) -> Element<'a, WizardMsg> {
+    picker::view(
         &w.picker,
         &w.choices,
         &w.model,
-        Some(w.effort.as_str()),
+        effort.then_some(w.effort.as_str()),
         WizardMsg::Picker,
-    );
+    )
+}
+
+fn model_block<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     field(
         "Model and effort",
-        picked,
+        model_pick(w, true),
         "Worker models only. Effort is saved with the model as model@effort; \"Model default\" leaves it to the model.",
     )
 }
 
+/// The prompt, generated from the fields or edited by hand (step 4).
 fn prompt_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     let edited = w.prompt_edited.is_some();
     let note = if w.editing_prompt {
@@ -1099,15 +1292,9 @@ fn prompt_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     } else {
         "Generated from the fields in steps 2 and 3."
     };
-    let bar = row![
-        ui::faint(note),
-        ui::btn(
-            "Reset to generated",
-            None,
-            Kind::Ghost,
-            edited.then_some(WizardMsg::ResetPrompt)
-        ),
-        ui::btn(
+    let mut bar = row![
+        muted(note),
+        ui::btn_sm(
             if w.editing_prompt { "Done" } else { "Edit" },
             None,
             Kind::Ghost,
@@ -1116,17 +1303,28 @@ fn prompt_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
+    if edited {
+        bar = bar.push(ui::btn_sm(
+            "Reset to generated",
+            None,
+            Kind::Ghost,
+            Some(WizardMsg::ResetPrompt),
+        ));
+    }
     let body: Element<'a, WizardMsg> = if w.editing_prompt {
         text_editor(&w.prompt)
+            .style(crate::theme::editor)
             .height(Length::Fixed(360.0))
+            .padding(8)
             .on_action(|a| WizardMsg::Area(Area::Prompt, a))
             .into()
     } else {
         ui::markdown(&w.current_prompt())
     };
-    column![bar, body].spacing(10).into()
+    column![heading("Prompt"), bar, body].spacing(12).into()
 }
 
+/// An existing role's prompt, read-only (step 4).
 fn existing_prompt<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
     let prompt = match w.role() {
         Some(r) if !r.def.prompt.is_empty() => r.def.prompt.clone(),
@@ -1141,41 +1339,14 @@ fn existing_prompt<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
         ),
         None => String::new(),
     };
-    ui::markdown(&prompt)
+    column![heading("Prompt"), ui::markdown(&prompt)]
+        .spacing(12)
+        .into()
 }
 
-fn review_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
-    let mut rows: Vec<(String, String)> = Vec::new();
-    if w.mode == Mode::Existing {
-        let title = w
-            .role()
-            .map(|r| r.def.title.clone())
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| w.role_id.clone());
-        rows.push(("Role".into(), format!("{title} ({}), existing", w.role_id)));
-    } else {
-        rows.push(("New role".into(), format!("{} ({})", w.title.trim(), w.id)));
-        rows.push(("Purpose".into(), w.purpose_text()));
-        rows.push((
-            "Responsibilities".into(),
-            list_text(&nonempty(&w.responsibilities)),
-        ));
-        rows.push(("Deliverables".into(), list_text(&nonempty(&w.deliverables))));
-        rows.push(("Working with others".into(), w.collaboration_text()));
-        rows.push(("Boundaries".into(), list_text(&nonempty(&w.boundaries))));
-        rows.push((
-            "Tools".into(),
-            if w.tools.is_empty() {
-                "Workspace tools only".into()
-            } else {
-                w.tools.join(", ")
-            },
-        ));
-        rows.push(("Budget".into(), w.budget_value().to_string()));
-    }
-    rows.push(("Agents".into(), plural(w.count, "agent")));
-    let label = w
-        .choices
+/// The model's label as the picker shows it, or the default.
+fn model_label(w: &Wizard) -> String {
+    w.choices
         .iter()
         .find(|c| c.id == w.model)
         .map(|c| c.label.clone())
@@ -1185,97 +1356,200 @@ fn review_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
             } else {
                 w.model.clone()
             }
-        });
+        })
+}
+
+/// The review's rows: the role, the agents, the model (step 5).
+fn review_rows(w: &Wizard) -> Vec<(&'static str, String)> {
+    let mut rows: Vec<(&'static str, String)> = Vec::new();
+    if w.mode == Mode::Existing {
+        let title = w
+            .role()
+            .map(|r| r.def.title.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| w.role_id.clone());
+        rows.push(("Role", format!("{title} ({}), existing", w.role_id)));
+    } else {
+        rows.push(("New role", format!("{} ({})", w.title.trim(), w.id)));
+        rows.push(("Purpose", w.purpose_text()));
+        rows.push(("Responsibilities", nonempty(&w.responsibilities).join("; ")));
+        rows.push(("Deliverables", nonempty(&w.deliverables).join("; ")));
+        rows.push(("Working with others", w.collaboration_text()));
+        let boundaries = nonempty(&w.boundaries).join("; ");
+        rows.push((
+            "Boundaries",
+            if boundaries.is_empty() {
+                "—".into()
+            } else {
+                boundaries
+            },
+        ));
+        rows.push((
+            "Tools",
+            if w.tools.is_empty() {
+                "Workspace tools only".into()
+            } else {
+                w.tools.join(", ")
+            },
+        ));
+        rows.push(("Budget", w.budget_value().to_string()));
+    }
+    rows.push(("Agents", plural(w.count, "agent")));
     let effort = if w.effort.is_empty() {
         String::new()
     } else {
         format!(" · {} effort", w.effort)
     };
-    rows.push(("Model".into(), format!("{label}{effort}")));
+    rows.push(("Model", format!("{}{effort}", model_label(w))));
+    rows
+}
 
-    let mut col = column![].spacing(10);
-    for (key, value) in rows {
-        col = col.push(
+/// The review (step 5): the rows as a definition list.
+fn review_step<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+    let mut dl = column![].spacing(4);
+    for (key, value) in review_rows(w) {
+        dl = dl.push(
             row![
-                ui::label(&key).width(Length::Fixed(160.0)),
-                ui::prose(value)
+                ui::sans(key, TYPE_ITEM, palette().ink_3).width(Length::Fixed(150.0)),
+                ui::sans(value, TYPE_ITEM, palette().ink).width(Length::Fill),
             ]
             .spacing(12),
         );
     }
-    col.into()
+    column![heading("Review and spawn"), dl].spacing(12).into()
 }
 
-fn read_only<'a>(label: &str, body: String) -> Element<'a, WizardMsg> {
-    let body = if body.trim().is_empty() {
-        "—".to_string()
-    } else {
-        body
-    };
-    column![ui::label(label), ui::prose(body)].spacing(4).into()
-}
-
-/// A block of label, control and hint, as the console's forms lay them out.
-fn field<'a>(label: &str, control: Element<'a, WizardMsg>, hint: &str) -> Element<'a, WizardMsg> {
-    column![
-        ui::label(label),
-        control,
-        ui::faint(hint.to_string()).size(11.0)
-    ]
-    .spacing(6)
-    .into()
-}
-
-fn input<'a>(
-    placeholder: &'a str,
-    value: &'a str,
-    on: impl Fn(String) -> WizardMsg + 'a,
-) -> Element<'a, WizardMsg> {
-    text_input(placeholder, value)
-        .on_input(on)
-        .padding(8)
-        .into()
-}
-
-fn area<'a>(
-    content: &'a Content,
-    placeholder: &'a str,
-    which: Area,
-    height: f32,
-) -> Element<'a, WizardMsg> {
-    text_editor(content)
-        .placeholder(placeholder)
-        .height(Length::Fixed(height))
-        .on_action(move |a| WizardMsg::Area(which, a))
-        .into()
-}
-
-/// A list of text rows that edit `items` in place; `Add` and the × remove rows.
+/// A list of text rows that edit `items` in place, with `Add` and × to remove a row.
 fn list_editor<'a>(
     key: ListKey,
     items: &'a [String],
     placeholder: &'a str,
 ) -> Element<'a, WizardMsg> {
-    let mut col = column![].spacing(6);
+    let mut col = column![].spacing(12);
     for (i, value) in items.iter().enumerate() {
         col = col.push(
             row![
-                text_input(placeholder, value)
-                    .on_input(move |s| WizardMsg::ListEdit(key, i, s))
-                    .padding(8),
-                ui::btn("×", None, Kind::Ghost, Some(WizardMsg::ListRemove(key, i))),
+                input(placeholder, value.as_str(), move |s| WizardMsg::ListEdit(
+                    key, i, s
+                )),
+                ui::btn_sm(
+                    "",
+                    Some("x"),
+                    Kind::Ghost,
+                    Some(WizardMsg::ListRemove(key, i))
+                ),
             ]
-            .spacing(6)
+            .spacing(8)
             .align_y(Alignment::Center),
         );
     }
-    col.push(ui::btn(
+    col.push(ui::btn_sm(
         "Add",
         None,
-        Kind::Secondary,
+        Kind::Ghost,
         Some(WizardMsg::ListAdd(key)),
     ))
     .into()
+}
+
+// ---- A proposal's three steps -----------------------------------------------------------------------------------
+
+/// The proposal's steps: the proposal and its reason, the role it defines (with the count and the model), then the
+/// decision (approve, or reject with a reason).
+fn proposal_body<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+    let Some(p) = &w.proposal else {
+        return column![].into();
+    };
+    let def = p.role_def();
+    let rid = p.role_id();
+    let title = if !def.title.is_empty() {
+        def.title.clone()
+    } else if !rid.is_empty() {
+        rid.clone()
+    } else {
+        "Role".to_string()
+    };
+    match w.step {
+        0 => {
+            let instruction: Element<'a, WizardMsg> = if p.instruction.is_empty() {
+                muted("No instruction was quoted with this proposal.")
+            } else {
+                container(ink_text(p.instruction.clone()))
+                    .padding([0, 14])
+                    .into()
+            };
+            column![
+                heading("The orchestrator proposes"),
+                ink_text(if p.reason.trim().is_empty() {
+                    "—".to_string()
+                } else {
+                    p.reason.clone()
+                }),
+                subheading("The owner's instruction"),
+                instruction,
+            ]
+            .spacing(12)
+            .into()
+        }
+        1 => {
+            let existing = w.roles.iter().find(|r| r.id == rid);
+            let (kind, note) = match existing {
+                Some(ex) => (
+                    "an existing",
+                    format!(
+                        "{} already run this role. The proposal adds agents of it.",
+                        plural(ex.agents, "agent")
+                    ),
+                ),
+                None => (
+                    "a new",
+                    "Approving it writes the role into the plaza with this definition.".to_string(),
+                ),
+            };
+            column![
+                heading(&title),
+                muted(format!("{rid}, {kind} role")),
+                hint(&note),
+                ro("Purpose", &def.purpose),
+                ro_list("Responsibilities", &def.responsibilities),
+                ro_list("Deliverables", &def.deliverables),
+                ro("Working with others", &def.collaboration),
+                ro_list("Boundaries", &def.boundaries),
+                field("Agents", count_pick(w), ""),
+                field("Model", model_pick(w, false), ""),
+            ]
+            .spacing(12)
+            .into()
+        }
+        _ => {
+            let mut col = column![
+                heading("Approve it, or reject it with a reason"),
+                muted(format!(
+                    "Approving starts {} of {title} on {}.",
+                    plural(w.count, "agent"),
+                    model_label(w)
+                )),
+            ]
+            .spacing(12);
+            if w.rejecting {
+                col = col.push(reject_panel(w));
+            }
+            col.into()
+        }
+    }
+}
+
+/// The reject form: the reason is required, and Reject stays off until one is typed.
+fn reject_panel<'a>(w: &'a Wizard) -> Element<'a, WizardMsg> {
+    let reason = text_editor(&w.reject_reason)
+        .style(crate::theme::editor)
+        .placeholder("Why the proposal is rejected")
+        .height(Length::Fixed(80.0))
+        .padding(8)
+        .on_action(WizardMsg::RejectEdit);
+    column![subheading("Reject it with a reason"), reason]
+        .spacing(12)
+        .into()
 }
 
 fn plural(n: u32, word: &str) -> String {
@@ -1288,17 +1562,6 @@ fn clip(s: &str, n: usize) -> String {
         t.to_string()
     } else {
         format!("{}…", t.chars().take(n).collect::<String>())
-    }
-}
-
-fn list_text(xs: &[String]) -> String {
-    if xs.is_empty() {
-        "—".to_string()
-    } else {
-        xs.iter()
-            .map(|x| format!("• {x}"))
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }
 

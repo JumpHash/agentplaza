@@ -4,7 +4,7 @@ import { badge, empty, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { badgeOf, languageFor, stationBadgeOf, stationCrumb } from '../ide/model';
 import type { Entry } from '../ide/types';
-import { centreViewsFor, hasDiff, hasTerminal, rightViewsFor } from '../ide/layout';
+import { centreViewsFor, hasDiff, hasTerminal, rightViewsFor, runsFor } from '../ide/layout';
 import { rowStatus } from '../ide/view';
 import { VIEWS, refOf, repoNameOf, type IdeCtx } from './ide-ctx';
 import { CENTRE_LABEL, paintTabs, setCrumb, type RightView } from './ide-frame';
@@ -54,7 +54,7 @@ export function renderSelection(c: IdeCtx): void {
     agent?.name ??
     (c.ws?.kind === 'repo' ? repoNameOf(c.ws) : c.ws?.kind === 'station' ? c.ws.name || c.ws.owner : c.cid !== null ? `agent ${c.cid}` : 'No selection');
   frame.centre.title.textContent = title;
-  frame.centre.dot.className = `iw-dot ${agent ? rowStatus(agent, null) : 'idle'}`;
+  frame.centre.dot.dataset.status = agent ? rowStatus(agent, null) : 'idle';
   frame.centre.popout.hidden = c.cid === null;
   const views = centreViewsFor(c.ws?.kind ?? null, c.cid !== null);
   for (const v of VIEWS) {
@@ -98,6 +98,9 @@ export function renderCentre(c: IdeCtx): void {
   dom.tabBar.hidden = !editing;
   dom.banners.hidden = !editing;
   dom.editorBar.hidden = !editing;
+  // The file's bar: its path (the prototype's editor bar), beside the Save button.
+  const path = dom.editorBar.querySelector<HTMLElement>('.ide-editor-path');
+  if (path) path.textContent = editing && has ? (c.state?.active ?? '') : '';
   if (!c.ws) {
     if (inEditor) {
       replace(
@@ -158,10 +161,26 @@ export function renderRightTabs(c: IdeCtx): void {
     approvals: c.approvalCount > 0 ? String(c.approvalCount) : null,
     activity: null,
   };
-  const tabs = c.dom.frame.right.tabs;
+  const { tabs, extra } = c.dom.frame.right;
   paintTabs(tabs, c.rightView, counts);
-  const shown = rightViewsFor(c.ws?.kind ?? null, c.cid !== null);
+  const kind = c.ws?.kind ?? null;
+  const agent = c.cid !== null;
+  const shown = rightViewsFor(kind, agent);
   for (const k of Object.keys(tabs) as RightView[]) tabs[k].hidden = !shown.includes(k);
+  // The dock's own tabs: the Diff (the centre's Diff view), and the drawer's Terminal and Run. Each is shown where its kind has it.
+  extra.diff.hidden = !c.ws || !hasDiff(kind);
+  extra.terminal.hidden = !hasTerminal(kind, agent);
+  extra.run.hidden = !runsFor(kind);
+  paintOne(extra.diff, c.centreView === 'diff');
+  paintOne(extra.terminal, c.drawerOpen && c.drawerTab === 'terminal');
+  paintOne(extra.run, c.drawerOpen && c.drawerTab === 'run');
+}
+
+/** One tab's selection: the same marks paintTabs gives a strip, for a tab that is not in a strip of its own. */
+function paintOne(el: HTMLElement, on: boolean): void {
+  el.setAttribute('aria-selected', on ? 'true' : 'false');
+  el.classList.toggle('on', on);
+  el.tabIndex = on ? 0 : -1;
 }
 
 /** The right panel's body: the current tab's panel (made and shown on first use), or a note. */
@@ -293,7 +312,7 @@ export function checkpointsKey(
 export function renderDrawer(c: IdeCtx): void {
   const { frame } = c.dom;
   frame.drawer.el.hidden = !c.drawerOpen;
-  paintTabs(frame.drawer.tabs, c.drawerTab, {});
+  paintTabs(frame.drawer.tabs, c.drawerOpen ? c.drawerTab : null, {});
   if (!c.drawerOpen) return;
   const body = frame.drawer.body;
   if (c.drawerTab === 'run') {

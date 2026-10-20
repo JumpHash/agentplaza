@@ -1,10 +1,10 @@
-// Overlays of the Metrics view: the panel and sibling menus, dialogs, the find palette, the keyboard help, the
-// "what changed" drawer and toasts. One overlay at a time; Esc closes it and focus returns where it was.
+// Overlays of the Metrics view: the panel and sibling menus, dialogs, the find palette, the keyboard help and the
+// "what changed" drawer. One overlay at a time; Esc closes it and focus returns where it was.
 
 import { button } from '../ui/components';
-import { h } from '../ui/dom';
+import { h, icon } from '../ui/dom';
 import { spark } from './figures';
-import type { Around, EventRow, MoverRow, Status, Tone } from './model';
+import type { Around, EventRow, MoverRow, Status } from './model';
 
 export interface MenuItem {
   label: string;
@@ -74,10 +74,10 @@ function placeMenu(panel: HTMLElement, anchor: HTMLElement): void {
 /** A menu under `anchor`; closes on a choice, Esc or a click outside. */
 export function menu(anchor: HTMLElement, items: MenuItem[]): void {
   const panel = h(
-    'div.mx-menu',
+    'div.mt-menu',
     { role: 'menu' },
     items.map((item) => {
-      const choice = h('button', { type: 'button', role: 'menuitem' }, h('span', null, item.label), item.key ? h('kbd', null, item.key) : null);
+      const choice = h('button.mt-mi', { type: 'button', role: 'menuitem' }, item.label, item.key ? h('span.mt-hint', null, item.key) : null);
       choice.addEventListener('click', () => {
         close();
         item.run();
@@ -124,29 +124,40 @@ export interface DialogAction {
   run?(dialog: HTMLElement): boolean | void;
 }
 
+/**
+ * The prototype's sheet: a dialog with its title and a close button, a body, and a footer of actions when there are
+ * any. `shut` runs when the close button is clicked.
+ */
+function sheet(title: string, body: Node, foot: Node[], shut: () => void, cls?: string): HTMLElement {
+  const close = h('button.iconbtn', { type: 'button', title: 'Close', 'aria-label': 'Close' }, icon('x'));
+  close.addEventListener('click', shut);
+  return h(
+    'div.sheet',
+    { role: 'dialog', 'aria-modal': 'true', 'aria-label': title, class: cls ?? null },
+    h('header.sheet-h', null, h('h2', null, title), close),
+    h('div.sheet-b', null, body),
+    foot.length ? h('footer.sheet-f', null, foot) : null,
+  );
+}
+
 /** A modal dialog; returns a function that closes it. */
 export function dialog(title: string, body: HTMLElement, actions: DialogAction[]): () => void {
-  const modal = h(
-    'div.mx-modal',
-    { role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
-    h('h2', null, title),
+  const modal = sheet(
+    title,
     body,
-    h(
-      'div.mx-acts',
-      null,
-      actions.map((action) =>
-        button(
-          action.label,
-          () => {
-            if (action.run?.(modal) === false) return;
-            close();
-          },
-          { kind: action.primary ? 'primary' : undefined },
-        ),
+    actions.map((action) =>
+      button(
+        action.label,
+        () => {
+          if (action.run?.(modal) === false) return;
+          close();
+        },
+        { kind: action.primary ? 'primary' : 'ghost' },
       ),
     ),
+    () => close(),
   );
-  const scrim = h('div.mx-scrim', null, modal);
+  const scrim = h('div.scrim', null, modal);
   scrim.addEventListener('mousedown', (e) => {
     if (e.target === scrim) close();
   });
@@ -158,7 +169,7 @@ export function dialog(title: string, body: HTMLElement, actions: DialogAction[]
       trapTab(e, modal);
     }
   });
-  (modal.querySelector<HTMLElement>('input, textarea, select') ?? modal.querySelector<HTMLElement>('.mx-acts .primary') ?? modal.querySelector<HTMLElement>('button'))?.focus();
+  (modal.querySelector<HTMLElement>('input, textarea, select') ?? modal.querySelector<HTMLElement>('.sheet-f .primary') ?? modal.querySelector<HTMLElement>('button'))?.focus();
   return close;
 }
 
@@ -168,24 +179,14 @@ export interface PaletteItem {
   run(): void;
 }
 
-/** The find palette: a filter box over `items`, ↑ ↓ to move, Enter to run, Esc to close. */
-export function palette(items: PaletteItem[], placeholder: string): void {
-  const input = h('input', { type: 'text', placeholder, 'aria-label': 'Search', autocomplete: 'off' });
-  const list = h('ul', { role: 'listbox' });
-  const panel = h(
-    'div.mx-pal',
-    { role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Find' },
-    input,
-    list,
-    h(
-      'div.mx-foot',
-      null,
-      h('span', null, h('kbd', null, '↑'), h('kbd', null, '↓'), ' move'),
-      h('span', null, h('kbd', null, 'Enter'), ' open'),
-      h('span', null, h('kbd', null, 'Esc'), ' close'),
-    ),
-  );
-  const scrim = h('div.mx-scrim', null, panel);
+/**
+ * The find palette: a filter box over `items` under group headings, ↑ ↓ to move, Enter to run, Esc to close.
+ * `title` names the dialog ("Find" by default).
+ */
+export function palette(items: PaletteItem[], placeholder: string, title = 'Find'): void {
+  const input = h('input.input.mt-find-q', { type: 'search', placeholder, 'aria-label': placeholder, autocomplete: 'off', 'data-input': 'mt-find-q' });
+  const list = h('div.mt-list', { id: 'mt-find-list', role: 'listbox' });
+  const body = h('div.mt-form', null, input, list);
   let shown: PaletteItem[] = [];
   let selected = 0;
 
@@ -200,22 +201,36 @@ export function palette(items: PaletteItem[], placeholder: string): void {
     const matches = query ? items.filter((item) => `${item.label} ${item.group}`.toLowerCase().includes(query)) : items;
     shown = matches.slice(0, 40);
     selected = Math.max(0, Math.min(selected, shown.length - 1));
-    list.replaceChildren(
-      ...(shown.length
-        ? shown.map((item, i) => {
-            const option = h('li', { role: 'option', 'aria-selected': i === selected ? 'true' : 'false' }, h('span.mx-mute', null, item.group), h('span', null, item.label));
-            option.addEventListener('click', () => choose(i));
-            return option;
-          })
-        : [h('li.mx-mute', null, 'Nothing matches.')]),
-    );
-    list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+    if (!shown.length) {
+      list.replaceChildren(h('div.mt-empty', null, 'Nothing matches.'));
+      return;
+    }
+    const rows: Node[] = [];
+    let last: string | null = null;
+    shown.forEach((item, i) => {
+      if (item.group !== last) {
+        rows.push(h('div.mt-gh', null, item.group));
+        last = item.group;
+      }
+      const option = h('button.mt-li', { type: 'button', role: 'option', 'aria-selected': i === selected ? 'true' : 'false', class: i === selected ? 'mt-on' : null }, item.label);
+      option.addEventListener('click', () => choose(i));
+      rows.push(option);
+    });
+    list.replaceChildren(...rows);
+    list.querySelector('.mt-on')?.scrollIntoView({ block: 'nearest' });
   };
 
   input.addEventListener('input', () => {
     selected = 0;
     draw();
   });
+  const sheetEl = sheet(
+    title,
+    body,
+    [h('span.mt-hint', null, '↑ ↓ move · Enter open · Esc close')],
+    () => close(),
+  );
+  const scrim = h('div.scrim', null, sheetEl);
   const close = mount(scrim, (e) => {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -232,7 +247,7 @@ export function palette(items: PaletteItem[], placeholder: string): void {
       e.preventDefault();
       choose(selected);
     } else {
-      trapTab(e, panel);
+      trapTab(e, sheetEl);
     }
   });
   scrim.addEventListener('mousedown', (e) => {
@@ -242,33 +257,25 @@ export function palette(items: PaletteItem[], placeholder: string): void {
   input.focus();
 }
 
-/** The keyboard and mouse help. */
+/** The keyboard shortcuts. */
 export function help(): void {
   const keys: [string, string][] = [
-    ['/', 'Find a scope, tab or action'],
-    ['Ctrl K', 'Same as /'],
-    ['1 – 9', 'Switch tab'],
-    ['[ and ]', 'Earlier / later period'],
-    ['l', 'Live on / off'],
+    ['/ or Ctrl K', 'Find a scope, tab or action'],
+    ['?', 'Keyboard shortcuts'],
+    ['l', 'Live on or off'],
     ['z', 'Reset zoom'],
-    ['f', 'Pin this scope'],
-    ['a', 'Annotations on / off'],
+    ['f', 'Pin or unpin this scope'],
+    ['a', 'Annotations on or off'],
     ['c', 'Compare with another scope'],
     ['d', 'Compact density'],
-    ['t', 'Theme'],
     ['n', 'New alert rule'],
-    ['?', 'This help'],
-    ['Esc', 'Close, exit full screen'],
-    ['drag on a chart', 'Zoom every chart to that span'],
-    ['click a point', 'What changed around then'],
+    ['[ and ]', 'Earlier and later'],
+    ['1 to 9', 'Select the tab at that position'],
+    ['Esc', 'Close the open overlay, or leave full screen'],
   ];
   dialog(
-    'Keyboard and mouse',
-    h(
-      'div.mx-help',
-      null,
-      keys.map(([key, text]) => h('div', null, h('span', null, text), h('kbd', null, key))),
-    ),
+    'Keyboard shortcuts',
+    h('div.mt-kb', null, keys.map(([key, text]) => h('div.mt-kb-row', null, h('kbd', null, key), h('span', null, text)))),
     [{ label: 'Close', primary: true }],
   );
 }
@@ -280,29 +287,24 @@ export interface DrawerCtx {
 }
 
 /** The chart tone of a mover's status; a muted status draws in the ink tone. */
-function sparkTone(status: Status): Tone {
+function sparkTone(status: Status): 'ok' | 'warn' | 'crit' | 'info' | 'ink-3' {
   return status === 'mute' ? 'ink-3' : status;
 }
 
-/** "What changed around then": events, the metrics that moved most, kept traces, a zoom button. */
+/** "Around" a clicked point: the events within 30 min either side, the series that moved most, the kept traces, a zoom. */
 export function drawer(a: Around, ctx: DrawerCtx): void {
   const event = (row: EventRow) =>
-    h(
-      'div.mx-ev',
-      null,
-      h('span.mx-when', null, row.time),
-      h('span', { class: `mx-${row.status}` }, '●'),
-      h('span', null, row.subject, row.detail ? h('span.mx-hint', null, row.detail) : null),
-    );
+    h('div.mt-ev', null,
+      h('span', { class: `mt-st mt-${row.status}` }),
+      h('span.mt-mono', null, row.time),
+      h('span', null, row.subject),
+      h('span.muted', null, row.detail));
 
   const mover = (row: MoverRow) => {
-    const moverButton = h(
-      'button.mx-mv',
-      { type: 'button' },
+    const moverButton = h('button.mt-mv', { type: 'button' },
       h('span', null, row.name),
-      h('b', { class: `mx-${row.status} num` }, row.change),
-      spark(row.spark, sparkTone(row.status), 90, 20),
-    );
+      spark(row.spark, sparkTone(row.status), 96, 22, 'mt-spark mt-spk'),
+      h('span.num', null, row.change));
     moverButton.addEventListener('click', () => {
       close();
       ctx.go({ tab: row.tab, scope: row.scope });
@@ -310,45 +312,40 @@ export function drawer(a: Around, ctx: DrawerCtx): void {
     return moverButton;
   };
 
-  const panel = h(
-    'aside.mx-drawer',
-    { 'aria-label': 'What changed' },
-    h('div.mx-drawer-head', null, h('h2', null, `Around ${a.label}`), button('Close', () => close())),
-    h('p.mx-sub', null, a.sub),
-    h('h4', null, 'Events'),
-    a.events.map(event),
-    h('h4', null, 'Moved the most'),
-    a.movers.map(mover),
-    h('h4', null, 'Traces kept in this window'),
-    h(
-      'div.mx-ev',
-      null,
-      h('span', null, `${a.traces.total} turns · ${a.traces.errors} errors · ${a.traces.slow} slow`),
-      button('Open traces', () => {
-        close();
-        ctx.traces();
-      }),
-    ),
-    h(
-      'div.mx-acts',
-      null,
-      button(
-        'Zoom to ± 30 min',
-        () => {
-          close();
-          ctx.zoom(a.zoom);
-        },
-        { kind: 'primary' },
-      ),
-    ),
-  );
-  const close = mount(panel, (e) => {
+  const body = h('div.mt-form', null,
+    h('div.mt-sub', null, a.sub),
+    h('h3', null, 'Events'),
+    h('div.mt-ev-list', null, a.events.length ? a.events.map(event) : h('div.mt-empty', null, 'Nothing in the 30 minutes either side.')),
+    h('h3', null, 'Moved the most'),
+    h('div.mt-mv-list', null, a.movers.length ? a.movers.map(mover) : h('div.mt-empty', null, 'Nothing moved in this window.')),
+    h('h3', null, 'Traces kept in this window'),
+    h('div.mt-kv2', null,
+      h('span', null, h('b.num', null, a.traces.total), ' kept'),
+      h('span', null, h('b.num', null, a.traces.errors), ' errors'),
+      h('span', null, h('b.num', null, a.traces.slow), ' slow')),
+    h('div.mt-row2', null, button('Open traces', () => {
+      close();
+      ctx.traces();
+    }, { kind: 'ghost', size: 'sm' })));
+
+  const foot = [
+    button('Close', () => close(), { kind: 'ghost' }),
+    button('Zoom to ± 30 min', () => {
+      close();
+      ctx.zoom(a.zoom);
+    }, { kind: 'primary' }),
+  ];
+  const scrim = h('div.scrim', null, sheet(`Around ${a.label}`, body, foot, () => close(), 'mt-aside'));
+  scrim.addEventListener('mousedown', (e) => {
+    if (e.target === scrim) close();
+  });
+  const close = mount(scrim, (e) => {
     if (e.key === 'Escape') {
       e.preventDefault();
       close();
     }
   });
-  panel.querySelector<HTMLElement>('.mx-drawer-head .btn')?.focus();
+  scrim.querySelector<HTMLElement>('.sheet-h .iconbtn')?.focus();
 }
 
 /** Closes whatever overlay is open; true when one was. */
@@ -360,5 +357,5 @@ export function closeOverlay(): boolean {
 
 /** Whether an overlay is open. */
 export function overlayOpen(): boolean {
-  return document.querySelector('.mx-scrim, .mx-menu, .mx-drawer') !== null;
+  return document.querySelector('.scrim, .mt-menu') !== null;
 }

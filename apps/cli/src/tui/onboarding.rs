@@ -8,13 +8,14 @@ use std::path::Path;
 use apz_setup::{Check, Need, State};
 use crossterm::event::KeyCode;
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use serde_json::Value;
 
 use super::app::{Palette, Tab};
+use super::style;
 use crate::ctx::{self, Client, Config};
 
 /// The wizard's screens: welcome, hub, dependencies, model keys, summary.
@@ -389,73 +390,130 @@ impl Onboarding {
     }
 
     /// Draws the panel for the stage: the wizard centred over the body, the tour along its bottom.
-    pub fn draw(&self, frame: &mut Frame, body: Rect, palette: Palette, base: &str) {
+    pub fn draw(&self, frame: &mut Frame, body: Rect, palette: Palette, base: &str, clock: f32) {
         match self.stage {
             Stage::Setup(i) => {
-                let lines = self.setup_lines(i, palette, base);
-                let height = if i == DEPS_SCREEN { 21 } else { 17 };
-                let area = centred(body, 74, height);
-                panel(frame, area, palette, " AgentPlaza setup ", lines);
+                let width = CARD_WIDTH.min(body.width);
+                let lines = self.setup_lines(i, palette, base, clock, width.saturating_sub(4));
+                let area = centred(body, width, panel_rows(&lines, width));
+                panel(frame, area, palette, "AgentPlaza setup", lines);
             }
             Stage::Ask => {
-                let lines = vec![
-                    line("Setup is done.", palette.paper, true),
-                    Line::from(""),
-                    line("Take a 1-minute tour? [y/N]", palette.accent, true),
-                    Line::from(""),
-                    line(
-                        "The tour shows each screen of this terminal UI in turn.",
-                        palette.muted,
-                        false,
-                    ),
-                ];
-                let area = centred(body, 74, 9);
-                panel(frame, area, palette, " AgentPlaza ", lines);
+                let width = CARD_WIDTH.min(body.width);
+                let lines = ask_lines(self, palette, clock, width.saturating_sub(4));
+                let area = centred(body, width, panel_rows(&lines, width));
+                panel(frame, area, palette, "AgentPlaza", lines);
             }
             Stage::Tour(i) => {
                 let step = &TOUR[i];
-                let mut lines = vec![line(
-                    &format!("Step {} of {} · {}", i + 1, TOUR.len(), step.title),
-                    palette.accent,
-                    true,
-                )];
+                let width = body.width.min(78);
+                let blanks = vec![""; TOUR.len()];
+                let mut lines = vec![
+                    line(
+                        &format!("Step {} of {} · {}", i + 1, TOUR.len(), step.title),
+                        palette.accent,
+                        true,
+                    ),
+                    flow_row(&blanks, i, palette, clock),
+                    Line::from(""),
+                ];
                 lines.extend(
                     step.lines
                         .iter()
                         .map(|text| line(text, palette.paper, false)),
                 );
                 lines.push(Line::from(""));
-                lines.push(line(self.hint().trim_start(), palette.muted, false));
-                let height = (lines.len() as u16 + 2).min(body.height);
-                let width = body.width.min(78);
+                lines.push(self.hint_line(palette, width.saturating_sub(4)));
+                let height = panel_rows(&lines, width).min(body.height);
                 let area = Rect::new(
                     body.x + (body.width - width) / 2,
                     body.y + body.height - height,
                     width,
                     height,
                 );
-                panel(frame, area, palette, " Tour ", lines);
+                panel(frame, area, palette, "Tour", lines);
             }
         }
     }
 
-    fn setup_lines(&self, i: usize, palette: Palette, base: &str) -> Vec<Line<'static>> {
-        let mut lines = vec![
-            line(
-                &format!("Step {} of {SETUP_SCREENS}", i + 1),
-                palette.accent,
-                true,
-            ),
-            Line::from(""),
-        ];
+    /// The key hints of the stage, as one line of the panel (the footer keeps `hint`).
+    fn hint_line(&self, palette: Palette, width: u16) -> Line<'static> {
+        style::hints(&self.keys(), width, &palette)
+    }
+
+    /// The keys the stage takes, as the panel's hints: each key and what it does.
+    fn keys(&self) -> Vec<(&'static str, &'static str)> {
+        match self.stage {
+            Stage::Setup(DEPS_SCREEN) if self.deps.running => vec![("Ctrl-C", "quits")],
+            Stage::Setup(DEPS_SCREEN) if self.deps.confirming => vec![
+                ("y", "runs the fixes"),
+                ("any other key", "cancels"),
+                ("Ctrl-C", "quits"),
+            ],
+            Stage::Setup(DEPS_SCREEN) => vec![
+                ("f", "fixes missing"),
+                ("Enter/→", "next"),
+                ("←", "back"),
+                ("Esc", "skips setup"),
+                ("Ctrl-C", "quits"),
+            ],
+            Stage::Setup(i) if i + 1 == SETUP_SCREENS => vec![
+                ("Enter", "finishes setup"),
+                ("←", "back"),
+                ("Esc", "skips it"),
+                ("Ctrl-C", "quits"),
+            ],
+            Stage::Setup(_) => vec![
+                ("Enter/→", "next"),
+                ("←", "back"),
+                ("Esc", "skips setup"),
+                ("Ctrl-C", "quits"),
+            ],
+            Stage::Ask => vec![
+                ("y", "starts the tour"),
+                ("n or Enter", "skips it"),
+                ("Ctrl-C", "quits"),
+            ],
+            Stage::Tour(i) if i + 1 == TOUR.len() => vec![
+                ("Enter/→", "finishes the tour"),
+                ("←", "back"),
+                ("Esc", "skips it"),
+                ("Ctrl-C", "quits"),
+            ],
+            Stage::Tour(_) => vec![
+                ("Enter/→", "next"),
+                ("←", "back"),
+                ("Esc", "skips the tour"),
+                ("Ctrl-C", "quits"),
+            ],
+        }
+    }
+
+    fn setup_lines(
+        &self,
+        i: usize,
+        palette: Palette,
+        base: &str,
+        clock: f32,
+        width: u16,
+    ) -> Vec<Line<'static>> {
+        let mut lines = vec![flow_row(&SETUP_STEPS, i, palette, clock), Line::from("")];
         match i {
             0 => {
-                lines.push(line("Welcome to AgentPlaza.", palette.paper, true));
+                lines.push(logo(palette, clock));
+                lines.push(Line::from(""));
+                lines.push(Line::from(style::shimmer(
+                    "Welcome to AgentPlaza.",
+                    clock,
+                    palette.ink2(),
+                    palette.accent,
+                )));
                 lines.push(line(
                     "AgentPlaza is a town for your AI agents, from the terminal.",
-                    palette.paper,
+                    palette.ink2(),
                     false,
                 ));
+                lines.push(Line::from(""));
                 lines.push(line(
                     "This short setup checks the hub and the model keys. Esc skips it.",
                     palette.muted,
@@ -523,8 +581,13 @@ impl Onboarding {
             }
         }
         lines.push(Line::from(""));
-        lines.push(line(self.hint().trim_start(), palette.muted, false));
-        lines
+        lines.push(self.hint_line(palette, width));
+        let align = if i == 0 {
+            Alignment::Center
+        } else {
+            Alignment::Left
+        };
+        lines.into_iter().map(|l| l.alignment(align)).collect()
     }
 
     fn hub_text(&self) -> String {
@@ -707,14 +770,116 @@ fn centred(body: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
-/// Clears `area` and draws the lines in a bordered box.
+/// The steps of the setup wizard, numbered as the wizard's screens are.
+const SETUP_STEPS: [&str; SETUP_SCREENS] = [
+    "1. Welcome",
+    "2. Hub",
+    "3. Dependencies",
+    "4. Model keys",
+    "5. Summary",
+];
+
+/// How wide the wizard and the question are, at most.
+const CARD_WIDTH: u16 = 80;
+
+/// The logo's pulse: one swell of the middle hexagon every this many seconds.
+const LOGO_PERIOD: f32 = 2.4;
+
+/// The question after the setup: the logo, the news, the question and its keys.
+fn ask_lines(ob: &Onboarding, palette: Palette, clock: f32, width: u16) -> Vec<Line<'static>> {
+    let done = Line::from(vec![
+        Span::styled(
+            "✓ ",
+            Style::new().fg(palette.ok).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Setup is done.",
+            Style::new().fg(palette.paper).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let lines = vec![
+        logo(palette, clock),
+        Line::from(""),
+        done,
+        Line::from(""),
+        line("Take a 1-minute tour? [y/N]", palette.accent, true),
+        Line::from(""),
+        line(
+            "The tour shows each screen of this terminal UI in turn.",
+            palette.muted,
+            false,
+        ),
+        Line::from(""),
+        ob.hint_line(palette, width),
+    ];
+    lines
+        .into_iter()
+        .map(|l| l.alignment(Alignment::Center))
+        .collect()
+}
+
+/// The hive logo: three hexagons in a row, the middle one pulsing between the soft and the full accent.
+fn logo(palette: Palette, clock: f32) -> Line<'static> {
+    let middle = style::mix(
+        palette.accent_soft(),
+        palette.accent,
+        style::pulse(clock, LOGO_PERIOD),
+    );
+    let edge = Style::new().fg(palette.accent);
+    Line::from(vec![
+        Span::styled("⬡", edge),
+        Span::styled(" ", edge),
+        Span::styled("⬢", Style::new().fg(middle).add_modifier(Modifier::BOLD)),
+        Span::styled(" ", edge),
+        Span::styled("⬡", edge),
+    ])
+}
+
+/// The steps of a flow in one row: ✓ (ok) for the done ones, the spinner on the current one, ○
+/// (muted) for the pending ones. A step's label follows its glyph; empty labels leave the glyphs.
+fn flow_row(labels: &[&str], current: usize, palette: Palette, clock: f32) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (n, label) in labels.iter().enumerate() {
+        if n > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let (glyph, glyph_colour, text) = if n < current {
+            ("✓", palette.ok, Style::new().fg(palette.ink2()))
+        } else if n == current {
+            (
+                style::spinner(clock),
+                palette.accent,
+                Style::new().fg(palette.paper).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            ("○", palette.muted, Style::new().fg(palette.muted))
+        };
+        spans.push(Span::styled(glyph, Style::new().fg(glyph_colour)));
+        if !label.is_empty() {
+            spans.push(Span::styled(format!(" {label}"), text));
+        }
+    }
+    Line::from(spans)
+}
+
+/// The rows a panel of `lines` takes at `width` columns: each line takes as many rows as it wraps to,
+/// and the border two more.
+fn panel_rows(lines: &[Line], width: u16) -> u16 {
+    let inner = usize::from(width.saturating_sub(2).max(1));
+    let rows: usize = lines
+        .iter()
+        .map(|line| line.width().div_ceil(inner).max(1))
+        .sum();
+    u16::try_from(rows + 2).unwrap_or(u16::MAX)
+}
+
+/// Clears `area` and draws the lines in a rounded panel.
 fn panel(frame: &mut Frame, area: Rect, palette: Palette, title: &str, lines: Vec<Line<'static>>) {
     frame.render_widget(Clear, area);
-    let block = Block::bordered()
-        .title(title.to_string())
-        .border_style(Style::new().fg(palette.accent));
     frame.render_widget(
-        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        Paragraph::new(lines)
+            .block(style::panel(title, &palette, true))
+            .wrap(Wrap { trim: true }),
         area,
     );
 }

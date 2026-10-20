@@ -4,13 +4,13 @@
 
 use std::collections::BTreeMap;
 
-use iced::widget::{column, row, text_input};
-use iced::{Alignment, Element, Length, Task};
+use iced::alignment::{Horizontal, Vertical};
+use iced::widget::{Space, column, container, row, text, text_input};
+use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
-use super::agent;
 use super::nodes::Load;
 use crate::console::{Ctx, client, ui};
 
@@ -187,9 +187,9 @@ pub fn role_settings(settings: &Value, role: &str, text: &str) -> Result<Value, 
     Ok(with_role(settings, role, names))
 }
 
-/// A volume's size in whole MiB.
-pub fn size_mib(bytes: u64) -> u64 {
-    bytes / (1024 * 1024)
+/// A volume's size in MiB, to one decimal (the web's "12.0 MiB").
+pub fn size_text(bytes: u64) -> String {
+    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 /// The agents (CIDs) that mount a volume, or the dash when none does.
@@ -455,195 +455,346 @@ fn gate(busy: bool, msg: Msg) -> Option<Msg> {
     if busy { None } else { Some(msg) }
 }
 
-/// The screen.
+/// The screen, as the web's Volumes page: the lede under the title, then two cards side by side (the volumes with
+/// the new one's form, the roles with the form for a new role).
 pub fn view(state: &State) -> Element<'_, Msg> {
-    let mut parts: Vec<Element<'_, Msg>> = vec![
-        ui::faint("Volumes are read-only images that a role's agents mount at /data/<name>. A change applies to agents spawned from now on.")
-            .into(),
-    ];
+    let head = ui::view_head_with_intro(
+        "Volumes",
+        "A volume is a read-only data set on the hub machine: an ext4 image or a directory. An agent of a role mounts each volume the role names at /data/<name>. A role change applies to the agents spawned from now on.",
+        Vec::new(),
+    );
+    let mut notes: Vec<Element<'_, Msg>> = Vec::new();
     if let Some(error) = &state.error {
-        parts.push(ui::error_line(error));
+        notes.push(ui::error_line(error));
     }
     if let Some(notice) = &state.notice {
-        parts.push(ui::faint(notice.clone()).into());
+        notes.push(ui::faint(notice.clone()).into());
     }
-    parts.push(ui::card("New volume", create_view(state)));
-    parts.push(ui::card("Volumes", volumes_view(state)));
-    parts.push(ui::card("Roles", roles_view(state)));
-    let head = ui::view_head("Volumes", vec![]);
-    ui::sheet(head, column(parts).spacing(22).width(Length::Fill).into())
+    let grid = row![
+        ui::card("Volumes", volumes_card(state)),
+        ui::card("Roles", roles_card(state)),
+    ]
+    .spacing(16)
+    .width(Length::Fill);
+    let body: Element<'_, Msg> = if notes.is_empty() {
+        grid.into()
+    } else {
+        notes.push(grid.into());
+        column(notes).spacing(16).width(Length::Fill).into()
+    };
+    ui::sheet(head, body)
 }
 
-fn create_view(state: &State) -> Element<'_, Msg> {
-    let form = row![
-        text_input("corpus", &state.name)
-            .on_input(Msg::Name)
-            .padding(8.0)
-            .style(crate::theme::input)
-            .width(Length::FillPortion(1)),
-        text_input("/srv/volumes/corpus.ext4", &state.source)
-            .on_input(Msg::Source)
-            .on_submit(Msg::Create)
-            .padding(8.0)
-            .style(crate::theme::input)
-            .width(Length::FillPortion(3)),
-        ui::btn(
-            "Create volume",
-            None,
-            ui::Kind::Primary,
-            gate(state.busy, Msg::Create)
-        ),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    column![
-        ui::faint("The name is how the volume is named here. The source is an absolute path on the hub's machine: an ext4 image, a cloned volume, or a directory, packed."),
-        form,
-    ]
-    .spacing(14)
-    .width(Length::Fill)
-    .into()
+/// A labelled field of a form: its label, the input, and the hint under it.
+fn field<'a>(label: &str, input: Element<'a, Msg>, hint: &str) -> Element<'a, Msg> {
+    let mut parts = column![ui::label(label), input]
+        .spacing(6)
+        .width(Length::Fill);
+    if !hint.is_empty() {
+        parts = parts.push(ui::faint(hint.to_string()));
+    }
+    parts.into()
 }
 
-fn volumes_view(state: &State) -> Element<'_, Msg> {
-    match &state.volumes {
+/// A column of a table: its head, its share of the row (None: as wide as its content), and whether it reads right.
+#[derive(Clone, Copy)]
+struct Col {
+    head: &'static str,
+    share: Option<u16>,
+    right: bool,
+}
+
+/// One cell of a table: the first and last columns sit at the card's edges, the others carry 12 either side.
+fn cell<'a>(cols: &[Col], i: usize, content: Element<'a, Msg>, pad_y: f32) -> Element<'a, Msg> {
+    let col = cols[i];
+    let left = if i == 0 { 0.0 } else { 12.0 };
+    let right = if i + 1 == cols.len() { 0.0 } else { 12.0 };
+    let inner = container(content)
+        .padding(Padding {
+            top: pad_y,
+            right,
+            bottom: pad_y,
+            left,
+        })
+        .align_x(if col.right {
+            Horizontal::Right
+        } else {
+            Horizontal::Left
+        })
+        .align_y(Vertical::Center);
+    match col.share {
+        Some(share) => inner.width(Length::FillPortion(share)).into(),
+        None => inner.width(Length::Shrink).into(),
+    }
+}
+
+/// A 1px rule across, in the given colour.
+fn rule<'a>(color: Color) -> Element<'a, Msg> {
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(move |_: &Theme| container::Style {
+            background: Some(color.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The web's `.tbl` in a card: the head in the label voice over a strong rule, a row per item with a rule between.
+fn table<'a>(cols: &[Col], rows: Vec<Vec<Element<'a, Msg>>>) -> Element<'a, Msg> {
+    let p = crate::theme::palette();
+    let heads: Vec<Element<'a, Msg>> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| cell(cols, i, ui::label(c.head).into(), 8.0))
+        .collect();
+    let mut lines: Vec<Element<'a, Msg>> =
+        vec![row(heads).width(Length::Fill).into(), rule(p.rule_strong)];
+    for (n, cells) in rows.into_iter().enumerate() {
+        if n > 0 {
+            lines.push(rule(p.rule));
+        }
+        let line: Vec<Element<'a, Msg>> = cells
+            .into_iter()
+            .enumerate()
+            .map(|(i, content)| cell(cols, i, content, 9.0))
+            .collect();
+        lines.push(
+            row(line)
+                .width(Length::Fill)
+                .align_y(Alignment::Center)
+                .into(),
+        );
+    }
+    column(lines).width(Length::Fill).into()
+}
+
+/// The Volumes card's body: the open remove confirmation, the table (or its empty state), then the form for a new
+/// volume.
+fn volumes_card(state: &State) -> Element<'_, Msg> {
+    let p = crate::theme::palette();
+    let mut parts: Vec<Element<'_, Msg>> = Vec::new();
+    if let Some(name) = state.confirm_remove.as_deref() {
+        parts.push(ui::card(
+            &format!("Remove {name}"),
+            column![
+                ui::faint("The volume is removed from the hub."),
+                row![
+                    Space::new().width(Length::Fill),
+                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelRemove)),
+                    ui::btn(
+                        "Remove",
+                        None,
+                        ui::Kind::Danger,
+                        gate(state.busy, Msg::Remove(name.to_string())),
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(12)
+            .into(),
+        ));
+    }
+    parts.push(match &state.volumes {
         Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load the volumes.", ""),
-        Load::Ready(list) if list.is_empty() => ui::empty(
-            "machine",
-            "No volumes yet",
-            "Make one above, then give it to a role below.",
-        ),
-        Load::Ready(list) => column(
-            list.iter()
-                .map(|volume| volume_row(state, volume))
-                .collect::<Vec<_>>(),
-        )
-        .spacing(14)
+        Load::Failed => ui::empty("alert", "Could not load the volumes", ""),
+        Load::Ready(list) if list.is_empty() => {
+            ui::empty("wrench", "No volumes yet", "Create one below.")
+        }
+        Load::Ready(list) => {
+            let cols = [
+                Col {
+                    head: "Name",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Size",
+                    share: None,
+                    right: true,
+                },
+                Col {
+                    head: "Mounted by",
+                    share: Some(2),
+                    right: false,
+                },
+                Col {
+                    head: "Source",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "",
+                    share: None,
+                    right: true,
+                },
+            ];
+            let rows = list
+                .iter()
+                .map(|v| {
+                    // A volume an agent mounts stays until that agent lets go of it: the hub refuses it.
+                    let remove = ui::btn_sm(
+                        "Remove",
+                        Some("trash"),
+                        ui::Kind::Danger,
+                        if v.in_use.is_empty() {
+                            gate(state.busy, Msg::AskRemove(v.name.clone()))
+                        } else {
+                            None
+                        },
+                    );
+                    vec![
+                        text(v.name.clone())
+                            .font(crate::theme::SANS_SEMIBOLD)
+                            .size(13.0)
+                            .color(p.ink)
+                            .into(),
+                        ui::sans(size_text(v.size_bytes), 13.0, p.ink_2).into(),
+                        ui::sans(mounted_text(&v.in_use), 13.0, p.ink_2).into(),
+                        ui::mono(v.source.clone(), 12.0, p.ink_2).into(),
+                        remove,
+                    ]
+                })
+                .collect();
+            table(&cols, rows)
+        }
+    });
+    parts.push(
+        column![
+            field(
+                "Name",
+                text_input("deps", &state.name)
+                    .on_input(Msg::Name)
+                    .padding(8.0)
+                    .style(crate::theme::input)
+                    .width(Length::Fill)
+                    .into(),
+                "What agents see under /data/<name>. Up to 20 characters.",
+            ),
+            field(
+                "Source",
+                text_input("/srv/volumes/deps.ext4", &state.source)
+                    .on_input(Msg::Source)
+                    .on_submit(Msg::Create)
+                    .padding(8.0)
+                    .style(crate::theme::input)
+                    .width(Length::Fill)
+                    .into(),
+                "An ext4 image or a directory on the hub machine.",
+            ),
+            row![ui::btn(
+                "Create volume",
+                None,
+                ui::Kind::Secondary,
+                gate(state.busy, Msg::Create),
+            )],
+        ]
+        .spacing(16)
         .width(Length::Fill)
         .into(),
-    }
+    );
+    column(parts).spacing(16).width(Length::Fill).into()
 }
 
-fn volume_row<'a>(state: &State, volume: &Volume) -> Element<'a, Msg> {
-    let facts = row![
-        ui::mono(volume.name.clone(), 12.0, crate::theme::palette().ink),
-        ui::faint(format!("{} MiB", size_mib(volume.size_bytes))),
-        ui::faint(format!("mounted by {}", mounted_text(&volume.in_use))),
-        ui::faint(volume.source.clone()),
-        ui::faint(format!("created {}", agent::ago(volume.created_ms))),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-    let action: Element<'a, Msg> = if state.confirm_remove.as_deref() == Some(volume.name.as_str())
-    {
-        row![
-            ui::faint(format!(
-                "Remove {}? Roles stop mounting it from the next agent they spawn.",
-                volume.name
-            )),
-            ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelRemove)),
-            ui::btn_sm(
-                "Remove",
-                None,
-                ui::Kind::Danger,
-                gate(state.busy, Msg::Remove(volume.name.clone())),
-            ),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .into()
-    } else {
-        // A volume that a running agent mounts is not removed: the hub refuses it, so the button is off.
-        let allowed = if volume.in_use.is_empty() {
-            gate(state.busy, Msg::AskRemove(volume.name.clone()))
-        } else {
-            None
-        };
-        ui::btn_sm("Remove", None, ui::Kind::Danger, allowed)
-    };
-    column![facts, action].spacing(8).into()
-}
-
-fn roles_view(state: &State) -> Element<'_, Msg> {
-    let lines: Element<'_, Msg> = match &state.settings {
+/// The Roles card's body: the table of roles with their volume lists (edited in place), or the empty state, then
+/// the form for a new role.
+fn roles_card(state: &State) -> Element<'_, Msg> {
+    let p = crate::theme::palette();
+    let table_part: Element<'_, Msg> = match &state.settings {
         Load::Pending => ui::loading(),
-        Load::Failed => ui::empty("alert", "Could not load the roles.", ""),
-        Load::Ready(_) if state.drafts.is_empty() => ui::empty(
-            "machine",
-            "No role mounts a volume",
-            "Add a role below and list the volumes its agents mount.",
-        ),
-        Load::Ready(_) => column(
-            state
+        Load::Failed => ui::empty("alert", "Could not load the roles", ""),
+        Load::Ready(_) if state.drafts.is_empty() => {
+            ui::empty("wrench", "No role mounts a volume", "Add a role below.")
+        }
+        Load::Ready(_) => {
+            let cols = [
+                Col {
+                    head: "Role",
+                    share: Some(1),
+                    right: false,
+                },
+                Col {
+                    head: "Volumes",
+                    share: Some(3),
+                    right: false,
+                },
+                Col {
+                    head: "",
+                    share: None,
+                    right: true,
+                },
+            ];
+            let rows = state
                 .drafts
                 .iter()
-                .map(|(role, text)| role_row(state, role, text))
-                .collect::<Vec<_>>(),
-        )
-        .spacing(14)
-        .width(Length::Fill)
-        .into(),
+                .map(|(role, text_value)| {
+                    let volumes: Element<'_, Msg> = text_input("deps, models", text_value)
+                        .on_input({
+                            let role = role.clone();
+                            move |value| Msg::Draft(role.clone(), value)
+                        })
+                        .padding(8.0)
+                        .style(crate::theme::input)
+                        .width(Length::Fill)
+                        .into();
+                    vec![
+                        ui::sans(role.clone(), 13.0, p.ink).into(),
+                        volumes,
+                        row![
+                            ui::btn_sm(
+                                "Save",
+                                None,
+                                ui::Kind::Ghost,
+                                gate(state.busy, Msg::SaveRole(role.clone())),
+                            ),
+                            ui::btn_sm(
+                                "Remove",
+                                Some("trash"),
+                                ui::Kind::Danger,
+                                gate(state.busy, Msg::RemoveRole(role.clone())),
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .into(),
+                    ]
+                })
+                .collect();
+            table(&cols, rows)
+        }
     };
-    let add = row![
-        text_input("role", &state.new_role)
-            .on_input(Msg::NewRole)
-            .padding(8.0)
-            .style(crate::theme::input)
-            .width(Length::FillPortion(1)),
-        text_input("data-1, corpus", &state.new_role_volumes)
-            .on_input(Msg::NewRoleVolumes)
-            .on_submit(Msg::AddRole)
-            .padding(8.0)
-            .style(crate::theme::input)
-            .width(Length::FillPortion(2)),
-        ui::btn(
+    column![
+        table_part,
+        field(
+            "Role",
+            text_input("coder", &state.new_role)
+                .on_input(Msg::NewRole)
+                .padding(8.0)
+                .style(crate::theme::input)
+                .width(Length::Fill)
+                .into(),
+            "",
+        ),
+        field(
+            "Volumes",
+            text_input("deps, models", &state.new_role_volumes)
+                .on_input(Msg::NewRoleVolumes)
+                .on_submit(Msg::AddRole)
+                .padding(8.0)
+                .style(crate::theme::input)
+                .width(Length::Fill)
+                .into(),
+            "Up to four volume names, separated by commas.",
+        ),
+        row![ui::btn(
             "Add role",
             None,
             ui::Kind::Primary,
-            gate(state.busy, Msg::AddRole)
-        ),
+            gate(state.busy, Msg::AddRole),
+        )],
     ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    column![
-        ui::faint("Each role lists the volumes its agents mount, at most four. A role with no volumes is removed."),
-        lines,
-        ui::label("Add a role"),
-        add,
-    ]
-    .spacing(14)
+    .spacing(16)
     .width(Length::Fill)
-    .into()
-}
-
-/// One role: its name, its volume list (edited in place), and Save and Remove.
-fn role_row<'a>(state: &State, role: &'a str, text: &'a str) -> Element<'a, Msg> {
-    column![
-        ui::mono(role.to_string(), 12.0, crate::theme::palette().ink),
-        row![
-            text_input("data-1, corpus", text)
-                .on_input(move |value| Msg::Draft(role.to_string(), value))
-                .padding(8.0)
-                .style(crate::theme::input)
-                .width(Length::Fill),
-            ui::btn_sm(
-                "Save",
-                None,
-                ui::Kind::Secondary,
-                gate(state.busy, Msg::SaveRole(role.to_string()))
-            ),
-            ui::btn_sm(
-                "Remove",
-                None,
-                ui::Kind::Danger,
-                gate(state.busy, Msg::RemoveRole(role.to_string()))
-            ),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    ]
-    .spacing(8)
     .into()
 }
 

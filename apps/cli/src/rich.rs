@@ -191,7 +191,7 @@ fn sgr_colour(r: &Ref) -> u8 {
         Ref::Agent { .. } | Ref::MentionAll => 35,
         Ref::Task { .. } => 33,
         Ref::Path { .. } => 32,
-        Ref::Library { .. } | Ref::LibraryTool { .. } => 34,
+        Ref::Library { .. } | Ref::LibraryTool { .. } | Ref::Artifact { .. } => 34,
         Ref::Image { .. } | Ref::Video { .. } | Ref::Html { .. } | Ref::Link { .. } => 94,
     }
 }

@@ -981,7 +981,7 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             name: name.to_string(),
             input: input.clone(),
         })?;
-        let (decision, output, is_error, program) =
+        let (decision, output, is_error, program, engine) =
             self.await_message("tool_decision", |message| match message {
                 HostMessage::ToolDecision {
                     call,
@@ -989,8 +989,9 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                     output,
                     is_error,
                     program,
+                    engine,
                     ..
-                } if call == id => Ok((decision, output, is_error, program)),
+                } if call == id => Ok((decision, output, is_error, program, engine)),
                 other => Err(other),
             })?;
         match decision {
@@ -1001,7 +1002,8 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                     Some(program) => {
                         self.run_local(move || library::run(workspace, &program, input))?
                     }
-                    // An engine runs as an ACP session whose every action the hub checks.
+                    // An engine runs as an ACP session whose every action the hub checks. The hub's
+                    // launch spec, for an engine instance the owner configured, comes with the decision.
                     None if name == "code_engine" => {
                         let shared = self.shared;
                         let cancel = Arc::clone(&self.tool_cancel);
@@ -1016,7 +1018,7 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                         });
                         self.run_local(move || {
                             let link = HubLink::new(shared, work, call, &cancel, tools);
-                            crate::acp::run::run(workspace, input, &link, protocol)
+                            crate::acp::run::run(workspace, input, &link, protocol, engine.as_ref())
                         })?
                     }
                     None => self.run_local(move || run_guest_tool(workspace, name, input))?,
@@ -1076,7 +1078,7 @@ fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
 }
 
 /// The names [`run_guest_tool`] serves itself, besides the file tools of [`tools::serve`].
-const GUEST_TOOLS: [&str; 17] = [
+const GUEST_TOOLS: [&str; 21] = [
     "bash",
     "install_packages",
     "multi_edit",
@@ -1089,6 +1091,10 @@ const GUEST_TOOLS: [&str; 17] = [
     "code_engine",
     "tool_package",
     "deliver_file",
+    "artifact_create",
+    "artifact_update",
+    "artifact_attach_data",
+    "artifact_share_request",
     "share_file",
     "checkpoint_diff",
     "checkpoint_restore",
@@ -1119,6 +1125,10 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "tool_package" => library::package(workspace, input),
         "deliver_file" => library::deliver(workspace, input),
         "share_file" => library::share(workspace, input),
+        "artifact_create" => library::artifact_create(workspace, input),
+        "artifact_update" => library::artifact_update(workspace, input),
+        "artifact_attach_data" => library::artifact_attach_data(workspace, input),
+        "artifact_share_request" => library::artifact_share_request(workspace, input),
         "checkpoint_diff" => checkpoints::diff(workspace, input),
         "checkpoint_restore" => checkpoints::restore(workspace, input),
         "checkpoint_list" => checkpoints::list(workspace, input),

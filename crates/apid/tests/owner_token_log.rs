@@ -208,8 +208,10 @@ fn owner_token_is_never_logged() {
             }
             Startup::Exited(status) => {
                 let (_, stderr) = hub.output();
-                // Another process took one of the picked ports between the probe and the bind: try again.
-                if stderr.contains("in use") && attempt < ATTEMPTS {
+                // Another process took one of the picked ports between the probe and the bind: try again. Windows
+                // words it "Only one usage of each socket address" (os error 10048).
+                let taken = stderr.contains("in use") || stderr.contains("os error 10048");
+                if taken && attempt < ATTEMPTS {
                     continue;
                 }
                 panic!(

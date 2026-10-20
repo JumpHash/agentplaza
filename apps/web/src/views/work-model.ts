@@ -83,6 +83,16 @@ export function stepText(step: AgentStep | null | undefined, now: number): strin
   return `${what} · ${shortSpan(now - step.since_ms)}`;
 }
 
+/** A moment as the Work and Tasks cards say it: `just now`, `4 min ago`, `3 h ago`, `2 d ago`; `—` for none. */
+export function agoLabel(ms: number | null | undefined, now = Date.now()): string {
+  if (!ms) return '—';
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  if (s < 45) return 'just now';
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 86_400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86_400)} d ago`;
+}
+
 /** The tasks `id` runs after, from the links, as `[from, to]` pairs. */
 export const upstreamOf = (id: string, edges: [string, string][]): string[] => edges.filter(([, to]) => to === id).map(([from]) => from);
 

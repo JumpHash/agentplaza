@@ -1,13 +1,14 @@
 // Recipes: the review recipes the hub knows (their steps, axes and rounds), the recipe changes waiting for the owner, and
 // one recipe in full: its graph of steps, its TOML, and an edit that saves the next version. The hub checks the TOML and
-// refuses a bad one; its reason shows under the editor.
+// refuses a bad one; its reason shows under the editor. The Loom prototype's layout (the recipes part of m-review.js).
 
 import '../styles/review.css';
+import '../styles/proto/library.css';
 import { ApiError } from '../api';
 import { review, type NodeDef, type RecipeDetail, type RecipeList, type RecipeProposal, type RecipeSummary } from '../api-review';
 import { go, href } from '../router';
-import { attempt, badge, button, empty, table, textarea, toast, type Column } from '../ui/components';
-import { h, icon, replace } from '../ui/dom';
+import { attempt, badge, button, card, empty, table, textarea, toast, type Column } from '../ui/components';
+import { h, lu, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { axisName, bumpVersion, layerNodes, versionOf } from './review-model';
 
@@ -46,7 +47,7 @@ function recipeGraph(nodes: NodeDef[]): SVGSVGElement {
       at.set(n.id, [LEFT + layer * COL, y]);
     });
   }
-  const svg = svgEl('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'The recipe, step by step' }) as SVGSVGElement;
+  const svg = svgEl('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': 'The recipe, step by step' }, 'rc-graph') as SVGSVGElement;
   for (const n of nodes) {
     const [x1, y1] = at.get(n.id) ?? [0, 0];
     for (const p of n.after) {
@@ -75,7 +76,7 @@ function recipeGraph(nodes: NodeDef[]): SVGSVGElement {
 
 export function mount(root: HTMLElement, params: string[]): Cleanup {
   const id = params[0] ?? '';
-  const view = h('div.rc-view');
+  const view = h('div.rc');
   root.append(view);
 
   let alive = true;
@@ -88,7 +89,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let saveError: string | null = null;
   let timer: number | undefined;
   // The editor survives the redraws of the page while the owner types into it.
-  const editor = textarea({ rows: 26, spellcheck: 'false', 'aria-label': 'The recipe, as TOML' });
+  const editor = textarea({ rows: 26, spellcheck: 'false', 'aria-label': 'The recipe, as TOML', class: 'rc-editor' });
 
   const decide = async (p: RecipeProposal, approve: boolean): Promise<void> => {
     await attempt(() => review.decideProposal(p.id, approve), approve ? 'Approved' : 'Declined');
@@ -96,38 +97,37 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   };
 
   const proposalCard = (p: RecipeProposal): HTMLElement => {
-    const decline = button('Decline', () => void decide(p, false));
+    const decline = button('Decline', () => void decide(p, false), { kind: 'ghost' });
     const approve = button('Approve', () => void decide(p, true), { kind: 'primary' });
-    return h(
-      'article.rc-proposal',
-      null,
+    const meta = [p.recipe ? `recipe ${p.recipe}${p.version ? ` v${p.version}` : ''}` : null, p.by ? `by agent ${p.by}` : null].filter(Boolean).join(' · ');
+    const el = card(
       h('strong', null, p.title || p.recipe || p.id),
-      p.reason ? h('p', null, p.reason) : null,
-      h('span.rc-meta', null, [p.recipe ? `recipe ${p.recipe}${p.version ? ` v${p.version}` : ''}` : null, p.by ? `by ${p.by}` : null].filter(Boolean).join(' · ')),
-      h('div.rc-buttons', null, decline, approve),
+      h('div', null, p.reason ? h('p', null, p.reason) : null, h('p.muted', null, meta), h('div.rc-actions', null, decline, approve)),
     );
+    el.classList.add('rc-prop');
+    return el;
   };
 
   const listPage = (data: RecipeList): HTMLElement => {
     const cols: Column<RecipeSummary>[] = [
-      { label: 'Recipe', cell: (r) => h('span', null, h('strong', null, r.title || r.id), ' ', h('code', null, r.id)) },
+      { label: 'Recipe', cell: (r) => h('div', null, h('strong', null, r.title || r.id), h('div.mono.pr-note', null, r.id)) },
       { label: 'Version', num: true, cell: (r) => `v${r.version}` },
       { label: 'Axes', num: true, cell: (r) => r.axes.length },
       { label: 'Steps', num: true, cell: (r) => r.nodes },
     ];
     return h(
-      'div.rc-view',
+      'div.rc',
       null,
-      h('div.view-head', null, h('h1', null, 'Recipes')),
+      h('header.page-head', null, h('div.page-head-row', null, h('h1', null, 'Recipes'), h('span.sp'), h('div.page-actions'))),
       data.proposals.length
-        ? h('section.rc-section', null, h('h2', null, 'Waiting for you'), h('div.rc-proposals', null, data.proposals.map((p) => proposalCard(p))))
+        ? h('section.rc-block', null, h('h2', null, 'Waiting for you'), data.proposals.map((p) => proposalCard(p)))
         : null,
       h(
-        'section.rc-section',
+        'section.rc-block',
         null,
         h('h2', null, 'Recipes'),
         data.recipes.length
-          ? table(cols, data.recipes, (r) => go('recipes', r.id), (r) => r.id)
+          ? h('div.tbl-wrap', null, table(cols, data.recipes, (r) => go('recipes', r.id), (r) => r.id))
           : empty('rules', 'No recipes yet', 'A recipe is the set of steps a change is reviewed with.'),
       ),
     );
@@ -167,46 +167,44 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     };
     const body = editing
       ? h(
-          'section.rc-section',
+          'section.rc-block',
           null,
           h('h2', null, 'Edit'),
+          editor,
+          saveError ? h('p.rc-error', { role: 'alert' }, saveError) : null,
           h(
-            'div.rc-edit',
+            'div.rc-actions',
             null,
-            editor,
-            saveError ? h('p.rc-error', { role: 'alert' }, saveError) : null,
-            h(
-              'div.rc-row',
-              null,
-              h('span.rc-hint', null, 'The hub checks the TOML before it keeps a new version.'),
-              button('Cancel', stopEdit, { kind: 'ghost', disabled: saving }),
-              button(`Save as version ${current + 1}`, () => void save(current), { kind: 'primary', disabled: saving }),
-            ),
+            h('span.muted', null, 'The hub checks the TOML before it keeps a new version.'),
+            button('Cancel', stopEdit, { kind: 'ghost', disabled: saving }),
+            button(`Save as version ${current + 1}`, () => void save(current), { kind: 'primary', disabled: saving }),
           ),
         )
-      : h('section.rc-section', null, h('h2', null, 'Recipe, as written'), h('pre.rc-toml', null, d.toml));
+      : h('section.rc-block', null, h('h2', null, 'Recipe, as written'), h('pre.rc-toml', null, d.toml));
     return h(
-      'div.rc-view',
+      'div.rc',
       null,
-      h('a.back', { href: href('recipes') }, icon('chevronRight'), 'Recipes'),
+      h('p', null, h('a.btn.ghost.sm', { href: href('recipes') }, lu('arrow-left', 14), h('span', null, 'Recipes'))),
       h(
-        'div.view-head',
+        'div.rc-head',
         null,
         h(
-          'div.rc-head',
+          'div',
           null,
           h('h1', null, r.title || r.id),
-          h('div.rc-meta', null, h('code', null, r.id), badge(`version ${r.version}`, 'info'), h('span', null, `${r.applies.kinds.join(', ') || 'any kind'}`), h('span', null, `${r.rounds} ${r.rounds === 1 ? 'round' : 'rounds'}`)),
+          h(
+            'div.rc-meta',
+            null,
+            h('code', null, r.id),
+            badge(`version ${r.version}`, 'info'),
+            h('span.muted', null, r.applies.kinds.join(', ') || 'any kind'),
+            h('span.muted', null, `${r.rounds} ${r.rounds === 1 ? 'round' : 'rounds'}`),
+          ),
         ),
-        h('div.actions', null, editing ? null : button('Edit', startEdit)),
+        editing ? null : button('Edit', startEdit),
       ),
-      h(
-        'section.rc-section',
-        null,
-        h('h2', null, 'Steps'),
-        h('div.rc-graph', null, recipeGraph(r.node)),
-      ),
-      h('section.rc-section', null, h('h2', null, 'Axes'), h('div.rc-axes', null, r.axes.map((a) => h('span', { title: axisName(a) }, a)))),
+      h('section.rc-block', null, h('h2', null, 'Steps'), recipeGraph(r.node)),
+      h('section.rc-block', null, h('h2', null, 'Axes'), h('div.rc-chips', null, r.axes.map((a) => h('span.rc-chip', { title: axisName(a) }, a)))),
       body,
     );
   };
@@ -215,11 +213,11 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (!alive) return;
     if (id) {
       if (detail) return replace(view, recipePage(detail));
-      if (!loaded) return replace(view, h('p.rc-hint', null, 'Loading the recipe…'));
+      if (!loaded) return replace(view, h('p.muted', null, 'Loading the recipe…'));
       return replace(view, empty('alert', failed ? failed : 'Recipe not found.'));
     }
     if (list) return replace(view, listPage(list));
-    replace(view, failed ? empty('alert', failed) : h('p.rc-hint', null, 'Loading the recipes…'));
+    replace(view, failed ? empty('alert', failed) : h('p.muted', null, 'Loading the recipes…'));
   };
 
   // A failed read keeps what is on screen; it only shows its own message when there is nothing to show.

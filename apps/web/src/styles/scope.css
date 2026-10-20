@@ -1,14 +1,14 @@
 /* The project scope: the top bar's switcher, the New project dialog, the bench and team rows, a project's settings. */
 
-.scope-switcher { max-width: 260px; margin-left: 14px; font: 600 12px var(--sans); }
+.scope-switcher { max-width: 260px; margin-left: 14px; font: 600 12px var(--font); }
 
-.banner.scope-note { color: var(--ink-2); background: var(--surface-2); border-color: var(--rule); font-weight: 500; }
-.banner.scope-note a { color: var(--accent); }
+.banner.scope-note { color: var(--ink-2); background: var(--sheet-2); border-color: var(--rule); font-weight: 500; }
+.banner.scope-note a { color: var(--signal); }
 
 .new-project { display: grid; gap: 22px; min-width: min(560px, 80vw); }
 .new-project section { display: grid; gap: 10px; }
 .new-project section + section { padding-top: 18px; border-top: 1px solid var(--rule); }
-.new-project h3 { margin: 0; font: 600 14px var(--sans); }
+.new-project h3 { margin: 0; font: 600 14px var(--font); }
 .new-project .actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 .bench-row, .team-row { gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--rule-faint); }

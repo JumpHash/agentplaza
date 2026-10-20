@@ -81,6 +81,9 @@ pub fn router() -> Router<App> {
     let router = crate::acp::routes(router);
     let router = settings::routes(router);
     let router = providers::routes(router);
+    let router = crate::engine_instances::routes(router);
+    let router = crate::context_track::routes(router);
+    let router = crate::usage_providers::routes(router);
     let router = decisions::routes(router);
     let router = agents::routes(router);
     let router = plaza::routes(router);
@@ -108,6 +111,13 @@ pub fn router() -> Router<App> {
     let router = crate::drafts::routes(router);
     let router = crate::project_settings::routes(router);
     let router = crate::harness_control::routes(router);
+    let router = crate::appearance::routes(router);
+    let router = crate::artifacts::routes::routes(router);
+    let router = crate::content::routes(router);
+    let router = crate::artifacts::gateway::routes(router);
+    let router = crate::shares::routes::routes(router);
+    let router = crate::shares::public::routes(router);
+    let router = crate::shares::request::routes(router);
     let router = crate::weft_hub::routes(router);
     let router = crate::platforms::routes(router);
     let router = crate::review_graph::routes::routes(router);
@@ -153,12 +163,11 @@ pub fn router() -> Router<App> {
         })
         .doc(RouteDoc::new("Give an agent a robot species").errors(&[400, 404]));
     router
-        .get("/", |app, req, _| {
-            static_file(&app.config.console, "index.html", accepts(req))
-        })
+        .get("/", |app, req, _| start_page(app, req))
         .doc(RouteDoc::new("Serve the console's start page").errors(&[404]))
-        .get("/{file}", |app, req, p| {
-            static_file(&app.config.console, p.get("file"), accepts(req))
+        .get("/{file}", |app, req, p| match p.get("file") {
+            "index.html" => start_page(app, req),
+            file => static_file(&app.config.console, file, accepts(req)),
         })
         .doc(RouteDoc::new("Serve a console file").errors(&[404]))
         .get("/assets/{file}", |app, req, p| {
@@ -296,6 +305,22 @@ fn static_file(root: &Path, name: &str, accepts: Vec<String>) -> Response {
     }
 }
 
+/// The console's start page, with the content origin its HTML panels load from allowed as a frame source.
+fn start_page(app: &App, req: &apz_http::Request) -> Response {
+    match std::fs::read_to_string(app.config.console.join("index.html")) {
+        Ok(page) => {
+            let origin = crate::content::frame_origin(app, req);
+            Response::new(
+                200,
+                "text/html; charset=utf-8",
+                crate::content::console_page(&page, origin.as_deref()).into_bytes(),
+            )
+            .with_header("cache-control", "no-cache")
+        }
+        Err(_) => Response::error(404, "not found"),
+    }
+}
+
 /// Build outputs named `<stem>-<hash>.<ext>`: esbuild's `main-I6T7NTXS.js` (8 base32
 /// characters) and apz-pack's `apz_engine_web-1a2b3c4d.js` (8 hex digits).
 fn is_fingerprinted(name: &str) -> bool {
@@ -324,6 +349,8 @@ fn content_type(path: &Path) -> &'static str {
         Some("woff2") => "font/woff2",
         Some("ttf") => "font/ttf",
         Some("wasm") => "application/wasm",
+        // The backdrop shader and its WebGL2 translation (apz-pack web-backdrop).
+        Some("wgsl" | "glsl") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
 }

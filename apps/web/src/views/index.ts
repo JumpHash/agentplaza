@@ -3,6 +3,8 @@
 
 import type { IconName } from '../ui/icons.gen';
 import { mount as agents } from './agents';
+import { mount as appearance } from './appearance';
+import { mount as artifact } from './artifact';
 import { mount as approvals } from './approvals';
 import { mount as board } from './board';
 import { mount as conversations } from './conversations';
@@ -81,9 +83,11 @@ export const SCREENS: Screen[] = [
   { key: 'volumes', label: 'Volumes', icon: 'wrench', section: 'Setup', mount: volumes },
   { key: 'workstations', label: 'Workstations', icon: 'harness', section: 'Setup', mount: workstations },
   { key: 'nodes', label: 'Nodes', icon: 'link', section: 'Setup', mount: nodes },
+  { key: 'appearance', label: 'Appearance', icon: 'sparkles', section: 'Setup', mount: appearance },
   { key: 'setup', label: 'Setup', icon: 'wrench', section: 'Setup', mount: setup },
   { key: 'hardware-lab', label: 'Hardware lab', icon: 'wrench', section: 'Setup', mount: hardwareLab, hidden: true },
   { key: 'robot-lab', label: 'Robot lab', icon: 'wrench', section: 'Setup', mount: robotLab, hidden: true },
+  { key: 'artifact', label: 'Artifact', icon: 'library', section: 'Plaza', mount: artifact, hidden: true },
   // The IDE is reached by its route and openIde (ide/open.ts), not the sidebar; its code loads on the first visit.
   { key: 'ide', label: 'IDE', icon: 'file', section: 'Plaza', mount: lazyMount(() => import('./ide'), (m) => m.mount), hidden: true },
 ];

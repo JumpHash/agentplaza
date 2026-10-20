@@ -1127,6 +1127,9 @@ struct TextBody {
     /// The owner's files (ids from `PUT /v1/files`) that go with a chat turn.
     #[serde(default)]
     attachments: Vec<String>,
+    /// This turn's model (`<provider>/<model>[@effort]`); absent: the agent's.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1384,6 +1387,14 @@ fn chat(app: &App, req: &Request, params: &Params<'_>) -> Response {
     if let Err(e) = check_chat_text(&text) {
         return Response::error(400, &e);
     }
+    let turn_model = b.model.clone().filter(|m| !m.trim().is_empty());
+    if let Some(model) = &turn_model
+        && let Err(e) = app
+            .settings
+            .allowed(crate::settings::tier_of(&agent.role), model)
+    {
+        return Response::error(400, &e);
+    }
     if let Err(resp) = crate::sleep::awake_or_503(app, agent.cid) {
         return resp;
     }
@@ -1409,6 +1420,9 @@ fn chat(app: &App, req: &Request, params: &Params<'_>) -> Response {
             ..Origin::default()
         },
     );
+    if let Some(model) = turn_model {
+        app.context.set_override(work, model);
+    }
     Response::json(200, &json!({"work": work}))
 }
 

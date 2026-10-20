@@ -4,7 +4,7 @@
 
 use apz_ide::{ChangeSet, FileChange, Hunk, LineKind, Status};
 use iced::widget::{Space, button, column, container, row};
-use iced::{Border, Color, Element, Length, Theme};
+use iced::{Border, Element, Length, Theme};
 
 use super::ide::Msg;
 use crate::console::ui;
@@ -88,57 +88,36 @@ pub fn counts(file: &FileChange) -> (usize, usize) {
     (added, removed)
 }
 
-/// The one-letter status the lists show.
-pub fn status_letter(status: Status) -> &'static str {
-    match status {
-        Status::Added => "A",
-        Status::Modified => "M",
-        Status::Deleted => "D",
-        Status::Renamed => "R",
-    }
+/// The status's word and tone, as the web's review badge: added (ok), modified (info), deleted (danger), renamed (warn).
+fn status_badge<'a>(status: Status) -> Element<'a, Msg> {
+    let (word, tone) = match status {
+        Status::Added => ("added", ui::Tone::Ok),
+        Status::Modified => ("modified", ui::Tone::Info),
+        Status::Deleted => ("deleted", ui::Tone::Danger),
+        Status::Renamed => ("renamed", ui::Tone::Warn),
+    };
+    ui::badge(word, tone)
 }
 
-/// The summary line of a change set: files, added and removed lines.
+/// The summary line of a change set, as the review's totals: files, then added and removed lines.
 pub fn summary(set: &ChangeSet) -> String {
     let stats = set.stats();
     format!(
-        "{} files  +{}  -{}",
+        "{} files · +{} −{}",
         stats.files, stats.additions, stats.deletions
     )
 }
 
-/// The Changes panel's file list: a press shows that file's diff below it.
-pub fn file_list(set: &ChangeSet, selected: Option<&str>) -> Element<'static, Msg> {
-    let mut col = column![].spacing(0);
-    for file in &set.files {
-        let (added, removed) = counts(file);
-        let on = selected == Some(file.path.as_str());
-        let ink = theme::palette().ink;
-        let stats = format!("+{added} -{removed}");
-        let label = row![
-            ui::mono(status_letter(file.status), 11.0, theme::palette().ink_3),
-            ui::mono(file.path.clone(), 11.5, ink),
-            Space::new().width(Length::Fill),
-            ui::mono(stats, 10.5, theme::palette().ink_3),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center);
-        col = col.push(
-            button(label)
-                .on_press(Msg::ShowDiff(file.path.clone()))
-                .padding([4, 6])
-                .width(Length::Fill)
-                .style(theme::register_row(on)),
-        );
-    }
-    col.into()
-}
-
-/// The review view: every changed file's diff, one after another, in the centre.
+/// The review, the web's `.ided-review-body`: every changed file's block, one after another. A file's name picks it
+/// (`ShowDiff`), which shows that file alone in the centre.
 pub fn review(set: &ChangeSet) -> Element<'static, Msg> {
-    let mut col = column![ui::mono(summary(set), 11.5, theme::palette().ink_2)].spacing(14);
+    let mut col = column![].spacing(16);
     if set.files.is_empty() {
-        col = col.push(ui::faint("Nothing has changed since this base."));
+        col = col.push(ui::empty(
+            "check",
+            "Nothing changed",
+            "No file differs from this base.",
+        ));
     }
     for file in &set.files {
         col = col.push(file_block(file));
@@ -146,28 +125,46 @@ pub fn review(set: &ChangeSet) -> Element<'static, Msg> {
     ui::scroll(col).width(Length::Fill).into()
 }
 
-/// One file's diff: a head (status, path, counts) over its rows.
+/// One file's block, the web's `.ided-file`: a head with the status badge, the path (picks the file) and the added and
+/// removed counts, over its rows. `on` marks the file the centre shows alone.
 pub fn file_block(file: &FileChange) -> Element<'static, Msg> {
+    let p = theme::palette();
     let (added, removed) = counts(file);
+    let name = if file.status == Status::Renamed {
+        file.old_path
+            .as_deref()
+            .map_or_else(|| file.path.clone(), |old| format!("{old} → {}", file.path))
+    } else {
+        file.path.clone()
+    };
     let head = row![
-        ui::mono(status_letter(file.status), 11.0, theme::palette().ink_3),
-        ui::mono(file.path.clone(), 12.0, theme::palette().ink),
+        status_badge(file.status),
+        button(ui::mono(name, 12.0, p.ink))
+            .on_press(Msg::ShowDiff(file.path.clone()))
+            .padding(0)
+            .style(|_: &Theme, _| button::Style {
+                background: None,
+                text_color: theme::palette().ink,
+                ..Default::default()
+            }),
         Space::new().width(Length::Fill),
-        ui::mono(format!("+{added} -{removed}"), 10.5, theme::palette().ink_3),
+        ui::mono(format!("+{added}"), 11.5, p.ok),
+        ui::mono(format!("−{removed}"), 11.5, p.crit),
     ]
     .spacing(10)
     .align_y(iced::Alignment::Center);
+
     let mut block =
         column![
             container(head)
-                .padding([6, 8])
+                .padding([10, 14])
                 .width(Length::Fill)
-                .style(|_: &Theme| container::Style {
-                    background: Some(theme::palette().hover.into()),
+                .style(move |_: &Theme| container::Style {
+                    background: Some(p.hover.into()),
                     border: Border {
-                        color: theme::palette().rule,
+                        color: p.rule,
                         width: 1.0,
-                        radius: 0.0.into()
+                        radius: theme::skin().radius.into(),
                     },
                     ..Default::default()
                 })
@@ -197,8 +194,8 @@ fn view_row(r: Row) -> Element<'static, Msg> {
             text,
         } => {
             let (tint, ink) = match kind {
-                LineKind::Add => (Some(Color { a: 0.14, ..p.ok }), p.ok),
-                LineKind::Remove => (Some(Color { a: 0.14, ..p.crit }), p.crit),
+                LineKind::Add => (Some(p.add_bg), p.add_fg),
+                LineKind::Remove => (Some(p.del_bg), p.del_fg),
                 LineKind::Context | LineKind::NoNewline => (None, p.ink),
             };
             let number = |n: Option<u32>| {

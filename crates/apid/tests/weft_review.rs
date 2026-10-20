@@ -145,12 +145,17 @@ impl Vm<'_> {
         });
     }
 
-    /// A tool call the model makes in work item `work`: the hub's decision.
-    fn tool(&self, work: u64, name: &str, input: Value) -> Value {
+    /// A tool call the model makes in work item `work`: the hub's decision, whatever it is.
+    fn tool_reply(&self, work: u64, name: &str, input: Value) -> Value {
         let message = json!({ "type": "tool_request", "work": work, "call": format!("toolu_{name}_{work}"), "name": name, "input": input });
         let (status, body) = self.hub.guest(self.cid, "message", message);
         assert_eq!(status, 200, "{body}");
-        let reply = body["reply"].clone();
+        body["reply"].clone()
+    }
+
+    /// A tool call the model makes in work item `work`, which must succeed: the hub's decision.
+    fn tool(&self, work: u64, name: &str, input: Value) -> Value {
+        let reply = self.tool_reply(work, name, input);
         assert_eq!(
             reply["is_error"], false,
             "{name} for agent {}: {reply}",
@@ -183,24 +188,62 @@ fn pass() -> Answer {
     }
 }
 
-/// Plays the reviewers: every review step sent to `cids` is answered by `answer(run, node, tree)`, until `done`.
+/// What the reviewers of task `tid` were sent and what the hub holds for it: printed when a review stalls.
+fn review_state(
+    hub: &Hub,
+    gateway: &FakeDaemon,
+    cids: &[u64],
+    tid: &str,
+    answered: &HashSet<u64>,
+) -> String {
+    let mut out = String::new();
+    for &cid in cids {
+        let sent: Vec<String> = works(gateway, cid)
+            .iter()
+            .map(|w| {
+                let id = w["work"].as_u64().unwrap_or(0);
+                let mark = if answered.contains(&id) {
+                    "answered"
+                } else {
+                    "open"
+                };
+                format!("{id} {} {} ({mark})", text(&w["kind"]), text(&w["thread"]))
+            })
+            .collect();
+        let agent = hub.call("GET", &format!("/v1/agents/{cid}"), None).1;
+        out += &format!("agent {cid} sent {sent:?}\n  {agent}\n");
+    }
+    let task = hub.call("GET", &format!("/v1/tasks/{tid}"), None).1;
+    let runs = hub.call("GET", &format!("/v1/tasks/{tid}/reviews"), None).1;
+    out += &format!("task {tid}: {}\nreviews: {runs}\n", text(&task["state"]));
+    out
+}
+
+/// Plays the reviewers of task `tid`: every review step sent to `cids` is answered by `answer(run, node, tree)`,
+/// until `done`.
+#[allow(clippy::too_many_arguments)]
 fn review(
     hub: &Hub,
     gateway: &FakeDaemon,
     cids: &[u64],
+    tid: &str,
     token: &Path,
     home: &Path,
     answered: &Arc<Mutex<HashSet<u64>>>,
     answer: &dyn Fn(&str, &str, &Value) -> Answer,
     done: &dyn Fn() -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(90);
     while !done() {
-        assert!(
-            Instant::now() < deadline,
-            "the review did not finish\n{}",
-            hub.log()
-        );
+        if Instant::now() >= deadline {
+            let held = answered.lock().unwrap().clone();
+            panic!(
+                "the review of {tid} did not finish\n{}\n{}",
+                review_state(hub, gateway, cids, tid, &held),
+                hub.log()
+            );
+        }
         for &cid in cids {
             answer_chats(hub, gateway, cid);
             for w in works(gateway, cid) {
@@ -219,9 +262,20 @@ fn review(
                     home: home.join(format!("vm{cid}")),
                     token: token.to_path_buf(),
                 };
-                let tree: Value =
-                    serde_json::from_str(&text(&vm.tool(id, "review_tree", json!({}))["output"]))
-                        .unwrap();
+                let reply = vm.tool_reply(id, "review_tree", json!({}));
+                // A step whose work item ended without a verdict is handed on under a new work item (work_ended). On a
+                // slow runner the hub can count a delivery as failed while the test still holds the old item: the old
+                // item's verdict then reaches the step (an agent's tool calls go to its running step), and the new item
+                // finds no step. A reviewer with no step ends its turn, or its next work waits behind the item forever.
+                if reply["is_error"] == true && text(&reply["output"]).contains("no review step") {
+                    hub.work_done(cid, id, "done", "no review step left");
+                    continue;
+                }
+                assert_eq!(
+                    reply["is_error"], false,
+                    "review_tree for agent {cid}: {reply}"
+                );
+                let tree: Value = serde_json::from_str(&text(&reply["output"])).unwrap();
                 assert_eq!(tree["step"], node, "{tree}");
                 let a = answer(run, node, &tree);
                 if !a.scores.is_empty() || !a.findings.is_empty() {
@@ -241,6 +295,7 @@ fn review(
         }
         std::thread::sleep(Duration::from_millis(150));
     }
+    println!("review of {tid}: {:.1} s", started.elapsed().as_secs_f64());
 }
 
 fn first_symbol(tree: &Value, ends: &str) -> String {
@@ -421,6 +476,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &reviewers,
+        &tid,
         &token,
         &home,
         &answered,
@@ -491,6 +547,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &reviewers,
+        &tid,
         &token,
         &home,
         &answered,
@@ -633,6 +690,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &[303],
+        &tid,
         &token,
         &home,
         &answered,
@@ -726,6 +784,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &rreview,
+        &rtid,
         &token,
         &home,
         &answered,
@@ -765,6 +824,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &rreview,
+        &rtid,
         &token,
         &home,
         &answered,

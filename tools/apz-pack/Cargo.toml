@@ -7,8 +7,10 @@ publish = false
 description = "Packages the AgentPlaza web engine: cargo build, wasm-bindgen as a library, wasm-opt -Oz, content-hashed names"
 
 [dependencies]
+apz-theme = { path = "../../crates/apz-theme" }
 brotli = { version = "8", default-features = false, features = ["std"] }
 flate2 = "1.1"
+naga = { version = "27", features = ["wgsl-in", "glsl-out"] }
 serde_json.workspace = true
 sha2.workspace = true
 wasm-bindgen-cli-support = "=0.2.129"

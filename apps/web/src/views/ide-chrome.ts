@@ -2,16 +2,14 @@
 // the screen (views/ide.ts) owns the state and passes the callbacks, and these paint what it gives them.
 
 import type { Lang } from '../ide/model';
-import { dot } from '../ui/components';
-import { h, replace } from '../ui/dom';
-
+import { h } from '../ui/dom';
 
 /**
  * The edge of a side panel: drag it to resize (`onDrag` gets the pointer's x while it is held, `onDone` when it is let
  * go), double-click to reset the width. The edge sits inside its panel, at the side that faces the editor.
  */
 export function panelEdge(side: 'left' | 'right', onDrag: (clientX: number) => void, onDone: () => void, onReset: () => void): HTMLElement {
-  const el = h('div.ide-edge', {
+  const el = h(`div.ide-edge.ide-edge-${side}`, {
     role: 'separator',
     'aria-orientation': 'vertical',
     'aria-label': side === 'left' ? 'Resize the side panel' : 'Resize the right panel',
@@ -21,7 +19,7 @@ export function panelEdge(side: 'left' | 'right', onDrag: (clientX: number) => v
   const end = () => {
     el.removeEventListener('pointermove', move);
     el.classList.remove('on');
-    el.closest('.ide')?.classList.remove('dragging');
+    el.closest('.ide-frame')?.classList.remove('dragging');
     onDone();
   };
   el.addEventListener('pointerdown', (e) => {
@@ -29,7 +27,7 @@ export function panelEdge(side: 'left' | 'right', onDrag: (clientX: number) => v
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     el.classList.add('on');
-    el.closest('.ide')?.classList.add('dragging');
+    el.closest('.ide-frame')?.classList.add('dragging');
     el.addEventListener('pointermove', move);
   });
   el.addEventListener('pointerup', end);
@@ -39,8 +37,8 @@ export function panelEdge(side: 'left' | 'right', onDrag: (clientX: number) => v
 }
 
 /**
- * The top edge of the terminal dock: drag it to resize (`onDrag` gets the pointer's y while it is held, `onDone` when it is
- * let go); an arrow key steps it by `onStep`. It sits on the dock's top border, inside the editor column.
+ * The top edge of the terminal drawer: drag it to resize (`onDrag` gets the pointer's y while it is held, `onDone` when it is
+ * let go); an arrow key steps it by `onStep`. It sits on the drawer's top border, inside the editor column.
  */
 export function dockEdge(onDrag: (clientY: number) => void, onDone: () => void, onStep: (px: number) => void): HTMLElement {
   const el = h('div.ide-bottom-edge', {
@@ -54,7 +52,7 @@ export function dockEdge(onDrag: (clientY: number) => void, onDone: () => void, 
   const end = () => {
     el.removeEventListener('pointermove', move);
     el.classList.remove('on');
-    el.closest('.ide')?.classList.remove('dragging-rows');
+    el.closest('.ide-frame')?.classList.remove('dragging-rows');
     onDone();
   };
   el.addEventListener('pointerdown', (e) => {
@@ -62,7 +60,7 @@ export function dockEdge(onDrag: (clientY: number) => void, onDone: () => void, 
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     el.classList.add('on');
-    el.closest('.ide')?.classList.add('dragging-rows');
+    el.closest('.ide-frame')?.classList.add('dragging-rows');
     el.addEventListener('pointermove', move);
   });
   el.addEventListener('pointerup', end);
@@ -74,7 +72,6 @@ export function dockEdge(onDrag: (clientY: number) => void, onDone: () => void, 
   });
   return el;
 }
-
 
 export interface StatusInfo {
   workspace: string;
@@ -101,7 +98,10 @@ export const LANG_LABEL: Record<Lang, string> = {
   plain: 'Plain text',
 };
 
-/** The status bar: the workspace and its base on the left; the cursor, the language, the unsaved count and the help on the right. */
+/**
+ * The status bar: the live link, the workspace and its base on the left; the cursor, the language, the unsaved count and the
+ * help on the right (the prototype's footer, in mono).
+ */
 export function statusBar(onHelp: () => void): { el: HTMLElement; paint(s: StatusInfo): void } {
   const live = h('span.ide-st-live');
   const workspace = h('span.ide-st-ws');
@@ -109,18 +109,21 @@ export function statusBar(onHelp: () => void): { el: HTMLElement; paint(s: Statu
   const cursor = h('span.ide-st-cursor');
   const lang = h('span.ide-st-lang');
   const dirty = h('span.ide-st-dirty');
-  const help = h('button.ide-st-help', { type: 'button', title: 'Keyboard shortcuts (?)', 'aria-label': 'Keyboard shortcuts', onclick: onHelp }, '?');
+  const help = h('button.ide-helpb', { type: 'button', title: 'Keyboard shortcuts (?)', 'aria-label': 'Keyboard shortcuts', onclick: onHelp }, '?');
   const el = h(
     'footer.ide-status',
     { 'aria-label': 'Status' },
-    h('span.ide-st-group', null, live, workspace, base),
+    live,
+    workspace,
+    base,
     h('span.spacer'),
-    h('span.ide-st-group', null, cursor, lang, dirty, help),
+    h('span.ide-st-group', null, cursor, lang, dirty),
+    help,
   );
   return {
     el,
     paint(s) {
-      replace(live, dot(s.live ? 'ok' : 'danger'), s.live ? 'Live' : 'Reconnecting…');
+      live.replaceChildren(h('span.ide-dot', { 'data-status': s.live ? 'online' : 'failed' }), s.live ? 'Live' : 'Reconnecting…');
       workspace.textContent = s.workspace;
       base.textContent = s.base;
       cursor.textContent = s.cursor ? `Ln ${s.cursor.line}, Col ${s.cursor.col}` : '';
@@ -141,13 +144,13 @@ export const SHORTCUTS: [string, string][] = [
   ['Esc', 'Close the help, a panel or a search; with none open, back to the console'],
 ];
 
-/** The help popover: the shortcuts, under the header. Hidden until `set(true)`. */
+/** The help popover: the shortcuts, over the screen's corner. Hidden until `set(true)`. */
 export function keyboardHelp(): { el: HTMLElement; isOpen(): boolean; set(open: boolean): void } {
   const el = h(
     'div.ide-help',
     { role: 'dialog', 'aria-label': 'Keyboard shortcuts', hidden: true },
-    h('h2', null, 'Keyboard'),
-    h('dl', null, SHORTCUTS.flatMap(([keys, what]) => [h('dt', null, h('kbd', null, keys)), h('dd', null, what)])),
+    h('h3', null, 'Keyboard'),
+    h('dl', null, ...SHORTCUTS.map(([keys, what]) => h('div.ide-help-r', null, h('dt', null, h('kbd.ide-kbd', null, keys)), h('dd', null, what)))),
   );
   let open = false;
   return {

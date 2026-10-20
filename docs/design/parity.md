@@ -146,6 +146,48 @@ the file or command named.
 | Tasks: a new task names its project, its assignee one of that project's agents; a task from before projects moves into one | `tasks.ts` | `tasks.rs` | `tasks create --project`, `tasks move` | web 5/8, desktop 7/8, CLI 8/8 |
 | The IDE: conversations with the orchestrator, the draft beside the chat, Edit and Start; project mode; the chat composer talks to an idle agent and steers a working one | `apps/web/src/views/ide-conversation.ts`, `ide-sidebar.ts`, `ide-chat.ts`, `apps/web/src/ide/conversation-model.ts` | `apps/desktop/src/console/screens/ide_conversation.rs`, `ide_sidebar.rs`, `ide_panels.rs`, `ide_model.rs` | `agentplaza chat` (`/draft`, `/start`); the TUI's Chat tab | web 6/8, desktop 7/8, CLI 8/8 |
 
+## Seventh pass (2026-10-19): themes, backgrounds, artifacts and sharing
+
+Loom and Graphite replace the old look on both consoles, with palettes, saved and imported themes, background styles,
+agent artifacts and share links (`docs/design/themes.md`, `artifacts.md`, `sharing.md`). Each row names the shared
+source both consoles read and the file that applies it on each side.
+
+| Surface | Shared source | Web | Desktop | State |
+|---|---|---|---|---|
+| Tokens, skins and built-in palettes (Loom · Clay, Moss, Indigo; Graphite · Cobalt, Violet, Teal), contrast checked | `crates/apz-theme`, `apps/shared/themes/*.apztheme.json`, `themes.gen.json` | `styles/themes.gen.css`, `boot-theme.js`, `ui/theme.ts` | `theme.rs` (`Palette` from the token list, `Skin`, `apply`) | done |
+| Geist and Geist Mono in both skins | `assets/fonts/Geist*` | `styles/tokens.css` (`@font-face`) | `console/mod.rs` (embedded) | done |
+| One global appearance on the hub, a per-device override | `crates/apid/src/appearance.rs`, `apz_theme::appearance` | `ui/theme.ts`, `api-appearance.ts` (localStorage `apz.appearance.device`) | `screens/appearance.rs` (`desktop.json` `appearance_device`) | done |
+| Appearance screen: skin, palette, background, mode, density, code size; "Choose a look" in the first-run wizard | `apps/shared/onboarding.json` (`look`) | `views/appearance.ts`, `ui/onboarding.ts` | `screens/appearance.rs`, `onboard.rs` | done |
+| Theme editor with contrast and Fix; `.apztheme.json` import and export | `apz_theme::{resolve, check_all, color::fix_contrast}`; web through `crates/apz-theme-web` | `views/theme-editor.ts`, `theme/wasm.ts` | `screens/theme_editor.rs` | done |
+| VS Code import: theme JSON (comments, includes) and `.vsix`, with the report | `apz_theme::{vscode, vsix}` | `views/theme-editor.ts` (import) | `screens/theme_editor.rs` (import) | done |
+| Background styles drawn by one shader | `crates/apz-theme/src/backdrop.wgsl`, `backdrop.rs` | `view/backdrop.ts` (WebGPU, WebGL2 via `apz-pack web-backdrop`, CSS fallback) | `console/backdrop.rs` through `apz-engine/src/backdrop.rs` (tiny-skia still frame) | done |
+| Code highlighting with the theme's `syn-*` tokens | `apps/shared/highlight.json`, `apz_view::highlight`, `crates/apz-view/tests/highlight_golden.json` | `view/highlight.ts`, `view/code.ts` (golden checked in `test/tests.ts`) | `console/view/code.rs` | done |
+| Artifact bodies: Metrics panels plus image, graph, dataset, document, code, HTML | `crates/apz-view` (`model.rs`, `artifact.rs`), `apz-graph` (layered, `force.rs`) | `view/artifact.ts`, `bodies.ts`, `graph.ts`, `dataset.ts`, `code.ts`, `frame.ts` | `console/view/{image,document,code,graph,dataset,webview}.rs` | done |
+| `artifact:<id>` references and inline embeds in agent text | `crates/apz-rich` (`Ref::Artifact`, vectors) | `ui/rich.ts`, `ui/markdown.ts`, `views/artifact.ts` (`artifactEmbed`) | `console/rich.rs` | done |
+| Artifact viewer (versions, exports CSV, JSON, PNG, delete) and the Library's Artifacts group | `crates/apid/src/artifacts/` (owner routes, PNG through `apz_view::raster`) | `views/artifact.ts`, `views/files.ts` | `screens/artifact.rs`, `screens/library.rs` | done |
+| Live HTML artifacts: sandboxed frames on the content origin, the bridge, two live frames at a time | `crates/apid/src/content.rs`, `content_bridge.js`, `crates/apz-artifact` (oxc) | `view/frame.ts` (iframe sandbox, opaque origin) | `console/view/webview.rs` (iced_wry; arm64 Linux shows the still) | done |
+| Share dialog: anyone with the link, expiry, password, downloads, version pin, activity | `crates/apid/src/shares/` | `ui/share.ts`, `api-shares.ts` | `console/share.rs` | done |
+| Agents' share requests in Approvals (`artifact.share`) | `crates/apid/src/shares/request.rs` | `views/approvals.ts` | `screens/approvals.rs` | done |
+| The share viewer at `{hub}/artifact/{id}` and `agentplaza.io/artifact/{id}` | `crates/apid/src/shares/public.rs`, `relay.rs`; agentplaza-landing `cloudflare/relay/` | `viewer.ts`, `viewer.html` (served to anyone with the link; the desktop opens links in the browser) | opens the link in the browser | done |
+| Visual parity: fixture screens in every theme and mode, web against desktop | `scripts/parity/` (`.github/workflows/parity.yml`) | headless Chromium | `APZ_SNAPSHOT`, `APZ_APPEARANCE` | done |
+
+## Eighth pass (2026-10-19): providers, engines and models
+
+The providers manager is one card of instances (API providers, then coding engines) beside the selected one's detail,
+with the usage hubs, the health interval and the decision models below it. The desktop's Models screen now follows
+that layout, so both consoles read the same hub endpoints in the same order. The user's guide is
+`docs/guide/providers.md`. The terminal app's Providers tab (key `m`) is the same data with its own keys.
+
+| Surface | Shared source | Web | Desktop | TUI | State |
+|---|---|---|---|---|---|
+| API provider instances: label, accent, enabled, several per kind, key in the vault (write-only) | `crates/apid/src/providers.rs`, `apz-gateway` (`ProviderKind`) | `views/models-providers.ts`, `views/provider-wizard.ts`, `api-providers.ts` | `screens/models.rs` (providers card), `screens/provider_wizard.rs`, `screens/providers_api.rs` | `tui/providers.rs` (list, `space`, `k`, `d`, `a`) | done |
+| Coding engines as instances: built-in, ACP registry agents, local ACP commands; version pins; runtime and variables | `crates/apid/src/engine_instances.rs`, `GET /v1/acp/registry`, `GET /v1/provider-catalog` | `views/models-providers.ts` (engine detail), `provider-wizard.ts` (engines) | `screens/models.rs` (`engine_detail`, `runtime_section`, `env_section`), `provider_wizard.rs` | `tui/providers.rs` (`e` runtime, `a` add) | done |
+| Update all: a dry run lists the changes, then the install | `POST /v1/engines/update` (`dry_run`) | `views/models-providers.ts` (`updateAll`) | `screens/models.rs` (Update all) | `u` (plan, then yes) | done |
+| Background health checks every `health_interval_s` (0 off), Check now, `providers.health` on the bus | `crates/apid/src/provider_health.rs`, `settings.rs` | `views/models-providers.ts` (interval step buttons, check buttons) | `screens/models.rs` (interval, `providers.health`) | health shown; `c` and `C` check now | TUI gap: no interval control (CLI has `models settings health-interval`) |
+| Favourite models: they lead every picker; shared across devices | `settings.favourite_models` (max 200) | `views/models-providers.ts` (star), `ui/model-picker.ts` (rail) | `screens/models.rs`, `console/picker.rs` | `f` (star under the cursor), `p` (model list) | done |
+| Usage providers (CLIProxyAPI hubs): totals, models, pooled accounts; management key in the vault | `crates/apid/src/usage_providers.rs`, `/v1/usage-providers` | `views/models-providers.ts` (usage cards) | `screens/models.rs` (`usage_card`, `hub_row`) | `U` (hubs), `h` (add), `d` (remove) | done |
+| Model picker: an instance whose health is crit lists no models, only its message and a link to its setup | `ui/model-picker.ts` | `ui/model-picker.ts` | `console/picker.rs` | n/a | done |
+
 ## Out of scope
 
 **Hidden labs.** The hardware, robot and room labs are developer tools behind hidden routes on the web and environment

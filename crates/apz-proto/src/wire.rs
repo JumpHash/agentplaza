@@ -152,6 +152,66 @@ pub struct Program {
     pub timeout_s: u64,
 }
 
+/// How the VM starts one engine instance (`code_engine`) beyond the harness catalogue's defaults: the
+/// owner's pinned install, launch arguments, plain environment, home folder and default model route
+/// (`apid`'s `engine_instances.rs`). Sent with a `code_engine` call's [`HostMessage::ToolDecision`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EngineSpec {
+    /// A catalogue engine id, `acp:<registry id>` or `acp-local`.
+    pub engine: String,
+    /// None: the catalogue's own pinned install.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install: Option<EngineInstall>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// The engine's home folder name under the VM's engines home; None: the instance id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+    /// The model the engine runs when a call names none, `<provider>/<model>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+}
+
+/// An exact, pinned install of an engine: the VM refuses anything that does not match its pin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum EngineInstall {
+    /// An npm package at an exact version, checked against the registry's `dist.integrity`.
+    Npm {
+        package: String,
+        version: String,
+        integrity: String,
+    },
+    /// A Python package's wheel at an exact version, checked against its sha256.
+    Pip {
+        package: String,
+        version: String,
+        file: String,
+        sha256: String,
+    },
+    /// A release archive per VM architecture (`linux-x86_64`, `linux-aarch64`), each checked against its
+    /// sha256; `cmd` is the binary inside it.
+    Archive {
+        version: String,
+        assets: std::collections::BTreeMap<String, EngineAsset>,
+    },
+    /// A command already present in the agent's VM image or workspace.
+    Command { command: String },
+}
+
+/// One architecture's archive of an [`EngineInstall::Archive`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineAsset {
+    pub url: String,
+    pub sha256: String,
+    pub cmd: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+}
+
 /// One file of a [`Program`], its bytes base64-encoded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgramFile {
@@ -234,6 +294,10 @@ pub enum HostMessage {
         /// built-in tools.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         program: Option<Program>,
+        /// For an allowed `code_engine` call on an engine instance the owner configured: how to start it.
+        /// `None`: the harness catalogue's defaults for the named engine.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        engine: Option<EngineSpec>,
         /// v4: with `decision: pending`, the approval the owner decides; the answer follows as a
         /// [`HostMessage::PermissionDecision`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -561,6 +625,7 @@ mod tests {
             output: String::new(),
             is_error: false,
             program: None,
+            engine: None,
             approval: None,
         };
         assert_eq!(
@@ -630,6 +695,7 @@ mod tests {
             output: "waiting for the owner's approval (a7)".into(),
             is_error: false,
             program: None,
+            engine: None,
             approval: Some("a7".into()),
         };
         let line = pending.to_line().unwrap();
@@ -690,6 +756,7 @@ mod tests {
             output: "no".into(),
             is_error: true,
             program: None,
+            engine: None,
             approval: None,
         };
         assert!(!deny.to_line().unwrap().contains("approval"));

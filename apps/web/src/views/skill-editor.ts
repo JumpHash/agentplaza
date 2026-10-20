@@ -2,6 +2,7 @@
 // preview and findings, versions, compare, publish, bindings, export, and GitHub updates.
 
 import '../styles/skill-editor.css';
+import '../styles/proto/library.css';
 import {
   ApiError,
   api,
@@ -1229,52 +1230,62 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     if (!detail) {
       replace(
         headEl,
-        h('div.se-top', null, button('Back to skills', goBack, { kind: 'ghost' })),
-        h('p.se-muted', null, loadError || 'Loading...'),
+        h(
+          'header.page-head',
+          null,
+          h('div.page-head-row', null, h('h1', null, 'Skill'), h('span.sp'), h('div.page-actions', null, button('Back to skills', goBack, { kind: 'ghost' }))),
+          h('p.lede', null, loadError || 'Loading...'),
+        ),
       );
       return;
     }
     const s = detail.skill;
     const archived = s.archived_ms != null;
-    dirtyFlag = h('span.se-dirty', { hidden: !dirty() }, badge('Unsaved changes', 'warn', true));
+    dirtyFlag = h('span', { hidden: !dirty() }, badge('Unsaved changes', 'warn'));
     replace(
       headEl,
-      h('div.se-top', null, button('Back to skills', goBack, { kind: 'ghost' })),
       h(
-        'div.se-title',
+        'header.page-head',
         null,
-        h('h1', null, s.title || s.name),
-        s.description ? h('p.se-muted', null, s.description) : null,
         h(
-          'div.se-chips',
+          'div.page-head-row',
           null,
-          badge(sourceName(s.source)),
-          s.active_version != null ? badge(`Live v${s.active_version}`, 'ok', true) : badge('Not published'),
-          badge(`Latest v${s.latest_version}`),
-          s.score != null ? badge(`Score ${s.score}`, scoreTone(s.score)) : null,
-          s.bindings.map((b) => badge(bindingName(b), 'accent')),
-          s.tags.map((t) => badge(t)),
-          archived ? badge('Archived') : null,
-          dirtyFlag,
+          h('h1', null, s.title || s.name),
+          h('span.sp'),
+          h(
+            'div.page-actions',
+            null,
+            button('Back to skills', goBack, { kind: 'ghost' }),
+            button('Save version', openSave, { kind: 'primary' }),
+            button('Details…', openDetails, { kind: 'ghost' }),
+            button('Publish…', openPublish, { kind: 'ghost' }),
+            s.active_version != null ? button('Unpublish', () => void act(() => skillsApi.unpublish(id), 'Unpublished'), { kind: 'ghost' }) : null,
+            button('Bindings…', openBindings, { kind: 'ghost' }),
+            h('a.btn.ghost', { href: skillsApi.exportUrl(id, s.latest_version), download: `${s.name}.zip` }, 'Export'),
+            button(archived ? 'Restore' : 'Archive', () =>
+              void act(() => (archived ? skillsApi.restore(id) : skillsApi.archive(id)), archived ? 'Restored' : 'Archived'),
+              { kind: 'ghost' },
+            ),
+          ),
         ),
-        sourceLine(s),
+        h('p.lede', null, s.description || s.name),
       ),
-      stale
-        ? h('div.se-stale', { role: 'status' }, badge('Changed on the hub', 'warn', true), ' ', button('Reload', reloadFromHub, { size: 'sm' }))
-        : null,
       h(
-        'div.se-actions',
+        'div.pr-bar',
         null,
-        button('Save version', openSave, { kind: 'primary' }),
-        button('Details…', openDetails),
-        button('Publish…', openPublish),
-        s.active_version != null ? button('Unpublish', () => void act(() => skillsApi.unpublish(id), 'Unpublished')) : null,
-        button('Bindings…', openBindings),
-        h('a.btn', { href: skillsApi.exportUrl(id, s.latest_version), download: `${s.name}.zip` }, 'Export'),
-        button(archived ? 'Restore' : 'Archive', () =>
-          void act(() => (archived ? skillsApi.restore(id) : skillsApi.archive(id)), archived ? 'Restored' : 'Archived'),
-        ),
+        badge(sourceName(s.source)),
+        s.active_version != null ? badge(`Live v${s.active_version}`, 'ok') : badge('Not published', 'muted'),
+        badge(`Latest v${s.latest_version}`, 'muted'),
+        s.score != null ? badge(`Score ${s.score}`, scoreTone(s.score)) : null,
+        s.bindings.map((b) => badge(bindingName(b), 'accent')),
+        s.tags.map((t) => badge(t)),
+        archived ? badge('Archived', 'muted') : null,
+        dirtyFlag,
       ),
+      sourceLine(s),
+      stale
+        ? h('div.pr-bar', { role: 'status' }, badge('Changed on the hub', 'warn'), button('Reload', reloadFromHub, { kind: 'ghost', size: 'sm' }))
+        : null,
     );
   }
 

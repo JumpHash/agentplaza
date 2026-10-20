@@ -1,7 +1,10 @@
-// The prompt editor (docs/design/prompt-library.md, "Screens"): the markdown source with a live preview, the findings
-// and score as you type, versions (live and best marked), compare with a line diff, publish, history and the rules.
+// The prompt editor (docs/design/prompt-library.md, "Screens"), in the Loom prototype's layout: the page head with the
+// prompt's actions, the status badges, the tabs (Edit, Versions, History, Rules). Edit is the markdown source beside a
+// line diff against the live version; the checks (score and findings) and the preview sit under it. Versions mark the live
+// and the best one; compare shows a line diff; publish, history and the rules are as before.
 
 import '../styles/prompt-editor.css';
+import '../styles/proto/library.css';
 import {
   ApiError,
   promptsApi,
@@ -18,7 +21,7 @@ import {
   type PromptVersionMeta,
 } from '../api';
 import { on } from '../store';
-import { ago, badge, button, field, input, modal, select, table, tabs, toast, type Column, type Tone } from '../ui/components';
+import { ago, badge, button, card, field, input, modal, select, table, toast, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
@@ -26,28 +29,12 @@ import type { Cleanup } from './index';
 const CHECK_MS = 400;
 const LIVE_MS = 250;
 type TabKey = 'edit' | 'versions' | 'history' | 'rules';
-const TABS: { key: TabKey; label: string }[] = [
-  { key: 'edit', label: 'Edit' },
-  { key: 'versions', label: 'Versions' },
-  { key: 'history', label: 'History' },
-  { key: 'rules', label: 'Rules' },
-];
 const SEVERITIES: PromptSeverity[] = ['error', 'warning', 'info'];
 const SEVERITY_NAME: Record<PromptSeverity, string> = { error: 'Error', warning: 'Warning', info: 'Info' };
-const SEVERITY_GROUP: Record<PromptSeverity, string> = { error: 'Errors', warning: 'Warnings', info: 'Infos' };
 const SEVERITY_TONE: Record<PromptSeverity, Tone> = { error: 'danger', warning: 'warn', info: 'info' };
 const SEVERITY_MARK: Record<PromptSeverity, string> = { error: '✕', warning: '▲', info: '●' };
 const KIND_NAME: Record<PromptKind, string> = { system: 'System prompt', agents_md: 'AGENTS.md', fragment: 'Fragment' };
 const DIFF_SIGN: Record<'same' | 'add' | 'del', string> = { same: ' ', add: '+', del: '−' };
-
-/** The live pieces of the Edit tab, rebuilt whenever the tab is drawn. */
-interface EditView {
-  ta: HTMLTextAreaElement;
-  gutter: HTMLElement;
-  preview: HTMLElement;
-  summary: HTMLElement;
-  findings: HTMLElement;
-}
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 const scoreTone = (score: number | null | undefined): Tone => (score == null ? 'muted' : score >= 90 ? 'ok' : score >= 60 ? 'warn' : 'danger');
@@ -63,6 +50,57 @@ function lineBounds(text: string, n: number): { start: number; end: number } {
   }
   const nl = text.indexOf('\n', start);
   return { start, end: nl < 0 ? text.length : nl };
+}
+
+/** A line diff of `a` against `b` (the longest common subsequence of lines): same, del and add rows, in order. */
+function lineDiff(a: string, b: string): { op: 'same' | 'add' | 'del'; text: string }[] {
+  const A = a.split('\n');
+  const B = b.split('\n');
+  const n = A.length;
+  const m = B.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) dp[i]![j] = A[i] === B[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+  }
+  const out: { op: 'same' | 'add' | 'del'; text: string }[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) {
+      out.push({ op: 'same', text: A[i]! });
+      i++;
+      j++;
+    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
+      out.push({ op: 'del', text: A[i++]! });
+    } else {
+      out.push({ op: 'add', text: B[j++]! });
+    }
+  }
+  while (i < n) out.push({ op: 'del', text: A[i++]! });
+  while (j < m) out.push({ op: 'add', text: B[j++]! });
+  return out;
+}
+
+/** The diff lines as the prototype draws them: a `.diff` box of `.dl` rows with a sign. */
+function diffBox(rows: { op: 'same' | 'add' | 'del'; text: string }[]): HTMLElement {
+  return h(
+    'div.diff',
+    null,
+    rows.map((l) => h('div', { class: l.op === 'same' ? 'dl' : `dl ${l.op}` }, `${DIFF_SIGN[l.op]} ${l.text}`)),
+  );
+}
+
+/** A tab strip with the count after a label, the prototype's `.tabs` markup. */
+function tabBar(items: { key: TabKey; label: string; count?: number }[], current: TabKey, onPick: (key: TabKey) => void): HTMLElement {
+  return h(
+    'div.tabs',
+    { role: 'tablist' },
+    items.map((t) => {
+      const b = h('button.tab', { type: 'button', role: 'tab', 'aria-selected': String(t.key === current) }, t.label, t.count != null ? ' ' : null, t.count != null ? h('span.count.num', null, String(t.count)) : null);
+      b.addEventListener('click', () => onPick(t.key));
+      return b;
+    }),
+  );
 }
 
 /** A tag list as typed: comma-separated, each trimmed, empty ones dropped. */
@@ -83,9 +121,9 @@ export function bindingField(kind: PromptKind, binding: string | null): { node: 
   if (kind === 'agents_md') {
     const sharedIn = h('input', { type: 'checkbox' }) as HTMLInputElement;
     sharedIn.checked = binding === 'plaza';
-    return { node: h('label.prompts-check', null, sharedIn, ' Apply to every agent'), value: () => (sharedIn.checked ? 'plaza' : null) };
+    return { node: h('label.check', null, sharedIn, ' Apply to every agent'), value: () => (sharedIn.checked ? 'plaza' : null) };
   }
-  return { node: h('p.prompts-hint', null, 'Fragments are not bound to a role or to the plaza.'), value: () => null };
+  return { node: h('p.pr-note', null, 'Fragments are not bound to a role or to the plaza.'), value: () => null };
 }
 
 /** The hub's rules for a prompt's details (title, description, tags, binding), as a sentence for the first failure, or null. */
@@ -110,6 +148,7 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
   let tab: TabKey = 'edit';
   let body = ''; // the editor's text
   let savedBody = ''; // the text of the latest version
+  let liveBody = ''; // the text of the live version (the latest, when none is live): what the diff compares with
   let baseVersion = 0; // the latest version the editor started from
   let report: PromptReport | null = null;
   let checkSeq = 0;
@@ -124,10 +163,11 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
   let stale = false; // the hub changed this prompt while the editor holds unsaved edits
   let liveTimer: number | undefined;
 
-  const headEl = h('div.pe-head');
-  const tabsEl = h('div.pe-tabs');
-  const bodyEl = h('div.pe-main');
-  root.replaceChildren(h('div.prompt-editor', null, headEl, tabsEl, bodyEl));
+  const headEl = h('div');
+  const barEl = h('div.pr-bar');
+  const tabsEl = h('div');
+  const bodyEl = h('div');
+  root.replaceChildren(h('div.prompt-editor', null, headEl, barEl, tabsEl, bodyEl));
 
   const dirty = (): boolean => body !== savedBody;
   const syncDirty = (): void => {
@@ -170,7 +210,6 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
       if (edit) replace(edit.summary, h('p.pe-error', { role: 'alert' }, `Check failed: ${messageOf(err)}`));
       return;
     }
-    paintLines();
     paintReport();
   }
 
@@ -178,23 +217,8 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     if (edit) replace(edit.preview, renderMarkdown(body));
   }
 
-  function paintLines(): void {
-    if (!edit) return;
-    const worst = new Map<number, PromptSeverity>();
-    for (const f of report?.findings ?? []) {
-      if (f.line < 1) continue;
-      const cur = worst.get(f.line);
-      if (!cur || SEVERITIES.indexOf(f.severity) < SEVERITIES.indexOf(cur)) worst.set(f.line, f.severity);
-    }
-    const count = Math.max(1, body.split('\n').length);
-    replace(
-      edit.gutter,
-      Array.from({ length: count }, (_, i) => {
-        const sev = worst.get(i + 1);
-        return h('span', { class: sev ? `sev-${sev}` : null, title: sev ? SEVERITY_NAME[sev] : null }, String(i + 1));
-      }),
-    );
-    edit.gutter.scrollTop = edit.ta.scrollTop;
+  function paintDiff(): void {
+    if (edit) replace(edit.diffEl, diffBox(lineDiff(liveBody, body)));
   }
 
   function paintReport(): void {
@@ -219,7 +243,6 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     );
     replace(
       edit.findings,
-      h('h2', null, 'Findings'),
       r.findings.length
         ? h('ol.pe-findings-list', null, r.findings.map((f) => h('li', null, findingButton(f))))
         : h('p.pe-muted', null, 'No findings. This prompt passes every check.'),
@@ -242,51 +265,78 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
 
   function selectLine(n: number): void {
     if (!edit) return;
-    const { ta, gutter } = edit;
+    const { ta } = edit;
     const { start, end } = lineBounds(ta.value, n);
     ta.focus();
     ta.setSelectionRange(start, end);
     const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 20;
     ta.scrollTop = Math.max(0, (n - 2) * lineHeight);
-    gutter.scrollTop = ta.scrollTop;
   }
 
+  /** The Edit tab: the source beside the diff against the live version, with the note and the save; the checks and preview below. */
   function buildEdit(): void {
-    const ta = h('textarea.pe-src', { spellcheck: 'false', wrap: 'off', 'aria-label': 'Prompt source in markdown', placeholder: 'Write the prompt in markdown' }) as HTMLTextAreaElement;
+    const ta = h('textarea.textarea.pr-src', { spellcheck: 'false', wrap: 'off', 'aria-label': 'Markdown', placeholder: 'Write the prompt in markdown' }) as HTMLTextAreaElement;
     ta.value = body;
-    const gutter = h('div.pe-gutter', { 'aria-hidden': 'true' });
-    const preview = h('div.pe-preview');
-    const summary = h('div.pe-summary');
-    const findings = h('div.pe-findings');
-    edit = { ta, gutter, preview, summary, findings };
+    const noteIn = input({ type: 'text', maxlength: 200, placeholder: 'What changed, in a few words', autocomplete: 'off' });
+    const saveBtn: HTMLButtonElement = button(`Save as version ${(detail?.prompt.latest_version ?? 0) + 1}`, () => void saveVersion(noteIn, saveBtn), { kind: 'primary' });
+    const diffEl = h('div.pr-diff');
+    const summary = h('div');
+    const findings = h('div');
+    const preview = h('div.lib-md');
+    edit = { ta, diffEl, summary, findings, preview, saveErr: h('div.pe-error', { role: 'alert', hidden: true }) };
     ta.addEventListener('input', () => {
       body = ta.value;
       syncDirty();
+      paintDiff();
       paintPreview();
-      paintLines();
       scheduleCheck();
-    });
-    ta.addEventListener('scroll', () => {
-      gutter.scrollTop = ta.scrollTop;
     });
     replace(
       bodyEl,
       h(
-        'div.pe-edit',
+        'div.pr-cols',
         null,
-        h(
-          'div.pe-panes',
-          null,
-          h('div.pe-pane', null, h('div.pe-label', null, 'Markdown'), h('div.pe-code', null, gutter, ta)),
-          h('div.pe-pane', null, h('div.pe-label', null, 'Preview'), preview),
-        ),
-        summary,
-        findings,
+        card(null, [
+          ta,
+          h('div.pr-bar', null, field('Note', noteIn), saveBtn),
+          edit.saveErr,
+        ]),
+        card('Against the live version', diffEl),
       ),
+      h('div.pr-stack', { style: 'margin-top:16px' }, card('Checks', [summary, findings]), card('Preview', preview)),
     );
+    paintDiff();
     paintPreview();
-    paintLines();
     paintReport();
+  }
+
+  /** Saves the editor's text as the next version. A version saved meanwhile is said so, with a reload to take it. */
+  async function saveVersion(noteIn: HTMLInputElement, saveBtn: HTMLButtonElement): Promise<void> {
+    if (!detail || !edit) return;
+    const err = edit.saveErr;
+    err.hidden = true;
+    err.textContent = '';
+    saveBtn.disabled = true;
+    try {
+      const res = await promptsApi.addVersion(id, body, noteIn.value.trim(), baseVersion);
+      if (!alive) return;
+      if (!res.created) {
+        toast('No changes');
+        return;
+      }
+      toast(`Saved version ${res.version.version}`);
+      await loadLatest();
+    } catch (e) {
+      if (!alive) return;
+      err.hidden = false;
+      if (e instanceof ApiError && e.status === 409) {
+        err.append('Someone saved a newer version while you were editing. Reloading replaces your text with the latest version. ', button('Reload latest', () => void loadLatest(), { kind: 'ghost', size: 'sm' }));
+      } else {
+        err.textContent = messageOf(e);
+      }
+    } finally {
+      saveBtn.disabled = false;
+    }
   }
 
   function buildVersions(): void {
@@ -300,10 +350,11 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
         label: 'Version',
         cell: (v) =>
           h(
-            'span.pe-vers',
+            'span',
             null,
             h('strong', null, `v${v.version}`),
-            v.version === live ? badge('Live', 'ok', true) : null,
+            ' ',
+            v.version === live ? badge('Live', 'ok') : null,
             v.version === best ? badge('Best', 'accent') : null,
             v.rules_version < current ? badge('stale', 'warn') : null,
           ),
@@ -312,20 +363,16 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
       { label: 'Author', cell: (v) => v.author },
       { label: 'Created', cell: (v) => ago(v.created_ms) },
       { label: 'Score', num: true, cell: (v) => badge(String(v.score), scoreTone(v.score)) },
-      { label: 'Errors / warnings / infos', cell: (v) => `${v.errors} / ${v.warnings} / ${v.infos}` },
+      { label: 'E / W / I', cell: (v) => h('span.mono', null, `${v.errors} / ${v.warnings} / ${v.infos}`) },
       { label: '', cell: (v) => versionActions(v, live) },
     ];
     const sorted = [...d.versions].sort(newestFirst);
     replace(
       bodyEl,
-      h(
-        'div.pe-versions',
-        null,
-        viewing ? viewPanel(viewing) : null,
-        picks.length ? pickBar() : null,
-        diff ? comparePanel(diff) : null,
-        sorted.length ? table(cols, sorted, undefined, (v) => String(v.version)) : h('p.pe-muted', null, 'No versions yet.'),
-      ),
+      viewing ? viewPanel(viewing) : null,
+      sorted.length ? h('div.tbl-wrap', null, table(cols, sorted, undefined, (v) => String(v.version))) : h('p.pr-note', null, 'No versions yet.'),
+      picks.length ? pickBar() : null,
+      diff ? comparePanel(diff) : null,
     );
   }
 
@@ -333,21 +380,21 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     const picked = picks.includes(v.version);
     const publishLabel = v.version === live ? 'Live' : live != null && v.version < live ? 'Roll back' : 'Publish';
     return h(
-      'div.pe-row-actions',
+      'div.lib-acts',
       null,
-      button('View', () => void viewVersion(v.version), { size: 'sm' }),
-      button(picked ? 'Unpick' : 'Compare', () => togglePick(v.version), { size: 'sm' }),
-      button(publishLabel, () => void act(() => promptsApi.publish(id, v.version), `Published v${v.version}`), { size: 'sm', disabled: v.version === live }),
-      button('Restore as new', () => void restoreIntoEditor(v.version), { size: 'sm' }),
+      button('View', () => void viewVersion(v.version), { kind: 'ghost', size: 'sm' }),
+      button(picked ? 'Unpick' : 'Compare', () => togglePick(v.version), { kind: 'ghost', size: 'sm' }),
+      button(publishLabel, () => void act(() => promptsApi.publish(id, v.version), `Published v${v.version}`), { kind: 'ghost', size: 'sm', disabled: v.version === live }),
+      button('Restore as new', () => void restoreIntoEditor(v.version), { kind: 'ghost', size: 'sm' }),
     );
   }
 
   function pickBar(): HTMLElement {
     const text = picks.length === 1 ? `v${picks[0]} picked. Pick one more version to compare.` : '';
     return h(
-      'div.pe-pickbar',
+      'div.pr-bar',
       null,
-      text ? h('span.pe-muted', null, text) : null,
+      text ? h('span.pr-note', null, text) : null,
       button(
         'Clear',
         () => {
@@ -394,75 +441,45 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
   }
 
   function viewPanel(v: PromptVersion): HTMLElement {
-    return h(
-      'section.pe-view',
-      null,
-      h(
-        'div.pe-view-head',
-        null,
-        h('h2', null, `v${v.version}, read only`),
-        v.stale ? badge('stale', 'warn') : null,
-        badge(`Score ${v.score}`, scoreTone(v.score)),
-        button(
-          'Close',
-          () => {
-            viewing = null;
-            drawTab();
-          },
-          { kind: 'ghost', size: 'sm' },
-        ),
-      ),
-      renderMarkdown(v.body),
+    return card(
+      `v${v.version}, read only`,
+      h('pre.lib-pre', null, v.body),
+      {
+        actions: [
+          button(
+            'Close',
+            () => {
+              viewing = null;
+              drawTab();
+            },
+            { kind: 'ghost', size: 'sm' },
+          ),
+        ],
+      },
     );
   }
 
   function comparePanel(d: PromptDiff): HTMLElement {
-    const side = (v: PromptVersion): HTMLElement =>
+    return card(
+      `Compare v${d.from.version} and v${d.to.version}`,
       h(
-        'div.pe-side',
+        'div.diff',
         null,
-        h('h3', null, `v${v.version}`),
-        h(
-          'div.pe-score',
-          null,
-          badge(`Score ${v.score}`, scoreTone(v.score)),
-          badge(`${v.errors} errors`, v.errors ? 'danger' : 'muted'),
-          badge(`${v.warnings} warnings`, v.warnings ? 'warn' : 'muted'),
-          badge(`${v.infos} infos`, v.infos ? 'info' : 'muted'),
-        ),
-      );
-    return h(
-      'section.pe-compare',
-      null,
-      h(
-        'div.pe-view-head',
-        null,
-        h('h2', null, `Compare v${d.from.version} and v${d.to.version}`),
-        button(
-          'Close',
-          () => {
-            picks = [];
-            diff = null;
-            drawTab();
-          },
-          { kind: 'ghost', size: 'sm' },
-        ),
+        d.lines.map((l) => h('div', { class: l.op === 'same' ? 'dl' : `dl ${l.op}` }, `${DIFF_SIGN[l.op]} ${l.text}`)),
       ),
-      h('div.pe-sides', null, side(d.from), side(d.to)),
-      h(
-        'div.pe-diff',
-        null,
-        d.lines.map((l) =>
-          h(
-            'div',
-            { class: `pe-line ${l.op}` },
-            h('span.pe-ln', null, l.old == null ? '' : String(l.old)),
-            h('span.pe-ln', null, l.new == null ? '' : String(l.new)),
-            h('span.pe-sign', null, DIFF_SIGN[l.op]),
-            h('code', null, l.text),
+      {
+        actions: [
+          button(
+            'Close',
+            () => {
+              picks = [];
+              diff = null;
+              drawTab();
+            },
+            { kind: 'ghost', size: 'sm' },
           ),
-        ),
-      ),
+        ],
+      },
     );
   }
 
@@ -486,112 +503,41 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
   async function buildHistory(): Promise<void> {
     let events = history;
     if (!events) {
-      replace(bodyEl, h('p.pe-muted', null, 'Loading history...'));
+      replace(bodyEl, h('p.pr-note', null, 'Loading history...'));
       try {
         events = (await promptsApi.history(id)).events;
       } catch (err) {
-        if (alive && tab === 'history') replace(bodyEl, h('p.pe-error', { role: 'alert' }, messageOf(err)));
+        if (alive && tab === 'history') replace(bodyEl, h('p.pr-note', { role: 'alert' }, messageOf(err)));
         return;
       }
       history = events;
       if (!alive || tab !== 'history') return;
     }
     const cols: Column<PromptEvent>[] = [
-      { label: 'Action', cell: (e) => badge(e.action) },
+      { label: 'Action', cell: (e) => badge(e.action, 'muted') },
       { label: 'Version', cell: (e) => (e.version == null ? '—' : `v${e.version}`) },
       { label: 'Actor', cell: (e) => e.actor },
       { label: 'When', cell: (e) => ago(e.at_ms) },
     ];
-    replace(bodyEl, events.length ? table(cols, events, undefined, (e) => String(e.id)) : h('p.pe-muted', null, 'No history yet.'));
+    replace(bodyEl, events.length ? h('div.tbl-wrap', null, table(cols, events, undefined, (e) => String(e.id))) : h('p.pr-note', null, 'No history yet.'));
   }
 
   function buildRules(): void {
     if (!rules) {
-      replace(bodyEl, h('p.pe-muted', null, 'Loading the rules...'));
+      replace(bodyEl, h('p.pr-note', null, 'Loading the rules...'));
       return;
     }
     const current = kind;
     const applies = rules.rules.filter((r) => r.kinds.length === 0 || r.kinds.includes(current));
+    const ordered = SEVERITIES.flatMap((sev) => applies.filter((r) => r.severity === sev));
     replace(
       bodyEl,
+      h('p.pr-note', null, `The checks that apply to ${KIND_NAME[current]}. Errors block publishing and cost 25 points each; warnings cost 8 and infos 2.`),
       h(
-        'div.pe-rules',
+        'div.pr-rules',
         null,
-        h(
-          'p.pe-muted',
-          null,
-          `The checks that apply to ${KIND_NAME[current]}. Errors block publishing and cost 25 points each; warnings cost 8 and infos 2.`,
-        ),
-        SEVERITIES.map((sev) => {
-          const list = applies.filter((r) => r.severity === sev);
-          return h(
-            'section.pe-rule-group',
-            null,
-            h('h2', null, `${SEVERITY_GROUP[sev]} (${list.length})`),
-            list.length
-              ? list.map((r) =>
-                  h(
-                    'article.pe-rule-card',
-                    null,
-                    h('div.pe-rule-head', null, h('h3', null, r.title), h('code', null, r.id)),
-                    h('p', null, r.why),
-                  ),
-                )
-              : h('p.pe-muted', null, 'None for this kind.'),
-          );
-        }),
+        ordered.map((r) => h('div.row', null, badge(r.severity, SEVERITY_TONE[r.severity]), h('span', null, r.title, h('small', null, r.why)))),
       ),
-    );
-  }
-
-  function openSave(): void {
-    if (!detail) return;
-    const note = input({ type: 'text', maxlength: 200, placeholder: 'What changed, in a few words', autocomplete: 'off' });
-    const err = h('div.pe-error', { role: 'alert', hidden: true });
-    const showError = (message: string, extra?: HTMLElement): void => {
-      err.hidden = false;
-      err.textContent = message;
-      if (extra) err.append(extra);
-    };
-    const save: HTMLButtonElement = button(
-      'Save version',
-      async () => {
-        save.disabled = true;
-        try {
-          const res = await promptsApi.addVersion(id, body, note.value.trim(), baseVersion);
-          if (!alive) return;
-          closeModal?.();
-          if (!res.created) {
-            toast('No changes');
-            return;
-          }
-          toast(`Saved version ${res.version.version}`);
-          await loadLatest();
-        } catch (e) {
-          if (!alive) return;
-          if (e instanceof ApiError && e.status === 409) {
-            showError(
-              'Someone saved a newer version while you were editing. Reloading replaces your text with the latest version.',
-              button(
-                'Reload latest',
-                () => {
-                  closeModal?.();
-                  void loadLatest();
-                },
-                { size: 'sm' },
-              ),
-            );
-          } else {
-            showError(messageOf(e));
-          }
-          save.disabled = false;
-        }
-      },
-      { kind: 'primary' },
-    );
-    openModal(
-      'Save version',
-      h('div.pe-form', null, field('Note', note, 'Optional. Shown in the version list.'), err, h('div.pe-actions', null, save)),
     );
   }
 
@@ -736,16 +682,19 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     drawTab();
   }
 
-  /** Loads the latest version's body into the editor (replacing what is typed). */
+  /** Loads the latest version's body into the editor (replacing what is typed), and the live version's for the diff. */
   async function loadLatest(): Promise<void> {
     const next = await promptsApi.get(id);
     const latest = await promptsApi.version(id, next.prompt.latest_version);
+    const liveN = next.prompt.active_version ?? next.prompt.latest_version;
+    const live = liveN === latest.version ? latest : await promptsApi.version(id, liveN);
     if (!alive) return;
     detail = next;
     kind = next.prompt.kind;
     baseVersion = next.prompt.latest_version;
     body = latest.body;
     savedBody = latest.body;
+    liveBody = live.body;
     history = null;
     stale = false;
     drawHead();
@@ -756,68 +705,81 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
 
   function drawHead(): void {
     if (!detail) {
-      replace(headEl, h('div.pe-top', null, button('Back to prompts', goBack, { kind: 'ghost' })), h('p.pe-muted', null, loadError || 'Loading...'));
+      replace(
+        headEl,
+        h(
+          'header.page-head',
+          null,
+          h('div.page-head-row', null, h('h1', null, 'Prompt'), h('span.sp'), h('div.page-actions', null, button('Back to prompts', goBack, { kind: 'ghost' }))),
+          h('p.lede', null, loadError || 'Loading...'),
+        ),
+      );
       return;
     }
     const p = detail.prompt;
     const archived = p.archived_ms != null;
-    dirtyFlag = h('span.pe-dirty', { hidden: !dirty() }, badge('Unsaved changes', 'warn', true));
+    dirtyFlag = h('span', { hidden: !dirty() }, badge('Unsaved changes', 'warn'));
     replace(
       headEl,
       h(
-        'div.pe-top',
+        'header.page-head',
         null,
-        button('Back to prompts', goBack, { kind: 'ghost' }),
-        h('a.btn', { href: promptsApi.rawUrl(id, p.latest_version), download: `${p.id}.md` }, 'Download .md'),
-      ),
-      h(
-        'div.pe-title',
-        null,
-        h('h1', null, p.title || 'Untitled prompt'),
         h(
-          'div.pe-chips',
+          'div.page-head-row',
           null,
-          badge(KIND_NAME[p.kind]),
-          p.binding ? badge(`Binds ${p.binding}`, 'accent') : null,
-          p.active_version != null ? badge(`Live v${p.active_version}`, 'ok', true) : badge('Not published'),
-          badge(`Latest v${p.latest_version}`),
-          p.score != null ? badge(`Score ${p.score}`, scoreTone(p.score)) : null,
-          archived ? badge('Archived') : null,
-          dirtyFlag,
+          h('h1', null, p.title || 'Untitled prompt'),
+          h('span.sp'),
+          h(
+            'div.page-actions',
+            null,
+            h('a.btn.ghost', { href: promptsApi.rawUrl(id, p.latest_version), download: `${p.id}.md` }, 'Download .md'),
+            button('Details…', openDetails, { kind: 'ghost' }),
+            button('Publish…', openPublish, { kind: 'ghost' }),
+            p.active_version != null ? button('Unpublish', () => void act(() => promptsApi.unpublish(id), 'Unpublished'), { kind: 'ghost' }) : null,
+            button(archived ? 'Restore' : 'Archive', () => void act(() => (archived ? promptsApi.restore(id) : promptsApi.archive(id)), archived ? 'Restored' : 'Archived'), { kind: 'ghost' }),
+          ),
         ),
+        h('p.lede', null, `${KIND_NAME[p.kind]} · ${p.id}`),
       ),
       stale
-        ? h('div.pe-stale', { role: 'status' }, badge('Changed on the hub', 'warn', true), ' ', button('Reload', reloadFromHub, { size: 'sm' }))
+        ? h('div.pr-bar', { role: 'status' }, badge('Changed on the hub', 'warn', true), button('Reload', reloadFromHub, { kind: 'ghost', size: 'sm' }))
         : null,
-      h(
-        'div.pe-actions',
-        null,
-        button('Save version', openSave, { kind: 'primary' }),
-        button('Details…', openDetails),
-        button('Publish…', openPublish),
-        p.active_version != null ? button('Unpublish', () => void act(() => promptsApi.unpublish(id), 'Unpublished')) : null,
-        button(archived ? 'Restore' : 'Archive', () =>
-          void act(() => (archived ? promptsApi.restore(id) : promptsApi.archive(id)), archived ? 'Restored' : 'Archived'),
-        ),
-      ),
+    );
+    replace(
+      barEl,
+      p.active_version != null ? badge(`Live v${p.active_version}`, 'ok') : badge('Not published', 'muted'),
+      badge(`Latest v${p.latest_version}`, 'muted'),
+      p.score != null ? badge(`Score ${p.score}`, scoreTone(p.score)) : null,
+      p.binding ? badge(`Binds ${p.binding}`, 'accent') : null,
+      archived ? badge('Archived', 'muted') : null,
+      dirtyFlag,
     );
   }
 
   function drawTabs(): void {
     replace(
       tabsEl,
-      tabs(TABS, tab, (key) => {
-        tab = key as TabKey;
-        drawTabs();
-        drawTab();
-      }),
+      tabBar(
+        [
+          { key: 'edit', label: 'Edit' },
+          { key: 'versions', label: 'Versions', count: detail?.versions.length ?? 0 },
+          { key: 'history', label: 'History' },
+          { key: 'rules', label: 'Rules' },
+        ],
+        tab,
+        (key) => {
+          tab = key;
+          drawTabs();
+          drawTab();
+        },
+      ),
     );
   }
 
   function drawTab(): void {
     edit = null;
     if (!detail) {
-      replace(bodyEl, h('p.pe-muted', null, loadError || 'Loading...'));
+      replace(bodyEl, h('p.pr-note', null, loadError || 'Loading...'));
       return;
     }
     switch (tab) {
@@ -862,4 +824,13 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     closeModal?.();
     root.replaceChildren();
   };
+}
+
+interface EditView {
+  ta: HTMLTextAreaElement;
+  diffEl: HTMLElement;
+  preview: HTMLElement;
+  summary: HTMLElement;
+  findings: HTMLElement;
+  saveErr: HTMLElement;
 }

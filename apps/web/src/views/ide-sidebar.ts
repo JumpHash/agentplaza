@@ -1,29 +1,35 @@
-// The IDE's left sidebar: search, the projects with their agents and repo workspaces, the workstations, a hover card, keyboard
-// movement and the pinned New agent button. The agents are grouped by project (an agent is listed under every project it leads
-// or holds a task of); the agents in no project sit last in "No project", collapsed while any project exists. The workstations
-// form their own group, after the projects and before No project: an online workstation's row shows its OS and, when its agents
-// act as the owner, a warning. A terminal row shows under its agent only when a terminal exists for that workspace. It loads its
-// own data: the agents Cell from the store, projects, tasks and IDE workspaces polled every 20 s, and the workstations' accounts.
-// Nothing here is shared with the shell.
+// The IDE's navigator (the threads column): the head (the mark, the brand, New conversation and Hide), the actions (search,
+// Needs you, Console), the project's links in project mode, the list (projects with their agents and repo workspaces, the
+// workstations, the conversations, a hover card, keyboard movement) and the foot (the hub's status and New agent). The agents
+// are grouped by project (an agent is listed under every project it leads or holds a task of); the agents in no project sit
+// last in "No project", collapsed while any project exists. The workstations form their own group, after the projects and
+// before No project. A terminal row shows under its agent only when a terminal exists for that workspace. It loads its own
+// data: the agents from the store, projects, tasks, IDE workspaces, the workstations, the conversations and the pending
+// approvals, polled every 20 s. Nothing here is shared with the shell.
 
-import css from '../styles/ide-sidebar.css';
 import { api, ideApi, type Agent, type IdeWorkspaceInfo, type OwnerConversationSummary, type Project, type StationView, type Task } from '../api';
 import { openConversation } from '../ide/open';
 import { hrefIn } from '../router';
 import { projectTitle, scope } from '../scope';
 import { agents, on } from '../store';
 import { openNewProject } from '../ui/new-project';
+import { brandMark } from '../ui/brand';
 import { ago } from '../ui/components';
-import { h, icon } from '../ui/dom';
+import { h, lu } from '../ui/dom';
 import { matchingRows, NONE_GID, sharedNames, sidebarGroups, type SidebarGroup } from '../ide/groups';
 import { osLabel } from '../ide/model';
 import { currentTask, rowStatus, type RowStatus } from '../ide/view';
 import { stationBadge } from './station-machine';
 import { browserSession, storedTerminalCount } from './ide-terminal-model';
+import { iconBtn } from './ide-frame';
 
 export interface SidebarOpts {
   onOpen(key: string): void;
   onNewAgent(): void;
+  /** The head's Hide button and Ctrl/Cmd+Alt+B: the navigator shows or hides. */
+  onHide(): void;
+  /** The Console action and Escape: back to the screen the IDE was opened from. */
+  onConsole(): void;
 }
 
 export interface Sidebar {
@@ -35,9 +41,6 @@ export interface Sidebar {
   dispose(): void;
 }
 
-const STYLE_ID = 'apz-ide-sidebar-style';
-/** The groups the owner opened or closed: `gid` → open. Only the choices made are kept. */
-const GROUPS_KEY = 'apz.ide.groups';
 const POLL_MS = 20000;
 const HOVER_MS = 300;
 const LEAVE_MS = 100;
@@ -50,13 +53,8 @@ const STATUS_WORD: Record<RowStatus, string> = {
   failed: 'Failed',
 };
 
-function injectStyle(): void {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = css;
-  document.head.append(style);
-}
+/** The groups the owner opened or closed: `gid` → open. Only the choices made are kept. */
+const GROUPS_KEY = 'apz.ide.groups';
 
 /** The groups the owner has opened or closed. An old or malformed value is ignored. */
 function loadOpen(): Record<string, boolean> {
@@ -83,33 +81,23 @@ function isEditable(t: EventTarget | null): boolean {
   return t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
 }
 
-/** The status mark: a pulsing dot (working), a hollow ring (idle), a moon (sleeping), a check (done), a dot (failed). */
-function mark(st: RowStatus): HTMLElement {
-  const word = STATUS_WORD[st];
-  const inner = st === 'sleeping' ? icon('moon') : st === 'done' ? icon('check') : h('span.ide-side-dot');
-  return h('span.ide-side-mark', { role: 'img', 'aria-label': word, title: word }, inner);
-}
-
 function cardLine(label: string, value: string): HTMLElement {
-  return h('div.ide-side-card-line', null,
-    h('span.ide-side-card-k', null, label),
-    h('span.ide-side-card-v', null, value));
+  return h('div', null, h('dt', null, label), h('dd', null, value));
 }
 
 function fillCard(el: HTMLElement, a: Agent): void {
   el.replaceChildren(
-    h('div.ide-side-card-name', null, a.name || `Agent ${a.cid}`),
-    cardLine('Role', a.role_label || a.role || '—'),
-    cardLine('Model', a.model || '—'),
-    cardLine('Task', currentTask(a) ?? '—'),
-    cardLine('Active', ago(a.last_seen_ms)),
-    cardLine('Status', STATUS_WORD[rowStatus(a, null)]),
+    h('div.ide-card-n', null, a.name || `Agent ${a.cid}`),
+    h('dl.ide-card-l', null,
+      cardLine('Role', a.role_label || a.role || '—'),
+      cardLine('Model', a.model || '—'),
+      cardLine('Task', currentTask(a) ?? '—'),
+      cardLine('Active', ago(a.last_seen_ms)),
+      cardLine('Status', STATUS_WORD[rowStatus(a, null)])),
   );
 }
 
 export function sidebar(opts: SidebarOpts): Sidebar {
-  injectStyle();
-
   let projects: Project[] = [];
   let tasks: Task[] = [];
   let workspaces: IdeWorkspaceInfo[] = [];
@@ -117,10 +105,13 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   let stationViews: StationView[] = [];
   /** The owner's conversations with the orchestrator, newest first: where a project is set up. */
   let conversations: OwnerConversationSummary[] = [];
+  /** The agents that wait for the owner: a pending approval. Failed agents are added when the list is drawn. */
+  let waiting = new Set<number>();
   /** In project mode (the IDE opened under a project), the sidebar is that project's. */
   const inProject = scope.get();
   let selected: string | null = null;
   let query = '';
+  let needsOnly = false;
   let disposed = false;
   let queued = false;
   const openGroups = loadOpen();
@@ -132,14 +123,14 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   let showTimer = 0;
   let hideTimer = 0;
 
-  const card = h('div.ide-side-card', { role: 'tooltip' });
+  const card = h('div.ide-card', { role: 'tooltip' });
   card.hidden = true;
   document.body.append(card);
 
-  const search = h('input.ide-side-search', {
+  const search = h('input.ide-search', {
     type: 'search',
     placeholder: 'Search',
-    'aria-label': 'Search agents, projects, repos and workstations',
+    'aria-label': 'Search tasks, conversations, agents, repos and workstations',
     autocomplete: 'off',
     spellcheck: false,
     oninput: () => {
@@ -149,37 +140,54 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     onkeydown: (e) => onSearchKey(e as KeyboardEvent),
   });
 
-  const list = h('div.ide-side-list', {
+  const list = h('div.ide-list', {
     role: 'group',
     'aria-label': 'Projects and agents',
+    'data-ide-list': '',
     onkeydown: (e) => onListKey(e as KeyboardEvent),
   });
 
-  const newBtn = h('button.ide-side-new', {
+  // The head: the mark (back to the console), the brand (the project in project mode), New conversation and Hide.
+  const brand = h('span.inav-brand', null, inProject ? projectTitle(inProject) : 'AgentPlaza');
+  const head = h('div.inav-top', null,
+    h('a.mark.inav-mark', { href: '#/overview', title: 'AgentPlaza: back to the console', 'aria-label': 'AgentPlaza, back to the console' }, brandMark(22)),
+    brand,
+    iconBtn('square-pen', 'New conversation with the orchestrator', () => openNewProject()),
+    iconBtn('panel-left', 'Hide the task list (Ctrl/Cmd+Alt+B)', () => opts.onHide()));
+
+  const needsRow = h('button.inav-r', {
     type: 'button',
-    onclick: () => opts.onNewAgent(),
-  }, '+ New agent');
-  const newConversation = h('button.ide-side-new', {
+    'aria-pressed': 'false',
+    onclick: () => {
+      needsOnly = !needsOnly;
+      schedule();
+    },
+  }, lu('circle-dot', 16), h('span.inav-l', null, 'Needs you'));
+  const consoleRow = h('button.inav-r', {
     type: 'button',
-    title: 'Set a project up in a conversation with the orchestrator',
-    onclick: () => openNewProject(),
-  }, '+ New conversation');
+    title: 'Back to the screen you opened the IDE from',
+    onclick: () => opts.onConsole(),
+  }, lu('layout-dashboard', 16), h('span.inav-l', null, 'Console'), h('kbd', null, 'Esc'));
+  const acts = h('div.inav-acts', null, h('label.inav-search', null, lu('search', 16), search, h('kbd', null, '/')), needsRow, consoleRow);
 
   // In project mode: the project, and its tasks, board, work and settings in the console.
-  const projectName = h('strong', null, projectTitle(inProject));
+  const projectName = h('span.ide-proj-t', null, projectTitle(inProject));
   const projectHead = inProject
-    ? h('div.ide-side-project', null,
+    ? h('div.ide-proj', null,
         projectName,
-        h('span.ide-side-links', null,
+        h('span.ide-proj-l', null,
           ...(['tasks', 'board', 'work', 'settings'] as const).map((k) =>
             h('a', { href: k === 'settings' ? hrefIn(inProject, 'projects', inProject, 'settings') : k === 'work' ? hrefIn(inProject, 'work', inProject) : hrefIn(inProject, k) }, k.charAt(0).toUpperCase() + k.slice(1)))))
     : null;
+  const listHeadText = h('span', null, '');
+  const listHead = h('div.inav-lh', null, listHeadText);
 
-  const el = h('div.ide-side', null,
-    h('div.ide-side-top', null, search),
-    ...(projectHead ? [projectHead] : []),
-    list,
-    h('div.ide-side-foot', null, newConversation, newBtn));
+  // The foot: the hub's status (the agents working) and New agent.
+  const hubText = h('span', null, '');
+  const hub = h('a.inav-hub', { href: '#/machines', title: 'The hub and its agents' }, h('span.dotlive'), hubText);
+  const foot = h('div.inav-foot', null, hub, h('span.sp'), iconBtn('user-plus', 'New agent', () => opts.onNewAgent()));
+
+  const el = h('div.ide-side', null, head, acts, ...(projectHead ? [projectHead] : []), listHead, list, foot);
 
   /** Coalesces store and poll updates into one render per task. */
   function schedule(): void {
@@ -339,24 +347,24 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   }
 
   function groupHead(g: SidebarGroup, open: boolean): HTMLElement {
-    return h('button.ide-side-group', {
+    return h('button.ide-grp', {
       type: 'button',
       'data-key': `g:${g.gid}`,
       'aria-expanded': String(open),
       onclick: () => toggleGroup(g),
     },
-      h('span.ide-side-caret', { 'aria-hidden': 'true' }, open ? '▾' : '▸'),
-      h('span.ide-side-gtitle', null, g.title),
-      h('span.ide-side-count', null, String(g.count)));
+      h('span.ide-caret-g', { 'aria-hidden': 'true' }, open ? '▾' : '▸'),
+      h('span.ide-grp-title', null, g.title),
+      h('span.ide-grp-n', null, String(g.count)));
   }
 
-  /** An agent's row. The cid shows next to the name when another agent in the group has the same name. */
+  /** An agent's row: its status dot, its name (the cid when another agent in the group has the same name), its task. */
   function agentRow(a: Agent, shared: Set<number>): HTMLElement {
     const key = `agent:${a.cid}`;
     const st = rowStatus(a, null);
     const task = currentTask(a);
     const name = a.name || `Agent ${a.cid}`;
-    return h('button.ide-side-row', {
+    return h('button.ide-row.ide-agent', {
       type: 'button',
       'data-key': key,
       'data-status': st,
@@ -369,42 +377,40 @@ export function sidebar(opts: SidebarOpts): Sidebar {
       },
       onblur: () => leaveRow(),
     },
-      mark(st),
-      h('span.ide-side-body', null,
-        h('span.ide-side-line', null,
-          h('span.ide-side-name', null, name),
-          shared.has(a.cid) ? h('span.ide-side-cid', { title: `Agent ${a.cid}` }, `#${a.cid}`) : null),
-        task ? h('span.ide-side-task', { title: task }, task) : null));
+      h('span.ide-dot', { 'data-status': st, 'aria-label': STATUS_WORD[st], title: STATUS_WORD[st] }),
+      h('span.ide-row-txt', null,
+        h('span.ide-row-name', null, name, shared.has(a.cid) ? h('span.ide-cid', { title: `Agent ${a.cid}` }, `#${a.cid}`) : null),
+        task ? h('span.ide-row-task', { title: task }, task) : null));
   }
 
   /** The agent's terminal row, under the agent: shown only while a terminal exists for its workspace. */
   function termRow(a: Agent, count: number): HTMLElement {
     const key = `term:${a.cid}`;
     const name = a.name || `Agent ${a.cid}`;
-    return h('button.ide-side-term', {
+    return h('button.ide-row.ide-term', {
       type: 'button',
       'data-key': key,
       'aria-current': selected === key ? 'true' : null,
       title: `Terminal of ${name}`,
       onclick: () => choose(key),
     },
-      icon('terminal'),
-      h('span', null, count > 1 ? `${count} terminals` : 'Terminal'));
+      lu('terminal', 14),
+      h('span.ide-row-name', null, count > 1 ? `${count} terminals` : 'Terminal'));
   }
 
   function repoRow(ws: IdeWorkspaceInfo): HTMLElement {
     const key = `ws:${ws.id}`;
-    return h('button.ide-side-row', {
+    return h('button.ide-row.ide-repo', {
       type: 'button',
       'data-key': key,
       'data-status': 'repo',
       'aria-current': selected === key ? 'true' : null,
       onclick: () => choose(key),
     },
-      h('span.ide-side-mark', null, h('span.ide-side-dot')),
-      h('span.ide-side-body', null,
-        h('span.ide-side-name', null, ws.name || ws.id),
-        h('span.ide-side-meta', null, ws.writable ? 'Writable repo' : 'Read only repo')));
+      h('span.ide-dot', { 'data-status': 'repo' }),
+      h('span.ide-row-txt', null,
+        h('span.ide-row-name', null, ws.name || ws.id),
+        h('span.ide-row-meta', null, ws.writable ? 'Writable repo' : 'Read only repo')));
   }
 
   /**
@@ -417,7 +423,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     const badge = stationViews.find((s) => s.id === ws.owner);
     const warn = badge ? stationBadge(badge) : null;
     const online = ws.status === 'online';
-    return h('button.ide-side-row', {
+    return h('button.ide-row.ide-station', {
       type: 'button',
       'data-key': key,
       'data-status': online ? 'online' : 'offline',
@@ -425,11 +431,11 @@ export function sidebar(opts: SidebarOpts): Sidebar {
       title: `Workstation ${name}`,
       onclick: () => choose(key),
     },
-      h('span.ide-side-mark', { role: 'img', 'aria-label': online ? 'Online' : 'Offline', title: online ? 'Online' : 'Offline' }, h('span.ide-side-dot')),
-      h('span.ide-side-body', null,
-        h('span.ide-side-name', null, name),
-        h('span.ide-side-meta', null, osLabel(ws.os)),
-        warn ? h('span.ide-side-warn', { title: 'The agents work in the owner’s own account on this machine' }, warn) : null));
+      h('span.ide-dot', { 'data-status': online ? 'online' : 'offline', 'aria-label': online ? 'Online' : 'Offline', title: online ? 'Online' : 'Offline' }),
+      h('span.ide-row-txt', null,
+        h('span.ide-row-name', null, name),
+        h('span.ide-row-meta', null, osLabel(ws.os)),
+        warn ? h('span.ide-warn', { title: 'The agents work in the owner’s own account on this machine' }, warn) : null));
   }
 
   /** The conversations: the newest few, and the one this project was started from in project mode. */
@@ -440,21 +446,26 @@ export function sidebar(opts: SidebarOpts): Sidebar {
       .slice(0, 6);
     if (!shown.length) return [];
     return [
-      h('div.ide-side-subhead', null, 'Conversations'),
+      h('div.ide-subhead', null, 'Conversations'),
       ...shown.map((c) =>
-        h('button.ide-side-row', {
+        h('button.ide-row.ide-conv', {
           type: 'button',
           'data-key': `conv:${c.id}`,
           'data-status': c.pending ? 'working' : 'idle',
           title: c.last ? c.last.text : c.title,
           onclick: () => openConversation(c.id),
         },
-          h('span.ide-side-mark', null, h('span.ide-side-dot')),
-          h('span.ide-side-body', null,
-            h('span.ide-side-name', null, c.title),
-            h('span.ide-side-meta', null,
+          h('span.ide-dot', { 'data-status': c.pending ? 'working' : 'idle' }),
+          h('span.ide-row-txt', null,
+            h('span.ide-row-name', null, c.title),
+            h('span.ide-row-meta', null,
               c.pending ? 'answering…' : c.project ? projectTitle(c.project) : c.draft ? `draft · revision ${c.draft.revision}` : ago(c.updated_ms))))),
     ];
+  }
+
+  /** The agents that need the owner now: a pending approval. */
+  function needsCids(_list: Agent[]): Set<number> {
+    return new Set<number>(waiting);
   }
 
   /** Rebuilds the list, keeping the focused row focused by its key. */
@@ -463,29 +474,46 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     const focusKey = active instanceof HTMLElement && list.contains(active) ? active.dataset.key : undefined;
     const q = query.toLowerCase();
     const hasProjects = projects.length > 0;
+    const roster = agents.get();
+    const needs = needsCids(roster);
     // The title, once the project list has it (the header is built before the list loads).
-    if (inProject) projectName.textContent = projects.find((p) => p.id === inProject)?.title ?? projectTitle(inProject);
-    const nodes: HTMLElement[] = [...conversationRows(q)];
-    for (const g of sidebarGroups(agents.get(), projects, tasks, workspaces)) {
+    if (inProject) {
+      const title = projects.find((p) => p.id === inProject)?.title ?? projectTitle(inProject);
+      projectName.textContent = title;
+      brand.textContent = title;
+    }
+    const working = roster.filter((a) => a.status === 'working').length;
+    hubText.textContent = working > 0 ? `${working} working` : 'Idle';
+    needsRow.setAttribute('aria-pressed', String(needsOnly));
+    needsRow.title = needsOnly ? 'Show everything again' : 'Show only what waits for you';
+    needsRow.querySelector('.count')?.remove();
+    if (needs.size > 0) needsRow.append(h('span.count', { class: needsOnly ? '' : 'hot' }, String(needs.size)));
+    listHeadText.textContent = needsOnly ? 'Needs you' : inProject ? 'Project' : 'By project';
+    const nodes: HTMLElement[] = needsOnly ? [] : [...conversationRows(q)];
+    for (const g of sidebarGroups(roster, projects, tasks, workspaces)) {
       // In project mode, only the project's own group (its agents and its repositories).
       if (inProject && g.gid !== `p:${inProject}`) continue;
       const v = matchingRows(g, q);
       if (!v) continue;
-      const open = isOpen(g, q, hasProjects);
+      const agentsShown = needsOnly ? v.agents.filter((a) => needs.has(a.cid)) : v.agents;
+      const reposShown = needsOnly ? [] : v.repos;
+      const stationsShown = needsOnly ? [] : v.stations;
+      if (needsOnly && !agentsShown.length) continue;
+      const open = needsOnly || isOpen(g, q, hasProjects);
       nodes.push(groupHead(g, open));
       if (!open) continue;
       const shared = sharedNames(g.agents);
-      for (const a of v.agents) {
+      for (const a of agentsShown) {
         nodes.push(agentRow(a, shared));
-        const terminals = storedTerminalCount(browserSession(), `agent:${a.cid}`);
+        const terminals = needsOnly ? 0 : storedTerminalCount(browserSession(), `agent:${a.cid}`);
         if (terminals > 0) nodes.push(termRow(a, terminals));
       }
-      for (const ws of v.repos) nodes.push(repoRow(ws));
-      for (const ws of v.stations) nodes.push(stationRow(ws));
+      for (const ws of reposShown) nodes.push(repoRow(ws));
+      for (const ws of stationsShown) nodes.push(stationRow(ws));
     }
     if (!nodes.length) {
-      nodes.push(h('div.ide-side-empty', null,
-        q ? 'No matches.' : inProject ? 'Nobody works on this project yet: add agents from the bench in its Team tab.' : 'Nothing yet. Start with a conversation: New conversation, below.'));
+      nodes.push(h('p.ide-empty-list', null,
+        needsOnly ? 'Nothing waits for you.' : q ? 'No matches.' : inProject ? 'Nobody works on this project yet: add agents from the bench in its Team tab.' : 'Nothing yet. Start with a conversation: New conversation, above.'));
     }
     els.clear();
     for (const n of nodes) if (n.dataset.key) els.set(n.dataset.key, n);
@@ -495,12 +523,13 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   }
 
   async function load(): Promise<void> {
-    const [p, w, t, s, c] = await Promise.all([
+    const [p, w, t, s, c, ap] = await Promise.all([
       api.projects().catch(() => null),
       ideApi.workspaces().catch(() => null),
       api.tasks().catch(() => null),
       api.stations().catch(() => null),
       api.ownerConversations().catch(() => null),
+      api.approvals().catch(() => null),
     ]);
     if (disposed) return;
     if (p) projects = p;
@@ -508,6 +537,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     if (t) tasks = t;
     if (s) stationViews = s;
     if (c) conversations = c;
+    if (ap) waiting = new Set(ap.filter((a) => a.kind === 'tool' && a.state === 'pending').map((a) => a.cid));
     schedule();
   }
 

@@ -40,7 +40,7 @@ use crate::console::client::{self, Client};
 use crate::console::events;
 use crate::console::rich;
 use crate::console::shell;
-use crate::console::ui::{self, Kind, Tone};
+use crate::console::ui::{self, Tone};
 
 /// The setting that keeps the last workspace the IDE opened (the console's Ctrl+Shift+E opens it).
 pub(super) const REMEMBERED: &str = "ide_workspace";
@@ -1704,8 +1704,22 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if event.kind == "owner_conversation" {
                 tasks.push(load_conversations(ctx));
             }
+            if let Some(task) = st
+                .panels
+                .chat_tools
+                .on_event(&ctx.client, &event.kind, &event.data)
+            {
+                tasks.push(task.map(|m| Msg::Panels(ide_panels::Msg::ChatTools(m))));
+            }
             if let Some(conv) = st.conversation.as_mut() {
                 ide_conversation::on_event(conv, &event.kind, &event.data);
+                if let Some(task) = conv
+                    .chat_tools
+                    .on_event(&ctx.client, &event.kind, &event.data)
+                {
+                    tasks
+                        .push(task.map(|m| Msg::Conversation(ide_conversation::Msg::ChatTools(m))));
+                }
             }
             if matches!(event.kind.as_str(), "board" | "board_paused") {
                 tasks.push(load_board(st, ctx));
@@ -1880,36 +1894,32 @@ pub(super) fn resume_poll(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 /// A narrow window keeps the side panels out of the row: below `LEFT_DRAWER_BELOW` the left sidebar is a drawer, and
 /// below `RIGHT_SHEET_BELOW` the right panel is a sheet, each laid over the centre (see `State::left_is_drawer`).
 pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
-    let mut page = column![ide_chrome::header(st, plaza)].height(Length::Fill);
+    // The web's grid: the navigator and the dock run the window's height; the centre holds its own top bar, the
+    // view, the drawer and the status bar.
+    let mut centre = column![ide_chrome::header(st, plaza)].height(Length::Fill);
     if plaza.held {
-        page = page.push(ide_chrome::held_strip());
+        centre = centre.push(ide_chrome::held_strip());
     }
     if let Some(line) = status_line(st) {
-        page = page.push(container(line).padding([4, 16]).width(Length::Fill));
+        centre = centre.push(container(line).padding([4, 12]).width(Length::Fill));
     }
+    centre = centre.push(
+        container(centre_column(st))
+            .width(Length::Fill)
+            .height(Length::Fill),
+    );
+    centre = centre.push(ide_chrome::status_bar(st, plaza.live));
     let mut body = row![].height(Length::Fill);
     if st.layout.left_open && !st.left_is_drawer() {
         body = body.push(left_panel(st, st.layout.left));
         body = body.push(ide_chrome::handle(Edge::Left));
     }
-    body = body.push(
-        container(centre_column(st))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(Padding {
-                top: 10.0,
-                right: 14.0,
-                bottom: 10.0,
-                left: 14.0,
-            }),
-    );
+    body = body.push(container(centre).width(Length::Fill).height(Length::Fill));
     if st.layout.right_open && !st.right_is_sheet() {
         body = body.push(ide_chrome::handle(Edge::Right));
         body = body.push(right_panel(st, st.layout.right));
     }
-    page = page.push(body);
-    page = page.push(ide_chrome::status_bar(st, plaza.live));
-    let base = container(page)
+    let base = container(body)
         .width(Length::Fill)
         .height(Length::Fill)
         .style(ui::paper);
@@ -1932,17 +1942,11 @@ pub fn view(st: &State, plaza: Plaza) -> Element<'_, Msg> {
     stack.into()
 }
 
-/// The left side panel: the sidebar in its padding, on the panel's sheet.
+/// The left side panel: the navigator, on the panel's sheet (its own head, list and foot take the padding).
 pub(super) fn left_panel(st: &State, width: f32) -> Element<'_, Msg> {
     container(ide_sidebar::view(st))
         .width(Length::Fixed(width))
         .height(Length::Fill)
-        .padding(Padding {
-            top: 10.0,
-            right: 10.0,
-            bottom: 10.0,
-            left: 12.0,
-        })
         .style(ide_chrome::panel_style)
         .into()
 }
@@ -1950,23 +1954,26 @@ pub(super) fn left_panel(st: &State, width: f32) -> Element<'_, Msg> {
 /// The right side panel: its tabs and the shown tab, on the panel's sheet. Its tabs take the panel's width. With a
 /// conversation on screen, the project it drafts.
 pub(super) fn right_panel(st: &State, width: f32) -> Element<'_, Msg> {
-    let body = match &st.conversation {
+    let (body, padding) = match &st.conversation {
         Some(conv) => {
             let roster: Vec<(u64, String)> =
                 st.roster.iter().map(|a| (a.cid, a.name.clone())).collect();
-            ide_conversation::draft(conv, &roster, now_ms(), Msg::Conversation, Msg::Shell)
+            (
+                ide_conversation::draft(conv, &roster, now_ms(), Msg::Conversation, Msg::Shell),
+                Padding {
+                    top: 10.0,
+                    right: 12.0,
+                    bottom: 10.0,
+                    left: 10.0,
+                },
+            )
         }
-        None => ide_right::view(st, width),
+        None => (ide_right::view(st), Padding::from(0.0)),
     };
     container(body)
         .width(Length::Fixed(width))
         .height(Length::Fill)
-        .padding(Padding {
-            top: 10.0,
-            right: 12.0,
-            bottom: 10.0,
-            left: 10.0,
-        })
+        .padding(padding)
         .style(ide_chrome::panel_style)
         .into()
 }
@@ -1999,44 +2006,50 @@ pub(super) fn centre_column(st: &State) -> Element<'_, Msg> {
         container(drawer(st))
             .width(Length::Fill)
             .height(Length::Fixed(st.layout.terminal_height))
-            .padding(Padding {
-                top: 6.0,
-                right: 0.0,
-                bottom: 0.0,
-                left: 0.0,
-            }),
+            .style(ide_chrome::panel_style),
     ]
     .height(Length::Fill)
     .into()
 }
 
-/// The terminal drawer: its two tabs (Terminal, Run), its hide, and the tab's body.
+/// The terminal drawer (the web's `.ide-drawer`): its two tabs (Terminal, Run) and its hide on a 36 px head ruled off
+/// from the tab's body.
 pub(super) fn drawer(st: &State) -> Element<'_, Msg> {
     let shell = has_shell(st.ide.workspace.as_ref());
-    let tabs = ui::tabs(
-        &[(Drawer::Terminal, "Terminal"), (Drawer::Run, "Run")],
-        st.drawer_tab,
-        Msg::DrawerTab,
-    );
     let head = row![
-        tabs,
-        Space::new().width(Length::Fill),
-        ui::btn_sm(
-            "Hide Ctrl+`",
-            Some("x"),
-            Kind::Ghost,
-            Some(Msg::ToggleDrawer)
+        ide_chrome::dock_tab(
+            "square-terminal",
+            "Terminal",
+            None,
+            st.drawer_tab == Drawer::Terminal,
+            Msg::DrawerTab(Drawer::Terminal),
         ),
+        ide_chrome::dock_tab(
+            "play",
+            "Run",
+            None,
+            st.drawer_tab == Drawer::Run,
+            Msg::DrawerTab(Drawer::Run),
+        ),
+        Space::new().width(Length::Fill),
+        ide_chrome::tool_btn("x", Msg::ToggleDrawer, false),
     ]
-    .spacing(8)
+    .spacing(2)
     .align_y(Alignment::Center);
+    let head = container(head)
+        .width(Length::Fill)
+        .height(Length::Fixed(36.0))
+        .padding([0, 8])
+        .align_y(Alignment::Center);
     let body: Element<'_, Msg> = match st.drawer_tab {
         Drawer::Terminal => ide_panels::terminal_body(st.terminals.as_ref(), shell),
         Drawer::Run => ui::scroll(ide_panels::run_view(&st.panels, shell).map(Msg::Panels))
             .height(Length::Fill)
             .into(),
     };
-    column![head, body].spacing(8).height(Length::Fill).into()
+    column![head, ide_chrome::rule_strip(), body]
+        .height(Length::Fill)
+        .into()
 }
 
 pub(super) fn status_line(st: &State) -> Option<Element<'_, Msg>> {

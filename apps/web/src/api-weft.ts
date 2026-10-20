@@ -391,6 +391,36 @@ export interface WeftOp {
   undone_by: number | null;
 }
 
+/** A signing key as the hub lists it (`GET /v1/keys`): its id, its public key, who holds it and what it may sign. */
+export interface WeftKey {
+  id: string;
+  key: string;
+  holder: { actor: WeftActor; name?: string | null; role?: string | null; project?: string | null };
+  caps: string[];
+  issued_seq: number;
+  issuer: string;
+  revoked_seq: number | null;
+  revoked_reason: string | null;
+}
+
+export interface WeftKeys {
+  owner: string | null;
+  keys: WeftKey[];
+}
+
+/** A dry run or an export of a repo to a connection (`state` is `dry-run`, `pushed`, `in-step` or `moved`). */
+export interface WeftExport {
+  repo: string;
+  connection: string;
+  remote: string;
+  branch: string;
+  state: string;
+  detail: string;
+  head: string | null;
+  changes: { change: string; commits: { intent: string; git: string; files: number }[] }[];
+  objects: number;
+}
+
 export interface WeftVerify {
   ok: boolean;
   owner_key: string;
@@ -466,7 +496,7 @@ export const weft = {
     post<WeftReleaseExport>(`/repos/${seg(repo)}/releases/${seg(version)}/export`, { connection }),
   /** Exports the repo's landed changes to a connection; `dryRun` says what would go, without writing. */
   exportRepo: (repo: string, connection: string, dryRun = false) =>
-    post<unknown>(`/repos/${seg(repo)}/export`, dryRun ? { connection, dry_run: true } : { connection }),
+    post<WeftExport>(`/repos/${seg(repo)}/export`, dryRun ? { connection, dry_run: true } : { connection }),
   /** Brings a moved remote's own commits into the repo, as a change. */
   adopt: (repo: string, connection: string) => post<unknown>(`/repos/${seg(repo)}/adopt`, { connection }),
 
@@ -483,4 +513,6 @@ export const weft = {
   /** The signature check of a change (`w-12`) or a release (`repo@version`). */
   verify: (subject: string) => get<WeftVerify>(`/verify${qs({ subject })}`),
   ops: (limit = 50) => get<{ ops: WeftOp[] }>(`/ops${qs({ limit })}`).then((r) => r.ops),
+  /** The signing keys of the hub: the owner's, the hub's and the agents'. */
+  keys: () => get<WeftKeys>('/keys'),
 };

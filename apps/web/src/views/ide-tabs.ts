@@ -96,10 +96,10 @@ function diffNode(rows: DiffRow[]): HTMLElement {
     }
     flush();
     // The grid has two line-number columns, left empty: a proposed change has no numbers in the file yet.
-    out.push(h('div.ide-line', { class: r.kind }, h('span.ln'), h('span.ln'), h('span.sign', null, SIGN[r.kind]), h('span.code', null, r.text)));
+    out.push(h('div.ided-ln', { class: r.kind === 'add' ? 'add' : r.kind === 'remove' ? 'del' : '' }, h('span'), h('span'), h('span', null, SIGN[r.kind]), h('span', null, r.text)));
   });
   flush();
-  return h('div.ide-lines', null, out);
+  return h('div.ided-hunk', null, out);
 }
 
 /** The Approvals tab: the agent's held tool calls in this workspace, each with its input or its proposed change. */
@@ -107,8 +107,8 @@ export function approvalsPanel(opts: { wsId: string; cid: number; onCount(n: num
   const { wsId, cid } = opts;
   let alive = true;
   let generation = 0;
-  const list = h('div.ide-appr-list');
-  const el = h('div.ide-appr-panel', null, list);
+  const list = h('div.ided-appr-list');
+  const el = h('div.ided-panel', null, list);
 
   async function load(): Promise<void> {
     const mine = ++generation;
@@ -125,20 +125,20 @@ export function approvalsPanel(opts: { wsId: string; cid: number; onCount(n: num
   function card(a: Approval): HTMLElement {
     const args = (a.input && typeof a.input === 'object' ? a.input : {}) as Record<string, unknown>;
     const path = typeof args['path'] === 'string' ? args['path'] : null;
-    const body = h('div.ide-appr-body');
+    const body = h('div.ided-appr-body');
     const reason = textarea({ rows: 2, placeholder: 'Reason (optional)', 'aria-label': 'Reason' });
     const approve = button('Approve', () => void decide(true), { kind: 'primary', size: 'sm', icon: 'check' });
     const deny = button('Deny', () => void decide(false), { kind: 'danger', size: 'sm', icon: 'x' });
     const node = h(
-      'article.ide-appr',
+      'article.ided-appr',
       null,
-      h('header.ide-appr-head', null, badge(a.tool, 'info'), path !== null ? h('code', null, path) : null, h('span.ide-totals', null, ago(a.created_ms))),
+      h('header.ided-appr-h', null, badge(a.tool, 'info'), path !== null ? h('code', null, path) : null, h('span.sp'), h('span.muted', null, ago(a.created_ms))),
       body,
       reason,
-      h('div.ide-appr-actions', null, deny, approve),
+      h('div.ided-appr-acts', null, deny, approve),
     );
     if (WRITES.has(a.tool) && path !== null) void showChange(body, path, a.tool, args);
-    else replace(body, h('pre.ide-pre', null, JSON.stringify(a.input, null, 2)));
+    else replace(body, h('pre.ided-pre', null, JSON.stringify(a.input, null, 2)));
 
     async function decide(ok: boolean): Promise<void> {
       approve.disabled = true;
@@ -159,14 +159,14 @@ export function approvalsPanel(opts: { wsId: string; cid: number; onCount(n: num
 
   /** The proposed change against the file as it is now: a write's content, or an edit's old and new text. */
   async function showChange(host: HTMLElement, path: string, tool: string, args: Record<string, unknown>): Promise<void> {
-    replace(host, h('p.ide-note', null, 'Reading the current file…'));
+    replace(host, h('p.muted', null, 'Reading the current file…'));
     let before: string;
     try {
       before = (await ideApi.file(wsId, path)).text;
     } catch (err) {
       // A write may create the file: a missing file is an empty one for a write only.
       if (tool !== 'write_file' || !(err instanceof ApiError && err.status === 404)) {
-        if (alive) replace(host, h('p.ide-note.error', null, `The current file did not load: ${message(err)}`), h('pre.ide-pre', null, JSON.stringify(args, null, 2)));
+        if (alive) replace(host, h('p.ide-note.error', null, `The current file did not load: ${message(err)}`), h('pre.ided-pre', null, JSON.stringify(args, null, 2)));
         return;
       }
       before = '';
@@ -230,12 +230,12 @@ export function runPanel(ws: IdeWorkspaceInfo): Panel {
   const seconds = input({ type: 'number', min: 1, max: 600, value: 60, 'aria-label': 'Timeout in seconds', disabled: !enabled });
   const go = button('Run', () => void start(), { kind: 'primary', size: 'sm', icon: 'play', disabled: !enabled });
   const stop = button('Stop', () => void stopRun(), { kind: 'danger', size: 'sm', icon: 'stop', disabled: true });
-  const status = h('p.ide-run-status', { 'aria-live': 'polite' }, enabled ? 'Not run yet.' : 'Runs are for agent and workstation workspaces. Repository runs come in phase 3.');
-  const out = h('pre.ide-run-out', { 'aria-label': 'Output' });
+  const status = h('p.ided-status', { 'aria-live': 'polite' }, enabled ? 'Not run yet.' : 'Runs are for agent and workstation workspaces. Repository runs come in phase 3.');
+  const out = h('pre.ided-pre', { 'aria-label': 'Output' });
   const el = h(
-    'div.ide-run',
+    'div.ided-run',
     null,
-    h('div.ide-run-form', null, command, seconds, go, stop),
+    h('div.ided-run-form', null, command, seconds, go, stop),
     status,
     out,
   );

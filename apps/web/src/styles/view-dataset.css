@@ -1,0 +1,27 @@
+/* A dataset panel in an artifact: the prototype's toolbar (input, cluster, ghost buttons) over a .tbl-wrap table with a
+   sticky head. Sorting and paging are the view's own; this file lays the parts out. */
+
+.view-dataset { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.view-dataset [hidden] { display: none !important; }
+.view-dataset-bar { gap: 8px; min-width: 0; }
+.view-dataset-filter { width: 220px; max-width: 100%; }
+.view-dataset-count, .view-dataset-status { font-size: var(--fs-xs); }
+.view-dataset-status:empty { display: none; }
+.view-dataset-pager { margin-left: auto; gap: 4px; }
+.view-dataset-range { min-width: 9ch; text-align: center; font-size: var(--fs-xs); }
+.view-dataset-error { margin: 0; color: var(--crit); }
+.view-dataset-scroll {
+  max-height: 440px; overflow: auto; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--sheet);
+  transition: opacity .15s var(--ease);
+}
+.view-dataset-scroll.is-loading { opacity: .55; }
+.view-dataset-scroll .tbl thead th { position: sticky; top: 0; background: var(--sheet-2); z-index: 1; }
+.view-dataset-scroll .tbl td, .view-dataset-scroll .tbl th { max-width: 320px; }
+.view-dataset-sort {
+  display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none;
+  color: inherit; font: inherit; cursor: pointer; white-space: nowrap;
+}
+.view-dataset-sort:hover { color: var(--ink); }
+.view-dataset-arrow { color: var(--signal-ink); min-width: 1ch; }
+.view-dataset td.is-time { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.view-dataset-empty td { text-align: center; padding: 18px 12px; }

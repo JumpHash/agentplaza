@@ -1,0 +1,32 @@
+meta {
+  name: Refuse a custom theme that takes a built-in id
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/appearance/themes/loom-clay
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "schema": 1,
+    "id": "loom-clay",
+    "name": "My theme",
+    "skin": "loom",
+    "palette": {
+      "light": {
+        "paper": "#f6f4ee",
+        "ink": "#1b1a17",
+        "signal": "#d0602c"
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

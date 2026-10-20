@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, button, column, container, pick_list, row, stack, text_input};
-use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
+use iced::widget::{Space, column, container, pick_list, row, stack, text_input};
+use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
 use serde_json::Value;
 
 use super::Id;
@@ -21,8 +21,8 @@ use crate::console::lab_api::{self, Dataset, DatasetSpec};
 use crate::console::ui::{self, Kind, Tone};
 use crate::theme::{self};
 
-/// Cards per row in the dataset grid, as the web's `minmax(300px, 1fr)` at the console's width.
-const GRID_COLS: usize = 2;
+/// Cards per row in the datasets grid, as the web's `lab2-grid` at the console's width.
+const GRID_COLS: usize = 3;
 /// The kinds an export can take, in the order the form offers them.
 const KINDS: [&str; 4] = ["cascade", "tasks", "usage", "all"];
 /// The label classes in the order the rung predictor reads them; any other class follows.
@@ -471,57 +471,56 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         ),
         None => String::new(),
     };
-    let seg = ui::seg(
-        &[(View::Table, "Table"), (View::Cards, "Cards")],
-        state.view,
-        Msg::SetView,
-    );
-    let actions: Vec<Element<'a, Msg>> = vec![
-        ui::faint(count).into(),
-        seg,
-        ui::btn(
-            "Upload",
-            Some("file"),
-            Kind::Secondary,
-            Some(Msg::OpenUpload),
+    let bar = row![
+        lab_common::note(count),
+        Space::new().width(Length::Fill),
+        ui::seg(
+            &[(View::Table, "Table"), (View::Cards, "Cards")],
+            state.view,
+            Msg::SetView,
         ),
-        ui::btn("Export", None, Kind::Primary, Some(Msg::OpenExport)),
-    ];
-    let mut parts: Vec<Element<'a, Msg>> = vec![ui::view_head("Datasets", actions)];
-    if let Some(note) = &state.notice {
-        parts.push(ui::faint(note.clone()).into());
-    }
+        ui::btn("Upload", Some("upload"), Kind::Ghost, Some(Msg::OpenUpload)),
+        ui::btn(
+            "Export",
+            Some("download"),
+            Kind::Primary,
+            Some(Msg::OpenExport)
+        ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .wrap();
+    let mut parts: Vec<Element<'a, Msg>> = vec![bar.into()];
     if let Some(e) = &state.error {
-        parts.push(ui::error_line(e));
+        parts.push(lab_common::err(e));
+    }
+    if let Some(note) = &state.notice {
+        parts.push(lab_common::note(note.clone()));
     }
     if let Some(list) = &sorted {
-        let open = state
-            .selected
-            .as_deref()
-            .and_then(|id| list.iter().copied().find(|d| d.id == id));
-        if let Some(d) = open {
-            parts.push(detail(d, state.provenance));
-        }
         if list.is_empty() {
-            parts.push(ui::empty(
+            parts.push(lab_common::empty(
                 "library",
                 "No datasets yet",
-                "Export cascade outcomes or tasks from the plaza's records, or upload a JSONL file of rows.",
+                Some("Export cascade outcomes or tasks from the plaza's records, or upload a JSONL file of rows."),
+                None,
             ));
         } else {
             match state.view {
                 View::Table => parts.push(table(list, state.selected.as_deref())),
                 View::Cards => parts.push(grid(
-                    list.iter()
-                        .copied()
-                        .map(|d| dataset_card(d, state.selected.as_deref() == Some(d.id.as_str())))
-                        .collect(),
+                    list.iter().copied().map(dataset_card).collect(),
                     GRID_COLS,
                 )),
             }
         }
+        if let Some(id) = state.selected.as_deref()
+            && let Some(d) = list.iter().copied().find(|d| d.id == id)
+        {
+            parts.push(detail(d, state.provenance));
+        }
     }
-    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(22).width(Length::Fill))
+    let page: Element<'a, Msg> = ui::scroll(column(parts).spacing(16).width(Length::Fill))
         .height(Length::Fill)
         .into();
     let framed = lab::frame(Section::Datasets, page, Msg::Go);
@@ -607,7 +606,9 @@ fn export_body<'a>(e: &'a Export) -> Element<'a, Msg> {
     let kinds: Vec<String> = KINDS.iter().map(|k| k.to_string()).collect();
     items.push(field(
         "Kind",
-        pick_list(kinds, Some(e.kind.clone()), Msg::ExportKind).into(),
+        pick_list(kinds, Some(e.kind.clone()), Msg::ExportKind)
+            .style(crate::theme::pick_list)
+            .into(),
     ));
     items.push(field(
         "Name",
@@ -773,102 +774,75 @@ fn fact<'a>(label: &str, value: impl Into<Element<'a, Msg>>) -> Element<'a, Msg>
     .into()
 }
 
-/// The cells of a table, by their portions of the row.
-fn cell<'a>(portion: u16, content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content.into())
-        .width(Length::FillPortion(portion))
-        .into()
-}
-
-/// The right-aligned cell of the row count.
-fn cell_right<'a>(portion: u16, content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content.into())
-        .width(Length::FillPortion(portion))
-        .align_x(Alignment::End)
-        .into()
-}
-
-/// The table's head: mono caps, the rows' own widths.
-fn table<'a>(rows: &[&'a Dataset], selected: Option<&str>) -> Element<'a, Msg> {
-    let heads: [(&str, u16, bool); 7] = [
-        ("Name", 3, false),
-        ("Kind", 2, false),
-        ("Source", 2, false),
-        ("Time range", 3, false),
-        ("Rows", 2, true),
-        ("Label balance", 3, false),
-        ("Taint", 2, false),
+/// The datasets as the web's table, newest first; a row opens its detail.
+fn table<'a>(rows: &[&'a Dataset], _selected: Option<&str>) -> Element<'a, Msg> {
+    let cols = [
+        lab_common::col("Name", 3, false),
+        lab_common::col("Kind", 2, false),
+        lab_common::col("Source", 2, false),
+        lab_common::col("Rows", 2, true),
+        lab_common::col("Time range", 3, false),
+        lab_common::col("Label balance", 3, false),
+        lab_common::col("Taint", 2, false),
+        lab_common::col("Created", 2, false),
     ];
-    let head_cells: Vec<Element<'a, Msg>> = heads
+    let rows: Vec<lab_common::Row<'a, Msg>> = rows
         .iter()
-        .map(|(label, portion, right)| {
-            let content: Element<'a, Msg> =
-                ui::sans(label.to_string(), 11.0, crate::theme::palette().ink_3).into();
-            if *right {
-                cell_right(*portion, content)
-            } else {
-                cell(*portion, content)
-            }
+        .map(|&d| lab_common::Row {
+            cells: vec![
+                name_cell(d),
+                ui::badge(&d.kind, kind_tone(&d.kind)),
+                ui::sans(source_of(d), 13.0, crate::theme::palette().ink_2).into(),
+                rows_cell(d),
+                range_cell(d),
+                balance_cell(d),
+                taints_cell(d),
+                ui::sans(
+                    lab_common::ago_text(d.created_ms, lab_common::now_ms()),
+                    13.0,
+                    crate::theme::palette().ink_2,
+                )
+                .into(),
+            ],
+            on_press: Some(Msg::Select(d.id.clone())),
         })
         .collect();
-    let mut lines: Vec<Element<'a, Msg>> = vec![
-        row(head_cells)
-            .spacing(12)
-            .padding(Padding::from([8.0, 12.0]))
-            .into(),
-        rule(),
-    ];
-    for &d in rows {
-        lines.push(table_row(d, selected == Some(d.id.as_str())));
-    }
-    column(lines).width(Length::Fill).into()
+    lab_common::table(&cols, rows)
 }
 
-/// One table row: a button over the whole row, so a click anywhere opens its detail.
-fn table_row<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
-    let content = row![
-        cell(3, name_cell(d)),
-        cell(2, ui::badge(&d.kind, kind_tone(&d.kind))),
-        cell(
-            2,
-            ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)
-        ),
-        cell(3, range_cell(d)),
-        cell_right(2, rows_cell(d)),
-        cell(3, balance_cell(d)),
-        cell(2, taints_cell(d)),
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center);
-    button(content)
-        .width(Length::Fill)
-        .padding(Padding::from([10.0, 12.0]))
-        .style(theme::register_row(selected))
-        .on_press(Msg::Select(d.id.clone()))
-        .into()
-}
-
-/// One dataset as a card: the same facts as the table's row, opening its detail on a click.
-fn dataset_card<'a>(d: &'a Dataset, selected: bool) -> Element<'a, Msg> {
+/// One dataset as the web's card: its kind and row count (with the frozen ones), the label balance,
+/// and an Open action that opens its detail.
+fn dataset_card<'a>(d: &'a Dataset) -> Element<'a, Msg> {
+    let rows = if d.frozen_rows > 0 {
+        format!(
+            "{} rows, {} frozen",
+            lab_common::count(d.rows),
+            lab_common::count(d.frozen_rows)
+        )
+    } else {
+        format!("{} rows", lab_common::count(d.rows))
+    };
     let body = column![
-        ui::mono(d.id.clone(), 11.5, crate::theme::palette().ink_3).wrapping(Wrapping::None),
-        fact(
-            "Source",
-            ui::sans(source_of(d), 12.0, crate::theme::palette().ink_2)
-        ),
-        fact("Time range", range_cell(d)),
-        fact("Rows", rows_cell(d)),
-        fact("Balance", balance_cell(d)),
-        fact("Taint", taints_cell(d)),
+        row![
+            ui::badge(&d.kind, kind_tone(&d.kind)),
+            lab_common::note(rows),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+        balance_cell(d),
     ]
-    .spacing(10);
-    let card = ui::card(&d.name, body.into());
-    button(card)
-        .width(Length::Fill)
-        .padding(0)
-        .style(theme::register_row(selected))
-        .on_press(Msg::Select(d.id.clone()))
-        .into()
+    .spacing(10)
+    .width(Length::Fill);
+    ui::card_with(
+        &d.name,
+        vec![ui::btn_sm(
+            "Open",
+            None,
+            Kind::Ghost,
+            Some(Msg::Select(d.id.clone())),
+        )],
+        body.into(),
+    )
 }
 
 /// The detail panel of one dataset: its facts, then the provenance (folded until it is asked for).
@@ -948,7 +922,7 @@ fn detail<'a>(d: &'a Dataset, provenance_open: bool) -> Element<'a, Msg> {
     ui::card(&d.name, column(body).spacing(14).into())
 }
 
-/// The grid of cards, `cols` to a row; a short last row keeps its width with empty cells.
+/// The cards of a grid, `cols` to a row (the web's `.lab2-grid`, 12 apart); a short last row keeps its width.
 fn grid<'a>(cards: Vec<Element<'a, Msg>>, cols: usize) -> Element<'a, Msg> {
     let mut rows: Vec<Element<'a, Msg>> = Vec::new();
     let mut cards = cards.into_iter().peekable();
@@ -960,20 +934,9 @@ fn grid<'a>(cards: Vec<Element<'a, Msg>>, cols: usize) -> Element<'a, Msg> {
                 None => cells.push(Space::new().width(Length::FillPortion(1)).into()),
             }
         }
-        rows.push(row(cells).spacing(22).into());
+        rows.push(row(cells).spacing(12).width(Length::Fill).into());
     }
-    column(rows).spacing(22).width(Length::Fill).into()
-}
-
-/// A hairline under the table's head.
-fn rule<'a>() -> Element<'a, Msg> {
-    container(Space::new().height(Length::Fixed(1.0)))
-        .width(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().rule.into()),
-            ..Default::default()
-        })
-        .into()
+    column(rows).spacing(12).width(Length::Fill).into()
 }
 
 /// The dataset's name over its id; the id stays on one line.

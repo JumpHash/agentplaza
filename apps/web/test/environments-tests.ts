@@ -102,8 +102,8 @@ const now = Date.UTC(2026, 9, 18, 12, 0, 0);
 eq(hookText(true), 'Deploy hook: set', 'a hook is set');
 eq(hookText(false), 'No deploy hook: deploys are recorded only', 'no hook: deploys are only recorded');
 eq(nowText(env({}), now), 'Nothing deployed yet', 'nothing deployed yet without a version');
-eq(nowText(env({ version: 'v1.4.0', deployed_ms: now - 5 * 60_000 }), now), 'Now: v1.4.0 · 5m ago', 'the version and how long ago it went');
-eq(nowText(env({ version: 'main@ab12cd', deployed_ms: now - 2 * 3_600_000 }), now), 'Now: main@ab12cd · 2h ago', 'a branch head shows too');
+eq(nowText(env({ version: 'v1.4.0', deployed_ms: now - 5 * 60_000 }), now), 'Now: v1.4.0 · 5 min ago', 'the version and how long ago it went');
+eq(nowText(env({ version: 'main@ab12cd', deployed_ms: now - 2 * 3_600_000 }), now), 'Now: main@ab12cd · 2 h ago', 'a branch head shows too');
 
 // ---- Variables ----------------------------------------------------------------------
 

@@ -874,29 +874,49 @@ fn boxed(_: &Theme) -> container::Style {
         border: Border {
             color: crate::theme::palette().rule,
             width: 1.0,
-            radius: 0.0.into(),
+            radius: crate::theme::skin().radius.into(),
         },
         ..Default::default()
     }
 }
 
-/// A card (the web's `.prov-card`): a boxed frame, 16px sides, 12px below.
+/// A tool chip's outline: a rule, fully rounded (the web's `.tl-chip`).
+fn pill(_: &Theme) -> container::Style {
+    container::Style {
+        border: Border {
+            color: crate::theme::palette().rule,
+            width: 1.0,
+            radius: 999.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// A logo tile's ground: the second sheet, rounded (the web's `.mdl-logo`).
+fn tile(_: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(crate::theme::palette().ink_2),
+        background: Some(crate::theme::palette().sheet_2.into()),
+        border: Border {
+            radius: crate::theme::skin().radius.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// A card (the web's `.mdl-card`): the card surface, padded 16.
 fn frame<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
     container(content)
-        .padding(iced::Padding {
-            top: 16.0,
-            right: 16.0,
-            bottom: 12.0,
-            left: 16.0,
-        })
+        .padding(16)
         .width(Length::Fill)
-        .style(boxed)
+        .style(super::models::mdl_surface)
         .into()
 }
 
-/// A small boxed tag (the web's tool-chip).
+/// A small outlined tag (the web's tool-chip).
 fn chip<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    container(content).padding([2, 8]).style(boxed).into()
+    container(content).padding([2, 8]).style(pill).into()
 }
 
 /// A 1px line in `color`, full width (the web's rules).
@@ -928,12 +948,7 @@ fn between<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
 
 /// A card's actions (the web's `.prov-actions`): a faint rule, then the buttons from the left.
 fn card_footer<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    column![
-        ui::hairline(),
-        row(items).spacing(8).align_y(Alignment::Center)
-    ]
-    .spacing(10)
-    .into()
+    row(items).spacing(8).align_y(Alignment::Center).into()
 }
 
 /// A card's head: the logo (or none), then a serif title over a one-line faint line, cut at the edge.
@@ -942,10 +957,11 @@ fn card_head<'a>(
     title: Element<'a, Msg>,
     sub: String,
 ) -> Element<'a, Msg> {
-    let sub = container(ui::faint(sub).wrapping(Wrapping::None))
-        .width(Length::Fill)
-        .height(Length::Fixed(18.0))
-        .clip(true);
+    let sub =
+        container(ui::mono(sub, 12.0, crate::theme::palette().ink_3).wrapping(Wrapping::None))
+            .width(Length::Fill)
+            .height(Length::Fixed(18.0))
+            .clip(true);
     let block = column![title, sub].spacing(2).width(Length::Fill);
     match logo {
         Some(logo) => row![logo, block]
@@ -966,6 +982,10 @@ fn dot<'a>(tone: ui::Tone) -> Element<'a, Msg> {
     )
     .style(move |_: &Theme| container::Style {
         background: Some(color.into()),
+        border: Border {
+            radius: 3.5.into(),
+            ..Default::default()
+        },
         ..Default::default()
     })
     .into()
@@ -973,19 +993,17 @@ fn dot<'a>(tone: ui::Tone) -> Element<'a, Msg> {
 
 /// A section title (the web's `.prov-group-title`): small mono caps over a rule.
 fn group_title<'a>(title: &str) -> Element<'a, Msg> {
-    column![
-        ui::sans(title.to_string(), 11.0, crate::theme::palette().ink),
-        rule_line(crate::theme::palette().rule)
-    ]
-    .spacing(6)
-    .width(Length::Fill)
-    .into()
+    text(title.to_string())
+        .font(SANS_SEMIBOLD)
+        .size(15.0)
+        .color(crate::theme::palette().ink)
+        .into()
 }
 
 /// A connector's logo box (the web's 48px `.logo.lg`): its brand mark, else its initials.
 fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
     let inner: Element<'a, Msg> = if !c.brand.is_empty() {
-        ui::brand_logo(&c.brand, 26.0)
+        ui::brand_logo(&c.brand, 18.0)
     } else {
         let letters: String = c
             .label
@@ -995,17 +1013,17 @@ fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
             .collect::<String>()
             .to_uppercase();
         text(letters)
-            .font(ui::SANS_BOLD)
-            .size(13.0)
-            .color(crate::theme::palette().ink)
+            .font(theme::MONO)
+            .size(theme::TYPE_META)
+            .color(crate::theme::palette().ink_2)
             .into()
     };
     container(inner)
-        .width(Length::Fixed(48.0))
-        .height(Length::Fixed(48.0))
+        .width(Length::Fixed(32.0))
+        .height(Length::Fixed(32.0))
         .align_x(Alignment::Center)
         .align_y(Alignment::Center)
-        .style(boxed)
+        .style(tile)
         .into()
 }
 
@@ -1013,7 +1031,7 @@ fn logo<'a>(c: &Connector) -> Element<'a, Msg> {
 fn card_title<'a>(label: &str) -> Element<'a, Msg> {
     text(label.to_string())
         .font(SANS_SEMIBOLD)
-        .size(16.5)
+        .size(theme::TYPE_ITEM)
         .color(crate::theme::palette().ink)
         .wrapping(Wrapping::None)
         .into()
@@ -1056,7 +1074,7 @@ fn connector_card<'a>(c: &Connector) -> Element<'a, Msg> {
     if section != "Coming soon" && from_env_only(c) {
         meta.push(ui::badge("Key from env", ui::Tone::Info));
     }
-    meta.push(ui::badge(text, tone));
+    meta.push(ui::badge_dot(text, tone));
 
     let mut body = column![
         card_head(Some(logo(c)), card_title(&c.label), c.description.clone()),
@@ -1125,7 +1143,9 @@ fn connectors_section<'a>(state: &State) -> Element<'a, Msg> {
                     .map(connector_card)
                     .collect();
                 if !cards.is_empty() {
-                    col = col.push(column![group_title(section), ui::card_grid(cards)].spacing(12));
+                    col = col.push(
+                        column![group_title(section), super::models::card_grid(cards)].spacing(12),
+                    );
                 }
             }
         }
@@ -1335,7 +1355,7 @@ fn proposals_section<'a>(state: &State) -> Element<'a, Msg> {
         col = col.push(ui::faint("Nothing waiting for your review."));
     } else {
         let cards: Vec<Element<'a, Msg>> = pending.iter().map(|p| proposal_card(p)).collect();
-        col = col.push(ui::card_grid(cards));
+        col = col.push(super::models::card_grid(cards));
     }
     if !decided.is_empty() {
         let label = if state.show_decided {
@@ -1499,7 +1519,7 @@ fn library_card<'a>(t: &LibraryTool) -> Element<'a, Msg> {
 
     let title = iced::widget::text(format!("x_{}", t.name))
         .font(ui::SANS_SEMIBOLD)
-        .size(16.5)
+        .size(theme::TYPE_ITEM)
         .color(crate::theme::palette().ink)
         .wrapping(Wrapping::None);
     let mut body = column![
@@ -1559,14 +1579,16 @@ fn library_section<'a>(state: &State) -> Element<'a, Msg> {
     if !pending.is_empty() {
         col = col.push(
             column![
-                group_title("Waiting for your review"),
-                ui::card_grid(pending)
+                super::models::h3("Waiting for your review"),
+                super::models::card_grid(pending)
             ]
             .spacing(10),
         );
     }
     if !rest.is_empty() {
-        col = col.push(column![group_title("Library"), ui::card_grid(rest)].spacing(10));
+        col = col.push(
+            column![super::models::h3("Library"), super::models::card_grid(rest)].spacing(10),
+        );
     }
     col.into()
 }
@@ -1833,7 +1855,8 @@ fn found_section<'a>(state: &State) -> Element<'a, Msg> {
         label: k.to_string(),
     }));
     let selected = choices.iter().find(|c| c.value == state.kind).cloned();
-    let kind = pick_list(choices, selected, |c: KindChoice| Msg::FilterKind(c.value));
+    let kind = pick_list(choices, selected, |c: KindChoice| Msg::FilterKind(c.value))
+        .style(crate::theme::pick_list);
     let toolbar = row![
         container(search).width(Length::Fill),
         kind,

@@ -10,10 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use iced::widget::operation::snap_to;
-use iced::widget::{
-    Id as WidgetId, Space, button, column, container, rich_text, row, scrollable, span,
-};
-use iced::{Alignment, Border, Color, Element, Length, Task, Theme};
+use iced::widget::{Id as WidgetId, Space, column, container, row, scrollable, text};
+use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
 use serde_json::Value;
 
 use super::Id;
@@ -25,7 +23,7 @@ use crate::console::lab_api::{
     self, JobEvent, JobEventsPage, JobPlan, JobRun, JobView, SeriesPoint,
 };
 use crate::console::{Ctx, ui};
-use crate::theme::SANS;
+use crate::theme::SANS_SEMIBOLD;
 
 /// Live lines kept for the screen: the newest this many (the charts read them as they arrive).
 const LIVE_KEPT: usize = 2_000;
@@ -342,16 +340,10 @@ fn loss_color() -> Color {
 fn lr_color() -> Color {
     crate::theme::palette().ok
 }
-/// The web's chart palette in its dark theme (chart-3 to chart-8).
+/// The web's chart palette, in the current mode.
 fn palette() -> [Color; 6] {
-    [
-        crate::theme::palette().warn,
-        Color::from_rgb8(0xb7, 0x9c, 0xf0),
-        Color::from_rgb8(0x5a, 0xd6, 0xd6),
-        Color::from_rgb8(0xd9, 0xa8, 0x77),
-        crate::theme::palette().ink_2,
-        crate::theme::palette().crit,
-    ]
+    let p = crate::theme::palette();
+    [p.warn, p.chart_4, p.chart_8, p.chart_1, p.ink_2, p.crit]
 }
 
 fn step_text(p: &SeriesPoint) -> String {
@@ -696,120 +688,58 @@ fn stages_of(v: &JobView) -> Vec<Stage> {
     ]
 }
 
-fn stage_cell<'a>(stage: &Stage) -> Element<'a, Msg> {
-    let bar = match stage.state {
-        StageState::Done => crate::theme::palette().ok,
-        StageState::Current => crate::theme::palette().signal,
-        StageState::Pending | StageState::Skipped => crate::theme::palette().rule,
-    };
-    let mut lines = column![
-        ui::sans(stage.label, 12.0, crate::theme::palette().ink),
-        ui::sans(
-            lab_common::time(stage.at.unwrap_or(0)),
-            11.0,
-            crate::theme::palette().ink_3
-        )
-    ]
-    .spacing(4);
-    if !stage.sub.is_empty() {
-        lines = lines.push(ui::faint(stage.sub.clone()));
-    }
-    row![
-        container(Space::new().width(3.0).height(44.0)).style(move |_: &Theme| container::Style {
-            background: Some(bar.into()),
-            ..Default::default()
-        }),
-        lines,
-    ]
-    .spacing(10)
-    .width(Length::Fill)
-    .into()
-}
-
 // ---- Shared pieces ---------------------------------------------------------------------------
 
 fn txt<'a>(content: impl Into<String>) -> Element<'a, Msg> {
     ui::sans(content.into(), 12.5, crate::theme::palette().ink).into()
 }
 
+/// One figure of the job's stats, as the web's `.stat`: a raised card with its label over its value.
 fn stat<'a>(label: &str, value: String) -> Element<'a, Msg> {
     container(
         column![
             ui::label(label),
-            ui::sans(value, 14.0, crate::theme::palette().ink)
+            text(value)
+                .font(SANS_SEMIBOLD)
+                .size(15.0)
+                .color(crate::theme::palette().ink)
         ]
         .spacing(6),
     )
     .padding([12, 16])
     .width(Length::Fill)
-    .style(|_: &Theme| container::Style {
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    })
+    .style(ui::card_style)
     .into()
 }
 
-/// A table over equal cells: the header in mono caps, numeric columns right-aligned, a hairline under each row.
+/// A table as the web's `.tbl` (see [`lab_common::table`]): numeric columns read right-aligned.
 fn table<'a>(
-    head: &[&str],
+    head: &[&'static str],
     numeric: &[usize],
     rows: Vec<Vec<Element<'a, Msg>>>,
 ) -> Element<'a, Msg> {
-    let cell = |content: Element<'a, Msg>, i: usize| -> Element<'a, Msg> {
-        let align = if numeric.contains(&i) {
-            Alignment::End
-        } else {
-            Alignment::Start
-        };
-        container(content)
-            .padding([6, 8])
-            .width(Length::FillPortion(1))
-            .align_x(align)
-            .into()
-    };
-    let mut lines = column![
-        row(head
-            .iter()
-            .enumerate()
-            .map(|(i, label)| cell(ui::label(label).into(), i))
-            .collect::<Vec<_>>())
-        .width(Length::Fill)
-    ]
-    .spacing(0);
-    for cells in rows {
-        let line = row(cells
-            .into_iter()
-            .enumerate()
-            .map(|(i, c)| cell(c, i))
-            .collect::<Vec<_>>())
-        .width(Length::Fill);
-        lines = lines.push(line).push(ui::hairline::<Msg>());
-    }
-    lines.into()
+    let cols: Vec<lab_common::Col> = head
+        .iter()
+        .enumerate()
+        .map(|(i, label)| lab_common::col(label, 1, numeric.contains(&i)))
+        .collect();
+    let rows: Vec<lab_common::Row<'a, Msg>> = rows
+        .into_iter()
+        .map(|cells| lab_common::Row {
+            cells,
+            on_press: None,
+        })
+        .collect();
+    lab_common::table(&cols, rows)
 }
 
+/// A job's share as the web's `.lab-job-share`: a meter, then the percent.
 fn share_cell<'a>(share: f64) -> Element<'a, Msg> {
-    let pct = (share.clamp(0.0, 1.0) * 100.0).round() as u16;
     row![
-        container(Space::new().width(Length::Fill).height(6.0))
-            .width(Length::FillPortion(pct.max(1)))
-            .style(|_: &Theme| container::Style {
-                background: Some(crate::theme::palette().signal.into()),
-                ..Default::default()
-            }),
-        container(Space::new().width(Length::Fill).height(6.0))
-            .width(Length::FillPortion((100 - pct).max(1)))
-            .style(|_: &Theme| container::Style {
-                background: Some(crate::theme::palette().rule_faint.into()),
-                ..Default::default()
-            }),
+        container(lab_common::meter(share, false)).width(Length::Fixed(96.0)),
         ui::sans(
             lab_common::percent(share),
-            11.0,
+            12.0,
             crate::theme::palette().ink_2
         )
         .width(Length::Fixed(44.0)),
@@ -819,24 +749,18 @@ fn share_cell<'a>(share: f64) -> Element<'a, Msg> {
     .into()
 }
 
-fn unknown<'a>(id: &str) -> Element<'a, Msg> {
-    let title = if id.is_empty() {
-        "Job".to_string()
-    } else {
-        format!("Job {id}")
-    };
-    column![
-        ui::empty(
-            "brain",
-            &title,
-            "No job with this id. Go back to Jobs to pick one."
-        ),
-        container(back_link())
-            .width(Length::Fill)
-            .align_x(Alignment::Center),
-    ]
-    .spacing(8)
-    .into()
+fn unknown<'a>(_id: &str) -> Element<'a, Msg> {
+    lab_common::empty(
+        "search",
+        "No job with this id",
+        None,
+        Some(ui::btn(
+            "Back to Jobs",
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::Go(Id::LabJobs)),
+        )),
+    )
 }
 
 // ---- The page --------------------------------------------------------------------------------
@@ -859,317 +783,188 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
 }
 
 fn page<'a>(state: &'a State, v: &'a JobView) -> Element<'a, Msg> {
-    let terminal = matches!(v.status.as_str(), "done" | "failed" | "cancelled");
-    let cancellable = matches!(v.status.as_str(), "queued" | "running") && !state.cancelling;
-    let cancel = ui::btn(
-        "Cancel job",
-        None,
-        ui::Kind::Danger,
-        cancellable.then_some(Msg::AskCancel),
-    );
+    let live = !matches!(v.status.as_str(), "done" | "failed" | "cancelled");
+    let now = lab_common::now_ms();
+    let cancel: Element<'a, Msg> = if live {
+        ui::btn_sm(
+            "Cancel job",
+            None,
+            ui::Kind::Danger,
+            (!state.cancelling).then_some(Msg::AskCancel),
+        )
+    } else {
+        Space::new().into()
+    };
     let head = row![
-        ui::mono(format!("Job {}", v.id), 22.0, crate::theme::palette().ink),
+        ui::mono(v.id.clone(), 15.0, crate::theme::palette().ink),
+        ui::badge(&cap(&v.status), tone_of(&v.status)),
         Space::new().width(Length::Fill),
-        ui::badge(&v.status, tone_of(&v.status)),
         cancel,
     ]
-    .spacing(12)
+    .spacing(10)
     .align_y(Alignment::Center);
     let stats = row![
         stat("Recipe", v.recipe.clone()),
         stat("Mode", v.mode.clone()),
-        stat("Created", lab_common::time(v.created_ms)),
-        stat("Updated", lab_common::time(v.updated_ms)),
+        stat("Created", lab_common::ago_text(v.created_ms, now)),
+        stat("Updated", lab_common::ago_text(v.updated_ms, now)),
     ]
-    .spacing(12);
+    .spacing(12)
+    .width(Length::Fill);
 
     let mut parts: Vec<Element<'a, Msg>> = vec![head.into(), stats.into()];
     if state.confirming {
         parts.push(confirm_strip(&v.id));
     }
     if let Some(err) = &state.cancel_error {
-        parts.push(ui::error_line(&format!("The cancel failed: {err}")));
+        parts.push(lab_common::err(&format!("The cancel failed: {err}")));
     }
     if let Some(err) = &state.error {
-        parts.push(ui::error_line(&format!(
+        parts.push(lab_common::err(&format!(
             "The job view is out of date: {err}"
         )));
     }
-    parts.push(ui::card(
-        "Status",
-        row(stages_of(v).iter().map(stage_cell).collect::<Vec<_>>())
-            .spacing(12)
-            .width(Length::Fill)
-            .into(),
-    ));
-    parts.push(ui::card("Plan", plan_body(v.plan.as_ref())));
-
     let points = points_of(v, &state.live, &state.live_at);
-    parts.push(ui::card("Charts", charts_body(&points)));
-
+    parts.push(grid2(
+        ui::card("Status", timeline(&stages_of(v), now)),
+        ui::card("Budget", budget_body(v)),
+    ));
+    parts.push(grid2(
+        ui::card("Runs", runs_body(v)),
+        ui::card("Charts", charts_body(&points)),
+    ));
+    parts.push(grid2(
+        ui::card("Datasets", datasets_body(v)),
+        ui::card("Plan", plan_body(v.plan.as_ref())),
+    ));
     parts.push(ui::card("Devices", devices_body(&v.runs)));
-    parts.push(ui::card("Log tail", log_body(&state.logs)));
-
-    let budget = budget_body(v);
-    let outputs = outputs_body(v);
-    parts.push(
-        row![
-            ui::card("Budget", budget),
-            ui::card("Outputs and metrics", outputs)
-        ]
-        .spacing(22)
-        .width(Length::Fill)
-        .into(),
-    );
-
-    let error = match &v.error {
-        Some(err) => ui::error_line(err),
-        None => ui::faint("No error.").into(),
-    };
-    parts.push(ui::card("Error", error));
-    if !terminal {
-        parts.push(ui::faint("This page follows the job live.").into());
+    parts.push(ui::card_with(
+        "Log tail",
+        vec![lab_common::note(format!("{} events", state.logs.len()))],
+        log_body(&state.logs),
+    ));
+    parts.push(ui::card("Outputs and metrics", outputs_body(v)));
+    if live {
+        parts.push(lab_common::note("This page follows the job live."));
     }
-    column(parts).spacing(22).width(Length::Fill).into()
+    column(parts).spacing(16).width(Length::Fill).into()
 }
 
+/// Two cards side by side, as the web's `.lab-grid2`: each keeps its own height.
+fn grid2<'a>(left: Element<'a, Msg>, right: Element<'a, Msg>) -> Element<'a, Msg> {
+    row![
+        container(left).width(Length::FillPortion(1)),
+        container(right).width(Length::FillPortion(1)),
+    ]
+    .spacing(16)
+    .align_y(Alignment::Start)
+    .width(Length::Fill)
+    .into()
+}
+
+/// The cancel confirmation, as the web's dialog: the question, then keep running or cancel.
 fn confirm_strip<'a>(id: &str) -> Element<'a, Msg> {
     container(
-        row![
-            ui::faint(format!(
-                "Cancel job {id}? Its runs stop; the GPU time used so far stays on the job."
-            ))
-            .width(Length::Fill),
-            ui::btn(
-                "Keep running",
-                None,
-                ui::Kind::Secondary,
-                Some(Msg::KeepRunning)
+        column![
+            ui::sans(
+                format!(
+                    "Cancel job {id}? Its runs stop; the GPU time used so far stays on the job."
+                ),
+                13.0,
+                crate::theme::palette().ink
             ),
-            ui::btn(
-                "Cancel job",
-                None,
-                ui::Kind::Danger,
-                Some(Msg::ConfirmCancel)
-            ),
+            row![
+                ui::btn(
+                    "Keep running",
+                    None,
+                    ui::Kind::Ghost,
+                    Some(Msg::KeepRunning)
+                ),
+                ui::btn(
+                    "Cancel job",
+                    None,
+                    ui::Kind::Danger,
+                    Some(Msg::ConfirmCancel)
+                ),
+            ]
+            .spacing(8),
         ]
-        .spacing(12)
-        .align_y(Alignment::Center),
+        .spacing(10),
     )
     .padding(12)
     .width(Length::Fill)
     .style(|_: &Theme| container::Style {
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
+        background: Some(crate::theme::palette().sheet_2.into()),
+        border: Border::default().rounded(crate::theme::skin().radius),
         ..Default::default()
     })
     .into()
 }
 
+/// The plan the job was dispatched with, as the web's `planDiagram`; a note when none is recorded.
 fn plan_body<'a>(plan: Option<&'a JobPlan>) -> Element<'a, Msg> {
-    let Some(plan) = plan else {
-        return ui::faint("No plan is recorded for this job.").into();
-    };
-    let mode = if plan.mode == "loose" {
-        format!(
-            "Loose: islands train {} inner steps, then average through the hub. Rounds {}, staleness {}.",
-            plan.inner_steps,
-            plan.rounds
-                .map_or_else(|| "—".to_string(), |r| r.to_string()),
-            plan.staleness
-        )
-    } else if plan.mode == "tight" {
-        "Tight: the machines of each island train together and sync through the island's rendezvous.".to_string()
-    } else {
-        "Single: one trainer on one machine.".to_string()
-    };
-    let islands: Vec<Element<'a, Msg>> = plan.islands.iter().map(island_cell).collect();
-    let islands: Element<'a, Msg> = if islands.is_empty() {
-        ui::faint("No islands.").into()
-    } else {
-        row(islands).spacing(12).wrap().vertical_spacing(12).into()
-    };
-    let rounds = plan
-        .rounds
-        .map_or_else(|| "—".to_string(), |r| r.to_string());
-    let meta: Vec<Element<'a, Msg>> = vec![
-        ui::sans(
-            format!("Devices {}", plan.devices_total),
-            11.0,
-            crate::theme::palette().ink_3,
-        )
-        .into(),
-        ui::sans(
-            format!("Inner steps {}", plan.inner_steps),
-            11.0,
-            crate::theme::palette().ink_3,
-        )
-        .into(),
-        ui::sans(
-            format!("Staleness {}", plan.staleness),
-            11.0,
-            crate::theme::palette().ink_3,
-        )
-        .into(),
-        ui::sans(
-            format!("Rounds {rounds}"),
-            11.0,
-            crate::theme::palette().ink_3,
-        )
-        .into(),
-    ];
-    let datasets = if plan.datasets.is_empty() {
-        "—".to_string()
-    } else {
-        plan.datasets
-            .iter()
-            .map(|(name, id)| format!("{name} {id}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let kv = |label: &str, value: String| -> Element<'a, Msg> {
-        row![
-            ui::faint(label.to_string()).width(Length::Fixed(96.0)),
-            ui::sans(value, 11.5, crate::theme::palette().ink_2).width(Length::Fill)
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .into()
-    };
-    column![
-        ui::prose(mode),
-        islands,
-        row(meta).spacing(18).wrap().vertical_spacing(6),
-        column![
-            kv("Datasets", datasets),
-            kv("Frozen", non_empty(plan.frozen.as_deref())),
-            kv("Output", non_empty(Some(plan.output_dir.as_str()))),
-        ]
-        .spacing(4),
-    ]
-    .spacing(10)
-    .width(Length::Fill)
-    .into()
-}
-
-/// The web's `.lab-job-back`: a mono link in the signal ink, underlined.
-fn back_link<'a>() -> Element<'a, Msg> {
-    let spans: Vec<iced::widget::text::Span<'a>> = vec![
-        span("Back to Jobs")
-            .font(SANS)
-            .size(13.0)
-            .color(crate::theme::palette().signal_ink)
-            .underline(true),
-    ];
-    let label: Element<'a, Msg> = rich_text(spans).into();
-    button(label)
-        .on_press(Msg::Go(Id::LabJobs))
-        .padding(0)
-        .style(|_: &Theme, _: button::Status| button::Style {
-            background: None,
-            text_color: crate::theme::palette().signal_ink,
-            ..Default::default()
-        })
-        .into()
-}
-
-fn non_empty(s: Option<&str>) -> String {
-    match s {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => "—".to_string(),
+    match plan {
+        Some(plan) => super::lab_jobs::plan_view(plan),
+        None => lab_common::note("No plan is recorded for this job."),
     }
 }
 
-fn island_cell<'a>(isl: &'a lab_api::Island) -> Element<'a, Msg> {
-    let machines: Vec<Element<'a, Msg>> = isl
-        .machines
+/// The job's datasets by id, joined, or `none`.
+fn datasets_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
+    let value = if v.datasets.is_empty() {
+        "none".to_string()
+    } else {
+        v.datasets.join(", ")
+    };
+    ui::sans(value, 13.0, crate::theme::palette().ink).into()
+}
+
+/// The job's runs as the web's table: the run, its node and island, its devices, state, start and
+/// end, device-hours and result.
+fn runs_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
+    if v.runs.is_empty() {
+        return lab_common::note("No runs yet");
+    }
+    let now = lab_common::now_ms();
+    let rows: Vec<Vec<Element<'a, Msg>>> = v
+        .runs
         .iter()
-        .map(|m| {
-            let devices: Vec<Element<'a, Msg>> = if m.devices.is_empty() {
-                vec![ui::faint("no devices").into()]
+        .map(|r| {
+            let devices = if r.devices.is_empty() {
+                "cpu".to_string()
             } else {
-                m.devices
+                r.devices
                     .iter()
-                    .map(|d| {
-                        container(ui::mono(
-                            format!("dev {d}"),
-                            11.0,
-                            crate::theme::palette().ink_2,
-                        ))
-                        .padding([1, 6])
-                        .style(|_: &Theme| container::Style {
-                            border: Border {
-                                color: crate::theme::palette().rule,
-                                width: 1.0,
-                                radius: 0.0.into(),
-                            },
-                            ..Default::default()
-                        })
-                        .into()
-                    })
-                    .collect()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             };
-            row![
-                ui::mono(m.id.clone(), 12.0, crate::theme::palette().ink),
-                row(devices).spacing(8).align_y(Alignment::Center)
+            vec![
+                lab_common::cell(r.node_job.clone(), true),
+                txt(r.node.clone()),
+                txt(r.island.clone()),
+                txt(devices),
+                txt(cap(&r.state)),
+                txt(lab_common::ago_text(r.started_ms, now)),
+                txt(match r.ended_ms {
+                    Some(ended) if ended > 0 => lab_common::ago_text(ended, now),
+                    _ => "—".to_string(),
+                }),
+                txt(dash2(r.gpu_hours)),
+                txt(match r.exit_code {
+                    Some(code) => format!("exit {code}"),
+                    None => "—".to_string(),
+                }),
             ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into()
         })
         .collect();
-    let mut lines = column![
-        row![
-            ui::mono(
-                format!("island {}", isl.id),
-                12.5,
-                crate::theme::palette().ink
-            ),
-            ui::badge(
-                non_empty(Some(isl.backend.as_str())).as_str(),
-                ui::Tone::Signal
-            )
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-        row![
-            ui::faint("Leader"),
-            ui::sans(
-                non_empty(Some(isl.leader.as_str())),
-                11.0,
-                crate::theme::palette().ink_2
-            )
-        ]
-        .spacing(10),
-        row![
-            ui::faint("Rendezvous"),
-            ui::sans(
-                non_empty(Some(isl.rdzv.as_str())),
-                11.0,
-                crate::theme::palette().ink_2
-            )
-        ]
-        .spacing(10),
-    ]
-    .spacing(6);
-    for m in machines {
-        lines = lines.push(container(m).padding([6, 0]));
-    }
-    container(lines)
-        .padding(12)
-        .width(Length::Fixed(320.0))
-        .style(|_: &Theme| container::Style {
-            border: Border {
-                color: crate::theme::palette().rule,
-                width: 1.0,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
+    table(
+        &[
+            "Run", "Node", "Island", "Devices", "State", "Started", "Ended", "GPU-h", "Result",
+        ],
+        &[7],
+        rows,
+    )
 }
 
 fn charts_body<'a>(points: &[SeriesPoint]) -> Element<'a, Msg> {
@@ -1297,68 +1092,71 @@ fn devices_body<'a>(runs: &'a [JobRun]) -> Element<'a, Msg> {
 }
 
 fn log_body<'a>(logs: &'a [JobEvent]) -> Element<'a, Msg> {
-    if logs.is_empty() {
-        return ui::faint("No events yet.").into();
-    }
-    let lines: Vec<Element<'a, Msg>> = logs
-        .iter()
-        .map(|e| {
-            ui::mono(
-                format!("#{} {} {}", e.seq, e.island, log_text(&e.event)),
-                11.5,
-                crate::theme::palette().ink_2,
-            )
-            .width(Length::Fill)
-            .into()
-        })
-        .collect();
-    ui::scroll(column(lines).spacing(2).width(Length::Fill))
-        .id(WidgetId::new(LOG_ID))
-        .on_scroll(|viewport| Msg::LogScroll(viewport.relative_offset().y))
-        .height(Length::Fixed(320.0))
-        .into()
+    let lines: Vec<Element<'a, Msg>> = if logs.is_empty() {
+        vec![lab_common::note("No events yet.")]
+    } else {
+        logs.iter()
+            .map(|e| {
+                ui::mono(
+                    format!("#{} {} {}", e.seq, e.island, log_text(&e.event)),
+                    12.0,
+                    crate::theme::palette().ink_2,
+                )
+                .width(Length::Fill)
+                .into()
+            })
+            .collect()
+    };
+    container(
+        ui::scroll(column(lines).spacing(2).width(Length::Fill))
+            .id(WidgetId::new(LOG_ID))
+            .on_scroll(|viewport| Msg::LogScroll(viewport.relative_offset().y))
+            .height(Length::Fixed(300.0)),
+    )
+    .padding(10)
+    .width(Length::Fill)
+    .style(|_: &Theme| container::Style {
+        background: Some(crate::theme::palette().sheet_2.into()),
+        border: Border::default().rounded(crate::theme::skin().radius),
+        ..Default::default()
+    })
+    .into()
 }
 
+/// The budget as the web's card: the GPU-hours used of the budget, whether it is over, and the meter.
 fn budget_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
     let used = v.gpu_hours;
     let budget = v.budget_gpu_hours;
+    let over = used > budget;
     let ratio = if budget > 0.0 { used / budget } else { 0.0 };
-    let pct = (ratio.clamp(0.0, 1.0) * 100.0).round() as u16;
-    let fill = if used > budget {
-        crate::theme::palette().crit
-    } else {
-        crate::theme::palette().signal
-    };
-    let bar = row![
-        container(Space::new().width(Length::Fill).height(10.0))
-            .width(Length::FillPortion(pct.max(1)))
-            .style(move |_: &Theme| container::Style {
-                background: Some(fill.into()),
-                ..Default::default()
-            }),
-        container(Space::new().width(Length::Fill).height(10.0))
-            .width(Length::FillPortion((100 - pct).max(1)))
-            .style(|_: &Theme| container::Style {
-                background: Some(crate::theme::palette().rule_faint.into()),
-                ..Default::default()
-            }),
-    ];
-    column![
-        ui::sans(
-            format!(
-                "{} of {} GPU-h used ({})",
-                dash2(used),
-                dash2(budget),
-                lab_common::percent(ratio)
-            ),
-            12.5,
-            crate::theme::palette().ink
+    let pairs: [(&str, String); 2] = [
+        (
+            "GPU-h used",
+            format!("{} of {}", dash2(used), dash2(budget)),
         ),
-        bar,
-    ]
-    .spacing(8)
-    .width(Length::Fill)
-    .into()
+        ("Over budget", if over { "yes" } else { "no" }.to_string()),
+    ];
+    let lines: Vec<Element<'a, Msg>> = pairs
+        .into_iter()
+        .map(|(label, value)| {
+            row![
+                container(ui::sans(
+                    label.to_string(),
+                    12.5,
+                    crate::theme::palette().ink_3
+                ))
+                .width(Length::Fixed(140.0)),
+                ui::sans(value, 13.0, crate::theme::palette().ink),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into()
+        })
+        .collect();
+    column![column(lines).spacing(8), lab_common::meter(ratio, over),]
+        .spacing(12)
+        .width(Length::Fill)
+        .into()
 }
 
 fn outputs_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
@@ -1391,6 +1189,71 @@ fn outputs_body<'a>(v: &'a JobView) -> Element<'a, Msg> {
         parts.push(ui::faint("The outputs stay on the node that trained them.").into());
     }
     column(parts).spacing(10).width(Length::Fill).into()
+}
+
+/// A status word with its first letter capitalised, as the web's `cap`.
+fn cap(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// The status timeline as the web's `ol.lab-steps`: a dot in each stage's tone, its label, when it
+/// happened and any error under it.
+fn timeline<'a>(stages: &[Stage], now: u64) -> Element<'a, Msg> {
+    let steps: Vec<Element<'a, Msg>> = stages
+        .iter()
+        .map(|stage| {
+            let tone = match stage.state {
+                StageState::Done => crate::theme::palette().ok,
+                StageState::Current => crate::theme::palette().info,
+                StageState::Pending | StageState::Skipped => crate::theme::palette().ink_3,
+            };
+            let when = match stage.at {
+                Some(at) => lab_common::ago_text(at, now),
+                None => "—".to_string(),
+            };
+            let dot = container(
+                Space::new()
+                    .width(Length::Fixed(8.0))
+                    .height(Length::Fixed(8.0)),
+            )
+            .style(move |_: &Theme| container::Style {
+                background: Some(tone.into()),
+                border: Border::default().rounded(4.0),
+                ..Default::default()
+            })
+            .padding(Padding {
+                top: 5.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 0.0,
+            });
+            let mut lines = column![
+                row![
+                    text(stage.label.to_string())
+                        .font(SANS_SEMIBOLD)
+                        .size(13.0)
+                        .color(crate::theme::palette().ink),
+                    lab_common::note(when),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(2);
+            if !stage.sub.is_empty() {
+                lines = lines.push(ui::sans(
+                    stage.sub.clone(),
+                    12.5,
+                    crate::theme::palette().crit,
+                ));
+            }
+            row![dot, lines].spacing(10).width(Length::Fill).into()
+        })
+        .collect();
+    column(steps).spacing(12).width(Length::Fill).into()
 }
 
 /// The cancel path, driven through the view: the header's Cancel button, then the confirmation's

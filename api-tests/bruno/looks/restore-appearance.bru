@@ -1,0 +1,26 @@
+meta {
+  name: Put the default look back
+  type: http
+  seq: 8
+}
+
+put {
+  url: {{baseUrl}}/v1/appearance
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "theme": "loom-clay",
+    "mode": "system",
+    "density": "default",
+    "code_size": 13,
+    "chosen": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

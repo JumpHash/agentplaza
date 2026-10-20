@@ -1229,11 +1229,12 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
     if project.archived {
         // Nothing more is done for it: its agents go back to the bench (the tasks waiting in their queues open
         // again), then its open tasks are withdrawn (their escrow back in its budget), and the rest of its budget
-        // goes to the plaza.
+        // goes to the plaza. A task an agent was working on is still claimed here, its work only cancelled (it ends
+        // when the agent answers): it is withdrawn too, or its escrow would stay out of both budgets.
         crate::membership::release_project(app, id);
         for task in &project.tasks {
             if let Some(task) = app.plaza.tasks.find(task)
-                && task.is_open()
+                && (task.is_open() || task.state() == "claimed")
             {
                 let _ = task.withdraw();
             }

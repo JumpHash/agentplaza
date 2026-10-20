@@ -169,6 +169,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         });
         assert_eq!(agent["role"], role, "{agent}\n{}", hub.log());
     }
+    hub.name_agent(ORCHESTRATOR, "Ada");
     let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
         w["running"] == true
     });
@@ -252,6 +253,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
             Value::Null,
             "a delivered project in maintenance is worked: {member}"
         );
+        hub.name_agent(cid, if cid == PLANNER { "Mira" } else { "Kofi" });
     }
 
     // Its watchers get the maintenance tools; the planner sweeps first, and the sweep asks for the map.
@@ -574,7 +576,8 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         Some(json!({ "text": "Here is what support saw", "attachments": [fid] })),
     );
     assert_eq!(status, 200, "{chat}\n{}", hub.log());
-    let (_, _, prompt) = (0..50)
+    // Up to 15 s: a busy runner took longer than 5 to deliver it.
+    let (_, _, prompt) = (0..150)
         .find_map(|_| {
             let list = pushed(&gateway, BUILDER);
             if list.len() > chats_before {
@@ -583,7 +586,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
             std::thread::sleep(Duration::from_millis(100));
             None
         })
-        .expect("the chat went out");
+        .unwrap_or_else(|| panic!("the chat went out\n{}", hub.log()));
     assert!(
         prompt.contains("Attached files") && prompt.contains(&fid) && prompt.contains("safari.txt"),
         "{prompt}"

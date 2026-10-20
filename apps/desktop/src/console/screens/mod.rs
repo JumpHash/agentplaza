@@ -5,7 +5,9 @@
 pub mod agent;
 pub mod agent_side;
 pub mod agents;
+pub mod appearance;
 pub mod approvals;
+pub mod artifact;
 pub mod board;
 pub mod conversations;
 pub mod council;
@@ -14,6 +16,8 @@ pub mod egress;
 pub mod engine_lab;
 pub mod floor;
 pub mod history;
+mod history_map;
+mod history_ops;
 pub mod ide;
 pub mod ide_chat;
 pub mod ide_chrome;
@@ -56,6 +60,8 @@ pub mod project_team;
 pub mod projects;
 pub mod prompt_editor;
 pub mod prompts;
+pub mod provider_wizard;
+pub mod providers_api;
 pub mod rules;
 pub mod sanctions;
 pub mod setup;
@@ -63,6 +69,7 @@ pub mod skill_editor;
 pub mod skills;
 pub mod society;
 pub mod tasks;
+pub mod theme_editor;
 pub mod tools;
 pub mod treasury;
 pub mod vault;
@@ -118,6 +125,12 @@ pub enum Id {
     /// The owner's shared read-only data volumes, and the roles that mount them.
     Volumes,
     Setup,
+    /// The owner's look: the skin, palette, background, mode, density and code size, for the hub and this device.
+    Appearance,
+    /// The theme editor, not in the sidebar: a saved theme by its id, `new:<built-in id>` for a copy, or `import`.
+    ThemeEditor(String),
+    /// One artifact on its own screen, by its id.
+    Artifact(String),
     /// One task in full, on the Tasks screen, by its id.
     Task(String),
     /// One project's page, on the Projects screen, by its id.
@@ -182,6 +195,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Egress, "Egress", "Setup", "external"),
     (Id::E2b, "E2B API", "Setup", "square-code"),
     (Id::Volumes, "Volumes", "Setup", "machine"),
+    (Id::Appearance, "Appearance", "Setup", "sun"),
     (Id::Setup, "Setup", "Setup", "settings"),
 ];
 
@@ -217,6 +231,9 @@ pub struct Screens {
     pub e2b: e2b::State,
     pub volumes: volumes::State,
     pub setup: setup::State,
+    pub appearance: appearance::State,
+    pub theme_editor: theme_editor::State,
+    pub artifact: artifact::State,
     pub agent: agent::State,
     pub lab: lab::State,
     pub lab_jobs: lab_jobs::State,
@@ -261,6 +278,9 @@ pub enum Msg {
     E2b(e2b::Msg),
     Volumes(volumes::Msg),
     Setup(setup::Msg),
+    Appearance(appearance::Msg),
+    ThemeEditor(theme_editor::Msg),
+    Artifact(artifact::Msg),
     Agent(agent::Msg),
     Lab(lab::Msg),
     LabJobs(lab_jobs::Msg),
@@ -306,6 +326,9 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::E2b(m) => e2b::go(m),
         Msg::Volumes(m) => volumes::go(m),
         Msg::Setup(m) => setup::go(m),
+        Msg::Appearance(m) => appearance::go(m),
+        Msg::ThemeEditor(m) => theme_editor::go(m),
+        Msg::Artifact(m) => artifact::go(m),
         Msg::Agent(m) => agent::go(m),
         Msg::Lab(m) => lab::go(m),
         Msg::LabJobs(m) => lab_jobs::go(m),
@@ -325,6 +348,7 @@ pub fn scope_home(id: &Id) -> Id {
     match id {
         Id::Agent(_) => Id::Agents,
         Id::Task(_) => Id::Tasks,
+        Id::Artifact(_) => Id::Library,
         Id::Project(_) | Id::ProjectTab(..) => Id::Projects,
         Id::WorkOn(_) => Id::Work,
         Id::LabJobDetail(_) => Id::LabJobs,
@@ -377,6 +401,7 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Id::Task(task) => screens.tasks = tasks::opened(task.clone()),
+        Id::Artifact(id) => screens.artifact = artifact::opened(id.clone()),
         Id::Project(project) => screens.projects = projects::opened(project.clone()),
         Id::ProjectTab(project, tab) => {
             screens.projects = projects::opened_on(project.clone(), *tab)
@@ -452,6 +477,11 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::E2b => e2b::load(&mut screens.e2b, ctx).map(Msg::E2b),
         Id::Volumes => volumes::load(&mut screens.volumes, ctx).map(Msg::Volumes),
         Id::Setup => setup::load(&mut screens.setup, ctx).map(Msg::Setup),
+        Id::Appearance => appearance::load(&mut screens.appearance, ctx).map(Msg::Appearance),
+        Id::ThemeEditor(target) => {
+            theme_editor::load(&mut screens.theme_editor, target, ctx).map(Msg::ThemeEditor)
+        }
+        Id::Artifact(_) => artifact::load(&mut screens.artifact, ctx).map(Msg::Artifact),
         Id::Agent(_) => agent::load(&mut screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::load(&mut screens.lab, ctx).map(Msg::Lab),
         Id::LabJobs => lab_jobs::load(&mut screens.lab_jobs, ctx).map(Msg::LabJobs),
@@ -507,6 +537,13 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::E2b(m) => e2b::update(&mut screens.e2b, m, ctx).map(Msg::E2b),
         Msg::Volumes(m) => volumes::update(&mut screens.volumes, m, ctx).map(Msg::Volumes),
         Msg::Setup(m) => setup::update(&mut screens.setup, m, ctx).map(Msg::Setup),
+        Msg::Appearance(m) => {
+            appearance::update(&mut screens.appearance, m, ctx).map(Msg::Appearance)
+        }
+        Msg::ThemeEditor(m) => {
+            theme_editor::update(&mut screens.theme_editor, m, ctx).map(Msg::ThemeEditor)
+        }
+        Msg::Artifact(m) => artifact::update(&mut screens.artifact, m, ctx).map(Msg::Artifact),
         Msg::Agent(m) => agent::update(&mut screens.agent, m, ctx).map(Msg::Agent),
         Msg::Lab(m) => lab::update(&mut screens.lab, m, ctx).map(Msg::Lab),
         Msg::LabJobs(m) => lab_jobs::update(&mut screens.lab_jobs, m, ctx).map(Msg::LabJobs),
@@ -543,6 +580,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Overview => overview::subscription(ctx).map(Msg::Overview),
         Id::Agents => agents::subscription(ctx).map(Msg::Agents),
         Id::Prompts => prompts::subscription(ctx).map(Msg::Prompts),
+        Id::Models => models::subscription(ctx).map(Msg::Models),
         Id::Skills => skills::subscription(ctx).map(Msg::Skills),
         Id::History => history::subscription(ctx).map(Msg::History),
         Id::Platforms => platforms::subscription(&screens.platforms, ctx).map(Msg::Platforms),
@@ -555,6 +593,8 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         }
         Id::Metrics => metrics::subscription(&screens.metrics, ctx).map(Msg::Metrics),
         Id::E2b => e2b::subscription().map(Msg::E2b),
+        Id::Appearance => appearance::subscription(ctx).map(Msg::Appearance),
+        Id::Artifact(_) => artifact::subscription(&screens.artifact).map(Msg::Artifact),
         Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
         Id::Treasury => treasury::subscription(&screens.treasury, ctx).map(Msg::Treasury),
         Id::LabJobs => lab_jobs::subscription(&screens.lab_jobs, ctx).map(Msg::LabJobs),
@@ -626,6 +666,9 @@ pub fn view<'a>(
         Id::E2b => e2b::view(&screens.e2b, ctx.client.base()).map(Msg::E2b),
         Id::Volumes => volumes::view(&screens.volumes).map(Msg::Volumes),
         Id::Setup => setup::view(&screens.setup, ctx).map(Msg::Setup),
+        Id::Appearance => appearance::view(&screens.appearance).map(Msg::Appearance),
+        Id::ThemeEditor(_) => theme_editor::view(&screens.theme_editor).map(Msg::ThemeEditor),
+        Id::Artifact(_) => artifact::view(&screens.artifact, ctx).map(Msg::Artifact),
         Id::Agent(_) => agent::view(&screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::view(&screens.lab, ctx).map(Msg::Lab),
         Id::LabJobs => lab_jobs::view(&screens.lab_jobs, ctx).map(Msg::LabJobs),

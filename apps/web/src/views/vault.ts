@@ -1,10 +1,10 @@
-// Vault screen: the status header, a toolbar (Add secret, Import .env) and three tabs
-// (Secrets, Per node, Audit). Each reload re-fetches everything and rebuilds the page
-// from the same data; the sections return fresh elements on every call.
+// Vault screen: the page head, the status card, a toolbar (Add secret, Import .env) and three tabs
+// (Secrets, Per node, Audit). Each reload re-fetches everything and rebuilds the page from the same data;
+// the sections return fresh elements on every call. The page's children are the screen's children.
 
-import '../styles/vault.css';
+import '../styles/proto/settings-c.css';
 import { vaultApi } from '../api';
-import { button, empty, tabs } from '../ui/components';
+import { button, card, tabs } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
 import { errorText, type VaultCtx, type VaultData } from './vault-common';
@@ -14,6 +14,7 @@ import { vaultMatrixSection } from './vault-matrix';
 import { vaultAuditSection } from './vault-audit';
 import { openImportDialog } from './vault-import';
 import { addSecretDialog } from './vault-form';
+import { dim, pageHead } from './vault-ui';
 import type { Cleanup } from './index';
 
 type VaultTab = 'secrets' | 'matrix' | 'audit';
@@ -49,9 +50,6 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let loads = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const body = h('div.stack.vault-page', null);
-  root.append(h('div.view-head', null, h('h1', null, 'Vault')), body);
-
   function toolbar(c: VaultCtx): HTMLElement {
     const title = c.locked ? 'Unseal the vault first.' : undefined;
     const add = button('Add secret', () => addSecretDialog({}, () => void c.reload()), {
@@ -64,7 +62,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       title,
       disabled: c.locked,
     });
-    return h('div.vault-toolbar', null, add, imp);
+    return h('div.vlt-bar', null, add, imp);
   }
 
   function tabBar(): HTMLElement {
@@ -75,9 +73,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     });
   }
 
-  function tabContent(c: VaultCtx): HTMLElement {
-    if (tab === 'matrix') return vaultMatrixSection(c);
-    if (tab === 'audit') return vaultAuditSection(c);
+  function tabContent(c: VaultCtx): Node[] {
+    if (tab === 'matrix') return [vaultMatrixSection(c)];
+    if (tab === 'audit') return [vaultAuditSection(c)];
     return vaultSecretsSection(c, secretScope, (next) => {
       secretScope = next;
       draw();
@@ -88,17 +86,21 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     if (!alive) return;
     if (failure !== undefined) {
       replace(
-        body,
-        empty('alert', 'The vault could not load', failure, button('Try again', () => void reload(), { kind: 'primary' })),
+        root,
+        pageHead('Vault'),
+        card('', [
+          h('div.vlt-err', { role: 'alert' }, `The vault could not load. ${failure}`),
+          button('Try again', () => void reload(), { kind: 'primary' }),
+        ]),
       );
       return;
     }
     if (!ctx) {
-      replace(body, h('p.vault-loading', null, 'Loading the vault...'));
+      replace(root, pageHead('Vault'), card('', dim('Loading the vault...')));
       return;
     }
     const c = ctx;
-    replace(body, vaultStatusSection(c), toolbar(c), tabBar(), tabContent(c));
+    replace(root, pageHead('Vault'), vaultStatusSection(c), toolbar(c), tabBar(), ...tabContent(c));
   }
 
   async function reload(): Promise<void> {

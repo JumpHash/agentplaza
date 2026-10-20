@@ -3,14 +3,17 @@
 // syncs by itself; this page only reads and writes the hub's side of it (docs/design/workstations.md section 8).
 
 import { api, type StationSync, type SyncFile } from '../api';
-import { ago, attempt, button, card, empty, field, input, modal, table, textarea, toast, type Column } from '../ui/components';
+import { attempt, card, field, input, textarea, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { bytesText, crumbsOf, joinPath, pendingPaths, parentDir, treeOf, uploadProblem, type Section } from './workstations-model';
+import { ago, btn, dialog, empty, muted, ptable, type PCol } from './workstations-ui';
 
 /** How many held deletions the page lists; the rest are counted. */
 const PENDING_SHOWN = 50;
 
 const fileName = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+
+type Row = { folder?: { name: string; path: string }; file?: SyncFile };
 
 /** The work folder: its state, the conflicts, and the mirror's files, folder by folder. */
 export function syncCard(stationId: string): Section {
@@ -22,7 +25,7 @@ export function syncCard(stationId: string): Section {
   let filesFailed = false;
   let dir = '';
 
-  const body = h('div.stack', null, empty('clock', 'Loading…'));
+  const body = h('div', null, empty('clock', 'Loading…'));
   const fileInput = h('input', { type: 'file', hidden: true, 'aria-label': 'File to put in the work folder' });
 
   const statusLine = (s: StationSync): string => {
@@ -36,18 +39,25 @@ export function syncCard(stationId: string): Section {
     const shown = held.slice(0, PENDING_SHOWN);
     const more = held.length - shown.length;
     return h(
-      'div.ws-banner.is-paused',
+      'div.ws-paused',
       null,
-      h('p', null, 'Syncing is paused', s.reason ? `: ${s.reason}` : '.', held.length ? ` ${held.length} deletion${held.length === 1 ? '' : 's'} wait${held.length === 1 ? 's' : ''} for your decision.` : ''),
-      shown.length ? h('ul.ws-pending', null, shown.map((p) => h('li', null, h('code', null, p)))) : null,
-      more > 0 ? h('p.faint', null, `And ${more} more.`) : null,
+      h('b', null, `Syncing is paused${s.reason ? `: ${s.reason}` : ''}`),
+      held.length
+        ? h(
+            'div',
+            null,
+            `${held.length} deletion${held.length === 1 ? '' : 's'} ${held.length === 1 ? 'waits' : 'wait'} for your decision.`,
+          )
+        : null,
+      shown.length ? h('ul', null, shown.map((p) => h('li.ws-mono', null, p))) : null,
+      more > 0 ? h('div', null, `And ${more} more.`) : null,
       h(
-        'div.ws-buttons',
+        'div.ws-cluster',
         null,
+        held.length ? btn('Resume and apply the deletions', () => confirmResume(held.length), { kind: 'danger' }) : null,
         held.length
-          ? button('Resume and apply the deletions', () => confirmResume(held.length), { kind: 'danger' })
-          : null,
-        button(held.length ? 'Resume and keep the files' : 'Resume', () => void resume(false), { kind: 'primary' }),
+          ? btn('Resume and keep the files', () => void resume(false), { kind: 'primary' })
+          : btn('Resume', () => void resume(false), { kind: 'primary' }),
       ),
     );
   };
@@ -58,15 +68,12 @@ export function syncCard(stationId: string): Section {
   };
 
   const confirmResume = (count: number): void => {
-    const pane = h(
-      'div.stack',
-      null,
+    const close = dialog(
+      'Resume and apply the deletions?',
       h('p', null, `The hub deletes ${count} file${count === 1 ? '' : 's'} from the work folder on the machine. The copies on the hub are not removed.`),
-      h(
-        'div.ws-buttons',
-        null,
-        button('Cancel', () => close()),
-        button(
+      [
+        btn('Cancel', () => close(), { kind: 'ghost' }),
+        btn(
           'Resume and delete',
           () => {
             close();
@@ -74,27 +81,34 @@ export function syncCard(stationId: string): Section {
           },
           { kind: 'danger' },
         ),
-      ),
+      ],
     );
-    const close = modal('Resume and apply the deletions?', pane);
   };
+
+  const download = (f: SyncFile): HTMLElement => h('a.btn.ghost.sm', { href: api.stationFileUrl(stationId, f.path), download: fileName(f.path) }, 'Download');
 
   const conflictsBox = (s: StationSync): HTMLElement | null => {
     if (!s.conflicts.length) return null;
-    const columns: Column<SyncFile>[] = [
-      { label: 'Conflict copy', cell: (f) => h('strong', null, f.path) },
+    const columns: PCol<SyncFile>[] = [
+      { label: 'Conflict copy', cell: (f) => h('b', null, f.path) },
       { label: 'Of', cell: (f) => f.conflict_of ?? '—' },
       { label: 'Modified', cell: (f) => ago(f.mtime_ms) },
       {
         label: '',
-        cell: (f) => h('span.ws-row-actions', null, download(f), button('Show folder', () => openFolder(parentDir(f.path)), { kind: 'ghost', size: 'sm' })),
+        cls: 'num',
+        cell: (f) => [download(f), btn('Show folder', () => openFolder(parentDir(f.path)), { kind: 'ghost', sm: true })],
       },
     ];
     return h(
-      'div.ws-conflicts',
+      'div.ws-banner',
       null,
-      h('p', null, `${s.conflicts.length} conflict${s.conflicts.length === 1 ? '' : 's'}: both copies are kept. The copy named "conflict" is the machine's version.`),
-      h('div.ws-scroll', null, table(columns, s.conflicts)),
+      h(
+        'b',
+        null,
+        `${s.conflicts.length} conflict${s.conflicts.length === 1 ? '' : 's'}: both copies are kept.`,
+      ),
+      ` The copy named "conflict" is the machine's version.`,
+      ptable(columns, s.conflicts),
     );
   };
 
@@ -107,18 +121,13 @@ export function syncCard(stationId: string): Section {
     void loadFiles();
   };
 
-  const download = (f: SyncFile): HTMLElement => h('a.btn.ghost.sm', { href: api.stationFileUrl(stationId, f.path), download: fileName(f.path) }, 'Download');
-
   const confirmDelete = (f: SyncFile): void => {
-    const pane = h(
-      'div.stack',
-      null,
+    const close = dialog(
+      'Delete this file?',
       h('p', null, `${f.path} is removed from the work folder on the machine at the next sync. Its copy in the hub is kept as a deleted version.`),
-      h(
-        'div.ws-buttons',
-        null,
-        button('Cancel', () => close()),
-        button(
+      [
+        btn('Cancel', () => close(), { kind: 'ghost' }),
+        btn(
           'Delete',
           () => {
             close();
@@ -126,9 +135,8 @@ export function syncCard(stationId: string): Section {
           },
           { kind: 'danger' },
         ),
-      ),
+      ],
     );
-    const close = modal('Delete this file?', pane);
   };
 
   const remove = async (f: SyncFile): Promise<void> => {
@@ -139,16 +147,15 @@ export function syncCard(stationId: string): Section {
   const confirmDeliver = (f: SyncFile): void => {
     const title = input({ value: fileName(f.path), maxlength: 200, 'aria-label': 'Title', autocomplete: 'off' });
     const description = textarea({ rows: 3, maxlength: 2000, 'aria-label': 'Description' });
-    const pane = h(
-      'div.stack',
-      null,
-      field('Title', title, 'How the file is listed in the Library.'),
-      field('Description', description, 'Optional.'),
-      h(
-        'div.ws-buttons',
-        null,
-        button('Cancel', () => close()),
-        button(
+    const close = dialog(
+      'Deliver to the Library',
+      [
+        field('Title', title, 'How the file is listed in the Library.'),
+        field('Description', description, 'Optional.'),
+      ],
+      [
+        btn('Cancel', () => close(), { kind: 'ghost' }),
+        btn(
           'Deliver to Library',
           async () => {
             const done = await attempt(
@@ -159,9 +166,8 @@ export function syncCard(stationId: string): Section {
           },
           { kind: 'primary' },
         ),
-      ),
+      ],
     );
-    const close = modal('Deliver to the Library', pane);
   };
 
   const upload = async (file: File): Promise<void> => {
@@ -180,60 +186,60 @@ export function syncCard(stationId: string): Section {
     if (file) void upload(file);
   });
 
-  const rowsOf = (): { folder?: { name: string; path: string }; file?: SyncFile }[] => {
+  const rowsOf = (): Row[] => {
     if (!files) return [];
     const tree = treeOf(files, dir);
-    return [...tree.folders.map((folder) => ({ folder })), ...tree.files.map((file) => ({ file }))];
+    return [...tree.folders.map((folder): Row => ({ folder })), ...tree.files.map((file): Row => ({ file }))];
   };
 
+  const columns: PCol<Row>[] = [
+    {
+      label: 'Name',
+      cell: (r) =>
+        r.folder
+          ? btn(`${r.folder.name}/`, () => openFolder(r.folder?.path ?? ''), { kind: 'ghost', sm: true })
+          : h('b', null, r.file ? fileName(r.file.path) : ''),
+    },
+    { label: 'Size', cell: (r) => (r.file ? bytesText(r.file.size) : '—') },
+    { label: 'Modified', cell: (r) => (r.file ? ago(r.file.mtime_ms) : '') },
+    {
+      label: '',
+      cls: 'num',
+      cell: (r) =>
+        r.file
+          ? [
+              download(r.file),
+              btn('Deliver', () => confirmDeliver(r.file as SyncFile), { kind: 'ghost', sm: true, title: 'Copy into the Library' }),
+              btn('Delete', () => confirmDelete(r.file as SyncFile), { kind: 'danger', sm: true }),
+            ]
+          : '',
+    },
+  ];
+
   const browser = (): HTMLElement => {
+    // The trail: the work folder, then each folder down to this one.
     const crumbs = crumbsOf(dir);
     const trail = h(
-      'nav.ws-crumbs',
+      'nav.ws-cluster',
       { 'aria-label': 'Folder' },
-      crumbs.map((c, i) =>
-        i === crumbs.length - 1
-          ? h('span.ws-crumb.is-here', null, c.name)
-          : h('button.ws-crumb', { type: 'button', onclick: () => openFolder(c.path) }, c.name),
+      crumbs.flatMap((c, i): Node[] =>
+        i === 0
+          ? [btn(c.name, () => openFolder(c.path), { kind: 'ghost', sm: true })]
+          : [h('span.muted', null, '/'), i === crumbs.length - 1 ? h('span', null, c.name) : btn(c.name, () => openFolder(c.path), { kind: 'ghost', sm: true })],
       ),
     );
-    const toolbar = h('div.ws-buttons', null, button('Upload file', () => fileInput.click(), { kind: 'primary' }));
+    const toolbar = h('div.ws-cluster', { style: 'justify-content:space-between' }, trail, btn('Upload file', () => fileInput.click(), { kind: 'primary' }));
     if (files === null) {
-      return h('div.stack', null, trail, toolbar, filesFailed ? empty('alert', 'Could not load the work folder.') : empty('file', 'Loading…'));
+      return h('div', null, toolbar, filesFailed ? empty('alert', 'Could not load the work folder.') : empty('file', 'Loading…'));
     }
     const rows = rowsOf();
-    const columns: Column<{ folder?: { name: string; path: string }; file?: SyncFile }>[] = [
-      {
-        label: 'Name',
-        cell: (r) =>
-          r.folder
-            ? h('button.ws-crumb', { type: 'button', onclick: () => openFolder(r.folder?.path ?? '') }, `${r.folder.name}/`)
-            : h('strong', null, r.file ? fileName(r.file.path) : ''),
-      },
-      { label: 'Size', cell: (r) => (r.file ? bytesText(r.file.size) : '—'), num: true },
-      { label: 'Modified', cell: (r) => (r.file ? ago(r.file.mtime_ms) : '—') },
-      {
-        label: '',
-        cell: (r) =>
-          r.file
-            ? h(
-                'span.ws-row-actions',
-                null,
-                download(r.file),
-                button('Deliver', () => confirmDeliver(r.file as SyncFile), { kind: 'ghost', size: 'sm', title: 'Copy into the Library' }),
-                button('Delete', () => confirmDelete(r.file as SyncFile), { kind: 'danger', size: 'sm' }),
-              )
-            : null,
-      },
-    ];
     return h(
-      'div.stack',
+      'div',
       null,
-      trail,
       toolbar,
       rows.length
-        ? h('div.ws-scroll', null, table(columns, rows))
-        : empty('file', dir ? 'This folder is empty' : 'The work folder is empty', 'Files the agents write here sync to the hub, and files you upload sync to the machine.'),
+        ? ptable(columns, rows)
+        : empty('file', dir ? 'This folder is empty' : 'The work folder is empty', dir ? '' : 'Files the agents write here sync to the hub, and files you upload sync to the machine.'),
     );
   };
 
@@ -244,13 +250,12 @@ export function syncCard(stationId: string): Section {
       return;
     }
     if (state === null) return;
-    const paused = state.paused === true;
     replace(
       body,
-      h('p.faint', null, statusLine(state)),
-      paused ? pausedBox(state) : null,
+      muted(statusLine(state)),
+      state.paused === true ? pausedBox(state) : null,
       conflictsBox(state),
-      h('p.faint', null, 'The mirror on the hub. The machine has the same files; a change on either side reaches the other at the next sync.'),
+      h('p.hint', null, 'The mirror on the hub. The machine has the same files; a change on either side reaches the other at the next sync.'),
       browser(),
       fileInput,
     );

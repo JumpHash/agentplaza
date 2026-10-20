@@ -1,6 +1,8 @@
 // The Machines screen: the machines in two views. The Grid (floor.ts) is the fleet drawn in 3D and is the default; the
 // List (machine.ts) is one row per machine, each opening into its live view. `#/machines?view=list` is the List, and
 // `#/machines/<id>` is the List with that machine's row open. The switch changes the hash only, so the header stays.
+// The markup is the prototype's: the page head with the 3D | List switch, the 3D box with its reset control.
+import '../styles/proto/machines.css';
 import { button } from '../ui/components';
 import { h } from '../ui/dom';
 import { href, parse } from '../router';
@@ -37,23 +39,42 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let shown: string | null = null; // the machine id the view shows
 
   const bodyBox = h('div.machines-body');
-  const gridBtn = button('Grid', () => {
+  const threeD = h('button', { type: 'button' }, '3D');
+  threeD.addEventListener('click', () => {
     location.hash = viewHash('grid');
   });
-  const listBtn = button('List', () => {
+  const listBtn = h('button', { type: 'button' }, 'List');
+  listBtn.addEventListener('click', () => {
     location.hash = viewHash('list');
   });
-  const resetBtn = button('Reset view', () => reset?.(), { icon: 'refresh' });
+  const resetBtn = button('Reset', () => reset?.(), { icon: 'refresh', size: 'sm' });
   resetBtn.hidden = true;
-  const switchBox = h('div.machines-switch', { role: 'group', 'aria-label': 'View' }, gridBtn, listBtn);
+  // The Reset control sits over the 3D box, bottom right (the prototype's `.f3d-ctl`); it shows while the Grid has an engine.
+  const ctl = h('div.f3d-ctl', null, resetBtn);
+  ctl.hidden = true;
+  const switchBox = h('div.seg.mt-views', { role: 'group', 'aria-label': 'View' }, threeD, listBtn);
   const lookSwitch = styleSwitch(); // the machines' drawing style: the Grid, the List and the machine view draw in it
-  const head = h('div.view-head', null, h('h1', null, 'Machines'), h('div.actions', null, switchBox, lookSwitch.el, resetBtn));
+  const head = h('div.view-head.mch-head', null, h('div.mch-head-l', null, h('h1', null, 'Machines')), h('div.mt-actions', null, switchBox, lookSwitch.el));
   root.append(head, bodyBox);
 
-  // The Reset view button belongs to the Grid, and shows while the Grid has an engine to reset.
+  // The Reset control belongs to the Grid, and shows while the Grid has an engine to reset.
   const bindReset = (fn: (() => void) | null): void => {
     reset = fn;
-    resetBtn.hidden = fn === null || view !== 'grid';
+    const on = fn !== null && view === 'grid';
+    resetBtn.hidden = !on;
+    ctl.hidden = !on;
+  };
+
+  // The Grid: the 3D box holds the engine's stage; its reset control sits over it.
+  const mountFleet = (): Cleanup => {
+    const frame = h('div.f3d.f3d-fleet');
+    bodyBox.append(frame);
+    const stop = mountGrid(frame, bindReset);
+    frame.append(ctl);
+    return () => {
+      stop();
+      frame.remove();
+    };
   };
 
   // Shows the body the hash asks for; the body it replaces releases its resources first.
@@ -67,13 +88,12 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     bodyBox.replaceChildren();
     reset = null;
     resetBtn.hidden = true;
+    ctl.hidden = true;
     root.classList.toggle('floor-view', view === 'grid');
     head.hidden = view === 'machine';
-    gridBtn.setAttribute('aria-pressed', String(view === 'grid'));
-    gridBtn.classList.toggle('primary', view === 'grid');
+    threeD.setAttribute('aria-pressed', String(view === 'grid'));
     listBtn.setAttribute('aria-pressed', String(view === 'list'));
-    listBtn.classList.toggle('primary', view === 'list');
-    body = view === 'grid' ? mountGrid(bodyBox, bindReset) : route.id !== null ? mountMachineView(bodyBox, route.id) : mountList(bodyBox);
+    body = view === 'grid' ? mountFleet() : route.id !== null ? mountMachineView(bodyBox, route.id) : mountList(bodyBox);
   };
 
   // The switch and the redirects change the hash within this screen; a different screen takes the page away.

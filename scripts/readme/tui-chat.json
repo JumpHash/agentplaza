@@ -1,0 +1,42 @@
+{
+ "width": 120,
+ "height": 34,
+ "fps": 10,
+ "title": "agentplaza tui",
+ "warmup": 3.0,
+ "steps": [
+  {
+   "key": "c"
+  },
+  {
+   "wait": 1.5
+  },
+  {
+   "key": "t"
+  },
+  {
+   "wait": 0.5
+  },
+  {
+   "type": "Plan the status page and split it for the team",
+   "every": 0.05
+  },
+  {
+   "wait": 0.4
+  },
+  {
+   "key": "Enter"
+  },
+  {
+   "wait": 1.0
+  },
+  {
+   "wait": 5.0
+  },
+  {
+   "wait": 2.5
+  }
+ ],
+ "poster": -1,
+ "out": "docs/assets/readme/tui-chat"
+}

@@ -1,6 +1,5 @@
 // The machines' drawing style: Ink, Blueprint or Night. The owner chooses it once (the Style switch in the Machines header
 // and in the machine view's); every engine that draws the machines uses it, in the console's light or dark theme.
-import { button } from '../ui/components';
 import { h } from '../ui/dom';
 
 export type MachineStyle = 'ink' | 'blueprint' | 'night';
@@ -62,18 +61,18 @@ export function styleKey(): string {
   return machineStyle() + '-' + (isDark() ? 'dark' : 'light');
 }
 
-/** The Ink | Blueprint | Night segmented control (the Grid | List pattern). `dispose` unsubscribes it. */
+/** The Ink | Blueprint | Night segmented control (the prototype's `.seg`). `dispose` unsubscribes it. */
 export function styleSwitch(): { el: HTMLElement; dispose: () => void } {
-  const buttons = STYLES.map(({ style, label }) => ({ style, el: button(label, () => setMachineStyle(style)) }));
+  const buttons = STYLES.map(({ style, label }) => {
+    const el = h('button', { type: 'button' }, label);
+    el.addEventListener('click', () => setMachineStyle(style));
+    return { style, el };
+  });
   const paint = (current: MachineStyle): void => {
-    for (const b of buttons) {
-      const on = b.style === current;
-      b.el.setAttribute('aria-pressed', String(on));
-      b.el.classList.toggle('primary', on);
-    }
+    for (const b of buttons) b.el.setAttribute('aria-pressed', String(b.style === current));
   };
   paint(machineStyle());
   const off = onMachineStyle(paint);
-  const el = h('div.machines-switch', { role: 'group', 'aria-label': 'Machine style' }, ...buttons.map((b) => b.el));
+  const el = h('div.seg', { role: 'group', 'aria-label': 'Machine style' }, ...buttons.map((b) => b.el));
   return { el, dispose: off };
 }

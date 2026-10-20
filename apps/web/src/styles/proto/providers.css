@@ -1,0 +1,566 @@
+/* Models > Providers: the providers manager. The cards, rows, chips, dots, toggles, sheets and menus are the kit's (base.css);
+   this file lays out the list and detail split, the usage hubs, the health stepper and the accent popover. Colours are
+   the kit's tokens only; an instance's accent reaches a tile or a swatch through the --tile and --swatch custom properties. */
+
+.prov-scope {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+}
+
+.prov-faint {
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+}
+
+.prov-lede {
+  color: var(--ink-2);
+}
+
+.prov-note {
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.prov-busy {
+  color: var(--ink-3);
+  font-size: var(--fs-sm);
+}
+
+/* The card's split: the list on the left, the selected instance's detail on the right. */
+.prov-split {
+  display: grid;
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  min-height: 360px;
+  min-width: 0;
+}
+
+.prov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-right: 1px solid var(--rule);
+  min-width: 0;
+}
+
+.card.flush .prov-split .prov-row {
+  border-top: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 52px;
+}
+
+.card.flush .prov-split .prov-row[aria-current="true"] {
+  background: var(--signal-soft);
+}
+
+.prov-row .row-main {
+  gap: 1px;
+}
+
+.prov-row.off .row-main {
+  opacity: 0.6;
+}
+
+.prov-row .row-s {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.prov-row .row-s > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.prov-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.prov-line .row-t {
+  min-width: 0;
+}
+
+.prov-ver {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.prov-add {
+  margin-top: 4px;
+  min-height: 40px;
+  gap: 8px;
+  color: var(--ink-2);
+  border: 1px dashed var(--rule-strong);
+  border-radius: 8px;
+}
+
+.prov-add:hover {
+  color: var(--ink);
+}
+
+/* Monogram tiles: the accent as the hue, a tint of it on the raised ground. */
+.prov-tile {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--tile, var(--ink-3)) 18%, var(--raised));
+  color: var(--tile, var(--ink-2));
+  font: 600 10.5px/1 var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+.prov-tile.lg {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+
+/* The detail. */
+.prov-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px 20px;
+  min-width: 0;
+}
+
+.prov-dh {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.prov-dh-t {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.prov-dh-t h3 {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prov-sub {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prov-dh-v {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.prov-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.prov-sec > h4 {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+
+/* A section's `hidden` rows stay hidden despite their flex layout. */
+.prov-sec [hidden] {
+  display: none !important;
+}
+
+.prov-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.prov-name .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.prov-swatch {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px dashed var(--rule-strong);
+  background: var(--swatch, transparent);
+}
+
+.prov-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+
+.prov-cred {
+  color: var(--ink-2);
+}
+
+.prov-test {
+  color: var(--ok);
+  font-size: var(--fs-sm);
+}
+
+.prov-rt-sec > summary {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.prov-rt {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 6px;
+}
+
+.prov-env {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.prov-env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.prov-env-row .input {
+  min-width: 0;
+}
+
+.prov-models {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.prov-model {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 10px;
+  border-top: 1px solid var(--rule);
+}
+
+.prov-model:first-child {
+  border-top: 0;
+}
+
+.prov-mid {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prov-price {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.prov-danger {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+/* The accent popover. */
+.menu.prov-pop {
+  display: grid;
+  grid-template-columns: repeat(4, 28px);
+  gap: 8px;
+  padding: 10px;
+  min-width: 0;
+}
+
+.menu.prov-pop button.prov-sw {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--rule-strong);
+  background: var(--swatch);
+}
+
+.menu.prov-pop button.prov-sw:hover {
+  background: var(--swatch);
+}
+
+.menu.prov-pop button.prov-sw.none,
+.menu.prov-pop button.prov-sw.none:hover {
+  background: transparent;
+  border-style: dashed;
+}
+
+/* Usage providers: one block per hub. */
+.prov-usage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.prov-usage-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.prov-usage-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.prov-usage-row:last-child {
+  padding-bottom: 0;
+}
+
+.prov-usage-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.prov-usage-h .row-t {
+  flex: none;
+}
+
+.prov-url {
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The health-check interval and its stepper. */
+.prov-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.prov-setting-t {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.prov-step {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 8px;
+}
+
+.prov-step-v {
+  min-width: 64px;
+  padding: 4px 8px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 8px;
+  background: var(--raised);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* Brand marks in the list and the detail head: the kit's logo, sized to the tile. */
+.prov-row .logo,
+.prov-dh .logo {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: var(--hover);
+}
+
+.prov-dh .logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+
+.prov-row .logo svg,
+.prov-dh .logo svg {
+  width: 16px;
+  height: 16px;
+}
+
+.prov-dh .logo svg {
+  width: 20px;
+  height: 20px;
+}
+
+.prov-row .logo .mono-mark,
+.prov-dh .logo .mono-mark {
+  font: 600 10px/1 var(--font-mono);
+}
+
+/* The Decisions card: the kit's label voice for its two parts, fields and rows, no boxes inside the card. */
+.dec {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.dec-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dec-sec + .dec-sec {
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid var(--rule);
+}
+
+.dec-h {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-3);
+  margin: 0;
+}
+
+.dec-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 140px) minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--fs-sm);
+}
+
+.dec-bar-t {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--sheet-2);
+  overflow: hidden;
+}
+
+.dec-bar-t > span {
+  display: block;
+  height: 100%;
+  background: var(--signal);
+}
+
+.dec-ans {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+  min-width: 0;
+}
+
+.dec-ans > p {
+  font-size: var(--fs-sm);
+}
+
+@media (max-width: 900px) {
+  .dec-bar {
+    grid-template-columns: minmax(0, 90px) minmax(0, 1fr) 40px;
+  }
+}
+
+/* Dialogs. */
+.prov-change {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--rule);
+}
+
+.prov-foot-err {
+  margin-right: auto;
+  align-self: center;
+  max-width: 100%;
+}
+
+@media (max-width: 860px) {
+  .prov-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .prov-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .prov-env-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .prov-env-row > .input:last-of-type {
+    grid-column: 1 / -1;
+  }
+}

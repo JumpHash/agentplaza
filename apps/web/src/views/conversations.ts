@@ -1,15 +1,16 @@
-import { agentName } from '../roles';
 // The conversations screen: agent-to-agent threads, grouped by the pair of agents.
 // Exchanges come a page at a time, newest first, and a thread pages its own history.
 // The search box narrows both; the retention limits are set from the header.
+// The markup is the prototype's (styles/proto/society.css): the pair list, the thread card and its bubbles.
 
-import '../styles/social.css';
+import '../styles/proto/society.css';
 import { api, type Conversation, type ConversationPair, type Retention } from '../api';
+import { agentName } from '../roles';
 import { go, href } from '../router';
 import { agents, on } from '../store';
-import { ago, attempt, badge, button, clip, empty, input, toast } from '../ui/components';
+import { attempt, badge, button, clip, empty, input, toast } from '../ui/components';
 import { embedContextFromStore } from '../ui/embeds';
-import { h, icon, replace } from '../ui/dom';
+import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
 import type { Cleanup } from './index';
 
@@ -102,11 +103,22 @@ function retentionSummary(r: Retention): string {
   return `Retention · ${r.conversations_max} · ${r.conversations_days > 0 ? `${r.conversations_days} days` : 'kept forever'}`;
 }
 
+/** The relative time as the prototype words it: "just now", "11 min ago", "1 h ago", "2 d ago". */
+function agoText(ms: number | null | undefined, now = Date.now()): string {
+  if (!ms) return '—';
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  if (s < 45) return 'just now';
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+
 export function mount(root: HTMLElement, params: string[]): Cleanup {
-  const list = h('div.convo-list');
-  const thread = h('div.thread');
-  const search = input({ type: 'search', placeholder: 'Search exchanges, agents, roles', 'aria-label': 'Search conversations', autocomplete: 'off' });
-  const count = h('span.convo-count', { 'aria-live': 'polite' });
+  const list = h('div.cv-list');
+  let threadEl: HTMLElement = h('div.cv-card');
+  const wrap = h('div.cv-wrap', null, list, threadEl);
+  const search = input({ type: 'search', placeholder: 'Search exchanges, agents, roles', 'aria-label': 'Search exchanges', class: 'cv-search', autocomplete: 'off' });
+  const count = h('span.cv-count', { 'aria-live': 'polite' });
   const clear = button('Clear', () => {
     window.clearTimeout(searchTimer);
     search.value = '';
@@ -135,37 +147,32 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   // The retention block of the header: a row that opens under it.
   let retention: Retention = { ...RETENTION_DEFAULTS };
   let retentionBusy = false;
-  const retentionLabel = h('span', null, retentionSummary(RETENTION_DEFAULTS));
-  const retentionBtn = h('button.btn.ghost.sm', { type: 'button', 'aria-expanded': 'false', 'aria-controls': 'convo-retention' }, icon('settings'), retentionLabel);
-  const maxInput = input({ type: 'number', inputmode: 'numeric', step: 1, min: KEEP_MIN, max: KEEP_MAX, 'aria-label': 'Exchanges to keep' });
-  const daysInput = input({ type: 'number', inputmode: 'numeric', step: 1, min: 0, max: DAYS_MAX, 'aria-label': 'Days before an exchange is deleted' });
-  maxInput.classList.add('retention-input');
-  daysInput.classList.add('retention-input');
-  const maxError = h('span.retention-error', null);
-  const daysError = h('span.retention-error', null);
+  const retentionBtn = h('button.btn.ghost.sm', { type: 'button', 'aria-expanded': 'false', 'aria-controls': 'convo-retention' }, retentionSummary(RETENTION_DEFAULTS));
+  const maxInput = input({ inputmode: 'numeric', step: 1, min: KEEP_MIN, max: KEEP_MAX, 'aria-label': 'Exchanges to keep' });
+  const daysInput = input({ inputmode: 'numeric', step: 1, min: 0, max: DAYS_MAX, 'aria-label': 'Days before an exchange is deleted' });
+  maxInput.style.width = '120px';
+  daysInput.style.width = '90px';
+  const maxError = h('p.err', { hidden: true });
+  const daysError = h('p.err', { hidden: true });
   const saveBtn = button('Save', () => void saveRetention(), { kind: 'primary', size: 'sm' });
   const retentionPanel = h(
-    'section.retention',
+    'section.cv-ret',
     { id: 'convo-retention', 'aria-label': 'Retention', hidden: true },
-    h(
-      'div.retention-line',
-      null,
-      h('span.retention-label', null, 'Keep the newest'),
-      maxInput,
-      h('span.retention-label', null, 'exchanges · delete after'),
-      daysInput,
-      h('span.retention-label', null, 'days (0 = never)'),
-    ),
-    h('div.retention-errors', null, maxError, daysError),
-    h('p.retention-note', null, 'Older exchanges are removed automatically: the oldest go first once the count is passed, and any older than the day limit go.'),
-    h('div.retention-actions', null, saveBtn),
+    h('div.cv-bar', null, 'Keep the newest ', maxInput, ' exchanges · delete after ', daysInput, ' days (0 = never)'),
+    maxError,
+    daysError,
+    h('p.hint', null, 'Older exchanges are removed automatically: the oldest go first once the count is passed, and any older than the day limit go.'),
+    h('div.cluster', null, saveBtn),
   );
 
+  // The search bar: the box, Clear while a search is on, and the count.
+  const bar = h('div.cv-bar', null, search, clear, count);
+
   root.append(
-    h('div.view-head', null, h('h1', null, 'Conversations'), h('div.actions', null, retentionBtn)),
+    h('header.view-head', null, h('div', null, h('h1', null, 'Conversations')), h('div.cluster', null, retentionBtn)),
     retentionPanel,
-    h('div.convo-bar', null, search, clear, count),
-    h('div.convo', null, list, thread),
+    bar,
+    wrap,
   );
 
   const label = (cid: number): string => {
@@ -173,7 +180,11 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     return a ? agentName(a) : `agent ${cid}`;
   };
 
+  /** The scrolling ancestor of this view: the view host, or the page when there is none. */
+  const scroller = (): HTMLElement => (root.closest('.view-host') as HTMLElement | null) ?? document.documentElement;
+
   function updateCount(): void {
+    clear.hidden = !query;
     if (!query || !feedLoaded || feedFailed) {
       count.textContent = '';
       return;
@@ -184,10 +195,15 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   // ---- Retention -------------------------------------------------------
 
+  function setErr(el: HTMLElement, msg: string | undefined): void {
+    el.hidden = msg === undefined;
+    el.textContent = msg ?? '';
+  }
+
   function syncRetention(): void {
     const check = checkRetention(maxInput.value, daysInput.value);
-    maxError.textContent = check.errors.max ?? '';
-    daysError.textContent = check.errors.days ?? '';
+    setErr(maxError, check.errors.max);
+    setErr(daysError, check.errors.days);
     maxInput.setAttribute('aria-invalid', String(check.errors.max !== undefined));
     daysInput.setAttribute('aria-invalid', String(check.errors.days !== undefined));
     const changed = check.max !== retention.conversations_max || check.days !== retention.conversations_days;
@@ -223,7 +239,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (!alive) return;
     if (saved) {
       retention = saved;
-      retentionLabel.textContent = retentionSummary(saved);
+      retentionBtn.textContent = retentionSummary(saved);
       setRetentionOpen(false);
       refetch();
     } else {
@@ -238,7 +254,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     (s) => {
       if (!alive) return;
       retention = { ...RETENTION_DEFAULTS, ...s.retention };
-      retentionLabel.textContent = retentionSummary(retention);
+      retentionBtn.textContent = retentionSummary(retention);
     },
     () => undefined,
   );
@@ -264,7 +280,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const pairs = groupPairs(feed.items);
     const nodes: Node[] = [];
     if (!pairs.length) {
-      nodes.push(query ? empty('search', `No exchanges match “${query}”.`) : empty('conversations', 'No conversations yet.'));
+      nodes.push(h('p.muted', null, query ? `No exchanges match “${query}”.` : 'No conversations yet.'));
     } else {
       for (const p of pairs) {
         const exchanges = (!query && pairCounts.get(p.key)) || p.messages.length;
@@ -321,46 +337,56 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   // ---- The open thread -------------------------------------------------
 
+  /** Brings the newest exchange into view when it sits below the fold. */
+  const reveal = (el: Element | undefined): void => {
+    if (el && el.getBoundingClientRect().bottom > window.innerHeight) el.scrollIntoView({ block: 'end' });
+  };
+
   function renderThread(prepended?: { height: number; top: number }): void {
     const key = selected;
-    if (!key) {
-      replace(thread);
-      shownKey = undefined;
-      return;
-    }
-    const st = threadState?.key === key ? threadState : undefined;
+    const st = key !== undefined && threadState?.key === key ? threadState : undefined;
     const ready = !!st && (st.loaded || st.failed);
-    // A reader at the foot of the thread follows new messages; one reading earlier keeps their place.
-    const pinned = thread.scrollTop + thread.clientHeight >= thread.scrollHeight - 24;
-    replace(thread, threadNodes(key, st));
-    if (!ready) {
+    // A reader at the newest exchange follows new messages; one reading earlier keeps their place.
+    const old = threadEl.querySelectorAll('.cv-msg');
+    const followed = old.length === 0 || (old[old.length - 1]?.getBoundingClientRect().bottom ?? 0) <= window.innerHeight + 24;
+    const next = key !== undefined ? threadCard(key, st) : h('div.cv-card');
+    wrap.replaceChild(next, threadEl);
+    threadEl = next;
+    if (key === undefined || !ready) {
       shownKey = undefined;
       return;
     }
-    if (shownKey !== key) thread.scrollTop = thread.scrollHeight;
-    else if (prepended) thread.scrollTop = prepended.top + (thread.scrollHeight - prepended.height);
-    else if (pinned) thread.scrollTop = thread.scrollHeight;
+    const msgs = threadEl.querySelectorAll('.cv-msg');
+    const newest = msgs[msgs.length - 1];
+    if (shownKey !== key) reveal(newest);
+    else if (prepended) {
+      const sc = scroller();
+      sc.scrollTop = prepended.top + (sc.scrollHeight - prepended.height);
+    } else if (followed) reveal(newest);
     shownKey = key;
   }
 
-  function threadNodes(key: string, st: ThreadState | undefined): Node[] {
+  function threadCard(key: string, st: ThreadState | undefined): HTMLElement {
     const [a, b] = pairIds(key);
-    const head = h(
-      'div.thread-head',
+    const count = st?.loaded ? (query ? `${st.span.items.length}${st.span.next != null ? '+' : ''} matching` : `${st.total} exchanges`) : '';
+    const card = h(
+      'div.cv-card.cv-thread',
       null,
-      nameLink(a, label),
-      ' · ',
-      nameLink(b, label),
-      st?.loaded ? h('span.faint', null, ` · ${query ? `${st.span.items.length}${st.span.next != null ? '+' : ''} matching` : `${st.total} exchanges`}`) : null,
+      h('div.cv-bar', null, h('span', null, nameLink(a, label), ' · ', nameLink(b, label)), h('span.cv-count', null, count)),
     );
-    if (!st || (!st.loaded && !st.failed)) return [head, h('p.faint', null, 'Loading…')];
-    if (!st.loaded) return [head, h('p.faint', null, 'Could not load this thread.')];
-    const nodes: Node[] = [head];
-    if (st.span.next != null) nodes.push(moreButton(st.loadingOlder ? 'Loading…' : 'Load earlier messages', st.loadingOlder, () => void loadOlderThread()));
-    if (!st.span.items.length) nodes.push(h('p.faint', null, query ? `No exchanges match “${query}”.` : 'No exchanges yet.'));
+    if (!st || (!st.loaded && !st.failed)) {
+      card.append(h('p.muted', null, 'Loading…'));
+      return card;
+    }
+    if (!st.loaded) {
+      card.append(h('p.muted', null, 'Could not load this thread.'));
+      return card;
+    }
+    if (st.span.next != null) card.append(moreButton(st.loadingOlder ? 'Loading…' : 'Load earlier messages', st.loadingOlder, () => void loadOlderThread()));
+    if (!st.span.items.length) card.append(h('p.muted', null, query ? `No exchanges match “${query}”.` : 'No exchanges yet.'));
     const first = st.span.items[0]?.from_cid ?? a;
-    for (const m of st.span.items) nodes.push(bubble(m, m.from_cid === first ? 'left' : 'right', label));
-    return nodes;
+    for (const m of st.span.items) card.append(bubble(m, m.from_cid !== first, label));
+    return card;
   }
 
   /** Loads the selected pair's newest page; `reset` drops what was loaded, otherwise a refresh keeps older pages. */
@@ -400,8 +426,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     try {
       const page = await api.conversationThread(a, b, { limit: PAGE, before: cursor, q: query || undefined });
       if (!alive || threadState !== busy) return;
-      const height = thread.scrollHeight;
-      const top = thread.scrollTop;
+      const sc = scroller();
+      const height = sc.scrollHeight;
+      const top = sc.scrollTop;
       threadState = { ...busy, span: mergeOlder(busy.span, spanOf(page.messages, page.next_before)), total: page.total, loadingOlder: false };
       renderThread({ height, top });
     } catch {
@@ -449,6 +476,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       renderThread();
     }),
   ];
+  updateCount();
   void loadFeed(true);
   if (selected) {
     renderThread();
@@ -492,43 +520,38 @@ function groupPairs(list: Conversation[]): Pair[] {
   return Array.from(pairs.values()).sort((x, y) => y.last.created_at - x.last.created_at);
 }
 
-function moreButton(label: string, busy: boolean, onClick: () => void): HTMLButtonElement {
-  const b = button(label, onClick, { kind: 'ghost', size: 'sm', disabled: busy });
-  b.classList.add('convo-more');
-  return b;
+/** A ghost small button under the list or the thread, busy while a page loads. */
+function moreButton(label: string, busy: boolean, onClick: () => void): HTMLElement {
+  return h('div.cluster', null, button(label, onClick, { kind: 'ghost', size: 'sm', disabled: busy }));
 }
 
 function nameLink(cid: number, label: (cid: number) => string): HTMLElement {
-  return h('a.agent-link', { href: href('agents', cid) }, label(cid));
+  return h('a', { href: href('agents', cid) }, label(cid));
 }
 
 function pairItem(p: Pair, count: number, active: boolean, label: (cid: number) => string, onSelect: () => void): HTMLElement {
   const item = h(
-    'button.convo-item',
-    { type: 'button', 'aria-current': active ? 'true' : null },
-    h('span.convo-names', null, `${label(p.a)} · ${label(p.b)}`),
-    h('span.convo-last', null, clip(p.last.text, 90)),
-    h('span.convo-meta', null, `${ago(p.last.created_at)} · ${count} exchanges`),
+    'button.cv-item',
+    { type: 'button', 'aria-current': String(active) },
+    h('b', null, `${label(p.a)} · ${label(p.b)}`),
+    h('span', null, clip(p.last.text, 90)),
+    h('span', null, `${agoText(p.last.created_at)} · ${count} exchanges`),
   );
   item.addEventListener('click', onSelect);
   return item;
 }
 
-function bubble(m: Conversation, side: 'left' | 'right', label: (cid: number) => string): HTMLElement {
+function bubble(m: Conversation, right: boolean, label: (cid: number) => string): HTMLElement {
   return h(
-    'div.bubble-row',
-    { class: side },
+    'div.cv-msg',
+    { class: right ? 'right' : null },
     h(
-      'div.bubble',
+      'div.cv-meta',
       null,
-      h(
-        'div.bubble-meta',
-        null,
-        nameLink(m.from_cid, label),
-        h('span.faint', null, ago(m.created_at)),
-        m.delivered ? null : badge('undelivered', 'warn'),
-      ),
-      h('div.bubble-text', null, renderMarkdown(m.text, { embeds: embedContextFromStore() })),
+      nameLink(m.from_cid, label),
+      h('span', null, agoText(m.created_at)),
+      m.delivered ? null : badge('undelivered', 'warn'),
     ),
+    h('div.cv-body', null, renderMarkdown(m.text, { embeds: embedContextFromStore() })),
   );
 }

@@ -3,12 +3,14 @@
 // frames, pins, overlays and the keyboard. The numbers all come from the hub; this file lays them out.
 
 import '../styles/chart.css';
+import '../styles/proto/metrics.css';
+// Still needed by the artifact view's panels (view/artifact.ts uses the mx-card, mx-grid and mx-ttl classes).
 import '../styles/metrics.css';
 import type { Cleanup } from './index';
 import { api } from '../api';
 import { on } from '../store';
 import { button, select, toast } from '../ui/components';
-import { h, replace } from '../ui/dom';
+import { h, lu, replace } from '../ui/dom';
 import { localOffset } from '../metrics/format';
 import { HoverBus } from '../metrics/hover';
 import { closeOverlay, dialog, drawer, help, menu, overlayOpen, palette, type PaletteItem } from '../metrics/overlays';
@@ -116,16 +118,20 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let resizeTimer: ReturnType<typeof setTimeout> | undefined;
 
   // ---- Page shell ----
-  const starBtn = h('button.mx-star', { type: 'button', title: 'Pin this scope (f)', onclick: () => toggleScopePin() }, '☆');
-  const crumbsEl = h('div.mx-crumbs');
-  const scopeBtn = button('Scope ▾', () => treeEl.classList.toggle('mx-open'), { kind: 'ghost', size: 'sm' });
-  scopeBtn.classList.add('mx-scope-btn');
+  const starBtn = h('button.btn.ghost.sm', { type: 'button', 'data-act': 'mt-star', title: 'Pin this scope (f)', onclick: () => toggleScopePin() }, '☆');
+  const crumbsEl = h('div.mt-crumb');
+  const scopeBtn = button('Scope ▾', () => bodyEl.classList.toggle('mt-open'), { kind: 'ghost', size: 'sm' });
+  scopeBtn.setAttribute('data-act', 'mt-tree');
   const findBtn = button('Find… /', () => openFind(), { kind: 'ghost', size: 'sm', title: 'Find (/ or Ctrl K)' });
-  const shiftBack = h('button', { type: 'button', title: 'Earlier ([)', onclick: () => shiftBy(-1) }, '‹');
-  const shiftFwd = h('button', { type: 'button', title: 'Later (])', onclick: () => shiftBy(1) }, '›');
-  const shiftSeg = h('div.mx-seg', {}, shiftBack, shiftFwd);
-  const rangeSeg = h('div.mx-seg');
-  const liveBtn = button('Live', () => toggleLive(), { kind: 'ghost', size: 'sm', title: 'Live (l)' });
+  findBtn.setAttribute('data-act', 'mt-find');
+  const shiftBack = h('button', { type: 'button', title: 'Earlier ([)', 'aria-label': 'Earlier', 'data-act': 'mt-earlier', onclick: () => shiftBy(-1) }, '‹');
+  const shiftFwd = h('button', { type: 'button', title: 'Later (])', 'aria-label': 'Later', 'data-act': 'mx-later', onclick: () => shiftBy(1) }, '›');
+  shiftBack.className = 'iconbtn xs';
+  shiftFwd.className = 'iconbtn xs';
+  const rangeSeg = h('div.seg', { role: 'group', 'aria-label': 'Time range' });
+  const rangeWrap = h('div.mt-rng', {}, shiftBack, rangeSeg, shiftFwd);
+  const liveDot = h('i.mt-live-dot', { 'aria-hidden': 'true' });
+  const liveBtn = h('button.btn.sm', { type: 'button', title: 'Live (l)', 'data-act': 'mt-live', onclick: () => toggleLive() }, liveDot, 'Live');
   const groupSel = select(GROUPS.map((g) => ({ value: g, label: 'by ' + g })), state.group);
   groupSel.setAttribute('aria-label', 'Group by');
   groupSel.addEventListener('change', () => navigate({ ...state, group: groupSel.value }));
@@ -141,21 +147,27 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   compareSel.setAttribute('aria-label', 'Compare');
   compareSel.addEventListener('change', onCompareChange);
   const annotBtn = button('Annotations', () => toggleAnnotations(), { kind: 'ghost', size: 'sm', title: 'Annotations (a)' });
-  const settingsBtn = button('Settings', () => void openSettings(), { kind: 'ghost', size: 'sm' });
-  const exportLink = h('a.btn.ghost.sm', { href: '#', download: '' }, 'Export');
+  annotBtn.setAttribute('data-act', 'mt-annot');
+  const exportLink = h('a.btn.ghost.sm.icon-only', { href: '#', download: '', title: 'Export', 'aria-label': 'Export' }, lu('download', 16));
+  const settingsBtn = button('', () => void openSettings(), { kind: 'ghost', size: 'sm', title: 'Settings' });
+  settingsBtn.append(lu('settings', 16));
+  settingsBtn.setAttribute('data-act', 'mt-settings');
   const head = h(
-    'header.mx-head',
+    'div.mt-head',
     {},
-    h('div.mx-title', {}, h('h1', {}, 'Metrics ', starBtn), crumbsEl),
-    h('div.mx-ctl', {}, scopeBtn, findBtn, shiftSeg, rangeSeg, liveBtn, groupSel, compareSel, annotBtn, exportLink, settingsBtn),
+    h('div', {}, h('h1.mt-h1', {}, 'Metrics ', starBtn), crumbsEl),
+    h('div.mt-ctl', {}, scopeBtn, findBtn, rangeWrap, liveBtn, groupSel, compareSel, annotBtn, exportLink, settingsBtn),
   );
-  const tierEl = h('div.mx-tier');
-  const treeFilter = h('input', { type: 'search', placeholder: 'Find a node, VM, agent, model…', 'aria-label': 'Filter scopes', oninput: () => renderTreeList() });
-  const treeList = h('div.mx-tree-list');
-  const treeEl = h('nav.mx-tree', { 'aria-label': 'Scopes' }, treeFilter, treeList);
-  const tabsEl = h('div.mx-tabs', { role: 'tablist' });
-  const gridEl = h('div.mx-grid');
-  const bodyEl = h('div.mx-body', {}, treeEl, h('section', {}, tabsEl, gridEl));
+  const tierEl = h('div.mt-tierline');
+  const chipsEl = h('div.mt-chips');
+  const treeFilter = h('input.input', { type: 'search', placeholder: 'Find a node, VM, agent, model…', 'aria-label': 'Filter scopes', oninput: () => renderTreeList() });
+  treeFilter.setAttribute('data-input', 'mt-tree-q');
+  const treeList = h('div.mt-tree-list');
+  const treeEl = h('nav.mt-tree', { 'aria-label': 'Scopes' }, treeFilter, treeList);
+  const tabsEl = h('div.tabs.mt-tabs', { role: 'tablist' });
+  const gridEl = h('div.mt-grid');
+  const bodyEl = h('div.mt-body', {}, treeEl, h('div.mt-main', {}, tabsEl, gridEl));
+  const viewEl = h('div.mt-view', {}, head, tierEl, chipsEl, bodyEl);
   const resizeObs = new ResizeObserver(() => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(redrawAll, RESIZE_DEBOUNCE_MS);
@@ -278,7 +290,10 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     renderRanges();
     shiftFwd.disabled = state.shift >= 0;
     liveBtn.setAttribute('aria-pressed', String(state.live));
+    liveBtn.className = state.live ? 'btn sm' : 'btn ghost sm';
+    liveDot.hidden = !state.live;
     annotBtn.setAttribute('aria-pressed', String(state.annotations));
+    annotBtn.className = state.annotations ? 'btn primary sm' : 'btn ghost sm';
     groupSel.value = state.group;
     compareSel.value = compareKey(state.compare);
     exportLink.href = api.metricsExportUrl(queryOf(state, gridWidth(), localOffset()));
@@ -294,10 +309,10 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const nodes: Node[] = [];
     path.forEach(([label, id], i) => {
       if (i === last) {
-        nodes.push(h('span.mx-here', {}, label.trim()));
+        nodes.push(h('span.mt-here', {}, label.trim()));
         if (v.scope.siblings.length > 1) nodes.push(siblingButton(v.scope.siblings));
       } else {
-        nodes.push(h('button', { type: 'button', onclick: () => go({ scope: id }) }, label.trim()), h('span', {}, '›'));
+        nodes.push(h('button.mt-link', { type: 'button', onclick: () => go({ scope: id }) }, label.trim()), h('span.muted', {}, ' › '));
       }
     });
     replace(crumbsEl, nodes);
@@ -305,7 +320,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   /** The ▾ beside the current scope: its siblings in a menu. */
   function siblingButton(siblings: [string, string][]): HTMLButtonElement {
-    const btn = h('button.mx-sib', { type: 'button', title: 'Switch to a sibling', 'aria-label': 'Switch to a sibling' }, '▾');
+    const btn = h('button.btn.ghost.sm', { type: 'button', title: 'Switch to a sibling', 'aria-label': 'Sibling scopes', 'data-act': 'mt-sib' }, '▾');
     btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       menu(
@@ -348,13 +363,14 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const chips: Node[] = [];
     if (state.zoom) {
       chips.push(
-        h('span.mx-chip', {}, `zoomed ${percent(state.zoom[0])}–${percent(state.zoom[1])}% of the range `, button('reset (z)', () => resetZoom(), { kind: 'ghost', size: 'sm' })),
+        h('span.mt-chip', {}, `zoomed ${percent(state.zoom[0])}–${percent(state.zoom[1])}% of the range `, button('reset (z)', () => resetZoom(), { kind: 'ghost', size: 'sm' })),
       );
     }
     if (v && state.compare.startsWith('scope:')) {
-      chips.push(h('span.mx-chip', {}, `comparing with ${v.compare_label} `, button('stop', () => stopCompare(), { kind: 'ghost', size: 'sm' })));
+      chips.push(h('span.mt-chip', {}, `comparing with ${v.compare_label} `, button('stop', () => stopCompare(), { kind: 'ghost', size: 'sm' })));
     }
-    replace(tierEl, reading, chips);
+    replace(tierEl, reading);
+    replace(chipsEl, chips);
   }
 
   function liveText(): string {
@@ -377,12 +393,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     let group: string | null = null;
     for (const t of v.tabs) {
       if (t.group !== group) {
+        nodes.push(h(group === null ? 'span.mt-tg' : 'span.mt-tg.mt-sep', { 'aria-hidden': 'true' }, t.group || '·'));
         group = t.group;
-        nodes.push(h('span.mx-tg', { 'aria-hidden': 'true' }, t.group || '·'));
       }
       const count = t.key === 'alerts' ? v.firing : 0;
-      const badge = count > 0 ? h('span.mx-badge', {}, String(count)) : null;
-      nodes.push(h('button', { type: 'button', role: 'tab', 'aria-selected': String(t.key === state.tab), onclick: () => selectTab(t.key) }, t.label, badge));
+      const badge = count > 0 ? h('span.mt-badge', {}, String(count)) : null;
+      nodes.push(h('button.tab.mt-tab', { type: 'button', role: 'tab', 'aria-selected': String(t.key === state.tab), 'data-act': 'mt-tab', onclick: () => selectTab(t.key) }, t.label, badge));
     }
     replace(tabsEl, nodes);
     const current = tabsEl.querySelector('[aria-selected=true]');
@@ -418,28 +434,28 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     for (const [label, list] of groups) {
       const rows = list.filter((n) => !q || n.label.toLowerCase().includes(q));
       if (!rows.length) continue;
-      nodes.push(h('div.mx-grp', {}, label));
+      nodes.push(h('div.mt-tg2', {}, label));
       for (const n of rows) nodes.push(treeNode(n));
     }
-    replace(treeList, nodes.length ? nodes : h('div.mx-empty', {}, 'No scope matches.'));
+    replace(treeList, nodes.length ? nodes : h('div.mt-empty', {}, 'No scope matches.'));
   }
 
   function treeNode(n: ScopeNode): HTMLElement {
     const node = h(
-      'button',
+      'button.mt-node',
       {
         type: 'button',
-        class: 'mx-node',
+        'data-act': 'mt-go-scope',
         'aria-current': String(n.id === state.scope),
         style: `padding-left: ${12 + n.depth * 14}px`,
         onclick: () => {
-          treeEl.classList.remove('mx-open');
+          bodyEl.classList.remove('mt-open');
           go({ scope: n.id });
         },
       },
-      n.status ? h('span.mx-st', { class: 'mx-' + n.status }) : null,
-      n.label.trim(),
-      n.tag ? h('span.mx-k', {}, n.tag) : null,
+      h('span', { class: `mt-st mt-${n.status || 'mute'}` }),
+      h('span.mt-nl', {}, n.label.trim()),
+      n.tag ? h('span.mt-k', {}, n.tag) : null,
     );
     return node;
   }
@@ -452,7 +468,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   function setGridMessage(text: string): void {
     disposeHandles();
-    replace(gridEl, h('div.mx-empty', {}, text));
+    replace(gridEl, h('div.mt-empty', {}, text));
   }
 
   /** Draws every panel of the view. Live frames and resizes update the existing handles instead. */
@@ -466,7 +482,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       handles.set(p.id, handle);
       return handle.el;
     });
-    replace(gridEl, cards.length ? cards : h('div.mx-empty', {}, 'Nothing to show here yet.'));
+    replace(gridEl, cards.length ? cards : h('div.mt-empty', {}, 'Nothing to show here yet.'));
     refreshFresh();
   }
 
@@ -689,7 +705,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   function toggleDensity(): void {
     state = { ...state, compact: !state.compact };
     savePrefs(state);
-    root.classList.toggle('mx-compact', state.compact);
+    viewEl.classList.toggle('mt-compact', state.compact);
     drawGrid();
   }
 
@@ -814,9 +830,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       closeOverlay();
       return;
     }
-    const full = root.querySelector('.mx-card.mx-full');
+    const full = root.querySelector('.mt-card.mt-full');
     if (full) {
-      full.classList.remove('mx-full');
+      full.classList.remove('mt-full');
       requestAnimationFrame(redrawAll);
     }
   }
@@ -842,9 +858,8 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (overlayOpen()) closeOverlay();
   };
 
-  root.classList.add('mx-view');
-  root.classList.toggle('mx-compact', state.compact);
-  replace(root, head, tierEl, bodyEl);
+  viewEl.classList.toggle('mt-compact', state.compact);
+  replace(root, viewEl);
   renderControls();
   renderTreeList();
   resizeObs.observe(gridEl);

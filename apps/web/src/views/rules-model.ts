@@ -39,7 +39,7 @@ export const EXAMPLE_LAW = `law "O-001" "Agents do not delete posts" {
   tier statute
   enforcement preventive
   severity major
-  statement "Agents never delete a post from the board."
+  statement "Agents do not delete posts on the board."
   forbid tool.call
   principal is Agent
   resource is Tool

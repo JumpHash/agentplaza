@@ -153,13 +153,25 @@ fn engine_env(home: &Path, route: &Route) -> Vec<String> {
 /// pairs (see [`engine_env`]) and the model id the engine is given. OpenCode's model id is its provider block's `<id>/<model>`, which its config
 /// names as the default model. `HOME` is the engine's own folder (see `acp::layout::engine_home`), not
 /// the workspace.
+#[cfg(test)]
 pub(crate) fn acp_launch(
     workspace: &Workspace,
     engine_id: &str,
     model: Option<&str>,
 ) -> Result<(Vec<String>, Option<String>), String> {
-    let home = layout::engine_home(workspace, engine_id);
-    let home = home.as_path();
+    acp_launch_at(workspace, engine_id, engine_id, model)
+}
+
+/// [`acp_launch`] for an engine whose home folder is `home` (an added instance's own), with the
+/// catalogue's launch for `engine_id`.
+pub(crate) fn acp_launch_at(
+    workspace: &Workspace,
+    engine_id: &str,
+    home_name: &str,
+    model: Option<&str>,
+) -> Result<(Vec<String>, Option<String>), String> {
+    let dir = layout::engine_home(workspace, home_name);
+    let home = dir.as_path();
     match engine_id {
         // Gemini CLI and Qwen Code read their model from the environment, so the session is given none.
         "gemini" => return Ok((engine_env(home, &gemini_route(model)?), None)),
@@ -174,7 +186,12 @@ pub(crate) fn acp_launch(
         // command line (`acp_args`).
         "auggie" => return Ok((engine_env(home, &auggie_route()), None)),
         // Vibe reads its model from the config file `write_vibe_config` wrote before this launch.
-        "vibe" => return Ok((engine_env(home, &vibe_route(workspace, model)?), None)),
+        "vibe" => {
+            return Ok((
+                engine_env(home, &vibe_route(workspace, home_name, model)?),
+                None,
+            ));
+        }
         "opencode" => {
             let (route, model_id) = opencode_schema_launch("OPENCODE_CONFIG_CONTENT", model)?;
             return Ok((engine_env(home, &route), model_id));
@@ -190,37 +207,65 @@ pub(crate) fn acp_launch(
     Ok((engine_env(home, &route), route.model.clone()))
 }
 
+/// The launch of an ACP engine the catalogue does not know (`acp:<registry id>` or `acp-local`): it runs
+/// as a plain ACP agent. The gateway's Anthropic and OpenAI base URLs are the ones every engine gets
+/// (`ENGINE_ENV`), so the call's model is given to the session without its provider when the provider is
+/// one of those two.
+pub(crate) fn plain_launch(
+    workspace: &Workspace,
+    home: &str,
+    model: Option<&str>,
+) -> Result<(Vec<String>, Option<String>), String> {
+    let dir = layout::engine_home(workspace, home);
+    let model_id = match model {
+        None => None,
+        Some(model) => match split_model(model)? {
+            ("anthropic" | "openai", rest) => Some(rest.to_string()),
+            _ => {
+                return Err(format!(
+                    "invalid input: \"model\" is {model:?}; this engine takes anthropic/... or openai/... models"
+                ));
+            }
+        },
+    };
+    Ok((engine_env(&dir, &Route::default()), model_id))
+}
+
 /// The folder Mistral Vibe keeps its config in: `vibe` under the engine's own home
 /// (`/workspace/.engines/home/vibe/vibe`). It is the engine's, so the engine can edit its own
 /// settings; it is outside `.plaza`, which the engine cannot read. The config holds only
 /// the gateway route and a placeholder key.
-pub(crate) fn vibe_home(workspace: &Workspace) -> PathBuf {
-    layout::engine_home(workspace, "vibe").join("vibe")
+pub(crate) fn vibe_home(workspace: &Workspace, home: &str) -> PathBuf {
+    layout::engine_home(workspace, home).join("vibe")
 }
 
 /// Writes Mistral Vibe's `config.toml` for the call's model, before the launch, so a new model takes
 /// effect on every call (the way Cline's saved settings do). Vibe reads it from `VIBE_HOME`.
-pub(crate) fn write_vibe_config(workspace: &Workspace, model: Option<&str>) -> Result<(), String> {
+pub(crate) fn write_vibe_config(
+    workspace: &Workspace,
+    home: &str,
+    model: Option<&str>,
+) -> Result<(), String> {
     let config = vibe_config(model)?;
-    let home = vibe_home(workspace);
-    std::fs::create_dir_all(&home)
-        .map_err(|err| format!("unavailable: cannot create {}: {err}", home.display()))?;
-    std::fs::write(home.join("config.toml"), config)
-        .map_err(|err| format!("unavailable: cannot write {}: {err}", home.display()))?;
+    let dir = vibe_home(workspace, home);
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("unavailable: cannot create {}: {err}", dir.display()))?;
+    std::fs::write(dir.join("config.toml"), config)
+        .map_err(|err| format!("unavailable: cannot write {}: {err}", dir.display()))?;
     // The harness wrote it as root; the engine keeps its own settings folder (see `acp::layout`).
-    layout::give_to_engine(workspace.dir(), &home)
+    layout::give_to_engine(workspace.dir(), &dir)
 }
 
 /// The route for Mistral Vibe, which runs over ACP only and reads its provider and model from the file
 /// [`write_vibe_config`] writes: `VIBE_HOME` names that file's folder, and the placeholder key comes from
 /// `PLAZA_API_KEY`, which the file names. The model is in the file, so the session is given none.
-fn vibe_route(workspace: &Workspace, model: Option<&str>) -> Result<Route, String> {
+fn vibe_route(workspace: &Workspace, home: &str, model: Option<&str>) -> Result<Route, String> {
     vibe_config(model)?;
     Ok(Route {
         env: vec![
             (
                 "VIBE_HOME".to_string(),
-                vibe_home(workspace).display().to_string(),
+                vibe_home(workspace, home).display().to_string(),
             ),
             ("PLAZA_API_KEY".to_string(), "plaza".to_string()),
         ],
@@ -553,7 +598,7 @@ struct Route {
 }
 
 /// Splits a plaza model id `<provider>/<rest>` on its first `/`.
-fn split_model(model: &str) -> Result<(&str, &str), String> {
+pub(crate) fn split_model(model: &str) -> Result<(&str, &str), String> {
     match model.split_once('/') {
         Some((provider, rest)) if !provider.is_empty() && !rest.is_empty() => Ok((provider, rest)),
         _ => Err(format!(
@@ -921,7 +966,7 @@ mod tests {
         assert!(config.contains("bypass_tool_permissions = false\n"));
         // Under the engine's own home, and never under the harness's own state.
         assert_eq!(
-            vibe_home(&workspace),
+            vibe_home(&workspace, "vibe"),
             workspace
                 .dir()
                 .join(".engines")
@@ -929,7 +974,7 @@ mod tests {
                 .join("vibe")
                 .join("vibe")
         );
-        assert!(!vibe_home(&workspace).starts_with(workspace.plaza_dir()));
+        assert!(!vibe_home(&workspace, "vibe").starts_with(workspace.plaza_dir()));
 
         let (env, model) = acp_launch(&workspace, "vibe", Some("openai/gpt-x")).expect("vibe");
         assert_eq!(model, None);
@@ -940,7 +985,10 @@ mod tests {
                 workspace.dir().join(".engines/home/vibe").display()
             )
         );
-        assert!(env.contains(&format!("VIBE_HOME={}", vibe_home(&workspace).display())));
+        assert!(env.contains(&format!(
+            "VIBE_HOME={}",
+            vibe_home(&workspace, "vibe").display()
+        )));
         assert!(env.contains(&"PLAZA_API_KEY=plaza".to_string()));
     }
 

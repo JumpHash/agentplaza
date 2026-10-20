@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 // Our brand key → simple-icons export name.
 const map = {
-  anthropic: 'siAnthropic', openai: 'siOpenai', google: 'siGooglegemini', aws: 'siAmazonaws',
+  anthropic: 'siAnthropic', claude: 'siClaude', openai: 'siOpenai', google: 'siGooglegemini', aws: 'siAmazonaws',
   azure: 'siMicrosoftazure', microsoft: 'siMicrosoft', xai: 'siX', deepseek: 'siDeepseek', zai: 'siZdotai', moonshot: 'siMoonshotai', mistral: 'siMistralai',
   openrouter: 'siOpenrouter', opencode: 'siOpencode', perplexity: 'siPerplexity', nvidia: 'siNvidia', ollama: 'siOllama',
   lmstudio: 'siLmstudio', vllm: 'siVllm', huggingface: 'siHuggingface',

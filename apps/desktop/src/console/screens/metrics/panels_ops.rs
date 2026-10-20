@@ -609,11 +609,12 @@ fn pill<'a>(label: &str, color: Color) -> Element<'a, Msg> {
             .color(color),
     )
     .padding(Padding::from([2.0, 8.0]))
+    // The web's `.chip`: a soft ground in the tone, the skin's small radius, no edge.
     .style(move |_: &Theme| container::Style {
+        background: Some(color.scale_alpha(0.14).into()),
         border: Border {
-            color,
-            width: 1.0,
-            radius: 0.0.into(),
+            radius: crate::theme::skin().radius_sm.into(),
+            ..Default::default()
         },
         ..Default::default()
     })

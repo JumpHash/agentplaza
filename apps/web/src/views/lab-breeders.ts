@@ -4,14 +4,12 @@
 // read as the agent's page reads it, and kept to the foundry_* tools and invoke_model. A job belongs
 // to a breeder when its `agent` is the breeder's CID (the hub's job summary carries it).
 
-import '../styles/lab-breeders.css';
 import { api, listJobs, type Agent, type Entry, type JobSummary } from '../api';
 import { href } from '../router';
-import { clip } from '../ui/components';
+import { badge, card, clip, table as dataTable, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
-import { errorText, fmtGpuHours, fmtNumber, fmtTime, labEmpty, labRequest, pollEvery } from './lab-common';
-import { dataTable } from './lab-models';
+import { agoText, errorText, fmtGpuHours, fmtNumber, labEmpty, labRequest, pollEvery } from './lab-common';
 
 const POLL_MS = 5_000;
 /** The per-job GPU-hour cap when the laws cannot be read: S-006c permits a breeder's job up to 8 GPU-hours (S-006d refuses more). */
@@ -49,8 +47,8 @@ async function readCap(): Promise<number | null> {
   }
 }
 
-const JOB_TONE: Record<string, string> = { queued: 'muted', running: 'info', done: 'ok', failed: 'danger', cancelled: 'warn' };
-const STATUS_TONE: Record<string, string> = { working: 'accent', idle: 'ok', offline: 'muted' };
+const JOB_TONE: Record<string, Tone> = { queued: 'muted', running: 'info', done: 'ok', failed: 'danger', cancelled: 'warn' };
+const STATUS_TONE: Record<string, Tone> = { working: 'info', idle: 'muted', offline: 'muted' };
 
 const isFoundry = (name: string): boolean => name.startsWith('foundry_') || name === 'invoke_model';
 
@@ -115,25 +113,23 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
 
   const draw = (): void => {
     if (failure && breeders === null) {
-      replace(root, h('p.lab-error', { role: 'alert' }, failure));
+      replace(root, h('p.lab-err', { role: 'alert' }, failure));
       return;
     }
     if (breeders === null) {
-      replace(root, h('p.lab-muted', null, 'Loading breeders'));
+      replace(root, h('p.lab-note', null, 'Loading breeders'));
       return;
     }
     if (breeders.length === 0) {
-      replace(root, labEmpty('wrenchcog', 'No breeders yet.', 'A breeder is an agent with the breeder role; create one from Agents.'));
+      replace(root, labEmpty('bot', 'No breeders yet.', 'A breeder is an agent with the breeder role; create one from Agents.'));
       return;
     }
     const jobs = breeders.reduce((n, b) => n + b.jobs.length, 0);
     const used = breeders.reduce((n, b) => n + b.used, 0);
-    const summary = h('p.lab-muted', null, `${fmtNumber(breeders.length)} breeders · ${fmtNumber(jobs)} jobs · ${fmtGpuHours(used)} used`);
+    const summary = h('span.lab2-note', null, `${fmtNumber(breeders.length)} breeders · ${fmtNumber(jobs)} jobs · ${fmtGpuHours(used)} used`);
     replace(
       root,
-      h('div.lab-page-head', null, h('h2', null, 'Breeders'), h('div.lab-actions', null, summary)),
-      failure ? h('p.lab-error', { role: 'alert' }, failure) : null,
-      h('div.lab-stack', null, breeders.map(breederCard)),
+      h('div.lab2-form', null, h('div.lab2-row', { style: 'justify-content:flex-start' }, summary), failure ? h('p.lab-err', { role: 'alert' }, failure) : null, h('div.lab2-grid', null, breeders.map(breederCard)), jobsCard(breeders), callsCard(breeders)),
     );
   };
 
@@ -176,45 +172,55 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
   return () => stop();
 }
 
-/** One breeder: its head (name, status), budget use, its jobs and its recent Foundry calls. */
+/** One breeder's card: its name and status, its role and CID, then the GPU-hours used, the jobs and the per-job cap. */
 function breederCard(b: Breeder): HTMLElement {
   const a = b.agent;
   const name = a.name.trim() === '' ? `agent ${a.cid}` : a.name;
-  const jobRows = b.jobs.map((j) => [
-    h('a.lab-mono.lab-nowrap', { href: href('lab', 'jobs', j.id) }, j.id),
-    h('span.lab-badge', { class: JOB_TONE[j.status] ?? 'muted' }, j.status),
-    h('span.lab-mono.lab-nowrap', null, j.recipe),
-    h('span.lab-nowrap', null, fmtGpuHours(j.gpu_hours)),
-    h('span.lab-nowrap', null, fmtTime(j.created_ms)),
-  ]);
-  const callRows = b.calls.map((c) => [
-    h('span.lab-nowrap', null, fmtTime(c.at_ms)),
-    h('span.lab-mono.lab-nowrap', null, c.name),
-    c.detail ? h('span.lab-mono.lab-muted', null, clip(c.detail, 48)) : '—',
-    h('span', { class: c.refused ? 'lab-error' : '' }, c.result ? clip(c.result.replace(/\s+/g, ' '), 140) : c.refused ? 'refused' : '—'),
-  ]);
-  return h(
-    'section.lab-card.lab-breeder',
+  const body = h(
+    'div',
     null,
-    h('header.lab-card-head', null, h('h3', null, h('a', { href: href('agents', a.cid) }, name)), h('span.lab-badge', { class: STATUS_TONE[a.status] ?? 'muted' }, a.status)),
     h(
-      'div.lab-card-body',
-      null,
-      h(
-        'div.lab-stack-tight',
-        null,
-        h(
-          'div.lab-budget',
-          null,
-          h('div.lab-budget-head', null, h('span.lab-section-title', null, 'GPU-hours used'), h('span.lab-mono', null, fmtGpuHours(b.used))),
-          h('span.lab-muted', null, `per-job cap ${fmtNumber(b.cap)} GPU-h (S-006c)`),
-        ),
-        b.note ? h('p.lab-error', null, b.note) : null,
-        h('h4.lab-section-title', null, `Jobs (${fmtNumber(b.jobs.length)})`),
-        dataTable(['Job', 'Status', 'Recipe', 'GPU-h', 'Created'], jobRows, 'No jobs yet.'),
-        h('h4.lab-section-title', null, 'Recent Foundry calls'),
-        dataTable(['Time', 'Tool', 'Input', 'Result'], callRows, 'No Foundry tool calls yet.'),
-      ),
+      'div.lab2-row',
+      { style: 'justify-content:flex-start' },
+      badge(a.status, STATUS_TONE[a.status] ?? 'muted'),
+      h('span.lab2-note', null, `breeder · CID ${a.cid}`),
     ),
+    h(
+      'dl.kv',
+      null,
+      h('div', null, h('dt', null, 'GPU-h used'), h('dd', null, h('span.num', null, fmtGpuHours(b.used)))),
+      h('div', null, h('dt', null, 'Jobs'), h('dd', null, fmtNumber(b.jobs.length))),
+      h('div', null, h('dt', null, 'Per-job cap'), h('dd', null, `${fmtNumber(b.cap)} GPU-h`)),
+    ),
+    b.note ? h('p.lab-err', null, b.note) : null,
   );
+  return card(name, body, { actions: [h('a.btn.ghost.sm', { href: href('agents', a.cid) }, h('span', null, 'Agent page'))] });
+}
+
+/** Every breeder's jobs in one table: each job links to its page. */
+function jobsCard(breeders: Breeder[]): HTMLElement {
+  const rows = breeders.flatMap((b) => b.jobs);
+  const cols: Column<JobRow>[] = [
+    { label: 'Job', cell: (j) => h('a.mono', { href: href('lab', 'jobs', j.id) }, j.id) },
+    { label: 'Status', cell: (j) => badge(j.status, JOB_TONE[j.status] ?? 'muted') },
+    { label: 'Recipe', cell: (j) => h('span.mono', null, j.recipe) },
+    { label: 'GPU-h', num: true, cell: (j) => j.gpu_hours.toFixed(2) },
+    { label: 'Created', cell: (j) => agoText(j.created_ms) },
+  ];
+  return card('Jobs', rows.length ? h('div.tbl-wrap', null, dataTable(cols, rows)) : h('p.lab-note', null, 'No jobs yet.'));
+}
+
+/** Each breeder's recent Foundry calls, newest first, read from its transcript. */
+function callsCard(breeders: Breeder[]): HTMLElement {
+  const cols: Column<ToolCall>[] = [
+    { label: 'Time', cell: (c) => agoText(c.at_ms) },
+    { label: 'Tool', cell: (c) => h('span.mono', null, c.name) },
+    { label: 'Input', cell: (c) => h('span.mono', null, c.detail ? clip(c.detail, 80) : '—') },
+    { label: 'Result', cell: (c) => (c.refused ? h('span.lab2-over', null, `Refused${c.result ? `: ${clip(c.result.replace(/\s+/g, ' '), 140)}` : ''}`) : c.result ? clip(c.result.replace(/\s+/g, ' '), 140) : '—') },
+  ];
+  const parts = breeders.map((b) => {
+    if (b.note && b.calls.length === 0) return h('p.lab2-note', null, b.note);
+    return b.calls.length ? h('div.tbl-wrap', null, dataTable(cols, b.calls)) : h('p.lab-note', null, 'No Foundry calls yet.');
+  });
+  return card('Recent Foundry calls', parts.length ? parts : h('p.lab-note', null, 'No Foundry calls yet.'));
 }

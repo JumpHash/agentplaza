@@ -3,7 +3,7 @@
 use std::io::Read;
 
 use clap::Subcommand;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::ctx::{self, Ctx, confirm};
 
@@ -16,11 +16,14 @@ const EFFORTS: [&str; 8] = [
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// The configured providers: kind, endpoint, key status, models.
+    /// The configured providers and the coding engines: label, enabled, health, key, endpoint, models.
     Providers {
-        /// Only the `chat` or the `decisions` providers.
+        /// Only the `chat` or the `decisions` API providers (engines have no group, so they are left out).
         #[arg(long)]
         group: Option<String>,
+        /// Only the `api` providers or the `engine` instances.
+        #[arg(long, value_name = "api|engine")]
+        family: Option<String>,
     },
     /// The provider kinds you can add (presets).
     Presets,
@@ -52,6 +55,12 @@ pub enum Cmd {
         /// Store the API key read from stdin with the provider.
         #[arg(long)]
         key_stdin: bool,
+        /// The name shown for the provider (default: the kind's name).
+        #[arg(long)]
+        label: Option<String>,
+        /// The accent colour, #rrggbb (`none` clears it).
+        #[arg(long)]
+        accent: Option<String>,
     },
     /// Change a provider's endpoint, auth or models. Flags not given keep what it has.
     Edit {
@@ -123,12 +132,179 @@ pub enum Cmd {
         #[command(subcommand)]
         action: Option<PricesCmd>,
     },
+    /// Turn a provider or a coding engine on.
+    Enable {
+        /// The provider or engine id.
+        id: String,
+    },
+    /// Turn a provider or a coding engine off.
+    Disable {
+        /// The provider or engine id.
+        id: String,
+    },
+    /// Check the health of one provider or engine, or of all of them.
+    Check {
+        /// The provider or engine id; none checks all.
+        id: Option<String>,
+    },
+    /// Update the coding engines to the versions the catalogue pins.
+    Update {
+        /// List the changes without installing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The coding engines: add, change, remove.
+    Engines {
+        #[command(subcommand)]
+        action: EnginesCmd,
+    },
+    /// The ACP registry of coding agents.
+    Registry {
+        #[command(subcommand)]
+        action: RegistryCmd,
+    },
+    /// Favourite models: they lead the model pickers.
+    Favourite {
+        #[command(subcommand)]
+        action: FavouriteCmd,
+    },
+    /// The CLIProxyAPI hubs whose pooled account quotas show next to the providers.
+    UsageProviders {
+        #[command(subcommand)]
+        action: UsageCmd,
+    },
+    /// The providers' settings: the background health check interval.
+    Settings {
+        #[command(subcommand)]
+        action: SettingsCmd,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum PricesCmd {
     /// Fetches the price sources again now, then prints what each one returned.
     Refresh,
+}
+
+/// The flags an engine takes (`engines add` and `engines set`). Variables are plain values: keys never go here.
+#[derive(clap::Args, Debug, Default)]
+pub struct EngineFlags {
+    /// The name shown for the engine.
+    #[arg(long)]
+    pub label: Option<String>,
+    /// A local program to run (one program; its arguments go in --arg).
+    #[arg(long)]
+    pub command: Option<String>,
+    /// One argument for the program, in order. Repeatable.
+    #[arg(long = "arg", value_name = "ARG", allow_hyphen_values = true)]
+    pub args: Vec<String>,
+    /// A plain variable for the engine, NAME=VALUE. Repeatable.
+    #[arg(long = "env", value_name = "NAME=VALUE")]
+    pub env: Vec<String>,
+    /// The model the engine runs through, provider/model (empty clears it: the plaza's default).
+    #[arg(long)]
+    pub route: Option<String>,
+    /// The npm version: a version, `latest`, or `pinned` (the catalogue's).
+    #[arg(long)]
+    pub version: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EnginesCmd {
+    /// Add an engine: from the ACP registry (`--registry`), or as a local program (`--command`).
+    #[command(disable_version_flag = true)]
+    Add {
+        /// The engine's id: letters, digits, `_` and `-`.
+        id: String,
+        /// The registry agent to run, e.g. claude-code (see `models registry search`).
+        #[arg(long)]
+        registry: Option<String>,
+        #[command(flatten)]
+        flags: EngineFlags,
+    },
+    /// Change an engine. Flags not given keep what it has; a flag given replaces its list (args, variables).
+    #[command(disable_version_flag = true)]
+    Set {
+        /// The engine's id.
+        id: String,
+        #[command(flatten)]
+        flags: EngineFlags,
+    },
+    /// Remove an engine you added (the built-in ones are only turned off). Asks first unless --yes.
+    Remove {
+        /// The engine's id.
+        id: String,
+        /// Remove without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RegistryCmd {
+    /// The registry's agents whose id, name or description contains the query (all when empty).
+    Search {
+        /// The text to find.
+        #[arg(default_value = "")]
+        query: String,
+        /// Fetch the registry again first instead of the hub's copy.
+        #[arg(long)]
+        refresh: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FavouriteCmd {
+    /// Favourite a model: provider/model.
+    Add {
+        /// The model, provider/model.
+        model: String,
+    },
+    /// Take a model off the favourites.
+    Remove {
+        /// The model, provider/model.
+        model: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum UsageCmd {
+    /// Add a CLIProxyAPI hub. Its management key is read from stdin, never an argument.
+    Add {
+        /// The hub's URL.
+        #[arg(long)]
+        url: String,
+        /// The name shown for it (default: the hub's host name).
+        #[arg(long)]
+        label: Option<String>,
+        /// Read the management key from stdin.
+        #[arg(long)]
+        key_stdin: bool,
+    },
+    /// The usage hubs and their last reading.
+    List,
+    /// One hub's usage now: totals, models, pooled accounts.
+    Usage {
+        /// The usage provider's id.
+        id: String,
+    },
+    /// Remove a usage hub. Asks first unless --yes.
+    Remove {
+        /// The usage provider's id.
+        id: String,
+        /// Remove without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SettingsCmd {
+    /// How often the background check refreshes the providers, engines and models, in seconds (0 turns it off).
+    HealthInterval {
+        /// The interval in seconds, 0 to 86400. None shows it.
+        seconds: Option<u64>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -199,27 +375,28 @@ pub enum DecisionsCmd {
 
 pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
     match cmd {
-        Cmd::Providers { group } => {
+        Cmd::Providers { group, family } => {
             let want = group_filter(group)?;
-            let list = ctx.client.get("/v1/providers")?;
-            let kept = filter(&list, want.as_deref(), provider_group);
-            ctx.out(&kept, |v| {
-                let rows: Vec<Vec<String>> = items(v)
-                    .map(|p| {
-                        vec![
-                            ctx::s(p, "id").to_string(),
-                            ctx::s(p, "kind").to_string(),
-                            provider_group(p).to_string(),
-                            key_status(ctx::s(p, "credential")).to_string(),
-                            ctx::text(p, "base_url"),
-                            p.get("models")
-                                .and_then(Value::as_array)
-                                .map_or(0, Vec::len)
-                                .to_string(),
-                        ]
-                    })
-                    .collect();
-                ctx::table(&["id", "kind", "group", "key", "endpoint", "models"], &rows);
+            let family = family_filter(family.as_deref())?;
+            let mut rows: Vec<Value> = Vec::new();
+            if family != Some(Family::Engine) {
+                let list = ctx.client.get("/v1/providers")?;
+                rows.extend(items(&filter(&list, want.as_deref(), provider_group)).cloned());
+            }
+            if family != Some(Family::Api) && want.is_none() {
+                let engines = ctx.client.get("/v1/engines")?;
+                rows.extend(items(&engines).cloned());
+            }
+            let shown = Value::Array(rows);
+            ctx.out(&shown, |v| {
+                let rows: Vec<Vec<String>> = items(v).map(instance_row).collect();
+                ctx::table(
+                    &[
+                        "family", "id", "kind", "label", "enabled", "health", "key", "endpoint",
+                        "models",
+                    ],
+                    &rows,
+                );
             });
             Ok(())
         }
@@ -251,6 +428,8 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             command,
             models,
             key_stdin,
+            label,
+            accent,
         } => {
             let key = if key_stdin {
                 Some(read_secret_from_stdin()?)
@@ -269,17 +448,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         .ok_or_else(|| {
                             format!("no preset {name}: see `agentplaza models presets`")
                         })?;
-                    let mut body = json!({
-                        "id": id.clone().unwrap_or_else(|| name.clone()),
-                        "kind": ctx::s(&found, "kind"),
-                        "base_url": found.get("base_url").cloned().unwrap_or(Value::Null),
-                        "auth": found.get("auth").cloned().unwrap_or_else(|| json!("none")),
-                        "models": found.get("models").cloned().unwrap_or_else(|| json!([])),
-                    });
-                    if let Some(options) = found.get("options").filter(|o| !o.is_null()) {
-                        body["options"] = options.clone();
-                    }
-                    body
+                    preset_body(&id.clone().unwrap_or_else(|| name.clone()), &found)
                 }
                 None => json!({
                     "id": id.clone().ok_or("give the provider an id with --id")?,
@@ -297,6 +466,12 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             }
             if let Some(auth) = auth_from_flags(env, secret, command)? {
                 body["auth"] = auth;
+            }
+            if let Some(name) = label {
+                body["label"] = json!(name);
+            }
+            if let Some(hex) = accent {
+                body["accent"] = accent_value(&hex)?;
             }
             let pid = body["id"].as_str().unwrap_or_default().to_string();
             ctx.client.post("/v1/providers", &body)?;
@@ -329,17 +504,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 .find(|p| ctx::s(p, "id") == id.as_str())
                 .cloned()
                 .ok_or_else(|| format!("no provider {id}: see `agentplaza models providers`"))?;
-            let mut body = json!({
-                "id": id,
-                "kind": ctx::s(&current, "kind"),
-                "base_url": current.get("base_url").cloned().unwrap_or(Value::Null),
-                "auth": current.get("auth").cloned().unwrap_or_else(|| json!("none")),
-                "models": current.get("models").cloned().unwrap_or_else(|| json!([])),
-                "extra_headers": current.get("extra_headers").cloned().unwrap_or_else(|| json!({})),
-            });
-            if let Some(options) = current.get("options").filter(|o| !o.is_null()) {
-                body["options"] = options.clone();
-            }
+            let mut body = api_config(&current);
             if let Some(url) = base_url {
                 body["base_url"] = json!(url);
             }
@@ -579,7 +744,688 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             }
             _ => Err("give both a provider and a model, or neither".into()),
         },
+        Cmd::Enable { id } => set_enabled(ctx, &id, true),
+        Cmd::Disable { id } => set_enabled(ctx, &id, false),
+        Cmd::Check { id } => check(ctx, id),
+        Cmd::Update { dry_run } => {
+            let report = ctx
+                .client
+                .post("/v1/engines/update", &json!({ "dry_run": dry_run }))?;
+            ctx.out(&report, print_update);
+            Ok(())
+        }
+        Cmd::Engines { action } => engines(ctx, action),
+        Cmd::Registry {
+            action: RegistryCmd::Search { query, refresh },
+        } => search_registry(ctx, &query, refresh),
+        Cmd::Favourite { action } => favourite(ctx, action),
+        Cmd::UsageProviders { action } => usage_providers(ctx, action),
+        Cmd::Settings {
+            action: SettingsCmd::HealthInterval { seconds },
+        } => health_interval(ctx, seconds),
     }
+}
+
+// ---- Providers, engines, favourites, usage hubs and settings ----------------------------------
+
+/// Which kind of instance an id names: an API provider, or a coding engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Family {
+    Api,
+    Engine,
+}
+
+/// The largest health check interval the hub takes, in seconds (a day).
+const MAX_HEALTH_INTERVAL: u64 = 86_400;
+
+/// `--family`: api, engine, or none for both.
+fn family_filter(text: Option<&str>) -> Result<Option<Family>, String> {
+    match text {
+        None => Ok(None),
+        Some("api") => Ok(Some(Family::Api)),
+        Some("engine") => Ok(Some(Family::Engine)),
+        Some(other) => Err(format!("--family is api or engine, not {other}")),
+    }
+}
+
+/// The provider or engine with `id`, and which family it is (providers are looked at first).
+fn find_instance(ctx: &Ctx, id: &str) -> Result<(Family, Value), String> {
+    let providers = ctx.client.get("/v1/providers")?;
+    if let Some(found) = items(&providers).find(|p| ctx::s(p, "id") == id) {
+        return Ok((Family::Api, found.clone()));
+    }
+    let engines = ctx.client.get("/v1/engines")?;
+    items(&engines)
+        .find(|e| ctx::s(e, "id") == id)
+        .map(|e| (Family::Engine, e.clone()))
+        .ok_or_else(|| format!("no provider or engine {id}: see `agentplaza models providers`"))
+}
+
+/// The whole config of an API provider as its `PUT` takes it, from what the hub lists. Redacted header values are
+/// restored by the hub, so they go back as they are.
+pub(crate) fn api_config(current: &Value) -> Value {
+    let mut body = json!({
+        "id": ctx::s(current, "id"),
+        "kind": ctx::s(current, "kind"),
+        "label": current.get("label").cloned().unwrap_or(Value::Null),
+        "accent": current.get("accent").cloned().unwrap_or(Value::Null),
+        "enabled": current.get("enabled").cloned().unwrap_or(json!(true)),
+        "base_url": current.get("base_url").cloned().unwrap_or(Value::Null),
+        "auth": current.get("auth").cloned().unwrap_or_else(|| json!("none")),
+        "models": current.get("models").cloned().unwrap_or_else(|| json!([])),
+        "extra_headers": current.get("extra_headers").cloned().unwrap_or_else(|| json!({})),
+    });
+    for key in ["options", "extra_body"] {
+        if let Some(value) = current.get(key).filter(|v| !v.is_null()) {
+            body[key] = value.clone();
+        }
+    }
+    body
+}
+
+/// The body that adds an API provider from a preset (one of `/v1/provider-kinds`), under `id`.
+pub(crate) fn preset_body(id: &str, preset: &Value) -> Value {
+    let mut body = json!({
+        "id": id,
+        "kind": ctx::s(preset, "kind"),
+        "base_url": preset.get("base_url").cloned().unwrap_or(Value::Null),
+        "auth": preset.get("auth").cloned().unwrap_or_else(|| json!("none")),
+        "models": preset.get("models").cloned().unwrap_or_else(|| json!([])),
+    });
+    if let Some(options) = preset.get("options").filter(|o| !o.is_null()) {
+        body["options"] = options.clone();
+    }
+    body
+}
+
+/// `#rrggbb` as the accent the hub keeps; `none` clears it.
+fn accent_value(text: &str) -> Result<Value, String> {
+    if text == "none" {
+        return Ok(Value::Null);
+    }
+    let hex = text.strip_prefix('#').unwrap_or("");
+    if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(json!(format!("#{}", hex.to_ascii_lowercase())))
+    } else {
+        Err(format!("{text}: the accent is #rrggbb, or none"))
+    }
+}
+
+/// An id a provider or engine takes: letters, digits, `_` and `-`.
+pub(crate) fn checked_id(id: &str) -> Result<(), String> {
+    let ok = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("{id}: an id is letters, digits, _ and -"))
+    }
+}
+
+/// An engine's version as the hub takes it: `pinned`, `latest`, or a dotted version such as `1.2.3`.
+pub(crate) fn version_ok(text: &str) -> Result<String, String> {
+    let numeric = !text.is_empty()
+        && text
+            .split('.')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+    if text == "pinned" || text == "latest" || numeric {
+        Ok(text.to_string())
+    } else {
+        Err(format!("{text}: a version is pinned, latest, or x.y.z"))
+    }
+}
+
+/// The body that saves an engine's runtime and variables (the whole set, as the console's Runtime section sends it):
+/// an empty home or route clears it; the arguments and variables replace the lists the hub keeps.
+pub(crate) fn runtime_body(
+    version: &str,
+    home: &str,
+    route: &str,
+    args: &[String],
+    env: &[String],
+) -> Result<Value, String> {
+    let route = if route.is_empty() {
+        Value::Null
+    } else {
+        json!(checked_entry(route)?)
+    };
+    Ok(json!({
+        "version": version_ok(version)?,
+        "home": if home.is_empty() { Value::Null } else { json!(home) },
+        "route": route,
+        "args": args,
+        "env": Value::Object(env_map(env)?),
+    }))
+}
+
+/// The body that adds a CLIProxyAPI usage hub: its management key goes with it, and the hub keeps it.
+pub(crate) fn usage_body(url: &str, key: &str, label: Option<&str>) -> Value {
+    let mut body = json!({ "kind": "cliproxyapi", "url": url, "key": key });
+    if let Some(label) = label {
+        body["label"] = json!(label);
+    }
+    body
+}
+
+/// `NAME=VALUE` pairs as the plain variables an engine takes.
+pub(crate) fn env_map(pairs: &[String]) -> Result<Map<String, Value>, String> {
+    let mut env = Map::new();
+    for pair in pairs {
+        let (name, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("--env takes NAME=VALUE, not {pair}"))?;
+        let name_ok = !name.is_empty()
+            && name
+                .chars()
+                .enumerate()
+                .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()));
+        if !name_ok {
+            return Err(format!(
+                "{name}: a variable name is letters, digits and _, not starting with a digit"
+            ));
+        }
+        env.insert(name.to_string(), json!(value));
+    }
+    Ok(env)
+}
+
+/// The body that adds an engine: from the ACP registry (`registry`), or a local program (`flags.command`).
+pub(crate) fn engine_body(
+    id: &str,
+    registry: Option<&str>,
+    flags: &EngineFlags,
+) -> Result<Value, String> {
+    let engine = match (registry, flags.command.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err("--registry and --command are two ways to get an engine: pick one".into());
+        }
+        (Some(agent), None) => format!("acp:{agent}"),
+        (None, Some(_)) => "acp-local".to_string(),
+        (None, None) => {
+            return Err("give the engine a registry agent with --registry, or a local program with --command".into());
+        }
+    };
+    let mut body = json!({ "id": id, "engine": engine });
+    if let Some(label) = &flags.label {
+        body["label"] = json!(label);
+    }
+    if let Some(command) = &flags.command {
+        body["command"] = json!(command);
+    }
+    if !flags.args.is_empty() {
+        body["args"] = json!(flags.args);
+    }
+    if !flags.env.is_empty() {
+        body["env"] = Value::Object(env_map(&flags.env)?);
+    }
+    if let Some(route) = flags.route.as_deref().filter(|r| !r.is_empty()) {
+        body["route"] = json!(checked_entry(route)?);
+    }
+    if let Some(version) = flags.version.as_deref().filter(|v| !v.is_empty()) {
+        body["version"] = json!(version_ok(version)?);
+    }
+    Ok(body)
+}
+
+/// The fields `engines set` changes: only the flags given. Refuses an empty change.
+pub(crate) fn engine_edit_body(flags: &EngineFlags) -> Result<Value, String> {
+    let mut body = Map::new();
+    if let Some(label) = &flags.label {
+        body.insert("label".into(), json!(label));
+    }
+    if let Some(command) = &flags.command {
+        body.insert("command".into(), json!(command));
+    }
+    if !flags.args.is_empty() {
+        body.insert("args".into(), json!(flags.args));
+    }
+    if !flags.env.is_empty() {
+        body.insert("env".into(), Value::Object(env_map(&flags.env)?));
+    }
+    if let Some(route) = &flags.route {
+        let value = if route.is_empty() {
+            Value::Null
+        } else {
+            json!(checked_entry(route)?)
+        };
+        body.insert("route".into(), value);
+    }
+    if let Some(version) = flags.version.as_deref().filter(|v| !v.is_empty()) {
+        body.insert("version".into(), json!(version_ok(version)?));
+    }
+    if body.is_empty() {
+        return Err(
+            "nothing to change: give a flag (see `agentplaza models engines set --help`)".into(),
+        );
+    }
+    Ok(Value::Object(body))
+}
+
+/// Turns a provider or an engine on or off. An API provider is saved whole; an engine takes just the flag.
+fn set_enabled(ctx: &Ctx, id: &str, on: bool) -> Result<(), String> {
+    let (family, current) = find_instance(ctx, id)?;
+    let saved = match family {
+        Family::Api => {
+            let mut body = api_config(&current);
+            body["enabled"] = json!(on);
+            ctx.client
+                .put(&format!("/v1/providers/{}", ctx::seg(id)), &body)?
+        }
+        Family::Engine => ctx.client.put(
+            &format!("/v1/engines/{}", ctx::seg(id)),
+            &json!({ "enabled": on }),
+        )?,
+    };
+    let verb = if on { "enabled" } else { "disabled" };
+    ctx.out(&saved, |_| println!("{verb} {id}"));
+    Ok(())
+}
+
+/// Checks one instance, or all of them. The answer is a map of id to health, as the hub's check answers are.
+fn check(ctx: &Ctx, id: Option<String>) -> Result<(), String> {
+    let report = match id {
+        Some(id) => {
+            let (family, _) = find_instance(ctx, &id)?;
+            let health = match family {
+                Family::Api => {
+                    let answer = ctx.client.call(
+                        "POST",
+                        &format!("/v1/providers/{}/check", ctx::seg(&id)),
+                        None,
+                    )?;
+                    answer.get("health").cloned().unwrap_or(Value::Null)
+                }
+                Family::Engine => {
+                    let map = ctx.client.call("POST", "/v1/engines/check", None)?;
+                    map.get(&id).cloned().unwrap_or(Value::Null)
+                }
+            };
+            let mut one = Map::new();
+            one.insert(id, health);
+            Value::Object(one)
+        }
+        None => {
+            let apis = ctx.client.call("POST", "/v1/providers/check", None)?;
+            let engines = ctx.client.call("POST", "/v1/engines/check", None)?;
+            let mut all = Map::new();
+            for map in [apis, engines] {
+                if let Value::Object(entries) = map {
+                    all.extend(entries);
+                }
+            }
+            Value::Object(all)
+        }
+    };
+    ctx.out(&report, print_health);
+    Ok(())
+}
+
+/// One row per checked instance: its id, its status and its message.
+fn print_health(map: &Value) {
+    let rows: Vec<Vec<String>> = map
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(id, h)| {
+            vec![
+                id.clone(),
+                ctx::s(h, "status").to_string(),
+                ctx::text(h, "message"),
+            ]
+        })
+        .collect();
+    ctx::table(&["id", "status", "message"], &rows);
+}
+
+/// The health of an instance as one cell: its status, then its message.
+pub(crate) fn health_text(h: &Value) -> String {
+    let status = ctx::s(h, "status");
+    let message = ctx::s(h, "message");
+    if message.is_empty() {
+        status.to_string()
+    } else {
+        format!("{status}  {message}")
+    }
+}
+
+/// One row of the providers list: an API provider, or an engine (its version where it has one).
+fn instance_row(i: &Value) -> Vec<String> {
+    let engine = ctx::s(i, "family") == "engine";
+    let endpoint = if engine {
+        let version = ctx::text(i, "version");
+        none_if_empty(if version.is_empty() {
+            ctx::text(i, "pinned")
+        } else {
+            version
+        })
+    } else {
+        ctx::text(i, "base_url")
+    };
+    let models = if engine {
+        "-".to_string()
+    } else {
+        i.get("models")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+            .to_string()
+    };
+    vec![
+        if engine { "engine" } else { "api" }.to_string(),
+        ctx::s(i, "id").to_string(),
+        if engine {
+            ctx::s(i, "engine").to_string()
+        } else {
+            ctx::s(i, "kind").to_string()
+        },
+        ctx::s(i, "label").to_string(),
+        if i.get("enabled").and_then(Value::as_bool) == Some(true) {
+            "yes"
+        } else {
+            "no"
+        }
+        .to_string(),
+        health_text(i.get("health").unwrap_or(&Value::Null)),
+        if engine {
+            "-".to_string()
+        } else {
+            key_status(ctx::s(i, "credential")).to_string()
+        },
+        endpoint,
+        models,
+    ]
+}
+
+/// The update plan's changes, as the dry run and the update both answer them.
+fn print_update(v: &Value) {
+    let rows: Vec<Vec<String>> = items(&v["changes"])
+        .map(|c| {
+            vec![
+                ctx::s(c, "id").to_string(),
+                ctx::s(c, "from").to_string(),
+                ctx::s(c, "to").to_string(),
+            ]
+        })
+        .collect();
+    if rows.is_empty() {
+        println!("Everything is up to date");
+        return;
+    }
+    let verb = if v.get("dry_run").and_then(Value::as_bool) == Some(true) {
+        "would update"
+    } else {
+        "updated"
+    };
+    println!("{verb} {} engine(s)", rows.len());
+    ctx::table(&["engine", "from", "to"], &rows);
+}
+
+fn engines(ctx: &Ctx, action: EnginesCmd) -> Result<(), String> {
+    match action {
+        EnginesCmd::Add {
+            id,
+            registry,
+            flags,
+        } => {
+            checked_id(&id)?;
+            let body = engine_body(&id, registry.as_deref(), &flags)?;
+            let saved = ctx.client.post("/v1/engines", &body)?;
+            ctx.out(&saved, |_| println!("added engine {id}"));
+        }
+        EnginesCmd::Set { id, flags } => {
+            let body = engine_edit_body(&flags)?;
+            let saved = ctx
+                .client
+                .put(&format!("/v1/engines/{}", ctx::seg(&id)), &body)?;
+            ctx.out(&saved, |_| println!("saved engine {id}"));
+        }
+        EnginesCmd::Remove { id, yes } => {
+            if !confirm(yes, &format!("Remove engine {id}."))? {
+                return Err("cancelled".into());
+            }
+            let gone = ctx
+                .client
+                .delete(&format!("/v1/engines/{}", ctx::seg(&id)))?;
+            ctx.out(&gone, |_| println!("removed engine {id}"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a registry agent matches the search text (its id, name or description, in any case; everything when empty).
+fn matches_agent(agent: &Value, needle: &str) -> bool {
+    let needle = needle.trim().to_lowercase();
+    needle.is_empty()
+        || ["id", "name", "description"]
+            .iter()
+            .any(|key| ctx::s(agent, key).to_lowercase().contains(&needle))
+}
+
+fn search_registry(ctx: &Ctx, query: &str, refresh: bool) -> Result<(), String> {
+    let path = if refresh {
+        "/v1/acp/registry?refresh=1"
+    } else {
+        "/v1/acp/registry"
+    };
+    let registry = ctx.client.get(path)?;
+    let hits: Vec<Value> = items(&registry["agents"])
+        .filter(|agent| matches_agent(agent, query))
+        .cloned()
+        .collect();
+    ctx.out(&Value::Array(hits), |v| {
+        let rows: Vec<Vec<String>> = items(v)
+            .map(|a| {
+                vec![
+                    ctx::s(a, "id").to_string(),
+                    ctx::s(a, "name").to_string(),
+                    ctx::s(a, "version").to_string(),
+                    none_if_empty(ctx::text(a, "distribution")),
+                    if a.get("runs_in_vm").and_then(Value::as_bool) == Some(true) {
+                        "yes"
+                    } else {
+                        "no"
+                    }
+                    .to_string(),
+                    ctx::s(a, "description").to_string(),
+                ]
+            })
+            .collect();
+        ctx::table(
+            &[
+                "id",
+                "name",
+                "version",
+                "source",
+                "runs in a VM",
+                "description",
+            ],
+            &rows,
+        );
+    });
+    Ok(())
+}
+
+/// Adds or removes one model in `favourite_models` of the settings in `root`. Adding one twice keeps one.
+pub(crate) fn edit_favourites(root: &mut Map<String, Value>, model: &str, on: bool) {
+    let mut list: Vec<String> = root
+        .get("favourite_models")
+        .and_then(Value::as_array)
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|m| m.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if on {
+        if !list.iter().any(|m| m == model) {
+            list.push(model.to_string());
+        }
+    } else {
+        list.retain(|m| m != model);
+    }
+    root.insert("favourite_models".into(), json!(list));
+}
+
+/// A favourite is `provider/model`: the policy's `@effort` does not belong in it.
+fn favourite_key(model: &str) -> Result<String, String> {
+    if model.contains('@') {
+        return Err(format!(
+            "{model}: a favourite is provider/model, with no @effort"
+        ));
+    }
+    checked_entry(model)
+}
+
+fn favourite(ctx: &Ctx, action: FavouriteCmd) -> Result<(), String> {
+    let (model, on) = match action {
+        FavouriteCmd::Add { model } => (model, true),
+        FavouriteCmd::Remove { model } => (model, false),
+    };
+    let model = favourite_key(&model)?;
+    let mut settings = ctx.client.get("/v1/settings")?;
+    let root = settings
+        .as_object_mut()
+        .ok_or("the hub's settings are not an object")?;
+    edit_favourites(root, &model, on);
+    let saved = ctx.client.put("/v1/settings", &settings)?;
+    ctx.out(&saved, |s| {
+        let shown = items(&s["favourite_models"])
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        if shown.is_empty() {
+            println!("no favourite models");
+        } else {
+            for model in shown {
+                println!("{model}");
+            }
+        }
+    });
+    Ok(())
+}
+
+fn usage_providers(ctx: &Ctx, action: UsageCmd) -> Result<(), String> {
+    match action {
+        UsageCmd::Add {
+            url,
+            label,
+            key_stdin,
+        } => {
+            if !key_stdin {
+                return Err("the hub's management key is read from stdin: pass --key-stdin".into());
+            }
+            let key = read_secret_from_stdin()?;
+            let body = usage_body(&url, &key, label.as_deref());
+            let saved = ctx.client.post("/v1/usage-providers", &body)?;
+            ctx.out(&saved, |v| {
+                println!("added usage provider {}", ctx::s(v, "id"));
+            });
+        }
+        UsageCmd::List => {
+            let list = ctx.client.get("/v1/usage-providers")?;
+            ctx.out(&list, |v| {
+                let rows: Vec<Vec<String>> = items(v)
+                    .map(|u| {
+                        let last = u.get("last").unwrap_or(&Value::Null);
+                        vec![
+                            ctx::s(u, "id").to_string(),
+                            ctx::s(u, "label").to_string(),
+                            ctx::s(u, "url").to_string(),
+                            ctx::s(u, "key").to_string(),
+                            none_if_empty(ctx::text(last, "status")),
+                            none_if_empty(ctx::text(last, "message")),
+                        ]
+                    })
+                    .collect();
+                ctx::table(&["id", "label", "url", "key", "status", "message"], &rows);
+            });
+        }
+        UsageCmd::Usage { id } => {
+            let reading = ctx
+                .client
+                .get(&format!("/v1/usage-providers/{}/usage", ctx::seg(&id)))?;
+            ctx.out(&reading, print_usage);
+        }
+        UsageCmd::Remove { id, yes } => {
+            if !confirm(yes, &format!("Remove usage provider {id}."))? {
+                return Err("cancelled".into());
+            }
+            let gone = ctx
+                .client
+                .delete(&format!("/v1/usage-providers/{}", ctx::seg(&id)))?;
+            ctx.out(&gone, |_| println!("removed usage provider {id}"));
+        }
+    }
+    Ok(())
+}
+
+/// One hub's reading: its status, its totals, its models and its pooled accounts.
+fn print_usage(v: &Value) {
+    ctx::fields(&[
+        ("status", ctx::text(v, "status")),
+        ("message", none_if_empty(ctx::text(v, "message"))),
+    ]);
+    let totals = v.get("totals").unwrap_or(&Value::Null);
+    ctx::fields(&[
+        ("requests", ctx::text(totals, "requests")),
+        ("success", ctx::text(totals, "success")),
+        ("failure", ctx::text(totals, "failure")),
+        ("tokens", ctx::text(totals, "tokens")),
+    ]);
+    let models: Vec<Vec<String>> = items(&v["models"])
+        .map(|m| {
+            vec![
+                ctx::s(m, "model").to_string(),
+                ctx::text(m, "requests"),
+                ctx::text(m, "tokens"),
+            ]
+        })
+        .collect();
+    if !models.is_empty() {
+        println!();
+        ctx::table(&["model", "requests", "tokens"], &models);
+    }
+    let accounts: Vec<Vec<String>> = items(&v["accounts"])
+        .map(|a| {
+            vec![
+                ctx::s(a, "name").to_string(),
+                ctx::s(a, "provider").to_string(),
+                ctx::s(a, "status").to_string(),
+                ctx::s(a, "message").to_string(),
+            ]
+        })
+        .collect();
+    if !accounts.is_empty() {
+        println!();
+        ctx::table(&["account", "provider", "status", "message"], &accounts);
+    }
+}
+
+fn health_interval(ctx: &Ctx, seconds: Option<u64>) -> Result<(), String> {
+    let mut settings = ctx.client.get("/v1/settings")?;
+    let saved = match seconds {
+        None => settings,
+        Some(n) => {
+            if n > MAX_HEALTH_INTERVAL {
+                return Err(format!(
+                    "the interval is 0 (off) to {MAX_HEALTH_INTERVAL} seconds, not {n}"
+                ));
+            }
+            settings
+                .as_object_mut()
+                .ok_or("the hub's settings are not an object")?
+                .insert("health_interval_s".into(), json!(n));
+            ctx.client.put("/v1/settings", &settings)?
+        }
+    };
+    ctx.out(&saved, |s| {
+        println!(
+            "health check interval: {} seconds (0 = off)",
+            ctx::text(s, "health_interval_s")
+        );
+    });
+    Ok(())
 }
 
 // ---- Helpers shared with the other console areas ----------------------------------------------
@@ -748,7 +1594,7 @@ fn auth_from_flags(
 // ---- Policy and decisions -----------------------------------------------------------------------
 
 /// `provider/model`, optionally `@effort` (the policy's entry form). Only the base is checked.
-fn checked_entry(entry: &str) -> Result<String, String> {
+pub(crate) fn checked_entry(entry: &str) -> Result<String, String> {
     let base = entry.split('@').next().unwrap_or_default();
     let ok = match base.split_once('/') {
         Some((provider, model)) => {
@@ -1118,5 +1964,346 @@ mod tests {
             Probe::try_parse_from(["models", "prices"]).map(|p| p.cmd),
             Ok(Cmd::Prices { action: None })
         ));
+    }
+
+    fn parse(args: &[&str]) -> Result<Cmd, clap::Error> {
+        let mut argv = vec!["models"];
+        argv.extend_from_slice(args);
+        Probe::try_parse_from(argv).map(|p| p.cmd)
+    }
+
+    #[test]
+    fn providers_lists_both_families_and_takes_a_family_filter() {
+        assert!(matches!(
+            parse(&["providers"]),
+            Ok(Cmd::Providers {
+                group: None,
+                family: None
+            })
+        ));
+        assert!(matches!(
+            parse(&["providers", "--family", "engine"]),
+            Ok(Cmd::Providers { family: Some(f), .. }) if f == "engine"
+        ));
+        assert_eq!(family_filter(Some("api")), Ok(Some(Family::Api)));
+        assert_eq!(family_filter(None), Ok(None));
+        assert!(family_filter(Some("both")).is_err());
+    }
+
+    #[test]
+    fn add_takes_a_label_and_an_accent() {
+        let Ok(Cmd::Add { label, accent, .. }) =
+            parse(&["add", "openai", "--label", "Work", "--accent", "#5CC8FF"])
+        else {
+            panic!("add parses");
+        };
+        assert_eq!(label.as_deref(), Some("Work"));
+        assert_eq!(accent.as_deref(), Some("#5CC8FF"));
+        assert_eq!(accent_value("#5CC8FF").unwrap(), json!("#5cc8ff"));
+        assert_eq!(accent_value("none").unwrap(), Value::Null);
+        assert!(accent_value("blue").is_err());
+        assert!(accent_value("#12345").is_err());
+    }
+
+    #[test]
+    fn enable_disable_check_and_update_parse() {
+        assert!(matches!(parse(&["enable", "openai"]), Ok(Cmd::Enable { id }) if id == "openai"));
+        assert!(
+            matches!(parse(&["disable", "claude-code"]), Ok(Cmd::Disable { id }) if id == "claude-code")
+        );
+        assert!(matches!(parse(&["check"]), Ok(Cmd::Check { id: None })));
+        assert!(
+            matches!(parse(&["check", "openai"]), Ok(Cmd::Check { id: Some(id) }) if id == "openai")
+        );
+        assert!(matches!(
+            parse(&["update"]),
+            Ok(Cmd::Update { dry_run: false })
+        ));
+        assert!(matches!(
+            parse(&["update", "--dry-run"]),
+            Ok(Cmd::Update { dry_run: true })
+        ));
+        assert!(parse(&["enable"]).is_err(), "an id is required");
+    }
+
+    #[test]
+    fn engines_add_takes_a_registry_agent_or_a_local_command_with_its_flags() {
+        let Ok(Cmd::Engines {
+            action:
+                EnginesCmd::Add {
+                    id,
+                    registry,
+                    flags,
+                },
+        }) = parse(&[
+            "engines",
+            "add",
+            "mine",
+            "--registry",
+            "claude-code",
+            "--env",
+            "A=1",
+            "--env",
+            "B=two=2",
+            "--arg",
+            "-x",
+            "--route",
+            "anthropic/claude-sonnet-5-5",
+            "--version",
+            "1.2.3",
+            "--label",
+            "Mine",
+        ])
+        else {
+            panic!("engines add parses");
+        };
+        assert_eq!(id, "mine");
+        assert_eq!(registry.as_deref(), Some("claude-code"));
+        assert_eq!(flags.env, vec!["A=1".to_string(), "B=two=2".to_string()]);
+        assert_eq!(
+            flags.args,
+            vec!["-x".to_string()],
+            "a hyphen argument is a value"
+        );
+        assert_eq!(flags.version.as_deref(), Some("1.2.3"));
+        assert_eq!(flags.label.as_deref(), Some("Mine"));
+
+        let body = engine_body(&id, registry.as_deref(), &flags).expect("a valid engine");
+        assert_eq!(body["engine"], json!("acp:claude-code"));
+        assert_eq!(body["env"], json!({ "A": "1", "B": "two=2" }));
+        assert_eq!(body["route"], json!("anthropic/claude-sonnet-5-5"));
+        assert_eq!(body["args"], json!(["-x"]));
+
+        // A local program: --command, no registry.
+        assert!(matches!(
+            parse(&["engines", "add", "local", "--command", "/usr/bin/tool"]),
+            Ok(Cmd::Engines {
+                action: EnginesCmd::Add { registry: None, .. }
+            })
+        ));
+        let local = EngineFlags {
+            command: Some("/usr/bin/tool".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            engine_body("local", None, &local).unwrap()["engine"],
+            json!("acp-local")
+        );
+        // Neither or both are refused.
+        assert!(engine_body("x", None, &EngineFlags::default()).is_err());
+        assert!(engine_body("x", Some("a"), &local).is_err());
+    }
+
+    #[test]
+    fn engines_set_and_remove_parse_and_only_the_flags_given_change() {
+        assert!(matches!(
+            parse(&[
+                "engines",
+                "set",
+                "mine",
+                "--command",
+                "/bin/x",
+                "--arg",
+                "a",
+                "--arg",
+                "b"
+            ]),
+            Ok(Cmd::Engines {
+                action: EnginesCmd::Set { .. }
+            })
+        ));
+        assert!(matches!(
+            parse(&["engines", "remove", "mine", "--yes"]),
+            Ok(Cmd::Engines {
+                action: EnginesCmd::Remove { yes: true, .. }
+            })
+        ));
+        let one = EngineFlags {
+            version: Some("latest".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            engine_edit_body(&one).unwrap(),
+            json!({ "version": "latest" })
+        );
+        let cleared = EngineFlags {
+            route: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(
+            engine_edit_body(&cleared).unwrap(),
+            json!({ "route": null })
+        );
+        assert!(
+            engine_edit_body(&EngineFlags::default()).is_err(),
+            "nothing to change is refused"
+        );
+        let bad_env = EngineFlags {
+            env: vec!["1X=y".into()],
+            ..Default::default()
+        };
+        assert!(engine_edit_body(&bad_env).is_err());
+        assert!(env_map(&["NOEQUALS".into()]).is_err());
+        assert!(checked_id("my-engine_2").is_ok());
+        assert!(checked_id("My Engine").is_err());
+    }
+
+    #[test]
+    fn registry_search_takes_a_query_or_none_and_refresh() {
+        assert!(matches!(
+            parse(&["registry", "search", "claude", "--refresh"]),
+            Ok(Cmd::Registry { action: RegistryCmd::Search { query, refresh: true } }) if query == "claude"
+        ));
+        assert!(matches!(
+            parse(&["registry", "search"]),
+            Ok(Cmd::Registry { action: RegistryCmd::Search { query, refresh: false } }) if query.is_empty()
+        ));
+        let agent =
+            json!({ "id": "claude-code", "name": "Claude Code", "description": "A coding agent" });
+        assert!(matches_agent(&agent, "code"));
+        assert!(matches_agent(&agent, "CLAUDE"));
+        assert!(!matches_agent(&agent, "gemini"));
+        assert!(matches_agent(&agent, ""));
+    }
+
+    #[test]
+    fn favourite_takes_provider_slash_model_and_edits_the_list_once() {
+        assert!(matches!(
+            parse(&["favourite", "add", "openai/gpt-x"]),
+            Ok(Cmd::Favourite { action: FavouriteCmd::Add { model } }) if model == "openai/gpt-x"
+        ));
+        assert!(matches!(
+            parse(&["favourite", "remove", "openai/gpt-x"]),
+            Ok(Cmd::Favourite {
+                action: FavouriteCmd::Remove { .. }
+            })
+        ));
+        assert!(
+            favourite_key("openai/gpt-x@high").is_err(),
+            "no effort in a favourite"
+        );
+        assert!(favourite_key("gpt-x").is_err());
+
+        let mut root = Map::new();
+        edit_favourites(&mut root, "a/b", true);
+        edit_favourites(&mut root, "a/b", true);
+        edit_favourites(&mut root, "c/d", true);
+        assert_eq!(root["favourite_models"], json!(["a/b", "c/d"]));
+        edit_favourites(&mut root, "a/b", false);
+        assert_eq!(root["favourite_models"], json!(["c/d"]));
+    }
+
+    #[test]
+    fn usage_providers_takes_its_subcommands_and_reads_the_key_from_stdin_only() {
+        assert!(matches!(
+            parse(&[
+                "usage-providers",
+                "add",
+                "--url",
+                "https://hub.example",
+                "--label",
+                "L",
+                "--key-stdin"
+            ]),
+            Ok(Cmd::UsageProviders {
+                action: UsageCmd::Add {
+                    key_stdin: true,
+                    ..
+                }
+            })
+        ));
+        assert!(matches!(
+            parse(&["usage-providers", "list"]),
+            Ok(Cmd::UsageProviders {
+                action: UsageCmd::List
+            })
+        ));
+        assert!(matches!(
+            parse(&["usage-providers", "usage", "hub1"]),
+            Ok(Cmd::UsageProviders { action: UsageCmd::Usage { id } }) if id == "hub1"
+        ));
+        assert!(matches!(
+            parse(&["usage-providers", "remove", "hub1", "--yes"]),
+            Ok(Cmd::UsageProviders {
+                action: UsageCmd::Remove { yes: true, .. }
+            })
+        ));
+        assert!(
+            parse(&[
+                "usage-providers",
+                "add",
+                "--url",
+                "https://h",
+                "--key",
+                "secret"
+            ])
+            .is_err(),
+            "a key is never an argument"
+        );
+    }
+
+    #[test]
+    fn settings_health_interval_takes_seconds_or_shows_them() {
+        assert!(matches!(
+            parse(&["settings", "health-interval", "300"]),
+            Ok(Cmd::Settings {
+                action: SettingsCmd::HealthInterval { seconds: Some(300) }
+            })
+        ));
+        assert!(matches!(
+            parse(&["settings", "health-interval"]),
+            Ok(Cmd::Settings {
+                action: SettingsCmd::HealthInterval { seconds: None }
+            })
+        ));
+        assert!(parse(&["settings", "health-interval", "soon"]).is_err());
+    }
+
+    #[test]
+    fn api_config_keeps_what_the_hub_lists_and_the_flag_it_is_given() {
+        let listed = json!({
+            "id": "openai", "kind": "openai", "label": "Work", "accent": "#5cc8ff", "enabled": false,
+            "base_url": "https://api.openai.com/v1", "auth": { "secret": "openai" },
+            "models": ["gpt-x"], "extra_headers": { "X-Team": "[redacted]" }, "extra_body": { "k": 1 },
+            "credential": "secret", "health": { "status": "ok" }
+        });
+        let mut body = api_config(&listed);
+        assert_eq!(body["enabled"], json!(false));
+        assert_eq!(body["label"], json!("Work"));
+        assert_eq!(body["extra_body"], json!({ "k": 1 }));
+        assert!(
+            body.get("credential").is_none(),
+            "the listing's own fields do not go back"
+        );
+        body["enabled"] = json!(true);
+        assert_eq!(body["enabled"], json!(true));
+        assert_eq!(health_text(&listed["health"]), "ok");
+        assert_eq!(
+            health_text(&json!({ "status": "crit", "message": "Not authenticated" })),
+            "crit  Not authenticated"
+        );
+    }
+
+    #[test]
+    fn a_version_is_pinned_latest_or_dotted_and_the_runtime_body_clears_what_is_empty() {
+        assert_eq!(version_ok("latest").unwrap(), "latest");
+        assert_eq!(version_ok("1.2.3").unwrap(), "1.2.3");
+        assert!(version_ok("soon").is_err());
+        assert!(version_ok("1..2").is_err());
+        assert!(version_ok("").is_err());
+        let body = runtime_body("pinned", "", "", &["--x".into()], &["A=1".into()]).unwrap();
+        assert_eq!(body["home"], Value::Null);
+        assert_eq!(body["route"], Value::Null);
+        assert_eq!(body["args"], json!(["--x"]));
+        assert_eq!(body["env"], json!({ "A": "1" }));
+        assert!(runtime_body("pinned", "", "", &[], &["BAD".into()]).is_err());
+        assert!(
+            runtime_body("latest", "", "p", &[], &[]).is_err(),
+            "a route is provider/model"
+        );
+        assert_eq!(
+            usage_body("https://h", "k", Some("L")),
+            json!({ "kind": "cliproxyapi", "url": "https://h", "key": "k", "label": "L" })
+        );
     }
 }

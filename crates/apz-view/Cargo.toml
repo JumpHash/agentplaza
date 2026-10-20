@@ -1,0 +1,22 @@
+[package]
+name = "apz-view"
+description = "The panel model both consoles render: charts, tables, tiles, heatmaps and the rest, plus images, graphs, datasets, documents, code and live HTML. The hub composes Metrics from it and agents build artifacts with it; the validator holds every artifact to its caps. Formatting rules are pinned by tests/format_golden.json, which the web test suite also reads."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-metrics = { path = "../apz-metrics" }
+serde.workspace = true
+serde_json.workspace = true
+# The PNG export of a panel: tiny-skia rasterises, ab_glyph outlines the embedded Geist faces.
+ab_glyph = { version = "0.2", optional = true }
+apz-theme = { path = "../apz-theme", optional = true }
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "png-format"], optional = true }
+
+[features]
+raster = ["dep:tiny-skia", "dep:ab_glyph", "dep:apz-theme"]
+
+[lints]
+workspace = true

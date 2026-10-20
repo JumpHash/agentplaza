@@ -399,14 +399,24 @@ impl Laws {
             store.insert(&peer, member_attrs_of(&peer.id, ""));
             requests.push(("message.send", peer, Context::new()));
         }
-        // A file shared or delivered to the plaza is an artifact published.
-        if matches!(tool, "share_file" | "deliver_file") {
+        // An artifact tool is an artifact operation: a file shared or delivered to the plaza is published, an
+        // artifact the agent makes or changes is created (permitted to every agent), and asking the owner to share
+        // one is a share request (the owner's approval is the gate).
+        let artifact_op = match tool {
+            "share_file" | "deliver_file" => Some("artifact.publish"),
+            "artifact_create" | "artifact_update" | "artifact_attach_data" => {
+                Some("artifact.create")
+            }
+            "artifact_share_request" => Some("artifact.share"),
+            _ => None,
+        };
+        if let Some(operation) = artifact_op {
             let artifact = Entity {
                 ty: "Artifact".into(),
                 id: tool.into(),
             };
             store.insert(&artifact, BTreeMap::new());
-            requests.push(("artifact.publish", artifact, Context::new()));
+            requests.push((operation, artifact, Context::new()));
         }
         requests.extend(plaza_operations(tool, input, agent_cid, role, &mut store));
         let strict = self.strict.load(Ordering::Relaxed);
@@ -1709,6 +1719,8 @@ fn verb_of(op: &str) -> String {
         "vault.read" => "read".to_string(),
         "egress.connect" => "connect out to".to_string(),
         "artifact.publish" => "publish".to_string(),
+        "artifact.create" => "create".to_string(),
+        "artifact.share" => "share".to_string(),
         "memory.change" => "change the memory of".to_string(),
         "device.actuate" => "operate".to_string(),
         "device.read" => "read".to_string(),

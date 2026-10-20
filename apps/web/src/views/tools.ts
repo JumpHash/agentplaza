@@ -1,16 +1,14 @@
-// Setup > Tools: the connectors the plaza lends to agents, the connectors agents
-// have proposed (waiting for the owner's review), and the tools agents
-// have built and packaged into the plaza's library. A key is written once
-// here, kept in the plaza's vault, and never reaches an agent's VM. Laid out like
-// Models > Providers: grouped provider cards, and a Configure modal.
+// Settings > Tools: the connectors the plaza lends to agents, the connectors agents have proposed (waiting for the
+// owner's review), the tools agents built and packaged into the plaza's library, and the tools agents found online.
+// A key is written once here, kept in the plaza's vault, and never reaches an agent's VM.
 
-import '../styles/models.css';
-import '../styles/tools.css';
+import '../styles/proto/settings-a.css';
 import { api, type Connector, type ConnectorAction, type ConnectorField, type ConnectorProposal, type ConnectorTest, type Discovery, type LibraryTool } from '../api';
-import { attempt, badge, brandLogo, button, dot, empty, field, input, modal, select, textarea, toast, type Tone } from '../ui/components';
+import { attempt, badge, button, dot, empty, field, input, modal, select, textarea, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { on } from '../store';
 import type { Cleanup } from './index';
+import { sheet } from './models-providers';
 
 type Section = 'Enabled' | 'Configured' | 'Needs a key' | 'Coming soon';
 const SECTIONS: Section[] = ['Enabled', 'Configured', 'Needs a key', 'Coming soon'];
@@ -37,10 +35,8 @@ const PROPOSAL_STATE: Record<ConnectorProposal['state'], [string, Tone]> = {
   rejected: ['Rejected', 'danger'],
 };
 
-/** A required field with no value anywhere: neither in the vault nor in the environment. */
-function missingRequired(c: Connector): boolean {
-  return c.fields.some((f) => f.required && !f.set);
-}
+const DISC_PAGE = 10;
+const DISC_KINDS = ['cli', 'library', 'service', 'api', 'technique'];
 
 /** Every required field is read from the environment, so the vault holds none of the key. */
 function fromEnvOnly(c: Connector): boolean {
@@ -51,7 +47,7 @@ function fromEnvOnly(c: Connector): boolean {
 /** A connector with no actions yet is coming soon; otherwise it needs a key while a required field is missing, else by whether it is on. */
 function sectionOf(c: Connector): Section {
   if (!c.actions.length) return 'Coming soon';
-  if (!c.configured || missingRequired(c)) return 'Needs a key';
+  if (!c.configured || c.fields.some((f) => f.required && !f.set)) return 'Needs a key';
   return c.enabled ? 'Enabled' : 'Configured';
 }
 
@@ -68,11 +64,9 @@ function splitList(text: string): string[] {
   return text.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
-/** A connector's logo: its brand mark when it has one, else its initials. */
-function logo(c: Connector): HTMLElement {
-  if (c.brand) return brandLogo(c.brand, true);
-  const letters = c.label.split(/\s+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
-  return h('span.logo.lg', { title: c.label }, h('span.mono-mark', null, letters));
+/** The tile letters: the first letter of the first two words of a name. */
+function initials(s: string): string {
+  return s.split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase();
 }
 
 /** A proposal's auth in one phrase: its kind, and the header, query or path name when it has one. */
@@ -86,8 +80,13 @@ function fullUrl(baseUrl: string, path: string): string {
 }
 
 /** The plaza's check failures, shown above a proposal whose approve is off. */
-function checksBox(p: ConnectorProposal): HTMLElement {
-  return h('div.stack', null, badge('Checks failed · approve is off', 'warn'), h('ul', null, p.checks.map((c) => h('li', { 'data-key': `check-${c}` }, c))));
+function checksBanner(checks: string[]): HTMLElement {
+  return h('div.mdl-banner', null, badge('Checks failed · approve is off', 'warn'), h('ul', null, checks.map((c) => h('li', { 'data-key': `check-${c}` }, c))));
+}
+
+/** A tile's letters: the connector's initials, in the prototype's tile. */
+function tileOf(name: string): HTMLElement {
+  return h('span.mdl-logo', { 'aria-hidden': 'true' }, initials(name));
 }
 
 export function mount(root: HTMLElement): Cleanup {
@@ -96,14 +95,16 @@ export function mount(root: HTMLElement): Cleanup {
   let discoveries: Discovery[] = [];
   let proposals: ConnectorProposal[] = [];
   let showDecided = false;
-  const body = h('div.prov-body', null, h('p.faint', null, 'Loading tools…'));
-  const propBody = h('div.prov-body', null);
-  const libBody = h('div.prov-body', null, h('p.faint', null, 'Loading agent tools…'));
-  const discBody = h('div.prov-body', null, h('p.faint', null, 'Loading found tools…'));
+
+  const connBox = h('div.mdl-body');
+  const propBox = h('div.mdl-body');
+  const libBox = h('div.mdl-body');
+  const discBox = h('div.mdl-body');
   root.append(
-    h('div.view-head', null, h('h1', null, 'Tools')),
-    h('div.stack', null, h('p.faint', null, "Keys stay in the plaza's vault; agents reach a tool only through the plaza."), body, propBody, libBody, discBody),
+    h('div.mdl-page', null, h('div.view-head', null, h('div', null, h('h1', null, 'Tools'), h('p.mdl-faint', null, "Keys stay in the plaza's vault; agents reach a tool only through the plaza."))), connBox, propBox, libBox, discBox),
   );
+
+  // ---- Connectors -----------------------------------------------------------------------------------------------
 
   const refresh = async (): Promise<void> => {
     const list = await attempt(() => api.connectors());
@@ -113,15 +114,15 @@ export function mount(root: HTMLElement): Cleanup {
 
   const render = (): void => {
     if (!connectors.length) {
-      replace(body, empty('models', 'No tools yet'));
+      replace(connBox, empty('models', 'No tools yet', ''));
       return;
     }
     const groups: Record<Section, Connector[]> = { Enabled: [], Configured: [], 'Needs a key': [], 'Coming soon': [] };
     for (const c of connectors) groups[sectionOf(c)].push(c);
     const sections = SECTIONS.filter((s) => groups[s].length > 0).map((s) =>
-      h('section.prov-group', null, h('h2.prov-group-title', null, s), h('div.prov-grid', null, groups[s].map(card))),
+      h('section.tl-group', { 'data-key': `grp-${s}` }, h('h2', null, s), h('div.mdl-grid', null, groups[s].map(card))),
     );
-    replace(body, ...sections);
+    replace(connBox, sections);
   };
 
   const setEnabled = async (c: Connector, on: boolean): Promise<void> => {
@@ -142,65 +143,45 @@ export function mount(root: HTMLElement): Cleanup {
     const needsKey = section === 'Needs a key';
     const keyFromEnv = section !== 'Coming soon' && fromEnvOnly(c);
 
-    const footer =
+    const chips = c.actions.map((a) =>
+      h(
+        'span.tl-chip',
+        { 'data-key': `act-${a.name}`, title: `${a.description}${a.risk === 'irreversible' ? ' · needs your approval' : ''}` },
+        dot(RISK[a.risk]),
+        h('span', null, a.name),
+      ),
+    );
+
+    const foot =
       section === 'Coming soon'
         ? null
         : h(
-            'div.prov-actions',
+            'div.mdl-row-a',
             null,
-            button('Configure', () => openConfigure(c), needsKey ? { size: 'sm', kind: 'primary' } : { size: 'sm' }),
-            c.configured ? button('Test', () => void runTest(c), { size: 'sm' }) : null,
+            button('Configure', () => openConfigure(c), { size: 'sm', kind: needsKey ? 'primary' : 'ghost' }),
+            c.configured ? button('Test', () => void runTest(c), { size: 'sm', kind: 'ghost' }) : null,
             c.configured ? button(c.enabled ? 'Disable' : 'Enable', () => void setEnabled(c, !c.enabled), { size: 'sm', kind: 'ghost' }) : null,
           );
 
-    const chips = c.actions.length
-      ? h(
-          'ul.tool-actions',
-          null,
-          c.actions.map((a) =>
-            h(
-              'li',
-              { 'data-key': `act-${a.name}` },
-              h(
-                'span.tool-chip',
-                { title: a.risk === 'irreversible' ? `${a.description} · needs your approval` : a.description },
-                dot(RISK[a.risk]),
-                a.name,
-              ),
-            ),
-          ),
-        )
-      : null;
-
     return h(
-      'article.prov-card',
+      'article.mdl-card',
       { 'data-key': `conn-${c.id}` },
+      h('div.mdl-card-h', null, tileOf(c.label), h('div.mdl-card-t', null, h('h3', null, c.label), h('p.mdl-sub', { title: c.description }, c.description))),
       h(
-        'header.prov-head',
-        null,
-        logo(c),
-        h(
-          'div.prov-title',
-          null,
-          h('h3.truncate', null, c.label),
-          h('span.faint.truncate', { title: c.description }, c.description),
-        ),
-      ),
-      h(
-        'div.prov-meta',
+        'div.mdl-row-a',
         null,
         badge(c.kind === 'cli' ? 'CLI' : 'API', c.kind === 'cli' ? 'accent' : 'muted'),
         badge(text, tone, true),
         keyFromEnv ? badge('Key from env', 'info') : null,
       ),
-      chips,
-      footer,
+      chips.length ? h('div.tl-chips', null, chips) : null,
+      foot,
     );
   };
 
   /** Configure: one input per credential field, the roles, and enabled. Save writes each field typed into, then the settings. */
   const openConfigure = (c: Connector): void => {
-    let close = () => {};
+    let close = (): void => {};
     const inputs = new Map<string, HTMLInputElement>();
 
     const fieldBlocks = c.fields.map((f) => {
@@ -211,31 +192,30 @@ export function mount(root: HTMLElement): Cleanup {
 
       const remove =
         f.source === 'vault'
-          ? button(
-              'Remove',
-              async () => {
-                const cleared = await attempt(async () => {
-                  await api.clearConnectorSecret(c.id, f.name);
-                  return true;
-                }, `${f.label} removed`);
-                if (!cleared) return;
-                close();
-                await refresh();
-              },
-              { size: 'sm', kind: 'ghost' },
+          ? h(
+              'div',
+              { style: 'display:flex;justify-content:flex-end;margin:4px 0 12px' },
+              button(
+                'Remove',
+                async () => {
+                  const cleared = await attempt(async () => {
+                    await api.clearConnectorSecret(c.id, f.name);
+                    return true;
+                  }, `${f.label} removed`);
+                  if (!cleared) return;
+                  close();
+                  await refresh();
+                },
+                { size: 'sm', kind: 'ghost' },
+              ),
             )
           : null;
 
-      return h(
-        'div.stack',
-        { 'data-key': `field-${f.name}` },
-        field(`${f.label} · ${f.required ? 'required' : 'optional'}`, control, sourceLine(f)),
-        remove ? h('div.prov-row', null, h('span.prov-spacer'), remove) : null,
-      );
+      return h('div', { 'data-key': `field-${f.name}` }, field(`${f.label} · ${f.required ? 'required' : 'optional'}`, control, sourceLine(f)), remove);
     });
 
     const rolesInput = input({ value: c.roles.join(', '), placeholder: 'all roles', autocomplete: 'off' });
-    const enabledBox = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    const enabledBox = h('input', { type: 'checkbox', id: 'tl-f-enabled' }) as HTMLInputElement;
     enabledBox.checked = c.enabled;
 
     const save = button(
@@ -263,23 +243,23 @@ export function mount(root: HTMLElement): Cleanup {
       });
     }
 
-    close = modal(
+    close = sheet(
       `Configure ${c.label}`,
       h(
         'div.stack',
         null,
-        c.cli ? h('p.faint', null, `Installs ${c.cli.binary} in the agent's VM, pointed at the plaza's gateway — no key inside the VM.`) : null,
-        h('p.faint', null, 'Write-only: a stored value is never shown again. Empty fields keep what is stored.'),
+        c.cli ? h('p.mdl-faint', null, `Installs ${c.cli.binary} in the agent's VM, pointed at the plaza's gateway — no key inside the VM.`) : null,
+        h('p.mdl-faint', null, 'Write-only: a stored value is never shown again. Empty fields keep what is stored.'),
         fieldBlocks,
         field('Roles', rolesInput, 'Comma-separated; empty = all roles'),
-        h('label.tool-toggle', null, enabledBox, h('span', null, 'Enabled')),
-        c.docs_url ? h('a', { href: c.docs_url, target: '_blank', rel: 'noopener noreferrer' }, 'Docs') : null,
-        h('div.prov-row', null, h('span.prov-spacer'), save),
+        h('label.check', null, enabledBox, h('span', null, 'Enabled')),
+        c.docs_url ? h('p', null, h('a', { href: c.docs_url, target: '_blank', rel: 'noopener noreferrer' }, 'Docs')) : null,
       ),
+      [save],
     );
   };
 
-  // ---- Proposed connectors --------------------------------------------------
+  // ---- Proposed connectors --------------------------------------------------------------------------------------
 
   const refreshProposals = async (): Promise<void> => {
     const list = await attempt(() => api.connectorProposals());
@@ -294,19 +274,21 @@ export function mount(root: HTMLElement): Cleanup {
   };
 
   const renderProposals = (): void => {
-    const pending = proposals.filter((p) => p.state === 'pending');
-    const decided = proposals.filter((p) => p.state !== 'pending');
-    if (!pending.length && !decided.length) {
-      replace(propBody);
+    if (!proposals.length) {
+      replace(propBox);
       return;
     }
-    const parts: HTMLElement[] = [h('h2.prov-group-title', null, 'Proposed connectors')];
-    if (pending.length) parts.push(h('div.prov-grid', null, pending.map(proposalCard)));
-    else parts.push(h('p.faint', null, 'Nothing waiting for your review.'));
-    if (decided.length) {
-      parts.push(
+    const pending = proposals.filter((p) => p.state === 'pending');
+    const decided = proposals.filter((p) => p.state !== 'pending');
+    replace(
+      propBox,
+      h(
+        'section.tl-group',
+        { 'data-key': 'proposals' },
+        h('h2', null, 'Proposed connectors'),
+        pending.length ? h('div.mdl-grid', null, pending.map(proposalCard)) : h('p.mdl-faint', null, 'Nothing waiting for your review.'),
         h(
-          'div.prov-row',
+          'div.mdl-row-a',
           null,
           button(
             showDecided ? 'Hide decided' : `Decided (${decided.length})`,
@@ -317,65 +299,47 @@ export function mount(root: HTMLElement): Cleanup {
             { size: 'sm', kind: 'ghost' },
           ),
         ),
-      );
-      if (showDecided) parts.push(h('ul.lib-files', null, decided.map(decidedRow)));
-    }
-    replace(propBody, ...parts);
+        showDecided ? h('ul.tl-list', null, decided.map(decidedRow)) : null,
+      ),
+    );
   };
 
   const proposalCard = (p: ConnectorProposal): HTMLElement => {
     const s = p.spec;
     const blocked = p.checks.length > 0;
     return h(
-      'article.prov-card',
+      'article.mdl-card',
       { 'data-key': `prop-${p.id}` },
+      h('div.mdl-card-h', null, tileOf(s.label), h('div.mdl-card-t', null, h('h3', null, s.label), h('p.tl-mono', { title: s.id }, s.id))),
+      h('p.mdl-faint', { style: 'margin-top:8px' }, `proposed by ${p.proposer}`),
+      h('div.tl-meta', null, badge(s.category, 'accent'), badge(authLabel(s), 'muted')),
+      h('p.tl-trunc', { title: s.description, style: 'margin-top:8px' }, s.description),
+      h('p.tl-mono', { title: s.base_url }, s.base_url),
       h(
-        'header.prov-head',
+        'div.tl-chips',
         null,
-        h(
-          'div.prov-title',
-          null,
-          h('h3.truncate', null, s.label),
-          h('span.mono.faint.truncate', { title: s.id }, s.id),
-        ),
-      ),
-      h(
-        'div.prov-meta',
-        null,
-        h('span.faint', null, `proposed by ${p.proposer}`),
-        badge(s.category, 'accent'),
-        badge(authLabel(s), 'muted'),
-      ),
-      h('p.faint', { title: s.description }, s.description),
-      h('p.mono.truncate', { title: s.base_url }, s.base_url),
-      s.fields.length
-        ? h(
-            'ul.tool-actions',
-            null,
-            s.fields.map((f) =>
-              h('li', { 'data-key': `pfield-${f.env}` }, h('span.tool-chip', { title: `$${f.env}${f.secret ? ' · secret' : ''}${f.hint ? ` · ${f.hint}` : ''}` }, f.required ? `${f.label} *` : f.label)),
-            ),
-          )
-        : null,
-      h(
-        'ul.tool-actions',
-        null,
-        s.actions.map((a) =>
+        s.fields.map((f) =>
           h(
-            'li',
-            { 'data-key': `pact-${a.name}` },
-            h(
-              'span.tool-chip',
-              { title: a.description },
-              dot(RISK[a.risk]),
-              a.name,
-              h('span.mono', null, ` ${a.method} ${a.path}`),
-            ),
+            'span.tl-chip',
+            { 'data-key': `pfield-${f.env}`, title: `$${f.env}${f.secret ? ' · secret' : ''}${f.hint ? ` · ${f.hint}` : ''}` },
+            h('span', null, f.required ? `${f.label} *` : f.label),
           ),
         ),
       ),
-      blocked ? checksBox(p) : null,
-      h('div.prov-actions', null, button('Review', () => openReview(p), { size: 'sm', kind: 'primary' })),
+      h(
+        'div.tl-chips',
+        null,
+        s.actions.map((a) =>
+          h(
+            'span.tl-chip',
+            { 'data-key': `pact-${a.name}`, title: a.description },
+            dot(RISK[a.risk]),
+            h('span', null, a.name, ' ', h('span.mdl-faint', null, `${a.method} ${a.path}`)),
+          ),
+        ),
+      ),
+      blocked ? h('div', { style: 'margin-top:12px' }, checksBanner(p.checks)) : null,
+      h('div.mdl-row-a', null, button('Review', () => openReview(p), { size: 'sm', kind: 'primary' })),
     );
   };
 
@@ -384,17 +348,17 @@ export function mount(root: HTMLElement): Cleanup {
     return h(
       'li',
       { 'data-key': `decided-${p.id}` },
-      h('span.mono', null, p.spec.id),
+      h('span.tl-mono', null, p.spec.id),
       ' ',
       badge(text, tone, true),
-      h('span.faint', null, ` ${p.spec.label} · proposed by ${p.proposer}`),
-      p.note ? h('span.faint', null, ` · ${p.note}`) : null,
+      h('span.mdl-faint', null, ` ${p.spec.label} · proposed by ${p.proposer}`),
+      p.note ? h('span.mdl-faint', null, ` · ${p.note}`) : null,
     );
   };
 
   /** Review: the full spec, then Approve or Reject (Reject takes an optional note). */
   const openReview = (p: ConnectorProposal): void => {
-    let close = () => {};
+    let close = (): void => {};
     const s = p.spec;
     const blocked = p.checks.length > 0;
     const note = input({ autocomplete: 'off', placeholder: 'Why it is rejected (optional)' });
@@ -417,41 +381,41 @@ export function mount(root: HTMLElement): Cleanup {
     const rejectBtn = button('Reject', () => void decide(false), { kind: 'ghost' });
     approveBtn.disabled = blocked;
 
-    close = modal(
+    close = sheet(
       `Review ${s.label}`,
       h(
         'div.stack',
         null,
-        h('p.mono', null, `${s.id} · ${s.category}`),
-        h('p.faint', null, `Proposed by ${p.proposer} · auth ${authLabel(s)}`),
-        h('p.faint', null, s.description),
-        h('p.mono', null, s.base_url),
-        s.docs_url && /^https?:\/\//.test(s.docs_url) ? h('a', { href: s.docs_url, target: '_blank', rel: 'noopener noreferrer' }, 'Docs') : null,
+        h('p.tl-mono', null, `${s.id} · ${s.category}`),
+        h('p.mdl-faint', null, `Proposed by ${p.proposer} · auth ${authLabel(s)}`),
+        h('p', null, s.description),
+        h('p.tl-mono', null, s.base_url),
+        s.docs_url && /^https?:\/\//.test(s.docs_url) ? h('p', null, h('a', { href: s.docs_url, target: '_blank', rel: 'noopener noreferrer' }, 'Docs')) : null,
         s.fields.length
           ? h(
-              'p.faint',
+              'p.mdl-faint',
               null,
               `Fields: ${s.fields.map((f) => `${f.label}${f.required ? ' (required)' : ''} · $${f.env}${f.secret ? ' · secret' : ''}`).join('; ')}`,
             )
           : null,
-        blocked ? checksBox(p) : null,
+        blocked ? checksBanner(p.checks) : null,
         s.actions.map((a) =>
           h(
-            'section.stack',
-            { 'data-key': `review-${a.name}` },
-            h('div.prov-row', null, dot(RISK[a.risk]), h('strong', null, a.name), h('span.faint', null, a.risk)),
-            h('p.mono', null, `${a.method} ${fullUrl(s.base_url, a.path)}`),
-            h('p.faint', null, a.description),
-            h('pre.lib-file', null, JSON.stringify(a.input_schema, null, 2)),
+            'div',
+            { 'data-key': `review-${a.name}`, style: 'margin-top:12px' },
+            h('div.tl-row', null, dot(RISK[a.risk]), h('strong', null, a.name), h('span.mdl-faint', null, a.risk)),
+            h('p.tl-mono', null, `${a.method} ${fullUrl(s.base_url, a.path)}`),
+            h('p.mdl-faint', null, a.description),
+            h('pre.tl-pre', null, JSON.stringify(a.input_schema, null, 2)),
           ),
         ),
         field('Note for the proposer', note, 'Optional. Only sent when rejecting.'),
-        h('div.prov-row', null, h('span.prov-spacer'), rejectBtn, approveBtn),
       ),
+      [rejectBtn, approveBtn],
     );
   };
 
-  // ---- Made by agents -------------------------------------------------------
+  // ---- Made by agents ---------------------------------------------------------------------------------------------
 
   const refreshLibrary = async (): Promise<void> => {
     const list = await attempt(() => api.library());
@@ -460,26 +424,28 @@ export function mount(root: HTMLElement): Cleanup {
   };
 
   const renderLibrary = (): void => {
-    const heading = h('h2.prov-group-title', null, 'Made by agents');
+    const heading = h('h2', null, 'Made by agents');
     if (!library.length) {
-      replace(libBody, heading, empty('models', 'Agents can build tools in their VM and package them with tool_package; they show up here.'));
+      replace(libBox, h('section.tl-group', { 'data-key': 'library' }, heading, h('p.mdl-faint', null, 'Agents can build tools in their VM and package them with tool_package; they show up here.')));
       return;
     }
     const pending = library.filter((t) => t.state === 'pending');
     const rest = library.filter((t) => t.state !== 'pending');
-    const groups: HTMLElement[] = [];
-    if (pending.length) {
-      groups.push(h('section.prov-group', null, h('h2.prov-group-title', null, 'Waiting for your review'), h('div.prov-grid', null, pending.map(libCard))));
-    }
-    if (rest.length) {
-      groups.push(h('section.prov-group', null, h('h2.prov-group-title', null, 'Library'), h('div.prov-grid', null, rest.map(libCard))));
-    }
-    replace(libBody, heading, ...groups);
+    replace(
+      libBox,
+      h(
+        'section.tl-group',
+        { 'data-key': 'library' },
+        heading,
+        pending.length ? [h('h3.mdl-h3', null, 'Waiting for your review'), h('div.mdl-grid', null, pending.map(libCard))] : null,
+        rest.length ? [h('h3.mdl-h3', null, 'Library'), h('div.mdl-grid', null, rest.map(libCard))] : null,
+      ),
+    );
   };
 
   const libCard = (t: LibraryTool): HTMLElement => {
     const [text, tone] = LIBRARY_STATE[t.state];
-    const actions: HTMLElement[] = [button('Files', () => openFiles(t), { size: 'sm' })];
+    const actions: HTMLElement[] = [button('Files', () => openFiles(t), { size: 'sm', kind: 'ghost' })];
     if (t.state === 'pending') {
       actions.push(
         button('Publish', () => void publish(t), { size: 'sm', kind: 'primary' }),
@@ -489,52 +455,42 @@ export function mount(root: HTMLElement): Cleanup {
     actions.push(button('Remove', () => openRemove(t), { size: 'sm', kind: 'ghost' }));
 
     return h(
-      'article.prov-card',
+      'article.mdl-card',
       { 'data-key': `lib-${t.name}@${t.version}` },
+      h('h3.tl-mono', { style: 'font-size:var(--fs);color:var(--ink)', title: `x_${t.name}` }, `x_${t.name}`),
+      h('p.tl-trunc', { title: t.description }, t.description),
       h(
-        'header.prov-head',
+        'div.tl-meta',
         null,
-        h(
-          'div.prov-title',
-          null,
-          h('h3.mono.truncate', null, `x_${t.name}`),
-          h('span.faint.truncate', { title: t.description }, t.description),
-        ),
-      ),
-      h(
-        'div.prov-meta',
-        null,
-        h('span.faint', null, `by ${t.author} · v${t.version}`),
+        h('span.mdl-faint', null, `by ${t.author} · v${t.version}`),
         badge(text, tone, true),
-        h('span.faint', null, `${t.calls} ${t.calls === 1 ? 'call' : 'calls'}`),
+        h('span.mdl-faint', null, `${t.calls} ${t.calls === 1 ? 'call' : 'calls'}`),
       ),
-      h('p.lib-command', { title: 'Command' }, t.command.join(' ')),
+      h('p.tl-mono', { title: 'Command', style: 'margin-top:8px' }, t.command.join(' ')),
       t.requires.length
-        ? h('ul.tool-actions', null, t.requires.map((p) => h('li', { 'data-key': `req-${p}` }, h('span.tool-chip', null, p))))
+        ? h(
+            'div.tl-chips',
+            null,
+            t.requires.map((r) => h('span.tl-chip', { 'data-key': `req-${r}` }, h('span', null, r))),
+          )
         : null,
-      t.review_note ? h('p.faint', null, `Note: ${t.review_note}`) : null,
-      h('div.prov-actions', null, ...actions),
+      t.review_note ? h('p.mdl-faint', { style: 'margin-top:8px' }, `Note: ${t.review_note}`) : null,
+      h('div.mdl-row-a', null, ...actions),
     );
   };
 
   const openFiles = (t: LibraryTool): void => {
-    const view = h('pre.lib-file', null, 'Pick a file to see its content.');
+    const out = h('div', { id: 'tl-file-out' }, h('p.mdl-faint', null, 'Pick a file to see its content.'));
     const list = t.files.length
-      ? h(
-          'ul.lib-files',
-          null,
-          t.files.map((f) =>
-            h('li', { 'data-key': `file-${f.path}` }, button(`${f.path} · ${f.size} B`, () => void showFile(t, f.path, view), { size: 'sm', kind: 'ghost' })),
-          ),
-        )
-      : h('p.faint', null, 'No files.');
-    modal(`x_${t.name} · v${t.version}`, h('div.stack', null, list, view));
+      ? t.files.map((f) => button(`${f.path} · ${f.size} B`, () => void showFile(t, f.path, out), { size: 'sm', kind: 'ghost' }))
+      : [h('p.mdl-faint', null, 'No files.')];
+    modal(`x_${t.name} · v${t.version}`, h('div', { style: 'display:flex;flex-direction:column;gap:8px;align-items:flex-start' }, list, out));
   };
 
-  const showFile = async (t: LibraryTool, path: string, view: HTMLElement): Promise<void> => {
-    view.textContent = 'Loading…';
+  const showFile = async (t: LibraryTool, path: string, out: HTMLElement): Promise<void> => {
+    replace(out, h('p.mdl-faint', null, 'Loading…'));
     const file = await attempt(() => api.libraryFile(t.name, t.version, path));
-    view.textContent = file ? file.content : 'Could not read this file.';
+    replace(out, file ? h('pre.tl-pre', null, file.content) : h('p.mdl-faint', null, 'Could not read this file.'));
   };
 
   const publish = async (t: LibraryTool): Promise<void> => {
@@ -546,7 +502,7 @@ export function mount(root: HTMLElement): Cleanup {
   };
 
   const openReject = (t: LibraryTool): void => {
-    let close = () => {};
+    let close = (): void => {};
     const note = input({ autocomplete: 'off', placeholder: 'Why it is rejected (short)' });
     const reject = button(
       'Reject',
@@ -563,19 +519,11 @@ export function mount(root: HTMLElement): Cleanup {
       },
       { kind: 'primary' },
     );
-    close = modal(
-      `Reject x_${t.name}`,
-      h(
-        'div.stack',
-        null,
-        field('Note for the author', note, 'Optional. The author sees it.'),
-        h('div.prov-row', null, h('span.prov-spacer'), reject),
-      ),
-    );
+    close = sheet(`Reject x_${t.name}`, h('div.stack', null, field('Note for the author', note, 'Optional. The author sees it.')), [reject]);
   };
 
   const openRemove = (t: LibraryTool): void => {
-    let close = () => {};
+    let close = (): void => {};
     const remove = button(
       'Remove',
       async () => {
@@ -591,66 +539,41 @@ export function mount(root: HTMLElement): Cleanup {
       },
       { kind: 'primary' },
     );
-    close = modal(
-      `Remove x_${t.name}?`,
-      h(
-        'div.stack',
-        null,
-        h('p.faint', null, `Removes v${t.version} and its files from the library. This cannot be undone.`),
-        h('div.prov-row', null, h('span.prov-spacer'), button('Cancel', () => close(), { kind: 'ghost' }), remove),
-      ),
-    );
+    close = sheet(`Remove x_${t.name}?`, h('p', null, `Removes v${t.version} and its files from the library. This cannot be undone.`), [
+      button('Cancel', () => close(), { kind: 'ghost' }),
+      remove,
+    ]);
   };
 
-  // ---- Found by agents ------------------------------------------------------
+  // ---- Found by agents ----------------------------------------------------------------------------------------------
 
-  const refreshToolbox = async (): Promise<void> => {
-    const list = await attempt(() => api.toolbox());
-    if (list) discoveries = list;
-    renderToolbox();
-  };
-
-  const DISC_PAGE = 10;
-  const DISC_KINDS = ['cli', 'library', 'service', 'api', 'technique'];
   const expanded = new Set<string>();
   let discQuery = '';
   let discKind = '';
   let discPage = 1;
   let discMounted = false;
 
-  const discHeading = h('h2.prov-group-title', null, 'Found by agents');
-  const discIntro = h('p.faint', null, 'Software, services and techniques agents found on the internet, tried in their VMs and recommend to each other.');
-  const discSearch = h('input.disc-search', {
-    type: 'search',
-    placeholder: 'Search name, use, tags, by',
-    'aria-label': 'Search found tools',
-    oninput: () => {
-      discQuery = discSearch.value;
-      discPage = 1;
-      paintDiscoveries();
-    },
-  });
+  const discSearch = input({ type: 'search', placeholder: 'Search found tools', 'aria-label': 'Search found tools', autocomplete: 'off' });
   const discKindSelect = select([{ value: '', label: 'All kinds' }, ...DISC_KINDS.map((k) => ({ value: k, label: k }))], '');
-  discKindSelect.classList.add('disc-kind');
-  discKindSelect.addEventListener('change', () => {
+  discKindSelect.setAttribute('aria-label', 'Kind');
+  const discCount = h('span.mdl-faint', null);
+  const discArea = h('div');
+
+  discSearch.addEventListener('input', () => {
+    discQuery = discSearch.value;
+    discPage = 1;
+    paintDiscoveries();
+  });
+  discKindSelect.addEventListener('input', () => {
     discKind = discKindSelect.value;
     discPage = 1;
     paintDiscoveries();
   });
-  const discCount = h('span.disc-count', null);
-  const discToolbar = h('div.disc-toolbar', null, discSearch, discKindSelect, discCount);
-  const discArea = h('div.disc-area', null);
 
   const matches = (d: Discovery, q: string): boolean => !q || [d.name, d.what_for, d.by, ...d.tags].some((s) => s.toLowerCase().includes(q));
 
-  const act = (label: string, onClick: () => void, kind?: 'danger' | 'ghost'): HTMLButtonElement => {
-    const b = button(label, onClick, { size: 'sm', kind });
-    b.classList.add('disc-btn');
-    return b;
-  };
-
   const flagDisc = (d: Discovery): void => {
-    let close = () => {};
+    let close = (): void => {};
     const reason = textarea({ rows: 3, placeholder: 'What is wrong with it?' });
     const save = button(
       'Save',
@@ -669,15 +592,7 @@ export function mount(root: HTMLElement): Cleanup {
       },
       { kind: 'primary' },
     );
-    close = modal(
-      `Flag ${d.name}`,
-      h(
-        'div.stack',
-        null,
-        field('Reason', reason, 'Shown next to the entry.'),
-        h('div.prov-row', null, h('span.prov-spacer'), button('Cancel', () => close(), { kind: 'ghost' }), save),
-      ),
-    );
+    close = sheet(`Flag ${d.name}`, h('div.stack', null, field('Reason', reason, 'Shown next to the entry.')), [button('Cancel', () => close(), { kind: 'ghost' }), save]);
   };
 
   const unflagDisc = async (d: Discovery): Promise<void> => {
@@ -685,12 +600,20 @@ export function mount(root: HTMLElement): Cleanup {
     if (done) await refreshToolbox();
   };
 
-  const removeDisc = async (d: Discovery): Promise<void> => {
-    if (!window.confirm(`Remove ${d.name} from the found tools?`)) return;
-    const done = await attempt(() => api.removeDiscovery(d.id), `${d.name} removed`);
-    if (!done) return;
-    expanded.delete(d.id);
-    await refreshToolbox();
+  const removeDisc = (d: Discovery): void => {
+    let close = (): void => {};
+    const remove = button(
+      'Remove',
+      async () => {
+        const done = await attempt(() => api.removeDiscovery(d.id), `${d.name} removed`);
+        if (!done) return;
+        close();
+        expanded.delete(d.id);
+        await refreshToolbox();
+      },
+      { kind: 'danger' },
+    );
+    close = sheet(`Remove ${d.name} from the found tools?`, h('div'), [button('Cancel', () => close(), { kind: 'ghost' }), remove]);
   };
 
   const discRow = (d: Discovery): HTMLElement => {
@@ -700,41 +623,32 @@ export function mount(root: HTMLElement): Cleanup {
       else expanded.add(d.id);
       paintDiscoveries();
     };
-    const flag = d.flagged ? badge('flagged', 'danger') : null;
-    if (flag) flag.title = d.flagged ?? '';
+    const flag = d.flagged ? h('span.badge-t.t-danger', { title: d.flagged }, 'flagged') : null;
     return h(
       'li.disc-row',
       { 'data-key': `disc-${d.id}` },
+      h('div.tl-row', null, h('span.tl-name', { title: d.name }, d.name), h('span.tl-chip', null, h('span', null, d.kind)), flag),
+      h('p.tl-trunc', { title: d.what_for, style: 'margin-top:4px' }, d.what_for),
+      h('p.mdl-faint', { style: 'margin-top:4px' }, `by ${d.by} · ${d.endorsed_by.length} endorsements`),
       h(
-        'div.disc-main',
+        'div.mdl-row-a',
         null,
-        h('div.disc-line', null, h('strong.disc-name', { title: d.name }, d.name), h('span.tool-chip', null, d.kind), flag),
-        h(
-          'div.disc-line',
-          null,
-          h('span.disc-what', { title: d.what_for }, d.what_for),
-          h('span.disc-by', null, `by ${d.by} · ${d.endorsed_by.length} endorsements`),
-        ),
-      ),
-      h(
-        'div.disc-actions',
-        null,
-        act('Details', toggle),
-        act(d.flagged ? 'Unflag' : 'Flag', () => {
+        button('Details', toggle, { size: 'sm', kind: 'ghost' }),
+        button(d.flagged ? 'Unflag' : 'Flag', () => {
           if (d.flagged) void unflagDisc(d);
           else flagDisc(d);
-        }),
-        act('Remove', () => void removeDisc(d), 'danger'),
+        }, { size: 'sm', kind: 'ghost' }),
+        button('Remove', () => removeDisc(d), { size: 'sm', kind: 'danger' }),
       ),
       open
         ? h(
-            'div.disc-details',
+            'div',
             null,
-            h('pre.lib-file', null, d.how),
+            h('pre.tl-pre', null, d.how),
             h('p', null, d.verdict),
-            d.tags.length ? h('ul.tool-actions', null, d.tags.map((t) => h('li', { 'data-key': `tag-${t}` }, h('span.tool-chip', null, t)))) : null,
+            d.tags.length ? h('div.tl-chips', null, d.tags.map((t) => h('span.tl-chip', { 'data-key': `tag-${t}` }, h('span', null, t)))) : null,
             // Agents write these URLs, so only web links become anchors (as the proposal review does).
-            d.url && /^https?:\/\//.test(d.url) ? h('a', { href: d.url, target: '_blank', rel: 'noopener noreferrer' }, d.url) : null,
+            d.url && /^https?:\/\//.test(d.url) ? h('p', null, h('a', { href: d.url, target: '_blank', rel: 'noopener noreferrer' }, d.url)) : null,
           )
         : null,
     );
@@ -747,11 +661,11 @@ export function mount(root: HTMLElement): Cleanup {
     discPage = Math.min(Math.max(1, discPage), pages);
     discCount.textContent = `${discoveries.length} found`;
     if (!discoveries.length) {
-      replace(discArea, empty('models', 'Nothing yet. Agents record what they find with plaza_toolbox_share.'));
+      replace(discArea, h('p.mdl-faint', null, 'Nothing yet. Agents record what they find with plaza_toolbox_share.'));
       return;
     }
     if (!rows.length) {
-      replace(discArea, h('p.faint', null, 'Nothing matches that search.'));
+      replace(discArea, h('p.mdl-faint', null, 'Nothing matches that search.'));
       return;
     }
     const start = (discPage - 1) * DISC_PAGE;
@@ -773,15 +687,31 @@ export function mount(root: HTMLElement): Cleanup {
     );
     replace(
       discArea,
-      h('ul.disc-list', null, rows.slice(start, start + DISC_PAGE).map(discRow)),
-      h('div.disc-pager', null, prev, h('span', null, `page ${discPage} of ${pages}`), next),
+      h('ul.tl-list', null, rows.slice(start, start + DISC_PAGE).map(discRow)),
+      h('div.tl-pager', null, prev, h('span.mdl-faint', null, `page ${discPage} of ${pages}`), next),
     );
+  };
+
+  const refreshToolbox = async (): Promise<void> => {
+    const list = await attempt(() => api.toolbox());
+    if (list) discoveries = list;
+    renderToolbox();
   };
 
   const renderToolbox = (): void => {
     if (!discMounted) {
       discMounted = true;
-      replace(discBody, discHeading, discIntro, discToolbar, discArea);
+      replace(
+        discBox,
+        h(
+          'section.tl-group',
+          { 'data-key': 'found' },
+          h('h2', null, 'Found by agents'),
+          h('p.mdl-faint', null, 'Tools agents found online, recorded with plaza_toolbox_share.'),
+          h('div.tl-toolbar', null, discSearch, discKindSelect, discCount),
+          discArea,
+        ),
+      );
     }
     paintDiscoveries();
   };

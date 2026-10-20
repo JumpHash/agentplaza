@@ -178,6 +178,36 @@ pub(crate) fn conformance(store: Arc<dyn SkillStore>) {
 }
 
 #[test]
+fn builtin_skills_are_seeded_once() {
+    let skills = skills_on(Arc::new(store_mem::MemorySkills::in_memory()));
+    assert_eq!(seed_builtins(&skills, "owner", T0), Ok(1));
+    assert_eq!(seed_builtins(&skills, "owner", T0 + 1), Ok(0));
+    let held: Vec<Skill> = skills
+        .store()
+        .list(false)
+        .expect("lists")
+        .into_iter()
+        .filter(|skill| skill.id == "show-your-work")
+        .collect();
+    assert_eq!(held.len(), 1, "seeding twice holds the skill once");
+    assert_eq!(
+        held[0].active_version,
+        Some(1),
+        "the built-in skill is published"
+    );
+    assert_eq!(held[0].source, Source::Built);
+    skills
+        .store()
+        .set_archived("show-your-work", true, "owner", T0 + 2)
+        .expect("archives");
+    assert_eq!(
+        seed_builtins(&skills, "owner", T0 + 3),
+        Ok(0),
+        "an archived built-in skill is not seeded again"
+    );
+}
+
+#[test]
 fn memory_store_keeps_the_contract() {
     conformance(Arc::new(store_mem::MemorySkills::in_memory()));
 }

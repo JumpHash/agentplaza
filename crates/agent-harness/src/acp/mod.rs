@@ -2,7 +2,8 @@
 //! adapter the ACP agent on a child process's stdio. See [`link`] for how an engine session reaches
 //! the hub.
 //!
-//! - [`catalog`]: the engines, their pinned adapters and how each starts.
+//! - [`catalog`]: the engines, their pinned adapters and how each starts; [`instance`]: the engine a call runs,
+//!   the catalogue's or the owner's spec.
 //! - [`run`]: `code_engine` (input, install, sessions store, summary).
 //! - [`session`]: the process, the handshake, one prompt turn, the engine's client calls.
 //! - [`gate`]: what the hub is asked before an engine acts; [`stream`]: the update stream.
@@ -14,6 +15,7 @@ pub mod catalog;
 pub mod fs;
 pub mod gate;
 pub mod hub;
+pub mod instance;
 pub mod layout;
 pub mod link;
 pub mod mcp;

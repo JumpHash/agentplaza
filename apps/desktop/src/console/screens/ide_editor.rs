@@ -87,20 +87,36 @@ fn editor_style(_theme: &Theme, status: text_editor::Status) -> text_editor::Sty
     }
 }
 
-/// The tab strip: one tab per open file (its name, a dirty dot, a conflict mark), each with a close.
+/// A hairline across the editor's column: the rule under a bar.
+pub fn hrule<'a, M: 'a>() -> Element<'a, M> {
+    let p = theme::palette();
+    container(Space::new().width(Length::Fill).height(Length::Fixed(1.0)))
+        .style(move |_| container::Style {
+            background: Some(p.rule.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The tab strip, the web's `.ide-tabbar`: a sheet-2 bar with one tab per open file (its name, a dirty dot, a
+/// conflict mark, and a close), the active tab on the sheet, and a rule under the bar.
 pub fn tab_strip<'a>(
     open: &'a [String],
     active: Option<&'a str>,
     tabs: &'a BTreeMap<String, Tab>,
 ) -> Element<'a, Msg> {
     let p = theme::palette();
-    let mut strip = row![].spacing(2).align_y(Alignment::Center);
+    let mut strip = row![].spacing(0).align_y(Alignment::Center);
     for path in open {
         let on = active == Some(path.as_str());
         let tab = tabs.get(path);
-        let mut label = row![ui::mono(name_of(path).to_string(), 11.5, p.ink)]
-            .spacing(6)
-            .align_y(Alignment::Center);
+        let mut label = row![ui::sans(
+            name_of(path).to_string(),
+            13.0,
+            if on { p.ink } else { p.ink_2 }
+        )]
+        .spacing(6)
+        .align_y(Alignment::Center);
         if tab.is_some_and(|t| t.buffer.dirty) {
             label = label.push(ui::mono("•", 11.5, p.signal));
         }
@@ -109,17 +125,63 @@ pub fn tab_strip<'a>(
         }
         let pick = button(label)
             .on_press(Msg::Activate(path.clone()))
-            .padding([5, 8])
-            .style(theme::register_row(on));
-        let close = button(ui::icon("x", 11.0, p.ink_3))
+            .padding(0)
+            .style(|_: &Theme, _| button::Style {
+                background: None,
+                text_color: theme::palette().ink,
+                ..Default::default()
+            });
+        let close = button(ui::icon::<Msg>("x", 12.0, p.ink_3))
             .on_press(Msg::Close(path.clone()))
-            .padding([5, 4])
-            .style(theme::register_row(false));
-        strip = strip.push(row![pick, close].align_y(Alignment::Center));
+            .padding(0)
+            .width(Length::Fixed(20.0))
+            .height(Length::Fixed(20.0))
+            .style(|_: &Theme, status: button::Status| {
+                let hot = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                button::Style {
+                    background: hot.then(|| theme::palette().hover.into()),
+                    border: Border {
+                        radius: 4.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            });
+        let cell = container(row![pick, close].spacing(8).align_y(Alignment::Center))
+            .height(Length::Fixed(36.0))
+            .padding(iced::Padding {
+                top: 0.0,
+                right: 4.0,
+                bottom: 0.0,
+                left: 12.0,
+            })
+            .align_y(Alignment::Center)
+            .style(move |_| container::Style {
+                background: on.then(|| p.sheet.into()),
+                ..Default::default()
+            });
+        let divider = container(
+            Space::new()
+                .width(Length::Fixed(1.0))
+                .height(Length::Fixed(36.0)),
+        )
+        .style(move |_| container::Style {
+            background: Some(p.rule.into()),
+            ..Default::default()
+        });
+        strip = strip.push(cell).push(divider);
     }
-    ui::scroll_x(strip).width(Length::Fill).into()
+    column![
+        container(ui::scroll_x(strip).width(Length::Fill))
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(p.sheet_2.into()),
+                ..Default::default()
+            }),
+        hrule(),
+    ]
+    .into()
 }
-
 /// The active tab: a conflict banner when the hub's file moved on, then the editor. With no write
 /// access the editor is read-only and says so.
 pub fn editor<'a>(path: &'a str, tab: &'a Tab, writable: bool) -> Element<'a, Msg> {

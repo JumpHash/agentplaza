@@ -19,17 +19,17 @@ use audit::{AuditPage, AuditState, ImportForm, ImportResult};
 
 use forms::{
     EditForm, PassForm, RekeyField, Rotate, ScopeMode, SecretForm, SecretKind, UnsealForm,
-    UnsealMethod, add_passphrase_body, create_body, create_card, edit_body, edit_card,
-    pending_card, recovery_card, rekey_body, rekey_card, rollback_body, rotate_body, rotate_card,
-    sealed_card, secret_path, slot_path, slots_card, test_body, unseal_body,
+    UnsealMethod, add_passphrase_body, create_body, edit_body, rekey_body, rollback_body,
+    rotate_body, secret_path, slot_path, test_body, unseal_body,
 };
-use iced::widget::{column, pick_list, row, text, text_input};
-use iced::{Element, Length, Task};
+use iced::widget::{Space, Stack, column, container, pick_list, row, text};
+use iced::{Alignment, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
 use crate::console::{Ctx, client, ui};
+use crate::theme;
 
 // ---- The hub's shapes (as apps/web/src/api.ts types them, trimmed to what this screen uses) ----
 
@@ -76,11 +76,15 @@ pub enum VaultScope {
     },
 }
 
-/// One version of an entry; only its number is shown (the rollback target).
+/// One version of an entry: its number (the rollback target), when it was made, and the fingerprint and last four
+/// characters the table shows. The value itself is never listed.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct VersionRef {
     pub v: u64,
+    pub created_ms: f64,
+    pub fp: String,
+    pub hint: String,
 }
 
 /// One entry from `GET /v1/vault/secrets` (metadata only; the value is never returned).
@@ -242,11 +246,11 @@ pub fn rekey_fields(status: &VaultStatus) -> Vec<RekeyField> {
 }
 
 /// The audit chain's line, in the web console's words. None is "not checked", not "broken".
-fn audit_line(audit_ok: Option<bool>) -> &'static str {
+pub fn audit_line(audit_ok: Option<bool>) -> &'static str {
     match audit_ok {
         None => "Audit chain not checked until unsealed",
         Some(true) => "Audit chain intact",
-        Some(false) => "Audit chain broken, see the Audit log tab",
+        Some(false) => "Audit chain broken, see the Audit tab",
     }
 }
 
@@ -273,31 +277,47 @@ fn now_ms() -> f64 {
 
 // ---- State, messages, loading -----------------------------------------------------------------
 
-/// The unsealed screen's sections: the secrets, then the consumers matrix, the audit log and the .env import.
+/// The unsealed screen's tabs, as the web's: the secrets, each entry's node matrix, and the audit log.
+/// The .env import is a dialog from the toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
     Secrets,
     Consumers,
     Audit,
-    Import,
 }
 
-const TABS: [(Tab, &str); 4] = [
+const TABS: [(Tab, &str); 3] = [
     (Tab::Secrets, "Secrets"),
-    (Tab::Consumers, "Consumers"),
-    (Tab::Audit, "Audit log"),
-    (Tab::Import, ".env import"),
+    (Tab::Consumers, "Per node"),
+    (Tab::Audit, "Audit"),
 ];
+
+/// This hub's own node id: the default node a test runs on.
+const THIS_HUB: &str = "n0";
 
 /// An act that asks for confirmation before it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
     Seal,
-    RemoveSlot { id: String, kind: String },
+    RemoveSlot {
+        id: String,
+        kind: String,
+    },
     Rekey,
-    RemoveEntry { id: String, name: String },
-    Rollback { id: String, name: String, v: u64 },
+    RemoveEntry {
+        id: String,
+        name: String,
+    },
+    Rollback {
+        id: String,
+        name: String,
+        v: u64,
+    },
+    /// Adds the key-file slot, once the owner has read what it does.
+    AddKeyfile,
+    /// Makes a new recovery code, which replaces the old one.
+    Recovery,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -319,11 +339,17 @@ pub struct State {
     pub busy: bool,
     /// The act waiting for its confirmation.
     pub pending: Option<Pending>,
+    /// The unseal dialog, open while the vault is sealed and the owner unseals it.
+    pub unseal_open: bool,
     pub unseal: UnsealForm,
+    /// The add-passphrase dialog, open while a passphrase slot is being added.
+    pub pass_open: bool,
     pub add_pass: PassForm,
     /// A new recovery code, shown once until dismissed.
     pub recovery: Option<String>,
-    /// The last copy did not reach the clipboard: the recovery card shows the code to select instead.
+    /// The owner has ticked "I saved it": the recovery dialog's close is enabled.
+    pub recovery_saved: bool,
+    /// The last copy did not reach the clipboard: the recovery dialog shows the code to select instead.
     pub copy_failed: bool,
     /// The rekey form, open while the owner gives each slot's secret.
     pub rekey: Option<Vec<RekeyField>>,
@@ -333,26 +359,38 @@ pub struct State {
     pub rotate: Option<Rotate>,
     /// The edit form, open for one entry: its label, scope and bindings (no value).
     pub edit: Option<EditForm>,
-    /// The last test's answer.
-    pub test_note: Option<String>,
+    /// The test dialog, open for one entry: its id and name.
+    pub test: Option<(String, String)>,
+    /// The node the test runs on (`n0` is this hub).
+    pub test_node: String,
+    /// The last test's answer, shown in the test dialog.
+    pub test_note: Option<VaultTest>,
     /// The unsealed section on show.
     pub tab: Tab,
     /// The audit log, read one page at a time.
     pub audit: AuditState,
-    /// The .env import, open until it is cleared or sent.
+    /// The .env import dialog, open until it is closed.
+    pub import_open: bool,
+    /// The .env import, held until it is cleared or sent.
     pub import: ImportForm,
 }
 
 impl State {
     /// Drops every form and reveal that holds a secret; run whenever the vault is not unsealed.
+    /// The unseal dialog stays: it is what unseals the vault.
     fn wipe(&mut self) {
         self.pending = None;
+        self.pass_open = false;
         self.add_pass = PassForm::default();
         self.recovery = None;
+        self.recovery_saved = false;
         self.rekey = None;
         self.create = None;
         self.rotate = None;
         self.edit = None;
+        self.test = None;
+        self.test_note = None;
+        self.import_open = false;
         self.import = ImportForm::default();
     }
 }
@@ -428,6 +466,24 @@ pub enum Msg {
     EditSubmit,
     CloseEdit,
     Edited(Result<String, String>),
+    /// Opens or closes the unseal dialog.
+    OpenUnseal,
+    CloseUnseal,
+    /// Unseals with the key file (no secret is typed).
+    UnsealKeyfile,
+    /// Opens or closes the add-passphrase dialog.
+    OpenPass,
+    ClosePass,
+    /// The recovery dialog's "I saved it" tick.
+    RecoverySaved(bool),
+    /// Opens the test dialog for one entry, and closes it.
+    OpenTest(String, String),
+    CloseTest,
+    /// The node a test runs on.
+    TestNode(String),
+    /// Opens or closes the .env import dialog.
+    OpenImport,
+    CloseImport,
 }
 
 pub fn go(_msg: &Msg) -> Option<Id> {
@@ -470,24 +526,6 @@ fn call(
     )
 }
 
-/// The recovery reveal after a copy that did not reach the clipboard: the code in a read-only field to select.
-fn recovery_card_selectable<'a>(code: &str) -> Element<'a, Msg> {
-    ui::card(
-        "Recovery code",
-        column![
-            ui::faint("Could not copy. Select the code and copy it."),
-            text_input("", code).on_input(|_| Msg::Noop),
-            row![
-                ui::btn("Copy", None, ui::Kind::Primary, Some(Msg::CopyRecovery)),
-                ui::btn("Done", None, ui::Kind::Ghost, Some(Msg::DismissRecovery)),
-            ]
-            .spacing(12),
-        ]
-        .spacing(12)
-        .into(),
-    )
-}
-
 /// The recovery code from `POST /v1/vault/recovery`.
 fn recovery_code(v: &Value) -> Result<String, String> {
     v.get("recovery_code")
@@ -522,6 +560,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 state.consumers.clear();
                 return Task::none();
             }
+            // Unsealed: the unseal dialog has done its job.
+            state.unseal_open = false;
             Task::batch([
                 fetch::<Vec<VaultEntry>>(ctx, "/v1/vault/secrets", Msg::Entries),
                 fetch::<Vec<ConsumerRef>>(ctx, "/v1/vault/consumers", Msg::Consumers),
@@ -556,6 +596,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Mutated(Ok(note)) => {
             state.busy = false;
             state.pending = None;
+            state.unseal_open = false;
+            state.pass_open = false;
             state.notice = Some(note);
             load(state, ctx)
         }
@@ -579,6 +621,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Recovery(Ok(code)) => {
             state.busy = false;
             state.recovery = Some(code);
+            state.recovery_saved = false;
             Task::none()
         }
         Msg::Recovery(Err(error)) => {
@@ -587,15 +630,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Tested(Ok(test)) => {
-            state.test_note = Some(format!(
-                "{}: {}",
-                if test.ok {
-                    "Test passed"
-                } else {
-                    "Test failed"
-                },
-                test.detail
-            ));
+            state.test_note = Some(test);
             Task::none()
         }
         Msg::Tested(Err(error)) => {
@@ -615,22 +650,24 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.unseal.secret = secret;
             Task::none()
         }
-        Msg::Unseal => {
-            let method = state.unseal.method;
-            match unseal_body(method, &mut state.unseal.secret) {
-                Ok(body) => call(
-                    state,
-                    ctx,
-                    "POST",
-                    "/v1/vault/unseal".into(),
-                    Some(body),
-                    "Vault unsealed".into(),
-                ),
-                Err(e) => {
-                    state.failure = Some(e);
-                    Task::none()
-                }
-            }
+        Msg::Unseal => unseal(state, ctx),
+        Msg::UnsealKeyfile => {
+            state.unseal = UnsealForm {
+                method: UnsealMethod::KeyFile,
+                secret: String::new(),
+            };
+            unseal(state, ctx)
+        }
+        Msg::OpenUnseal => {
+            state.unseal_open = true;
+            state.failure = None;
+            Task::none()
+        }
+        Msg::CloseUnseal => {
+            state.unseal_open = false;
+            state.unseal.secret.clear();
+            state.failure = None;
+            Task::none()
         }
 
         // Confirmations.
@@ -697,9 +734,22 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Some(rollback_body(v)),
                 format!("Rolled {name} back to v{v}"),
             ),
+            Some(Pending::AddKeyfile) => update(state, Msg::AddKeyfile, ctx),
+            Some(Pending::Recovery) => update(state, Msg::MakeRecovery, ctx),
         },
 
         // Key slots and recovery.
+        Msg::OpenPass => {
+            state.pass_open = true;
+            state.failure = None;
+            Task::none()
+        }
+        Msg::ClosePass => {
+            state.pass_open = false;
+            state.add_pass = PassForm::default();
+            state.failure = None;
+            Task::none()
+        }
         Msg::PassPhrase(s) => {
             state.add_pass.pass = s;
             Task::none()
@@ -769,6 +819,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Noop => Task::none(),
         Msg::DismissRecovery => {
             state.recovery = None;
+            state.recovery_saved = false;
+            Task::none()
+        }
+        Msg::RecoverySaved(on) => {
+            state.recovery_saved = on;
             Task::none()
         }
 
@@ -1015,11 +1070,25 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
 
         // Test.
+        Msg::OpenTest(id, name) => {
+            state.test = Some((id, name));
+            state.test_node = THIS_HUB.to_string();
+            state.test_note = None;
+            state.failure = None;
+            Task::none()
+        }
+        Msg::CloseTest => {
+            state.test = None;
+            state.test_note = None;
+            state.failure = None;
+            Task::none()
+        }
+        Msg::TestNode(node) => {
+            state.test_node = node;
+            Task::none()
+        }
         Msg::RunTest(id) => {
-            let node = match &state.selection {
-                Selection::Node(n) => Some(n.clone()),
-                _ => None,
-            };
+            let node = Some(state.test_node.clone()).filter(|n| !n.is_empty());
             state.test_note = None;
             let body = test_body(node.as_deref());
             let path = secret_path(&id, "/test");
@@ -1096,6 +1165,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::AuditVerified(Err(error)) => {
             state.audit.busy = false;
             state.audit.error = Some(error);
+            Task::none()
+        }
+        Msg::OpenImport => {
+            state.import_open = true;
+            state.failure = None;
+            Task::none()
+        }
+        Msg::CloseImport => {
+            state.import_open = false;
+            state.import = ImportForm::default();
+            state.failure = None;
             Task::none()
         }
         Msg::ImportPick => {
@@ -1210,271 +1290,633 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 // ---- View -------------------------------------------------------------------------------------
 
 /// A button that is inert while an owner call is in flight.
+/// The message a control sends while no owner call is in flight; None disables it.
 fn gate(busy: bool, msg: Msg) -> Option<Msg> {
     if busy { None } else { Some(msg) }
 }
 
-/// A column of elements with the screen's spacing.
-fn stack<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    column(items).spacing(12).into()
-}
-
-pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
-    let mut parts: Vec<Element<'a, Msg>> =
-        vec![ui::faint("Values are write-only: the vault never shows or returns a secret.").into()];
-    if let Some(error) = &state.error {
-        parts.push(ui::error_line(error));
-    }
-    if let Some(failure) = &state.failure {
-        parts.push(ui::error_line(failure));
-    }
-    if let Some(notice) = &state.notice {
-        parts.push(ui::faint(notice.clone()).into());
-    }
-    let mut actions: Vec<Element<'a, Msg>> = Vec::new();
-    match &state.status {
-        None => parts.push(ui::loading()),
-        Some(status) => {
-            if status.env_file_keys > 0 {
-                parts.push(env_banner());
-            }
-            parts.push(header(status));
-            match status.state.as_str() {
-                "unsealed" => {
-                    if state.create.is_none() {
-                        actions.push(ui::btn(
-                            "New secret",
-                            None,
-                            ui::Kind::Primary,
-                            gate(state.busy, Msg::OpenCreate),
-                        ));
-                    }
-                    parts.extend(unsealed_section(state));
-                }
-                "sealed" => parts.push(sealed_card(state)),
-                "tampered" => parts.push(ui::card(
-                    "Tampered",
-                    ui::error_line(
-                        status
-                            .tampered
-                            .as_deref()
-                            .unwrap_or("The vault failed its integrity check."),
-                    ),
-                )),
-                _ => parts.push(ui::card(
-                    "Not set up",
-                    ui::faint("The vault has not been set up. Set it up in the web console.")
-                        .into(),
-                )),
-            }
+/// Unseals with the form's method: the one secret it holds, or the key file (no secret).
+fn unseal(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    let method = state.unseal.method;
+    match unseal_body(method, &mut state.unseal.secret) {
+        Ok(body) => call(
+            state,
+            ctx,
+            "POST",
+            "/v1/vault/unseal".into(),
+            Some(body),
+            "Vault unsealed".into(),
+        ),
+        Err(e) => {
+            state.failure = Some(e);
+            Task::none()
         }
     }
-    ui::sheet(
-        ui::view_head("Vault", actions),
-        column(parts).spacing(16).into(),
-    )
 }
 
-/// The status card: the state, the counts and the audit chain's line, then when the vault was last rekeyed.
-fn header<'a>(status: &VaultStatus) -> Element<'a, Msg> {
-    let state = match status.state.as_str() {
+/// The version the entry resolves to now (the last one when the number is missing).
+fn current_version(entry: &VaultEntry) -> Option<&VersionRef> {
+    entry
+        .versions
+        .iter()
+        .find(|v| v.v == entry.current)
+        .or_else(|| entry.versions.last())
+}
+
+/// A binding's label as the web reads it: the consumer's label when it is known, else a plain reading of its name.
+fn binding_name(binding: &str, consumers: &[ConsumerRef]) -> String {
+    if let Some(c) = consumers.iter().find(|c| c.binding == binding) {
+        return c.label.clone();
+    }
+    match binding.split_once(':') {
+        Some(("provider", rest)) => format!("{rest} provider"),
+        Some(("mcp", rest)) => format!("MCP {rest}"),
+        Some(("connector", rest)) => format!("{rest} connector"),
+        Some(("tool", rest)) => format!("tool {rest}"),
+        _ if binding == "hf" => "Hugging Face".to_string(),
+        _ => binding.to_string(),
+    }
+}
+
+/// A form field, as the web's: its label in the label voice, the control, then a hint line when there is one.
+pub(super) fn field<'a>(
+    label: &str,
+    control: Element<'a, Msg>,
+    hint: Option<&str>,
+) -> Element<'a, Msg> {
+    let mut items: Vec<Element<'a, Msg>> = vec![ui::label(label).into(), control];
+    if let Some(hint) = hint {
+        items.push(ui::faint(hint.to_string()).into());
+    }
+    column(items).spacing(6).width(Length::Fill).into()
+}
+
+/// The open dialog's own failure line. With no dialog open, the page shows the failure instead.
+pub(super) fn failure_line<'a>(state: &State) -> Option<Element<'a, Msg>> {
+    state.failure.as_deref().map(ui::error_line)
+}
+
+/// A rule the width of a card, in the strong ink-rule tone (under a table's head).
+fn strong_rule<'a>() -> Element<'a, Msg> {
+    container(Space::new().height(1.0))
+        .width(Length::Fill)
+        .style(|_: &Theme| container::Style {
+            background: Some(theme::palette().rule_strong.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// The web's table: a head row in the label voice over a strong rule, then each row under a faint rule.
+/// Columns are proportional; each row is built with `cells`.
+pub(super) fn table<'a>(head: &[(u16, &str)], rows: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
+    let heads: Vec<(u16, Element<'a, Msg>)> = head
+        .iter()
+        .map(|(portion, label)| (*portion, ui::label(label).into()))
+        .collect();
+    let mut lines: Vec<Element<'a, Msg>> = vec![cells(heads), strong_rule()];
+    for line in rows {
+        lines.push(line);
+        lines.push(ui::hairline());
+    }
+    column(lines).width(Length::Fill).into()
+}
+
+/// One table row: its cells in proportional columns, padded 9 by 12 as the web's cells are.
+pub(super) fn cells<'a>(parts: Vec<(u16, Element<'a, Msg>)>) -> Element<'a, Msg> {
+    let laid: Vec<Element<'a, Msg>> = parts
+        .into_iter()
+        .map(|(portion, cell)| container(cell).width(Length::FillPortion(portion)).into())
+        .collect();
+    container(row(laid).spacing(12).align_y(Alignment::Center))
+        .padding([9, 12])
+        .width(Length::Fill)
+        .into()
+}
+
+/// A card whose body is flush (a table or a list under its head, with no padding of its own), as the web's
+/// `.card` with its flush body. The head is the card's own: its title in the label voice, its actions at the right.
+pub(super) fn flush_card<'a>(
+    title: &str,
+    actions: Vec<Element<'a, Msg>>,
+    body: Element<'a, Msg>,
+) -> Element<'a, Msg> {
+    let mut head = row![ui::card_title(title)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    head = head.push(Space::new().width(Length::Fill));
+    for action in actions {
+        head = head.push(action);
+    }
+    let head = container(head)
+        .padding([8, 16])
+        .width(Length::Fill)
+        .center_y(Length::Fixed(44.0));
+    container(column![head, strong_rule(), body])
+        .width(Length::Fill)
+        .style(ui::card_style)
+        .into()
+}
+
+/// A dialog over the screen, as the web's modal: a sheet on a scrim, with its title, its body (which scrolls past
+/// a height) and its actions at the right. The caller stacks it over the page.
+pub(super) fn layer<'a>(
+    title: &str,
+    body: Vec<Element<'a, Msg>>,
+    actions: Vec<Element<'a, Msg>>,
+) -> Element<'a, Msg> {
+    let mut foot: Vec<Element<'a, Msg>> = vec![Space::new().width(Length::Fill).into()];
+    foot.extend(actions);
+    let sheet = container(
+        column![
+            text(title.to_string())
+                .font(theme::SANS_SEMIBOLD)
+                .size(theme::TYPE_SECTION)
+                .color(theme::palette().ink),
+            container(
+                ui::scroll(column(body).spacing(12).width(Length::Fill))
+                    .height(Length::Shrink)
+                    .width(Length::Fill)
+            )
+            .max_height(480.0),
+            row(foot).spacing(8).align_y(Alignment::Center),
+        ]
+        .spacing(16)
+        .width(Length::Fill),
+    )
+    .padding(20)
+    .width(Length::Fixed(520.0))
+    .style(theme::pop);
+    container(sheet)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center(Length::Fill)
+        .style(theme::scrim)
+        .into()
+}
+
+/// The state's label, badge tone and line, as the web's status card words them.
+fn state_label(state: &str) -> &'static str {
+    match state {
         "unsealed" => "Unsealed",
         "sealed" => "Sealed",
-        "uninitialized" => "Not set up",
         "tampered" => "Tampered",
-        other => other,
-    };
-    let line = format!(
-        "{state}  ·  {} key slots  ·  {} entries  ·  {}",
-        status.slots.len(),
-        status.entries,
-        audit_line(status.audit_ok)
-    );
-    let rekeyed = match status.rekeyed_ms {
-        Some(ms) => format!("Rekeyed: {}", ago(ms, now_ms())),
-        None => "Rekeyed: never".to_string(),
-    };
-    ui::card(
-        "Status",
-        stack(vec![text(line).into(), ui::faint(rekeyed).into()]),
-    )
-}
-
-/// The env-file banner, in the web console's words: keys that were in an env file now live in the vault.
-fn env_banner<'a>() -> Element<'a, Msg> {
-    let warn = crate::theme::palette().warn;
-    ui::card(
-        "Env file",
-        stack(vec![
-            ui::faint("Keys were found in an env file. They now live in the vault. Delete the file.").color(warn).into(),
-            ui::faint("To move what is left and remove the file in one step, run apz vault import FILE.env --shred.").into(),
-        ]),
-    )
-}
-
-/// The unsealed screen's cards, top to bottom: the confirmation, the recovery reveal, the key slots,
-/// the rekey and rotate forms, the create form, and the secrets.
-fn unsealed_parts<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
-    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
-    if let Some(pending) = &state.pending {
-        parts.push(pending_card(pending, state.busy));
+        _ => "Uninitialized",
     }
-    if let Some(code) = &state.recovery {
-        parts.push(if state.copy_failed {
-            recovery_card_selectable(code)
+}
+
+fn state_tone(state: &str) -> ui::Tone {
+    match state {
+        "unsealed" => ui::Tone::Ok,
+        "sealed" => ui::Tone::Warn,
+        "tampered" => ui::Tone::Danger,
+        _ => ui::Tone::Muted,
+    }
+}
+
+fn state_copy(status: &VaultStatus) -> String {
+    match status.state.as_str() {
+        "unsealed" => "Secrets resolve for agents, connectors and MCP servers.".to_string(),
+        "sealed" => "Secrets stay encrypted. Unseal to use them.".to_string(),
+        "tampered" => format!(
+            "{} Secrets are not available. Check the audit log.",
+            status
+                .tampered
+                .as_deref()
+                .unwrap_or("The vault failed an integrity check.")
+        ),
+        _ => {
+            "The vault is not set up. It is created when apid starts with a vault key.".to_string()
+        }
+    }
+}
+
+/// The status card: the state and its line, then the key slots (each removable), the secret count, when the vault
+/// was last rekeyed and the audit chain. Its actions follow the state: the key work when unsealed, Unseal when sealed.
+fn status_card<'a>(state: &'a State, status: &'a VaultStatus) -> Element<'a, Msg> {
+    let unsealed = status.state == "unsealed";
+    let has_keyfile = status.slots.iter().any(|s| s.kind == "keyfile");
+    let mut actions: Vec<Element<'a, Msg>> = Vec::new();
+    if unsealed {
+        let keyfile = if has_keyfile {
+            None
         } else {
-            recovery_card(code)
-        });
+            gate(state.busy, Msg::Ask(Pending::AddKeyfile))
+        };
+        actions.push(ui::btn(
+            "Seal",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::Ask(Pending::Seal)),
+        ));
+        actions.push(ui::btn(
+            "Add passphrase",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::OpenPass),
+        ));
+        actions.push(ui::btn(
+            "Add key file slot",
+            None,
+            ui::Kind::Secondary,
+            keyfile,
+        ));
+        actions.push(ui::btn(
+            "Create recovery code",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::Ask(Pending::Recovery)),
+        ));
+        actions.push(ui::btn(
+            "Rekey",
+            None,
+            ui::Kind::Secondary,
+            gate(state.busy, Msg::OpenRekey),
+        ));
+    } else if matches!(status.state.as_str(), "sealed" | "tampered") {
+        actions.push(ui::btn(
+            "Unseal",
+            None,
+            ui::Kind::Primary,
+            gate(state.busy, Msg::OpenUnseal),
+        ));
     }
-    parts.push(slots_card(state));
-    if let Some(fields) = &state.rekey {
-        parts.push(rekey_card(fields, state.busy));
-    }
-    if let Some(form) = &state.create {
-        parts.push(create_card(state, form));
-    }
-    if let Some(rotate) = &state.rotate {
-        parts.push(rotate_card(rotate, state.busy));
-    }
-    if let Some(edit) = &state.edit {
-        parts.push(edit_card(state, edit));
-    }
-    parts.push(secrets_card(state));
-    parts
+
+    let now = now_ms();
+    let count = status.slots.len();
+    let slot_rows: Vec<Element<'a, Msg>> = status
+        .slots
+        .iter()
+        .map(|slot| {
+            let mut parts: Vec<Element<'a, Msg>> = vec![
+                text(slot_kind_label(&slot.kind)).into(),
+                ui::faint(format!("Added {}", ago(slot.created_ms, now))).into(),
+            ];
+            if unsealed {
+                // The hub keeps at least one slot, so the last one is not removable.
+                let remove = if count > 1 {
+                    gate(
+                        state.busy,
+                        Msg::Ask(Pending::RemoveSlot {
+                            id: slot.id.clone(),
+                            kind: slot.kind.clone(),
+                        }),
+                    )
+                } else {
+                    None
+                };
+                parts.push(ui::btn_sm("Remove", None, ui::Kind::Ghost, remove));
+            }
+            row(parts).spacing(12).align_y(Alignment::Center).into()
+        })
+        .collect();
+    let slots: Element<'a, Msg> = if slot_rows.is_empty() {
+        ui::faint("None").into()
+    } else {
+        column(slot_rows).spacing(6).into()
+    };
+    let rekeyed = match status.rekeyed_ms {
+        Some(ms) => ago(ms, now),
+        None => "Never".to_string(),
+    };
+    let facts = row![
+        fact_cell("Key slots", slots),
+        fact_cell(
+            "Secrets",
+            ui::sans(status.entries.to_string(), 13.0, theme::palette().ink).into()
+        ),
+        fact_cell(
+            "Rekeyed",
+            ui::sans(rekeyed, 13.0, theme::palette().ink).into()
+        ),
+        fact_cell("Audit", audit_badge(status.audit_ok)),
+    ]
+    .spacing(24);
+    let top = row![
+        ui::badge_dot(state_label(&status.state), state_tone(&status.state)),
+        ui::faint(state_copy(status)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+    ui::card_with(
+        "Status",
+        actions,
+        column![top, facts].spacing(16).width(Length::Fill).into(),
+    )
 }
 
-/// The unsealed body under the section tabs: the secrets (the cards above), or one of the three sections.
-fn unsealed_section<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
-    let mut parts: Vec<Element<'a, Msg>> = vec![ui::tabs(&TABS, state.tab, Msg::Tab)];
+/// One fact of the status card: its label above its value.
+fn fact_cell<'a>(label: &str, value: Element<'a, Msg>) -> Element<'a, Msg> {
+    column![ui::label(label), value]
+        .spacing(6)
+        .width(Length::FillPortion(1))
+        .into()
+}
+
+/// The audit chain's badge: not checked until unsealed, then intact or broken.
+fn audit_badge<'a>(ok: Option<bool>) -> Element<'a, Msg> {
+    let tone = match ok {
+        None => ui::Tone::Muted,
+        Some(true) => ui::Tone::Ok,
+        Some(false) => ui::Tone::Danger,
+    };
+    ui::badge(audit_line(ok), tone)
+}
+
+/// The env-file banner, as the web's: keys that were in an env file now live in the vault.
+fn env_banner<'a>() -> Element<'a, Msg> {
+    let p = theme::palette();
+    let warn_soft = p.warn_soft;
+    container(
+        column![
+            text("Keys were found in an env file. They now live in the vault. Delete the file.")
+                .font(theme::SANS_SEMIBOLD)
+                .size(theme::TYPE_UI)
+                .color(p.ink),
+            row![
+                ui::faint("To move what is left and remove the file in one step, run "),
+                ui::mono("apz vault import FILE.env --shred", 12.0, p.ink),
+                ui::faint("."),
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(4),
+    )
+    .padding([12, 16])
+    .width(Length::Fill)
+    .style(move |_: &Theme| container::Style {
+        background: Some(warn_soft.into()),
+        border: iced::Border::default().rounded(theme::skin().radius),
+        ..Default::default()
+    })
+    .into()
+}
+
+/// The toolbar: Add secret and Import .env. Both are off while the vault is locked.
+fn toolbar<'a>(state: &'a State, locked: bool) -> Element<'a, Msg> {
+    let add = if locked {
+        None
+    } else {
+        gate(state.busy, Msg::OpenCreate)
+    };
+    let import = if locked {
+        None
+    } else {
+        gate(state.busy, Msg::OpenImport)
+    };
+    row![
+        ui::btn("Add secret", None, ui::Kind::Primary, add),
+        ui::btn("Import .env", None, ui::Kind::Ghost, import),
+    ]
+    .spacing(8)
+    .into()
+}
+
+/// The tab's content: the secrets, the node matrix, or the audit log.
+fn tab_content<'a>(state: &'a State, locked: bool) -> Vec<Element<'a, Msg>> {
     match state.tab {
-        Tab::Secrets => parts.extend(unsealed_parts(state)),
-        Tab::Consumers => parts.push(audit::consumers_card(state)),
-        Tab::Audit => parts.push(audit::audit_card(state)),
-        Tab::Import => parts.push(audit::import_card(state)),
+        Tab::Secrets => secrets_section(state, locked),
+        Tab::Consumers => vec![audit::consumers_card(state)],
+        Tab::Audit => vec![audit::audit_card(state)],
     }
-    parts
 }
 
-fn selector<'a>(state: &'a State) -> Element<'a, Msg> {
+/// The Secrets tab: the scope field, then the list (or its empty state) in a flush card.
+fn secrets_section<'a>(state: &'a State, locked: bool) -> Vec<Element<'a, Msg>> {
+    if locked {
+        return vec![ui::card(
+            "Secrets",
+            ui::empty(
+                "key",
+                "Vault is locked",
+                "Unseal the vault to see and manage secrets.",
+            ),
+        )];
+    }
+    if state.entries.is_empty() {
+        return vec![ui::card(
+            "Secrets",
+            ui::empty(
+                "key",
+                "No secrets yet",
+                "Add one with Add secret, or import a .env file.",
+            ),
+        )];
+    }
     let options = choices(&state.nodes);
     let current = options
         .iter()
         .find(|c| c.selection == state.selection)
         .cloned()
         .unwrap_or_else(|| options[0].clone());
-    row(vec![
-        ui::faint("Scope").into(),
-        pick_list(options, Some(current), Msg::Pick).into(),
-    ])
-    .spacing(12)
-    .into()
-}
-
-/// The secrets: the scope selector, the test answer, and the entries with their row actions.
-fn secrets_card<'a>(state: &'a State) -> Element<'a, Msg> {
-    let now = now_ms();
+    let scope = field(
+        "Scope",
+        pick_list(options, Some(current), Msg::Pick)
+            .style(crate::theme::pick_list)
+            .into(),
+        None,
+    );
     let shown = filter_entries(&state.entries, &state.selection);
-    let mut items: Vec<Element<'a, Msg>> = vec![selector(state)];
-    if let Some(note) = &state.test_note {
-        items.push(ui::faint(note.clone()).into());
-    }
     if shown.is_empty() {
-        items.push(ui::empty("key", "No entries", "Nothing in this scope yet."));
+        return vec![
+            scope,
+            ui::card(
+                "Secrets",
+                ui::empty(
+                    "key",
+                    "No secrets in this scope",
+                    "Pick another scope above.",
+                ),
+            ),
+        ];
     }
-    for (i, entry) in shown.iter().enumerate() {
-        if i > 0 {
-            items.push(ui::hairline());
-        }
-        items.push(entry_row(entry, state, now));
-    }
-    ui::card(&format!("Entries ({})", shown.len()), stack(items))
+    let rows: Vec<Element<'a, Msg>> = shown
+        .into_iter()
+        .map(|entry| entry_row(entry, state))
+        .collect();
+    let head: [(u16, &str); 10] = [
+        (3, "Name"),
+        (2, "Kind"),
+        (2, "Scope"),
+        (3, "Bindings"),
+        (2, "Fingerprint"),
+        (1, "Last 4"),
+        (1, "Version"),
+        (2, "Last used"),
+        (1, "Uses"),
+        (4, "Actions"),
+    ];
+    vec![scope, flush_card("Secrets", Vec::new(), table(&head, rows))]
 }
 
-fn entry_row<'a>(entry: &VaultEntry, state: &'a State, now: f64) -> Element<'a, Msg> {
-    let scope = match &entry.scope {
-        VaultScope::Plaza => "Plaza".to_string(),
-        VaultScope::Nodes { nodes: ids } => ids
-            .iter()
-            .map(|id| node_name(&state.nodes, id))
-            .collect::<Vec<_>>()
-            .join(", "),
+/// One entry's row: its name and label, kind, scope and bindings, the current fingerprint and last four characters,
+/// its version, when it was last used, its uses, and the row's actions as icon buttons.
+fn entry_row<'a>(entry: &'a VaultEntry, state: &'a State) -> Element<'a, Msg> {
+    let p = theme::palette();
+    let busy = state.busy;
+    let now = now_ms();
+    let mut name_parts: Vec<Element<'a, Msg>> =
+        vec![ui::mono(entry.name.clone(), 12.0, p.ink).into()];
+    if !entry.label.is_empty() {
+        name_parts.push(ui::faint(entry.label.clone()).into());
+    }
+    let scope: Element<'a, Msg> = match &entry.scope {
+        VaultScope::Plaza => ui::badge("plaza", ui::Tone::Signal),
+        VaultScope::Nodes { nodes } => ui::chip_row(
+            nodes
+                .iter()
+                .map(|id| ui::badge(&node_name(&state.nodes, id), ui::Tone::Info))
+                .collect(),
+        ),
     };
-    let bindings = if entry.bindings.is_empty() {
-        "no bindings".to_string()
+    let bindings: Element<'a, Msg> = if entry.bindings.is_empty() {
+        ui::faint("none").into()
     } else {
-        entry.bindings.join(", ")
+        ui::chip_row(
+            entry
+                .bindings
+                .iter()
+                .map(|b| ui::badge(&binding_name(b, &state.consumers), ui::Tone::Muted))
+                .collect(),
+        )
     };
-    let name = if entry.label.is_empty() {
-        entry.name.clone()
-    } else {
-        format!("{}  ({})", entry.name, entry.label)
-    };
-    let top: Element<'a, Msg> = row(vec![
-        text(name).width(Length::FillPortion(3)).into(),
-        text(entry.kind.clone())
-            .width(Length::FillPortion(2))
-            .into(),
-        text(scope).width(Length::FillPortion(3)).into(),
-        text(format!("v{}", entry.current))
-            .width(Length::FillPortion(1))
-            .into(),
-    ])
-    .spacing(12)
-    .into();
-    let detail = ui::faint(format!(
-        "Bindings: {bindings}  ·  used {} times, last {}",
-        entry.use_count,
-        ago(entry.last_used_ms, now)
-    ));
-    let mut actions: Vec<Element<'a, Msg>> = vec![
+    let current = current_version(entry);
+    let fingerprint: String = current
+        .map(|v| v.fp.chars().take(14).collect())
+        .unwrap_or_default();
+    let last_four = current.map(|v| v.hint.clone()).unwrap_or_default();
+    let rollback = previous_version(entry).and_then(|v| {
+        gate(
+            busy,
+            Msg::Ask(Pending::Rollback {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                v,
+            }),
+        )
+    });
+    let actions = row![
         ui::btn_sm(
-            "Edit",
-            None,
-            ui::Kind::Secondary,
-            gate(state.busy, Msg::OpenEdit(entry.id.clone())),
+            "",
+            Some("refresh"),
+            ui::Kind::Ghost,
+            gate(busy, Msg::OpenRotate(entry.id.clone(), entry.name.clone()))
+        ),
+        ui::btn_sm("", Some("clock"), ui::Kind::Ghost, rollback),
+        ui::btn_sm(
+            "",
+            Some("edit"),
+            ui::Kind::Ghost,
+            gate(busy, Msg::OpenEdit(entry.id.clone()))
         ),
         ui::btn_sm(
-            "Rotate",
-            None,
-            ui::Kind::Secondary,
+            "",
+            Some("play"),
+            ui::Kind::Ghost,
+            gate(busy, Msg::OpenTest(entry.id.clone(), entry.name.clone()))
+        ),
+        ui::btn_sm(
+            "",
+            Some("trash"),
+            ui::Kind::Danger,
             gate(
-                state.busy,
-                Msg::OpenRotate(entry.id.clone(), entry.name.clone()),
+                busy,
+                Msg::Ask(Pending::RemoveEntry {
+                    id: entry.id.clone(),
+                    name: entry.name.clone()
+                })
             ),
         ),
-        ui::btn_sm(
-            "Test",
-            None,
-            ui::Kind::Secondary,
-            gate(state.busy, Msg::RunTest(entry.id.clone())),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+    cells(vec![
+        (3, column(name_parts).spacing(2).into()),
+        (2, ui::mono(entry.kind.clone(), 12.0, p.ink_2).into()),
+        (2, scope),
+        (3, bindings),
+        (2, ui::mono(fingerprint, 12.0, p.ink).into()),
+        (1, ui::mono(last_four, 12.0, p.ink).into()),
+        (
+            1,
+            ui::mono(format!("v{}", entry.current), 12.0, p.ink).into(),
         ),
-    ];
-    if let Some(v) = previous_version(entry) {
-        let pending = Pending::Rollback {
-            id: entry.id.clone(),
-            name: entry.name.clone(),
-            v,
-        };
-        actions.push(ui::btn_sm(
-            &format!("Roll back to v{v}"),
-            None,
-            ui::Kind::Secondary,
-            gate(state.busy, Msg::Ask(pending)),
-        ));
+        (2, ui::faint(ago(entry.last_used_ms, now)).into()),
+        (1, ui::sans(entry.use_count.to_string(), 13.0, p.ink).into()),
+        (4, actions.into()),
+    ])
+}
+
+/// The open dialog, if any. One at a time, the topmost first: a pending confirmation, the recovery code, the
+/// unseal, rekey, create, rotate and edit forms, the import, the passphrase and the test.
+fn dialog_layer<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
+    if let Some(pending) = &state.pending {
+        return Some(forms::pending_layer(state, pending));
     }
-    let remove = Pending::RemoveEntry {
-        id: entry.id.clone(),
-        name: entry.name.clone(),
-    };
-    actions.push(ui::btn_sm(
-        "Remove",
-        None,
-        ui::Kind::Ghost,
-        gate(state.busy, Msg::Ask(remove)),
-    ));
-    column(vec![top, detail.into(), row(actions).spacing(8).into()])
-        .spacing(4)
-        .into()
+    if let Some(code) = &state.recovery {
+        return Some(forms::recovery_layer(state, code));
+    }
+    if state.unseal_open {
+        return Some(forms::unseal_layer(state));
+    }
+    if let Some(fields) = &state.rekey {
+        return Some(forms::rekey_layer(state, fields));
+    }
+    if let Some(form) = &state.create {
+        return Some(forms::create_layer(state, form));
+    }
+    if let Some(rotate) = &state.rotate {
+        return Some(forms::rotate_layer(state, rotate));
+    }
+    if let Some(edit) = &state.edit {
+        return Some(forms::edit_layer(state, edit));
+    }
+    if state.import_open {
+        return Some(audit::import_layer(state));
+    }
+    if state.pass_open {
+        return Some(forms::pass_layer(state));
+    }
+    if let Some((id, name)) = &state.test {
+        return Some(forms::test_layer(state, id, name));
+    }
+    None
+}
+
+pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
+    let mut parts: Vec<Element<'a, Msg>> = Vec::new();
+    let locked = !matches!(&state.status, Some(status) if status.state == "unsealed");
+    match &state.status {
+        None => match &state.error {
+            Some(error) => parts.push(ui::error_line(&format!(
+                "The vault could not load. {error}"
+            ))),
+            None => parts.push(ui::loading()),
+        },
+        Some(status) => {
+            if status.env_file_keys > 0 {
+                parts.push(env_banner());
+            }
+            parts.push(status_card(state, status));
+            parts.push(toolbar(state, locked));
+            parts.push(ui::tabs(&TABS, state.tab, Msg::Tab));
+            parts.extend(tab_content(state, locked));
+        }
+    }
+    if dialog_layer(state).is_none()
+        && let Some(failure) = &state.failure
+    {
+        parts.insert(0, ui::error_line(failure));
+    }
+    if let Some(notice) = &state.notice {
+        parts.insert(0, ui::faint(notice.clone()).into());
+    }
+    let body: Element<'a, Msg> = column(parts).spacing(16).width(Length::Fill).into();
+    let page = ui::scroll(ui::sheet(ui::view_head("Vault", Vec::new()), body)).height(Length::Fill);
+    match dialog_layer(state) {
+        Some(layer) => Stack::with_children(vec![page.into(), layer]).into(),
+        None => page.into(),
+    }
 }
 
 #[cfg(test)]
@@ -1506,7 +1948,7 @@ mod tests {
             serde_json::from_str(r#"{"state":"unsealed","audit_ok":false}"#).unwrap();
         assert_eq!(
             audit_line(broken.audit_ok),
-            "Audit chain broken, see the Audit log tab"
+            "Audit chain broken, see the Audit tab"
         );
     }
 

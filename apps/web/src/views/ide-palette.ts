@@ -1,5 +1,5 @@
 import { filterPalette, type PaletteItem } from '../ide/view';
-import css from '../styles/ide-palette.css';
+import moreCss from '../styles/proto/ide-more.css';
 
 export interface Palette {
   el: HTMLElement;
@@ -9,9 +9,18 @@ export interface Palette {
   dispose(): void;
 }
 
-const STYLE_ID = 'apz-ide-palette-style';
-const INPUT_ID = 'ide-pal-input';
-const LIST_ID = 'ide-pal-list';
+/** The prototype's IDE rules (styles/proto/ide-more.css), inserted once per page. */
+const MORE_STYLE_ID = 'apz-ide-more-style';
+function ensureMoreStyle(): void {
+  if (document.getElementById(MORE_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = MORE_STYLE_ID;
+  style.textContent = moreCss;
+  document.head.append(style);
+}
+
+const INPUT_ID = 'idem-pal-input';
+const LIST_ID = 'idem-pal-list';
 const PLACEHOLDER = 'Go to an agent, file, task or command';
 
 const GROUPS: { group: PaletteItem['group']; label: string }[] = [
@@ -20,14 +29,6 @@ const GROUPS: { group: PaletteItem['group']; label: string }[] = [
   { group: 'task', label: 'Tasks' },
   { group: 'command', label: 'Commands' },
 ];
-
-function injectStyle(): void {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = css;
-  document.head.append(style);
-}
 
 /** The hits in display order: the groups in GROUPS order, each keeping the order filterPalette gave it. */
 function groupHits(hits: PaletteItem[]): { label: string; items: PaletteItem[] }[] {
@@ -48,10 +49,9 @@ function make(tag: string, cls: string, text?: string): HTMLElement {
  * close() detaches it and hands focus back to whatever had it before.
  */
 export function palette(onRun: (item: PaletteItem) => void): Palette {
-  injectStyle();
-
-  const root = make('div', 'ide-pal');
-  const dialog = make('div', 'ide-pal-dialog');
+  ensureMoreStyle();
+  const root = make('div', 'idem-pal-back');
+  const dialog = make('div', 'idem-pal');
   dialog.setAttribute('role', 'dialog');
   dialog.setAttribute('aria-modal', 'true');
   dialog.setAttribute('aria-label', 'Command palette');
@@ -59,7 +59,7 @@ export function palette(onRun: (item: PaletteItem) => void): Palette {
   const input = document.createElement('input');
   input.type = 'text';
   input.id = INPUT_ID;
-  input.className = 'ide-pal-input';
+  input.className = 'idem-pal-in';
   input.placeholder = PLACEHOLDER;
   input.setAttribute('aria-label', PLACEHOLDER);
   input.setAttribute('role', 'combobox');
@@ -70,7 +70,7 @@ export function palette(onRun: (item: PaletteItem) => void): Palette {
   input.setAttribute('autocapitalize', 'off');
   input.setAttribute('spellcheck', 'false');
 
-  const list = make('div', 'ide-pal-list');
+  const list = make('div', 'idem-pal-list');
   list.id = LIST_ID;
   list.setAttribute('role', 'listbox');
   list.setAttribute('aria-label', 'Results');
@@ -106,24 +106,24 @@ export function palette(onRun: (item: PaletteItem) => void): Palette {
     list.scrollTop = 0;
     const groups = groupHits(filterPalette(all, input.value));
     if (groups.length === 0) {
-      const none = make('div', 'ide-pal-empty', 'No match');
+      const none = make('div', 'idem-pal-none', 'No match');
       none.setAttribute('role', 'presentation');
       list.append(none);
     }
     for (const g of groups) {
-      const section = make('div', 'ide-pal-group');
+      const section = make('div', 'idem-pal-group');
       section.setAttribute('role', 'group');
       section.setAttribute('aria-label', g.label);
-      const heading = make('div', 'ide-pal-heading', g.label);
+      const heading = make('div', 'idem-pal-sec', g.label);
       heading.setAttribute('aria-hidden', 'true');
       section.append(heading);
       for (const item of g.items) {
-        const opt = make('div', 'ide-pal-opt');
-        opt.id = `ide-pal-opt-${shown.length}`;
+        const opt = make('div', 'idem-pal-opt');
+        opt.id = `idem-pal-opt-${shown.length}`;
         opt.setAttribute('role', 'option');
         opt.setAttribute('aria-selected', 'false');
-        opt.append(make('span', 'ide-pal-label', item.label));
-        if (item.hint) opt.append(make('span', 'ide-pal-hint', item.hint));
+        opt.append(make('span', 'idem-pal-label', item.label));
+        if (item.hint) opt.append(make('span', 'idem-pal-hint', item.hint));
         opt.addEventListener('click', () => run(item));
         shown.push(item);
         optEls.push(opt);

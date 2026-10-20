@@ -467,6 +467,7 @@ mod tests {
             output: String::new(),
             is_error: false,
             program: None,
+            engine: None,
             approval: None,
         };
         assert!(nested.route(late.clone()).is_none());

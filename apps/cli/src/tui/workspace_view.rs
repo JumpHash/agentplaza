@@ -10,7 +10,9 @@ use ratatui::widgets::{Block, Paragraph};
 use serde_json::Value;
 
 use super::app::Palette;
+use super::context_bar::{self, Owner};
 use super::screens::{clip, local_time, show};
+use super::style;
 use super::workspace::{
     Composer, Glyph, Item, Pane, Row, Target, Transcript, Workspace, agent_of, data_of, first_seq,
     glyph, items, kind_of, shared_names, str_of, task_of, visible,
@@ -29,14 +31,14 @@ const GUTTER: usize = 2;
 type Cell = (char, Style);
 
 /// Draws the tab into `area`. The focused pane is the one the keys move.
-pub fn render(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette) {
+pub fn render(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette, clock: f32) {
     if area.height < 4 || area.width < 20 {
         return;
     }
     if visible(area.width, ws.focus).len() == 1 {
         let [bar, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
         switcher(frame, bar, ws.focus, palette);
-        pane(frame, body, ws, ws.focus, palette);
+        pane(frame, body, ws, ws.focus, palette, clock);
         return;
     }
     let [agents, chat, board] = Layout::horizontal([
@@ -45,16 +47,26 @@ pub fn render(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palett
         Constraint::Length(BOARD_WIDTH),
     ])
     .areas(area);
-    pane(frame, agents, ws, Pane::Agents, palette);
-    pane(frame, chat, ws, Pane::Chat, palette);
-    pane(frame, board, ws, Pane::Board, palette);
+    pane(frame, agents, ws, Pane::Agents, palette, clock);
+    pane(frame, chat, ws, Pane::Chat, palette, clock);
+    pane(frame, board, ws, Pane::Board, palette, clock);
+    if let Some(picker) = &ws.picker {
+        context_bar::overlay(frame, area, picker, palette);
+    }
 }
 
-fn pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, which: Pane, palette: Palette) {
+fn pane(
+    frame: &mut Frame,
+    area: Rect,
+    ws: &mut Workspace,
+    which: Pane,
+    palette: Palette,
+    clock: f32,
+) {
     match which {
         Pane::Agents => agents_pane(frame, area, ws, palette),
-        Pane::Chat => chat_pane(frame, area, ws, palette),
-        Pane::Board => board_pane(frame, area, ws, palette),
+        Pane::Chat => chat_pane(frame, area, ws, palette, clock),
+        Pane::Board => board_pane(frame, area, ws, palette, clock),
     }
 }
 
@@ -81,14 +93,7 @@ fn switcher(frame: &mut Frame, area: Rect, focus: Pane, palette: Palette) {
 }
 
 fn pane_block(title: String, focused: bool, palette: Palette) -> Block<'static> {
-    let edge = if focused {
-        palette.accent
-    } else {
-        palette.muted
-    };
-    Block::bordered()
-        .title(title)
-        .border_style(Style::new().fg(edge))
+    style::panel(&title, &palette, focused)
 }
 
 fn glyph_color(mark: Glyph, palette: Palette) -> Color {
@@ -214,7 +219,7 @@ fn agents_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palet
     frame.render_widget(Paragraph::new(lines[top..end].to_vec()), list);
 }
 
-fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette) {
+fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette, clock: f32) {
     let focused = ws.focus == Pane::Chat;
     let steering = matches!(
         ws.composer,
@@ -223,8 +228,9 @@ fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette
             ..
         })
     );
-    let [body, compose] = Layout::vertical([
+    let [body, bar, compose] = Layout::vertical([
         Constraint::Min(0),
+        Constraint::Length(1),
         Constraint::Length(if steering { 3 } else { 0 }),
     ])
     .areas(area);
@@ -257,20 +263,21 @@ fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette
     let transcript = ws.transcripts.entry(cid).or_default();
     let cursor = transcript.cursor_seq();
     let (mut lines, ranges) = chat_lines(transcript, &rctx, palette, width, cursor);
+    let writing = working && writes(&transcript.entries);
+    if writing {
+        with_cursor(&mut lines, clock, palette.accent);
+    }
     let muted = Style::new().fg(palette.muted);
     if !transcript.loaded {
         lines.push(Line::from(Span::styled("Loading the conversation…", muted)));
     } else if ranges.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No messages yet. Press i to write to the agent.",
+            "No messages yet. Press t to write to the agent.",
             muted,
         )));
     }
-    if working {
-        lines.push(Line::from(vec![
-            Span::styled("● ", Style::new().fg(palette.ok)),
-            Span::styled("Working…", muted),
-        ]));
+    if working && !writing {
+        lines.push(thinking(clock, palette));
     }
     let keep = if transcript.reveal {
         cursor
@@ -286,6 +293,14 @@ fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette
     let shown = lines[top..end].to_vec();
     frame.render_widget(block, body);
     frame.render_widget(Paragraph::new(shown), inner);
+    let context = ws.contexts.get(&Owner::Agent(cid));
+    frame.render_widget(
+        Paragraph::new(context_bar::bar_line(context, bar.width, palette, clock)),
+        bar,
+    );
+    if ws.breakdown {
+        context_bar::panel(frame, body, context, palette);
+    }
 
     if let Some(composer) = ws
         .composer
@@ -297,12 +312,14 @@ fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette
             compose,
             composer,
             format!(" Message to {name} · Enter sends · Esc cancels · Ctrl+C stops its work "),
+            &format!("Message {name}…"),
             palette,
+            clock,
         );
     }
 }
 
-fn board_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette) {
+fn board_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette, clock: f32) {
     let focused = ws.focus == Pane::Board;
     let posting = matches!(
         ws.composer,
@@ -376,27 +393,51 @@ fn board_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palett
     {
         let title =
             format!(" Post to {project_title} · @all or @name · Enter posts · Esc cancels ");
-        composer_box(frame, compose, composer, title, palette);
+        composer_box(
+            frame,
+            compose,
+            composer,
+            title,
+            "Write to the board, @all or @name…",
+            palette,
+            clock,
+        );
     }
 }
 
-/// A composer's box: its title says where the text goes, and the text shows its last characters with a cursor.
+/// A composer's box: a focused panel whose title says where the text goes. The text shows its last characters after an
+/// accent `›`, then a block cursor that blinks; empty, the placeholder says what to write.
 fn composer_box(
     frame: &mut Frame,
     area: Rect,
     composer: &Composer,
     title: String,
+    placeholder: &str,
     palette: Palette,
+    clock: f32,
 ) {
-    let block = Block::bordered()
-        .title(title)
-        .border_style(Style::new().fg(palette.accent));
     let room = usize::from(area.width).saturating_sub(6);
-    let line = Line::from(vec![
-        Span::styled("› ", Style::new().fg(palette.accent)),
-        Span::raw(format!("{}_", tail(&composer.text, room))),
-    ]);
-    frame.render_widget(Paragraph::new(line).block(block), area);
+    let mut spans = vec![Span::styled(
+        "› ",
+        Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
+    )];
+    if composer.text.is_empty() {
+        spans.push(Span::styled(
+            clip(placeholder, room),
+            Style::new().fg(palette.muted),
+        ));
+    } else {
+        spans.push(Span::styled(
+            tail(&composer.text, room),
+            Style::new().fg(palette.ink()),
+        ));
+    }
+    let cursor = if cursor_on(clock) { "▌" } else { " " };
+    spans.push(Span::styled(cursor, Style::new().fg(palette.accent)));
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).block(style::panel(&title, &palette, true)),
+        area,
+    );
 }
 
 /// The last `max` characters of a text.
@@ -546,13 +587,80 @@ fn right(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 }
 
 /// A line with a gutter span before it; the line's alignment is kept.
-fn with_gutter(line: Line<'static>, gutter: Span<'static>) -> Line<'static> {
+pub(super) fn with_gutter(line: Line<'static>, gutter: Span<'static>) -> Line<'static> {
     let alignment = line.alignment;
     let mut spans = vec![gutter];
     spans.extend(line.spans);
     let mut out = Line::from(spans);
     out.alignment = alignment;
     out
+}
+
+/// Lines with a role's glyph on the first line and a two-column indent on the rest.
+fn with_role(lines: Vec<Line<'static>>, glyph: Span<'static>) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                with_gutter(line, glyph.clone())
+            } else if line.spans.is_empty() {
+                line
+            } else {
+                with_gutter(line, Span::raw("  "))
+            }
+        })
+        .collect()
+}
+
+/// Whether the cursor is on at `clock`: a block that shows for half of each second.
+fn cursor_on(clock: f32) -> bool {
+    (clock.max(0.0) * 2.0) as i32 % 2 == 0
+}
+
+/// The streaming cursor: a block after the last words of the lines, on for half of each second.
+pub(super) fn with_cursor(lines: &mut [Line<'static>], clock: f32, accent: Color) {
+    if !cursor_on(clock) {
+        return;
+    }
+    if let Some(last) = lines.iter_mut().rev().find(|line| !line.spans.is_empty()) {
+        last.spans.push(Span::styled("▌", Style::new().fg(accent)));
+    }
+}
+
+/// The line a working agent shows before any of its words are out: the spinner in accent, then `Thinking…` with the
+/// shimmer sweeping across it.
+pub(super) fn thinking(clock: f32, palette: Palette) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        format!("{} ", style::spinner(clock)),
+        Style::new().fg(palette.accent),
+    )];
+    spans.extend(style::shimmer(
+        "Thinking…",
+        clock,
+        palette.muted,
+        palette.ink(),
+    ));
+    Line::from(spans)
+}
+
+/// Whether the agent is writing its words now: its newest entry is a model turn with words in it.
+fn writes(entries: &[Value]) -> bool {
+    entries
+        .last()
+        .is_some_and(|entry| kind_of(entry) == "model_response" && has_words(entry))
+}
+
+fn has_words(entry: &Value) -> bool {
+    data_of(entry)
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|blocks| {
+            blocks.iter().any(|block| {
+                str_of(block, "type") == Some("text")
+                    && str_of(block, "text").is_some_and(|text| !text.trim().is_empty())
+            })
+        })
 }
 
 /// The chat as lines: one block per item (an entry, or a run of steps). Returns the lines, and the line range of each block
@@ -602,6 +710,9 @@ fn entry_lines(
     let data = data_of(entry);
     let muted = Style::new().fg(palette.muted);
     let accent = Style::new().fg(palette.accent);
+    let glyph = Style::new().fg(palette.accent).add_modifier(Modifier::BOLD);
+    let ink = Style::new().fg(palette.ink());
+    let inner = width.saturating_sub(2).max(1);
     match kind_of(entry) {
         "work_start" => {
             let prompt = str_of(data, "prompt").unwrap_or("").trim();
@@ -610,7 +721,7 @@ fn entry_lines(
             } else if str_of(data, "kind") == Some("chat")
                 || str_of(data, "origin") == Some("owner")
             {
-                right(text_lines(prompt, width, accent))
+                with_role(text_lines(prompt, inner, ink), Span::styled("› ", glyph))
             } else if str_of(data, "kind") == Some("message")
                 || str_of(data, "origin") == Some("board")
             {
@@ -642,9 +753,9 @@ fn entry_lines(
                 if !out.is_empty() {
                     out.push(Line::default());
                 }
-                out.extend(prose_lines(text, rctx, palette.accent, width));
+                out.extend(prose_lines(text, rctx, palette.accent, inner));
             }
-            out
+            with_role(out, Span::styled("● ", Style::new().fg(palette.ok)))
         }
         "control" => {
             let note = data
@@ -668,7 +779,8 @@ fn entry_lines(
     }
 }
 
-/// A run of tool steps: its line (`▸ 3 steps · bash`, or `▾` when open), and when open, each call and its decision.
+/// A run of tool steps: its line (`⎿ ▸ 3 steps · bash`, or `▾` when open), and when open, each call and its decision, and
+/// each result with a mark: ✓ when it went through, ✗ when it failed or was denied.
 fn steps_lines(
     transcript: &Transcript,
     seq: u64,
@@ -681,28 +793,41 @@ fn steps_lines(
     let open = transcript.open.contains(&seq);
     let marker = if open { "▾" } else { "▸" };
     let muted = Style::new().fg(palette.muted);
-    let mut out = text_lines(&format!("{marker} {label}"), width, muted);
+    let mut out = text_lines(&format!("⎿ {marker} {label}"), width, muted);
     if open {
         for entry in &transcript.entries[first..end] {
-            if let Some(detail) = step_detail(entry) {
-                out.extend(text_lines(&format!("    {detail}"), width, muted));
+            if let Some((detail, style)) = step_detail(entry, palette) {
+                out.extend(text_lines(&format!("    {detail}"), width, style));
             }
         }
     }
     out
 }
 
-fn step_detail(entry: &Value) -> Option<String> {
+/// One step's detail line and its style: calls and decisions in muted, results ✓ in ok or ✗ in crit.
+fn step_detail(entry: &Value, palette: Palette) -> Option<(String, Style)> {
     let data = data_of(entry);
+    let muted = Style::new().fg(palette.muted);
+    let crit = Style::new().fg(palette.crit());
+    let ok = Style::new().fg(palette.ok);
     match kind_of(entry) {
-        "tool_request" => Some(format!("→ {}", str_of(data, "name").unwrap_or("tool"))),
-        "tool_decision" => Some(format!(
-            "decision: {}",
-            str_of(data, "decision").unwrap_or("-")
+        "tool_request" => Some((
+            format!("→ {}", str_of(data, "name").unwrap_or("tool")),
+            muted,
         )),
+        "tool_decision" => {
+            let decision = str_of(data, "decision").unwrap_or("-");
+            let style = if decision == "deny" { crit } else { muted };
+            Some((format!("decision: {decision}"), style))
+        }
         "tool_result" => {
             let output = str_of(data, "output").unwrap_or("").replace('\n', " ");
-            Some(format!("result: {}", clip(&output, 160)))
+            let (mark, style) = if data.get("ok").and_then(Value::as_bool).unwrap_or(true) {
+                ("✓", ok)
+            } else {
+                ("✗", crit)
+            };
+            Some((format!("{mark} result: {}", clip(&output, 160)), style))
         }
         _ => None,
     }
@@ -766,4 +891,71 @@ fn post_lines(
         out.extend(wrap(&cells, width).into_iter().map(|line| to_line(&line)));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::style::Color;
+    use serde_json::json;
+
+    use super::*;
+
+    fn palette() -> Palette {
+        Palette {
+            accent: Color::Red,
+            paper: Color::White,
+            ok: Color::Green,
+            muted: Color::DarkGray,
+        }
+    }
+
+    fn text_of(lines: &[Line]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_agent_writes_when_its_newest_entry_is_words_and_thinks_otherwise() {
+        let words = json!({"kind": "model_response", "data": {"content": [{"type": "text", "text": "Plan first."}]}});
+        let call = json!({"kind": "model_response", "data": {"content": [{"type": "tool_use", "name": "bash"}]}});
+        assert!(writes(&[call.clone(), words.clone()]));
+        assert!(
+            !writes(&[words, call]),
+            "a tool call after the words means it is working, not writing"
+        );
+        assert!(!writes(&[]));
+    }
+
+    #[test]
+    fn the_cursor_blinks_after_the_last_words_and_thinking_says_so() {
+        let mut on = vec![Line::from("a"), Line::default()];
+        with_cursor(&mut on, 0.0, Color::Red);
+        assert_eq!(text_of(&on), ["a▌", ""]);
+        let mut off = vec![Line::from("a")];
+        with_cursor(&mut off, 0.75, Color::Red);
+        assert_eq!(text_of(&off), ["a"]);
+        let thinking = text_of(&[thinking(0.0, palette())]);
+        assert!(thinking[0].starts_with("⠋ ") && thinking[0].ends_with("Thinking…"));
+    }
+
+    #[test]
+    fn a_result_is_marked_ok_or_failed_and_a_denial_is_crit() {
+        let p = palette();
+        let result = json!({"kind": "tool_result", "data": {"output": "12 lines"}});
+        let (text, style) = step_detail(&result, p).unwrap();
+        assert_eq!(text, "✓ result: 12 lines");
+        assert_eq!(style.fg, Some(p.ok));
+        let failed =
+            json!({"kind": "tool_result", "data": {"output": "no such file", "ok": false}});
+        assert_eq!(step_detail(&failed, p).unwrap().0, "✗ result: no such file");
+        let denied = json!({"kind": "tool_decision", "data": {"decision": "deny"}});
+        assert_eq!(step_detail(&denied, p).unwrap().1.fg, Some(p.crit()));
+    }
 }

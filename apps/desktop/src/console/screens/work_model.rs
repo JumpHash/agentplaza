@@ -706,15 +706,17 @@ pub struct Area {
     pub height: f64,
 }
 
-/// The plan column's size, and the height its links leave from.
+/// The plan column's size: its cards stack from the top padding, `height` tall with the gaps between and after them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlanPart {
     pub width: f64,
     pub height: f64,
-    pub anchor: f64,
 }
 
-/// Where the plan, the graph and delivery stand on the map, and the links that join them to the graph.
+/// The map's padding above its first card and below its last (the web's `TOP`).
+pub const MAP_TOP: f64 = 16.0;
+
+/// Where the plan, the graph and delivery stand on the map. The links are drawn between their cards.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapGeometry {
     pub width: f64,
@@ -723,35 +725,21 @@ pub struct MapGeometry {
     /// Where the layout's origin goes.
     pub graph: [f64; 2],
     pub delivery: Option<Area>,
-    /// The approved plan to each task that runs after no other (dashed), as corners.
-    pub posted: Vec<Vec<[f64; 2]>>,
-    /// Each task that no other runs after, to delivery (dashed), as corners.
-    pub delivered: Vec<Vec<[f64; 2]>>,
 }
 
-/// An elbow from `a` to `b`, bending at `x`.
-fn elbow(a: [f64; 2], x: f64, b: [f64; 2]) -> Vec<[f64; 2]> {
-    vec![a, [x, a[1]], [x, b[1]], b]
-}
-
-/// The map: the plan, the graph laid out, then delivery, each centred on the tallest, `gap` apart.
+/// The map as the web's `mapOf` sets it out: the plan and the graph start under the top padding, delivery is centred
+/// on the map, and the map is as tall as its tallest part plus the padding; `gap` runs between the columns.
 pub fn compose(
     layout: &apz_graph::Layout,
     plan: Option<PlanPart>,
     delivery: Option<(f64, f64)>,
     gap: f64,
 ) -> MapGeometry {
-    let height = layout
-        .height
-        .max(plan.map_or(0.0, |p| p.height))
-        .max(delivery.map_or(0.0, |d| d.1));
-    let graph = [
-        plan.map_or(0.0, |p| p.width + gap),
-        (height - layout.height) / 2.0,
-    ];
+    let height = (plan.map_or(0.0, |p| p.height).max(MAP_TOP + layout.height)) + MAP_TOP;
+    let graph = [plan.map_or(0.0, |p| p.width + gap), MAP_TOP];
     let plan_box = plan.map(|p| Area {
         x: 0.0,
-        y: (height - p.height) / 2.0,
+        y: MAP_TOP,
         width: p.width,
         height: p.height,
     });
@@ -761,51 +749,12 @@ pub fn compose(
         width,
         height: h,
     });
-    let card = |id: &str| layout.cards.iter().find(|c| c.id == id);
-    let posted = match (plan_box, plan) {
-        (Some(b), Some(p)) => layout
-            .columns
-            .first()
-            .map(|first| {
-                first
-                    .iter()
-                    .filter_map(|id| card(id))
-                    .map(|c| {
-                        elbow(
-                            [b.width, b.y + p.anchor],
-                            b.width + gap / 2.0,
-                            [graph[0] + c.x, graph[1] + c.y + c.height / 2.0],
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    let sources: HashSet<&str> = layout.routes.iter().map(|r| r.from.as_str()).collect();
-    let delivered = match delivery_box {
-        Some(d) => layout
-            .cards
-            .iter()
-            .filter(|c| !sources.contains(c.id.as_str()))
-            .map(|c| {
-                elbow(
-                    [graph[0] + c.x + c.width, graph[1] + c.y + c.height / 2.0],
-                    graph[0] + layout.width + gap / 2.0,
-                    [d.x, d.y + d.height / 2.0],
-                )
-            })
-            .collect(),
-        None => Vec::new(),
-    };
     MapGeometry {
         width: delivery_box.map_or(graph[0] + layout.width, |d| d.x + d.width),
         height,
         plan: plan_box,
         graph,
         delivery: delivery_box,
-        posted,
-        delivered,
     }
 }
 
@@ -1281,33 +1230,14 @@ mod tests {
         let plan = PlanPart {
             width: 50.0,
             height: 200.0,
-            anchor: 190.0,
         };
         let geo = compose(&layout, Some(plan), Some((40.0, 60.0)), 20.0);
-        assert_eq!(
-            (geo.width, geo.height),
-            (50.0 + 20.0 + 300.0 + 20.0 + 40.0, 200.0)
-        );
-        assert_eq!(geo.graph, [70.0, 50.0]);
-        // The web's `M50 190H60V100H80` and `M330 100H380V100H390`, as corners.
-        assert_eq!(
-            geo.posted,
-            [vec![
-                [50.0, 190.0],
-                [60.0, 190.0],
-                [60.0, 100.0],
-                [80.0, 100.0]
-            ]]
-        );
-        assert_eq!(
-            geo.delivered,
-            [vec![
-                [330.0, 100.0],
-                [380.0, 100.0],
-                [380.0, 100.0],
-                [390.0, 100.0]
-            ]]
-        );
+        // The plan and the graph start under the top padding; the map is the tallest part plus the padding on both
+        // sides; delivery is centred on it (the web's `mapOf`).
+        assert_eq!((geo.width, geo.height), (430.0, 216.0));
+        assert_eq!(geo.graph, [70.0, MAP_TOP]);
+        assert_eq!(geo.plan.map(|a| (a.x, a.y)), Some((0.0, MAP_TOP)));
+        assert_eq!(geo.delivery.map(|a| (a.x, a.y)), Some((390.0, 78.0)));
     }
 
     #[test]

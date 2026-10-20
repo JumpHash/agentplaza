@@ -3,14 +3,17 @@
 
 use apz_metrics_view::{MetricInfo, ScopeNode};
 use iced::widget::{
-    Space, TextInput, checkbox, column, container, pick_list, radio, row, text, text_input,
+    TextInput, checkbox, column, container, pick_list, radio, row, text, text_input,
 };
 use iced::{Alignment, Element, Length};
 use serde_json::json;
 
 use super::Msg;
 use crate::console::ui;
-use crate::theme::{MONO, SANS_SEMIBOLD, TYPE_META, TYPE_SECTION, TYPE_UI};
+use crate::theme::{MONO, TYPE_META, TYPE_UI};
+
+/// The width of the dialogs: the web's default sheet.
+pub const WIDTH: f32 = 560.0;
 
 /// The alert rule form.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -474,15 +477,6 @@ fn section<'a>(title: &str, body: Element<'a, Msg>) -> Element<'a, Msg> {
     .into()
 }
 
-/// The dialog's title line.
-fn title<'a>(words: &str) -> Element<'a, Msg> {
-    text(words.to_string())
-        .size(TYPE_SECTION)
-        .font(SANS_SEMIBOLD)
-        .color(crate::theme::palette().ink)
-        .into()
-}
-
 /// A quiet line of help text.
 fn hint<'a>(words: &str) -> Element<'a, Msg> {
     text(words.to_string())
@@ -491,18 +485,15 @@ fn hint<'a>(words: &str) -> Element<'a, Msg> {
         .into()
 }
 
-/// The dialog's buttons, Cancel and the primary act, at the foot of the dialog.
-fn buttons<'a>(primary: &str, on_primary: Msg) -> Element<'a, Msg> {
-    row![
-        Space::new().width(Length::Fill),
+/// The dialog's foot buttons, Cancel and the primary act: the kit's modal sets them at the right, primary last.
+fn buttons<'a>(primary: &str, on_primary: Msg) -> Vec<Element<'a, Msg>> {
+    vec![
         ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CloseOverlay)),
         ui::btn(primary, None, ui::Kind::Primary, Some(on_primary)),
     ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .into()
 }
 
+/// The alert rule dialog: the form's fields, the error line, and Cancel with Create or Save at the foot.
 pub fn rule<'a>(
     form: &'a RuleForm,
     catalog: &'a [MetricInfo],
@@ -541,22 +532,23 @@ pub fn rule<'a>(
     .spacing(8)
     .align_y(Alignment::Center)
     .into();
-    let notify: Element<'a, Msg> = row![
+    // The three notify choices wrap onto a second line when the dialog is too narrow for them.
+    let notify: Element<'a, Msg> = ui::chip_row(vec![
         checkbox(form.console)
             .label("console")
-            .on_toggle(|on| Msg::RuleForm(RuleMsg::Console(on))),
+            .on_toggle(|on| Msg::RuleForm(RuleMsg::Console(on)))
+            .into(),
         checkbox(form.desktop)
             .label("desktop notification")
-            .on_toggle(|on| Msg::RuleForm(RuleMsg::Desktop(on))),
+            .on_toggle(|on| Msg::RuleForm(RuleMsg::Desktop(on)))
+            .into(),
         checkbox(form.board)
             .label("board message")
-            .on_toggle(|on| Msg::RuleForm(RuleMsg::Board(on))),
-    ]
-    .spacing(16)
-    .into();
+            .on_toggle(|on| Msg::RuleForm(RuleMsg::Board(on)))
+            .into(),
+    ]);
 
     let mut body = column![
-        title(if editing { "Edit alert rule" } else { "New alert rule" }),
         labelled("Name", name.into()),
         labelled(
             "Metric",
@@ -585,22 +577,33 @@ pub fn rule<'a>(
         hint("Rules run on the hub's in-memory aggregates as points arrive, so they cost no database queries."),
     ]
     .spacing(12)
-    .width(Length::Fixed(520.0));
+    .width(Length::Fill);
     if let Some(error) = &form.error {
         body = body.push(ui::error_line(error));
     }
-    body.push(buttons(
-        if editing { "Save rule" } else { "Create rule" },
-        Msg::SaveRule,
-    ))
-    .into()
+    ui::modal(
+        if editing {
+            "Edit alert rule"
+        } else {
+            "New alert rule"
+        },
+        body.into(),
+        buttons(
+            if editing { "Save rule" } else { "Create rule" },
+            Msg::SaveRule,
+        ),
+        Msg::CloseOverlay,
+        WIDTH,
+    )
 }
 
+/// The settings dialog: the sections of the form, or the OpenMetrics token once it is made; Cancel and Save (Done
+/// once the token shows) at the foot.
 pub fn settings<'a>(form: &'a SettingsForm, scopes: &'a [ScopeNode]) -> Element<'a, Msg> {
     let p = crate::theme::palette();
-    let mut body = column![title("Metrics settings")]
+    let mut body = column(Vec::<Element<'a, Msg>>::new())
         .spacing(16)
-        .width(Length::Fixed(560.0));
+        .width(Length::Fill);
     match &form.token {
         // Once OpenMetrics is switched on the token is shown, and the form is replaced by it, as on the web.
         Some(token) => {
@@ -611,7 +614,7 @@ pub fn settings<'a>(form: &'a SettingsForm, scopes: &'a [ScopeNode]) -> Element<
                     container(text(token.clone()).font(MONO).size(TYPE_UI).color(p.ink))
                         .padding(8)
                         .width(Length::Fill)
-                        .style(crate::theme::boxed),
+                        .style(ui::frame(Some(p.sheet_2), p.rule)),
                 ]
                 .spacing(8)
                 .into(),
@@ -634,7 +637,13 @@ pub fn settings<'a>(form: &'a SettingsForm, scopes: &'a [ScopeNode]) -> Element<
     } else {
         ("Save settings", Msg::SaveSettings)
     };
-    body.push(buttons(primary, on_primary)).into()
+    ui::modal(
+        "Metrics settings",
+        body.into(),
+        buttons(primary, on_primary),
+        Msg::CloseOverlay,
+        WIDTH,
+    )
 }
 
 /// The collection level, one radio per level with its description.

@@ -1,0 +1,916 @@
+[
+  {
+    "language": "rust",
+    "text": "fn main() {\n    let x: u32 = 0x1F; // done\n    println!(\"hi \\\"there\\\"\");\n}\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 2,
+        "class": "keyword"
+      },
+      {
+        "start": 3,
+        "end": 7,
+        "class": "function"
+      },
+      {
+        "start": 16,
+        "end": 19,
+        "class": "keyword"
+      },
+      {
+        "start": 23,
+        "end": 26,
+        "class": "type"
+      },
+      {
+        "start": 29,
+        "end": 33,
+        "class": "number"
+      },
+      {
+        "start": 35,
+        "end": 42,
+        "class": "comment"
+      },
+      {
+        "start": 56,
+        "end": 70,
+        "class": "string"
+      }
+    ]
+  },
+  {
+    "language": "rust",
+    "text": "let café = \"ünï\"; fn f() -> Option<u8> { Some(7) }\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 3,
+        "class": "keyword"
+      },
+      {
+        "start": 11,
+        "end": 16,
+        "class": "string"
+      },
+      {
+        "start": 18,
+        "end": 20,
+        "class": "keyword"
+      },
+      {
+        "start": 21,
+        "end": 22,
+        "class": "function"
+      },
+      {
+        "start": 28,
+        "end": 34,
+        "class": "type"
+      },
+      {
+        "start": 35,
+        "end": 37,
+        "class": "type"
+      },
+      {
+        "start": 41,
+        "end": 45,
+        "class": "type"
+      },
+      {
+        "start": 46,
+        "end": 47,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "rust",
+    "text": "/* multi\nline */ fn g() {}\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 16,
+        "class": "comment"
+      },
+      {
+        "start": 17,
+        "end": 19,
+        "class": "keyword"
+      },
+      {
+        "start": 20,
+        "end": 21,
+        "class": "function"
+      }
+    ]
+  },
+  {
+    "language": "rust",
+    "text": "let s = \"open\nfn after() {}\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 3,
+        "class": "keyword"
+      },
+      {
+        "start": 8,
+        "end": 13,
+        "class": "string"
+      },
+      {
+        "start": 14,
+        "end": 16,
+        "class": "keyword"
+      },
+      {
+        "start": 17,
+        "end": 22,
+        "class": "function"
+      }
+    ]
+  },
+  {
+    "language": "RS",
+    "text": "const π: f64 = 3.14e-2;\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 5,
+        "class": "keyword"
+      },
+      {
+        "start": 9,
+        "end": 12,
+        "class": "type"
+      },
+      {
+        "start": 15,
+        "end": 22,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "typescript",
+    "text": "const greeting = `hi ${name}`;\nlet n = 'it\\'s'; // ok\nlet y: Array<string> = null;\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 5,
+        "class": "keyword"
+      },
+      {
+        "start": 17,
+        "end": 29,
+        "class": "string"
+      },
+      {
+        "start": 31,
+        "end": 34,
+        "class": "keyword"
+      },
+      {
+        "start": 39,
+        "end": 46,
+        "class": "string"
+      },
+      {
+        "start": 48,
+        "end": 53,
+        "class": "comment"
+      },
+      {
+        "start": 54,
+        "end": 57,
+        "class": "keyword"
+      },
+      {
+        "start": 61,
+        "end": 66,
+        "class": "type"
+      },
+      {
+        "start": 67,
+        "end": 73,
+        "class": "type"
+      },
+      {
+        "start": 77,
+        "end": 81,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "ts",
+    "text": "/* a\nb */ let x = 1e+5;\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 9,
+        "class": "comment"
+      },
+      {
+        "start": 10,
+        "end": 13,
+        "class": "keyword"
+      },
+      {
+        "start": 18,
+        "end": 22,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "JSX",
+    "text": "export default function App() { return <div>{NaN}</div>; }\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 6,
+        "class": "keyword"
+      },
+      {
+        "start": 7,
+        "end": 14,
+        "class": "keyword"
+      },
+      {
+        "start": 15,
+        "end": 23,
+        "class": "keyword"
+      },
+      {
+        "start": 24,
+        "end": 27,
+        "class": "type"
+      },
+      {
+        "start": 32,
+        "end": 38,
+        "class": "keyword"
+      },
+      {
+        "start": 45,
+        "end": 48,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "python",
+    "text": "@cache\ndef f(x: int) -> str:\n    \"\"\"doc\n    string\"\"\"\n    return None  # note\n",
+    "spans": [
+      {
+        "start": 7,
+        "end": 10,
+        "class": "keyword"
+      },
+      {
+        "start": 11,
+        "end": 12,
+        "class": "function"
+      },
+      {
+        "start": 16,
+        "end": 19,
+        "class": "type"
+      },
+      {
+        "start": 24,
+        "end": 27,
+        "class": "type"
+      },
+      {
+        "start": 33,
+        "end": 53,
+        "class": "string"
+      },
+      {
+        "start": 58,
+        "end": 64,
+        "class": "keyword"
+      },
+      {
+        "start": 65,
+        "end": 69,
+        "class": "number"
+      },
+      {
+        "start": 71,
+        "end": 77,
+        "class": "comment"
+      }
+    ]
+  },
+  {
+    "language": "py",
+    "text": "print('it\\'s', True, 'open\nx = Foo(1.5e3)\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 5,
+        "class": "function"
+      },
+      {
+        "start": 6,
+        "end": 13,
+        "class": "string"
+      },
+      {
+        "start": 15,
+        "end": 19,
+        "class": "number"
+      },
+      {
+        "start": 21,
+        "end": 26,
+        "class": "string"
+      },
+      {
+        "start": 31,
+        "end": 34,
+        "class": "type"
+      },
+      {
+        "start": 35,
+        "end": 40,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "json",
+    "text": "{\"a\": [1, -2.5e10, true, null], \"b\": \"x\\\"y\"}\n",
+    "spans": [
+      {
+        "start": 1,
+        "end": 4,
+        "class": "string"
+      },
+      {
+        "start": 7,
+        "end": 8,
+        "class": "number"
+      },
+      {
+        "start": 11,
+        "end": 17,
+        "class": "number"
+      },
+      {
+        "start": 19,
+        "end": 23,
+        "class": "number"
+      },
+      {
+        "start": 25,
+        "end": 29,
+        "class": "number"
+      },
+      {
+        "start": 32,
+        "end": 35,
+        "class": "string"
+      },
+      {
+        "start": 37,
+        "end": 43,
+        "class": "string"
+      }
+    ]
+  },
+  {
+    "language": "json",
+    "text": "[\"abc\n, 3]\n",
+    "spans": [
+      {
+        "start": 1,
+        "end": 5,
+        "class": "string"
+      },
+      {
+        "start": 8,
+        "end": 9,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "bash",
+    "text": "#!/bin/sh\n# note\nexport NAME=\"world\"\nif [ -f \"$f\" ]; then echo \"$NAME\"; fi\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 9,
+        "class": "comment"
+      },
+      {
+        "start": 10,
+        "end": 16,
+        "class": "comment"
+      },
+      {
+        "start": 17,
+        "end": 23,
+        "class": "keyword"
+      },
+      {
+        "start": 29,
+        "end": 36,
+        "class": "string"
+      },
+      {
+        "start": 37,
+        "end": 39,
+        "class": "keyword"
+      },
+      {
+        "start": 45,
+        "end": 49,
+        "class": "string"
+      },
+      {
+        "start": 53,
+        "end": 57,
+        "class": "keyword"
+      },
+      {
+        "start": 63,
+        "end": 70,
+        "class": "string"
+      },
+      {
+        "start": 72,
+        "end": 74,
+        "class": "keyword"
+      }
+    ]
+  },
+  {
+    "language": "sh",
+    "text": "greet() {\n  local who=${1:-'there'}\n  printf '%s\\n' \"$who\"\n}\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 5,
+        "class": "function"
+      },
+      {
+        "start": 12,
+        "end": 17,
+        "class": "keyword"
+      },
+      {
+        "start": 24,
+        "end": 25,
+        "class": "number"
+      },
+      {
+        "start": 27,
+        "end": 34,
+        "class": "string"
+      },
+      {
+        "start": 45,
+        "end": 51,
+        "class": "string"
+      },
+      {
+        "start": 52,
+        "end": 58,
+        "class": "string"
+      }
+    ]
+  },
+  {
+    "language": "sql",
+    "text": "SELECT id, name FROM users WHERE id = 42 -- trailing\n;\nselect 'it''s', NULL from t /* x */ where price > 1.5e3;\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 6,
+        "class": "keyword"
+      },
+      {
+        "start": 16,
+        "end": 20,
+        "class": "keyword"
+      },
+      {
+        "start": 27,
+        "end": 32,
+        "class": "keyword"
+      },
+      {
+        "start": 38,
+        "end": 40,
+        "class": "number"
+      },
+      {
+        "start": 41,
+        "end": 52,
+        "class": "comment"
+      },
+      {
+        "start": 55,
+        "end": 61,
+        "class": "keyword"
+      },
+      {
+        "start": 62,
+        "end": 66,
+        "class": "string"
+      },
+      {
+        "start": 66,
+        "end": 69,
+        "class": "string"
+      },
+      {
+        "start": 71,
+        "end": 75,
+        "class": "number"
+      },
+      {
+        "start": 76,
+        "end": 80,
+        "class": "keyword"
+      },
+      {
+        "start": 83,
+        "end": 90,
+        "class": "comment"
+      },
+      {
+        "start": 91,
+        "end": 96,
+        "class": "keyword"
+      },
+      {
+        "start": 105,
+        "end": 110,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "sql",
+    "text": "insert into t values ('abc\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 6,
+        "class": "keyword"
+      },
+      {
+        "start": 7,
+        "end": 11,
+        "class": "keyword"
+      },
+      {
+        "start": 14,
+        "end": 20,
+        "class": "keyword"
+      },
+      {
+        "start": 22,
+        "end": 27,
+        "class": "string"
+      }
+    ]
+  },
+  {
+    "language": "css",
+    "text": ".a-b > p {\n  color: #fff;\n  width: calc(100% - 2px);\n}\n@media (max-width: 600px) { p { display: none !important; } }\n/* end */\n",
+    "spans": [
+      {
+        "start": 35,
+        "end": 39,
+        "class": "function"
+      },
+      {
+        "start": 40,
+        "end": 43,
+        "class": "number"
+      },
+      {
+        "start": 47,
+        "end": 50,
+        "class": "number"
+      },
+      {
+        "start": 56,
+        "end": 61,
+        "class": "keyword"
+      },
+      {
+        "start": 74,
+        "end": 79,
+        "class": "number"
+      },
+      {
+        "start": 96,
+        "end": 100,
+        "class": "keyword"
+      },
+      {
+        "start": 102,
+        "end": 111,
+        "class": "keyword"
+      },
+      {
+        "start": 117,
+        "end": 126,
+        "class": "comment"
+      }
+    ]
+  },
+  {
+    "language": "css",
+    "text": "a::before { content: \"it's\"; margin: 0 auto; }\n",
+    "spans": [
+      {
+        "start": 21,
+        "end": 27,
+        "class": "string"
+      },
+      {
+        "start": 37,
+        "end": 38,
+        "class": "number"
+      },
+      {
+        "start": 39,
+        "end": 43,
+        "class": "keyword"
+      }
+    ]
+  },
+  {
+    "language": "html",
+    "text": "<!DOCTYPE html>\n<div class=\"x\">Hi <!-- c --></div>\n",
+    "spans": [
+      {
+        "start": 2,
+        "end": 9,
+        "class": "keyword"
+      },
+      {
+        "start": 10,
+        "end": 14,
+        "class": "keyword"
+      },
+      {
+        "start": 17,
+        "end": 20,
+        "class": "keyword"
+      },
+      {
+        "start": 27,
+        "end": 30,
+        "class": "string"
+      },
+      {
+        "start": 34,
+        "end": 44,
+        "class": "comment"
+      },
+      {
+        "start": 46,
+        "end": 49,
+        "class": "keyword"
+      }
+    ]
+  },
+  {
+    "language": "html",
+    "text": "<p>café <span title='x'>ok</span></p>\n",
+    "spans": [
+      {
+        "start": 1,
+        "end": 2,
+        "class": "keyword"
+      },
+      {
+        "start": 9,
+        "end": 13,
+        "class": "keyword"
+      },
+      {
+        "start": 14,
+        "end": 19,
+        "class": "keyword"
+      },
+      {
+        "start": 20,
+        "end": 23,
+        "class": "string"
+      },
+      {
+        "start": 28,
+        "end": 32,
+        "class": "keyword"
+      },
+      {
+        "start": 35,
+        "end": 36,
+        "class": "keyword"
+      }
+    ]
+  },
+  {
+    "language": "yaml",
+    "text": "# cfg\nname: \"demo\"\nenabled: yes\ncount: 0x1F\napi-key: ~\nlist:\n  - 1.5\n  - 'x'\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 5,
+        "class": "comment"
+      },
+      {
+        "start": 12,
+        "end": 18,
+        "class": "string"
+      },
+      {
+        "start": 28,
+        "end": 31,
+        "class": "number"
+      },
+      {
+        "start": 39,
+        "end": 43,
+        "class": "number"
+      },
+      {
+        "start": 65,
+        "end": 68,
+        "class": "number"
+      },
+      {
+        "start": 73,
+        "end": 76,
+        "class": "string"
+      }
+    ]
+  },
+  {
+    "language": "yml",
+    "text": "key: 1e+3\nflags: [True, off]\n",
+    "spans": [
+      {
+        "start": 5,
+        "end": 9,
+        "class": "number"
+      },
+      {
+        "start": 18,
+        "end": 22,
+        "class": "number"
+      },
+      {
+        "start": 24,
+        "end": 27,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "go",
+    "text": "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tvar x int = 42 // answer\n\tfmt.Println(x, nil, `raw\nstr`, 'c')\n}\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 7,
+        "class": "keyword"
+      },
+      {
+        "start": 14,
+        "end": 20,
+        "class": "keyword"
+      },
+      {
+        "start": 21,
+        "end": 26,
+        "class": "string"
+      },
+      {
+        "start": 28,
+        "end": 32,
+        "class": "keyword"
+      },
+      {
+        "start": 33,
+        "end": 37,
+        "class": "function"
+      },
+      {
+        "start": 43,
+        "end": 46,
+        "class": "keyword"
+      },
+      {
+        "start": 49,
+        "end": 52,
+        "class": "type"
+      },
+      {
+        "start": 55,
+        "end": 57,
+        "class": "number"
+      },
+      {
+        "start": 58,
+        "end": 67,
+        "class": "comment"
+      },
+      {
+        "start": 73,
+        "end": 80,
+        "class": "function"
+      },
+      {
+        "start": 84,
+        "end": 87,
+        "class": "number"
+      },
+      {
+        "start": 89,
+        "end": 98,
+        "class": "string"
+      },
+      {
+        "start": 100,
+        "end": 103,
+        "class": "string"
+      }
+    ]
+  },
+  {
+    "language": "golang",
+    "text": "type T struct{ n uint8 }\nfunc (t *T) Get() (int, error) { return int(t.n), nil }\n",
+    "spans": [
+      {
+        "start": 0,
+        "end": 4,
+        "class": "keyword"
+      },
+      {
+        "start": 7,
+        "end": 13,
+        "class": "keyword"
+      },
+      {
+        "start": 17,
+        "end": 22,
+        "class": "type"
+      },
+      {
+        "start": 25,
+        "end": 29,
+        "class": "keyword"
+      },
+      {
+        "start": 37,
+        "end": 40,
+        "class": "function"
+      },
+      {
+        "start": 44,
+        "end": 47,
+        "class": "type"
+      },
+      {
+        "start": 49,
+        "end": 54,
+        "class": "type"
+      },
+      {
+        "start": 58,
+        "end": 64,
+        "class": "keyword"
+      },
+      {
+        "start": 65,
+        "end": 68,
+        "class": "type"
+      },
+      {
+        "start": 75,
+        "end": 78,
+        "class": "number"
+      }
+    ]
+  },
+  {
+    "language": "klingon",
+    "text": "fn x() { 1 }\n",
+    "spans": []
+  }
+]

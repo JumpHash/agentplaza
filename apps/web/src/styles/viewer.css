@@ -1,0 +1,15 @@
+/* The share viewer: the console's own page (base, skins and tokens) with the shared artifact on it, read-only. */
+
+#app { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+#app > .page { flex: 1 1 auto; }
+.viewer-mark { font: 600 15px/1.2 var(--font-display); letter-spacing: -.01em; color: var(--ink); }
+.viewer-page .page-head-row { flex-wrap: wrap; }
+.viewer-page .page-actions { flex-wrap: wrap; }
+.viewer-main { min-width: 0; }
+.viewer-foot { margin-top: 12px; max-width: 560px; }
+.viewer-foot .viewer-report summary { cursor: pointer; font-size: var(--fs-sm); color: var(--ink-2); padding: 10px 16px; }
+.viewer-foot .viewer-report .card-b { padding-top: 0; }
+.viewer-password { max-width: 420px; width: 100%; margin: 56px auto 0; }
+.viewer-password .card-b { gap: 14px; }
+.viewer-password .field { min-width: 0; }
+.viewer-password .field .input { width: 100%; }

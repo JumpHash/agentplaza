@@ -1,5 +1,5 @@
 meta {
-  name: List skills on an empty hub
+  name: List skills on a fresh hub (only the built-in ones)
   type: http
   seq: 1
 }
@@ -17,7 +17,10 @@ assert {
 }
 
 tests {
-  test("no skills yet", function () {
-    expect(res.getBody().skills).to.have.length(0);
+  test("only the skills the hub ships with", function () {
+    // The hub ships show-your-work (artifacts); the owner has added nothing yet.
+    const skills = res.getBody().skills;
+    expect(skills.map((s) => s.id)).to.deep.equal(["show-your-work"]);
+    expect(skills[0].tags).to.include("builtin");
   });
 }
