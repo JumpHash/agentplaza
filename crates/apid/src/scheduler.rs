@@ -1328,10 +1328,9 @@ fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
                 && crate::membership::held(app, a).is_none())
             .then_some(a.cid)
         });
-        for cid in seated {
-            if motion.votes.iter().any(|v| v.agent_cid == cid) {
-                continue;
-            }
+        // Voters are collected once per motion, so each seated agent's check is a set lookup.
+        let voted: HashSet<_> = motion.votes.iter().map(|v| v.agent_cid).collect();
+        for cid in not_yet_voted(seated, &voted) {
             if !seen.insert((motion.id.clone(), cid)) {
                 continue;
             }
@@ -1429,9 +1428,29 @@ impl Queues {
     }
 }
 
+/// The seated agents that have not voted on a motion, in seated order. `voters` are the agents that have.
+fn not_yet_voted<T: Copy + Eq + std::hash::Hash>(
+    seated: impl IntoIterator<Item = T>,
+    voters: &HashSet<T>,
+) -> Vec<T> {
+    seated
+        .into_iter()
+        .filter(|cid| !voters.contains(cid))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn not_yet_voted_keeps_the_seated_order() {
+        // The same as checking each seated agent against every vote, for a small input.
+        let voters: HashSet<u64> = [3, 1].into_iter().collect();
+        assert_eq!(not_yet_voted(vec![5, 1, 4, 3, 2], &voters), vec![5, 4, 2]);
+        assert!(not_yet_voted(vec![1, 3], &voters).is_empty());
+        assert!(not_yet_voted(Vec::<u64>::new(), &voters).is_empty());
+    }
 
     #[test]
     fn the_queued_gauge_follows_the_lane_as_items_are_queued_and_started() {

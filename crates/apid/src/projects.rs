@@ -325,6 +325,13 @@ impl Store {
         self.items.lock().ok()?.iter().find(|p| p.id == id).cloned()
     }
 
+    /// Runs `f` on project `id` without cloning it, for a hot path that reads a field or two. `f` runs under the
+    /// store's lock, so it must not call back into the store.
+    pub fn with<R>(&self, id: &str, f: impl FnOnce(&Project) -> R) -> Option<R> {
+        let items = self.items.lock().ok()?;
+        items.iter().find(|p| p.id == id).map(f)
+    }
+
     /// Opens a project at stage "brief". `kind` is "code" or "other".
     pub fn open(
         &self,
@@ -1337,6 +1344,25 @@ mod tests {
         assert_eq!(b.list(), a.list());
         assert!(b.restore("not json").is_err());
         assert_eq!(b.list(), a.list(), "a refused restore changes nothing");
+    }
+
+    #[test]
+    fn with_reads_a_field_of_a_known_project_and_none_for_an_unknown_one() {
+        let (_dir, store) = fresh("with");
+        let project = store
+            .open(
+                &lead(),
+                "Ship the thing",
+                "Make the thing work",
+                "other",
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            store.with(&project.id, |p| p.title.clone()).as_deref(),
+            Some("Ship the thing")
+        );
+        assert_eq!(store.with("pr999", |p| p.title.clone()), None);
     }
 
     fn fresh(tag: &str) -> (PathBuf, Store) {

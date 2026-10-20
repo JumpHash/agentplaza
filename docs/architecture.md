@@ -258,8 +258,9 @@ one of the agents' microVMs.
   for the pixel session), the audit, and STOP ALL's freeze.
 - **Acts.** Every workstation action passes one choke point, `stations/act.rs`
   (the checks, the laws and the audit), then its hooks. Agents reach a station
-  only through the hub, and only with a lease. The agent's microVM never gets a
-  route to a station.
+  only through the hub. A screen operation needs the agent's active pixel
+  lease on that station; shell, runs, files, apps and scripts need none.
+  The agent's microVM never gets a route to a station.
 - **Owner takeover and live view.** `WS /v1/stations/{id}/screen` (tiles and
   thumbnails) and `WS /v1/stations/{id}/control` (take the mouse and keyboard,
   give them back). Recordings of a lease are kept in the object store, with a

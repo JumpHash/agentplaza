@@ -200,15 +200,18 @@ pub fn hold_reason(
 
 /// The state of project `id` on the hub.
 pub fn project_state(app: &App, id: &str) -> ProjectState {
-    match app.projects.get(id) {
-        None => ProjectState::Missing,
-        // A delivered project in maintenance is still worked: its watchers sweep and the owner's picks run.
-        Some(p) if p.archived || (p.stage == "delivered" && !p.in_maintenance()) => {
-            ProjectState::Over
-        }
-        Some(p) if p.paused => ProjectState::Paused,
-        Some(_) => ProjectState::Active,
-    }
+    app.projects
+        .with(id, |p| {
+            // A delivered project in maintenance is still worked: its watchers sweep and the owner's picks run.
+            if p.archived || (p.stage == "delivered" && !p.in_maintenance()) {
+                ProjectState::Over
+            } else if p.paused {
+                ProjectState::Paused
+            } else {
+                ProjectState::Active
+            }
+        })
+        .unwrap_or(ProjectState::Missing)
 }
 
 /// Why `agent` may not work now, or `None` when it may (see [`hold_reason`]).

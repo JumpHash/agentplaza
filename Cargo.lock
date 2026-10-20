@@ -115,13 +115,11 @@ dependencies = [
 name = "agentplaza-desktop"
 version = "0.1.0"
 dependencies = [
- "ab_glyph",
  "apz-engine",
  "apz-graph",
  "apz-graph-web",
  "apz-http",
  "apz-ide",
- "apz-metrics",
  "apz-metrics-view",
  "apz-os",
  "apz-plaza",
@@ -135,7 +133,6 @@ dependencies = [
  "apz-vt",
  "apz-workstation",
  "base64 0.22.1",
- "bytemuck",
  "chrono",
  "dirs",
  "glam 0.30.10",

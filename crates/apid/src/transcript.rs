@@ -12,6 +12,10 @@ use crate::events::Bus;
 /// Entries kept per agent; older ones are dropped.
 const KEEP: usize = 5_000;
 
+/// Bytes kept per agent (each entry's kind plus its data as JSON); older ones are dropped past this.
+/// The newest entry always stays, even when it alone is over the budget.
+const MAX_BYTES_PER_AGENT: usize = 1 << 20;
+
 /// One transcript entry. `kind`: `work_start`, `model_request`,
 /// `model_response`, `tool_request`, `tool_decision`, `tool_result`,
 /// `work_end`, `error`.
@@ -28,10 +32,53 @@ pub struct Entry {
 /// Where each recorded entry is also written (Postgres): (cid, seq, work, kind, at_ms, data).
 pub type Sink = Box<dyn Fn(u64, u64, u64, &str, u64, &Value) + Send + Sync>;
 
+/// One agent's window of recent entries, oldest first. Each entry's size is computed once on insert and
+/// kept beside it, so eviction can bring `bytes` back under the budget.
+#[derive(Default)]
+struct Window {
+    entries: VecDeque<Entry>,
+    sizes: VecDeque<usize>,
+    bytes: usize,
+}
+
+impl Window {
+    fn push(&mut self, entry: Entry) {
+        let size = entry.kind.len() + entry.data.to_string().len();
+        // Kept sorted by seq so `after_seq` can binary search. A record takes its seq before it takes the
+        // lock, so two records racing on one agent can arrive out of order; they are slotted in place here.
+        let at = self.entries.partition_point(|e| e.seq < entry.seq);
+        self.entries.insert(at, entry);
+        self.sizes.insert(at, size);
+        self.bytes += size;
+        while self.entries.len() > 1
+            && (self.entries.len() > KEEP || self.bytes > MAX_BYTES_PER_AGENT)
+        {
+            self.entries.pop_front();
+            if let Some(size) = self.sizes.pop_front() {
+                self.bytes -= size;
+            }
+        }
+    }
+
+    /// The entries with `seq > after`, oldest first.
+    fn after_seq(&self, after: u64) -> impl DoubleEndedIterator<Item = &Entry> {
+        let start = self.entries.partition_point(|e| e.seq <= after);
+        self.entries.range(start..)
+    }
+
+    fn iter(&self) -> impl DoubleEndedIterator<Item = &Entry> {
+        self.entries.iter()
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
 #[derive(Default)]
 pub struct Store {
     seq: AtomicU64,
-    agents: Mutex<HashMap<u64, VecDeque<Entry>>>,
+    agents: Mutex<HashMap<u64, Window>>,
     sink: Mutex<Option<Sink>>,
 }
 
@@ -56,10 +103,7 @@ impl Store {
             let mut agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
             let log = agents.entry(cid).or_default();
             for (seq, work, kind, at_ms, data) in entries {
-                if log.len() == KEEP {
-                    log.pop_front();
-                }
-                log.push_back(Entry {
+                log.push(Entry {
                     seq,
                     at_ms,
                     cid,
@@ -95,11 +139,7 @@ impl Store {
             sink(cid, seq, work, kind, entry.at_ms, &entry.data);
         }
         let mut agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
-        let log = agents.entry(cid).or_default();
-        if log.len() == KEEP {
-            log.pop_front();
-        }
-        log.push_back(entry);
+        agents.entry(cid).or_default().push(entry);
         seq
     }
 
@@ -108,13 +148,7 @@ impl Store {
         let agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
         agents
             .get(&cid)
-            .map(|log| {
-                log.iter()
-                    .filter(|e| e.seq > after)
-                    .take(limit)
-                    .cloned()
-                    .collect()
-            })
+            .map(|log| log.after_seq(after).take(limit).cloned().collect())
             .unwrap_or_default()
     }
 
@@ -279,5 +313,116 @@ mod tests {
         );
         assert_eq!(store.last(7, 0).len(), 0);
         assert!(store.last(9, 3).is_empty());
+    }
+
+    #[test]
+    fn the_entry_cap_still_holds() {
+        let (store, bus) = (Store::default(), Bus::default());
+        let mut newest = 0;
+        for i in 0..KEEP + 10 {
+            newest = store.record(&bus, 7, 1, "model_request", json!({ "i": i }));
+        }
+        assert_eq!(store.last(7, usize::MAX).len(), KEEP);
+        assert_eq!(store.last(7, 1)[0].seq, newest);
+    }
+
+    #[test]
+    fn a_window_stays_under_its_byte_budget() {
+        let (store, bus) = (Store::default(), Bus::default());
+        let big = "x".repeat(64 << 10);
+        for i in 0..200 {
+            store.record(
+                &bus,
+                7,
+                1,
+                "tool_result",
+                json!({ "i": i, "text": big.as_str() }),
+            );
+        }
+        let rows: Vec<(u64, u64, String, u64, Value)> = (1..=200u64)
+            .map(|seq| {
+                (
+                    seq,
+                    1,
+                    "tool_result".to_string(),
+                    0,
+                    json!({ "text": big.as_str() }),
+                )
+            })
+            .collect();
+        store.preload(8, rows);
+        for cid in [7u64, 8] {
+            let (len, bytes) = {
+                let agents = store.agents.lock().unwrap();
+                (agents[&cid].len(), agents[&cid].bytes)
+            };
+            assert!(
+                bytes <= MAX_BYTES_PER_AGENT,
+                "cid {cid} holds {bytes} bytes"
+            );
+            assert!(
+                (15..200).contains(&len),
+                "cid {cid} keeps what fits: {len} entries"
+            );
+            let summed: usize = store
+                .last(cid, usize::MAX)
+                .iter()
+                .map(|e| e.kind.len() + e.data.to_string().len())
+                .sum();
+            assert_eq!(summed, bytes, "the tracked size matches the entries kept");
+        }
+    }
+
+    #[test]
+    fn the_newest_entry_is_kept_even_over_the_budget() {
+        let (store, bus) = (Store::default(), Bus::default());
+        for i in 0..10 {
+            store.record(&bus, 7, 1, "model_request", json!({ "i": i }));
+        }
+        let huge = "y".repeat(2 * MAX_BYTES_PER_AGENT);
+        let seq = store.record(&bus, 7, 1, "tool_result", json!({ "text": huge.as_str() }));
+        let kept = store.last(7, usize::MAX);
+        assert_eq!(
+            kept.len(),
+            1,
+            "older entries go once the newest is over budget"
+        );
+        assert_eq!(kept[0].seq, seq);
+
+        let next = store.record(&bus, 7, 1, "work_end", json!({ "status": "done" }));
+        let kept = store.last(7, usize::MAX);
+        assert_eq!(
+            kept.len(),
+            1,
+            "the oversized entry goes once a newer one arrives"
+        );
+        assert_eq!(kept[0].seq, next);
+    }
+
+    #[test]
+    fn after_pages_from_the_cursor_in_seq_order() {
+        let mut window = Window::default();
+        // 4 is pushed before 3, as a record racing another on the same agent can be.
+        for seq in [1u64, 2, 4, 3, 5] {
+            window.push(Entry {
+                seq,
+                at_ms: 0,
+                cid: 7,
+                work: 1,
+                kind: "model_request".to_string(),
+                data: json!({}),
+            });
+        }
+        let seqs = |after: u64| -> Vec<u64> { window.after_seq(after).map(|e| e.seq).collect() };
+        for after in 0..=6 {
+            let filtered: Vec<u64> = window
+                .iter()
+                .filter(|e| e.seq > after)
+                .map(|e| e.seq)
+                .collect();
+            assert_eq!(seqs(after), filtered, "after {after}");
+        }
+        assert_eq!(seqs(2), vec![3, 4, 5]);
+        assert!(seqs(5).is_empty());
     }
 }
