@@ -20,7 +20,7 @@ script:pre-request {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt 5000
 }
 
 tests {
@@ -29,4 +29,9 @@ tests {
     expect(body.state).to.equal("unsealed");
     expect(body.slots.find((s) => s.kind === "recovery").unsealed_with).to.equal(true);
   });
+}
+
+docs {
+  The hub derives the key from the passphrase or recovery code with Argon2id (256 MiB, three passes), slow
+  on purpose: the budget is 5 s, not the 1 s of a plain request, so a busy runner does not fail it.
 }

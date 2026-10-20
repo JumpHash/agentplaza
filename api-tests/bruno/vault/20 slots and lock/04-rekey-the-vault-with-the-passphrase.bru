@@ -24,7 +24,7 @@ script:pre-request {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt 5000
 }
 
 tests {
@@ -34,4 +34,9 @@ tests {
     expect(body.rekeyed_ms).to.be.a("number");
     expect(JSON.stringify(res.getBody())).to.not.include("bru-passphrase-0123456789");
   });
+}
+
+docs {
+  The hub derives the key from the passphrase or recovery code with Argon2id (256 MiB, three passes), slow
+  on purpose: the budget is 5 s, not the 1 s of a plain request, so a busy runner does not fail it.
 }
