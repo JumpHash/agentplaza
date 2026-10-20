@@ -18,7 +18,8 @@ body:json {
   {
     "goal": "t-treasury failed",
     "project": "{{treasuryProject}}",
-    "budget": 200
+    "budget": 200,
+    "role": "researcher"
   }
 }
 
@@ -29,4 +30,9 @@ assert {
 
 script:post-response {
   bru.setVar("treasuryTask", res.getBody().id);
+}
+
+docs {
+  The task is for a role the test agent does not have, so the scheduler does not hand it to the agent before
+  the folder's own claim does (on a slow runner it did, and the claim met a task already claimed).
 }
