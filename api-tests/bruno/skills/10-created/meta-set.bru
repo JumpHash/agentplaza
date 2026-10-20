@@ -26,5 +26,5 @@ body:json {
 assert {
   res.status: eq 200
   res.body.skill.title: eq "Formulare ✓ renamed"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

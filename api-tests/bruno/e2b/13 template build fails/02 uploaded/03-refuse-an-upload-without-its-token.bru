@@ -16,6 +16,6 @@ body:text {
 
 assert {
   res.status: eq 403
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.error_code: eq "upload_forbidden"
 }

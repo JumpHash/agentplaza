@@ -53,7 +53,8 @@ token="$(cat "$state/hub/internal.token")"
 # The internal token stays out of the saved results.
 bruno() {
   (cd api-tests/bruno && "$bru" run "$@" -r --env ci --env-var "baseUrl=$base" \
-    --env-var "internalToken=$token" --reporter-skip-headers x-apz-internal)
+    --env-var "internalToken=$token" --env-var "budgetMs=${APZ_API_BUDGET_MS:-1000}" \
+    --reporter-skip-headers x-apz-internal)
 }
 # Bruno skips a request file it cannot parse and still passes the run: the collection has no skipped requests, so
 # any skip is a broken file, and fails the run with its parse error.

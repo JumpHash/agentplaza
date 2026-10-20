@@ -22,7 +22,7 @@ assert {
   res.status: eq 201
   res.body.state: eq "open"
   res.body.ready: eq true
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 script:post-response {

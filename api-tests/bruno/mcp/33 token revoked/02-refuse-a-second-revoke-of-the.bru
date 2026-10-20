@@ -13,7 +13,7 @@ delete {
 assert {
   res.status: eq 404
   res.body.error: isString
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

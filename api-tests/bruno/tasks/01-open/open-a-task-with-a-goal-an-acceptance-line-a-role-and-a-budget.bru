@@ -26,7 +26,7 @@ assert {
   res.body.agent_cid: isNull
   res.body.budget: eq 400
   res.body.role: eq "writer"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 script:post-response {

@@ -14,7 +14,7 @@ assert {
   res.status: eq 201
   res.body.token: contains "apzi_"
   res.body.path: contains "/v1/ingest/"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 script:post-response {

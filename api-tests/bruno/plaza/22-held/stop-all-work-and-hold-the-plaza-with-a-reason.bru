@@ -23,7 +23,7 @@ assert {
   res.body.paused: eq true
   res.body.by: eq "owner"
   res.body.reason: eq "t-plaza probe: held for the test"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

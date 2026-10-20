@@ -29,7 +29,7 @@ body:json {
 assert {
   res.status: eq 201
   res.body.skill.id: eq "t-skill-arc"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 script:post-response {

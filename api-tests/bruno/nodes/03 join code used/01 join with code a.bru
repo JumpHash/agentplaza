@@ -49,7 +49,7 @@ script:post-response {
 
 assert {
   res.status: eq 201
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.node_id: isString
   res.body.cid_count: eq 100
   res.body.cid_base: isNumber

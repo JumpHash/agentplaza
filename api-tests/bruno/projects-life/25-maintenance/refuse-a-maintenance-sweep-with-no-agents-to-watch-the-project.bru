@@ -13,5 +13,5 @@ post {
 assert {
   res.status: eq 409
   res.body.error: contains "no agents to watch"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

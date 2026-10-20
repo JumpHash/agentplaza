@@ -13,5 +13,5 @@ delete {
 assert {
   res.status: eq 409
   res.body.error: contains "withdrawn to withdrawn"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

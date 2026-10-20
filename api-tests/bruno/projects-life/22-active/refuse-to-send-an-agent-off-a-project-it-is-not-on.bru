@@ -13,5 +13,5 @@ delete {
 assert {
   res.status: eq 404
   res.body.error: contains "is not on project"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

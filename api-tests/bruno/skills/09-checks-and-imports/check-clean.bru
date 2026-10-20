@@ -28,7 +28,7 @@ assert {
   res.status: eq 200
   res.body.errors: eq 0
   res.body.name: eq "t-skill-life"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

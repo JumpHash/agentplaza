@@ -65,7 +65,7 @@ body:json {
 
 assert {
   res.status: eq 201
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 script:post-response {

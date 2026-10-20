@@ -23,7 +23,7 @@ body:json {
 assert {
   res.status: eq 400
   res.body.error: eq "the source does not compile"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

@@ -23,5 +23,5 @@ body:json {
 assert {
   res.status: eq 200
   res.body.skill.active_version: eq 2
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

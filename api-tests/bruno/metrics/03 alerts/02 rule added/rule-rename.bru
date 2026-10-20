@@ -27,7 +27,7 @@ body:json {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.rule.threshold: eq 90
   res.body.rule.name: eq "t-metrics rule renamed"
 }

@@ -41,7 +41,7 @@ assert {
   res.body.skill.id: eq "t-skill-life"
   res.body.skill.latest_version: eq 1
   res.body.skill.active_version: eq null
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 script:post-response {

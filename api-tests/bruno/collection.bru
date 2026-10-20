@@ -7,4 +7,12 @@ docs {
 
   One folder per area. A folder's requests run in `seq` order, so a folder can create something,
   read it back, change it and delete it, passing ids along with `bru.setVar`.
+
+  Every request has a time budget. A plain one has `{{budgetMs}}`: 1000 ms, from the environment, and
+  `api-tests/run.sh` takes another from `APZ_API_BUDGET_MS` (the coverage job's instrumented hub is
+  slower). The rest are literal, for work that is slow by its nature:
+  - 500 ms: the hub's identity and overview, which must stay cheap.
+  - 2 s: Weft, a process behind the hub.
+  - 5 s: Argon2id vault unlocks, platform token exchanges, provider probes of a closed port, file uploads.
+  - 10 to 60 s: the internet (the ACP registry, the provider catalog), git clones, a node link's refused join.
 }

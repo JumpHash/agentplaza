@@ -36,6 +36,6 @@ script:post-response {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.id: eq "t-agents-lead"
 }

@@ -22,7 +22,7 @@ assert {
   res.status: eq 201
   res.body.text: contains "CI is red"
   res.body.from: eq "owner"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 script:post-response {

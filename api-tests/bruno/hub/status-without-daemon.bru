@@ -12,7 +12,7 @@ get {
 
 assert {
   res.status: eq 502
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.error: isString
 }
 

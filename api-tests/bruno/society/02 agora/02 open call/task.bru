@@ -25,7 +25,7 @@ script:post-response {
 
 assert {
   res.status: eq 201
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.state: eq "open"
   res.body.role: eq "architect"
 }

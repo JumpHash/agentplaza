@@ -13,7 +13,7 @@ post {
 assert {
   res.status: eq 200
   res.body.prompt.active_version: eq null
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

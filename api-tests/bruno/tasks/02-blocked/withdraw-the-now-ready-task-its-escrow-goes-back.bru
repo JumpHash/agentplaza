@@ -13,5 +13,5 @@ delete {
 assert {
   res.status: eq 200
   res.body.state: eq "withdrawn"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

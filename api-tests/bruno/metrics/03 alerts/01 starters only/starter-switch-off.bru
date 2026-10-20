@@ -27,7 +27,7 @@ body:json {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.ok: eq true
   res.body.rule.on: eq false
 }

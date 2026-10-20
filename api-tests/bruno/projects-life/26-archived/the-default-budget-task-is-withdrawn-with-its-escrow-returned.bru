@@ -14,5 +14,5 @@ assert {
   res.status: eq 200
   res.body.state: eq "withdrawn"
   res.body.outcome: eq "cancelled"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

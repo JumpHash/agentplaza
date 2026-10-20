@@ -12,7 +12,7 @@ get {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.settings.effort.source: eq "project"
   res.body.settings.max_turns.source: eq "plaza"
   res.body.budget.own: eq false

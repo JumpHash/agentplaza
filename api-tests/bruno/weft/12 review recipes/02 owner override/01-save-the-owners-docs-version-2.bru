@@ -20,7 +20,7 @@ script:pre-request {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.recipe.version: eq 2
   res.body.recipe.title: eq "Documentation (owner)"
 }

@@ -22,5 +22,5 @@ assert {
   res.status: eq 200
   res.body.name: eq "probe-env"
   res.body.protected: eq false
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

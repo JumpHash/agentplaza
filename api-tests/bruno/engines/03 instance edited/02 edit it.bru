@@ -32,7 +32,7 @@ body:json {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.label: eq "Scratch local 2"
   res.body.accent: eq "#00ff88"
   res.body.route: eq "mock/t-model-2"

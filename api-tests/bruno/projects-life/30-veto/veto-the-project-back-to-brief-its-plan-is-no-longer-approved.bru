@@ -22,7 +22,7 @@ assert {
   res.status: eq 200
   res.body.stage: eq "brief"
   res.body.approved_by: isNull
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

@@ -35,7 +35,7 @@ assert {
   res.body.prompt.kind: eq "system"
   res.body.prompt.latest_version: eq 1
   res.body.prompt.active_version: eq null
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 script:post-response {

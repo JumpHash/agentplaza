@@ -25,7 +25,7 @@ assert {
   res.body.paused: eq false
   res.body.archived: eq false
   res.body.approved_by: eq "owner"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

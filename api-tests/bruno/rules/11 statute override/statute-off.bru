@@ -24,7 +24,7 @@ body:json {
 assert {
   res.status: eq 200
   res.body.law: eq "S-000a"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

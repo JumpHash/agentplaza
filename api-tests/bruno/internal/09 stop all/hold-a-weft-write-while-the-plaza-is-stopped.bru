@@ -22,7 +22,7 @@ body:json {
 }
 
 assert {
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.status: eq 423
   res.body.error: eq "STOP ALL is on: Weft takes no writes"
 }

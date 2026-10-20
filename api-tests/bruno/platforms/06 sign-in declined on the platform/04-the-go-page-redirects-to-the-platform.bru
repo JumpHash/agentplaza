@@ -17,7 +17,7 @@ settings {
 
 assert {
   res.status: eq 302
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

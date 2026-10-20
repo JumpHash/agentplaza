@@ -20,7 +20,7 @@ body:text {
 }
 
 assert {
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.status: eq 403
   res.body.error: eq "missing or wrong internal token"
 }

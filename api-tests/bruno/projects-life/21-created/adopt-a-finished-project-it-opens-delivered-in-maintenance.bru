@@ -22,7 +22,7 @@ assert {
   res.status: eq 201
   res.body.project.stage: eq "delivered"
   res.body.project.mode: eq "maintenance"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

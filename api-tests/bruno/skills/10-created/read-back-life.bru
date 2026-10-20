@@ -13,7 +13,7 @@ get {
 assert {
   res.status: eq 200
   res.body.skill.id: eq "t-skill-life"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

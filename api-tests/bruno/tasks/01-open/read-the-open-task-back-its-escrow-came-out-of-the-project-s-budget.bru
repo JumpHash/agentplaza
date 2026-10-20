@@ -14,5 +14,5 @@ assert {
   res.status: eq 200
   res.body.state: eq "open"
   res.body.project: eq {{tsk_pid}}
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

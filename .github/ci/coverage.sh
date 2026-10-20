@@ -85,7 +85,8 @@ chmod +x "$hub_wrap"
 # A failing request fails the run's status, not the measurement: the hub ran the requests, and the pull request's
 # api job is what gates them. The status is kept (api-status) and shown in the log.
 api_status=0
-api-tests/run.sh "$hub_wrap" "$out/api-run" || api_status=$?
+# The instrumented hub is slower, and this run measures coverage, not latency: a plain request has 5 s, not 1.
+APZ_API_BUDGET_MS=5000 api-tests/run.sh "$hub_wrap" "$out/api-run" || api_status=$?
 echo "$api_status" > "$out/api-status"
 if [ "$api_status" != 0 ]; then echo "::warning::the API run failed (status $api_status): its coverage is measured as it ran"; fi
 take "$raw/api"

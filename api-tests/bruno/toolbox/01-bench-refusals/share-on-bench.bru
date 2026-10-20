@@ -39,7 +39,7 @@ body:json {
 assert {
   res.status: eq 200
   res.body.reply.type: eq "tool_decision"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

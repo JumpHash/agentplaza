@@ -13,7 +13,7 @@ get {
 assert {
   res.status: eq 200
   res.body.skill_md: isArray
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

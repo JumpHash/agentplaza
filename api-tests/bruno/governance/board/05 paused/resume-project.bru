@@ -24,5 +24,5 @@ body:json {
 assert {
   res.status: eq 200
   res.body.paused: eq false
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

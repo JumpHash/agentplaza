@@ -22,5 +22,5 @@ assert {
   res.status: eq 200
   res.body.config.every_hours: eq 6
   res.body.config.focus: eq "the tests"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

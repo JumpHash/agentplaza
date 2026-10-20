@@ -14,5 +14,5 @@ assert {
   res.status: eq 200
   res.body.own: eq true
   res.body.balance: eq 650
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

@@ -17,7 +17,7 @@ body:json {
 }
 
 assert {
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.status: gte 400
   res.status: lt 500
   res.body.error: isString

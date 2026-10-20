@@ -15,5 +15,5 @@ assert {
   res.body.config.every_hours: eq 24
   res.body.signals: isArray
   res.body.proposals: isArray
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

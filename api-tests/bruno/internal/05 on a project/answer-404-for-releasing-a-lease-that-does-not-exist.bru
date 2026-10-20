@@ -15,7 +15,7 @@ headers {
 }
 
 assert {
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.status: eq 404
   res.body.error: eq "no such lease"
 }

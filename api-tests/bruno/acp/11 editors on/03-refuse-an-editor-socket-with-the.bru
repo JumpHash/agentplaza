@@ -20,7 +20,7 @@ headers {
 assert {
   res.status: eq 426
   res.body.error: isString
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 tests {

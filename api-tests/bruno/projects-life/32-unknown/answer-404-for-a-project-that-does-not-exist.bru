@@ -13,5 +13,5 @@ get {
 assert {
   res.status: eq 404
   res.body.error: contains "no such project"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

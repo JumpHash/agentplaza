@@ -12,7 +12,7 @@ get {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.retention_days: eq 30
   res.body.record_fps: eq 3
   res.body.record: eq true

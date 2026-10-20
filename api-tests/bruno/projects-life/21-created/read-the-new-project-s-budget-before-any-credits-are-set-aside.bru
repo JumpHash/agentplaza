@@ -15,7 +15,7 @@ assert {
   res.body.own: eq false
   res.body.balance: eq 0
   res.body.plaza: isNumber
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 
 script:post-response {

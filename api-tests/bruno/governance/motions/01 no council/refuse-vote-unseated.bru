@@ -25,5 +25,5 @@ body:json {
 assert {
   res.status: eq 403
   res.body.error: isString
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

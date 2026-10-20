@@ -32,7 +32,7 @@ body:json {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.enabled: eq true
   res.body.credential: eq "secret"
 }

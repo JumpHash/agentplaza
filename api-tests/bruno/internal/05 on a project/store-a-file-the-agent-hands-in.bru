@@ -24,7 +24,7 @@ script:post-response {
 }
 
 assert {
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.status: eq 201
   res.body.size: eq 29
   res.body.url: isString

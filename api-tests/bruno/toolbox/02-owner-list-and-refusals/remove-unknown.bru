@@ -13,5 +13,5 @@ delete {
 assert {
   res.status: eq 404
   res.body.error: eq "no discovery d999999"
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }

@@ -12,6 +12,6 @@ get {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.label: eq "Scratch local"
 }

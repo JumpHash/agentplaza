@@ -22,7 +22,7 @@ script:pre-request {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
 }
 script:post-response {
   bru.setVar("fmdl_b", res.getBody().id);
