@@ -166,6 +166,49 @@ fn only_a_projects_agents_work_and_only_while_it_runs() {
 }
 
 #[test]
+fn stop_all_holds_a_tool_call_that_was_on_its_way() {
+    let scratch = Scratch::new("stop-all-tool");
+    let hub = Hub::start(&scratch, None, None);
+    // A member of a live project: no project gate holds it, so only STOP ALL can.
+    let (status, body) = hub.guest(310, "hello", json!({ "role": "builder", "vm": 0 }));
+    assert_eq!(status, 200, "{body}");
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Stop", "goal": "Check STOP ALL" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let (status, member) = hub.call(
+        "POST",
+        &format!("/v1/projects/{pid}/members"),
+        Some(json!({ "cid": 310 })),
+    );
+    assert_eq!(status, 200, "{member}");
+    assert_eq!(member["held"], Value::Null);
+    let egress = || {
+        let check = json!({ "cid": 310, "host": "example.com", "port": 443 });
+        let (status, answer) = hub.internal("/internal/egress/check", check);
+        assert_eq!(status, 200, "{answer}");
+        answer
+    };
+    assert!(!text(&egress()["reason"]).contains("STOP ALL"));
+    let (status, state) = hub.call("POST", "/v1/plaza/stop", Some(json!({ "reason": "audit" })));
+    assert_eq!(status, 200, "{state}");
+    // A tool request the harness sent before its work's cancel arrived is refused, and says why.
+    let decision = tool_request(&hub, 310);
+    assert_eq!(decision["decision"], "deny", "{decision}");
+    assert!(text(&decision["output"]).contains("STOP ALL"), "{decision}");
+    // The agent reaches no host until the owner resumes, and the answer says why.
+    let answer = egress();
+    assert_eq!(answer["allow"], false, "{answer}");
+    assert!(text(&answer["reason"]).contains("STOP ALL"), "{answer}");
+    let (status, state) = hub.call("POST", "/v1/plaza/resume", None);
+    assert_eq!(status, 200, "{state}");
+    assert!(!text(&egress()["reason"]).contains("STOP ALL"));
+}
+
+#[test]
 fn a_task_from_before_projects_moves_into_one_with_its_links() {
     let scratch = Scratch::new("project-gate");
     let hub = Hub::start(&scratch, None, None);

@@ -129,6 +129,12 @@ impl Hub {
         )
     }
 
+    /// A call from the agent gateway itself (vsockd's internal routes), with the machine's internal token.
+    #[allow(dead_code)] // not every test binary that includes `common` uses it
+    pub fn internal(&self, path: &str, body: Value) -> (u16, Value) {
+        self.send("POST", path, &[("x-apz-internal", &self.token)], Some(body))
+    }
+
     /// Agent `cid`'s VM says the work item `work` ended as `status` (`done`, `failed`, `stopped`), with `summary`.
     pub fn work_done(&self, cid: u64, work: u64, status: &str, summary: &str) {
         let message =

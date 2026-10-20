@@ -468,6 +468,16 @@ pub(crate) fn unknown_agent_verdict() -> EgressVerdict {
 /// refuse it too. The laws only forbid here: a permit is not required (see the report on
 /// `Laws::refuse_op`).
 fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
+    // STOP ALL holds the plaza: no agent or sandbox reaches the internet until the owner resumes.
+    // This is checked first, so neither the laws nor the blocklist are asked while it holds.
+    if app.control.paused() {
+        return json!({
+            "allow": false,
+            "law": null,
+            "reason": "the plaza is stopped (STOP ALL)",
+            "intercept": false,
+        });
+    }
     // A sandbox's CID is a party of its own: the laws see the role `sandbox`, and it never intercepts.
     let sandbox = crate::e2b::sandbox_by_cid(app, cid);
     // A CID that is neither an agent nor a sandbox is refused before the laws are asked.
@@ -477,6 +487,19 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
             "allow": verdict.allow,
             "law": verdict.law,
             "reason": verdict.reason,
+            "intercept": false,
+        });
+    }
+    // An agent the owner holds (on the bench, or on a paused project) does not reach the internet either.
+    let held = app
+        .agents
+        .get(cid)
+        .and_then(|agent| crate::membership::held(app, &agent));
+    if let Some(why) = held {
+        return json!({
+            "allow": false,
+            "law": null,
+            "reason": why,
             "intercept": false,
         });
     }
@@ -935,9 +958,15 @@ fn tool_request(
         .into_iter()
         .map(|t| t.name)
         .collect();
-    // An agent on the bench, or on a paused project, runs no tool (see `membership`). Then the plaza's laws and
-    // the grant (see `gate_call`).
-    let verdict = match crate::membership::held(app, agent) {
+    // STOP ALL holds every tool call, also one that was on its way when the owner stopped the plaza (its work's
+    // cancel may not have reached the VM yet). An agent on the bench, or on a paused project, runs no tool either
+    // (see `membership`). Then the plaza's laws and the grant (see `gate_call`).
+    let hold = if app.control.paused() {
+        Some("the plaza is held (STOP ALL); waiting for the owner to resume".to_string())
+    } else {
+        crate::membership::held(app, agent)
+    };
+    let verdict = match hold {
         Some(why) => Err(why),
         None => gate_call(app.laws, cid, &agent.role, &granted, name, input)
             .and_then(|runs| crate::sanctions::suspended(app, cid, name).map_or(Ok(runs), Err)),

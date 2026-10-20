@@ -478,6 +478,30 @@ pub(crate) fn kill_group(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
+/// Sends `signal` (`-TERM`, `-KILL`, …) to the whole process group of a command started in
+/// its own group. A group that is already gone is not an error.
+pub(crate) fn signal_group(child: &std::process::Child, signal: &str) {
+    let _ = Command::new("kill")
+        .args([signal, "--", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Whether any process of the child's group still runs. An exited child is reaped first, so
+/// its own zombie does not count as running.
+pub(crate) fn group_alive(child: &mut std::process::Child) -> bool {
+    let _ = child.try_wait();
+    Command::new("kill")
+        .args(["-0", "--", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

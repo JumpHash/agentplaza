@@ -74,6 +74,23 @@ pub fn stop_all(app: &App, by: &str, reason: &str) -> PlazaState {
             state.cancelled += 1;
         }
     }
+    // Each node's vsockd keeps the egress decisions it allowed for a while, so a stopped agent's next
+    // connection would still pass. They go now, on whichever node runs the agent; the paused check in
+    // the egress answer refuses the re-ask. A remote node answers through its command queue, so this
+    // runs off the owner's request. A node that cannot be reached keeps its decisions until they expire.
+    let cids = app.agents.select(|a| Some(a.cid));
+    let handle = app.handle();
+    std::thread::spawn(move || {
+        let Some(app) = handle.upgrade() else {
+            return;
+        };
+        for cid in cids {
+            let forget = format!("/v1/egress/forget/{cid}");
+            if let Err(err) = crate::fleet::gateway(&app, cid, "POST", &forget, None) {
+                eprintln!("apid: STOP ALL could not clear agent {cid}'s egress decisions: {err}");
+            }
+        }
+    });
     app.control.set(state.clone());
     // Every workstation freezes: input stops, pixel sessions end, shells and runs stop (docs/design/workstations.md).
     crate::stations::freeze_all(app, true, by);

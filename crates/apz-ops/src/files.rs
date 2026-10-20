@@ -216,6 +216,13 @@ pub fn read(root: &Root, path: &str, offset: Option<u64>) -> Result<ReadReply, O
             target.rel
         )));
     }
+    // Only a regular file is opened: a FIFO would wait for a writer, and a device or socket is not a file.
+    if !metadata.is_file() {
+        return Err(OpError::invalid(format!(
+            "{} is not a regular file; a read takes one file",
+            target.rel
+        )));
+    }
     if metadata.len() > MAX_FILE_BYTES {
         return Err(OpError::limit(format!(
             "{} is {} bytes, over the {MAX_FILE_BYTES}-byte cap",
@@ -290,6 +297,12 @@ pub fn write(
         Ok(metadata) if metadata.is_dir() => {
             return Err(OpError::invalid(format!(
                 "{} is a directory; a write takes one file",
+                target.rel
+            )));
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(OpError::invalid(format!(
+                "{} is not a regular file; a write takes one file",
                 target.rel
             )));
         }
@@ -902,5 +915,32 @@ mod tests {
         assert!(search(&root, "needle", None, Some(201)).is_err());
         assert!(search(&root, "needle", None, Some(0)).is_err());
         assert!(search(&root, "", None, None).is_err());
+    }
+
+    // The test makes a FIFO with mkfifo, so it runs on unix only. A read that opened the FIFO would wait for a
+    // writer, so the read runs on a thread and the test waits on it with a bound.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_at_once_and_never_opened() {
+        let (dir, root) = scratch("fifo");
+        let made = std::process::Command::new("mkfifo")
+            .arg(dir.join("pipe"))
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success(), "mkfifo made the FIFO");
+        let (done, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(read(&root, "pipe", None).map(|_| ()));
+        });
+        let reply = answer
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the read is refused without waiting for a writer");
+        match reply {
+            Err(OpError::InvalidInput(reason)) => {
+                assert!(reason.contains("not a regular file"), "{reason}");
+            }
+            Err(other) => panic!("expected a refusal, got {other}"),
+            Ok(()) => panic!("a FIFO was read"),
+        }
     }
 }
