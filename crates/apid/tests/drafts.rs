@@ -59,7 +59,12 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
             }] });
             (200, runs.to_string())
         } else if method == "POST" && path.starts_with("/v1/runs") {
-            (200, json!({ "id": "r2", "cids": [SPAWNED_QA] }).to_string())
+            // noded answers a new run with its view: each VM with the CID it gave it.
+            (
+                200,
+                json!({ "id": "r2", "vms": [{ "id": 0, "guest_cid": SPAWNED_QA, "state": "running" }] })
+                    .to_string(),
+            )
         } else {
             (200, "{}".into())
         }

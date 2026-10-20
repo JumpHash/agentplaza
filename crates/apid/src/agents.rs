@@ -1266,10 +1266,32 @@ pub fn spawn_agents(
             if status >= 300 {
                 return Err(format!("noded: status {status}: {value}"));
             }
-            for _ in 0..count {
-                app.spawned
-                    .expect(role, model.map(str::to_string), project.map(str::to_string));
+            // Each new VM's first hello is matched by the CID noded gave it, never by the role it claims.
+            let cids: Vec<u64> = value["vms"]
+                .as_array()
+                .map(|vms| {
+                    vms.iter()
+                        .filter_map(|vm| vm["guest_cid"].as_u64())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if cids.len() != count as usize {
+                eprintln!(
+                    "apid: noded named {} CID(s) for {count} spawned agent(s); the others run with their fleet role",
+                    cids.len()
+                );
             }
+            for &cid in &cids {
+                app.spawned.expect_cid(
+                    cid,
+                    role,
+                    model.map(str::to_string),
+                    project.map(str::to_string),
+                );
+            }
+            // The run's CIDs beside noded's run view, for the callers that record who was spawned.
+            let mut value = value;
+            value["cids"] = json!(cids);
             Ok(value)
         }
         Err(e) => Err(format!("noded: {e}")),

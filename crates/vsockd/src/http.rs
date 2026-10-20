@@ -11,10 +11,11 @@
 //! | `POST /v1/agents/{cid}/stop` | `{reason?}` → `{cid, stopped, calls}` or `{cid, stopped: false, reason}` |
 //!
 //! A CID the relay does not serve is 404; a served CID with no session, 409. A
-//! tool the agent's role does not grant is 403 `{ok: false, output}` and never
-//! reaches the guest; an agent that does not answer in time is 504. A CID path
-//! segment below 3 is 400: CIDs 0 to 2 are the hypervisor, local and host, never
-//! a guest.
+//! tool call an agent makes is forwarded to the hub, which decides from the role
+//! it recorded at spawn whether the tool is granted; the relay passes the hub's
+//! answer on and never checks a role itself. An agent that does not answer in
+//! time is 504. A CID path segment below 3 is 400: CIDs 0 to 2 are the
+//! hypervisor, local and host, never a guest.
 //!
 //! With `--internal-token-file`, every route but `GET /healthz` needs the
 //! machine's internal token (`x-apz-internal`), as the node daemons' APIs do.
@@ -443,7 +444,7 @@ mod tests {
             status_json(&surface, 42),
             concat!(
                 r#"{"node":{"cids":[10,11],"port":5000,"uptime_s":42,"max_sessions":64,"keepalive_idle_s":300},"#,
-                r#""agents":[{"cid":10,"role":"builder","connected_at_ms":1700000000250,"last_heartbeat_ms":1700000000250,"busy":false,"calls":2}],"#,
+                r#""agents":[{"cid":10,"role":"","claimed_role":"builder","connected_at_ms":1700000000250,"last_heartbeat_ms":1700000000250,"busy":false,"calls":2}],"#,
                 r#""sessions_active":1,"cids":[10,11]}"#,
             )
         );

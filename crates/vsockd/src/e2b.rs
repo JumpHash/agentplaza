@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -31,6 +32,9 @@ const ENVD_PORT: u32 = 49983;
 const MAX_HEAD: usize = 16 * 1024;
 /// A client must send its whole head within this long.
 const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connections served at once, relays included. One more is answered 503 before a thread is
+/// started for it, so a flood of clients cannot start threads without end.
+const MAX_PENDING: usize = 64;
 /// A relay is closed after this long with no bytes in either direction.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// The muxer answers `CONNECT` at once; a guest that does not accept the port is reset.
@@ -140,19 +144,62 @@ impl Drop for Slot {
     }
 }
 
-/// Accepts E2B connections on `listener` until a stop request, each served on its own thread.
+/// A place among the connections the gateway serves at once, given back when the guard drops.
+struct Permit(Arc<AtomicUsize>);
+
+impl Permit {
+    /// A place for one more connection, or `None` when [`MAX_PENDING`] are taken.
+    fn take(pending: &Arc<AtomicUsize>) -> Option<Self> {
+        pending
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+                (taken < MAX_PENDING).then_some(taken + 1)
+            })
+            .ok()
+            .map(|_| Self(Arc::clone(pending)))
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Answers a connection that has no place with 503, then closes it. The write is bounded, so a
+/// client that is not reading cannot hold up the accept loop.
+fn turn_away(client: &mut TcpStream) {
+    let _ = client.set_write_timeout(Some(ACCEPT_POLL));
+    let _ = client.write_all(
+        b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+    );
+}
+
+/// Accepts E2B connections on `listener` until a stop request, each served on its own thread. A
+/// connection with no place among [`MAX_PENDING`] is turned away before its thread is started.
 pub fn serve(listener: TcpListener, gateway: Arc<Gateway>) {
     if let Err(err) = listener.set_nonblocking(true) {
         eprintln!("vsockd: e2b cannot poll its listener: {err}");
         return;
     }
+    let pending = Arc::new(AtomicUsize::new(0));
     while !sys::shutdown_requested() {
         match listener.accept() {
-            Ok((client, _)) => {
+            Ok((mut client, _)) => {
                 // A blocking socket again: the accepted one may inherit the listener's mode.
                 let _ = client.set_nonblocking(false);
+                let Some(permit) = Permit::take(&pending) else {
+                    turn_away(&mut client);
+                    continue;
+                };
                 let gateway = Arc::clone(&gateway);
-                thread::spawn(move || serve_conn(client, &gateway));
+                let started = thread::Builder::new().spawn(move || {
+                    let _permit = permit;
+                    serve_conn(client, &gateway);
+                });
+                if let Err(err) = started {
+                    // The failed spawn dropped its closure, and with it the place and the connection.
+                    eprintln!("vsockd: e2b cannot start a thread: {err}");
+                }
             }
             Err(err) => {
                 if err.kind() != io::ErrorKind::WouldBlock {
@@ -184,7 +231,7 @@ fn handle(
     gateway: &Arc<Gateway>,
     audit: &mut Audit,
 ) -> Result<(), Refusal> {
-    let (head, rest) = read_head(client)?;
+    let (head, rest) = read_head(client, Instant::now() + HEAD_TIMEOUT)?;
     let parsed = parse_head(&head)?;
     audit.sandbox.clone_from(&parsed.sandbox);
     audit.method.clone_from(&parsed.method);
@@ -194,7 +241,8 @@ fn handle(
         eprintln!("vsockd: e2b sandbox lookup failed: {err}");
         refuse(502, "sandbox lookup failed")
     })?;
-    let sandbox = found.ok_or(refuse(404, "unknown sandbox"))?;
+    // An unknown sandbox gets the same answer as a wrong token, so the gateway does not say which ids exist.
+    let sandbox = found.ok_or(refuse(401, "wrong or missing access token"))?;
     if !sandbox.access_token.is_empty() && !token_ok(&parsed.tokens, &sandbox.access_token) {
         return Err(refuse(401, "wrong or missing access token"));
     }
@@ -349,9 +397,24 @@ struct Parsed {
     forward: String,
 }
 
-/// Reads the request head up to its blank line. Returns the head and whatever body bytes came with
-/// it. A head that does not end within [`MAX_HEAD`] bytes is refused with 431.
-fn read_head(client: &mut impl Read) -> Result<(String, Vec<u8>), Refusal> {
+/// A client connection whose reads can be bounded in time, so that a whole head is read against
+/// one deadline rather than a timeout per read.
+trait Bounded: Read {
+    /// Makes the next read wait no longer than `limit`.
+    fn bound_reads(&mut self, limit: Duration) -> io::Result<()>;
+}
+
+impl Bounded for TcpStream {
+    fn bound_reads(&mut self, limit: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(limit))
+    }
+}
+
+/// Reads the request head up to its blank line, all of it by `deadline`. Returns the head and
+/// whatever body bytes came with it. A head that does not end within [`MAX_HEAD`] bytes is refused
+/// with 431, and one not complete by `deadline` with 408. Each read waits no longer than what is
+/// left of the deadline, so a client sending a byte at a time cannot hold the head open.
+fn read_head(client: &mut impl Bounded, deadline: Instant) -> Result<(String, Vec<u8>), Refusal> {
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = vec![0u8; 1024];
     loop {
@@ -369,6 +432,13 @@ fn read_head(client: &mut impl Read) -> Result<(String, Vec<u8>), Refusal> {
         }
         if buf.len() >= MAX_HEAD {
             return Err(refuse(431, "request head too large"));
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(refuse(408, "request head timed out"));
+        }
+        if client.bound_reads(left).is_err() {
+            return Err(refuse(400, "incomplete request head"));
         }
         match read_chunk(client, &mut chunk) {
             Some(n) => buf.extend_from_slice(&chunk[..n]),
@@ -634,10 +704,16 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use apz_uds::UnixListener;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const TOKEN: &str = "gateway-test-token";
     const STREAM_CHUNKS: [&str; 3] = ["data: one\n\n", "data: two\n\n", "data: three\n\n"];
+
+    /// A head read from memory has no socket whose reads could be bounded.
+    impl Bounded for &[u8] {
+        fn bound_reads(&mut self, _limit: Duration) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     /// A fresh directory for one test's sockets and token file.
     fn scratch(name: &str) -> PathBuf {
@@ -893,7 +969,7 @@ mod tests {
             );
         }
 
-        // The original test: no sandbox id is answered 400, an unknown one 404, a gone VM 502.
+        // No sandbox id is answered 400, an unknown one 401 (as a wrong token is), a gone VM 502.
         {
             let rig = start_rig("unknown");
             let none = ask(rig.port, "GET / HTTP/1.1\r\nHost: 127.0.0.1:19080\r\n\r\n");
@@ -907,7 +983,7 @@ mod tests {
                 rig.port,
                 "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: nope\r\n\r\n",
             );
-            assert_eq!(status_of(&unknown), "404", "{unknown}");
+            assert_eq!(status_of(&unknown), "401", "{unknown}");
             let no_vm = ask(
                 rig.port,
                 "GET /unary HTTP/1.1\r\nE2b-Sandbox-Id: sbx-gone\r\n\r\n",
@@ -970,12 +1046,38 @@ mod tests {
 
     #[test]
     fn e2b_refuses_a_head_over_16_kib_and_reads_one_under() {
+        let far = Instant::now() + HEAD_TIMEOUT;
         let big = format!("GET / HTTP/1.1\r\nX-Pad: {}\r\n\r\n", "a".repeat(MAX_HEAD));
-        assert_eq!(read_head(&mut big.as_bytes()).unwrap_err().status, 431);
+        assert_eq!(read_head(&mut big.as_bytes(), far).unwrap_err().status, 431);
         let small = "GET / HTTP/1.1\r\nHost: x\r\n\r\nbody";
-        let (head, rest) = read_head(&mut small.as_bytes()).unwrap();
+        let (head, rest) = read_head(&mut small.as_bytes(), far).unwrap();
         assert_eq!(head, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
         assert_eq!(rest, b"body".to_vec());
+        let unfinished = "GET / HTTP/1.1\r\nHost: x\r\n";
+        assert_eq!(
+            read_head(&mut unfinished.as_bytes(), Instant::now())
+                .unwrap_err()
+                .status,
+            408,
+            "a head not complete by its deadline is refused"
+        );
+    }
+
+    #[test]
+    fn e2b_admits_at_most_64_connections_at_once() {
+        let pending = Arc::new(AtomicUsize::new(0));
+        let held: Vec<Permit> = (0..MAX_PENDING)
+            .map(|_| Permit::take(&pending).expect("a place"))
+            .collect();
+        assert!(
+            Permit::take(&pending).is_none(),
+            "the 65th connection is turned away"
+        );
+        drop(held);
+        assert!(
+            Permit::take(&pending).is_some(),
+            "a returned place is usable again"
+        );
     }
 
     #[test]

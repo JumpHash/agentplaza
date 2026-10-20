@@ -91,9 +91,12 @@ impl Task {
 pub struct Agent {
     /// The guest CID the agent connected as.
     pub cid: u64,
-    /// The role the hub accepted at the handshake.
+    /// The role the hub named for the agent; empty until it has.
     #[serde(default)]
     pub role: String,
+    /// The role the guest claimed in its hello: a claim, never a grant.
+    #[serde(default)]
+    pub claimed_role: String,
     /// When the session connected, in milliseconds since the Unix epoch.
     #[serde(default)]
     pub connected_at_ms: u64,

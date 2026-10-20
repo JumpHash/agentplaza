@@ -33,9 +33,11 @@ pub struct Registry {
     pub models: BTreeMap<u64, String>,
 }
 
-/// A spawned run still waiting for its first hello: its role, model override and project.
+/// A spawned run still waiting for its first hello: its CID when noded has named it already (a fork), its
+/// role, model override and project.
 #[derive(Debug, Clone)]
 struct Pending {
+    cid: u64,
     role: String,
     model: Option<String>,
     project: Option<String>,
@@ -108,13 +110,19 @@ impl Store {
         fleet.insert(cid, role.to_owned()).as_deref() != Some(role)
     }
 
-    /// The operator asked noded for one more run of `role`; its first hello of that role is it. A
-    /// `project` is the one its agent joins at that hello.
-    pub fn expect(&self, role: &str, model: Option<String>, project: Option<String>) {
+    /// Noded booted a spawn (an operator's run, or a fork) as guest `cid`: that guest's first hello is this
+    /// spawn, matched by its CID and never by the role a guest claims. A `project` is the one its agent joins
+    /// at that hello.
+    pub fn expect_cid(&self, cid: u64, role: &str, model: Option<String>, project: Option<String>) {
+        self.push_pending(cid, role, model, project);
+    }
+
+    fn push_pending(&self, cid: u64, role: &str, model: Option<String>, project: Option<String>) {
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push_back(Pending {
+                cid,
                 role: role.to_owned(),
                 model,
                 project,
@@ -123,25 +131,28 @@ impl Store {
 
     /// A session said hello. A first hello of a pending spawn is recorded; returns the model
     /// override to apply to the agent, and the project it was spawned for (on that first hello only).
-    pub fn hello(&self, cid: u64, role: &str) -> Arrival {
+    pub fn hello(&self, cid: u64, _claimed_role: &str) -> Arrival {
         let known = self.guard().spawned.iter().any(|entry| entry.cid == cid);
         let mut project = None;
         if !known {
             let claimed = {
                 let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-                let index = pending.iter().position(|wanted| wanted.role == role);
+                // The spawn noded named with this CID; the role in the hello plays no part.
+                let index = pending.iter().position(|wanted| wanted.cid == cid);
                 index.and_then(|i| pending.remove(i))
             };
             if let Some(Pending {
+                role: spawned_role,
                 model,
                 project: wanted,
                 ..
             }) = claimed
             {
                 project = wanted;
+                // The plaza's role for the spawn, never the role the guest claims in its hello.
                 let entry = Entry {
                     cid,
-                    role: role.to_owned(),
+                    role: spawned_role,
                     model: model.clone(),
                     name: String::new(),
                 };
@@ -269,7 +280,7 @@ mod snapshot_tests {
         let dir = std::env::temp_dir().join(format!("apid-spawned-snap-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::load(dir.join("spawned.json"));
-        store.expect("worker", Some("model-a".into()), None);
+        store.expect_cid(42, "worker", Some("model-a".into()), None);
         store.hello(42, "worker");
         store.set_name(42, "Ada").unwrap();
         let json = store.snapshot();
@@ -299,7 +310,7 @@ mod tests {
         assert!(!store.note_fleet_role(200, "architect"));
         assert_eq!(store.role_of(200).as_deref(), Some("architect"));
         // An operator spawn's recorded role wins over the fleet's.
-        store.expect("builder", None, None);
+        store.expect_cid(201, "builder", None, None);
         store.hello(201, "builder");
         store.note_fleet_role(201, "qa");
         assert_eq!(store.role_of(201).as_deref(), Some("builder"));
@@ -311,8 +322,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("apid-spawned-project-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::load(dir.join("spawned.json"));
-        store.expect("builder", None, Some("pr2".into()));
-        store.expect("qa", None, None);
+        store.expect_cid(301, "builder", None, Some("pr2".into()));
+        store.expect_cid(300, "qa", None, None);
         assert_eq!(
             store.hello(300, "qa"),
             Arrival::default(),
@@ -328,6 +339,39 @@ mod tests {
     }
 
     #[test]
+    fn a_fork_is_matched_by_its_cid_and_a_role_never_takes_it() {
+        let dir = std::env::temp_dir().join(format!("apid-spawned-fork-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::load(dir.join("spawned.json"));
+        store.expect_cid(501, "builder", Some("model-b".into()), None);
+        assert_eq!(
+            store.hello(502, "builder"),
+            Arrival::default(),
+            "another builder's hello does not take a fork that was named by CID"
+        );
+        assert_eq!(
+            store.hello(501, "builder").model.as_deref(),
+            Some("model-b"),
+            "the fork's own hello takes its spawn"
+        );
+        // A hello that names another CID, or claims any role, takes no pending spawn.
+        store.expect_cid(503, "orchestrator", Some("model-c".into()), None);
+        assert_eq!(
+            store.hello(504, "orchestrator"),
+            Arrival::default(),
+            "a guest claiming the pending role with another CID gets nothing"
+        );
+        assert_eq!(store.role_of(504), None);
+        assert_eq!(
+            store.hello(503, "builder").model.as_deref(),
+            Some("model-c"),
+            "the spawn's own CID takes it whatever role its hello claims"
+        );
+        assert_eq!(store.role_of(503).as_deref(), Some("orchestrator"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn registry_survives_a_round_trip() {
         let dir = std::env::temp_dir().join(format!("apid-spawned-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -335,7 +379,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let store = Store::load(path.clone());
-        store.expect("worker", Some("model-a".into()), None);
+        store.expect_cid(42, "worker", Some("model-a".into()), None);
         assert_eq!(store.hello(42, "worker").model.as_deref(), Some("model-a"));
         store.set_name(42, "Ada").unwrap();
         store.set_model(7, Some("model-b")).unwrap();
