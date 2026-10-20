@@ -1,0 +1,6 @@
+# The Rust the workspace builds with. The CI image (.github/ci/Dockerfile) and the Windows and
+# macOS jobs install this same version, so change them together. Extra targets (wasm32, the
+# cross targets) are installed where they are used, not here, so a plain checkout downloads none.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]

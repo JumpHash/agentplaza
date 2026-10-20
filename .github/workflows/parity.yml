@@ -26,7 +26,8 @@ jobs:
       THEMES: ${{ inputs.themes }}
       SCREENS: ${{ inputs.screens }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { persist-credentials: false }
       - name: CI image
         run: .github/ci/image.sh
       - name: The web console
@@ -61,7 +62,7 @@ jobs:
       - name: Remove the hub state (it holds the owner token)
         if: always()
         run: rm -rf parity-out/state
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: parity-report

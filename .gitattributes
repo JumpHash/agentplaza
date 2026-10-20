@@ -1,0 +1,14 @@
+# Text is stored and checked out with LF on every platform, so builds and hashes match across the
+# Windows, macOS and Linux runners. PowerShell scripts keep CRLF for Windows; binaries are never touched.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.webp binary
+*.glb binary
+*.woff2 binary
+*.ttf binary
+*.ico binary
+*.icns binary
+*.wasm binary
+# Captured SSE frame logs are tracked with their CRLF bytes; the eol rule would rewrite them.
+*-sse-frames.txt -text

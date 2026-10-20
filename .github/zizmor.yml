@@ -1,0 +1,17 @@
+# zizmor (the deep checks' workflow audit): the findings below are by design, each with its reason.
+rules:
+  # The pull request's results and the API report are posted by workflow_run jobs. They check out main's code
+  # (never the pull request's), read the gate run's artifacts as data, and write only GitHub's own metadata of
+  # that run to the environment, checked against its expected shape first.
+  dangerous-triggers:
+    ignore:
+      - api-report.yml
+      - check-results.yml
+  github-env:
+    ignore:
+      - api-report.yml
+      - check-results.yml
+  # The API report's publish job pushes the report to gh-pages, so its checkouts keep the token.
+  artipacked:
+    ignore:
+      - api-report.yml

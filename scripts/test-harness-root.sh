@@ -9,9 +9,19 @@ cd "$(dirname "$0")/.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-cargo test --offline -p agent-harness --no-run --message-format=json >"$work/build.json"
-exe=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "agent-harness" and (.target.kind | index("bin"))) | .executable' "$work/build.json" | tail -n 1)
-[ -n "$exe" ] || { echo "no agent-harness test executable" >&2; exit 1; }
+# APZ_HARNESS_TEST_EXE: a test executable built elsewhere (CI builds it in its image and runs it here, since a
+# container's seccomp profile refuses the user namespace).
+if [ -n "${APZ_HARNESS_TEST_EXE:-}" ]; then
+  exe=$APZ_HARNESS_TEST_EXE
+else
+  cargo test --offline -p agent-harness --no-run --message-format=json >"$work/build.json"
+  exe=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "agent-harness" and (.target.kind | index("bin"))) | .executable' "$work/build.json" | tail -n 1)
+fi
+[ -n "$exe" ] && [ -x "$exe" ] || { echo "no agent-harness test executable" >&2; exit 1; }
+unshare --map-auto --map-root-user true 2>/dev/null || {
+  echo "this machine gives no user namespace with subordinate ids (unshare --map-auto; /etc/subuid and /etc/subgid for $(id -un))" >&2
+  exit 1
+}
 
 cp /etc/passwd "$work/passwd"
 cp /etc/group "$work/group"

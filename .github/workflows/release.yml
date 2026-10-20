@@ -25,6 +25,10 @@ on:
         description: "Release this version (x.y.z, above the last release); empty: the automatic one"
         type: string
         default: ""
+      skip_nightly_gate:
+        description: "A hand run only: publish even when the last nightly run on main did not pass"
+        type: boolean
+        default: false
 
 # One release at a time, in push order; a newer push waits rather than cancelling a release.
 concurrency:
@@ -39,6 +43,33 @@ permissions:
 # runners) → publish. macOS may be switched off (APZ_MACOS=off), and Windows arm64 is on only with
 # APZ_WINDOWS_ARM64=on (its runner needs LLVM and the VS ARM64 tools): a release ships without them.
 jobs:
+  # Publishing waits for this: the last completed nightly run on main (nightly.yml tests every
+  # platform) must have passed. Packaging does not wait; a hand run may skip the check.
+  nightly-green:
+    name: Nightly is green
+    runs-on: [self-hosted, light]
+    timeout-minutes: 3
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SKIP: ${{ inputs.skip_nightly_gate }}
+    steps:
+      - name: The last completed nightly run on main
+        run: |
+          if [ "$SKIP" = true ]; then
+            echo "::notice::skip_nightly_gate is set: publishing without the nightly check (a hand run)."
+            exit 0
+          fi
+          line=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?branch=main&status=completed&per_page=1" --jq '.workflow_runs[0] | .conclusion + " " + .html_url')
+          echo "latest completed nightly on main: $line"
+          conclusion=${line%% *}
+          url=${line#* }
+          if [ "$conclusion" != success ]; then
+            echo "::error::the latest completed nightly run on main did not pass (conclusion: ${conclusion:-none}): ${url:-no run found}"
+            exit 1
+          fi
+          echo "nightly is green: $url"
   version:
     name: Version
     # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
@@ -50,8 +81,8 @@ jobs:
       previous: ${{ steps.next.outputs.previous }}
       source: ${{ steps.next.outputs.source }}
     steps:
-      - uses: actions/checkout@v5
-        with: { fetch-depth: 0 }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { fetch-depth: 0, persist-credentials: false }
       # A hand run always releases.
       - id: changes
         env:
@@ -78,76 +109,88 @@ jobs:
     needs: version
     if: needs.version.outputs.release == 'true'
     uses: ./.github/workflows/console.yml
+  # linux.yml and raspberry-pi.yml read no secrets, so they get none.
   linux:
     name: Linux
     needs: [version, guest, relay, console]
     uses: ./.github/workflows/linux.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true, tests: false }
-    secrets: inherit
   macos:
     name: macOS
     needs: [version, guest, relay, console]
     uses: ./.github/workflows/macos.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true, tests: false }
-    secrets: inherit
+    secrets:
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}
   windows:
     name: Windows
     needs: [version, guest, relay, console]
     uses: ./.github/workflows/windows.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true, tests: false }
-    secrets: inherit
+    secrets:
+      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
   # Made from the Linux arm64 build.
   raspberry-pi:
     name: Raspberry Pi
     needs: [version, linux]
     uses: ./.github/workflows/raspberry-pi.yml
     with: { version: "${{ needs.version.outputs.version }}", package: true }
-    secrets: inherit
 
   publish:
     name: Publish to GitHub
-    needs: [version, linux, macos, windows, raspberry-pi, console]
-    # Every platform passed; macOS may also have been switched off.
+    needs: [version, linux, macos, windows, raspberry-pi, console, nightly-green]
+    # Every platform passed; macOS may also have been switched off. The nightly gate must have passed too.
     if: >-
-      !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' &&
-      needs.raspberry-pi.result == 'success' && needs.console.result == 'success' &&
+      !cancelled() && needs.nightly-green.result == 'success' && needs.linux.result == 'success' &&
+      needs.windows.result == 'success' && needs.raspberry-pi.result == 'success' &&
+      needs.console.result == 'success' &&
       (needs.macos.result == 'success' || needs.macos.result == 'skipped')
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 15
     permissions:
       contents: write
       actions: write
+      # The release files' build provenance (a Sigstore-signed attestation, kept by GitHub).
+      id-token: write
+      attestations: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
       PREVIOUS: ${{ needs.version.outputs.previous }}
       SOURCE: ${{ needs.version.outputs.source }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v5
-        with: { fetch-depth: 0 }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { fetch-depth: 0, persist-credentials: false }
       # First, so the closing clean-up has it even when a restore below fails.
       - name: CI image
         run: .github/ci/image.sh
       # The platform jobs leave their packages in the cache under this run's id (no artifact storage).
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with: { path: out-linux-x86_64, key: "pkg-linux-x86_64-${{ github.run_id }}", fail-on-cache-miss: true }
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with: { path: out-linux-aarch64, key: "pkg-linux-aarch64-${{ github.run_id }}", fail-on-cache-miss: true }
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with: { path: out-raspberrypi, key: "pkg-raspberrypi-${{ github.run_id }}", fail-on-cache-miss: true }
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: needs.macos.result == 'success'
         with: { path: out-macos, key: "pkg-macos-${{ github.run_id }}", fail-on-cache-miss: true }
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with: { path: out-windows-x64, key: "pkg-windows-x64-${{ github.run_id }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: vars.APZ_WINDOWS_ARM64 == 'on'
         with: { path: out-windows-arm64, key: "pkg-windows-arm64-${{ github.run_id }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
-      - name: Gather and checksum
+      # The SBOM (CycloneDX: every crate the workspace builds, with versions and licences) ships with the packages.
+      - name: Gather, SBOM and checksum
         run: |
           rm -rf dist && mkdir dist
           cp -- out-*/* dist/
+          .github/ci/in-image.sh "cargo metadata --format-version 1 --locked --all-features > metadata.json"
+          python3 .github/ci/sbom.py "$VERSION" < metadata.json > "dist/agentplaza-$VERSION-sbom.cdx.json"
           cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with: { subject-path: "dist/*" }
       - name: Changelog
         # Download rows whose files this release does not have (macOS switched off) are dropped.
         run: |

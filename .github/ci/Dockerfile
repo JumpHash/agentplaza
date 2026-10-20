@@ -13,7 +13,8 @@
 # arm64's included, are built there). On the arm64 runners it builds and tests natively and has none
 # of those.
 ARG TARGETARCH
-FROM ubuntu:22.04 AS common
+# The base image by digest (the multi-architecture index of ubuntu:22.04), so a rebuild gets the same one.
+FROM ubuntu:22.04@sha256:0a9887931b0e38af2e3487ed39e29436b0535c4f3f52e57745baaf79d1898956 AS common
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN case "$(dpkg --print-architecture)" in \
@@ -61,11 +62,18 @@ RUN [ "$(dpkg --print-architecture)" = amd64 ] || exit 0; \
  && appimagetool --version
 ENV APZ_APPIMAGE_RUNTIMES=/opt/appimage-runtime
 
-# The GitHub CLI, for the release job.
+# The GitHub CLI, for the release job. Every download below is checked against its published SHA-256
+# before it is unpacked or run; a new version changes the version and its sums together.
 ENV GH_VERSION=2.89.0
 RUN arch="$(dpkg --print-architecture)" \
- && curl -fsSL "https://github.com/cli/cli/releases/download/v$GH_VERSION/gh_${GH_VERSION}_linux_${arch}.tar.gz" \
-      | tar -xz -C /usr/local --strip-components=1 "gh_${GH_VERSION}_linux_${arch}/bin/gh" \
+ && case "$arch" in \
+      amd64) sum=d0422caade520530e76c1c558da47daebaa8e1203d6b7ff10ad7d6faba3490d8 ;; \
+      arm64) sum=9e64a623dfc242990aa5d9b3f507111149c4282f66b68eaad1dc79eeb13b9ce5 ;; \
+    esac \
+ && curl -fsSL -o /tmp/gh.tgz "https://github.com/cli/cli/releases/download/v$GH_VERSION/gh_${GH_VERSION}_linux_${arch}.tar.gz" \
+ && echo "$sum  /tmp/gh.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/gh.tgz -C /usr/local --strip-components=1 "gh_${GH_VERSION}_linux_${arch}/bin/gh" \
+ && rm /tmp/gh.tgz \
  && gh --version
 
 ENV RUSTUP_HOME=/usr/local/rustup \
@@ -75,18 +83,40 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PKG_CONFIG_ALLOW_CROSS=1
 # Rust is pinned, so clippy's lints (the pull request gate fails on warnings) change only when this
 # line does. cargo-deny checks advisories, licences and sources (deny.toml).
-ENV RUST_VERSION=1.99.0 CARGO_DENY_VERSION=0.20.2
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION" --component clippy,rustfmt,llvm-tools-preview --no-modify-path \
- && arch="$(uname -m)" \
- && curl -LsSf "https://get.nexte.st/latest/linux$( [ "$arch" = aarch64 ] && echo -arm )" | tar zxf - -C "$CARGO_HOME/bin" \
+ENV RUST_VERSION=1.99.0 RUSTUP_VERSION=1.29.1 NEXTEST_VERSION=0.9.148 SCCACHE_VERSION=0.18.0 CARGO_DENY_VERSION=0.20.2
+RUN arch="$(uname -m)" \
+ && case "$arch" in \
+      x86_64) rustup_sum=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 \
+              nextest_sum=223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc \
+              sccache_sum=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89 \
+              deny_sum=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f ;; \
+      aarch64) rustup_sum=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433 \
+               nextest_sum=81469eb963ef883fd590e60189e77d6aba3d91b418591d3391f50fe3e9480d2b \
+               sccache_sum=2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a \
+               deny_sum=995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d ;; \
+    esac \
+ && curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/rustup-init \
+      "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/$arch-unknown-linux-gnu/rustup-init" \
+ && echo "$rustup_sum  /tmp/rustup-init" | sha256sum -c - \
+ && chmod +x /tmp/rustup-init \
+ && /tmp/rustup-init -y --profile minimal --default-toolchain "$RUST_VERSION" --component clippy,rustfmt,llvm-tools-preview --no-modify-path \
+ && rm /tmp/rustup-init \
+ && curl -fsSL -o /tmp/nextest.tgz \
+      "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$NEXTEST_VERSION/cargo-nextest-$NEXTEST_VERSION-$arch-unknown-linux-gnu.tar.gz" \
+ && echo "$nextest_sum  /tmp/nextest.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/nextest.tgz -C "$CARGO_HOME/bin" \
  && rustup target add aarch64-unknown-linux-gnu wasm32-unknown-unknown \
  && cargo nextest --version \
- && curl -fsSL "https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-$arch-unknown-linux-musl.tar.gz" \
-      | tar -xz -C "$CARGO_HOME/bin" --strip-components=1 "sccache-v0.18.0-$arch-unknown-linux-musl/sccache" \
+ && curl -fsSL -o /tmp/sccache.tgz \
+      "https://github.com/mozilla/sccache/releases/download/v$SCCACHE_VERSION/sccache-v$SCCACHE_VERSION-$arch-unknown-linux-musl.tar.gz" \
+ && echo "$sccache_sum  /tmp/sccache.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/sccache.tgz -C "$CARGO_HOME/bin" --strip-components=1 "sccache-v$SCCACHE_VERSION-$arch-unknown-linux-musl/sccache" \
  && sccache --version \
- && curl -fsSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/cargo-deny-$CARGO_DENY_VERSION-$arch-unknown-linux-musl.tar.gz" \
-      | tar -xz -C "$CARGO_HOME/bin" --strip-components=1 "cargo-deny-$CARGO_DENY_VERSION-$arch-unknown-linux-musl/cargo-deny" \
+ && curl -fsSL -o /tmp/deny.tgz \
+      "https://github.com/EmbarkStudios/cargo-deny/releases/download/$CARGO_DENY_VERSION/cargo-deny-$CARGO_DENY_VERSION-$arch-unknown-linux-musl.tar.gz" \
+ && echo "$deny_sum  /tmp/deny.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/deny.tgz -C "$CARGO_HOME/bin" --strip-components=1 "cargo-deny-$CARGO_DENY_VERSION-$arch-unknown-linux-musl/cargo-deny" \
+ && rm /tmp/nextest.tgz /tmp/sccache.tgz /tmp/deny.tgz \
  && cargo deny --version \
  && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"
 
@@ -98,9 +128,15 @@ RUN cargo install --locked --version "$CARGO_LLVM_COV_VERSION" cargo-llvm-cov \
 
 # Node.js: the web console's build, and JavaScript actions under a local runner (Forgejo / act).
 ENV NODE_VERSION=24.21.0
-RUN arch="$(uname -m)"; [ "$arch" = x86_64 ] && narch=x64 || narch=arm64; \
-    curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$narch.tar.xz" \
-      | tar -xJ -C /usr/local --strip-components=1 \
+RUN arch="$(uname -m)"; \
+    case "$arch" in \
+      x86_64) narch=x64 sum=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 ;; \
+      aarch64) narch=arm64 sum=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 ;; \
+    esac \
+ && curl -fsSL -o /tmp/node.txz "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$narch.tar.xz" \
+ && echo "$sum  /tmp/node.txz" | sha256sum -c - \
+ && tar -xJf /tmp/node.txz -C /usr/local --strip-components=1 \
+ && rm /tmp/node.txz \
  && node --version
 
 # c8, the web console's coverage (coverage.sh): turns the tests' V8 coverage into lcov, pinned.
@@ -112,7 +148,15 @@ RUN npm install -g "c8@$C8_VERSION" && c8 --version
 ENV BRUNO_VERSION=4.2.1 UV_VERSION=0.13.1 SCHEMATHESIS_VERSION=4.31.1 \
     UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_INSTALL_DIR=/opt/uv/python
 RUN npm install -g "@usebruno/cli@$BRUNO_VERSION" && bru --version \
- && curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh \
+ && arch="$(uname -m)" \
+ && case "$arch" in \
+      x86_64) sum=eadd9d27c134ab5ac1ffd4473b97a741407f3ea238288f03121fc4deddf90220 ;; \
+      aarch64) sum=9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59ad14 ;; \
+    esac \
+ && curl -fsSL -o /tmp/uv.tgz "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$arch-unknown-linux-gnu.tar.gz" \
+ && echo "$sum  /tmp/uv.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/uv.tgz -C /usr/local/bin --strip-components=1 "uv-$arch-unknown-linux-gnu/uv" "uv-$arch-unknown-linux-gnu/uvx" \
+ && rm /tmp/uv.tgz \
  && uv tool install --python 3.12 "schemathesis==$SCHEMATHESIS_VERSION" && st --version \
  && chmod -R a+rX /opt/uv
 

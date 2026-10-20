@@ -95,7 +95,8 @@ jobs:
       # emulated, 15 to 50 times slower (natively it needs no more than x86_64).
       APZ_PERF_SLACK: ${{ matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full') && '25' || '' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { persist-credentials: false }
       - name: CI image
         run: .github/ci/image.sh
       # A pull request from a fork builds in its own cache directory, never in the one releases use.
@@ -135,10 +136,13 @@ jobs:
       # The pull request's Tests comment (check-results.yml) is made from these.
       - name: Results for the pull request
         if: always() && inputs.tests
+        env:
+          ARCH_NAME: "${{ matrix.arch == 'aarch64' && 'arm64' || matrix.arch }}"
+          TEST_OUTCOME: "${{ steps.test.outcome }}"
         run: >-
-          python3 .github/ci/results.py results tests "Linux ${{ matrix.arch == 'aarch64' && 'arm64' || matrix.arch }}"
-          --junit target/nextest/ci/junit.xml --part "tests=${{ steps.test.outcome }}"
-      - uses: actions/upload-artifact@v4
+          python3 .github/ci/results.py results tests "Linux $ARCH_NAME"
+          --junit target/nextest/ci/junit.xml --part "tests=$TEST_OUTCOME"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always() && inputs.tests
         with: { name: "results-linux-${{ matrix.arch }}", path: results, retention-days: 7 }
       # The AppImage runs where WebKitGTK is not installed, so its desktop app is built without the webview (its HTML
@@ -146,71 +150,78 @@ jobs:
       - name: Build the AppImage's desktop app (no webview)
         if: inputs.package && matrix.arch == 'x86_64'
         run: >-
-          .github/ci/in-image.sh "cargo build --release --locked ${{ env.TARGET_ARG }} -p agentplaza-desktop --no-default-features &&
+          .github/ci/in-image.sh "CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --release --locked ${{ env.TARGET_ARG }} -p agentplaza-desktop --no-default-features &&
           cp ${{ env.OUT }}/agentplaza-desktop ${{ env.OUT }}/agentplaza-desktop-portable"
+      # Packaged binaries leave out their symbol tables (about half of apid's size); the test builds above keep
+      # theirs. Release builds carry no debug info to split off, and a panic still names its file and line.
       - name: Build the binaries
         if: inputs.package
         run: >-
-          .github/ci/in-image.sh "cargo build --release --locked ${{ env.TARGET_ARG }}
+          .github/ci/in-image.sh "CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --release --locked ${{ env.TARGET_ARG }}
           -p apid -p apz-link -p agentplaza-cli -p agentplaza-desktop -p noded -p vsockd -p vmm -p vmctl"
       - name: The guest (cached by guest.yml)
         if: inputs.package
         id: guest
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/guest/${{ matrix.arch }}
-          key: "guest-${{ matrix.arch }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/agent-harness/**','Cargo.lock') }}"
+          key: "guest-${{ matrix.arch }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/**','Cargo.toml','Cargo.lock','.cargo/**','.github/ci/Dockerfile') }}"
           enableCrossOsArchive: true
       - name: "Build the guest (not cached: a hand run, or guest.yml did not run)"
         if: inputs.package && steps.guest.outputs.cache-hit != 'true'
-        env: { APZ_CI_TARGET: workspace }
-        run: .github/ci/in-image.sh 'APZ_BUSYBOX=$( [ ${{ matrix.arch }} = aarch64 ] && echo $APZ_BUSYBOX_AARCH64 ) scripts/mk-guest.sh ${{ matrix.arch }}'
+        env: { APZ_CI_TARGET: workspace, ARCH: "${{ matrix.arch }}" }
+        run: .github/ci/in-image.sh "APZ_BUSYBOX=\$( [ $ARCH = aarch64 ] && echo \$APZ_BUSYBOX_AARCH64 ) scripts/mk-guest.sh $ARCH"
       - name: The relay binaries (both architectures, from the relay job)
         if: inputs.package
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with: { path: relay, key: "mcp-relay-x86_64-aarch64-${{ github.sha }}", fail-on-cache-miss: true }
       - name: The web console (from the console job)
         if: inputs.package
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with: { path: apps/web/dist, key: "console-${{ github.sha }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
       - name: Stage and package
         if: inputs.package
+        env:
+          ARCH: "${{ matrix.arch }}"
+          APPIMAGE_DESKTOP: "${{ matrix.arch == 'x86_64' && format('{0}/agentplaza-desktop-portable', env.OUT) || '' }}"
         run: |
-          .github/ci/in-image.sh "APZ_RELAY_DIR=relay packaging/scripts/stage.sh ${{ env.TRIPLE }} ${{ env.OUT }} stage \"\$VERSION\" &&
-            APZ_APPIMAGE_DESKTOP=${{ matrix.arch == 'x86_64' && format('{0}/agentplaza-desktop-portable', env.OUT) || '' }} packaging/linux/build.sh stage \"\$VERSION\" ${{ matrix.arch }} out-linux-${{ matrix.arch }}"
-          mkdir -p stage-out && tar -czf stage-out/stage-linux-${{ matrix.arch }}.tgz stage
+          .github/ci/in-image.sh "APZ_RELAY_DIR=relay packaging/scripts/stage.sh $TRIPLE $OUT stage \"\$VERSION\" &&
+            APZ_APPIMAGE_DESKTOP=$APPIMAGE_DESKTOP packaging/linux/build.sh stage \"\$VERSION\" $ARCH out-linux-$ARCH"
+          mkdir -p stage-out && tar -czf stage-out/stage-linux-$ARCH.tgz stage
       - name: Install and run on Ubuntu 24.04, Debian 12, Fedora 42, Arch; the AppImage on Ubuntu 22.04
         if: inputs.package
+        env:
+          ARCH: "${{ matrix.arch }}"
         run: |
           # arm64 packages run under qemu: only where the runner has it registered (binfmt_misc).
-          if [ ${{ matrix.arch }} = aarch64 ] && [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
-            echo "::notice::arm64 install checks skipped: the runner has no qemu-aarch64 binfmt handler"; exit 0
+          if [ "$ARCH" = aarch64 ] && [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+            echo "::error::arm64 install checks require the qemu-aarch64 binfmt handler"; exit 1
           fi
-          out=$PWD/out-linux-${{ matrix.arch }}
-          plat=$([ ${{ matrix.arch }} = x86_64 ] && echo linux/amd64 || echo linux/arm64)
-          check='for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done; test -f /usr/share/agentplaza/console/index.html; test -s /usr/share/agentplaza/guest/${{ matrix.arch }}/vmlinux; test -s /usr/share/agentplaza/guest/${{ matrix.arch }}/initrd.gz'
+          out=$PWD/out-linux-$ARCH
+          plat=$([ "$ARCH" = x86_64 ] && echo linux/amd64 || echo linux/arm64)
+          check='for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done; test -f /usr/share/agentplaza/console/index.html; test -s /usr/share/agentplaza/guest/'"$ARCH"'/vmlinux; test -s /usr/share/agentplaza/guest/'"$ARCH"'/initrd.gz'
           # run IMAGE SCRIPT NAME [CHECK]: SCRIPT, then the installed-package checks unless CHECK is "none".
           run() {
             if [ "${4:-}" = none ]; then script=$2; else script="$2 && $check"; fi
             docker run --rm --platform "$plat" -v "$out:/pkgs:ro" "$1" sh -c "$script" > "install-$3.log" 2>&1 \
               && echo "ok   $3" || { echo "FAIL $3"; tail -30 "install-$3.log"; return 1; }
           }
-          run ubuntu:24.04 "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_${{ env.DEB }}.deb" ubuntu & a=$!
-          run debian:bookworm "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_${{ env.DEB }}.deb" debian & b=$!
-          run fedora:42 "dnf install -y -q /pkgs/agentplaza-*.${{ matrix.arch }}.rpm" fedora & c=$!
+          run ubuntu:24.04 "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_$DEB.deb" ubuntu & a=$!
+          run debian:bookworm "apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_$DEB.deb" debian & b=$!
+          run fedora:42 "dnf install -y -q /pkgs/agentplaza-*.$ARCH.rpm" fedora & c=$!
           # The AppImage on the oldest glibc it supports, without FUSE (unpacked to run): the desktop
           # app by default, the command line tool through a link named agentplaza.
-          run ubuntu:22.04 "cd /tmp && cp /pkgs/AgentPlaza-*-linux-${{ matrix.arch }}.AppImage app.AppImage && ln -s app.AppImage agentplaza && export APPIMAGE_EXTRACT_AND_RUN=1 && ./app.AppImage --version && ./agentplaza --version && ./app.AppImage --cli --version" appimage none & d=$!
+          run ubuntu:22.04 "cd /tmp && cp /pkgs/AgentPlaza-*-linux-$ARCH.AppImage app.AppImage && ln -s app.AppImage agentplaza && export APPIMAGE_EXTRACT_AND_RUN=1 && ./app.AppImage --version && ./agentplaza --version && ./app.AppImage --cli --version" appimage none & d=$!
           pids="$a $b $c $d"
-          if [ ${{ matrix.arch }} = x86_64 ]; then
+          if [ "$ARCH" = x86_64 ]; then
             run archlinux:latest "pacman -Sy --noconfirm >/dev/null && pacman -U --noconfirm /pkgs/agentplaza-*-x86_64.pkg.tar.zst" arch & pids="$pids $!"
           fi
           status=0; for p in $pids; do wait $p || status=1; done; exit $status
       # Handed to release.yml's publish job (and, for arm64, raspberry-pi.yml) through the cache.
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: inputs.package
         with: { path: "out-linux-${{ matrix.arch }}", key: "pkg-linux-${{ matrix.arch }}-${{ github.run_id }}" }
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: inputs.package && matrix.arch == 'aarch64'
         with: { path: stage-out, key: "stage-linux-aarch64-${{ github.run_id }}" }
       - name: Clean up

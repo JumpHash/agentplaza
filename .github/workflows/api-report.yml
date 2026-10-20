@@ -58,15 +58,20 @@ jobs:
           set -euo pipefail
           if [ -n "$DISPATCHED" ]; then
             case "$DISPATCHED" in *[!0-9]*) echo "::error::run-id is a number"; exit 1 ;; esac
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DISPATCHED" \
-              --jq '"RUN_ID=\(.id)\nRUN_URL=\(.html_url)\nEVENT=\(.event)\nHEAD_SHA=\(.head_sha)\nCONCLUSION=\(.conclusion)"' >> "$GITHUB_ENV"
-          else
-            printf 'RUN_ID=%s\nRUN_URL=%s\nEVENT=%s\nHEAD_SHA=%s\nCONCLUSION=%s\n' \
-              "$WR_ID" "$WR_URL" "$WR_EVENT" "$WR_SHA" "$WR_CONCLUSION" >> "$GITHUB_ENV"
+            meta=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DISPATCHED" --jq '[.id, .html_url, .event, .head_sha, .conclusion] | map(tostring) | @tsv')
+            IFS=$'\t' read -r WR_ID WR_URL WR_EVENT WR_SHA WR_CONCLUSION <<< "$meta"
           fi
+          # Only GitHub's own metadata of the run goes into the environment, each value in the shape GitHub gives it.
+          bad() { echo "::error::the gate run's $1 is not in the expected form"; exit 1; }
+          [[ "$WR_ID" =~ ^[0-9]+$ ]] || bad id
+          [[ "$WR_SHA" =~ ^[0-9a-f]{40}$ ]] || bad sha
+          [[ "$WR_EVENT" =~ ^[a-z_]+$ ]] || bad event
+          [[ "$WR_URL" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$ ]] || bad url
+          [[ "$WR_CONCLUSION" =~ ^[a-z_]*$ ]] || bad conclusion
+          printf 'RUN_ID=%s\nRUN_URL=%s\nEVENT=%s\nHEAD_SHA=%s\nCONCLUSION=%s\n' "$WR_ID" "$WR_URL" "$WR_EVENT" "$WR_SHA" "$WR_CONCLUSION" >> "$GITHUB_ENV"
       # Main's code: the report builder, the console's tokens and faces.
-      - uses: actions/checkout@v5
-        with: { ref: "${{ github.event.repository.default_branch }}", path: trusted }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { ref: "${{ github.event.repository.default_branch }}", path: trusted, persist-credentials: false }
       # A run whose API tests did not run (nothing they test changed, or it stopped before them) has no results,
       # and an expired one has none left: nothing to publish, and no download error.
       - name: Whether the run has results
@@ -84,7 +89,7 @@ jobs:
         id: data
         if: steps.has.outputs.found == 'true'
         continue-on-error: true
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with: { name: api-results, run-id: "${{ env.RUN_ID }}", github-token: "${{ github.token }}", path: data }
       - name: Where it goes
         id: where
@@ -102,7 +107,7 @@ jobs:
               echo "dir=api/main" >> "$GITHUB_OUTPUT" ;;
             *) echo "a $EVENT run: nothing to publish" ;;
           esac
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         if: steps.where.outputs.dir != ''
         with: { ref: gh-pages, path: pages }
         continue-on-error: true

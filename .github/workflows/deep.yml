@@ -1,0 +1,116 @@
+# The weekly deep checks: what the pull request gate and the nightly run leave out because it is slow or needs
+# more than a test run. The fuzz targets (a minute each, coverage-guided), the formal models' full sweeps (the
+# jhrl machines' ignored state spaces, witnesses and mutants: about 20 minutes), the doctests, the coding
+# engine's user-isolation tests (root in a user namespace), and the workflows' own lint (actionlint, zizmor).
+# Nothing here gates a merge; a red run is read and fixed like a red nightly.
+name: Deep checks
+run-name: "Deep checks: fuzzing, models, isolation, workflow lint"
+
+on:
+  schedule:
+    - cron: "47 3 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: deep
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz targets (60 s each)
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { persist-credentials: false }
+      - name: CI image
+        run: .github/ci/image.sh
+      # cargo fuzz's own coverage flags, on the stable toolchain the workspace builds with (no sanitizer: those
+      # need nightly). `--target` keeps the flags off the build scripts.
+      - name: Build the targets
+        run: >-
+          .github/ci/in-image.sh "cd fuzz && RUSTFLAGS='--cfg fuzzing -Cpasses=sancov-module
+          -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters
+          -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares
+          -Cdebug-assertions -Coverflow-checks' cargo build --locked --release --target x86_64-unknown-linux-gnu
+          --features fuzzing --bins"
+      - name: Run each target
+        run: |
+          set -eu
+          bins=$(sed -n 's/^name = "\(.*\)"$/\1/p' fuzz/Cargo.toml | grep -v '^agentplaza-fuzz$')
+          .github/ci/in-image.sh "set -eu; for t in $bins; do mkdir -p fuzz/corpus/\$t; echo \"== \$t\";
+            /ci-target/x86_64-unknown-linux-gnu/release/\$t -max_total_time=60 -rss_limit_mb=2048 -artifact_prefix=fuzz/ fuzz/corpus/\$t; done"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with: { name: fuzz-crashes, path: "fuzz/crash-*", retention-days: 14 }
+
+  models:
+    name: Formal models (full sweeps) and doctests
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { persist-credentials: false }
+      - name: CI image
+        run: .github/ci/image.sh
+      - name: Keep the build directory fresh
+        run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
+      - name: Every state space, witness and mutant
+        run: .github/ci/in-image.sh "cargo test --locked --release -p jhrl --test specs -- --include-ignored"
+      - name: Doctests
+        run: .github/ci/in-image.sh "cargo test --locked --doc --workspace"
+
+  isolation:
+    name: Engine user isolation (root tests)
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    timeout-minutes: 30
+    env:
+      # The test executable lands in the workspace, at the same path inside the image and on the runner.
+      APZ_CI_TARGET: workspace
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { persist-credentials: false }
+      - name: CI image
+        run: .github/ci/image.sh
+      - name: Build the harness tests
+        run: >-
+          .github/ci/in-image.sh "cargo test --locked -p agent-harness --no-run --message-format=json > harness-build.json"
+      # A container's seccomp profile refuses user namespaces, so the tests run on the runner itself.
+      - name: Run them as root in a user namespace
+        run: |
+          set -eu
+          exe=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "agent-harness" and (.target.kind | index("bin"))) | .executable' harness-build.json | tail -n 1)
+          APZ_HARNESS_TEST_EXE="$exe" sh scripts/test-harness-root.sh
+
+  workflows:
+    name: Workflow lint (actionlint, zizmor)
+    runs-on: [self-hosted, light]
+    timeout-minutes: 10
+    env:
+      ACTIONLINT: "1.7.12"
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+      ZIZMOR: "1.31.1"
+      ZIZMOR_SHA256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { persist-credentials: false }
+      - name: The tools, checked against their release digests
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/lint"
+          cd "$RUNNER_TEMP/lint"
+          curl -fsSL -o actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT/actionlint_${ACTIONLINT}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  actionlint.tgz" | sha256sum -c -
+          curl -fsSL -o zizmor.tgz "https://github.com/zizmorcore/zizmor/releases/download/v$ZIZMOR/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$ZIZMOR_SHA256  zizmor.tgz" | sha256sum -c -
+          tar -xzf actionlint.tgz actionlint
+          tar -xzf zizmor.tgz
+          echo "$RUNNER_TEMP/lint" >> "$GITHUB_PATH"
+      - name: actionlint
+        run: actionlint -color
+      # Offline: the audit reads the workflows only, and needs no token.
+      - name: zizmor
+        run: zizmor --offline --min-severity medium --config .github/zizmor.yml .github/workflows
