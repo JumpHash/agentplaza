@@ -240,9 +240,24 @@ fn connect(relay: &Relay) -> Result<Socket, String> {
         "{}/relay/connect?hub={hub}&ts={ts_text}&sig={sig}",
         ws_base(&relay.base)
     );
-    let (socket, _) = tungstenite::connect(url.as_str()).map_err(|e| e.to_string())?;
+    let (tls, host, port) =
+        apz_http::client::split_base(&origin(&relay.base)).map_err(|e| e.to_string())?;
+    let tcp = TcpStream::connect((host.as_str(), port)).map_err(|e| e.to_string())?;
+    // TLS with the plaza's own client configuration (the Mozilla roots, ring), not tungstenite's.
+    let connector =
+        tls.then(|| tungstenite::Connector::Rustls(apz_http::client::public_client_config()));
+    let (socket, _) = tungstenite::client_tls_with_config(url.as_str(), tcp, None, connector)
+        .map_err(|e| e.to_string())?;
     set_tick(&socket);
     Ok(socket)
+}
+
+/// The scheme and authority of an HTTP base, without a path or query: `https://relay.example/x` is
+/// `https://relay.example`.
+fn origin(base: &str) -> String {
+    let (scheme, rest) = base.split_once("://").unwrap_or(("", base));
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    format!("{scheme}://{authority}")
 }
 
 /// The WebSocket base of an HTTP base: `https` becomes `wss` and `http` becomes `ws`.
@@ -576,6 +591,19 @@ mod tests {
                 .verify(b"apz-relay-release\nhub1\nshare1\n1700000000", &signature)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn the_relay_is_dialled_at_the_bases_origin() {
+        assert_eq!(origin("https://agentplaza.io"), "https://agentplaza.io");
+        assert_eq!(origin("https://agentplaza.io/"), "https://agentplaza.io");
+        assert_eq!(
+            origin("http://127.0.0.1:7790/r?x=1"),
+            "http://127.0.0.1:7790"
+        );
+        let (tls, host, port) =
+            apz_http::client::split_base(&origin("https://agentplaza.io/")).unwrap();
+        assert_eq!((tls, host.as_str(), port), (true, "agentplaza.io", 443));
     }
 
     #[test]

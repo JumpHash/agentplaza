@@ -45,8 +45,9 @@ hmac.workspace = true
 zeroize.workspace = true
 secrecy.workspace = true
 base64.workspace = true
-# The relay client's socket to agentplaza.io (shares/relay.rs): TLS through rustls with the Mozilla roots.
-tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+# The relay client's socket to agentplaza.io (shares/relay.rs): TLS through rustls, with apz-http's client
+# configuration and its Mozilla roots (`__rustls-tls` is rustls without tungstenite's own root store).
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "__rustls-tls"] }
 # The relay's signatures (shares/relay.rs), matching crates/apz-trust.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 flate2 = "1.1"
