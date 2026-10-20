@@ -1,0 +1,16 @@
+meta {
+  name: Archive the test prompt
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

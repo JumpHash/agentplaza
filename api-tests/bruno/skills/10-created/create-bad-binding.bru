@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a binding that is neither plaza nor a role or project
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-skill-badbind",
+    "title": "Bad binding",
+    "bindings": [
+      "nonsense"
+    ],
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n"
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt {{budgetMs}}
+}

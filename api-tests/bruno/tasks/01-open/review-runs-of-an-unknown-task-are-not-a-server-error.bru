@@ -1,0 +1,16 @@
+meta {
+  name: Review runs of an unknown task are not a server error
+  type: http
+  seq: 29
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/t999999/reviews
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: lt 500
+  res.responseTime: lt {{budgetMs}}
+}

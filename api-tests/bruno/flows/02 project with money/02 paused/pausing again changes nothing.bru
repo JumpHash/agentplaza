@@ -1,0 +1,22 @@
+meta {
+  name: pausing again changes nothing
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/pause
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("still paused", function () {
+    expect(res.getBody().paused).to.equal(true);
+  });
+}

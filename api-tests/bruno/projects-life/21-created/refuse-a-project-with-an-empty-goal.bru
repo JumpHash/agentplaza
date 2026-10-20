@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a project with an empty goal
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-life no goal", "goal": "   "}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "goal must be"
+  res.responseTime: lt {{budgetMs}}
+}

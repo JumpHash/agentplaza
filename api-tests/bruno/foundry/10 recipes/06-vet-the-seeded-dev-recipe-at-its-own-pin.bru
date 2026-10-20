@@ -1,0 +1,31 @@
+meta {
+  name: Vet the seeded dev recipe at its own pin
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/recipes/rung-predictor@1/vet
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "commit": "{{fdy_pin}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the vet is recorded as the owner's", function () {
+    const r = res.getBody();
+    expect(r.id).to.equal("rung-predictor@1");
+    expect(r.vetted_by).to.equal("owner");
+    expect(r.commit).to.equal(bru.getVar("fdy_pin"));
+  });
+}

@@ -12,7 +12,7 @@ get {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.config.every_hours: eq 24
   res.body.sources.ingest: eq false
   res.body.signals: isArray

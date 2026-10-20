@@ -1,0 +1,22 @@
+meta {
+  name: Read an expired link
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh7_expired}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 410
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says expired", function () {
+    expect(res.getBody().error).to.equal("expired");
+  });
+}

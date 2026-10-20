@@ -1,0 +1,17 @@
+meta {
+  name: Delete the owner's rule
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/metrics/alerts/rules/{{metrics_rule_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.ok: eq true
+}

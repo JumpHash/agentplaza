@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an upload with no name and a body that is not JSON
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload
+  body: text
+  auth: none
+}
+
+body:text {
+  not json at all
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error asks for a name or a path", function () {
+    expect(res.getBody().error).to.equal("send JSONL with ?name=, or {name, path}");
+  });
+}

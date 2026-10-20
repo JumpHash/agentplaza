@@ -1,0 +1,27 @@
+meta {
+  name: Register agent 7 through its VM's hello, for the permission mode checks
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/7/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "role": "builder",
+    "vm": 0
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

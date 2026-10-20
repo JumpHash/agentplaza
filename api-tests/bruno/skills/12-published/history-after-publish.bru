@@ -1,0 +1,24 @@
+meta {
+  name: The history records publish and unpublish
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/history
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("publish and unpublish events are recorded", function () {
+    const actions = res.getBody().events.map((e) => e.action);
+    expect(actions).to.include("publish");
+    expect(actions).to.include("unpublish");
+  });
+}

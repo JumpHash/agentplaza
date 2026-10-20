@@ -1,0 +1,45 @@
+meta {
+  name: Add a second version to the artifact as its author
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts/{{looks_art}}
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-looks Notes",
+      "panels": [
+        {
+          "id": "notes",
+          "title": "Notes",
+          "span": 12,
+          "body": {
+            "type": "document",
+            "markdown": "Second draft."
+          }
+        }
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the new version is numbered on", function () {
+    expect(res.getBody().version).to.equal(2);
+  });
+}

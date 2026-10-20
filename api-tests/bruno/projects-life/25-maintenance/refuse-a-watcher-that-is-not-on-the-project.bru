@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a watcher that is not on the project
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"watchers": [1000]}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "is not on project"
+  res.responseTime: lt {{budgetMs}}
+}

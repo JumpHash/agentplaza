@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a model import whose body is not JSON
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/import
+  body: text
+  auth: none
+}
+
+body:text {
+  not json
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the body is bad", function () {
+    expect(res.getBody().error).to.match(/^bad body/);
+  });
+}

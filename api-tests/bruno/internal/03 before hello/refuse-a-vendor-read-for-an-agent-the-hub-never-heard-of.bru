@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a vendor read for an agent the hub never heard of
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61001/gateway/vendor/augment/v1/sessions
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 404
+  res.body.error: eq "unknown agent"
+}

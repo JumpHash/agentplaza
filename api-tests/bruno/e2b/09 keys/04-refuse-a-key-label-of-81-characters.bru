@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a key label of 81 characters
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/e2b/keys
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "label": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "invalid_request"
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Download the reference file of version 1
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions/1/files/reference.md
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the file comes back as text with its bytes", function () {
+    expect(res.getBody()).to.contain("# Reference");
+    expect(res.getHeader("content-type")).to.contain("text/markdown");
+  });
+}

@@ -1,0 +1,32 @@
+meta {
+  name: give back more than the project holds is refused
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "credits": -2000
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the budget did not move", function () {
+    expect(res.getBody().error).to.include('the budget did not move');
+  });
+}

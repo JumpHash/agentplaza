@@ -1,0 +1,25 @@
+meta {
+  name: Test the server and refuse its tools while it is unreachable
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp/test
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the test answers not ok with the reason, and lists no tools", function () {
+    const body = res.getBody();
+    expect(body.ok).to.equal(false);
+    expect(body.error).to.be.a("string");
+    expect(body).to.not.have.property("tools");
+  });
+}

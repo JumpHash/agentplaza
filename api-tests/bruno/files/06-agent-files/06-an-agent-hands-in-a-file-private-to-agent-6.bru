@@ -1,0 +1,35 @@
+meta {
+  name: An agent hands in a file private to agent 6
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/files?name=t-files-private.txt&to=6
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  content-type: text/plain
+}
+
+body:text {
+  for six
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("file_priv", res.getBody().id);
+}
+
+tests {
+  test("private", function () {
+    expect(res.getBody().audience).to.equal("private");
+  });
+}

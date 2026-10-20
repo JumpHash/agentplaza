@@ -1,0 +1,24 @@
+meta {
+  name: The revoked node is listed as revoked and offline
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the node is revoked and offline", function () {
+    const n = res.getBody().find((x) => x.id === bru.getVar("node_joined_id"));
+    expect(n.revoked).to.equal(true);
+    expect(n.online).to.equal(false);
+  });
+}

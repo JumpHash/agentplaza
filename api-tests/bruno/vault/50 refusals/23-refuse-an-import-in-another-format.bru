@@ -1,0 +1,33 @@
+meta {
+  name: Refuse an import in another format
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "format": "json",
+    "text": "{}",
+    "scope": {
+      "kind": "plaza"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the format", function () {
+    expect(res.getBody().error).to.equal("the import format is dotenv");
+  });
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Enable Mistral Vibe, a pip engine: the check reads it without the registry
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/vibe
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "enabled": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.enabled: eq true
+}

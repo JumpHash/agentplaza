@@ -1,0 +1,17 @@
+meta {
+  name: Read the withdrawn task
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{society_withdrawn_task}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.state: eq "withdrawn"
+}

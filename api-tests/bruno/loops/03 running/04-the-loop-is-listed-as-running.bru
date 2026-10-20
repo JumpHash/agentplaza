@@ -1,0 +1,24 @@
+meta {
+  name: The loop is listed as running
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/loops
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("our loop is listed running", function () {
+    const lp = res.getBody().find(l => l.id === bru.getVar("floop_a"));
+    expect(lp).to.not.be.undefined;
+    expect(lp.state).to.equal("running");
+  });
+}

@@ -1,0 +1,36 @@
+meta {
+  name: Answer an egress inject with no matching rule
+  type: http
+  seq: 67
+}
+
+post {
+  url: {{baseUrl}}/internal/egress/inject
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "cid": 61003,
+    "host": "example.com",
+    "port": 443,
+    "method": "GET",
+    "path": "/v1"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("no header is added", function () {
+    expect(res.getBody()).to.deep.equal({});
+  });
+}

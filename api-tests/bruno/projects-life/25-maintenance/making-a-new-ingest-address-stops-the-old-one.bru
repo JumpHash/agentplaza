@@ -1,0 +1,27 @@
+meta {
+  name: Making a new ingest address stops the old one
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance/ingest
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 201
+  res.body.token: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the new address differs from the old one", function () {
+    expect(res.getBody().token).to.not.equal(bru.getVar("life_ingest_token"));
+  });
+}
+
+script:post-response {
+  bru.setVar("life_ingest_token2", res.getBody().token);
+}

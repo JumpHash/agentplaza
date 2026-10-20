@@ -1,0 +1,31 @@
+meta {
+  name: Rate the agent as the owner
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/rating
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": 1
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.b: isNumber
+  res.body.d: isNumber
+  res.body.u: isNumber
+}
+
+tests {
+  test("the rating answers the opinion's updated time", function () {
+    expect(res.getBody().updated_ms).to.be.above(0);
+  });
+}

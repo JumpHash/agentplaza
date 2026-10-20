@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a calls page with a limit above 200
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/calls?limit=201
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error names the limit", function () {
+    expect(res.getBody().error).to.include("limit");
+  });
+}

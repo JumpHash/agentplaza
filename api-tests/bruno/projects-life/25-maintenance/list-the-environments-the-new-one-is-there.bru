@@ -1,0 +1,23 @@
+meta {
+  name: List the environments: the new one is there
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/environments
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("probe-env is listed", function () {
+    expect(res.getBody().map((e) => e.name)).to.include("probe-env");
+  });
+}

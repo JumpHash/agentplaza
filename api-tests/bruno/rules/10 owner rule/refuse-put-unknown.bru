@@ -1,0 +1,27 @@
+meta {
+  name: Answer 404 when editing an unknown rule
+  type: http
+  seq: 11
+}
+
+put {
+  url: {{baseUrl}}/v1/laws/rules/R-bruno-none
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "x"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

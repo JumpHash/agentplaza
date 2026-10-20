@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a rotation of the deleted secret
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/vault/secrets/{{vault_life_id}}/value
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": "bru-life-value-v3-0123456789"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

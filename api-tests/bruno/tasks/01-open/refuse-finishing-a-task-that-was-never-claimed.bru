@@ -1,0 +1,25 @@
+meta {
+  name: Refuse finishing a task that was never claimed
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}/finish
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"outcome": "done"}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "open to done"
+  res.responseTime: lt {{budgetMs}}
+}

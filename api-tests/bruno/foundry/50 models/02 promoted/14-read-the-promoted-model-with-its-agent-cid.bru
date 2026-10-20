@@ -1,0 +1,23 @@
+meta {
+  name: Read the promoted model with its agent cid
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the record shows promoted with the same agent cid", function () {
+    expect(res.getBody().state).to.equal("promoted");
+    expect(res.getBody().agent_cid).to.equal(bru.getVar("fmdl_agent"));
+  });
+}

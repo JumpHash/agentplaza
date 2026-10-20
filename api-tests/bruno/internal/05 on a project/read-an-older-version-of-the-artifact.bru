@@ -1,0 +1,27 @@
+meta {
+  name: Read an older version of the artifact
+  type: http
+  seq: 50
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts/{{int_art}}?v=1
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("version 1 is still there while version 2 is the latest", function () {
+    expect(res.getBody().version).to.equal(1);
+    expect(res.getBody().latest).to.equal(2);
+  });
+}

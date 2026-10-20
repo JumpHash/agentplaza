@@ -30,7 +30,7 @@ body:json {
 
 assert {
   res.status: eq 201
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.skill.id: eq "pdf-forms"
   res.body.skill.title: eq "PDF forms"
   res.body.skill.latest_version: eq 1

@@ -1,0 +1,30 @@
+meta {
+  name: Read the audit log and verify its chain
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/audit?limit=500&verify=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the chain verifies, nothing is broken, and no value is in the log", function () {
+    const body = res.getBody();
+    expect(body.chain_ok).to.equal(true);
+    expect(body.first_broken).to.equal(null);
+    expect(body.verified).to.be.a("number");
+    expect(body.entries).to.be.an("array");
+    expect(body.entries.length).to.be.above(0);
+    const text = JSON.stringify(body);
+    expect(text).to.not.include(bru.getVar("vault_recovery_code"));
+    expect(JSON.stringify(res.getBody())).to.not.include("bru-life-value-0123456789");expect(JSON.stringify(res.getBody())).to.not.include("bru-life-value-v2-0123456789");expect(JSON.stringify(res.getBody())).to.not.include("bru-passphrase-0123456789");expect(JSON.stringify(res.getBody())).to.not.include("bru-imp-a-value-0123");expect(JSON.stringify(res.getBody())).to.not.include("bru-imp-b-value-0123");
+  });
+}

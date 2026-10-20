@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a vote from an agent that holds no council seat
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/motions/m-none/vote
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent_cid": 8603,
+    "vote": "yes",
+    "reason": "t-motion"
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

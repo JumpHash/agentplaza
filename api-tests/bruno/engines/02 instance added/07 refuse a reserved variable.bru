@@ -1,0 +1,31 @@
+meta {
+  name: Refuse an engine variable the plaza sets for its gateway
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-eng-bad",
+    "engine": "acp-local",
+    "command": "scratch-agent",
+    "env": {
+      "ANTHROPIC_BASE_URL": "http://127.0.0.1:9"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

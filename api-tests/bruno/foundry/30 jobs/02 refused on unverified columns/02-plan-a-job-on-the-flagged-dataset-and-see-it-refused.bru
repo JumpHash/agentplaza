@@ -1,0 +1,33 @@
+meta {
+  name: Plan a job on the flagged dataset and see it refused
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/plan
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "job_id": "t-job-taint",
+    "recipe": "rung-predictor@1",
+    "datasets": [
+      "{{fjob_unknown}}"
+    ],
+    "budget_gpu_hours": 2
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the flag is named", function () {
+    expect(res.getBody().error).to.equal(bru.getVar("fjob_unknown") ? "dataset " + bru.getVar("fjob_unknown") + " is tainted (unverified_upload) and cannot train a job" : "");
+  });
+}

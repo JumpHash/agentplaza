@@ -1,0 +1,23 @@
+meta {
+  name: Switch the owner's rule off
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/alerts/{{metrics_rule_id}}/on
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "on": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.rule.on: eq false
+}

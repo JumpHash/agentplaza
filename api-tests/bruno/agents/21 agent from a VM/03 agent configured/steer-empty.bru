@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a steer with no text
+  type: http
+  seq: 30
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/control
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "action": "steer",
+    "text": ""
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("steer needs text");
+  });
+}

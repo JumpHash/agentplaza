@@ -1,0 +1,17 @@
+meta {
+  name: List the base models
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/models?kind=base
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.models: isArray
+}

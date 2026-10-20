@@ -1,0 +1,26 @@
+meta {
+  name: make an ingest address for the project
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/maintenance/ingest
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("flowMoneyIngest", res.getBody().token);
+}
+
+tests {
+  test("the token is an ingest token", function () {
+    expect(res.getBody().token).to.match(/^apzi_/);
+  });
+}

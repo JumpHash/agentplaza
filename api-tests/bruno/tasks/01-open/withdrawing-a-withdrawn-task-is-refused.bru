@@ -1,0 +1,17 @@
+meta {
+  name: Withdrawing a withdrawn task is refused
+  type: http
+  seq: 50
+}
+
+delete {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "withdrawn to withdrawn"
+  res.responseTime: lt {{budgetMs}}
+}

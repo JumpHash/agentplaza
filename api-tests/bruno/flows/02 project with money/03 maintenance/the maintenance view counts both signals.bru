@@ -1,0 +1,24 @@
+meta {
+  name: the maintenance view counts both signals
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/maintenance
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("two signals, and the ingest address is on", function () {
+    const b = res.getBody();
+    expect(b.signals_total).to.equal(2);
+    expect(b.sources.ingest).to.equal(true);
+  });
+}

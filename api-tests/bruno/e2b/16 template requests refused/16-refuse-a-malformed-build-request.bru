@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a malformed build request
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: text
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:text {
+  {"name": 
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "invalid_request"
+}

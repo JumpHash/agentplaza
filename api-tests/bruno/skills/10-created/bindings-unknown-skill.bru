@@ -1,0 +1,26 @@
+meta {
+  name: Answer 404 when setting bindings of an unknown skill
+  type: http
+  seq: 22
+}
+
+put {
+  url: {{baseUrl}}/v1/skills/no-such-skill/bindings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "bindings": []
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

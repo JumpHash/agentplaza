@@ -1,0 +1,22 @@
+meta {
+  name: Re-derive a model that does not exist (Hugging Face side)
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/t-no-model/rederive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says there is no such model", function () {
+    expect(res.getBody().error).to.equal("no such model");
+  });
+}

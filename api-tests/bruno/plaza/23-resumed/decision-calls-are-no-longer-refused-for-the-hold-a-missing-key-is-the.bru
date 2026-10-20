@@ -1,0 +1,31 @@
+meta {
+  name: Decision calls are no longer refused for the hold: a missing key is the refusal
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai-decisions", "model": "gpt-6-luna", "input": "t-plaza after resume", "questions": [{"type": "predicate", "name": "flaky", "instructions": "Is the test flaky?"}]}
+}
+
+assert {
+  res.status: eq 502
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal is not the hold", function () {
+    expect(res.getBody().error).to.not.contain("STOP ALL");
+  });
+}

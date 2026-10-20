@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a sign-in body with no token
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/auth/session
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

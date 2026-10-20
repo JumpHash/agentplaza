@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a loop whose cid is a string
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/loops
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": "9101",
+    "prompt": "Check the queue",
+    "every_minutes": 5,
+    "max_runs": 0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the body is bad", function () {
+    expect(res.getBody().error).to.match(/^bad body/);
+  });
+}

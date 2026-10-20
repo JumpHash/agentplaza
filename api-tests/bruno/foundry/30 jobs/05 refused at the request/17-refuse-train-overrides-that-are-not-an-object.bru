@@ -1,0 +1,26 @@
+meta {
+  name: Refuse train overrides that are not an object
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"recipe": "rung-predictor@1", "datasets": ["ds-x"], "budget_gpu_hours": 1, "train": "fast"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.equal("train is an object of overrides");
+  });
+}

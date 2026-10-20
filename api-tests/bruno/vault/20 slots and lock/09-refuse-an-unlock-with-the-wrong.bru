@@ -1,0 +1,34 @@
+meta {
+  name: Refuse an unlock with the wrong passphrase
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/unseal
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "passphrase": "bru-wrong-passphrase-0000"
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.body.error: isString
+  res.responseTime: lt 5000
+}
+
+tests {
+  test("the refusal does not say which part was wrong", function () {
+    expect(res.getBody().error).to.equal("wrong passphrase or recovery code");
+  });
+}
+
+docs {
+  The hub derives the key from the passphrase or recovery code with Argon2id (256 MiB, three passes), slow
+  on purpose: the budget is 5 s, not the 1 s of a plain request, so a busy runner does not fail it.
+}

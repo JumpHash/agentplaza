@@ -1,0 +1,22 @@
+meta {
+  name: Compare version 2 with the broken version 3
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/diff?from=2&to=3
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the added link shows in the diff", function () {
+    expect(JSON.stringify(res.getBody().skill_md)).to.contain("notes.md");
+  });
+}

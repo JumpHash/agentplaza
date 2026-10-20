@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for a project id that is not a project at all
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/not-a-project
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

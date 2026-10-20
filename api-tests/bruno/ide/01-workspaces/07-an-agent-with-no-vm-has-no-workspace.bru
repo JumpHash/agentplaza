@@ -1,0 +1,22 @@
+meta {
+  name: An agent with no VM has no workspace
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/agent:999999/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the workspace", function () {
+    expect(JSON.stringify(res.getBody())).to.include("no workspace agent:999999");
+  });
+}

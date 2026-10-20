@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an upload whose bytes do not hash to the name given
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/weft/wire/objects/0000000000000000000000000000000000000000000000000000000000000000
+  body: text
+  auth: none
+}
+
+body:text {
+  hello from bru
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the refusal says the bytes hash to something else", function () {
+    expect(res.getBody().error).to.include("the bytes hash to");
+  });
+}

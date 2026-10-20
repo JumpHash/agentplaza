@@ -1,0 +1,24 @@
+meta {
+  name: Answer 404 when moving a task that does not exist
+  type: http
+  seq: 27
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks/t999999/move
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"project": "{{tsk_pid}}"}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

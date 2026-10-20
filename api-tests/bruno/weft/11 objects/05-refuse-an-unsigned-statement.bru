@@ -1,0 +1,20 @@
+meta {
+  name: Refuse a statement that is not signed
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/records
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "repo.create", "body": {"repo": "t-weft-unsigned"}}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+}

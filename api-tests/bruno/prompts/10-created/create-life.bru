@@ -1,0 +1,52 @@
+meta {
+  name: Create a system prompt bound to a role
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-prompt-life",
+    "kind": "system",
+    "title": "Tester ✓ (Prüfer)",
+    "description": "A test role prompt for the Bruno run.",
+    "tags": [
+      "t-test"
+    ],
+    "binding": "role:t-tester",
+    "body": "# Tester\n\nYou are the test role. Check each request against the plan.\n",
+    "note": "first draft"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.prompt.id: eq "t-prompt-life"
+  res.body.prompt.kind: eq "system"
+  res.body.prompt.latest_version: eq 1
+  res.body.prompt.active_version: eq null
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("lifePromptId", res.getBody().prompt.id);
+}
+
+tests {
+  test("the title keeps its unicode, the binding is set and nothing is scored yet", function () {
+    const p = res.getBody().prompt;
+    expect(p.title).to.equal("Tester ✓ (Prüfer)");
+    expect(p.binding).to.equal("role:t-tester");
+    expect(p.score).to.equal(null);
+  });
+}

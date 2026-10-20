@@ -1,0 +1,27 @@
+meta {
+  name: Read the created prompt back: unpublished and unscored
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.prompt.id: eq "t-prompt-life"
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("one version, nothing live, no score", function () {
+    const body = res.getBody();
+    expect(body.versions).to.have.length(1);
+    expect(body.live).to.equal(null);
+    expect(body.prompt.score).to.equal(null);
+    expect(body.prompt.binding).to.equal("role:t-tester");
+  });
+}

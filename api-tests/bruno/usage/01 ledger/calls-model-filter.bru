@@ -1,0 +1,24 @@
+meta {
+  name: Filter the calls by an encoded model id
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/calls?model=anthropic%2Fclaude-opus-5-5&limit=5
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("every call is for the asked model", function () {
+    const calls = res.getBody().calls;
+    expect(calls).to.be.an("array");
+    calls.forEach((c) => expect(c.model).to.equal("anthropic/claude-opus-5-5"));
+  });
+}

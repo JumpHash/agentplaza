@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a create without a body
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-prompt-nobody",
+    "kind": "system",
+    "title": "No body",
+    "binding": null
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

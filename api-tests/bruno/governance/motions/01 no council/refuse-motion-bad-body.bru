@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a motion whose body is not an object
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/motions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  [
+    "not",
+    "a",
+    "motion"
+  ]
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

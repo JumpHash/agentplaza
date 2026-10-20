@@ -1,0 +1,22 @@
+meta {
+  name: Set the agent to ask before an engine request
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/agents/61007/permissions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "mode": "ask"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}

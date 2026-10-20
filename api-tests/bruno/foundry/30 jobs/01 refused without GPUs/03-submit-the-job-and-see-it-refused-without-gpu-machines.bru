@@ -1,0 +1,34 @@
+meta {
+  name: Submit the job and see it refused without GPU machines
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "job_id": "t-job-nogpu",
+    "recipe": "rung-predictor@1",
+    "datasets": [
+      "{{fjob_clean}}"
+    ],
+    "budget_gpu_hours": 2
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal is the planner's, and no job is recorded", function () {
+    expect(res.getBody().error).to.match(/^no eligible devices:/);
+    expect(res.getBody()).to.not.have.property("id");
+  });
+}

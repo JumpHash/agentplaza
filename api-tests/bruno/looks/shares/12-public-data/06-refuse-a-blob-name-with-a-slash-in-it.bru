@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a blob name with a slash in it
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh12_share}}/blobs/x%2Fy
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

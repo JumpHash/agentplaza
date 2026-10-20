@@ -1,0 +1,39 @@
+meta {
+  name: Refuse a workstation VM with a GPU that is neither none, virtual nor vfio
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/vms
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "node": "n0",
+    "os": "linux",
+    "name": "t-stations-vm",
+    "cpus": 2,
+    "ram_mb": 4096,
+    "disk_gb": 16,
+    "gpu": "rtx4090"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("gpu must be");
+  });
+}

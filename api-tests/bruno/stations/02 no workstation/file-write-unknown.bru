@@ -1,0 +1,25 @@
+meta {
+  name: Answer 404 to writing a file to a workstation that does not exist
+  type: http
+  seq: 22
+}
+
+put {
+  url: {{baseUrl}}/v1/stations/w-t-missing/files/notes/t-stations.txt
+  body: text
+  auth: none
+}
+
+headers {
+  Content-Type: application/octet-stream
+}
+
+body:text {
+  hello from the Bruno test
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Refuse a token with an empty name
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/hub-mcp/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "   ",
+    "scope": "observe"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

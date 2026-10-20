@@ -1,0 +1,17 @@
+meta {
+  name: Delete the owner rule and its law
+  type: http
+  seq: 12
+}
+
+delete {
+  url: {{baseUrl}}/v1/laws/rules/{{lawRuleId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.deleted: isString
+  res.responseTime: lt {{budgetMs}}
+}

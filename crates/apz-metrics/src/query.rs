@@ -86,6 +86,25 @@ pub fn reduce(agg: &Agg, f: AggFn, step_ms: u64) -> Option<f64> {
     }
 }
 
+/// The most points one query may ask for: a range over its step is refused above this, before any bucket is made.
+pub const MAX_QUERY_POINTS: u64 = 10_000;
+
+/// Checks that `[from, to)` over `step_ms` makes at most [`MAX_QUERY_POINTS`] points (one per step, the last one
+/// partial). A zero step or an empty range makes none. The error names the limit.
+pub fn check_points(from_ms: u64, to_ms: u64, step_ms: u64) -> Result<(), String> {
+    if step_ms == 0 || to_ms <= from_ms {
+        return Ok(());
+    }
+    let span = to_ms - from_ms;
+    let points = span / step_ms + u64::from(!span.is_multiple_of(step_ms));
+    if points > MAX_QUERY_POINTS {
+        return Err(format!(
+            "the range over step_ms makes {points} points, above the limit of {MAX_QUERY_POINTS}: use a longer step or a shorter range"
+        ));
+    }
+    Ok(())
+}
+
 /// Buckets stored windows `(start_ms, Agg)` of one series into `[from, to)` by `step_ms` (each window merged into
 /// the bucket holding its start), then reduces each bucket. Empty buckets are `None` (a gap, never zero).
 pub fn bucketize(
@@ -230,6 +249,21 @@ mod tests {
             last: max,
             hist: Some(hist),
         }
+    }
+
+    #[test]
+    fn check_points_refuses_a_range_over_the_point_limit_and_names_it() {
+        // 90 days at 1 ms is 7.776e9 points: refused, and the message says the limit.
+        let day = 86_400_000;
+        let error = check_points(0, 90 * day, 1).unwrap_err();
+        assert!(error.contains("limit of 10000"), "{error}");
+        assert!(error.contains("7776000000 points"), "{error}");
+        // Exactly the limit is allowed, and a partial last step counts as one more point.
+        assert!(check_points(0, 10_000 * 60_000, 60_000).is_ok());
+        assert!(check_points(0, 10_000 * 60_000 + 1, 60_000).is_err());
+        // A zero step or an empty range makes no points, so there is nothing to refuse.
+        assert!(check_points(0, 90 * day, 0).is_ok());
+        assert!(check_points(5, 5, 1).is_ok());
     }
 
     #[test]

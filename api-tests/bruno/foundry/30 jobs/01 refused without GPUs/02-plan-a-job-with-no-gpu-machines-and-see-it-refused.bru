@@ -1,0 +1,33 @@
+meta {
+  name: Plan a job with no GPU machines and see it refused
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/plan
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "job_id": "t-job-nogpu",
+    "recipe": "rung-predictor@1",
+    "datasets": [
+      "{{fjob_clean}}"
+    ],
+    "budget_gpu_hours": 2
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the planner names the missing devices", function () {
+    expect(res.getBody().error).to.match(/^no eligible devices:/);
+  });
+}

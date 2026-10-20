@@ -1,0 +1,27 @@
+meta {
+  name: Describe the hub's identity
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/hub/identity
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 500
+  res.body.name: isString
+  res.body.version: isString
+  res.body.url: isString
+  res.body.nodes: isNumber
+}
+
+tests {
+  test("the identity carries no owner token or secret", function () {
+    expect(JSON.stringify(res.getBody())).to.not.include("token");
+    expect(JSON.stringify(res.getBody())).to.not.include("secret");
+  });
+}

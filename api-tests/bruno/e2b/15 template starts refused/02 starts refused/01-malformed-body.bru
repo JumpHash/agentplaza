@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a start with a malformed body
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/templates/{{e2bRefusedTemplate}}/builds/{{e2bRefusedBuild}}
+  body: text
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:text {
+  {"fromImage": 
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "invalid_request"
+}

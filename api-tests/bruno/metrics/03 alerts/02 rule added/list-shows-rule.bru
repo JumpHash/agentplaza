@@ -1,0 +1,26 @@
+meta {
+  name: List the alerts and find the added rule
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/alerts
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the added rule is listed with its threshold and switch", function () {
+    const id = bru.getVar("metrics_rule_id");
+    const rule = res.getBody().rules.find((r) => r.id === id);
+    expect(rule, "rule listed").to.not.be.undefined;
+    expect(rule.threshold).to.equal(80);
+    expect(rule.on).to.equal(true);
+  });
+}

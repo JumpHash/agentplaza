@@ -1,0 +1,17 @@
+meta {
+  name: the provider reads a key now
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/providers/anthropic
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.credential: eq "secret"
+  res.responseTime: lt {{budgetMs}}
+}

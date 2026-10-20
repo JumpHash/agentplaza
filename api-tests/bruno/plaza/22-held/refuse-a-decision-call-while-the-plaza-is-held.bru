@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a decision call while the plaza is held
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai-decisions", "model": "gpt-6-luna", "input": "t-plaza held decision", "questions": [{"type": "predicate", "name": "flaky", "instructions": "Is the test flaky?"}]}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "STOP ALL"
+  res.responseTime: lt {{budgetMs}}
+}

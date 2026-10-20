@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a metadata key with a control character
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "metadata": {
+      "bad\tkey": "x"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

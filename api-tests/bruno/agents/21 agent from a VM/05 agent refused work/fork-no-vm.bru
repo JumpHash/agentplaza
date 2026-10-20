@@ -1,0 +1,29 @@
+meta {
+  name: Refuse forking an agent with no VM
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/fork
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "n": 2
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("has no VM");
+  });
+}

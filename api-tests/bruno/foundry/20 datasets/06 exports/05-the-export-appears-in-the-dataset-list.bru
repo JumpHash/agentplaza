@@ -1,0 +1,22 @@
+meta {
+  name: The export appears in the dataset list
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/datasets
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the export is listed", function () {
+    expect(res.getBody().map(x => x.id)).to.include(bru.getVar("fdy_export"));
+  });
+}

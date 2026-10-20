@@ -1,0 +1,17 @@
+meta {
+  name: Delete the provider
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/providers/t-prov-compat
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.deleted: eq "t-prov-compat"
+}

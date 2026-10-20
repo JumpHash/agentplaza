@@ -1,0 +1,26 @@
+meta {
+  name: Restore OpenCode's switch as it was
+  type: http
+  seq: 10
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/opencode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "enabled": {{engine_opencode_before}}
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

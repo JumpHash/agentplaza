@@ -1,0 +1,30 @@
+meta {
+  name: The agora lists the open task as a call
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/agora
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.calls: isArray
+}
+
+tests {
+  test("the call names the role, its budget, and no bids or award", function () {
+    const id = bru.getVar("society_open_task");
+    const c = res.getBody().calls.find((x) => x.task === id);
+    expect(c).to.not.be.undefined;
+    expect(c.capability).to.equal("architect");
+    expect(c.state).to.equal("open");
+    expect(c.max_price).to.equal(300);
+    expect(c.bids).to.have.lengthOf(0);
+    expect(c.award).to.be.null;
+  });
+}

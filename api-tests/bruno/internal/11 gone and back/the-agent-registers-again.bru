@@ -1,0 +1,34 @@
+meta {
+  name: The agent registers again
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61010/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "role": "orchestrator",
+    "vm": 1,
+    "caps": []
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the profile is back", function () {
+    expect(res.getBody().profile).to.be.an("object");
+  });
+}

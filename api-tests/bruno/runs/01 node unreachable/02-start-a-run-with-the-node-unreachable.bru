@@ -1,0 +1,29 @@
+meta {
+  name: Start a run with the node unreachable
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/runs
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "image": "t-run-image",
+    "name": "t-run"
+  }
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the hub says the node is unreachable", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an import of a repo id with a space
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/hf/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "bad id!",
+    "as": "base"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says it is not a repo id", function () {
+    expect(res.getBody().error).to.include("is not a Hugging Face repo id");
+  });
+}

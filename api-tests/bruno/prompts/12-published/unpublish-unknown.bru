@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when unpublishing an unknown prompt
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/no-such-prompt/unpublish
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

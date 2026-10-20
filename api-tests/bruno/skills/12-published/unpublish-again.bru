@@ -1,0 +1,17 @@
+meta {
+  name: Unpublishing an unpublished skill changes nothing
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/unpublish
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.skill.active_version: eq null
+  res.responseTime: lt {{budgetMs}}
+}

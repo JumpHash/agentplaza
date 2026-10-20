@@ -1,0 +1,17 @@
+meta {
+  name: Read the open task
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{society_open_task}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.state: eq "open"
+}

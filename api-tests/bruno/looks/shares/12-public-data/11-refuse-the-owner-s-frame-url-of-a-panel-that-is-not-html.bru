@@ -1,0 +1,16 @@
+meta {
+  name: Refuse the owner's frame URL of a panel that is not HTML
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{sh12_art}}/frame?panel=words
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

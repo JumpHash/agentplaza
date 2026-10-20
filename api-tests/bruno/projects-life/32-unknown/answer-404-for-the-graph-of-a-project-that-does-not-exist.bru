@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for the graph of a project that does not exist
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/pr999999/graph
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

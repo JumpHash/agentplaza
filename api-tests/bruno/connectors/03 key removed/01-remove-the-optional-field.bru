@@ -1,0 +1,25 @@
+meta {
+  name: Remove one optional field's value, leaving the key
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/connectors/unsplash/secret?field=app_id
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.id: eq "unsplash"
+}
+
+tests {
+  test("the app id is no longer set, the access key still is", function () {
+    const body = res.getBody();
+    expect(body.fields.find((f) => f.name === "app_id").set).to.equal(false);
+    expect(body.fields.find((f) => f.name === "access_key").set).to.equal(true);
+  });
+}

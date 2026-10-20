@@ -1,0 +1,28 @@
+meta {
+  name: Open a project for the budget tests
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-tasks budget", "goal": "Escrow limits"}
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("bu_pid", res.getBody().id);
+}

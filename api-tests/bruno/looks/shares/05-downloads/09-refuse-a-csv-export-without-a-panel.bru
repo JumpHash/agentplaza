@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a CSV export without a panel
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh5_share}}/export?format=csv
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

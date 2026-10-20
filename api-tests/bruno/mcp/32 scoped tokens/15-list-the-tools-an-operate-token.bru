@@ -1,0 +1,39 @@
+meta {
+  name: List the tools an operate token may see
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_operate_token}}
+  Mcp-Session-Id: {{mcp_operate_session}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/list",
+    "params": {}
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("an operate token sees the operate tools and not the govern ones", function () {
+    const names = res.getBody().result.tools.map((t) => t.name);
+    expect(names).to.include("create_task");
+    expect(names).to.include("plaza_status");
+    expect(names).to.not.include("skill_publish");
+  });
+}

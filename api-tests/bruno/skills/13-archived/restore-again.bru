@@ -1,0 +1,16 @@
+meta {
+  name: Restoring a live skill changes nothing
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{arcSkillId}}/restore
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

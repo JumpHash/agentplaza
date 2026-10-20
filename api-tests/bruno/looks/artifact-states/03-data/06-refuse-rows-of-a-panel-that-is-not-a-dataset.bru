@@ -1,0 +1,16 @@
+meta {
+  name: Refuse rows of a panel that is not a dataset
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/rows?panel=notes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

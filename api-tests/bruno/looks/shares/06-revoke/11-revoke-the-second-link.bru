@@ -1,0 +1,16 @@
+meta {
+  name: Revoke the second link
+  type: http
+  seq: 11
+}
+
+delete {
+  url: {{baseUrl}}/v1/shares/{{sh6b_share}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

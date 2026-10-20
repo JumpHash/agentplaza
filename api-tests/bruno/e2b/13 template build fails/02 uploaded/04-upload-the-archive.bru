@@ -1,0 +1,24 @@
+meta {
+  name: Upload the archive with its link token
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{e2bUploadUrl}}
+  body: text
+  auth: none
+}
+
+headers {
+  x-plaza-upload: {{e2bUploadToken}}
+}
+
+body:text {
+  e2b archive bytes
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

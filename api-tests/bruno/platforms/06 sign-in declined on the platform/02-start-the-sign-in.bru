@@ -1,0 +1,32 @@
+meta {
+  name: Start the owner's sign-in on the registered app
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/authorize
+  body: json
+  auth: none
+}
+
+body:json {
+  {"registration": "{{declined_app}}"}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("declined_state", res.getBody().state);
+}
+
+tests {
+  test("a 32-hex state and the page the browser opens", function () {
+    const b = res.getBody();
+    expect(b.state).to.match(/^[0-9a-f]{32}$/);
+    expect(b.go).to.include("/v1/platforms/flows/" + b.state + "/go");
+  });
+}

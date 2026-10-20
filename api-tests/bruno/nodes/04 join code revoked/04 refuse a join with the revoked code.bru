@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a join with a revoked code
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/join
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "secret": "{{node_join_b_secret}}",
+    "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "name": "t-node-revoked",
+    "machine": {}
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

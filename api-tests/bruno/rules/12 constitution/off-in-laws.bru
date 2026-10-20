@@ -1,0 +1,24 @@
+meta {
+  name: List the laws: the constitutional law is flagged off
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/laws
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("C-001a is off and flagged", function () {
+  const law = res.getBody().find((l) => l.id === "C-001a");
+    expect(law.enabled).to.equal(false);
+    expect(law.constitutional_off).to.equal(true);
+  });
+}

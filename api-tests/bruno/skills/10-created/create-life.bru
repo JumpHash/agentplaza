@@ -1,0 +1,59 @@
+meta {
+  name: Create a skill with a reference file
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-skill-life",
+    "title": "Formulare ✓ test skill",
+    "tags": [
+      "t-test",
+      "reference"
+    ],
+    "bindings": [
+      "role:t-tester"
+    ],
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n",
+    "files": [
+      {
+        "path": "reference.md",
+        "content_b64": "IyBSZWZlcmVuY2UK"
+      }
+    ],
+    "note": "first version"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.skill.id: eq "t-skill-life"
+  res.body.skill.latest_version: eq 1
+  res.body.skill.active_version: eq null
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("lifeSkillId", res.getBody().skill.id);
+}
+
+tests {
+  test("the title keeps its unicode and the bindings are set", function () {
+    const s = res.getBody().skill;
+    expect(s.title).to.equal("Formulare ✓ test skill");
+    expect(s.bindings).to.deep.equal(["role:t-tester"]);
+    expect(s.name).to.equal("t-skill-life");
+    expect(s.description).to.contain("Use when");
+  });
+}

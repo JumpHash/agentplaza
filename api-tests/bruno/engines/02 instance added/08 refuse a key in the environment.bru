@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a key placed in an engine's environment
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-eng-bad",
+    "engine": "acp-local",
+    "command": "scratch-agent",
+    "env": {
+      "SCRATCH_API_KEY": "scratch-value"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

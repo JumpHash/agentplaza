@@ -1,0 +1,17 @@
+meta {
+  name: Withdraw the now-ready task: its escrow goes back
+  type: http
+  seq: 11
+}
+
+delete {
+  url: {{baseUrl}}/v1/tasks/{{bl_b}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "withdrawn"
+  res.responseTime: lt {{budgetMs}}
+}

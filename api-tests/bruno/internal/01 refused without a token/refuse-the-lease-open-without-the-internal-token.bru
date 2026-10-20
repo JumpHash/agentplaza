@@ -1,0 +1,23 @@
+meta {
+  name: Refuse the lease open without the internal token
+  type: http
+  seq: 41
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/stations/s-t-internal-none/leases
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "shared"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an upload from an absolute path that is not there
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload
+  body: json
+  auth: none
+}
+
+body:json {
+  {"name": "t-ds-missing", "path": "/nonexistent-t-foundry/rows.jsonl"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says the file is missing", function () {
+    expect(res.getBody().error).to.include("No such file");
+  });
+}

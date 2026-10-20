@@ -1,5 +1,5 @@
 meta {
-  name: List the datasets (empty on a fresh hub)
+  name: List the datasets
   type: http
   seq: 1
 }
@@ -12,12 +12,16 @@ get {
 
 assert {
   res.status: eq 200
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body: isArray
 }
 
 tests {
-  test("no datasets on a fresh hub", function () {
-    expect(res.getBody()).to.be.an("array").that.is.empty;
+  test("every dataset in the list has an id and a kind", function () {
+    // The folders under this one (run before it) upload and export datasets, so the list is not empty.
+    for (const ds of res.getBody()) {
+      expect(ds.id).to.be.a("string");
+      expect(ds.kind).to.be.a("string");
+    }
   });
 }

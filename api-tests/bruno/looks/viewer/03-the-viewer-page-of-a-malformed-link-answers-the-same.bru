@@ -1,0 +1,16 @@
+meta {
+  name: The viewer page of a malformed link answers the same
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/artifact/not-a-share
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

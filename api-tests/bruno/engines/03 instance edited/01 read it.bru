@@ -1,0 +1,17 @@
+meta {
+  name: Read the local engine instance
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.label: eq "Scratch local"
+}

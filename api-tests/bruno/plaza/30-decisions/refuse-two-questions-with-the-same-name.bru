@@ -1,0 +1,25 @@
+meta {
+  name: Refuse two questions with the same name
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai-decisions", "model": "gpt-6-luna", "input": "t-dec twins", "questions": [{"type": "predicate", "name": "a", "instructions": "i"}, {"type": "predicate", "name": "a", "instructions": "j"}]}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "not unique"
+  res.responseTime: lt {{budgetMs}}
+}

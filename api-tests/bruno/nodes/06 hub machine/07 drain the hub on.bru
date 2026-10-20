@@ -1,0 +1,29 @@
+meta {
+  name: Drain on the hub's own machine: it goes out of service
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n0/drain
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "on": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.id: eq "n0"
+  res.body.draining: eq true
+  res.body.state: eq "stopped"
+}

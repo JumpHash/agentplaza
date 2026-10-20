@@ -1,0 +1,22 @@
+meta {
+  name: The note is listed among the owner's attachments
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/files?kind=attachment
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it is there", function () {
+    expect(res.getBody().map((f) => f.id)).to.include(bru.getVar("file_note"));
+  });
+}

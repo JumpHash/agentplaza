@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a contact whose peer is text
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/contacts
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "peer_cid": "41002"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("invalid contact request");
+  });
+}

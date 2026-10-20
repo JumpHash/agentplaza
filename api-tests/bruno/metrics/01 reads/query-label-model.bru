@@ -1,0 +1,34 @@
+meta {
+  name: Read a series grouped by the model label
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/query
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "metric": "cpu",
+    "scope": "global",
+    "from_ms": 0,
+    "to_ms": 3600000,
+    "step_ms": 60000,
+    "agg": "avg",
+    "group": "label:model"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the answer lists groups", function () {
+    expect(res.getBody().groups).to.be.an("array");
+  });
+}

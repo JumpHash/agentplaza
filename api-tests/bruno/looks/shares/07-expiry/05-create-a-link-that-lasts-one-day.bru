@@ -1,0 +1,40 @@
+meta {
+  name: Create a link that lasts one day
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh7_art}}"
+    },
+    "expires_in_days": 1
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("sh7_share", res.getBody().id);
+}
+
+tests {
+  test("the expiry is about a day from now", function () {
+    const b = res.getBody();
+    const now = Date.now();
+    expect(b.state).to.equal("live");
+    expect(b.expires_ms - now).to.be.above(23 * 3600 * 1000);
+    expect(b.expires_ms - now).to.be.below(25 * 3600 * 1000);
+  });
+}

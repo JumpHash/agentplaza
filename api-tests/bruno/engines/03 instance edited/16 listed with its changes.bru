@@ -1,0 +1,25 @@
+meta {
+  name: The engine listing shows the instance as changed
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/v1/engines
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the instance is listed, not built-in and enabled", function () {
+    const e = res.getBody().find((x) => x.id === "t-eng-local");
+    expect(e, "listed").to.not.equal(undefined);
+    expect(e.builtin).to.equal(false);
+    expect(e.enabled).to.equal(true);
+  });
+}

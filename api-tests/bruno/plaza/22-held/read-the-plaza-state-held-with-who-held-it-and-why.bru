@@ -1,0 +1,18 @@
+meta {
+  name: Read the plaza state: held, with who held it and why
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/plaza/state
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq true
+  res.body.by: eq "owner"
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Remove the saved token
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/v1/foundry/hf/token
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("no token now", function () {
+    expect(res.getBody().hf_token_set).to.equal(false);
+  });
+}

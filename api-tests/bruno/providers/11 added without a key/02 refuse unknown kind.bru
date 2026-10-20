@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a provider of a kind that does not exist
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/providers
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-prov-compat",
+    "kind": "carrier-pigeon",
+    "auth": "none"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

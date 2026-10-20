@@ -1,0 +1,28 @@
+meta {
+  name: Read the artifact as the owner
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the owner sees the author, kind and panel", function () {
+    const b = res.getBody();
+    expect(b.id).to.equal(bru.getVar("looks_art"));
+    expect(b.author).to.equal("a5");
+    expect(b.kind).to.equal("document");
+    expect(b.panels.length).to.equal(1);
+    expect(b.bytes).to.be.above(0);
+    expect(b.project).to.equal("t-looks");
+  });
+}

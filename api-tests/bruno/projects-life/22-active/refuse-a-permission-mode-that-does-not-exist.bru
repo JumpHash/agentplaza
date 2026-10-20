@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a permission mode that does not exist
+  type: http
+  seq: 13
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"permission_mode": "nope"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "unknown variant"
+  res.responseTime: lt {{budgetMs}}
+}

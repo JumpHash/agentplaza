@@ -1,0 +1,24 @@
+meta {
+  name: The agora no longer lists the withdrawn task as a call
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/agora
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.calls: isArray
+}
+
+tests {
+  test("the withdrawn task is not a call", function () {
+    const id = bru.getVar("society_withdrawn_task");
+    expect(res.getBody().calls.find((c) => c.task === id)).to.be.undefined;
+  });
+}

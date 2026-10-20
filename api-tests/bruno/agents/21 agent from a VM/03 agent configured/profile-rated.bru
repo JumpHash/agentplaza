@@ -1,0 +1,17 @@
+meta {
+  name: The profile shows a reputation after the rating
+  type: http
+  seq: 22
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001/profile
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.reputation: isNumber
+}

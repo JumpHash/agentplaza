@@ -1,0 +1,22 @@
+meta {
+  name: Show what changed around a time
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/around?tab=overview&range=1h&t=1000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the answer is an object", function () {
+    expect(res.getBody()).to.be.an("object");
+  });
+}

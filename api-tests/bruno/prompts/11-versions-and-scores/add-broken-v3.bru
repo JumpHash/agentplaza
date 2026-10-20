@@ -1,0 +1,37 @@
+meta {
+  name: Add version 3 with an unknown variable: an error and a lower score
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "body": "# Tester\n\nYou are the test role. Check each request against the plan.\n\n## Rules\n\n- Stay in scope.\n- Name what you could not check.\n\nUse {{nope}} for the target.\n",
+    "note": "uses a variable",
+    "base_version": 2
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the version has one error and scores at most 75", function () {
+    const v = res.getBody().version;
+    expect(v.version).to.equal(3);
+    expect(v.errors).to.equal(1);
+    expect(v.score).to.be.at.most(75);
+  });
+}

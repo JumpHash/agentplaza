@@ -1,0 +1,35 @@
+meta {
+  name: Sign in with the rotated owner token: a session cookie is set
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/auth/session
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "token": "{{auth_owner_token}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.ok: eq true
+}
+
+tests {
+  test("the cookie is HttpOnly and strict", function () {
+    const cookie = JSON.stringify(res.getHeader("set-cookie"));
+    expect(cookie).to.include("HttpOnly");
+    expect(cookie).to.include("SameSite=Strict");
+  });
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for the change tree of a review run that does not exist
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/reviews/r-t-platforms-none/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no such review"
+}

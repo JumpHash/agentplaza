@@ -1,0 +1,20 @@
+meta {
+  name: Refuse a token against a host that is not an http(s) URL
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "gitlab", "host": "gitlab.example.test", "token": "t-platforms-token-0456"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

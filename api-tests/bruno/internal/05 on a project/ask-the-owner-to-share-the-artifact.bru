@@ -1,0 +1,33 @@
+meta {
+  name: Ask the owner to share the artifact
+  type: http
+  seq: 52
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts/{{int_art}}/share
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "reason": "t-internal share check",
+    "expires_in_days": 3,
+    "allow_download": false
+  }
+}
+
+script:post-response {
+  bru.setVar("int_share", res.getBody().approval);
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 202
+  res.body.state: eq "pending"
+}

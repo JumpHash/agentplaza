@@ -1,0 +1,23 @@
+meta {
+  name: List the tasks of a project that does not exist: none
+  type: http
+  seq: 48
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks?project=pr999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.tasks: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("no task belongs to the unknown project", function () {
+    expect(res.getBody().tasks.filter((t) => t.project === "pr999999")).to.deep.equal([]);
+  });
+}

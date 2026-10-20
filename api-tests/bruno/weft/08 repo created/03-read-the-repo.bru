@@ -1,0 +1,26 @@
+meta {
+  name: Read the new repo by its name
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/repos/t-weft-repo-a
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+  res.body.name: eq "t-weft-repo-a"
+  res.body.project: eq "t-weft-project"
+}
+
+tests {
+  test("the repo carries its description and no connection", function () {
+    const body = res.getBody();
+    expect(body.description).to.equal("bru repo");
+    expect(body.connections).to.eql([]);
+  });
+}

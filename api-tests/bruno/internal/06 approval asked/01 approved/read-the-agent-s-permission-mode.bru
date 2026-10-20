@@ -1,0 +1,23 @@
+meta {
+  name: Read the agent's permission mode
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/61004/permissions
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the mode is ask and set for the agent", function () {
+    expect(res.getBody().mode).to.equal("ask");
+    expect(res.getBody().source).to.equal("agent");
+  });
+}

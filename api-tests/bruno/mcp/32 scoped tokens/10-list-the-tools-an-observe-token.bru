@@ -1,0 +1,39 @@
+meta {
+  name: List the tools an observe token may see
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_observe_token}}
+  Mcp-Session-Id: {{mcp_observe_session}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/list",
+    "params": {}
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("an observe token sees the read tools and not the operate or govern ones", function () {
+    const names = res.getBody().result.tools.map((t) => t.name);
+    expect(names).to.include("plaza_status");
+    expect(names).to.not.include("create_task");
+    expect(names).to.not.include("skill_publish");
+  });
+}

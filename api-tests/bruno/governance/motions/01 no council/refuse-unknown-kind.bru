@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a motion of an unknown kind
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/motions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "proposer_cid": 8603,
+    "kind": "nope",
+    "text": "t-motion"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

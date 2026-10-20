@@ -1,0 +1,25 @@
+meta {
+  name: Refuse moving a task that already belongs to a project
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}/move
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"project": "{{tsk_pid}}"}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "never leaves its project"
+  res.responseTime: lt {{budgetMs}}
+}

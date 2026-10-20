@@ -1,0 +1,56 @@
+meta {
+  name: Add an engine instance as a local ACP command
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-eng-local",
+    "engine": "acp-local",
+    "command": "scratch-agent",
+    "args": [
+      "--stdio"
+    ],
+    "label": "Scratch local",
+    "accent": "#ff8800",
+    "env": {
+      "SCRATCH_FLAG": "1"
+    },
+    "home": "t-eng-home",
+    "route": "mock/t-model"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+  res.body.id: eq "t-eng-local"
+  res.body.engine: eq "acp-local"
+  res.body.builtin: eq false
+  res.body.source: eq "command"
+  res.body.enabled: eq true
+  res.body.label: eq "Scratch local"
+  res.body.accent: eq "#ff8800"
+  res.body.home: eq "t-eng-home"
+  res.body.route: eq "mock/t-model"
+  res.body.install.kind: eq "command"
+  res.body.install.command: eq "scratch-agent"
+}
+
+tests {
+  test("the instance's arguments and variables are kept", function () {
+    expect(res.getBody().args).to.deep.equal(["--stdio"]);
+    expect(res.getBody().env).to.deep.equal({SCRATCH_FLAG: "1"});
+  });
+}

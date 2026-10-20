@@ -1,0 +1,26 @@
+meta {
+  name: An empty change leaves the link as it was
+  type: http
+  seq: 10
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh10_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("download is still off", function () {
+    expect(res.getBody().allow_download).to.equal(false);
+  });
+}

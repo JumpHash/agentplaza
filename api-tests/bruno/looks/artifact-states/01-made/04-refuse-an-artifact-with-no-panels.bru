@@ -1,0 +1,35 @@
+meta {
+  name: Refuse an artifact with no panels
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-looks Empty",
+      "panels": []
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the empty panels", function () {
+    expect(JSON.stringify(res.getBody())).to.include("panels is empty");
+  });
+}

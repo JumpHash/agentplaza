@@ -1,0 +1,25 @@
+meta {
+  name: Refuse saving docs at version 1, which the built-in already holds
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  req.setBody({ toml: bru.getVar("docs_v1_toml") });
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "docs is already at version 1 or later"
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an update whose dry_run is not a boolean (the update always asks npm, so only validation is tested)
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/engines/update
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "dry_run": "maybe"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

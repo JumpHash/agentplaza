@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for the repositories of an unknown authorization
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/gitlab-99/repos?namespace=t-platforms-group
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+

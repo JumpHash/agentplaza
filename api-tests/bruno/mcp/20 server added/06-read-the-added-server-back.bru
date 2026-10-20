@@ -1,0 +1,24 @@
+meta {
+  name: Read the added server back
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: eq bru-fake-mcp
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the stored settings are the ones added", function () {
+    expect(res.getBody().allow_private).to.equal(true);
+    expect(res.getBody().transport.url).to.equal("http://127.0.0.1:9/mcp");
+  });
+}

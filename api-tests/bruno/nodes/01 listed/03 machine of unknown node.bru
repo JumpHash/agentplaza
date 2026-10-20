@@ -1,0 +1,23 @@
+meta {
+  name: Answer 502 for the machine of a node the hub does not know
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/n999/machine
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the node", function () {
+    expect(res.getBody().error).to.include("no node n999");
+  });
+}

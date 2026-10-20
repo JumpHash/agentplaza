@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a contact with an agent that does not exist
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/contacts
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "peer_cid": 999998
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no agent with guest CID 999998");
+  });
+}

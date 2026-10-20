@@ -1,0 +1,23 @@
+meta {
+  name: Refuse deleting an agent whose id is not a number
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/agents/abc
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("cid must be a number");
+  });
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse the logs of an unknown server
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/mcp/servers/no-such-mcp/logs
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Refuse the events of an artifact id, which is not a share
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/shares/{{sh1_art}}/events
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

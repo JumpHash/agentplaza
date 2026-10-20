@@ -1,0 +1,23 @@
+meta {
+  name: List the join codes after a refused join
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/codes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("the code the refused join named is still open", function () {
+    expect(res.getBody().map((c) => c.id)).to.include(bru.getVar("stations_code_id"));
+  });
+}

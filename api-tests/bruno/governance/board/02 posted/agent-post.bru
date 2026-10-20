@@ -1,0 +1,41 @@
+meta {
+  name: Post to the board as an agent on a project
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/board
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent_cid": 8601,
+    "subject": "t-board plan",
+    "body": "The agent's plan for the board tests."
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("boardAgentPost", res.getBody().id);
+}
+
+tests {
+  test("the post is the agent's and is on its project", function () {
+  const p = res.getBody();
+    expect(p.agent_cid).to.equal(8601);
+    expect(p.posted_by).to.equal("driver");
+    expect(p.project).to.equal(bru.getVar("boardProject"));
+  });
+}

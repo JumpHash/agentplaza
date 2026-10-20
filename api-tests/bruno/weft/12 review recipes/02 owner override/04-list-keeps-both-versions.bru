@@ -1,0 +1,24 @@
+meta {
+  name: The recipe list keeps both docs versions
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("docs is listed at versions 1 and 2", function () {
+    const versions = res.getBody().recipes.filter((r) => r.id === "docs").map((r) => r.version);
+    expect(versions).to.include(1);
+    expect(versions).to.include(2);
+  });
+}

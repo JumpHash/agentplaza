@@ -1,0 +1,16 @@
+meta {
+  name: Delete the artifact a second time
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

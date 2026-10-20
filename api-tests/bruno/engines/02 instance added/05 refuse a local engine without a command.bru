@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a local ACP engine with no command
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-eng-bad",
+    "engine": "acp-local"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a rollback without a version number
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets/sec_doesnotexist/rollback
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

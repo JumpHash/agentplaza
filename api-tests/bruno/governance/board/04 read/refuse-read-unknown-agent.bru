@@ -1,0 +1,28 @@
+meta {
+  name: Answer 404 for a read by an unknown agent
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/board/read
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent_cid": 8699,
+    "up_to": "{{boardAgentPost}}"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

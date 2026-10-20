@@ -1,0 +1,33 @@
+meta {
+  name: a sandbox start is refused as held
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{flowHeldE2bKey}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "templateID": "base"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal carries the held error code", function () {
+    expect(res.getBody().error_code).to.equal('sandbox_held');
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse an adoption with no title
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/adopt
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"finished": true}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "title"
+  res.responseTime: lt {{budgetMs}}
+}

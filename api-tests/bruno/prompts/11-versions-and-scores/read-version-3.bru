@@ -1,0 +1,25 @@
+meta {
+  name: Read the broken version: the finding names the rule
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/versions/3
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("template-var is an error on the version", function () {
+    const found = res.getBody().findings.find((f) => f.rule === "template-var");
+    expect(found).to.be.an("object");
+    expect(found.severity).to.equal("error");
+    expect(res.getBody().stale).to.equal(false);
+  });
+}

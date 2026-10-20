@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a contact that names no peer
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/contacts
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("missing field `peer_cid`");
+  });
+}

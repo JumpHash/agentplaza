@@ -1,0 +1,36 @@
+meta {
+  name: Switch a statute off, with the reason on record
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/laws/overrides/S-000a
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "disabled": true,
+    "reason": "Bruno suite switches it off"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.law: eq "S-000a"
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the override names the owner and the reason", function () {
+  const o = res.getBody().override;
+    expect(o.disabled_by).to.equal("owner");
+    expect(o.reason).to.equal("Bruno suite switches it off");
+  });
+}

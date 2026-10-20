@@ -1,0 +1,24 @@
+meta {
+  name: Take the browser back with the platform's refusal
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/callback?error=access_denied&state={{declined_state}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the page says the platform did not authorize the plaza", function () {
+    const html = res.getBody();
+    expect(html).to.include("Not authorized");
+    expect(html).to.include("access_denied");
+  });
+}

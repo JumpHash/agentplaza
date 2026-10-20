@@ -1,0 +1,17 @@
+meta {
+  name: Revoke the unicode key
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/v1/e2b/keys/{{e2bUniKeyId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.ok: eq true
+}

@@ -1,0 +1,22 @@
+meta {
+  name: The start page answers missing while no console is built
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("not HTML", function () {
+    expect(String(res.getBody())).to.not.include("<html");
+  });
+}

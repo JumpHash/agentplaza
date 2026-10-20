@@ -1,0 +1,30 @@
+meta {
+  name: Refuse an alert rule without its metric
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/alerts/rules
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "",
+    "name": "t-incomplete",
+    "agg": "avg",
+    "scope": "global",
+    "cmp": "gt",
+    "threshold": 1,
+    "for_ms": 0,
+    "severity": "warning"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

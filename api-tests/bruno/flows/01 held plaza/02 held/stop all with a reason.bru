@@ -1,0 +1,36 @@
+meta {
+  name: stop all with a reason
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/stop
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "reason": "flows hold"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the plaza is held by the owner with the reason", function () {
+    const b = res.getBody();
+    expect(b.paused).to.equal(true);
+    expect(b.by).to.equal('owner');
+    expect(b.reason).to.equal('flows hold');
+    expect(b.cancelled).to.be.a('number');
+  });
+}

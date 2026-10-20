@@ -1,0 +1,26 @@
+meta {
+  name: Show the waiting build in the owner's list
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/e2b/templates
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the owner sees the build waiting, with no tags yet", function () {
+    const t = res.getBody().templates.find((x) => x.templateID === bru.getVar("e2bFailTemplate"));
+    expect(t).to.exist;
+    const b = t.builds.find((x) => x.buildID === bru.getVar("e2bFailBuild"));
+    expect(b.status).to.equal("waiting");
+    expect(b.tags).to.deep.equal([]);
+  });
+}

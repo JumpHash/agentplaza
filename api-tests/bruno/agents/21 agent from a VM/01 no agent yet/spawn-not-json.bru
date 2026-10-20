@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a spawn whose body is not JSON
+  type: http
+  seq: 43
+}
+
+post {
+  url: {{baseUrl}}/v1/agents
+  body: text
+  auth: none
+}
+
+body:text {
+  {bad json
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("bad body");
+  });
+}

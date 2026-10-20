@@ -1,0 +1,33 @@
+meta {
+  name: Issue a join code to try a workstation join with
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/codes
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "label": "t-stations-join"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+  res.body.id: isString
+  res.body.token: isString
+}
+
+script:post-response {
+  bru.setVar("stations_code_id", res.getBody().id);
+  bru.setVar("stations_code_token", res.getBody().token);
+}

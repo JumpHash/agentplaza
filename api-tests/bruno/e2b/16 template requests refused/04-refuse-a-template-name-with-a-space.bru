@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a template name with a space
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "bad name"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "invalid_request"
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a PNG of a table panel
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh5_share}}/export?format=png&panel=sales
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

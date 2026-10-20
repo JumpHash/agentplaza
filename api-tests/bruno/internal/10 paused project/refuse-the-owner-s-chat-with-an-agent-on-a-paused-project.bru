@@ -1,0 +1,29 @@
+meta {
+  name: Refuse the owner's chat with an agent on a paused project
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/61009/chat
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "text": "t-internal chat"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 409
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the reason", function () {
+    expect(res.getBody().error).to.include("paused");
+  });
+}

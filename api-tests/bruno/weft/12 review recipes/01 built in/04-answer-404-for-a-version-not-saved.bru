@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for a recipe version that was never saved
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/docs?version=9
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no such recipe"
+}

@@ -313,6 +313,9 @@ fn refused(e: String) -> Response {
         || e.contains("expected")
         || e.contains("already")
         || e.contains("next ")
+        // A repo name in use (the store's "repo <name> exists"; a repo name has no spaces). Other "exists"
+        // refusals stay 400.
+        || (e.starts_with("repo ") && e.ends_with(" exists"))
     {
         409
     } else {
@@ -1556,4 +1559,19 @@ pub fn change_view(st: &State, c: &Change) -> Value {
         "revisions": revs, "drafts": c.drafts, "rounds": c.rounds, "landed": c.landed, "intents": c.intents, "records": records,
         "conflict": c.conflict, "queue_position": queue_pos, "import": c.import, "exported": c.exported, "opened_ms": c.opened_ms,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repo_name_in_use_is_a_conflict_and_other_exists_refusals_stay_400() {
+        assert_eq!(refused("repo ci exists".into()).status, 409);
+        // The artifact and version refusals are not the repo's: they keep their 400.
+        assert_eq!(refused("artifact a1 exists".into()).status, 400);
+        assert_eq!(refused("ci v2 exists".into()).status, 400);
+        assert_eq!(refused("repo ci is frozen".into()).status, 409);
+        assert_eq!(refused("bad repo name \"\"".into()).status, 400);
+    }
 }

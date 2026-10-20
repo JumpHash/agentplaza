@@ -1,0 +1,23 @@
+meta {
+  name: List only the fragments
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts?kind=fragment
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.prompts: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("every row is a fragment", function () {
+    for (const p of res.getBody().prompts) expect(p.kind).to.equal("fragment");
+  });
+}

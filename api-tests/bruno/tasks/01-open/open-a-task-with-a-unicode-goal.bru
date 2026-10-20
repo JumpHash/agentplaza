@@ -1,0 +1,29 @@
+meta {
+  name: Open a task with a unicode goal
+  type: http
+  seq: 45
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks Écrire les notes — 日本語 ✓", "budget": 200, "project": "{{tsk_pid}}"}
+}
+
+assert {
+  res.status: eq 201
+  res.body.goal: contains "日本語"
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("tsk_unicode", res.getBody().id);
+}

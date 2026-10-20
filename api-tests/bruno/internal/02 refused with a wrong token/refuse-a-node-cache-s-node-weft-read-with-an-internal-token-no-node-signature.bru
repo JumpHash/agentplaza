@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a node cache's node weft read with an internal token, no node signature
+  type: http
+  seq: 38
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/nodes/1/weft/wire/objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "bad node signature"
+}

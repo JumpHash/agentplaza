@@ -1,0 +1,26 @@
+meta {
+  name: The live version shows what was published
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.skill.active_version: eq 2
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the live view holds version 2's SKILL.md", function () {
+    const body = res.getBody();
+    expect(body.live.version).to.equal(2);
+    expect(body.live.skill_md).to.contain("Also keep the answer short");
+    expect(body.skill.score).to.be.a("number");
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Read the registered agent
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.cid: eq 41001
+  res.body.status: eq "idle"
+  res.body.kind: eq "llm"
+}
+
+tests {
+  test("it says it waits on the bench", function () {
+    expect(res.getBody().held).to.include("bench");
+  });
+}

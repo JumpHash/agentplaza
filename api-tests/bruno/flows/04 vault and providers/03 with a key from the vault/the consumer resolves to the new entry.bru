@@ -1,0 +1,24 @@
+meta {
+  name: the consumer resolves to the new entry
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/consumers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the anthropic binding points at the key", function () {
+    const c = res.getBody().find((x) => x.binding === 'provider:anthropic');
+    expect(c, 'anthropic consumer').to.not.be.undefined;
+    expect(c.per_node.n0).to.equal(bru.getVar('flowKeyId'));
+  });
+}

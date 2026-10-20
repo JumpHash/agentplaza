@@ -1,0 +1,26 @@
+meta {
+  name: Read the rules: the law is on again and the change is in the history
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/laws/rules
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the law is not off, and the history records the switch on", function () {
+  const body = res.getBody();
+    expect(body.constitutional_off).to.not.include("C-001a");
+    const last = body.history[body.history.length - 1];
+    expect(last.law).to.equal("C-001a");
+    expect(last.disabled).to.equal(false);
+  });
+}

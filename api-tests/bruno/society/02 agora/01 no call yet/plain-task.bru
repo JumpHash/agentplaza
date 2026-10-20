@@ -1,0 +1,29 @@
+meta {
+  name: A task with no role makes no agora call
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "goal": "Plain task",
+    "budget": 300,
+    "project": "{{society_project}}"
+  }
+}
+
+script:post-response {
+  bru.setVar("society_plain_task", res.getBody().id);
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+  res.body.role: isNull
+}

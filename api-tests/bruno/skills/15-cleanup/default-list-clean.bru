@@ -1,0 +1,24 @@
+meta {
+  name: Neither test skill is in the default list any more
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/skills
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the test skills are out of the default list", function () {
+    const ids = res.getBody().skills.map((s) => s.id);
+    expect(ids).to.not.include("t-skill-life");
+    expect(ids).to.not.include("t-skill-arc");
+  });
+}

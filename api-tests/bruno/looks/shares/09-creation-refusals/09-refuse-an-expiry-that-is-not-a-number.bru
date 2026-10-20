@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an expiry that is not a number
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh9_art}}"
+    },
+    "expires_ms": "soon"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

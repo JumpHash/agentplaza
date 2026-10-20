@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an OAuth app on a platform the plaza does not know
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/registrations
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "bitbucket", "client_id": "t-platforms-client", "client_secret": "x"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "kind is github, gitlab or forgejo"
+}

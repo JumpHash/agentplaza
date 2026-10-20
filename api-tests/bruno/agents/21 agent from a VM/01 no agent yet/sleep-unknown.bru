@@ -1,0 +1,27 @@
+meta {
+  name: Answer 404 when putting an agent that does not exist to sleep
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/999999/sleep
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no such agent");
+  });
+}

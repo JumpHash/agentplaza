@@ -1,0 +1,34 @@
+meta {
+  name: Check a source that declares no law
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/check
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "source": ""
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the check says not ok, and names the missing law", function () {
+  const body = res.getBody();
+    expect(body.ok).to.equal(false);
+    expect(body.diagnostics[0].message).to.contain("declares no law");
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a contact of an agent with itself
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/contacts
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "peer_cid": 41001
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("cannot be its own contact");
+  });
+}

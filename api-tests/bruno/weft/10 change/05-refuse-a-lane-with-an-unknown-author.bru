@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a lane whose author is not a known actor
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/lanes
+  body: json
+  auth: none
+}
+
+body:json {
+  {"repo": "t-weft-repo-d", "ref": "main", "title": "t lane", "author": "stranger"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the refusal names the author field", function () {
+    expect(res.getBody().error).to.include("author");
+  });
+}

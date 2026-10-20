@@ -1,0 +1,23 @@
+meta {
+  name: Acknowledge the owner's rule for the global scope
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/alerts/{{metrics_rule_id}}/ack
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "subject": "global"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.ok: eq true
+}

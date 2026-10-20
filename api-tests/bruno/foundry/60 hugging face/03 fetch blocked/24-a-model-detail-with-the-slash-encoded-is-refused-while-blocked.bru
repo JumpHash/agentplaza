@@ -1,0 +1,22 @@
+meta {
+  name: A model detail with the slash encoded is refused while huggingface.co is blocked
+  type: http
+  seq: 24
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/hf/models/t-org%2Ft-model
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the block list", function () {
+    expect(res.getBody().error).to.include("fetch_block");
+  });
+}

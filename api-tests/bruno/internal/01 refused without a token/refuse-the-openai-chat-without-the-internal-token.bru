@@ -1,0 +1,29 @@
+meta {
+  name: Refuse the openai chat without the internal token
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/openai/v1/chat/completions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "model": "gpt-6-luna",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ]
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

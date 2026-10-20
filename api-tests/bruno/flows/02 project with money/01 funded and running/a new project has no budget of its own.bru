@@ -1,0 +1,23 @@
+meta {
+  name: a new project has no budget of its own
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("no own budget and no balance yet", function () {
+    expect(res.getBody().own).to.equal(false);
+    expect(res.getBody().balance).to.equal(0);
+  });
+}

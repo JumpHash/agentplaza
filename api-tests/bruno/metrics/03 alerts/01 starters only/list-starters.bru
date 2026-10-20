@@ -1,0 +1,28 @@
+meta {
+  name: List the alerts with only the starter rules
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/alerts
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the starter rules are listed and marked as starters", function () {
+    const body = res.getBody();
+    expect(body.rules).to.be.an("array");
+    const ttft = body.rules.find((r) => r.id === "starter-ttft");
+    expect(ttft, "starter listed").to.not.be.undefined;
+    expect(ttft.starter).to.equal(true);
+    expect(body.subjects).to.be.an("array");
+    expect(body.history).to.be.an("array");
+  });
+}

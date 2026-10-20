@@ -1,0 +1,33 @@
+meta {
+  name: Start creating the plaza's GitHub App on a host that refuses
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/github/app
+  body: json
+  auth: none
+}
+
+body:json {
+  {"host": "http://127.0.0.1:1", "name": "t-platforms app"}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.state: isString
+}
+
+script:post-response {
+  bru.setVar("gh_state", res.getBody().state);
+}
+
+tests {
+  test("a state and the page the browser opens", function () {
+    const b = res.getBody();
+    expect(b.state).to.match(/^[0-9a-f]{32}$/);
+    expect(b.go).to.include("/v1/platforms/flows/" + b.state + "/go");
+  });
+}

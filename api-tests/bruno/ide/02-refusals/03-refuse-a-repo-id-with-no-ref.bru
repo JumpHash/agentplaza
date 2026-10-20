@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a repo id with no ref
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/repo:x/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

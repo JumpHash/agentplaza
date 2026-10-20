@@ -1,0 +1,24 @@
+meta {
+  name: The project's graph lists the resumed work as ready
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/graph
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the waiting task is in the frontier", function () {
+    const g = res.getBody();
+    expect(g.frontier).to.include(bru.getVar("life_task_paused"));
+    expect(g.tasks.map((t) => t.id)).to.include(bru.getVar("life_task_default"));
+  });
+}

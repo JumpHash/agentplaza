@@ -1,0 +1,29 @@
+meta {
+  name: List the connectors with unsplash configured and enabled
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/connectors
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("unsplash is enabled, configured and its key is set; no value in the list", function () {
+    const list = res.getBody();
+    const u = list.find((c) => c.id === "unsplash");
+    expect(u.enabled).to.equal(true);
+    expect(u.configured).to.equal(true);
+    expect(u.projects).to.eql(["t-platforms-project"]);
+    expect(u.fields.find((f) => f.name === "access_key").set).to.equal(true);
+    expect(JSON.stringify(list)).to.not.include("t-unsplash-key-0789");
+    expect(JSON.stringify(list)).to.not.include("t-unsplash-app-42");
+  });
+}

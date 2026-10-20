@@ -1,0 +1,22 @@
+meta {
+  name: Export the chart panel as PNG
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/export?format=png&panel=trend
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the PNG is an image", function () {
+    expect(res.getHeader("content-type")).to.include("image/png");
+  });
+}

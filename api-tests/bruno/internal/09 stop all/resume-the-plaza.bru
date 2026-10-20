@@ -1,0 +1,21 @@
+meta {
+  name: Resume the plaza
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/resume
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.paused: eq false
+}

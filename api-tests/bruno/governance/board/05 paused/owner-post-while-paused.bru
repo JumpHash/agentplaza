@@ -1,0 +1,28 @@
+meta {
+  name: Post as the owner while the project's deliveries are paused: stored
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/board/posts
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "subject": "t-board owner paused",
+    "body": "Owner note while paused.",
+    "project": "{{boardProject}}"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}

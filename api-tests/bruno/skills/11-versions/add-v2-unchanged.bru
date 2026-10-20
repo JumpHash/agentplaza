@@ -1,0 +1,41 @@
+meta {
+  name: Send the same version again: nothing new, the file by its sha256
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n\nAlso keep the answer short.\n",
+    "files": [
+      {
+        "path": "reference.md",
+        "sha256": "{{lifeRefSha}}"
+      }
+    ],
+    "note": "more",
+    "base_version": 2
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the latest version comes back unchanged", function () {
+    expect(res.getBody().created).to.equal(false);
+    expect(res.getBody().version.version).to.equal(2);
+  });
+}

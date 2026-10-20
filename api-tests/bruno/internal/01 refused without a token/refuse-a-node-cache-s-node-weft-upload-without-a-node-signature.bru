@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a node cache's node weft upload without a node signature
+  type: http
+  seq: 40
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/nodes/1/weft/wire/objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  body: text
+  auth: none
+}
+
+headers {
+  Content-Type: text/plain
+}
+
+body:text {
+  abc
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "bad node signature"
+}

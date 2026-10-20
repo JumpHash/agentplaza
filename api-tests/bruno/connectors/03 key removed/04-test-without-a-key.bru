@@ -1,0 +1,25 @@
+meta {
+  name: Test a connector with no key stored, which reports no key and calls nothing out
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/connectors/unsplash/test
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.ok: eq false
+}
+
+tests {
+  test("the check says there is no key and carries no detail of a key", function () {
+    const body = res.getBody();
+    expect(body.detail).to.equal("no key stored");
+    expect(body.latency_ms).to.equal(0);
+  });
+}

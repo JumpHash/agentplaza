@@ -1,0 +1,26 @@
+meta {
+  name: Export the project's board thread as JSON
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/board/export?project={{boardProject}}&format=json
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.posts: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the JSON holds both posts, with the comment", function () {
+  const posts = res.getBody().posts;
+    const agent = posts.find((p) => p.id === bru.getVar("boardAgentPost"));
+    expect(posts.map((p) => p.id)).to.include(bru.getVar("boardOwnerPost"));
+    expect(agent.comments.length).to.equal(1);
+  });
+}

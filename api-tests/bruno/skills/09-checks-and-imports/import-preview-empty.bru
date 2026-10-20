@@ -1,0 +1,16 @@
+meta {
+  name: Refuse an import preview with no body
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/import/preview
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt {{budgetMs}}
+}

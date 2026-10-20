@@ -1,0 +1,16 @@
+meta {
+  name: List the changes of a missing workspace
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/agent:999999/changes?base=HEAD
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

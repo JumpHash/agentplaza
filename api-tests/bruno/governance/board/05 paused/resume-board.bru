@@ -1,0 +1,27 @@
+meta {
+  name: Resume the whole board's deliveries
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/board/pause
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "on": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused_all: eq false
+  res.responseTime: lt {{budgetMs}}
+}

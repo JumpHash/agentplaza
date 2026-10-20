@@ -1,0 +1,24 @@
+meta {
+  name: List the agents' calls with a limit
+  type: http
+  seq: 30
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/calls?scope=global&limit=10
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the calls are a list no longer than the limit", function () {
+    const body = res.getBody();
+    expect(body).to.be.an("array");
+    expect(body.length).to.be.at.most(10);
+  });
+}

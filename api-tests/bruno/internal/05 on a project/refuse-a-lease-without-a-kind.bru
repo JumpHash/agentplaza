@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a lease without a kind
+  type: http
+  seq: 78
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/stations/s-t-internal-none/leases
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 400
+  res.body.error: isString
+}

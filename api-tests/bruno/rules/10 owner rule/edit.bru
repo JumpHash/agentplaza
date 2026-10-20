@@ -1,0 +1,28 @@
+meta {
+  name: Change an owner rule's title and its law
+  type: http
+  seq: 8
+}
+
+put {
+  url: {{baseUrl}}/v1/laws/rules/{{lawRuleId}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "Bruno law rule renamed",
+    "source": "law \"R-bruno-3\" \"Bruno law renamed\" {\n  statement \"Renamed by the API suite.\"\n  enforcement preventive\n  severity info\n  permit tool.exec\n  principal is Agent\n}\n"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.title: eq "Bruno law rule renamed"
+  res.responseTime: lt {{budgetMs}}
+}

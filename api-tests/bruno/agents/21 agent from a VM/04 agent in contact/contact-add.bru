@@ -1,0 +1,24 @@
+meta {
+  name: Add a contact from the agent to its peer
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/contacts
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "peer_cid": 41002
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.peer_cid: eq 41002
+  res.body.kind: eq "met"
+}

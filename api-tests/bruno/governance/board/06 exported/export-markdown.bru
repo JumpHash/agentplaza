@@ -1,0 +1,25 @@
+meta {
+  name: Export the project's board thread as Markdown
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/board/export?project={{boardProject}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the Markdown holds both posts", function () {
+  const text = String(res.getBody());
+    expect(text).to.contain("# Plaza board");
+    expect(text).to.contain("t-board plan");
+    expect(text).to.contain("t-board owner note");
+  });
+}

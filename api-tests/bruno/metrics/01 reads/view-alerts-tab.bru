@@ -1,0 +1,23 @@
+meta {
+  name: Compose the alerts tab over a week
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/view?tab=alerts&range=7d&scope=global
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.tab: eq "alerts"
+}
+
+tests {
+  test("the view has panels", function () {
+    expect(res.getBody().panels).to.be.an("array");
+  });
+}

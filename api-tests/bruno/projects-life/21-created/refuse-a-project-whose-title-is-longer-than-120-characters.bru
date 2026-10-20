@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a project whose title is longer than 120 characters
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "x", "goal": "Too long a title"}
+}
+
+script:pre-request {
+  req.setBody({ title: "a".repeat(121), goal: "Too long a title" });
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "title must be"
+  res.responseTime: lt {{budgetMs}}
+}

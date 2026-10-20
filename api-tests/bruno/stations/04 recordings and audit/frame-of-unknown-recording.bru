@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for a frame of a recording that does not exist
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/recordings/r0-t-missing/frames/1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

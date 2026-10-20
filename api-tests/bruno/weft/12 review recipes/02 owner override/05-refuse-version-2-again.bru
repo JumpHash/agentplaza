@@ -1,0 +1,25 @@
+meta {
+  name: Refuse saving docs at version 2 a second time
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  req.setBody({ toml: 'id = "docs"\nversion = 2\ntitle = "again"\n\n[[node]]\nid = "gate"\nkind = "gate"\n' });
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "docs is already at version 2 or later"
+}

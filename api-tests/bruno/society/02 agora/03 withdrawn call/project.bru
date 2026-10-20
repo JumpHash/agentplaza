@@ -1,0 +1,29 @@
+meta {
+  name: Open a project for a task that is withdrawn
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "t-agents withdrawn",
+    "goal": "Withdraw a roled task",
+    "kind": "code"
+  }
+}
+
+script:post-response {
+  bru.setVar("society_project", res.getBody().id);
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+  res.body.stage: eq "implementation"
+}

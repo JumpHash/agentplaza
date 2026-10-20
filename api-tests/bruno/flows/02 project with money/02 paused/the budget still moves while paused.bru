@@ -1,0 +1,33 @@
+meta {
+  name: the budget still moves while paused
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "credits": 100
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the project holds 900 now", function () {
+    expect(res.getBody().balance).to.equal(900);
+    expect(res.getBody().plaza).to.equal(Number(bru.getVar('flowMoneyPlazaBefore')) - 1600);
+  });
+}

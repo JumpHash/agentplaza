@@ -1,0 +1,45 @@
+meta {
+  name: Add a version to the artifact
+  type: http
+  seq: 49
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts/{{int_art}}
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-internal artifact v2",
+      "panels": [
+        {
+          "id": "p1",
+          "title": "Note",
+          "span": 12,
+          "body": {
+            "type": "document",
+            "markdown": "second"
+          }
+        }
+      ]
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 201
+}
+
+tests {
+  test("the new version is 2", function () {
+    expect(res.getBody().version).to.equal(2);
+  });
+}

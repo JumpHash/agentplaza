@@ -1,0 +1,22 @@
+meta {
+  name: Create a branch in a missing workspace
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/ide/workspaces/agent:999999/branch
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "t-ide-branch"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

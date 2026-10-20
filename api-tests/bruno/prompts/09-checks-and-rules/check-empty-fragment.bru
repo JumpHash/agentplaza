@@ -1,0 +1,34 @@
+meta {
+  name: Check an empty fragment: the empty rule is an error
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/check
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "kind": "fragment",
+    "body": ""
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the empty rule fires", function () {
+    expect(res.getBody().findings.map((f) => f.rule)).to.include("empty");
+    expect(res.getBody().errors).to.equal(1);
+  });
+}

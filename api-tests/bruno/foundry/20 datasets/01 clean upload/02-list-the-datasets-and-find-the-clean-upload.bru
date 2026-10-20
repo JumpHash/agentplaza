@@ -1,0 +1,26 @@
+meta {
+  name: List the datasets and find the clean upload
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/datasets
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("the clean upload is listed with its row counts", function () {
+    const ds = res.getBody().find(x => x.id === bru.getVar("fdy_clean"));
+    expect(ds).to.not.be.undefined;
+    expect(ds.name).to.equal("t-ds-clean");
+    expect(ds.rows + ds.frozen_rows).to.equal(20);
+  });
+}

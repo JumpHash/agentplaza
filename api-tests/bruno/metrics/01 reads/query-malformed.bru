@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a query body that is not JSON
+  type: http
+  seq: 26
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/query
+  body: json
+  auth: none
+}
+
+body:json {
+  { "metric": "cpu", 
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

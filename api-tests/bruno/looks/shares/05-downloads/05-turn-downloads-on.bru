@@ -1,0 +1,28 @@
+meta {
+  name: Turn downloads on
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh5_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "allow_download": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("downloads are on", function () {
+    expect(res.getBody().allow_download).to.equal(true);
+  });
+}

@@ -1,0 +1,32 @@
+meta {
+  name: Refuse a usage provider label longer than 60 characters
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/usage-providers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-usage-hub",
+    "url": "https://cliproxy.invalid:8317",
+    "label": "lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll",
+    "key": "t-usage-key-0123456789"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the error names the label", function () {
+    expect(res.getBody().error).to.include("label must be");
+  });
+}

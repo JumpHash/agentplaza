@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a rule body that is not JSON
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/egress/inject
+  body: text
+  auth: none
+}
+
+body:text {
+  {"host": 
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

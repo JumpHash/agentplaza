@@ -1,0 +1,20 @@
+meta {
+  name: Refuse an agent reading an artifact another agent made
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/6/gateway/artifacts/{{looks_art}}
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

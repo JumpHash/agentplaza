@@ -1,0 +1,26 @@
+meta {
+  name: Refuse to publish a version that does not exist
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/publish
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "version": 99
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Refuse to decide an approval that is already used
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/approvals/{{int_appr_1}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "approve": true
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: gte 400
+  res.status: lt 500
+  res.body.error: isString
+}

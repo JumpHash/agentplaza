@@ -1,0 +1,35 @@
+meta {
+  name: Create a share with downloads off by default
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh5_art}}"
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("sh5_share", res.getBody().id);
+}
+
+tests {
+  test("downloads are off", function () {
+    expect(res.getBody().allow_download).to.equal(false);
+  });
+}

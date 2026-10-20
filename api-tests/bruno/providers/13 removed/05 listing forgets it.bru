@@ -1,0 +1,22 @@
+meta {
+  name: The provider list no longer has the deleted provider
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/providers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the deleted provider is not listed", function () {
+    expect(res.getBody().map((p) => p.id)).to.not.include("t-prov-compat");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Move a shadow model to shadow again: refused
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/shadow
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says the move needs trained", function () {
+    expect(res.getBody().error).to.include("this move needs it to be trained");
+  });
+}

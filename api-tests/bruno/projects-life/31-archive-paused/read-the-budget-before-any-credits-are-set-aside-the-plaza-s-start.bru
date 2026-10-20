@@ -1,0 +1,21 @@
+meta {
+  name: Read the budget before any credits are set aside: the plaza's start
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_xpid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.own: eq false
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("life_xplaza_start", res.getBody().plaza);
+}

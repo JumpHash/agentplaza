@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when removing a discovery that does not exist
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/toolbox/d999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: eq "no discovery d999999"
+  res.responseTime: lt {{budgetMs}}
+}

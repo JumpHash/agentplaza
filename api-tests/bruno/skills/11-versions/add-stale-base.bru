@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a version built on an old base (409)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n\nSee [the notes](notes.md) too.\n",
+    "files": [
+      {
+        "path": "reference.md",
+        "sha256": "{{lifeRefSha}}"
+      }
+    ],
+    "note": "more",
+    "base_version": 1
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

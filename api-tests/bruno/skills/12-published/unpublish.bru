@@ -1,0 +1,23 @@
+meta {
+  name: Unpublish the skill: nothing is live
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/unpublish
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.skill.active_version: eq null
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the score goes with the live version", function () {
+    expect(res.getBody().skill.score).to.equal(null);
+  });
+}

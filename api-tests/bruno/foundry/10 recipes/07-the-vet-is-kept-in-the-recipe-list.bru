@@ -1,0 +1,24 @@
+meta {
+  name: The vet is kept in the recipe list
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/recipes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the seeded recipe reads back as vetted by the owner", function () {
+    const r = res.getBody().find(x => x.id === "rung-predictor@1");
+    expect(r.vetted_by).to.equal("owner");
+    expect(r.local_dev).to.equal(true);
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a live lease without its tab and range
+  type: http
+  seq: 42
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/live
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "scope": "global"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

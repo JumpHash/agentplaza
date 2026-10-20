@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when archiving an unknown skill
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/no-such-skill/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

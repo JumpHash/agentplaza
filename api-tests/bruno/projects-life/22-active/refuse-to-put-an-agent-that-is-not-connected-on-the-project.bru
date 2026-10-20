@@ -1,0 +1,25 @@
+meta {
+  name: Refuse to put an agent that is not connected on the project
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/members
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"cid": 1000}
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: contains "no agent 1000"
+  res.responseTime: lt {{budgetMs}}
+}

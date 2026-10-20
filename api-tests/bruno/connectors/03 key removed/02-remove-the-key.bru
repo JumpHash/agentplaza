@@ -1,0 +1,24 @@
+meta {
+  name: Remove every credential of unsplash, which is then unconfigured
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/connectors/unsplash/secret
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("no field is set and unsplash is not configured", function () {
+    const body = res.getBody();
+    expect(body.configured).to.equal(false);
+    expect(body.fields.every((f) => f.set === false)).to.equal(true);
+  });
+}

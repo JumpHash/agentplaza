@@ -1,0 +1,22 @@
+meta {
+  name: List the artifacts of a project that has none
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts?project=t-nope-project
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the artifact is not in another project", function () {
+    expect(res.getBody().map((a) => a.id)).to.not.include(bru.getVar("looks_art"));
+  });
+}

@@ -1,0 +1,45 @@
+meta {
+  name: Refuse an artifact whose panel span is not a grid span
+  type: http
+  seq: 45
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-internal span",
+      "panels": [
+        {
+          "id": "p1",
+          "title": "Note",
+          "span": 1,
+          "body": {
+            "type": "document",
+            "markdown": "hi"
+          }
+        }
+      ]
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 400
+}
+
+tests {
+  test("the problem names the span", function () {
+    expect(res.getBody().problems[0]).to.include("span 1");
+  });
+}

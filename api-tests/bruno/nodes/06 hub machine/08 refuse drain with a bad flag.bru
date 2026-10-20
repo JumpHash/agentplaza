@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a drain whose on flag is not a boolean
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n0/drain
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "on": "yes"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

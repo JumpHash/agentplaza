@@ -1,0 +1,24 @@
+meta {
+  name: List the motions: none, with the quorum rule
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/motions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.motions: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the quorum names four seats", function () {
+  expect(res.getBody().quorum.seats).to.equal(4);
+    expect(res.getBody().quorum.rule).to.be.a("string");
+  });
+}

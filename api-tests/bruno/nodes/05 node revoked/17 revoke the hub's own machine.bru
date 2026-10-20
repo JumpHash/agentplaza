@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when revoking the hub's own machine (it is not a joined node)
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n0/revoke
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

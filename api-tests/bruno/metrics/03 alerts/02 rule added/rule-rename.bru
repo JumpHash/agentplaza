@@ -1,0 +1,39 @@
+meta {
+  name: Save the owner's rule again with a new threshold
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/alerts/rules
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "{{metrics_rule_id}}",
+    "name": "t-metrics rule renamed",
+    "metric": "cpu",
+    "agg": "avg",
+    "scope": "global",
+    "cmp": "gt",
+    "threshold": 90,
+    "for_ms": 60000,
+    "severity": "warning",
+    "on": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.rule.threshold: eq 90
+  res.body.rule.name: eq "t-metrics rule renamed"
+}
+
+tests {
+  test("the saved rule keeps the same id", function () {
+    expect(res.getBody().rule.id).to.equal(bru.getVar("metrics_rule_id"));
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a forecast with an unknown range
+  type: http
+  seq: 39
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/forecast?range=2w
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error names the range", function () {
+    expect(res.getBody().error).to.include("range");
+  });
+}

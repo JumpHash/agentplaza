@@ -1,0 +1,32 @@
+meta {
+  name: The agent's session ends
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61010/gone
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "reason": "session ended"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the reply is empty", function () {
+    expect(res.getBody()).to.deep.equal({});
+  });
+}

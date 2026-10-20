@@ -1,0 +1,44 @@
+meta {
+  name: Refuse an engine request from a harness without ACP support
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61007/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "e2",
+    "name": "engine.exec",
+    "input": {
+      "command": "make test"
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+  res.body.reply.is_error: eq true
+}
+
+tests {
+  test("the decision is deny", function () {
+    expect(res.getBody().reply.decision).to.equal("deny");
+  });
+  test("it is held as a refusal, not a pending decision", function () {
+    expect(res.getBody().reply.decision).to.equal("deny");
+    expect(res.getBody().reply.output).to.include("waiting for the owner's approval");
+  });
+}

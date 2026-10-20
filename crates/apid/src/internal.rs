@@ -453,6 +453,16 @@ pub(crate) fn egress_verdict(
     }
 }
 
+/// The verdict for a connection from a CID the hub has no agent or sandbox for: refused. The proxy
+/// fails closed, so a party the hub never registered reaches nothing.
+pub(crate) fn unknown_agent_verdict() -> EgressVerdict {
+    EgressVerdict {
+        allow: false,
+        law: None,
+        reason: Some("unknown agent".to_string()),
+    }
+}
+
 /// The answer to the egress proxy for agent `cid` connecting to `host`. The laws are asked for
 /// every host, so a forbidden attempt is recorded as a violation even when the blocklist would
 /// refuse it too. The laws only forbid here: a permit is not required (see the report on
@@ -460,6 +470,16 @@ pub(crate) fn egress_verdict(
 fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
     // A sandbox's CID is a party of its own: the laws see the role `sandbox`, and it never intercepts.
     let sandbox = crate::e2b::sandbox_by_cid(app, cid);
+    // A CID that is neither an agent nor a sandbox is refused before the laws are asked.
+    if sandbox.is_none() && app.agents.get(cid).is_none() {
+        let verdict = unknown_agent_verdict();
+        return json!({
+            "allow": verdict.allow,
+            "law": verdict.law,
+            "reason": verdict.reason,
+            "intercept": false,
+        });
+    }
     let role = match &sandbox {
         Some(_) => "sandbox".to_string(),
         None => app
@@ -1330,6 +1350,20 @@ mod egress_check_tests {
                 allow: false,
                 law: None,
                 reason: Some("refused: evil.example is on the fetch blocklist".into())
+            }
+        );
+    }
+
+    #[test]
+    fn a_cid_the_hub_never_heard_of_is_refused_at_egress() {
+        // egress_check_fails_closed_for_an_unknown_cid: the verdict for an unknown party denies,
+        // names why, and carries no law (the laws are not asked for it).
+        assert_eq!(
+            unknown_agent_verdict(),
+            EgressVerdict {
+                allow: false,
+                law: None,
+                reason: Some("unknown agent".into())
             }
         );
     }

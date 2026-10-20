@@ -1,0 +1,26 @@
+meta {
+  name: The latest docs recipe is the owner's version 2
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.recipe.version: eq 2
+}
+
+tests {
+  test("its TOML is the one saved, with its rounds and its style node", function () {
+    const toml = res.getBody().toml;
+    expect(toml).to.include("version = 2");
+    expect(toml).to.include("rounds = 1");
+    expect(toml).to.include('id = "style"');
+  });
+}

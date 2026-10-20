@@ -1,0 +1,24 @@
+meta {
+  name: Rename a conversation that does not exist
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{baseUrl}}/v1/owner/conversations/c999999
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-owner renamed"}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

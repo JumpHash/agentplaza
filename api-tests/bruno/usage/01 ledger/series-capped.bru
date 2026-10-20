@@ -1,0 +1,24 @@
+meta {
+  name: Cap a year-long hourly series at 2000 points
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/series?from=0&to=9007199254740991&bucket=hour
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the series has at most 2000 points", function () {
+    const points = res.getBody().points;
+    expect(points.length).to.be.above(0);
+    expect(points.length).to.be.at.most(2000);
+  });
+}

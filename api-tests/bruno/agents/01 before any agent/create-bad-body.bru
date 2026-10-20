@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a custom role with missing fields
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/roles
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "x"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,34 @@
+meta {
+  name: Refuse a file whose content is not base64
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-skill-b64",
+    "title": "Bad base64",
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n",
+    "files": [
+      {
+        "path": "x.md",
+        "content_b64": "!!!"
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt {{budgetMs}}
+}

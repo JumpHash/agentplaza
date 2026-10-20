@@ -1,0 +1,32 @@
+meta {
+  name: Refuse a roled task for a project that does not exist
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "goal": "Scout sources",
+    "role": "architect",
+    "budget": 300,
+    "project": "pr-none"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no project pr-none");
+  });
+}

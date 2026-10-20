@@ -1,0 +1,40 @@
+meta {
+  name: Refuse a custom role with no responsibilities
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/roles
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-agents-lead",
+    "title": "Lead, équipe",
+    "purpose": "Mène la recherche.",
+    "responsibilities": [],
+    "deliverables": [
+      "A list of sources"
+    ],
+    "budget": 300,
+    "collaboration": "Works with the scouts.",
+    "boundaries": [
+      "No publishing"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("a role needs at least one responsibility");
+  });
+}

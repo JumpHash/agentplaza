@@ -1,0 +1,26 @@
+meta {
+  name: Answer the metrics of unknown sandboxes with an empty map
+  type: http
+  seq: 31
+}
+
+get {
+  url: {{baseUrl}}/e2b/sandboxes/metrics?sandbox_ids=sbe2bnone1,sbe2bnone2
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("unknown sandboxes are left out: the answer is an empty map", function () {
+    expect(res.getBody().sandboxes).to.deep.equal({});
+  });
+}

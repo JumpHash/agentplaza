@@ -1,0 +1,26 @@
+meta {
+  name: List the vault's entries before any secret of the owner's
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a fresh scratch hub holds only its own Weft keys", function () {
+    const body = res.getBody();
+    expect(body).to.be.an("array");
+    // Weft makes its hub key and its export signing key on first start; nothing else is there yet.
+    const names = body.map((s) => s.name).sort();
+    expect(names).to.deep.equal(["WEFT_HUB_KEY", "WEFT_SIGNING_KEY"]);
+  });
+}

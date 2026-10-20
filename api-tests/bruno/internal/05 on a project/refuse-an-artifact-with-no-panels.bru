@@ -1,0 +1,35 @@
+meta {
+  name: Refuse an artifact with no panels
+  type: http
+  seq: 44
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-internal empty",
+      "panels": []
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 400
+}
+
+tests {
+  test("the problem names the empty panels", function () {
+    expect(res.getBody().problems[0]).to.include("panels is empty");
+  });
+}

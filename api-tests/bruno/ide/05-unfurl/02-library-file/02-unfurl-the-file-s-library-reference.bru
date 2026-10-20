@@ -1,0 +1,38 @@
+meta {
+  name: Unfurl the file's library reference
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/unfurl
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "refs": [
+      {
+        "kind": "library",
+        "id": "{{unf_file}}"
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a card with the file's name, size, source and audience", function () {
+    const c = res.getBody().cards[0];
+    expect(c.ok).to.equal(true);
+    expect(c.card.name).to.equal("t-ide-card.txt");
+    expect(c.card.size).to.equal(9);
+    expect(c.card.source).to.equal("attachment");
+    expect(c.card.audience).to.equal("private");
+  });
+}

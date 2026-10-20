@@ -1,0 +1,16 @@
+meta {
+  name: Delete the largest-VM template as the owner
+  type: http
+  seq: 19
+}
+
+delete {
+  url: {{baseUrl}}/v1/e2b/templates/{{e2bMaxTemplate}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt {{budgetMs}}
+}

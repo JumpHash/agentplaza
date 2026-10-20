@@ -1,0 +1,23 @@
+meta {
+  name: Show the declined sign-in as failed, with the platform's reason
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/flows/{{declined_state}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.status: eq "failed"
+}
+
+tests {
+  test("the failure says why", function () {
+    expect(res.getBody().error).to.include("access_denied");
+  });
+}

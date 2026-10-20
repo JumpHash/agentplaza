@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a workstation VM body with no name
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/vms
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "node": "n0",
+    "os": "linux",
+    "cpus": 2,
+    "ram_mb": 4096,
+    "disk_gb": 16
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

@@ -1,0 +1,40 @@
+meta {
+  name: Check a clean skill: no errors
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/check
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n",
+    "files": [
+      {
+        "path": "reference.md",
+        "size": 12,
+        "executable": false,
+        "text": "# Reference\n"
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.errors: eq 0
+  res.body.name: eq "t-skill-life"
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the report carries a score and no error findings", function () {
+    const r = res.getBody();
+    expect(r.score).to.be.a("number");
+    expect(r.findings.filter((f) => f.severity === "error")).to.have.length(0);
+  });
+}

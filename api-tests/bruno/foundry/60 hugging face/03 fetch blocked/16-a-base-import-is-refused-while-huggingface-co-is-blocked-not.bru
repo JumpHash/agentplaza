@@ -1,0 +1,29 @@
+meta {
+  name: A base import is refused while huggingface.co is blocked (nothing is downloaded)
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/hf/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-org/t-model",
+    "as": "base"
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the block list", function () {
+    expect(res.getBody().error).to.include("fetch_block");
+  });
+}

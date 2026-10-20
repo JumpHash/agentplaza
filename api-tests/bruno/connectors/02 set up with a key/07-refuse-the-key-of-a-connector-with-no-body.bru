@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a key request with an empty body
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/unsplash/secret
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

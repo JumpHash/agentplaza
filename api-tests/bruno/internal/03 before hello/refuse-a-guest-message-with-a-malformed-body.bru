@@ -1,0 +1,32 @@
+meta {
+  name: Refuse a guest message with a malformed body
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61001/message
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: application/json
+}
+
+body:text {
+  {bad
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 400
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal says what is wrong", function () {
+    expect(res.getBody().error).to.be.a("string");
+  });
+}

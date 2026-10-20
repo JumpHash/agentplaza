@@ -1,0 +1,30 @@
+meta {
+  name: Post a task with a role to withdraw
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "goal": "Scout sources",
+    "role": "architect",
+    "budget": 300,
+    "project": "{{society_project}}"
+  }
+}
+
+script:post-response {
+  bru.setVar("society_withdrawn_task", res.getBody().id);
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+  res.body.state: eq "open"
+}

@@ -1,0 +1,22 @@
+meta {
+  name: a draft of an unknown conversation is not found
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/owner/conversations/conv-flow-none/draft
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says no such conversation", function () {
+    expect(res.getBody().error).to.equal('no such conversation');
+  });
+}

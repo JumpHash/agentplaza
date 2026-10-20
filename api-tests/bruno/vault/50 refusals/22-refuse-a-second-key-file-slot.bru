@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a second key file slot
+  type: http
+  seq: 22
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/slots
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "keyfile"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the vault already has one", function () {
+    expect(res.getBody().error).to.include("already has a key file slot");
+  });
+}

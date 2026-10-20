@@ -1,0 +1,28 @@
+meta {
+  name: Refuse to vet the seeded dev recipe at another commit
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/recipes/rung-predictor@1/vet
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "commit": "abcdef1"
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a local dev recipe takes only its own pin", function () {
+    expect(res.getBody().error).to.equal("a local dev recipe is vetted only at its own pin");
+  });
+}

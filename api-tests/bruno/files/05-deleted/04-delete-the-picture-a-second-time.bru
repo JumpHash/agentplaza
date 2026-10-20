@@ -1,0 +1,16 @@
+meta {
+  name: Delete the picture a second time
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/v1/files/{{file_pic}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

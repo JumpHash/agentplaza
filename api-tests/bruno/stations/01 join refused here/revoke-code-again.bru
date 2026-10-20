@@ -1,0 +1,16 @@
+meta {
+  name: Revoke a join code a second time: revoking is idempotent
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/v1/stations/codes/{{stations_code_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

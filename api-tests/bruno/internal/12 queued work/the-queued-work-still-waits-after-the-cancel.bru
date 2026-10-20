@@ -1,0 +1,22 @@
+meta {
+  name: The queued work still waits after the cancel
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/61011
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the queued item is still there", function () {
+    expect(res.getBody().queue).to.be.at.least(1);
+  });
+}

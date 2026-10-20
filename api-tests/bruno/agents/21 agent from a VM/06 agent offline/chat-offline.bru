@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a chat message to an offline agent
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/chat
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "text": "hi"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("agent is offline");
+  });
+}

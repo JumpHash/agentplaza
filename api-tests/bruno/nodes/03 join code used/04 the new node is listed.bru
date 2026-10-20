@@ -1,0 +1,28 @@
+meta {
+  name: The joined node is listed, active and online
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the node carries its name and is online and not revoked", function () {
+    const n = res.getBody().find((x) => x.id === bru.getVar("node_joined_id"));
+    expect(n, "joined node listed").to.not.equal(undefined);
+    expect(n.name).to.equal("t-node-scratch");
+    expect(n.online).to.equal(true);
+    expect(n.revoked).to.equal(false);
+    expect(n.state).to.equal("active");
+    expect(n.agents).to.equal(0);
+  });
+}

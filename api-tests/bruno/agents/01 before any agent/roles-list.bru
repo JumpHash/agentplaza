@@ -1,0 +1,25 @@
+meta {
+  name: List the roles before any custom role exists
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/roles
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the test's custom role is not there yet; built-in roles are listed", function () {
+    const roles = res.getBody();
+    expect(roles).to.be.an("array");
+    expect(roles.find((r) => r.id === "scout-test")).to.be.undefined;
+    roles.filter((r) => r.source !== "custom").forEach((r) => expect(r.source).to.equal("builtin"));
+  });
+}

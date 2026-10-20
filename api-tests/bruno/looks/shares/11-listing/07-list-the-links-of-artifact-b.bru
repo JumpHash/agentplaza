@@ -1,0 +1,22 @@
+meta {
+  name: List the links of artifact b
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/shares?target=artifact:{{sh11b_art}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("one link", function () {
+    expect(res.getBody().length).to.equal(1);
+  });
+}

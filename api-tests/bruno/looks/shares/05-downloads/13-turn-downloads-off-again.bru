@@ -1,0 +1,22 @@
+meta {
+  name: Turn downloads off again
+  type: http
+  seq: 13
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh5_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "allow_download": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

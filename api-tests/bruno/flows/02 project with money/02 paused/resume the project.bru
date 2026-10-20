@@ -1,0 +1,22 @@
+meta {
+  name: resume the project
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the project is no longer paused", function () {
+    expect(res.getBody().paused).to.equal(false);
+  });
+}

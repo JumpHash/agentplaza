@@ -1,0 +1,29 @@
+meta {
+  name: List the accelerators: every device is free, nothing is allocated
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/devices
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.machines: isArray
+}
+
+tests {
+  test("each device lists its backend and an empty allocation", function () {
+    for (const m of res.getBody().machines) {
+      expect(m.devices).to.be.an("array");
+      for (const dev of m.devices) {
+        expect(dev.backend).to.be.a("string");
+        expect(dev.allocated_to).to.be.null;
+      }
+    }
+  });
+}

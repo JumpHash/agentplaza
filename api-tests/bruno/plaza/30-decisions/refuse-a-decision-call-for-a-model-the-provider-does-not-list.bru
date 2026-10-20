@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a decision call for a model the provider does not list
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai-decisions", "model": "nope", "input": "t-dec model", "questions": [{"type": "predicate", "name": "flaky", "instructions": "Is the test flaky?"}]}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "does not list"
+  res.responseTime: lt {{budgetMs}}
+}

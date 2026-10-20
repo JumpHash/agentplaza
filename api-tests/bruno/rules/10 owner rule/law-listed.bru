@@ -1,0 +1,26 @@
+meta {
+  name: List the laws with the new owner law
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/laws
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the law is listed from the owner's rule and is on", function () {
+  const law = res.getBody().find((l) => l.id === "R-bruno-2");
+    expect(law).to.not.be.undefined;
+    expect(law.origin).to.equal("owner");
+    expect(law.rule_id).to.equal(bru.getVar("lawRuleId"));
+    expect(law.enabled).to.equal(true);
+  });
+}

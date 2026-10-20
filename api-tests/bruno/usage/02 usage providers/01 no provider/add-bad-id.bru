@@ -1,0 +1,32 @@
+meta {
+  name: Refuse a usage provider id with capitals and spaces
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/usage-providers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "Bad ID",
+    "url": "https://cliproxy.invalid:8317",
+    "label": "t usage hub",
+    "key": "t-usage-key-0123456789"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the error names the id", function () {
+    expect(res.getBody().error).to.include("id must match");
+  });
+}

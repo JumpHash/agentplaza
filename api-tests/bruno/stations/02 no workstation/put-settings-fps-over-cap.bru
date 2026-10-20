@@ -1,0 +1,33 @@
+meta {
+  name: Refuse workstation settings with a frame rate over 5
+  type: http
+  seq: 11
+}
+
+put {
+  url: {{baseUrl}}/v1/stations/w-t-missing/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "record_fps": 9
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("record_fps");
+  });
+}

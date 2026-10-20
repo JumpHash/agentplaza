@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a certificate for a host that is not intercepted
+  type: http
+  seq: 66
+}
+
+post {
+  url: {{baseUrl}}/internal/egress/cert
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "cid": 61003,
+    "host": "example.com"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "that host is not intercepted for this agent"
+}

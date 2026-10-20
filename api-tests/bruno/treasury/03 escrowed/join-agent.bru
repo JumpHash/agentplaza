@@ -1,0 +1,32 @@
+meta {
+  name: Put the test agent on the treasury project
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{treasuryProject}}/members
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "cid": 8801
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the agent is on the project", function () {
+  expect(res.getBody().project).to.equal(bru.getVar("treasuryProject"));
+  });
+}

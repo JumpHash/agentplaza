@@ -1,0 +1,31 @@
+meta {
+  name: Read the build as failed at its base
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/e2b/templates/{{e2bRefusedTemplate}}/builds/{{e2bRefusedBuild}}/status
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+script:pre-request {
+  await bru.sleep(1500);
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("failed in the base step", function () {
+    expect(res.getBody().status).to.equal("error");
+    expect(res.getBody().reason.step).to.equal("base");
+  });
+}

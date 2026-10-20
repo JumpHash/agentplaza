@@ -1,0 +1,28 @@
+meta {
+  name: Block huggingface.co for the owner's fetch (no network is ever used)
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "fetch_block": ["huggingface.co"]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the block list holds huggingface.co", function () {
+    expect(res.getBody().fetch_block).to.include("huggingface.co");
+  });
+}

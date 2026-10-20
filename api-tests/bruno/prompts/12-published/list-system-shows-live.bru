@@ -1,0 +1,26 @@
+meta {
+  name: The system list shows the live version and the best one
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts?kind=system
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.prompts: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the prompt is listed as live on version 2", function () {
+    const p = res.getBody().prompts.find((x) => x.id === "t-prompt-life");
+    expect(p).to.be.an("object");
+    expect(p.active_version).to.equal(2);
+    expect(p.best_version).to.be.a("number");
+  });
+}

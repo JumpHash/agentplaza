@@ -1,0 +1,23 @@
+meta {
+  name: Read the logs of the unreachable server
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp/logs?limit=5
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the logs answer a list of at most five lines", function () {
+    expect(res.getBody()).to.be.an("array");
+    expect(res.getBody().length).to.be.at.most(5);
+  });
+}

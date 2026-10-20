@@ -1,0 +1,29 @@
+meta {
+  name: Answer 409 when steering an agent that does not exist
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/999999/control
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "action": "show"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no agent 999999");
+  });
+}

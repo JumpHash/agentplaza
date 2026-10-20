@@ -1,0 +1,26 @@
+meta {
+  name: Read the default metrics settings
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.level: eq "standard"
+  res.body.basis_days: eq 14
+}
+
+tests {
+  test("the retention keeps its defaults and OpenMetrics is off", function () {
+    const body = res.getBody();
+    expect(body.retention.calls_days).to.equal(90);
+    expect(body.outside.openmetrics).to.equal(false);
+  });
+}

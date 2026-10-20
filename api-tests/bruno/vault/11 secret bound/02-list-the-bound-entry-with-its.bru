@@ -1,0 +1,26 @@
+meta {
+  name: List the bound entry with its bindings
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the list shows the bindings of the bound entry", function () {
+    const body = res.getBody();
+    const entry = body.find((e) => e.id === bru.getVar("vault_life_id"));
+    expect(entry.bindings).to.deep.equal(["mcp:bru-life-server", "tool:bru-life"]);
+    expect(entry.label).to.equal("bru lifecycle bound");
+    expect(JSON.stringify(res.getBody())).to.not.include("bru-life-value-0123456789");
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an import kind that is neither base nor servable
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/hf/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-org/t-model",
+    "as": "large"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error names the kinds", function () {
+    expect(res.getBody().error).to.include("as must be base or servable");
+  });
+}

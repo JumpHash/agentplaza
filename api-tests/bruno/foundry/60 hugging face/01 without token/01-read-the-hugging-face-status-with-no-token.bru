@@ -1,0 +1,26 @@
+meta {
+  name: Read the Hugging Face status with no token
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/hf/status
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("no token is set, the disk cap is in range, the downloads dir is named", function () {
+    const body = res.getBody();
+    expect(body.hf_token_set).to.equal(false);
+    expect(body.hf_max_gb).to.be.within(1, 500);
+    expect(body.free_bytes === null || typeof body.free_bytes === "number").to.equal(true);
+    expect(body.downloads_dir).to.be.a("string");
+  });
+}

@@ -1,0 +1,18 @@
+meta {
+  name: Read the vetoed project: still at brief
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_vpid}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.stage: eq "brief"
+  res.body.paused: eq false
+  res.responseTime: lt {{budgetMs}}
+}

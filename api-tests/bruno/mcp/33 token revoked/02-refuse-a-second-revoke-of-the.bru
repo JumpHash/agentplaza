@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a second revoke of the same token
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/hub-mcp/tokens/{{mcp_operate_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says no live token has the id", function () {
+    expect(res.getBody().error).to.equal("no live token has that id");
+  });
+}

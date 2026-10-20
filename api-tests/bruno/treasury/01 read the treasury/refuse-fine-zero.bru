@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a fine of zero credits
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/treasury/fine
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "cid": 8801,
+    "amount": 0,
+    "memo": "t-treasury"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

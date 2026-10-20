@@ -1,0 +1,46 @@
+meta {
+  name: add the key through the vault
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "ANTHROPIC_API_KEY",
+    "kind": "api_key",
+    "label": "flows provider key",
+    "value": "flows-provider-key-0123456789",
+    "scope": {
+      "kind": "plaza"
+    },
+    "bindings": [
+      "provider:anthropic"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("flowKeyId", res.getBody().id);
+}
+
+tests {
+  test("the view carries no value", function () {
+    expect(res.getBody()).to.not.have.property('value');
+    expect(JSON.stringify(res.getBody())).to.not.include('flows-provider-key-0123456789');
+  });
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for an unknown motion
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/motions/m-none
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

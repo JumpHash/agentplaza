@@ -1,0 +1,17 @@
+meta {
+  name: Refuse the file download without the internal token
+  type: http
+  seq: 29
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/files/fb-t-internal-none
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

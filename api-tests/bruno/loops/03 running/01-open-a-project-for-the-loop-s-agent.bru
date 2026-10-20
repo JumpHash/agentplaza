@@ -1,0 +1,36 @@
+meta {
+  name: Open a project for the loop's agent
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "t-loops project",
+    "goal": "Keep the loops test honest",
+    "kind": "other"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("floop_project", res.getBody().id);
+}
+
+tests {
+  test("the project is opened with its title and goal", function () {
+    expect(res.getBody().id).to.be.a("string");
+    expect(res.getBody().title).to.equal("t-loops project");
+    expect(res.getBody().goal).to.equal("Keep the loops test honest");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Download version 2 as Markdown
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/versions/2/raw
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the Rules section is in the file", function () {
+    expect(res.getBody()).to.contain("## Rules");
+  });
+}

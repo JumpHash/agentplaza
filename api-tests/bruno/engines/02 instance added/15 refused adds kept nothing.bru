@@ -1,0 +1,16 @@
+meta {
+  name: The refused instances were not kept
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/v1/engines/t-eng-bad
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

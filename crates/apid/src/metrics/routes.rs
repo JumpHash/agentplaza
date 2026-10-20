@@ -210,6 +210,9 @@ fn query_route(app: &App, req: &Request) -> Response {
             "step_ms must be above zero, and to_ms must not be before from_ms",
         );
     }
+    if let Err(message) = apz_metrics::query::check_points(body.from_ms, body.to_ms, body.step_ms) {
+        return Response::error(400, &message);
+    }
     let group = match parse_group(&body.group) {
         Ok(group) => group,
         Err(message) => return Response::error(400, &message),

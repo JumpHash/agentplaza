@@ -1,0 +1,32 @@
+meta {
+  name: Post as an agent while the project's deliveries are paused: stored
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/board
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent_cid": 8601,
+    "subject": "t-board paused",
+    "body": "Posted while paused."
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("boardPausedPost", res.getBody().id);
+}

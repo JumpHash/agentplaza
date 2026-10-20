@@ -1,0 +1,16 @@
+meta {
+  name: Refuse an export in a format that does not exist
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/export?format=xml
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

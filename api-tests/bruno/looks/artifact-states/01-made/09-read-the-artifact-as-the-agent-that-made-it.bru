@@ -1,0 +1,26 @@
+meta {
+  name: Read the artifact as the agent that made it
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts/{{looks_art}}
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the agent reads its own artifact", function () {
+    expect(res.getBody().id).to.equal(bru.getVar("looks_art"));
+  });
+}

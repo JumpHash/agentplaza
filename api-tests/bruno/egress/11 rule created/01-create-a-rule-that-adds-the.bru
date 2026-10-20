@@ -1,0 +1,48 @@
+meta {
+  name: Create a rule that adds the credential to one host's GET requests
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/egress/inject
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "host": "API.bru-egress.test.",
+    "port": 443,
+    "roles": [],
+    "methods": [
+      "get"
+    ],
+    "path_prefix": "/v1",
+    "header": "Authorization",
+    "format": "Bearer ${SECRET}",
+    "secret": "BRU_EGRESS_KEY"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("egress_rule_id", res.getBody().id);
+}
+
+tests {
+  test("the rule is kept with its host lower-cased and its method upper-cased", function () {
+    const body = res.getBody();
+    expect(body.id).to.be.a("string");
+    expect(body.host).to.equal("api.bru-egress.test");
+    expect(body.methods).to.deep.equal(["GET"]);
+    expect(body.port).to.equal(443);
+    expect(body.enabled).to.equal(true);
+    expect(body.secret).to.equal("BRU_EGRESS_KEY");
+    expect(JSON.stringify(res.getBody())).to.not.include("bru-egress-value-0123456789");
+  });
+}

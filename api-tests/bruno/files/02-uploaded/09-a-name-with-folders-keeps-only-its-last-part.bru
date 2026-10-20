@@ -1,0 +1,34 @@
+meta {
+  name: A name with folders keeps only its last part
+  type: http
+  seq: 9
+}
+
+put {
+  url: {{baseUrl}}/v1/files?name=..%2F..%2Ft-files-passwd
+  body: text
+  auth: none
+}
+
+headers {
+  content-type: text/plain
+}
+
+body:text {
+  passwd
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("file_passwd", res.getBody().id);
+}
+
+tests {
+  test("the name is the last part", function () {
+    expect(res.getBody().name).to.equal("t-files-passwd");
+  });
+}

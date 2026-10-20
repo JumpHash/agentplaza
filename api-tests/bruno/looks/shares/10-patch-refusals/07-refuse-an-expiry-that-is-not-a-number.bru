@@ -1,0 +1,22 @@
+meta {
+  name: Refuse an expiry that is not a number
+  type: http
+  seq: 7
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh10_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "expires_ms": "soon"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

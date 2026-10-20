@@ -1,0 +1,20 @@
+meta {
+  name: Create the repo a change will be opened in
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "repo.create", "body": {"repo": "t-weft-repo-d", "project": "t-weft-project"}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}

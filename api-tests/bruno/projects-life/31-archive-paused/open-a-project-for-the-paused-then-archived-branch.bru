@@ -1,0 +1,28 @@
+meta {
+  name: Open a project for the paused-then-archived branch
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-life paused archive", "goal": "Archived while paused"}
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("life_xpid", res.getBody().id);
+}

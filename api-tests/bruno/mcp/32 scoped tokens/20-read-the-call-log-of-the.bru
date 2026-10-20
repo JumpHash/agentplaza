@@ -1,0 +1,32 @@
+meta {
+  name: Read the call log of the observe token
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/v1/hub-mcp/calls?token={{mcp_observe_id}}&limit=50
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.calls: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the log holds the observe token's ok call and its refused call", function () {
+    const calls = res.getBody().calls;
+    expect(calls.every((c) => c.token_id === bru.getVar("mcp_observe_id"))).to.equal(true);
+    expect(calls.some((c) => c.tool === "plaza_status" && c.ok === true)).to.equal(true);
+    const refused = calls.find((c) => c.tool === "create_task");
+    expect(refused.ok).to.equal(false);
+    expect(refused.error).to.equal("unknown_tool");
+    const text = JSON.stringify(res.getBody());
+    ["mcp_observe_token", "mcp_operate_token", "mcp_govern_token"].forEach((name) => {
+      expect(text).to.not.include(bru.getVar(name));
+    });
+  });
+}

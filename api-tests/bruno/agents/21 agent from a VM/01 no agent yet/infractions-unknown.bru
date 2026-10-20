@@ -1,0 +1,23 @@
+meta {
+  name: An agent that does not exist has no infractions
+  type: http
+  seq: 27
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/999999/infractions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("the list is empty", function () {
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

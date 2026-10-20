@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when unpublishing an unknown skill
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/no-such-skill/unpublish
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

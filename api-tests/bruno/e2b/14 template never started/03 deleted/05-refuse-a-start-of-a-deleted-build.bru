@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a start of a deleted build
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/templates/{{e2bWaitTemplate}}/builds/{{e2bWaitBuild}}
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "fromImage": "e2bdev/base"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "template_not_found"
+}

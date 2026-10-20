@@ -1,0 +1,16 @@
+meta {
+  name: The owner reads the private file
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/files/{{file_priv}}/content
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when forgetting an app that was never registered
+  type: http
+  seq: 12
+}
+
+delete {
+  url: {{baseUrl}}/v1/platforms/registrations/gitlab-app-999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+

@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a change to a rule that does not exist
+  type: http
+  seq: 12
+}
+
+patch {
+  url: {{baseUrl}}/v1/egress/inject/egress_rule_nope
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "port": 8443
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

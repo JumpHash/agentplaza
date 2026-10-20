@@ -1,0 +1,33 @@
+meta {
+  name: Refuse an observe token that names an operate tool
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/hub-mcp/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "bru bad tool",
+    "scope": "observe",
+    "tools": [
+      "create_task"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the tool is not of the scope", function () {
+    expect(res.getBody().error).to.include("is not a tool of scope observe");
+  });
+}

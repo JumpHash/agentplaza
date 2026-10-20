@@ -1,0 +1,45 @@
+meta {
+  name: Add version 2 to the artifact
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts/{{sh4_art}}
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-looks share 04",
+      "panels": [
+        {
+          "id": "notes",
+          "title": "Notes",
+          "span": 12,
+          "body": {
+            "type": "document",
+            "markdown": "Version two."
+          }
+        }
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the new version is numbered on", function () {
+    expect(res.getBody().version).to.equal(2);
+  });
+}

@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a spawn of the deleted role
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/agents
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "role": "t-agents-lead",
+    "count": 1
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal says the role is unknown", function () {
+    expect(res.getBody().error).to.equal("unknown role t-agents-lead");
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for the maintenance of a project that does not exist
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/pr999999/maintenance
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

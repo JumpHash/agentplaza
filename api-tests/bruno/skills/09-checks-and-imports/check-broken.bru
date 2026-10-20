@@ -1,0 +1,33 @@
+meta {
+  name: Check a skill with no description and a dead link
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/check
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "skill_md": "---\nname: t-check-bad\n---\n# Bad\n\nSee [the notes](notes.md).\n",
+    "files": []
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.errors: isNumber
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it finds the missing description and the missing linked file", function () {
+    const rules = res.getBody().findings.map((f) => f.rule);
+    expect(rules).to.include("description-missing");
+    expect(rules).to.include("missing-file");
+    expect(res.getBody().errors).to.be.above(1);
+  });
+}

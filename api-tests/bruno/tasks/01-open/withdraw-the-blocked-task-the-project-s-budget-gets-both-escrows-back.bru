@@ -1,0 +1,17 @@
+meta {
+  name: Withdraw the blocked task: the project's budget gets both escrows back
+  type: http
+  seq: 53
+}
+
+delete {
+  url: {{baseUrl}}/v1/tasks/{{tsk_b}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "withdrawn"
+  res.responseTime: lt {{budgetMs}}
+}

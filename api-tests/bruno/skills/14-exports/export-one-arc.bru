@@ -1,0 +1,16 @@
+meta {
+  name: Export version 1 of the restored skill as a zip
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{arcSkillId}}/versions/1/export
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

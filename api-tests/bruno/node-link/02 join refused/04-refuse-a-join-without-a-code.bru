@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a join body with no code field
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/node-link/join
+  body: json
+  auth: none
+}
+
+body:json {
+  {"hub": "https://hub.example.test"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a join with no code is refused as an empty code", function () {
+    expect(res.getBody().error).to.equal("the join code is empty");
+  });
+}

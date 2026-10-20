@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for an unknown project's roster
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/agents?project=no-such-project
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

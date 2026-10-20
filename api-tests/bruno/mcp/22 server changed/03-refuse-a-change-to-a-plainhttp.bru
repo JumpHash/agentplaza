@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a change to a plain-http address while private addresses are off
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "allow_private": false,
+    "transport": {
+      "kind": "http",
+      "url": "http://127.0.0.1:9/mcp"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.field: eq transport.url
+  res.responseTime: lt {{budgetMs}}
+}

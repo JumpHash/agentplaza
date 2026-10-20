@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a node cache's node weft read without a node signature
+  type: http
+  seq: 38
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/nodes/1/weft/wire/objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "bad node signature"
+}

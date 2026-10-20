@@ -1,0 +1,49 @@
+meta {
+  name: Answer the model call again once the plaza resumes
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61008/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "model_call",
+    "req": 1,
+    "work": 1,
+    "request": {
+      "model": "deepseek/deepseek-flash",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "hi"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.reply.type: eq "model_result"
+}
+
+tests {
+  test("the model call is not answered", function () {
+    expect(res.getBody().reply.ok).to.equal(false);
+  });
+}

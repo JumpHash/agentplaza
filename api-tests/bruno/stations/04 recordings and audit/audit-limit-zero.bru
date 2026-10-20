@@ -1,0 +1,23 @@
+meta {
+  name: List no audit rows at a limit of 0
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/audit?limit=0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("a limit of 0 gives no rows", function () {
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

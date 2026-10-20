@@ -1,0 +1,33 @@
+meta {
+  name: set 300 credits aside
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowSmallPid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "credits": 300
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("300 held", function () {
+    expect(res.getBody().balance).to.equal(300);
+    expect(res.getBody().plaza).to.equal(Number(bru.getVar('flowSmallPlazaBefore')) - 300);
+  });
+}

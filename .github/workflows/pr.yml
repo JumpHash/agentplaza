@@ -14,6 +14,8 @@
 #   windows     the Windows tests (windows.yml), when platform code changes
 #   macos       the macOS tests (macos.yml), when platform code changes
 #   api         the hub API's tests against a scratch hub (api-tests/): Bruno, timings, fuzzing
+#   coverage    after the tests passed: the code coverage of each kind of test (coverage.sh), by test
+#               type, service, app and crate; pull requests only, commented by check-results.yml
 #
 # Speed: every build job starts from the runner's warm build directory and rebuilds only the crates
 # the change touches (.github/ci/build-cache.py, in-image.sh). A pull request runs only the tests of
@@ -229,8 +231,10 @@ jobs:
         run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
       - name: Keep the build directory fresh
         run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
+      # Weft too: the hub runs the `weft` beside it as a process, and the build directory persists on the runner, so
+      # without this the tests would meet a Weft another job built from other code.
       - name: Build the hub
-        run: .github/ci/in-image.sh 'cargo build --release --locked -p apid --bin apid'
+        run: .github/ci/in-image.sh 'cargo build --release --locked -p apid --bin apid -p weft --bin weft'
       - name: Run the API tests
         id: run
         continue-on-error: true
@@ -251,6 +255,69 @@ jobs:
           echo "::error::the API tests failed; the report linked on the pull request has the details"
           tail -n 60 api-out/bruno.log || true
           exit 1
+
+  # The code coverage of every kind of test (.github/ci/coverage.sh), once the tests have passed: the Linux
+  # tests, the hub API's and the web console's (a change without console code skips that one; its tests run
+  # here anyway). Pull requests only: the Coverage comment (check-results.yml) is for the pull request, and the
+  # merge queue has no use for it. The tests run again, instrumented, on the same runners and image as `api`.
+  # Not in `ci-ok`: the measurement is informational, and a job of up to two hours must not gate every merge.
+  coverage:
+    name: Coverage (by test type, service, app and crate)
+    needs: [changes, linux, api, console]
+    if: >-
+      always() && github.event_name == 'pull_request' && needs.changes.outputs.build == 'true' &&
+      needs.linux.result == 'success' && needs.api.result == 'success' &&
+      (needs.console.result == 'success' || needs.console.result == 'skipped')
+    runs-on: [self-hosted, Linux, X64, hetzner]
+    # A cold instrumented build of the workspace takes most of it; a later run rebuilds only what changed.
+    timeout-minutes: 120
+    env:
+      NET: apz-cov-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: CI image
+        run: .github/ci/image.sh
+      - name: Untrusted build cache
+        if: needs.changes.outputs.trusted != 'true'
+        run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
+      - name: Keep the build directory fresh
+        run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
+      # The Rust tests need the same Postgres as the Linux tests.
+      - name: Postgres for the tests
+        run: |
+          docker network create "$NET"
+          docker run -d --rm --name "$NET-pg" --network "$NET" \
+            -e POSTGRES_USER=apz -e POSTGRES_PASSWORD=apz -e POSTGRES_DB=apz_test postgres:17
+          for _ in $(seq 60); do docker exec "$NET-pg" pg_isready -U apz -q && break; sleep 1; done
+          echo "APZ_CI_NETWORK=$NET" >> "$GITHUB_ENV"
+          echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@$NET-pg:5432/apz_test" >> "$GITHUB_ENV"
+      # Its output is kept (tee, with pipefail from `shell: bash`) for the Coverage comment.
+      - name: Coverage of every test type
+        id: measure
+        shell: bash
+        run: .github/ci/in-image.sh '.github/ci/coverage.sh coverage-out' 2>&1 | tee coverage.log
+      - name: The coverage data (coverage.json)
+        if: steps.measure.outcome == 'success'
+        run: python3 .github/ci/coverage.py coverage-out coverage.json
+      # The pull request's Coverage comment (check-results.yml) is made from these.
+      - name: Results for the pull request
+        if: always()
+        run: >-
+          python3 .github/ci/results.py results coverage "Coverage"
+          --part "measured (every test type)=${{ steps.measure.outcome }}:coverage.log"
+          --data coverage.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: results-coverage, path: results, retention-days: 7 }
+      - name: Clean up
+        if: always()
+        run: |
+          docker rm -f "$NET-pg" >/dev/null 2>&1 || true
+          docker network rm "$NET" >/dev/null 2>&1 || true
+          # The instrumented build is part of the build directory, so the same pruning as the other jobs.
+          if [ -f .github/ci/build-cache.py ]; then
+            python3 .github/ci/build-cache.py prune "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target" --max-gb 40
+          fi
 
   # The one required check. A job skipped because the change does not touch it counts as passed.
   # It runs even when the run is cancelled (`always()`): GitHub counts a skipped required check as

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a second delete of the same rule
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/v1/egress/inject/{{egress_rule_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

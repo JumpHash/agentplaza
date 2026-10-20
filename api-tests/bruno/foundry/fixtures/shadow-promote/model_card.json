@@ -1,0 +1,86 @@
+{
+  "recipe": "t-shadow-promote",
+  "data": {
+    "train": {
+      "rows": 10
+    }
+  },
+  "metrics": {
+    "val": {
+      "accuracy": 0.9
+    }
+  },
+  "parameters": 12,
+  "serving": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "x0": {
+          "type": "number"
+        },
+        "x1": {
+          "type": "number"
+        },
+        "x2": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x0",
+        "x1",
+        "x2"
+      ]
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "enum": [
+            "cat",
+            "dog",
+            "bird"
+          ]
+        },
+        "probabilities": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "label",
+        "probabilities"
+      ]
+    },
+    "features": [
+      {
+        "name": "x0",
+        "kind": "numeric",
+        "transform": "zscore",
+        "mean": 0.0,
+        "std": 1.0
+      },
+      {
+        "name": "x1",
+        "kind": "numeric",
+        "transform": "zscore",
+        "mean": 0.0,
+        "std": 1.0
+      },
+      {
+        "name": "x2",
+        "kind": "numeric",
+        "transform": "zscore",
+        "mean": 0.0,
+        "std": 1.0
+      }
+    ],
+    "labels": [
+      "cat",
+      "dog",
+      "bird"
+    ],
+    "allowed_roles": [
+      "breeder"
+    ]
+  }
+}

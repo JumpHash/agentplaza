@@ -1,0 +1,16 @@
+meta {
+  name: Read the uploaded object back by its hash
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/wire/objects/af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}

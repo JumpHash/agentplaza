@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a create with a truncated body
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: text
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:text {
+  { "templateID": "base", "timeout": 
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "invalid_request"
+}

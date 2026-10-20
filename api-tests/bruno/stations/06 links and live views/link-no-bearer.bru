@@ -1,0 +1,23 @@
+meta {
+  name: Refuse the workstation link without a bearer token
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/link
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal asks for a Bearer token", function () {
+    expect(res.getHeader("www-authenticate")).to.eq("Bearer");
+  });
+}

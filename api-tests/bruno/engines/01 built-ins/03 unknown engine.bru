@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for an unknown engine
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/engines/no-such-engine
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

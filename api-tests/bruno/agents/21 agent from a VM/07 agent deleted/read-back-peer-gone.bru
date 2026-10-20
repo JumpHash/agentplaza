@@ -1,0 +1,17 @@
+meta {
+  name: The deleted peer is off the roster
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41002
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no such agent"
+}

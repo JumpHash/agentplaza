@@ -1,0 +1,27 @@
+meta {
+  name: Reach the node again after the release
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base"
+  }
+}
+
+assert {
+  res.status: eq 503
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "sandbox_node_unreachable"
+}

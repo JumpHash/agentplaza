@@ -1,0 +1,22 @@
+meta {
+  name: Turn downloads on for the note's link
+  type: http
+  seq: 8
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh_note_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "allow_download": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

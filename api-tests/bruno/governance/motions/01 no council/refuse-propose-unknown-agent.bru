@@ -1,0 +1,29 @@
+meta {
+  name: Answer 404 for a motion from an unknown agent
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/motions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "proposer_cid": 8699,
+    "kind": "priority",
+    "text": "t-motion ghost"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

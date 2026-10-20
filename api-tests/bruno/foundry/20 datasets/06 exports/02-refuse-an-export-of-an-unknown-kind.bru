@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an export of an unknown kind
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "bogus",
+    "name": "t-ds-bogus"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error lists the kinds", function () {
+    expect(res.getBody().error).to.equal("unknown dataset kind \"bogus\"; use cascade, tasks, usage or all");
+  });
+}

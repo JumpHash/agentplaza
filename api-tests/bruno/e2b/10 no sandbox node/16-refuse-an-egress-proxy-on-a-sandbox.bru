@@ -1,0 +1,31 @@
+meta {
+  name: Refuse an egress proxy on a sandbox
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "network": {
+      "egressProxy": {
+        "url": "http://127.0.0.1:3128"
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

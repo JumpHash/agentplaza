@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a route without a model (400, nothing changes)
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "route": "no-slash"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

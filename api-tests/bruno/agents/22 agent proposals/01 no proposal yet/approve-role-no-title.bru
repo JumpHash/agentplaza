@@ -1,0 +1,31 @@
+meta {
+  name: Refuse an approval whose role has no title
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/agent-proposals/ap-none/approve
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "role": {
+      "id": "x"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("bad role");
+  });
+}

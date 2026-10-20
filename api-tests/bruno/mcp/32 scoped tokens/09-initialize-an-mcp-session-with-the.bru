@@ -1,0 +1,49 @@
+meta {
+  name: Initialize an MCP session with the observe token
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_observe_token}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-06-18",
+      "capabilities": {},
+      "clientInfo": {
+        "name": "bru",
+        "version": "0"
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("mcp_observe_session", res.getHeader("mcp-session-id"));
+}
+
+tests {
+  test("the session answers the protocol and a session id header", function () {
+    const body = res.getBody();
+    expect(body.result.protocolVersion).to.be.a("string");
+    expect(body.result.serverInfo.name).to.equal("agentplaza");
+    expect(res.getHeader("mcp-session-id")).to.be.a("string");
+  });
+}

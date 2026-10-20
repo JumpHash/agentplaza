@@ -1,0 +1,16 @@
+meta {
+  name: Refuse an upload with an empty body
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/files?name=t-files-empty.txt
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

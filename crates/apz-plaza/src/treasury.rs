@@ -550,16 +550,15 @@ pub enum PostError {
 }
 
 impl PostError {
-    /// The HTTP status this error is reported as when it reaches the task
-    /// lifecycle's request path: a full journal or a duplicated/over-cap
-    /// account is a conflict with the treasury's state; the rest are rules a
-    /// service-constructed entry cannot break, so reaching one over HTTP would
-    /// be a daemon bug.
+    /// The HTTP status this error is reported as when it reaches a request path: a full journal, an
+    /// over-cap transfer or an account the move would overdraw (a budget too small for a task's escrow, a fine
+    /// larger than the wallet) is a conflict with the treasury's state; a bad amount is the request's fault; the
+    /// rest are rules a service-constructed entry cannot break, so reaching one over HTTP would be a daemon bug.
     pub fn status(&self) -> u16 {
         match self {
             PostError::JournalFull { .. } | PostError::AccountsFull { .. } => 409,
             PostError::SelfTransfer { .. } | PostError::NonPositive { .. } => 400,
-            PostError::TransferCap { .. } => 409,
+            PostError::TransferCap { .. } | PostError::Overdrawn { .. } => 409,
             _ => 500,
         }
     }

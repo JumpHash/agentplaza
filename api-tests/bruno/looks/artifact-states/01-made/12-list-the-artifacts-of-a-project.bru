@@ -1,0 +1,24 @@
+meta {
+  name: List the artifacts of a project
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts?project=t-looks
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("every listed artifact is in the project and this one is listed", function () {
+    const b = res.getBody();
+    expect(b.every((a) => a.project === "t-looks")).to.equal(true);
+    expect(b.map((a) => a.id)).to.include(bru.getVar("looks_art"));
+  });
+}

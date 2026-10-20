@@ -1,0 +1,21 @@
+meta {
+  name: Refuse settings whose enabled flag is not a boolean
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/unsplash
+  body: json
+  auth: none
+}
+
+body:json {
+  {"enabled": "yes"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: contains "bad body"
+}

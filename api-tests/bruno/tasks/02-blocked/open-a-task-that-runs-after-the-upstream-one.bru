@@ -1,0 +1,29 @@
+meta {
+  name: Open a task that runs after the upstream one
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks downstream", "budget": 200, "project": "{{bl_pid}}", "after": ["{{bl_a}}"]}
+}
+
+assert {
+  res.status: eq 201
+  res.body.ready: eq false
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("bl_b", res.getBody().id);
+}

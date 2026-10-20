@@ -1,0 +1,53 @@
+meta {
+  name: Switch OpenMetrics on and receive its token once
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "level": "standard",
+    "retention": {
+      "chunks_hours": 48,
+      "minute_days": 14,
+      "hour_days": 400,
+      "calls_days": 90,
+      "traces_days": 7,
+      "traces_cap_mb": 2048,
+      "events_days": 90
+    },
+    "budgets": [],
+    "monthly_budget_usd": null,
+    "basis_days": 14,
+    "outside": {
+      "openmetrics": true,
+      "otlp": false,
+      "otlp_url": "",
+      "otlp_confirmed": false
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.outside.openmetrics: eq true
+}
+
+script:post-response {
+  bru.setVar("metrics_om_token", res.getBody().openmetrics_token);
+}
+
+tests {
+  test("the token is sent on the switch and is 24 hex bytes", function () {
+    const token = res.getBody().openmetrics_token;
+    expect(token).to.be.a("string");
+    expect(token).to.match(/^[0-9a-f]{48}$/);
+  });
+}

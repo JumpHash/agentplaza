@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for a workstation id with a space in it
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/no%20such
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

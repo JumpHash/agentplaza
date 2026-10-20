@@ -1,0 +1,21 @@
+meta {
+  name: Stop the plaza
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/stop
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.paused: eq true
+}

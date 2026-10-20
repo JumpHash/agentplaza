@@ -1,0 +1,24 @@
+meta {
+  name: The pinned link keeps serving version 1
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh4_share}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("version 1 is served, and the latest is 2", function () {
+    const b = res.getBody();
+    expect(b.artifact.version).to.equal(1);
+    expect(b.share.latest).to.equal(2);
+  });
+}

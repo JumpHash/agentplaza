@@ -1,0 +1,16 @@
+meta {
+  name: Refuse an export format that does not exist
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh5_share}}/export?format=xml
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

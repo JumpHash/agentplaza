@@ -1,0 +1,28 @@
+meta {
+  name: Enable the rule again
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/v1/egress/inject/{{egress_rule_id}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the rule is enabled", function () {
+    expect(res.getBody().enabled).to.equal(true);
+  });
+}

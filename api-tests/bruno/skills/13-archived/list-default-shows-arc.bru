@@ -1,0 +1,22 @@
+meta {
+  name: The restored skill is back in the default list
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/skills
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the restored skill is listed", function () {
+    expect(res.getBody().skills.map((s) => s.id)).to.include("t-skill-arc");
+  });
+}

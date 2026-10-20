@@ -1,0 +1,17 @@
+meta {
+  name: Resume the paused project: its waiting work goes out
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq false
+  res.responseTime: lt {{budgetMs}}
+}

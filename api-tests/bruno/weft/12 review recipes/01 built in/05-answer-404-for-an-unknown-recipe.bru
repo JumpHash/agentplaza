@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for a recipe that does not exist
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/t-no-such-recipe
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no such recipe"
+}

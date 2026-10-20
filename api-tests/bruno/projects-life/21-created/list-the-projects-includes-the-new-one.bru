@@ -1,0 +1,23 @@
+meta {
+  name: List the projects includes the new one
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/projects
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the new project is in the list", function () {
+    expect(res.getBody().map((p) => p.id)).to.include(bru.getVar("life_pid"));
+  });
+}

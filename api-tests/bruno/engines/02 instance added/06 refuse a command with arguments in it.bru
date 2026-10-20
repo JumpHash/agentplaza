@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a command that holds its arguments
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-eng-bad",
+    "engine": "acp-local",
+    "command": "scratch agent"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

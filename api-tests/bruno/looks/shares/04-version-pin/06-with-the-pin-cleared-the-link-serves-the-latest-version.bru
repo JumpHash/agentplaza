@@ -1,0 +1,22 @@
+meta {
+  name: With the pin cleared the link serves the latest version
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh4_share}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("version 2 is served", function () {
+    expect(res.getBody().artifact.version).to.equal(2);
+  });
+}

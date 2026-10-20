@@ -1,0 +1,16 @@
+meta {
+  name: Delete the file
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/v1/files/{{unf_file}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

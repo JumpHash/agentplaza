@@ -1,0 +1,31 @@
+meta {
+  name: Relink the second task after the first again: it waits
+  type: http
+  seq: 10
+}
+
+patch {
+  url: {{baseUrl}}/v1/tasks/{{tsk_b}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"after": ["{{tsk_a}}"]}
+}
+
+assert {
+  res.status: eq 200
+  res.body.ready: eq false
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it waits on A again", function () {
+    expect(res.getBody().waiting_on).to.deep.equal([bru.getVar("tsk_a")]);
+  });
+}

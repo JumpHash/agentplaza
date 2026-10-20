@@ -1,0 +1,35 @@
+meta {
+  name: Keep only the top group of a query
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/query
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "metric": "cpu",
+    "scope": "global",
+    "from_ms": 0,
+    "to_ms": 3600000,
+    "step_ms": 60000,
+    "agg": "avg",
+    "group": "label:model",
+    "top": 1
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("at most one group is returned", function () {
+    expect(res.getBody().groups.length).to.be.at.most(1);
+  });
+}

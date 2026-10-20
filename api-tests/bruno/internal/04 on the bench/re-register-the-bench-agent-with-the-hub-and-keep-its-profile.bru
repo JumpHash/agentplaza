@@ -1,0 +1,28 @@
+meta {
+  name: Re-register the bench agent with the hub and keep its profile
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61002/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "role": "orchestrator",
+    "vm": 1,
+    "caps": []
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}

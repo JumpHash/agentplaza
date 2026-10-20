@@ -1,0 +1,16 @@
+meta {
+  name: A console file path that climbs out is missing
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/%2e%2e%2fsecret
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

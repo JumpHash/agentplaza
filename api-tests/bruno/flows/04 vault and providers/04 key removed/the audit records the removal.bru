@@ -1,0 +1,22 @@
+meta {
+  name: the audit records the removal
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/audit?verify=1&after={{flowAuditCursor}}&limit=500
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a delete event names the key", function () {
+    expect(res.getBody().entries.some((e) => e.event === 'delete' && e.entry === bru.getVar('flowKeyId'))).to.equal(true);
+  });
+}

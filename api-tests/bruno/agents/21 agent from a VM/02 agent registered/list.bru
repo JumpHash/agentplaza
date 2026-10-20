@@ -1,0 +1,28 @@
+meta {
+  name: A registered agent is listed
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/agents
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("the agent is listed idle, on the default model, with no role", function () {
+    const a = res.getBody().find((x) => x.cid === 41001);
+    expect(a).to.not.be.undefined;
+    expect(a.status).to.equal("idle");
+    expect(a.model_source).to.equal("default");
+    expect(a.role).to.equal("");
+    expect(a.project).to.be.null;
+  });
+}

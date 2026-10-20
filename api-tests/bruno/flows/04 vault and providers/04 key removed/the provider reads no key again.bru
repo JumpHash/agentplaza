@@ -1,0 +1,17 @@
+meta {
+  name: the provider reads no key again
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/providers/anthropic
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.credential: eq "missing"
+  res.responseTime: lt {{budgetMs}}
+}

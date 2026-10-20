@@ -1,0 +1,23 @@
+meta {
+  name: Answer 404 when switching a rule that does not exist
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/alerts/no-such-rule/on
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "on": false
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no such rule"
+}

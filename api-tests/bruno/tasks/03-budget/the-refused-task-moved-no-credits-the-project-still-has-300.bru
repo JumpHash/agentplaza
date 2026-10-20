@@ -1,0 +1,17 @@
+meta {
+  name: The refused task moved no credits: the project still has 300
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{bu_pid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.balance: eq 300
+  res.responseTime: lt {{budgetMs}}
+}

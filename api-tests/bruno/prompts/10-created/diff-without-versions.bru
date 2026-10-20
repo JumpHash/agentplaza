@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a compare without both version numbers
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/diff
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 422
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

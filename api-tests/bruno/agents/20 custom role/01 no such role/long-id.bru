@@ -1,0 +1,43 @@
+meta {
+  name: Refuse a custom role whose id is over 32 characters
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/roles
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "title": "Lead, équipe",
+    "purpose": "Mène la recherche.",
+    "responsibilities": [
+      "Plan the search",
+      "Lead the team"
+    ],
+    "deliverables": [
+      "A list of sources"
+    ],
+    "budget": 300,
+    "collaboration": "Works with the scouts.",
+    "boundaries": [
+      "No publishing"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("role id");
+  });
+}

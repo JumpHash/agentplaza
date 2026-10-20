@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a reference of an unknown kind
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/unfurl
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "refs": [
+      {
+        "kind": "nope"
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

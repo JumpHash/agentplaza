@@ -1,0 +1,25 @@
+meta {
+  name: Show one day's usage by agent
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/series?from=0&to=3600000&bucket=day&by=agent
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a day bucket covers the hour", function () {
+    const body = res.getBody();
+    expect(body.by).to.equal("agent");
+    expect(body.bucket_ms).to.equal(86400000);
+    expect(body.points).to.have.lengthOf(1);
+  });
+}

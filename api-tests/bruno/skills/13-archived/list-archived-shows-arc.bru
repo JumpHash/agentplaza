@@ -1,0 +1,25 @@
+meta {
+  name: The archived list shows the archived skill
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/skills?archived=true
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.skills: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it is listed with its archive time", function () {
+    const s = res.getBody().skills.find((x) => x.id === "t-skill-arc");
+    expect(s).to.be.an("object");
+    expect(s.archived_ms).to.be.a("number");
+  });
+}

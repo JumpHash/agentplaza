@@ -1,0 +1,28 @@
+meta {
+  name: Resume the project's deliveries
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/board/pause
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "project": "{{boardProject}}",
+    "on": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq false
+  res.responseTime: lt {{budgetMs}}
+}

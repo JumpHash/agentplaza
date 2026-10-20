@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a vet whose commit is not hex
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/recipes/rung-predictor@1/vet
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "commit": "zz"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says what a commit is", function () {
+    expect(res.getBody().error).to.equal("commit is 7 to 64 hex characters");
+  });
+}

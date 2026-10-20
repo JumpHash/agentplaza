@@ -1,0 +1,20 @@
+meta {
+  name: Refuse a GitHub host that is not an http(s) URL
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/github/app
+  body: json
+  auth: none
+}
+
+body:json {
+  {"host": "ftp://github.example.test"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

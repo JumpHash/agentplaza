@@ -1,0 +1,22 @@
+meta {
+  name: The deleted file's URL answers not found with status 200
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/unfurl?url=/v1/files/{{unf_file}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("ok false, not found", function () {
+    expect(res.getBody().error).to.equal("not_found");
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Set the agent to ask before a write
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/agents/61004/permissions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "mode": "ask"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.mode: eq "ask"
+}

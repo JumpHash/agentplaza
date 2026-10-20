@@ -1140,4 +1140,7 @@ fn the_egress_binding_is_a_binding() {
     assert!(super::valid_binding("hub:weft"));
     assert!(super::valid_binding("hub:git-platforms"));
     assert!(!super::valid_binding("hub:"));
+    // A usage hub's management key (usage_providers).
+    assert!(super::valid_binding("usage:home"));
+    assert!(!super::valid_binding("usage:"));
 }

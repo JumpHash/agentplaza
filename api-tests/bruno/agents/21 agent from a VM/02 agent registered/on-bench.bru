@@ -1,0 +1,23 @@
+meta {
+  name: The bench lists the registered agent
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/agents?project=bench
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("the agent is on the bench", function () {
+    expect(res.getBody().find((x) => x.cid === 41001)).to.not.be.undefined;
+  });
+}

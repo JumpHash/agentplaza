@@ -1,0 +1,29 @@
+meta {
+  name: Save a Hugging Face token (a fake test value)
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/foundry/hf/token
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": "hf_t-test-token-not-real"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the reply says a token is set and never echoes it", function () {
+    expect(res.getBody().hf_token_set).to.equal(true);
+    expect(JSON.stringify(res.getBody())).to.not.include("not-real");
+  });
+}

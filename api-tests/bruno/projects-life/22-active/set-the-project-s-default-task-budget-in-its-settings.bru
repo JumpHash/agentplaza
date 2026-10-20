@@ -1,0 +1,25 @@
+meta {
+  name: Set the project's default task budget in its settings
+  type: http
+  seq: 10
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"task_budget": 400}
+}
+
+assert {
+  res.status: eq 200
+  res.body.task_budget: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

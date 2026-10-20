@@ -1,0 +1,16 @@
+meta {
+  name: Refuse an unsigned command poll from a node
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/{{node_joined_id}}/commands
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+}

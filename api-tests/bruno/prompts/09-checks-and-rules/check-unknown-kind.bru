@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a check with a kind that does not exist
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/check
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "kind": "bogus",
+    "body": "# X\n"
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

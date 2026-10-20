@@ -1,0 +1,25 @@
+meta {
+  name: Show two hours of usage by role
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/series?from=0&to=7200000&by=role
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("hourly buckets are the default and empty ones are kept", function () {
+    const body = res.getBody();
+    expect(body.by).to.equal("role");
+    expect(body.bucket_ms).to.equal(3600000);
+    expect(body.points).to.have.lengthOf(2);
+  });
+}

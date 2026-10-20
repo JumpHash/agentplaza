@@ -1,0 +1,35 @@
+meta {
+  name: Create a project for t-internal engine approval
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "t-internal engine approval",
+    "goal": "Internal API tests",
+    "kind": "code"
+  }
+}
+
+script:post-response {
+  bru.setVar("int_proj_acp", res.getBody().id);
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: gte 200
+  res.status: lt 300
+}
+
+tests {
+  test("the project has an id", function () {
+    expect(res.getBody().id).to.be.a("string");
+  });
+}

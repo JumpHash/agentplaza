@@ -1,0 +1,23 @@
+meta {
+  name: Export a fixture view as CSV
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/export?tab=overview&range=1h&fixture=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the export starts with its header row", function () {
+    expect(res.getBody()).to.be.a("string");
+    expect(res.getBody().startsWith("panel,series,time,value")).to.equal(true);
+  });
+}

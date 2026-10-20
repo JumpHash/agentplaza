@@ -1,0 +1,33 @@
+meta {
+  name: Refuse an agent's attest without its revision
+  type: http
+  seq: 61
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/weft/records/unsigned
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "kind": "attest",
+    "body": {}
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 409
+}
+
+tests {
+  test("the error names the missing revision", function () {
+    expect(res.getBody().error).to.include("revision");
+  });
+}

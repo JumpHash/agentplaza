@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a takeover socket that names no session
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/w-t-missing/control
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("session");
+  });
+}

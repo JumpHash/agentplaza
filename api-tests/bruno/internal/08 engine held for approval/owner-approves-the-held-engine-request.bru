@@ -1,0 +1,23 @@
+meta {
+  name: Owner approves the held engine request
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/approvals/{{int_appr_e}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "approve": true
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.state: eq "approved"
+}

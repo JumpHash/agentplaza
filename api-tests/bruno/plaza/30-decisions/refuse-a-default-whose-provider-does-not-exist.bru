@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a default whose provider does not exist
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/decisions/default
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "nope", "model": "x"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "no provider"
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Publish the older version 1 again (a rollback)
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/publish
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "version": 1
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.skill.active_version: eq 1
+  res.responseTime: lt {{budgetMs}}
+}

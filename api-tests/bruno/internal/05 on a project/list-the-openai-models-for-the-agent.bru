@@ -1,0 +1,26 @@
+meta {
+  name: List the OpenAI models for the agent
+  type: http
+  seq: 26
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/openai/v1/models
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the list is an OpenAI list", function () {
+    expect(res.getBody().object).to.equal("list");
+  });
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Refuse to approve a proposal that does not exist
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/agent-proposals/ap-none/approve
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no proposal ap-none");
+  });
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Switch a constitutional law off with its typed id
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/laws/overrides/C-001a
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "disabled": true,
+    "reason": "Bruno suite",
+    "confirm": "C-001a"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

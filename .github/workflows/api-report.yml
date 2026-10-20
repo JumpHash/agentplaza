@@ -67,8 +67,22 @@ jobs:
       # Main's code: the report builder, the console's tokens and faces.
       - uses: actions/checkout@v5
         with: { ref: "${{ github.event.repository.default_branch }}", path: trusted }
+      # A run whose API tests did not run (nothing they test changed, or it stopped before them) has no results,
+      # and an expired one has none left: nothing to publish, and no download error.
+      - name: Whether the run has results
+        id: has
+        run: |
+          set -euo pipefail
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?name=api-results" \
+            --jq '[.artifacts[] | select(.expired | not)] | length')
+          if [ "$n" -gt 0 ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run $RUN_ID has no api-results (the API tests did not run, or its results expired): nothing to publish"
+          fi
       - name: The run's results (data only)
         id: data
+        if: steps.has.outputs.found == 'true'
         continue-on-error: true
         uses: actions/download-artifact@v5
         with: { name: api-results, run-id: "${{ env.RUN_ID }}", github-token: "${{ github.token }}", path: data }

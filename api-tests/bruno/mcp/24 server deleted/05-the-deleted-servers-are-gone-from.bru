@@ -1,0 +1,24 @@
+meta {
+  name: The deleted servers are gone from the list
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/mcp/servers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("neither test server is listed", function () {
+    const ids = res.getBody().map((s) => s.id);
+    expect(ids).to.not.include("bru-fake-mcp");
+    expect(ids).to.not.include("bru-vault-mcp");
+  });
+}

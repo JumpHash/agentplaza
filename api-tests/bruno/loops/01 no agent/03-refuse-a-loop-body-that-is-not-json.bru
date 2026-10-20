@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a loop body that is not JSON
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/loops
+  body: text
+  auth: none
+}
+
+body:text {
+  {
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says bad body", function () {
+    expect(res.getBody().error).to.match(/^bad body/);
+  });
+}

@@ -1,0 +1,30 @@
+meta {
+  name: A spawn of the custom role reaches noded and is refused
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/agents
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "role": "t-agents-lead",
+    "count": 1
+  }
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal comes from the node", function () {
+    expect(res.getBody().error).to.match(/^noded/);
+  });
+}

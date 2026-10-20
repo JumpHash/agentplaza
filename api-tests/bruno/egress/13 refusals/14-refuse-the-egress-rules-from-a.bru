@@ -1,0 +1,27 @@
+meta {
+  name: Refuse the egress rules from a host that does not name loopback
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/egress/inject
+  body: none
+  auth: none
+}
+
+headers {
+  Host: evil.test
+}
+
+assert {
+  res.status: eq 403
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the Host gate answers before the owner check", function () {
+    expect(res.getBody().error).to.equal("the Host header must name loopback");
+  });
+}

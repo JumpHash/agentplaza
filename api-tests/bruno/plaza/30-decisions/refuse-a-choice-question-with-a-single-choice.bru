@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a choice question with a single choice
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai-decisions", "model": "gpt-6-luna", "input": "t-dec one choice", "questions": [{"type": "choice", "name": "area", "instructions": "Which?", "choices": [{"value": "a"}]}]}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "2 to 255 choices"
+  res.responseTime: lt {{budgetMs}}
+}

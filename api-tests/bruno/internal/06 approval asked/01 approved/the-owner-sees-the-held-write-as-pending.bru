@@ -1,0 +1,24 @@
+meta {
+  name: The owner sees the held write as pending
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/approvals
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the approval is pending", function () {
+    const a = res.getBody().find((x) => x.id === bru.getVar("int_appr_1"));
+    expect(a, "approval").to.exist;
+    expect(a.state).to.equal("pending");
+  });
+}

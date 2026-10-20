@@ -1,0 +1,30 @@
+meta {
+  name: a repeated stop keeps the hold
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/stop
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the plaza is still held", function () {
+    expect(res.getBody().paused).to.equal(true);
+  });
+}

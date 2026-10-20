@@ -1,0 +1,21 @@
+meta {
+  name: Read the owner's fetch block list to restore it later
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.fetch_block: isArray
+}
+
+script:post-response {
+  bru.setVar("fdy_prev_block", JSON.stringify(res.getBody().fetch_block));
+}

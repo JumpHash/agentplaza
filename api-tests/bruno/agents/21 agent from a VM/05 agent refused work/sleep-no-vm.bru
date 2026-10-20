@@ -1,0 +1,27 @@
+meta {
+  name: Refuse putting an agent with no VM to sleep
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/sleep
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("has no VM");
+  });
+}

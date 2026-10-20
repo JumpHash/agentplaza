@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a default model the decision provider does not list
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/decisions/default
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai-decisions", "model": "nope"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "does not list"
+  res.responseTime: lt {{budgetMs}}
+}

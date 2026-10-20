@@ -1,0 +1,23 @@
+meta {
+  name: List the recordings of a workstation that has none
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/recordings?station=w-t-missing
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("a workstation with no recordings lists none", function () {
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

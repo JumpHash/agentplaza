@@ -1,0 +1,22 @@
+meta {
+  name: the sweep fails for want of a watcher, not the hold
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowHeldPid}}/maintenance/sweep
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal is the missing watcher", function () {
+    expect(res.getBody().error).to.include('no agents to watch it');
+  });
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a delete of a rule that does not exist
+  type: http
+  seq: 13
+}
+
+delete {
+  url: {{baseUrl}}/v1/egress/inject/egress_rule_nope
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

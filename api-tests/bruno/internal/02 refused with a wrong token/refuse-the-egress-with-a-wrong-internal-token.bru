@@ -1,0 +1,32 @@
+meta {
+  name: Refuse the egress with a wrong internal token
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/egress
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+}
+
+body:json {
+  {
+    "host": "example.com",
+    "port": 443,
+    "allowed": true,
+    "bytes_up": 10,
+    "bytes_down": 20,
+    "ms": 5
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

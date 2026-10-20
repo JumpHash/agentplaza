@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a recipe node of a kind the graph does not know
+  type: http
+  seq: 11
+}
+
+put {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  req.setBody({ toml: 'id = "docs"\nversion = 9\ntitle = "t"\n\n[[node]]\nid = "magic"\nkind = "magic"\n\n[[node]]\nid = "gate"\nkind = "gate"\n' });
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "node magic: no kind magic"
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a task that runs after the same task twice
+  type: http
+  seq: 43
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks twice", "budget": 200, "project": "{{tsk_pid}}", "after": ["{{tsk_a}}", "{{tsk_a}}"]}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "twice"
+  res.responseTime: lt {{budgetMs}}
+}

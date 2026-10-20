@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a title of 121 characters
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-prompt-longtitle",
+    "kind": "system",
+    "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "description": "A test role prompt for the Bruno run.",
+    "tags": [
+      "t-test"
+    ],
+    "binding": "role:t-tester",
+    "body": "# Tester\n\nYou are the test role. Check each request against the plan.\n",
+    "note": "first draft"
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt {{budgetMs}}
+}

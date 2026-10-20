@@ -1,0 +1,22 @@
+meta {
+  name: Delete the picture
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/files/{{file_pic}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the deleted id is echoed", function () {
+    expect(res.getBody().deleted).to.equal(bru.getVar("file_pic"));
+  });
+}

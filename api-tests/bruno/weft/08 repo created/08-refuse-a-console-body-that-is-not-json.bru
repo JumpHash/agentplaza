@@ -1,0 +1,20 @@
+meta {
+  name: Refuse a console body that is not JSON
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: text
+  auth: none
+}
+
+body:text {
+  kind=repo.create
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+}

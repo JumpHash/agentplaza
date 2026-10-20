@@ -1,0 +1,24 @@
+meta {
+  name: Read the share request on the owner's approvals
+  type: http
+  seq: 54
+}
+
+get {
+  url: {{baseUrl}}/v1/approvals
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the share request is pending", function () {
+    const a = res.getBody().find((x) => x.id === bru.getVar("int_share"));
+    expect(a, "approval").to.exist;
+    expect(a.state).to.equal("pending");
+  });
+}

@@ -1,0 +1,30 @@
+meta {
+  name: Restore the recording defaults the hub had before this folder
+  type: http
+  seq: 9
+}
+
+put {
+  url: {{baseUrl}}/v1/stations/recording-defaults
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {{stations_defaults_before}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the restored defaults are the ones read first", function () {
+    expect(JSON.stringify(res.getBody())).to.eq(bru.getVar("stations_defaults_before"));
+  });
+}

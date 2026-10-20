@@ -1,0 +1,30 @@
+meta {
+  name: Refuse the artifact version with a wrong internal token
+  type: http
+  seq: 32
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts/art-t-internal-none
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-internal empty",
+      "panels": []
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

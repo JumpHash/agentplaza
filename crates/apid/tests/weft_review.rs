@@ -350,6 +350,15 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
     let (noded, gateway) = daemons();
     let roles: Value = json!({ "roles": AGENTS.iter().map(|(_, r)| (r.to_string(), json!({ "role": r, "title": r, "tools": ["bash"] }))).collect::<serde_json::Map<String, Value>>() });
     let scratch = Scratch::new("weft-review");
+    scratch.name_agents(&[
+        (300, "Kofi"),
+        (301, "Lena"),
+        (302, "Mira"),
+        (303, "Ruth"),
+        (305, "Omar"),
+        (306, "Ines"),
+        (307, "Taro"),
+    ]);
     let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
     for (cid, _) in AGENTS {
         let a = hub.wait_for(&format!("/v1/agents/{cid}"), Duration::from_secs(30), |a| {

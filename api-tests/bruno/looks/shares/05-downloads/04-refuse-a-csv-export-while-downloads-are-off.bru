@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a CSV export while downloads are off
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh5_share}}/export?format=csv&panel=sales
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+}

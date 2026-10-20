@@ -1,0 +1,22 @@
+meta {
+  name: archiving again is harmless
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("still archived", function () {
+    expect(res.getBody().archived).to.equal(true);
+  });
+}

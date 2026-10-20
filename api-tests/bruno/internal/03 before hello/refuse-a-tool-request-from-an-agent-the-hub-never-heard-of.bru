@@ -1,0 +1,43 @@
+meta {
+  name: Refuse a tool request from an agent the hub never heard of
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61001/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "u1",
+    "name": "read_file",
+    "input": {
+      "path": "/x"
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+  res.body.reply.is_error: eq true
+}
+
+tests {
+  test("the decision is deny", function () {
+    expect(res.getBody().reply.decision).to.equal("deny");
+  });
+  test("the output says the agent is unknown", function () {
+    expect(res.getBody().reply.output).to.equal("unknown agent");
+  });
+}

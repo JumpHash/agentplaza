@@ -1,0 +1,17 @@
+meta {
+  name: Revoke the live key at the end
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/e2b/keys/{{e2bLiveKeyId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.ok: eq true
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for a provider that was deleted
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/providers/t-prov-compat
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

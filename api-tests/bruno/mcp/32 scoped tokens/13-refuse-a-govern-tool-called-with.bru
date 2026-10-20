@@ -1,0 +1,39 @@
+meta {
+  name: Refuse a govern tool called with the observe token
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_observe_token}}
+  Mcp-Session-Id: {{mcp_observe_session}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": {
+      "name": "skill_publish",
+      "arguments": {}
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the wrong-scope call is refused as an unknown tool", function () {
+    expect(res.getBody().error.message).to.equal("unknown tool: skill_publish");
+  });
+}

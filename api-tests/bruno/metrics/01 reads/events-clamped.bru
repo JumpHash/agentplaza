@@ -1,0 +1,24 @@
+meta {
+  name: List events with a limit above the cap and kind filters
+  type: http
+  seq: 28
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/events?scope=global&from=0&to=3600000&limit=99999&kinds=lifecycle,alert
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the limit is capped at 1000", function () {
+    const body = res.getBody();
+    expect(body).to.be.an("array");
+    expect(body.length).to.be.at.most(1000);
+  });
+}

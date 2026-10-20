@@ -1,0 +1,23 @@
+meta {
+  name: Answer 404 for the profile of an agent that does not exist
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/999999/profile
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no agent 999999");
+  });
+}

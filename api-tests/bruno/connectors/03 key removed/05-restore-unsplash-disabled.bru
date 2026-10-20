@@ -1,0 +1,30 @@
+meta {
+  name: Disable unsplash and clear its roles and projects again
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/unsplash
+  body: json
+  auth: none
+}
+
+body:json {
+  {"enabled": false, "roles": [], "projects": []}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.enabled: eq false
+}
+
+tests {
+  test("unsplash is back to its unset settings", function () {
+    const body = res.getBody();
+    expect(body.roles).to.eql([]);
+    expect(body.projects).to.eql([]);
+    expect(body.configured).to.equal(false);
+  });
+}

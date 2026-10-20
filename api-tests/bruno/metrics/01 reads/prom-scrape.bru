@@ -1,0 +1,23 @@
+meta {
+  name: Scrape the hub's Prometheus metrics
+  type: http
+  seq: 40
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the scrape is the Prometheus text format", function () {
+    expect(res.getBody()).to.be.a("string");
+    expect(res.getBody()).to.include("# TYPE");
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Refuse to reject a proposal that does not exist when no reason is sent
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/agent-proposals/ap-none/reject
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no proposal ap-none");
+  });
+}

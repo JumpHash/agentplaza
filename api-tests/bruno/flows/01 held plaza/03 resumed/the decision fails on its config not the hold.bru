@@ -1,0 +1,35 @@
+meta {
+  name: the decision fails on its config, not the hold
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "input": "flows probe input",
+    "questions": [
+      {
+        "type": "predicate",
+        "name": "ok",
+        "instructions": "Is it ok?"
+      }
+    ]
+  }
+}
+
+tests {
+  test("the decision is no longer held", function () {
+    expect(res.status).to.not.equal(409);
+    expect(JSON.stringify(res.getBody())).to.not.include('held');
+  });
+}

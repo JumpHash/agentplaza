@@ -1,0 +1,25 @@
+meta {
+  name: The project's graph: A first, B after it, A is the frontier
+  type: http
+  seq: 30
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{tsk_pid}}/graph
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the edge runs from A to B and only A is in the frontier", function () {
+    const g = res.getBody();
+    expect(g.edges).to.deep.include([bru.getVar("tsk_a"), bru.getVar("tsk_b")]);
+    expect(g.frontier).to.deep.equal([bru.getVar("tsk_a")]);
+    expect(g.longest_chain).to.deep.equal([bru.getVar("tsk_a"), bru.getVar("tsk_b")]);
+  });
+}

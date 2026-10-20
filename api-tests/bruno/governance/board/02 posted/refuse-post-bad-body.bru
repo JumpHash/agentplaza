@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an agent's post whose body is not an object
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/board
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  [
+    "not",
+    "a",
+    "post"
+  ]
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

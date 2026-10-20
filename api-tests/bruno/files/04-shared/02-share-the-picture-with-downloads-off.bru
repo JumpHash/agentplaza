@@ -1,0 +1,36 @@
+meta {
+  name: Share the picture with downloads off
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "file",
+      "id": "{{file_pic}}"
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("sh_pic_share", res.getBody().id);
+}
+
+tests {
+  test("a live file link", function () {
+    expect(res.getBody().state).to.equal("live");
+    expect(res.getBody().target.kind).to.equal("file");
+  });
+}

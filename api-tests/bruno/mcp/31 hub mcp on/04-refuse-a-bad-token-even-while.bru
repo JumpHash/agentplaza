@@ -1,0 +1,36 @@
+meta {
+  name: Refuse a bad token even while the server is on
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer apz_mcp_bogus-bru-token
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {}
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the token is unknown", function () {
+    expect(res.getBody().error).to.equal("unknown token");
+  });
+}

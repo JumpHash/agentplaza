@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a token body that is not JSON
+  type: http
+  seq: 8
+}
+
+put {
+  url: {{baseUrl}}/v1/foundry/hf/token
+  body: text
+  auth: none
+}
+
+body:text {
+  hf_text
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the body is bad", function () {
+    expect(res.getBody().error).to.match(/^bad body/);
+  });
+}

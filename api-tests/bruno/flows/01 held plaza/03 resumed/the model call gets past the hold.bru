@@ -1,0 +1,31 @@
+meta {
+  name: the model call gets past the hold
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/1/gateway/anthropic/v1/messages
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it now fails on the missing agent, not the hold", function () {
+    expect(res.getBody().error).to.equal('unknown agent');
+  });
+}

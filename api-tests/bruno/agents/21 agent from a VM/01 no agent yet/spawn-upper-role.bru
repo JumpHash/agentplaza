@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a spawn of a role whose id has capitals
+  type: http
+  seq: 34
+}
+
+post {
+  url: {{baseUrl}}/v1/agents
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "role": "ARCHITECT",
+    "count": 1
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("unknown role ARCHITECT");
+  });
+}

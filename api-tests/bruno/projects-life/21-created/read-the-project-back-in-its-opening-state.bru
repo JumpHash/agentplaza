@@ -1,0 +1,26 @@
+meta {
+  name: Read the project back in its opening state
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: eq {{life_pid}}
+  res.body.stage: eq "implementation"
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("its history records the opening and the owner's approval", function () {
+    const kinds = res.getBody().history.map((e) => e.what);
+    expect(kinds).to.include("opened");
+    expect(kinds).to.include("approved");
+  });
+}

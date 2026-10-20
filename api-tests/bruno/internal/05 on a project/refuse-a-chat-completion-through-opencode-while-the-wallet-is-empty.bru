@@ -1,0 +1,40 @@
+meta {
+  name: Refuse a chat completion through OpenCode while the wallet is empty
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/opencode/v1/chat/completions
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "model": "x",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ]
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: gte 400
+  res.status: lt 600
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal is a wallet, key or provider refusal", function () {
+    expect([402, 502, 503]).to.include(res.status);
+  });
+}

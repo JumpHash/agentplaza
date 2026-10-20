@@ -1,0 +1,37 @@
+meta {
+  name: Create a second skill to archive
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-skill-arc",
+    "title": "Archived test",
+    "bindings": [
+      "role:t-tester"
+    ],
+    "skill_md": "---\nname: t-skill-arc\ndescription: Test skill that gets archived. Use when a test archives a skill.\n---\n# Archived test skill\n\nNothing to read here.\n",
+    "files": []
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.skill.id: eq "t-skill-arc"
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("arcSkillId", res.getBody().skill.id);
+}

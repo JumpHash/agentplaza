@@ -1,0 +1,33 @@
+meta {
+  name: The deleted file's reference is not found
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/unfurl
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "refs": [
+      {
+        "kind": "library",
+        "id": "{{unf_file}}"
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("not found", function () {
+    expect(res.getBody().cards[0].error).to.equal("not_found");
+  });
+}

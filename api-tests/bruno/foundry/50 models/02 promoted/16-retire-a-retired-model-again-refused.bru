@@ -1,0 +1,22 @@
+meta {
+  name: Retire a retired model again: refused
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/retire
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("retired is terminal", function () {
+    expect(res.getBody().error).to.equal(bru.getVar("fmdl_a") + " is already retired");
+  });
+}

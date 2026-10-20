@@ -1,0 +1,23 @@
+meta {
+  name: Refuse setting the permission mode of an agent that is not on the hub
+  type: http
+  seq: 52
+}
+
+put {
+  url: {{baseUrl}}/v1/agents/999999/permissions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "mode": "ask"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no such agent"
+}

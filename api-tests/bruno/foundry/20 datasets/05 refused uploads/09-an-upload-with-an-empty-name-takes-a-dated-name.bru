@@ -1,0 +1,26 @@
+meta {
+  name: An upload with an empty name takes a dated name
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload?name=
+  body: text
+  auth: none
+}
+
+body:text {
+  {"ts":1700000000000,"label":"cheap","prompt_chars":100,"prompt_tokens":25,"tool_count":0,"history_turns":0,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-00"}
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the name is the upload's date", function () {
+    expect(res.getBody().name).to.match(/^upload-\d+$/);
+  });
+}

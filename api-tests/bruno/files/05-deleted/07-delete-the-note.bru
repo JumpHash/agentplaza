@@ -1,0 +1,16 @@
+meta {
+  name: Delete the note
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/v1/files/{{file_note2}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

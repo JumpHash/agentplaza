@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a warm template delete while no node answers
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/templates/t-warm-key
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt {{budgetMs}}
+}

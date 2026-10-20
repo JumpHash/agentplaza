@@ -1,0 +1,28 @@
+meta {
+  name: Read the note's metadata
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/files/{{file_note}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the name, title, owner and type are kept", function () {
+    const b = res.getBody();
+    expect(b.name).to.equal("t-files-notes.md");
+    expect(b.title).to.equal("t-files notes");
+    expect(b.author).to.equal("owner");
+    expect(b.author_cid).to.equal(0);
+    expect(b.content_type).to.equal("text/markdown");
+    expect(b.sha256).to.match(/^[0-9a-f]{64}$/);
+  });
+}

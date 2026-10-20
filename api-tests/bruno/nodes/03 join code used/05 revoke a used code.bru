@@ -1,0 +1,22 @@
+meta {
+  name: Refuse to revoke a code that was already used (404)
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/nodes/codes/{{node_code_a_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the answer says it was used", function () {
+    expect(res.getBody().error).to.include("already used");
+  });
+}

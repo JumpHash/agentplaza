@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a target filter that is not a target
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/shares?target=bogus
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

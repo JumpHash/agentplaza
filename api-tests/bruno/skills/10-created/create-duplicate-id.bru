@@ -1,0 +1,42 @@
+meta {
+  name: Refuse a second skill with the same id
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-skill-life",
+    "title": "Again",
+    "tags": [
+      "t-test",
+      "reference"
+    ],
+    "bindings": [
+      "role:t-tester"
+    ],
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n",
+    "files": [
+      {
+        "path": "reference.md",
+        "content_b64": "IyBSZWZlcmVuY2UK"
+      }
+    ],
+    "note": "first version"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}

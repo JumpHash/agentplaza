@@ -1,0 +1,22 @@
+meta {
+  name: Archiving an archived skill keeps its first archive time
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{arcSkillId}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("archived_ms is still a number", function () {
+    expect(res.getBody().skill.archived_ms).to.be.a("number");
+  });
+}

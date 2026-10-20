@@ -1,0 +1,26 @@
+meta {
+  name: The skill list shows the live version
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/skills
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.skills: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the skill is listed as live on version 2", function () {
+    const s = res.getBody().skills.find((x) => x.id === "t-skill-life");
+    expect(s).to.be.an("object");
+    expect(s.active_version).to.equal(2);
+    expect(s.latest_version).to.equal(3);
+  });
+}

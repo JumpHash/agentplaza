@@ -1,0 +1,30 @@
+meta {
+  name: Refuse the openrouter messages without the internal token
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/openrouter/v1/messages
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "model": "anthropic/claude-haiku-5-5",
+    "max_tokens": 16,
+    "messages": [
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ]
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

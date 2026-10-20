@@ -1,0 +1,42 @@
+meta {
+  name: a negative interval is refused as a bad value
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("flowSettingsCurrent"));
+  s.health_interval_s = -1;
+  req.setBody(s);
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setVar("flowSettingsCurrent", JSON.stringify(res.getBody()));
+  }
+}
+
+tests {
+  test("the refusal is a bad settings body", function () {
+    expect(res.getBody().error).to.include('bad settings JSON');
+  });
+}

@@ -1,0 +1,44 @@
+meta {
+  name: Refuse a decision for an agent the hub never heard of
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61001/gateway/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "input": "Pick one",
+    "questions": [
+      {
+        "type": "choice",
+        "name": "q1",
+        "instructions": "Pick the better one",
+        "choices": [
+          {
+            "value": "a",
+            "label": "A"
+          },
+          {
+            "value": "b",
+            "label": "B"
+          }
+        ]
+      }
+    ]
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 404
+  res.body.error: eq "unknown agent"
+}

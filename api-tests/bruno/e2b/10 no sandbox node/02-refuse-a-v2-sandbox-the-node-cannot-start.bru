@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a v2 sandbox the node cannot start
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "timeout": 60
+  }
+}
+
+assert {
+  res.status: eq 503
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "sandbox_node_unreachable"
+}
+
+tests {
+  test("the node cannot start it: a 503 that says why", function () {
+    expect(res.getBody().code).to.equal(503);
+    expect(res.getBody().message).to.match(/^noded unreachable: /);
+  });
+}

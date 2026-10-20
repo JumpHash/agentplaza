@@ -1,0 +1,30 @@
+meta {
+  name: Set the agent's turn limit
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/control
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "action": "set_limits",
+    "max_turns": 5
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.ok: eq true
+}
+
+tests {
+  test("the result names the limit", function () {
+    expect(res.getBody().result).to.include("max_turns");
+  });
+}

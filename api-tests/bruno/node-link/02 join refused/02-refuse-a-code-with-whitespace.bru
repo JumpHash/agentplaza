@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a join code with a space in it
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/node-link/join
+  body: json
+  auth: none
+}
+
+body:json {
+  {"code": "t-join code"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "the join code contains whitespace or control characters"
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an empty token
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/auth/session
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "token": ""
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+}

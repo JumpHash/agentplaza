@@ -1,0 +1,23 @@
+meta {
+  name: No Hugging Face import is listed after the refusals
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/hf/imports
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.imports: isArray
+}
+
+tests {
+  test("no import for the test repo", function () {
+    expect(res.getBody().imports.map(i => i.id)).to.not.include("t-org/t-model");
+  });
+}

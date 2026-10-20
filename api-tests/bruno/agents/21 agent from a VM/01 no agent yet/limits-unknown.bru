@@ -1,0 +1,25 @@
+meta {
+  name: An agent that does not exist has the default limits
+  type: http
+  seq: 30
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/999999/limits
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("no limit is set", function () {
+    const b = res.getBody();
+    expect(b.max_turns).to.be.null;
+    expect(b.compress_at).to.be.null;
+    expect(b.keep_recent).to.be.null;
+  });
+}

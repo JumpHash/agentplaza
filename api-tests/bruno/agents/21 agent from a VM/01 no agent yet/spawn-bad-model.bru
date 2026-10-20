@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a spawn with a model that has no provider
+  type: http
+  seq: 39
+}
+
+post {
+  url: {{baseUrl}}/v1/agents
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "role": "orchestrator",
+    "count": 1,
+    "model": "no-such-model"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("bad model name");
+  });
+}

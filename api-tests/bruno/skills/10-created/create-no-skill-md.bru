@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a create body without SKILL.md
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-skill-nomd",
+    "title": "No SKILL.md"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

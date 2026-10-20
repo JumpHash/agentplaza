@@ -1,0 +1,24 @@
+meta {
+  name: The owner lists the agent's file as made by the agent
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/files?kind=deliverable
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("author is agent 5", function () {
+    const f = res.getBody().find((x) => x.id === bru.getVar("file_agent"));
+    expect(f.author).to.equal("agent 5");
+    expect(f.author_cid).to.equal(5);
+  });
+}

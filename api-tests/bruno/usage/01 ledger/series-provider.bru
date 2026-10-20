@@ -1,0 +1,22 @@
+meta {
+  name: Show usage by provider
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/series?from=0&to=3600000&by=provider
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the grouping is the provider", function () {
+    expect(res.getBody().by).to.equal("provider");
+  });
+}

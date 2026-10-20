@@ -1,0 +1,27 @@
+meta {
+  name: Read the default decision model before any change
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/decisions/default
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the default has a provider and a model key", function () {
+    expect(res.getBody()).to.have.property("provider");
+    expect(res.getBody()).to.have.property("model");
+  });
+}
+
+script:post-response {
+  bru.setVar("dec_before", JSON.stringify(res.getBody()));
+}

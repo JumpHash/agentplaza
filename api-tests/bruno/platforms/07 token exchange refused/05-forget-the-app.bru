@@ -1,0 +1,16 @@
+meta {
+  name: Forget the app whose exchange failed
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/platforms/registrations/{{exchange_app}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

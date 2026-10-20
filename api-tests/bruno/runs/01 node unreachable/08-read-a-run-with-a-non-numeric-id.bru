@@ -1,0 +1,22 @@
+meta {
+  name: Read a run with a non-numeric id
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/runs/abc
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the hub says the node is unreachable", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

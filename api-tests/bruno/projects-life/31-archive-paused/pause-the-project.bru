@@ -1,0 +1,17 @@
+meta {
+  name: Pause the project
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_xpid}}/pause
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq true
+  res.responseTime: lt {{budgetMs}}
+}

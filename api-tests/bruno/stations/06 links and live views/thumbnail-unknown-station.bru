@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for the thumbnail of a workstation that does not exist
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/w-t-missing/thumbnail?session=shared
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

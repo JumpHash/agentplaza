@@ -1,0 +1,25 @@
+meta {
+  name: The vault lists the server as a consumer of that secret
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/consumers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the consumer for the server is listed with the secret it wants", function () {
+    const consumer = res.getBody().find((c) => c.binding === "mcp:bru-vault-mcp");
+    expect(consumer, "consumer is listed").to.not.be.undefined;
+    expect(consumer.wants).to.equal("BRU_MCP_TOKEN");
+    expect(consumer.per_node).to.be.an("object");
+  });
+}

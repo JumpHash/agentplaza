@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a motion from an agent that holds no council seat
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/motions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "proposer_cid": 8603,
+    "kind": "priority",
+    "text": "t-motion priority"
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the role holds no seat", function () {
+  expect(res.getBody().error).to.contain("no council seat");
+  });
+}

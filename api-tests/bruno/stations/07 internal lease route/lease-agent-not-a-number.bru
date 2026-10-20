@@ -1,0 +1,34 @@
+meta {
+  name: Refuse an agent's lease whose agent id is not a number
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/abc/stations/w-t-missing/leases
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "kind": "shared"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("CID must be a number");
+  });
+}

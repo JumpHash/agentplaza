@@ -1,0 +1,21 @@
+meta {
+  name: Leave when not joined, which stops nothing and keeps the identity
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/node-link/leave
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.joined: eq false
+}

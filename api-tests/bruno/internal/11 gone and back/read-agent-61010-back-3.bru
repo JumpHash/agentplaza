@@ -1,0 +1,25 @@
+meta {
+  name: Read agent 61010 back
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/61010
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the agent reads back as idle", function () {
+    expect(res.getBody().status).to.equal("idle");
+  });
+  test("the agent is on its project", function () {
+    expect(res.getBody().project).to.equal(bru.getVar("int_proj_gon"));
+  });
+}

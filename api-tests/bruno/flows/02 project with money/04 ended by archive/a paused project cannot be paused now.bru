@@ -1,0 +1,22 @@
+meta {
+  name: a paused project cannot be paused now
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/pause
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says archived", function () {
+    expect(res.getBody().error).to.include('archived');
+  });
+}

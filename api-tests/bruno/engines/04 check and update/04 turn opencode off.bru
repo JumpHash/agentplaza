@@ -1,0 +1,27 @@
+meta {
+  name: Turn OpenCode off
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/opencode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "enabled": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.enabled: eq false
+}

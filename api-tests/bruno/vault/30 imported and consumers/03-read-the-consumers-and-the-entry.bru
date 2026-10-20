@@ -1,0 +1,22 @@
+meta {
+  name: Read the consumers and the entry each one resolves
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/consumers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the consumers answer a list", function () {
+    expect(res.getBody()).to.be.an("array");
+  });
+}

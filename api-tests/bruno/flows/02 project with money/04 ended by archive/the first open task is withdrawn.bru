@@ -1,0 +1,24 @@
+meta {
+  name: the first open task is withdrawn
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{flowMoneyT1}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "withdrawn"
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("cancelled, with no agent", function () {
+    expect(res.getBody().outcome).to.equal('cancelled');
+    expect(res.getBody().agent_cid).to.equal(null);
+  });
+}

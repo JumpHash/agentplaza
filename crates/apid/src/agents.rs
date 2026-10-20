@@ -1335,7 +1335,9 @@ fn patch(app: &App, req: &Request, params: &Params<'_>) -> Response {
     Response::json(200, &v)
 }
 
-/// `DELETE`: asks the hub to stop the agent (best effort) and deletes its run.
+/// `DELETE`: asks the hub to stop the agent (best effort) and deletes its run, then takes the agent off
+/// the roster. noded's answer is best effort (`run_status` is null when it could not be told), so the
+/// roster does not wait on it: as in retire, the agent's work ends and it goes offline, then it is removed.
 fn delete(app: &App, params: &Params<'_>) -> Response {
     let agent = match agent_at(app, params) {
         Ok(agent) => agent,
@@ -1356,6 +1358,11 @@ fn delete(app: &App, params: &Params<'_>) -> Response {
             .map(|(status, _)| status)
             .ok()
     });
+    // The roster is read for the node's address, so the agent leaves it after the noded calls above.
+    app.work.cancel(app, agent.cid, "deleted by the owner");
+    app.work.clear(agent.cid);
+    gone(app, agent.cid, "deleted by the owner");
+    app.agents.remove(agent.cid);
     Response::json(200, &json!({"deleted": true, "run_status": run_status}))
 }
 

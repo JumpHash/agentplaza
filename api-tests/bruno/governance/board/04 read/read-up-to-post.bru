@@ -1,0 +1,34 @@
+meta {
+  name: Mark the board read by an agent up to its own post
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/board/read
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent_cid": 8601,
+    "up_to": "{{boardAgentPost}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("nothing is left unread after that post", function () {
+  expect(res.getBody().agent_cid).to.equal(8601);
+    expect(res.getBody().unread).to.equal(0);
+  });
+}

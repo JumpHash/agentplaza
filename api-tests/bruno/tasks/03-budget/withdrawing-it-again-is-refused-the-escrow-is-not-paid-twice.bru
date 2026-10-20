@@ -1,0 +1,16 @@
+meta {
+  name: Withdrawing it again is refused: the escrow is not paid twice
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{baseUrl}}/v1/tasks/{{bu_t1}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Upload an empty dataset
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload?name=t-job-empty
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("fjob_empty", res.getBody().id);
+}
+
+tests {
+  test("an empty upload is a dataset with no rows and the empty taint", function () {
+    expect(res.getBody().id).to.be.a("string");
+    expect(res.getBody().rows).to.equal(0);
+    expect(res.getBody().taint).to.include("empty");
+  });
+}

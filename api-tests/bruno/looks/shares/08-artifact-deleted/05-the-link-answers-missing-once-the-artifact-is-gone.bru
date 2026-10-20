@@ -1,0 +1,22 @@
+meta {
+  name: The link answers missing once the artifact is gone
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh8_share}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("missing", function () {
+    expect(res.getBody().error).to.equal("missing");
+  });
+}

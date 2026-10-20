@@ -1,0 +1,37 @@
+meta {
+  name: Add a connection from the repo to a remote, as the owner
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "connection.add",
+    "body": {
+      "repo": "t-weft-repo-b",
+      "id": "t-conn-a",
+      "remote": "file:///nonexistent/t-weft-remote.git",
+      "platform": "git",
+      "branch": "main",
+      "author_name": "Owner",
+      "author_email": "owner@example.test"
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the statement's summary names the repo and the remote", function () {
+    expect(res.getBody().summary).to.include("t-weft-repo-b connected to");
+  });
+}

@@ -491,12 +491,18 @@ fn treasury_mint(app: &App, body: &[u8]) -> Response {
         Ok(request) => request,
         Err(e) => return Response::error(400, &e.to_string()),
     };
+    if request.amount <= 0 {
+        return Response::error(
+            400,
+            &format!("an amount must be positive, got {}", request.amount),
+        );
+    }
     match app.plaza.treasury.mint_plaza_budget(request.amount) {
         Ok(entry) => Response::json(
             200,
             &serde_json::json!({ "entry": entry, "plaza_budget": app.plaza.treasury.plaza_budget_balance() }),
         ),
-        Err(e) => Response::error(e.status(), &format!("{e:?}")),
+        Err(e) => Response::error(e.status(), &e.to_string()),
     }
 }
 
@@ -518,7 +524,7 @@ fn treasury_fine(app: &App, body: &[u8]) -> Response {
         .fine(request.cid, request.amount, &request.memo)
     {
         Ok(entry) => Response::json(200, &serde_json::json!({ "entry": entry })),
-        Err(e) => Response::error(e.status(), &format!("{e:?}")),
+        Err(e) => Response::error(e.status(), &e.to_string()),
     }
 }
 
@@ -958,7 +964,9 @@ fn board_view(app: &App, req: &Request) -> Response {
 
 /// `POST /v1/board`: a connected agent posts. The author is always an agent;
 /// the driver defaults to the caller. The post is on the author's project's
-/// board; an agent on the bench, or on a paused project, does not post (409).
+/// board; an agent on the bench, or on a project the owner paused (the project's own pause, which holds
+/// its agents), does not post (409). The board's pause (`/v1/board/pause`) is different: it stores the
+/// post and only holds the deliveries of its mentions until it resumes (settings::BoardPauses).
 fn board_post(app: &App, body: &[u8]) -> Response {
     let request: PostRequest = match parse(body, "post") {
         Ok(request) => request,

@@ -1,0 +1,36 @@
+meta {
+  name: Start a loop with a unicode prompt and a run limit
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/loops
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": 9101,
+    "prompt": "Prüfe Änderungen 🚀 nach dem Build",
+    "every_minutes": 1,
+    "max_runs": 3
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("floop_b", res.getBody().id);
+}
+
+tests {
+  test("the prompt is kept and the run limit is 3", function () {
+    expect(res.getBody().prompt).to.equal("Prüfe Änderungen 🚀 nach dem Build");
+    expect(res.getBody().max_runs).to.equal(3);
+  });
+}

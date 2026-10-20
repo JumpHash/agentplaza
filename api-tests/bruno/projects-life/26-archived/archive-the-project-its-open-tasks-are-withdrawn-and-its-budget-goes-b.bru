@@ -1,0 +1,18 @@
+meta {
+  name: Archive the project: its open tasks are withdrawn and its budget goes back
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.archived: eq true
+  res.body.paused: eq false
+  res.responseTime: lt {{budgetMs}}
+}

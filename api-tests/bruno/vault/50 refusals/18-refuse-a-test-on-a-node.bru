@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a test on a node that is not of this plaza
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets/sec_doesnotexist/test
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "node": "n9"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the node is refused before the secret is looked up", function () {
+    expect(res.getBody().error).to.include("is not a node of this plaza");
+  });
+}

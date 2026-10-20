@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a v2 sandbox while the plaza is held
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "sandbox_held"
+}

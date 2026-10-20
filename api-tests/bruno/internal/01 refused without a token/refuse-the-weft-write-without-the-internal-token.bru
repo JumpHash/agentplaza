@@ -1,0 +1,23 @@
+meta {
+  name: Refuse the weft write without the internal token
+  type: http
+  seq: 36
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/weft/wire/want
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "revision": "t-internal-none"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

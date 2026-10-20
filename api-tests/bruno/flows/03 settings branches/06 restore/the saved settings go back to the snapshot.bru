@@ -1,0 +1,47 @@
+meta {
+  name: the saved settings go back to the snapshot
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:pre-request {
+  req.setBody(JSON.parse(bru.getVar("flowSettingsSnapshot")));
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setVar("flowSettingsCurrent", JSON.stringify(res.getBody()));
+  }
+}
+
+tests {
+  test("the policy, favourites, interval and roles are the snapshot's", function () {
+    const s = JSON.parse(bru.getVar('flowSettingsSnapshot'));
+    const b = res.getBody();
+    expect(b.orchestrator_model).to.equal(s.orchestrator_model);
+    expect(JSON.stringify(b.model_policy)).to.equal(JSON.stringify(s.model_policy));
+    expect(b.favourite_models).to.deep.equal(s.favourite_models);
+    expect(b.health_interval_s).to.equal(s.health_interval_s);
+    expect(b.role_models).to.deep.equal(s.role_models);
+    expect(b.max_turns).to.equal(s.max_turns);
+  });
+}

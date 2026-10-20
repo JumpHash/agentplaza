@@ -1,0 +1,25 @@
+meta {
+  name: Take the browser back with a code, and the exchange is refused by the host
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/callback?code=t-platforms-code&state={{exchange_state}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 5000
+}
+
+tests {
+  test("the page says not authorized and never shows the client secret", function () {
+    const html = res.getBody();
+    expect(html).to.include("Not authorized");
+    expect(html).to.not.include("t-platforms-exchange-secret-7788");
+    expect(html).to.not.include("t-platforms-code");
+  });
+}

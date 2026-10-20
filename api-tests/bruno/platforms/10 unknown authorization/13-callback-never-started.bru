@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a callback whose state was never started, with a platform error
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/callback?error=access_denied&state=0123456789abcdef0123456789abcdef
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+

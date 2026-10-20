@@ -1,0 +1,28 @@
+meta {
+  name: Refuse an unsigned heartbeat from a node that does not exist
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n999/heartbeat
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "machine": {},
+    "status": {},
+    "runs": []
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+}

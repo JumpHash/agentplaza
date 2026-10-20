@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a name with symbols and an emoji
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/v1/agents/41001
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "Bö 🤖"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("letters only");
+  });
+}

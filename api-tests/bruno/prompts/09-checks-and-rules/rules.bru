@@ -1,0 +1,29 @@
+meta {
+  name: List the prompt rules and templates
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/rules
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.rules: isArray
+  res.body.variables: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a template for each kind and the template variables", function () {
+    const body = res.getBody();
+    expect(body.templates.system).to.be.a("string");
+    expect(body.templates.agents_md).to.be.a("string");
+    expect(body.templates.fragment).to.be.a("string");
+    expect(body.variables).to.include("role");
+    expect(body.rules_version).to.be.a("number");
+  });
+}

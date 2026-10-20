@@ -1,0 +1,30 @@
+meta {
+  name: the hub enforces the model policy and keeps a snapshot
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  const s = res.getBody();
+  delete s.dev_models;
+  bru.setVar("flowSettingsSnapshot", JSON.stringify(s));
+  bru.setVar("flowSettingsCurrent", JSON.stringify(s));
+}
+
+tests {
+  test("the hub is not in dev models, so the tier rules hold", function () {
+    expect(res.getBody().dev_models).to.equal(false);
+    expect(res.getBody().model_policy.orchestrator).to.be.an('array').that.is.not.empty;
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a v2 connect to a sandbox that does not exist
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/sandboxes/sbffffffffffffffff/connect
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "sandbox_not_found"
+}

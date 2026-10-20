@@ -1,0 +1,31 @@
+meta {
+  name: Raise the project's budget by more credits
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"credits": 250}
+}
+
+assert {
+  res.status: eq 200
+  res.body.balance: eq 750
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the plaza gives up the raise too", function () {
+    expect(res.getBody().plaza).to.equal(Number(bru.getVar("life_plaza_start")) - 750);
+  });
+}

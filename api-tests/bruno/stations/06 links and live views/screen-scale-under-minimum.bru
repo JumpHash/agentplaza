@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a live screen view scaled below 0.1
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/w-t-missing/screen?session=shared&scale=0.05
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("scale");
+  });
+}

@@ -1,0 +1,30 @@
+meta {
+  name: A write whose body is not JSON to a missing agent is missing
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/ide/workspaces/agent:999999/file
+  body: text
+  auth: none
+}
+
+headers {
+  content-type: application/json
+}
+
+body:text {
+  not json
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the workspace is looked up before the body is read", function () {
+    expect(res.getBody().error).to.equal("no workspace agent:999999");
+  });
+}

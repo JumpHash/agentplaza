@@ -1,0 +1,16 @@
+meta {
+  name: Take the test agent off the motion project
+  type: http
+  seq: 19
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{motionProject}}/members/8603
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

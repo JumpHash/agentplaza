@@ -1,0 +1,22 @@
+meta {
+  name: Export two skills as one zip
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/export?ids={{lifeSkillId}},{{arcSkillId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the zip comes back as a zip", function () {
+    expect(res.getHeader("content-type")).to.contain("zip");
+  });
+}

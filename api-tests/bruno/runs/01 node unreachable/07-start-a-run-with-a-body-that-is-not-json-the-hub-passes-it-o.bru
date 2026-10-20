@@ -1,0 +1,26 @@
+meta {
+  name: Start a run with a body that is not JSON (the hub passes it on)
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/runs
+  body: text
+  auth: none
+}
+
+body:text {
+  {not json
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the hub says the node is unreachable", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

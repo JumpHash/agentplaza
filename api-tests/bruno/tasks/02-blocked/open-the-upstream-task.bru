@@ -1,0 +1,28 @@
+meta {
+  name: Open the upstream task
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks upstream", "budget": 200, "project": "{{bl_pid}}"}
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("bl_a", res.getBody().id);
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Archive the second test prompt
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/t-prompt-next/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

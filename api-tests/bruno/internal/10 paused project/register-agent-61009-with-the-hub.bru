@@ -1,0 +1,39 @@
+meta {
+  name: Register agent 61009 with the hub
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61009/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "role": "orchestrator",
+    "vm": 1,
+    "caps": []
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.profile.role: eq ""
+}
+
+tests {
+  test("a role the guest claims is not trusted", function () {
+    expect(res.getBody().profile.role).to.equal("");
+  });
+  test("the profile carries tools and a system prompt", function () {
+    expect(res.getBody().profile.tools).to.be.an("array");
+    expect(res.getBody().profile.system).to.be.a("string");
+  });
+}

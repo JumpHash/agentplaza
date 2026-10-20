@@ -1,0 +1,23 @@
+meta {
+  name: Answer 404 when switching a deleted rule
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/alerts/{{metrics_rule_id}}/on
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "on": true
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no such rule"
+}

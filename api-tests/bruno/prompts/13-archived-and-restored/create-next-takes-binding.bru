@@ -1,0 +1,30 @@
+meta {
+  name: A second prompt takes the role the archive released
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-prompt-next",
+    "kind": "system",
+    "title": "Next",
+    "binding": "role:t-tester",
+    "body": "# Next\n\nYou are the next test role.\n"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}

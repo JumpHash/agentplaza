@@ -1,0 +1,27 @@
+meta {
+  name: Change a local engine's command
+  type: http
+  seq: 14
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "command": "scratch-agent-2"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.install.command: eq "scratch-agent-2"
+}

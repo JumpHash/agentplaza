@@ -1,0 +1,27 @@
+meta {
+  name: Read the settings to restore later
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.acp_enabled: isBoolean
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("acp_settings_saved", JSON.stringify(res.getBody()));
+}
+
+tests {
+  test("the editors are off to start with", function () {
+    expect(res.getBody().acp_enabled).to.equal(false);
+  });
+}

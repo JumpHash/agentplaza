@@ -1,0 +1,27 @@
+meta {
+  name: Refuse an agent's hello whose VM is not a number
+  type: http
+  seq: 49
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/999999/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "vm": "x"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

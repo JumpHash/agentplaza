@@ -1,0 +1,26 @@
+meta {
+  name: Start the build after the release
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/templates/{{e2bHeldTemplate}}/builds/{{e2bHeldBuild}}
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "fromImage": "e2bdev/base"
+  }
+}
+
+assert {
+  res.status: eq 202
+  res.responseTime: lt {{budgetMs}}
+}

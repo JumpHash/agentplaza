@@ -1,0 +1,29 @@
+meta {
+  name: Create a link to artifact b
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh11b_art}}"
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("sh11b_share", res.getBody().id);
+}

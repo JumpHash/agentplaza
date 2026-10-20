@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a job body that is not JSON
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: text
+  auth: none
+}
+
+body:text {
+  {
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.match(/^job: /);
+  });
+}

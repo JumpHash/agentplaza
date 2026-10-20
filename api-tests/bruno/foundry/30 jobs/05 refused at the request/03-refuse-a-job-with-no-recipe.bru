@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a job with no recipe
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"datasets": ["ds-x"], "budget_gpu_hours": 1}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.equal('recipe "" is not NAME@VERSION');
+  });
+}

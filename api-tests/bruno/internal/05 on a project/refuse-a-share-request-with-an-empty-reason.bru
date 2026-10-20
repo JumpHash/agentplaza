@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a share request with an empty reason
+  type: http
+  seq: 53
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts/{{int_art}}/share
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "reason": ""
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 400
+  res.body.error: isString
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for the namespaces of an unknown authorization
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/gitlab-99/namespaces
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+

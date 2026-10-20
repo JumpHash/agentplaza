@@ -1,0 +1,29 @@
+meta {
+  name: Record a GitLab OAuth app whose token exchange will be refused
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/registrations
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "gitlab",
+    "host": "http://127.0.0.1:1",
+    "client_id": "t-platforms-exchange-client",
+    "client_secret": "t-platforms-exchange-secret-7788"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("exchange_app", res.getBody().id);
+}

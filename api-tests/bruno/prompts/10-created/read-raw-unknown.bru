@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for the Markdown of an unknown prompt
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/no-such-prompt/versions/1/raw
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an unsigned heartbeat from a node
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/{{node_joined_id}}/heartbeat
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "machine": {},
+    "status": {},
+    "runs": []
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

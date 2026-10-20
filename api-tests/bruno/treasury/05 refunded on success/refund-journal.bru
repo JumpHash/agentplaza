@@ -1,0 +1,26 @@
+meta {
+  name: Read the refund of the escrow, balanced
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/journal?task={{treasuryTask}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refund moves the 200 credits back to the town budget", function () {
+  const body = res.getBody();
+    const refund = body.entries.find((e) => e.kind === "refund");
+    expect(refund).to.not.be.undefined;
+    expect(refund.amount).to.equal(200);
+    expect(refund.postings.reduce((t, p) => t + p.amount, 0)).to.equal(0);
+  });
+}

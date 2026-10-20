@@ -1,0 +1,24 @@
+meta {
+  name: Read the rated agent's profile
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/43001/profile
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.cid: eq 43001
+  res.body.reputation: isNumber
+}
+
+tests {
+  test("it has no contacts", function () {
+    expect(res.getBody().contacts).to.equal(0);
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: A console file that does not exist is missing
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/favicon.ico
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

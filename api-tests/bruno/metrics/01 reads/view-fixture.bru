@@ -1,0 +1,23 @@
+meta {
+  name: Compose the tokens tab from the built-in fixture
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/view?tab=tokens&range=24h&fixture=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.tab: eq "tokens"
+}
+
+tests {
+  test("the fixture view has panels", function () {
+    expect(res.getBody().panels.length).to.be.above(0);
+  });
+}

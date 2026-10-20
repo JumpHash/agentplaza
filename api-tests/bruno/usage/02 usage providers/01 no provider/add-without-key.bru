@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a usage provider body without a key
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/usage-providers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-usage-hub",
+    "url": "https://cliproxy.invalid:8317",
+    "label": "t usage hub"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a JSON export while downloads are off
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh5_share}}/export?format=json
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names downloads", function () {
+    expect(res.getBody().error).to.include("downloads are off");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: The owner reads the agent's file
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/files/{{file_agent}}/content
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the text", function () {
+    expect(String(res.getBody())).to.equal("from the agent");
+  });
+}

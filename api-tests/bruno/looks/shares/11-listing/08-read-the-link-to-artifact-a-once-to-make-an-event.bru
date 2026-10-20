@@ -1,0 +1,16 @@
+meta {
+  name: Read the link to artifact a once, to make an event
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh11a_share}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

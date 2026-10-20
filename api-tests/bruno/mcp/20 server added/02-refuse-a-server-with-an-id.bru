@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a server with an id that is already taken
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/mcp/servers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "bru-fake-mcp",
+    "name": "Again",
+    "transport": {
+      "kind": "http",
+      "url": "http://127.0.0.1:9/mcp"
+    },
+    "allow_private": true
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.body.field: eq id
+  res.responseTime: lt {{budgetMs}}
+}

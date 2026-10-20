@@ -1,0 +1,24 @@
+meta {
+  name: Refuse a task with a budget that is not a whole number
+  type: http
+  seq: 39
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks text budget", "budget": "lots", "project": "{{tsk_pid}}"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to revoke a token that does not exist
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/v1/hub-mcp/tokens/tok_doesnotexist
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

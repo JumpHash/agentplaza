@@ -1,0 +1,22 @@
+meta {
+  name: Delete the rule
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/egress/inject/{{egress_rule_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the delete answers ok", function () {
+    expect(res.getBody().ok).to.equal(true);
+  });
+}

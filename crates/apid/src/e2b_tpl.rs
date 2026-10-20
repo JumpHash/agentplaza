@@ -349,7 +349,8 @@ fn templates(app: &App) -> &'static Templates {
 /// The metadata key that marks a build's sandbox (its value is the build's id).
 const BUILD_METADATA: &str = "e2b.templateBuild";
 
-fn template_not_found(id: &str) -> Refused {
+/// The 404 for a template no name or id finds; `DELETE /e2b/templates/{id}` answers it too.
+pub(crate) fn template_not_found(id: &str) -> Refused {
     Refused::new(404, "template_not_found", format!("no template {id}"))
 }
 
@@ -2424,7 +2425,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/e2b/v3/templates", |app, req, _| {
             e2b::guard(app, req, |_| request_build(app, req))
         })
-        .doc(RouteDoc::new("Request a template build"))
+        .doc(RouteDoc::new("Request a template build").status(202))
         .get("/e2b/templates/aliases/{name}", |app, req, p| {
             e2b::guard(app, req, |_| alias(app, p.get("name")))
         })
@@ -2432,7 +2433,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/e2b/templates/tags", |app, req, _| {
             e2b::guard(app, req, |_| assign_tags(app, req))
         })
-        .doc(RouteDoc::new("Assign tags to a template build"))
+        .doc(RouteDoc::new("Assign tags to a template build").status(201))
         .delete("/e2b/templates/tags", |app, req, _| {
             e2b::guard(app, req, |_| remove_tags(app, req))
         })
@@ -2446,7 +2447,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 file_link(app, req, p.get("id"), p.get("hash"))
             })
         })
-        .doc(RouteDoc::new("Get a template file's upload link"))
+        .doc(RouteDoc::new("Get a template file's upload link").status(201))
         // The upload link: no API key, the one-time token is its authority.
         .route("PUT", "/e2b/templates/{id}/files/{hash}", |app, req, p| {
             upload(app, req, p.get("id"), p.get("hash")).unwrap_or_else(e2b::refuse)
@@ -2457,7 +2458,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 trigger(app, req, p.get("id"), p.get("build"), key)
             })
         })
-        .doc(RouteDoc::new("Start a template build"))
+        .doc(RouteDoc::new("Start a template build").status(202))
         .get(
             "/e2b/templates/{id}/builds/{build}/status",
             |app, req, p| e2b::guard(app, req, |_| status(app, req, p.get("id"), p.get("build"))),

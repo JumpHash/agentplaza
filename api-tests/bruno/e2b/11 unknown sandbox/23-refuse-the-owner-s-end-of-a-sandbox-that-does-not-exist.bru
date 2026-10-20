@@ -1,0 +1,17 @@
+meta {
+  name: Refuse the owner's end of a sandbox that does not exist
+  type: http
+  seq: 23
+}
+
+delete {
+  url: {{baseUrl}}/v1/e2b/sandboxes/sbffffffffffffffff
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "sandbox_not_found"
+}

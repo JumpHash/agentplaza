@@ -1,0 +1,39 @@
+meta {
+  name: a decision is refused while held
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "input": "flows probe input",
+    "questions": [
+      {
+        "type": "predicate",
+        "name": "ok",
+        "instructions": "Is it ok?"
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the hold", function () {
+    expect(res.getBody().error).to.include('held (STOP ALL)');
+  });
+}

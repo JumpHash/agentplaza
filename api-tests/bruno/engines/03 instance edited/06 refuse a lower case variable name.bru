@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a lower case variable name (400, nothing changes)
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "env": {
+      "lower": "x"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

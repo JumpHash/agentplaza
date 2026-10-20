@@ -1,0 +1,40 @@
+meta {
+  name: Ignore an engine update from an agent the hub never heard of
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61001/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "engine_update",
+    "work": 1,
+    "call": "c",
+    "engine": "auggie",
+    "session": "s",
+    "seq": 1,
+    "update": {
+      "sessionUpdate": "agent_message_chunk"
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the guest gets no reply", function () {
+    expect(res.getBody().reply).to.be.null;
+  });
+}

@@ -1,0 +1,36 @@
+meta {
+  name: An octet-stream upload takes its type from the name
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/files?name=t-files-data.csv
+  body: text
+  auth: none
+}
+
+headers {
+  content-type: application/octet-stream
+}
+
+body:text {
+  a,b
+  1,2
+
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("file_csv", res.getBody().id);
+}
+
+tests {
+  test("the CSV type is guessed", function () {
+    expect(res.getBody().content_type).to.equal("text/csv");
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a plain HTTP GET to the event socket: it is not an upgrade
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/ws
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the answer names the missing upgrade", function () {
+    expect(res.getBody().error).to.include("not a WebSocket upgrade");
+  });
+}

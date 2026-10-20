@@ -1,0 +1,40 @@
+meta {
+  name: Initialize an MCP session with the operate token
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_operate_token}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-06-18",
+      "capabilities": {},
+      "clientInfo": {
+        "name": "bru",
+        "version": "0"
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("mcp_operate_session", res.getHeader("mcp-session-id"));
+}

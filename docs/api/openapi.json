@@ -14495,6 +14495,16 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -16702,8 +16712,8 @@
         "summary": "Request a template build",
         "security": [],
         "responses": {
-          "200": {
-            "description": "OK"
+          "202": {
+            "description": "Accepted"
           }
         }
       }
@@ -16752,8 +16762,8 @@
         "summary": "Assign tags to a template build",
         "security": [],
         "responses": {
-          "200": {
-            "description": "OK"
+          "201": {
+            "description": "Created"
           }
         }
       },
@@ -16833,8 +16843,8 @@
         ],
         "security": [],
         "responses": {
-          "200": {
-            "description": "OK"
+          "201": {
+            "description": "Created"
           },
           "400": {
             "description": "A path parameter is not valid UTF-8",
@@ -16917,8 +16927,8 @@
         ],
         "security": [],
         "responses": {
-          "200": {
-            "description": "OK"
+          "202": {
+            "description": "Accepted"
           },
           "400": {
             "description": "A path parameter is not valid UTF-8",
@@ -17368,6 +17378,21 @@
         }
       }
     },
+    "/e2b/sandboxes/metrics": {
+      "get": {
+        "operationId": "get_e2b_sandboxes_metrics",
+        "tags": [
+          "e2b"
+        ],
+        "summary": "Get the metrics of several sandboxes",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/e2b/sandboxes/{id}": {
       "get": {
         "operationId": "get_e2b_sandboxes_id",
@@ -17737,21 +17762,6 @@
                 }
               }
             }
-          }
-        }
-      }
-    },
-    "/e2b/sandboxes/metrics": {
-      "get": {
-        "operationId": "get_e2b_sandboxes_metrics",
-        "tags": [
-          "e2b"
-        ],
-        "summary": "Get the metrics of several sandboxes",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "OK"
           }
         }
       }
@@ -26063,6 +26073,16 @@
           },
           "401": {
             "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {

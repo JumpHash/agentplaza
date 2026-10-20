@@ -1,0 +1,26 @@
+meta {
+  name: Restore Claude Code's switch as it was
+  type: http
+  seq: 8
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/claude
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "enabled": {{engine_claude_before}}
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,38 @@
+meta {
+  name: Request a second build of the same template
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "e2b-wait-tmpl"
+  }
+}
+
+script:post-response {
+  bru.setVar("e2bWaitBuild2", res.getBody().buildID);
+}
+
+assert {
+  res.status: eq 202
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the same template, a new build, the default tag", function () {
+    expect(res.getBody().templateID).to.equal(bru.getVar("e2bWaitTemplate"));
+    expect(res.getBody().buildID).to.not.equal(bru.getVar("e2bWaitBuild"));
+    expect(res.getBody().tags).to.deep.equal(["default"]);
+  });
+}

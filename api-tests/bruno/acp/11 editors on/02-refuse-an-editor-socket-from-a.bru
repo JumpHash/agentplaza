@@ -1,0 +1,32 @@
+meta {
+  name: Refuse an editor socket from a foreign origin
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/acp
+  body: none
+  auth: none
+}
+
+headers {
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Version: 13
+  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+  Sec-WebSocket-Protocol: apz.acp.v1
+  Origin: https://evil.test
+}
+
+assert {
+  res.status: eq 403
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the origin is not allowed", function () {
+    expect(res.getBody().error).to.include("Origin is not allowed");
+  });
+}

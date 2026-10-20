@@ -1,0 +1,34 @@
+meta {
+  name: Send the same body again: the latest comes back, nothing new
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "body": "# Tester\n\nYou are the test role. Check each request against the plan.\n\n## Rules\n\n- Stay in scope.\n- Name what you could not check.\n",
+    "base_version": 2
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("created is false and the version is 2", function () {
+    expect(res.getBody().created).to.equal(false);
+    expect(res.getBody().version.version).to.equal(2);
+  });
+}

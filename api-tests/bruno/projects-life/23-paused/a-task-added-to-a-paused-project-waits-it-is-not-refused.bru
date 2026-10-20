@@ -1,0 +1,30 @@
+meta {
+  name: A task added to a paused project waits: it is not refused
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-life task while paused", "budget": 200, "project": "{{life_pid}}"}
+}
+
+assert {
+  res.status: eq 201
+  res.body.state: eq "open"
+  res.body.ready: eq true
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("life_task_paused", res.getBody().id);
+}

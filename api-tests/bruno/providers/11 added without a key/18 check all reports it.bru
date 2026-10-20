@@ -1,0 +1,22 @@
+meta {
+  name: Check every enabled provider: the new one is critical
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/providers/check
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 15000
+}
+
+tests {
+  test("the new provider's result is in the answer", function () {
+    expect(res.getBody()["t-prov-compat"].status).to.equal("crit");
+  });
+}

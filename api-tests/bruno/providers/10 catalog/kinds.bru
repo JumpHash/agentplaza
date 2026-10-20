@@ -1,0 +1,26 @@
+meta {
+  name: List the provider kinds you can add
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/provider-kinds
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("the kinds include the OpenAI-compatible one and each names its auth", function () {
+    const kinds = res.getBody();
+    expect(kinds.length).to.be.above(10);
+    expect(kinds.map((k) => k.kind)).to.include("openai-compatible");
+    kinds.forEach((k) => { expect(k.label).to.be.a("string"); expect(k.auth).to.not.equal(undefined); });
+  });
+}

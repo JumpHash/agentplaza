@@ -1,0 +1,42 @@
+meta {
+  name: the list holds exactly 200 favourites
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("flowSettingsCurrent"));
+  s.favourite_models = Array.from({ length: 200 }, (_, i) => "flows/model" + i);
+  req.setBody(s);
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setVar("flowSettingsCurrent", JSON.stringify(res.getBody()));
+  }
+}
+
+tests {
+  test("200 kept", function () {
+    expect(res.getBody().favourite_models.length).to.equal(200);
+  });
+}

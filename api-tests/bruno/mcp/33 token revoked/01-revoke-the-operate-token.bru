@@ -1,0 +1,16 @@
+meta {
+  name: Revoke the operate token
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/hub-mcp/tokens/{{mcp_operate_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt {{budgetMs}}
+}

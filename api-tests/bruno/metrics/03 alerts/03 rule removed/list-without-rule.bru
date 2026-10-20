@@ -1,0 +1,27 @@
+meta {
+  name: List the alerts without the deleted rule
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/alerts
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the rule, its mute and its ack are gone with it", function () {
+    const id = bru.getVar("metrics_rule_id");
+    const body = res.getBody();
+    expect(body.rules.find((r) => r.id === id)).to.be.undefined;
+    expect(body.muted.find((m) => m[0] === id)).to.be.undefined;
+    expect(body.acked.find((a) => a[0] === id)).to.be.undefined;
+    expect(body.rules.find((r) => r.id === "starter-ttft").on).to.equal(true);
+  });
+}

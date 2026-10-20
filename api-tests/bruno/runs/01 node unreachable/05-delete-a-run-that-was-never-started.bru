@@ -1,0 +1,22 @@
+meta {
+  name: Delete a run that was never started
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/runs/t-run-1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the hub says the node is unreachable", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

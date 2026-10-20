@@ -1,0 +1,29 @@
+meta {
+  name: The status lists the recovery slot but not the code
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/vault
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  const slot = res.getBody().slots.find((s) => s.kind === "recovery");
+  bru.setVar("vault_recovery_slot", slot.id);
+}
+
+tests {
+  test("the recovery slot is listed and the code is not in the status", function () {
+    const body = res.getBody();
+    expect(body.slots.some((s) => s.kind === "recovery")).to.equal(true);
+    expect(JSON.stringify(body)).to.not.include(bru.getVar("vault_recovery_code"));
+  });
+}

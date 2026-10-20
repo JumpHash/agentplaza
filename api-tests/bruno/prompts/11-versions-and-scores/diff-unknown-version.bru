@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when comparing with a version that does not exist
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/diff?from=1&to=99
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

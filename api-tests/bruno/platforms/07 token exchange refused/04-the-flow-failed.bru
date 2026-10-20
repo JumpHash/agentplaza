@@ -1,0 +1,26 @@
+meta {
+  name: Show the failed exchange as failed, without the code
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/flows/{{exchange_state}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.status: eq "failed"
+}
+
+tests {
+  test("the error is kept, the code and the secret are not", function () {
+    const text = JSON.stringify(res.getBody());
+    expect(res.getBody().error).to.be.a("string");
+    expect(text).to.not.include("t-platforms-code");
+    expect(text).to.not.include("t-platforms-exchange-secret-7788");
+  });
+}

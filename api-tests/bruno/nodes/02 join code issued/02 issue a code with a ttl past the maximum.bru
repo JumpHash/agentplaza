@@ -1,0 +1,39 @@
+meta {
+  name: Issue a join code whose lifetime is clamped to one hour
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/codes
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "label": "t-node-clamp",
+    "ttl_minutes": 100000
+  }
+}
+
+script:post-response {
+  bru.setVar("node_code_clamp_id", res.getBody().id);
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it expires within an hour", function () {
+    const left = res.getBody().expires_ms - Date.now();
+    expect(left).to.be.above(0);
+    expect(left).to.be.below(60 * 60 * 1000 + 60000);
+  });
+}

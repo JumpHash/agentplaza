@@ -1,0 +1,26 @@
+meta {
+  name: List the Gemini models for the agent
+  type: http
+  seq: 29
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/gemini/v1beta/models
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the list has models", function () {
+    expect(res.getBody().models).to.be.an("array");
+  });
+}

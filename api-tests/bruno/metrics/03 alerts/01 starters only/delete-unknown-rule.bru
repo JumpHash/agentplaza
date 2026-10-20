@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to delete a rule that does not exist
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/metrics/alerts/rules/no-such-rule
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no such rule"
+}

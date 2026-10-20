@@ -1,0 +1,25 @@
+meta {
+  name: Refuse an environment name with capital letters
+  type: http
+  seq: 21
+}
+
+put {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/environments/Probe_Env
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"kind": "development"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "lower-case"
+  res.responseTime: lt {{budgetMs}}
+}

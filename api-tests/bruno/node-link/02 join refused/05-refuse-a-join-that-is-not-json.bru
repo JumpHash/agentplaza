@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a join body that is not JSON
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/node-link/join
+  body: text
+  auth: none
+}
+
+body:text {
+  {"code": 
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: contains "bad JSON"
+}

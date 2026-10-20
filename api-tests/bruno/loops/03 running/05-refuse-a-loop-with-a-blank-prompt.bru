@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a loop with a blank prompt
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/loops
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": 9101,
+    "prompt": "   ",
+    "every_minutes": 1,
+    "max_runs": 0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error gives the prompt range", function () {
+    expect(res.getBody().error).to.equal("a loop's prompt must be 1 to 4000 characters");
+  });
+}

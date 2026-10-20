@@ -1,0 +1,46 @@
+meta {
+  name: Add an owner's alert rule
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/alerts/rules
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "",
+    "name": "t-metrics rule",
+    "metric": "cpu",
+    "agg": "avg",
+    "scope": "global",
+    "cmp": "gt",
+    "threshold": 80,
+    "for_ms": 60000,
+    "severity": "warning",
+    "on": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.ok: eq true
+  res.body.rule.name: eq "t-metrics rule"
+  res.body.rule.starter: eq false
+}
+
+script:post-response {
+  bru.setVar("metrics_rule_id", res.getBody().rule.id);
+}
+
+tests {
+  test("the rule gets an id of its own", function () {
+    const id = res.getBody().rule.id;
+    expect(id).to.be.a("string");
+    expect(id).to.match(/^rule-\d+$/);
+  });
+}

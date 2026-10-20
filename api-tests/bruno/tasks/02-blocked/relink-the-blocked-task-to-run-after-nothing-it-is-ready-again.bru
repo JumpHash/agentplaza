@@ -1,0 +1,31 @@
+meta {
+  name: Relink the blocked task to run after nothing: it is ready again
+  type: http
+  seq: 10
+}
+
+patch {
+  url: {{baseUrl}}/v1/tasks/{{bl_b}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"after": []}
+}
+
+assert {
+  res.status: eq 200
+  res.body.ready: eq true
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("nothing blocks it", function () {
+    expect(res.getBody().blocked_by).to.deep.equal([]);
+  });
+}

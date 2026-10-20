@@ -1,0 +1,18 @@
+meta {
+  name: The task added while paused is still open after the resume
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{life_task_paused}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "open"
+  res.body.project: eq {{life_pid}}
+  res.responseTime: lt {{budgetMs}}
+}

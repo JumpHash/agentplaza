@@ -1,0 +1,16 @@
+meta {
+  name: Delete the fake server
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt {{budgetMs}}
+}

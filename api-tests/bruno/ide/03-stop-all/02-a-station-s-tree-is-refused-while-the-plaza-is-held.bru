@@ -1,0 +1,16 @@
+meta {
+  name: A station's tree is refused while the plaza is held
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/station:w1/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}

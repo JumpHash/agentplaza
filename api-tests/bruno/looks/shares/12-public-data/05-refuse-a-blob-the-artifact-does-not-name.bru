@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a blob the artifact does not name
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh12_share}}/blobs/b0000000000000000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

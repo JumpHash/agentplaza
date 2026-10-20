@@ -1,0 +1,23 @@
+meta {
+  name: The history records each version written
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/history
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("two version events are recorded", function () {
+    const versions = res.getBody().events.filter((e) => e.action === "version");
+    expect(versions.length).to.be.at.least(2);
+  });
+}

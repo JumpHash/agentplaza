@@ -1,0 +1,25 @@
+meta {
+  name: Refuse an agent's file with a wrong internal token
+  type: http
+  seq: 10
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/files?name=t-files-agent.txt
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: wrong-token
+  content-type: text/plain
+}
+
+body:text {
+  x
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+}

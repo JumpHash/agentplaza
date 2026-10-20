@@ -1,0 +1,23 @@
+meta {
+  name: Export the whole artifact as JSON by default
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/export
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the JSON is the artifact, as an attachment", function () {
+    expect(res.getBody().id).to.equal(bru.getVar("looks_art"));
+    expect(res.getHeader("content-disposition")).to.include(".json");
+  });
+}

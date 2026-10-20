@@ -1,0 +1,22 @@
+meta {
+  name: List the service-level objectives
+  type: http
+  seq: 37
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/slos
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the objectives are a list", function () {
+    expect(res.getBody()).to.be.an("array");
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Refuse dashboards whose scopes are not a list
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/dashboards
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "scopes": "global"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

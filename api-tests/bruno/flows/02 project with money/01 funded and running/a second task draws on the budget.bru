@@ -1,0 +1,32 @@
+meta {
+  name: a second task draws on the budget
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "flows money task two",
+    "project": "{{flowMoneyPid}}",
+    "budget": 300
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("flowMoneyT2", res.getBody().id);
+}

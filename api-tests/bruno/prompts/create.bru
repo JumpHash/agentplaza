@@ -24,7 +24,7 @@ body:json {
 
 assert {
   res.status: eq 201
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.prompt.id: eq "planner"
   res.body.prompt.kind: eq "system"
   res.body.prompt.title: eq "Planner"

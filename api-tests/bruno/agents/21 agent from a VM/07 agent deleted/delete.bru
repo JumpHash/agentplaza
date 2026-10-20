@@ -1,0 +1,18 @@
+meta {
+  name: Delete an agent and its run
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/v1/agents/41001
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.deleted: eq true
+  res.body.run_status: isNull
+}

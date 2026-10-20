@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a claim by an agent that is not connected
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}/claim
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"agent_cid": 1000}
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: contains "no agent with guest CID 1000"
+  res.responseTime: lt {{budgetMs}}
+}

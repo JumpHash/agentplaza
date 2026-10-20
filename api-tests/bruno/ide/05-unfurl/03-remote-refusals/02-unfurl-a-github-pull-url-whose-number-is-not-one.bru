@@ -1,0 +1,24 @@
+meta {
+  name: Unfurl a GitHub pull URL whose number is not one as unsupported
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/unfurl?url=https://github.com/t-ide-nobody/t-ide-nope/pull/one
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("unsupported, with no call to GitHub", function () {
+    const b = res.getBody();
+    expect(b.ok).to.equal(false);
+    expect(b.error).to.equal("unsupported");
+  });
+}

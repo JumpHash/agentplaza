@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a review that does not say whether it approves
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/connectors/proposals/cp-999/review
+  body: json
+  auth: none
+}
+
+body:json {
+  {"note": "no decision here"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: contains "bad body"
+}

@@ -1,0 +1,45 @@
+meta {
+  name: Refuse a workstation join that names no join code
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/join
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "t-stations-ws",
+    "facts": {
+      "os": "linux",
+      "os_version": "6.0",
+      "arch": "x86_64",
+      "hostname": "bruno-ws",
+      "form": "desktop",
+      "cpus": 4,
+      "ram_mb": 8192,
+      "gpus": [],
+      "displays": [],
+      "account": {
+        "mode": "agent_user",
+        "name": "agents"
+      },
+      "apps": 0,
+      "virtual_displays": false,
+      "ui_tree": false
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

@@ -1,0 +1,32 @@
+meta {
+  name: Claim the task for the test agent
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks/{{treasuryTask}}/claim
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent_cid": 8802
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the task is claimed by the agent", function () {
+  expect(res.getBody().state).to.equal("claimed");
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a rekey that leaves out the passphrase slot
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/rekey
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the slot that needs its passphrase", function () {
+    expect(res.getBody().error).to.include("needs its passphrase");
+  });
+}

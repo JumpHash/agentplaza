@@ -1,0 +1,23 @@
+meta {
+  name: Export the dataset panel as CSV
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh5_share}}/export?format=csv&panel=sales
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the rows are in the CSV", function () {
+    expect(String(res.getBody())).to.include("north");
+    expect(res.getHeader("content-type")).to.include("text/csv");
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a frame path that climbs out of the panel
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh12_share}}/frame/page/..%2Fsecret
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

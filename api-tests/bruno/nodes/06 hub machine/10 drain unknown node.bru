@@ -1,0 +1,26 @@
+meta {
+  name: Answer 404 when draining an unknown node
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n999/drain
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "on": true
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,25 @@
+meta {
+  name: The share counts the view
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/shares?target=artifact:{{sh1_art}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("one share, with one view", function () {
+    const b = res.getBody();
+    expect(b.length).to.equal(1);
+    expect(b[0].views).to.equal(1);
+    expect(b[0].downloads).to.equal(0);
+  });
+}

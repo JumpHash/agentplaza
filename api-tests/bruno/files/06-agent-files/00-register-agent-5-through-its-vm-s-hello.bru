@@ -1,0 +1,27 @@
+meta {
+  name: Register agent 5 through its VM hello, so the agent routes take its uploads
+  type: http
+  seq: 0
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/5/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "role": "builder",
+    "vm": 0
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

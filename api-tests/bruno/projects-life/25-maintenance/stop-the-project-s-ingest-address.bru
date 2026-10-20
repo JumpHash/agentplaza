@@ -1,0 +1,17 @@
+meta {
+  name: Stop the project's ingest address
+  type: http
+  seq: 15
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance/ingest
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.ingest: eq false
+  res.responseTime: lt {{budgetMs}}
+}

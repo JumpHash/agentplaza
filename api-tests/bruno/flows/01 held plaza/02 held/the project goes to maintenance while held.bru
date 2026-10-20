@@ -1,0 +1,32 @@
+meta {
+  name: the project goes to maintenance while held
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowHeldPid}}/mode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "mode": "maintenance"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the project is in maintenance", function () {
+    expect(res.getBody().mode).to.equal('maintenance');
+  });
+}

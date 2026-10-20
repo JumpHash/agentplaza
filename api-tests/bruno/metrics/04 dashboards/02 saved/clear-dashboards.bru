@@ -1,0 +1,25 @@
+meta {
+  name: Clear the saved dashboard pins again
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/dashboards
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "scopes": [],
+    "pins": [],
+    "recent": []
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.starter: eq false
+}

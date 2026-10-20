@@ -1,0 +1,24 @@
+meta {
+  name: Read the board: the comment is on the agent's post
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/board?project={{boardProject}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the post has one comment with the owner's text", function () {
+  const post = res.getBody().posts.find((p) => p.id === bru.getVar("boardAgentPost"));
+    expect(post.comments.length).to.equal(1);
+    expect(post.comments[0].body).to.equal("Owner reply on the plan.");
+  });
+}

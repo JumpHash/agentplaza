@@ -1,0 +1,22 @@
+meta {
+  name: Retire a retired model again: refused
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_b}}/retire
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the model is already retired", function () {
+    expect(res.getBody().error).to.include("already retired");
+  });
+}

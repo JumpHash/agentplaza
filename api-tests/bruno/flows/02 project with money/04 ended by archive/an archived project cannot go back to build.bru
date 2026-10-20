@@ -1,0 +1,26 @@
+meta {
+  name: an archived project cannot go back to build
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/mode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "mode": "build"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}

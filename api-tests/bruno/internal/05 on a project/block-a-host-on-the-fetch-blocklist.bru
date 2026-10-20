@@ -1,0 +1,32 @@
+meta {
+  name: Block a host on the fetch blocklist
+  type: http
+  seq: 71
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("int_settings_json"));
+  s.fetch_block = ["t-internal-blocked.test"];
+  req.setBody(s);
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("the blocklist holds the host", function () {
+    expect(res.getBody().fetch_block).to.deep.equal(["t-internal-blocked.test"]);
+  });
+}

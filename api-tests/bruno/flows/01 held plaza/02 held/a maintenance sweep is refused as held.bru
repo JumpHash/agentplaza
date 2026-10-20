@@ -1,0 +1,22 @@
+meta {
+  name: a maintenance sweep is refused as held
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowHeldPid}}/maintenance/sweep
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the sweep is refused because of the hold, not for want of a watcher", function () {
+    expect(res.getBody().error).to.include('STOP ALL');
+  });
+}

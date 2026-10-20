@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a tag on a template that does not exist
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/e2b/templates/tags
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "target": "e2b-nope-tmpl:beta",
+    "tags": [
+      "stable"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "template_not_found"
+}

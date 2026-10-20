@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to resume an archived project
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "archived"
+  res.responseTime: lt {{budgetMs}}
+}

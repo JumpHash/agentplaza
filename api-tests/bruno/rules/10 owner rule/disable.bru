@@ -1,0 +1,22 @@
+meta {
+  name: Disable the owner rule
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/rules/{{lawRuleId}}/disable
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the rule is off", function () {
+  expect(res.getBody().enabled).to.equal(false);
+  });
+}

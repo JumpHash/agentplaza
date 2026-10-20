@@ -1,0 +1,25 @@
+meta {
+  name: A valid decision call goes to the gateway: without a key it is a 502
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai-decisions", "model": "gpt-6-luna", "input": "The scheduler tests are flaky", "questions": [{"type": "predicate", "name": "flaky", "instructions": "Is the test flaky?"}, {"type": "choice", "name": "area", "instructions": "Which area?", "choices": [{"value": "sched"}, {"value": "ui"}]}, {"type": "score", "name": "risk", "instructions": "How risky?", "levels": [{"label": "low"}, {"label": "high"}]}]}
+}
+
+assert {
+  res.status: eq 502
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

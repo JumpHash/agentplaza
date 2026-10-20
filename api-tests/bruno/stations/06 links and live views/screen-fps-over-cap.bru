@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a live screen view with more than 15 frames a second
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/w-t-missing/screen?session=shared&fps=16
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("fps");
+  });
+}

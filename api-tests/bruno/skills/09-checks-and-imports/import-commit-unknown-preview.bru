@@ -1,0 +1,30 @@
+meta {
+  name: Answer 404 when committing an unknown preview
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/import/commit
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "preview_id": "no-such-preview",
+    "picks": [
+      "x"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,39 @@
+meta {
+  name: Refuse a new version from an agent that did not make the artifact
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/6/gateway/artifacts/{{looks_art}}
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-looks Notes",
+      "panels": [
+        {
+          "id": "notes",
+          "title": "Notes",
+          "span": 12,
+          "body": {
+            "type": "document",
+            "markdown": "A note the test wrote."
+          }
+        }
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+}

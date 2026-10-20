@@ -1,0 +1,25 @@
+meta {
+  name: Open the go page, which carries the manifest form for the host
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/flows/{{gh_state}}/go
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the page is a form that names the app's state and the manifest", function () {
+    const html = res.getBody();
+    expect(html).to.include("<form method=post");
+    expect(html).to.include('name=manifest');
+    expect(html).to.include("state=" + bru.getVar("gh_state"));
+  });
+}

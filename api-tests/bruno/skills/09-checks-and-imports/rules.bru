@@ -1,0 +1,27 @@
+meta {
+  name: List the skill rules and the template
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/rules
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.rules: isArray
+  res.body.template: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the catalogue names the frontmatter and link rules", function () {
+    const ids = res.getBody().rules.map((r) => r.id);
+    expect(ids).to.include("frontmatter");
+    expect(ids).to.include("missing-file");
+    expect(res.getBody().rules_version).to.be.a("number");
+  });
+}

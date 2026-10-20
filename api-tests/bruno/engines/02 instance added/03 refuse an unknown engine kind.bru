@@ -1,0 +1,28 @@
+meta {
+  name: Refuse an engine that is neither built-in, registry nor local
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-eng-bad",
+    "engine": "carrier-pigeon",
+    "command": "scratch-agent"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Refuse an event socket upgrade whose key is not 16 bytes
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/ws
+  body: none
+  auth: none
+}
+
+headers {
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Version: 13
+  Sec-WebSocket-Key: c2hvcnQ=
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

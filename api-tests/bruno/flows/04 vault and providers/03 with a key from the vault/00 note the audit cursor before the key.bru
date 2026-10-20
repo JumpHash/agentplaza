@@ -1,0 +1,28 @@
+meta {
+  name: Note where the audit log ends before the key is added, so the audit check can page from there
+  type: http
+  seq: 0
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/audit?verify=1&limit=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  // The lines are numbered 1, 2, 3... from the first, so the verified count is the last line's seq.
+  bru.setVar("flowAuditCursor", res.getBody().verified);
+}
+
+tests {
+  test("the audit log verifies, and its end is known", function () {
+    expect(res.getBody().chain_ok).to.equal(true);
+    expect(res.getBody().verified).to.be.a("number");
+  });
+}

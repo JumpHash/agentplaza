@@ -1,0 +1,20 @@
+meta {
+  name: Answer 404 when connecting a repository of an unknown authorization
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/gitlab-99/connect
+  body: json
+  auth: none
+}
+
+body:json {
+  {"repo": "t-platforms-group/t-repo", "project": "t-platforms-project"}
+}
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+

@@ -1,0 +1,21 @@
+meta {
+  name: Cancel does not reach queued work: nothing is in flight
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/61011/cancel
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.cancelled: eq false
+}

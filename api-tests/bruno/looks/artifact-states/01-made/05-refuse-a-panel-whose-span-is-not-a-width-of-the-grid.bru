@@ -1,0 +1,45 @@
+meta {
+  name: Refuse a panel whose span is not a width of the grid
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-looks Span",
+      "panels": [
+        {
+          "id": "notes",
+          "title": "Notes",
+          "span": 5,
+          "body": {
+            "type": "document",
+            "markdown": "A note the test wrote."
+          }
+        }
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the span", function () {
+    expect(JSON.stringify(res.getBody())).to.include("span 5 is not");
+  });
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Filter the calls by agent
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/calls?cid=1&limit=5
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("every call is for the asked agent", function () {
+    const calls = res.getBody().calls;
+    expect(calls).to.be.an("array");
+    calls.forEach((c) => expect(c.cid).to.equal(1));
+  });
+}

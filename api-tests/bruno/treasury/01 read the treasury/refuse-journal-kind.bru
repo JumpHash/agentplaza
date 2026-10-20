@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a journal filter on an unknown kind
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/journal?kind=nope
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

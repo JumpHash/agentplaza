@@ -1,0 +1,23 @@
+meta {
+  name: Restore the permission mode to autonomous
+  type: http
+  seq: 18
+}
+
+put {
+  url: {{baseUrl}}/v1/agents/41001/permissions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "mode": "autonomous"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.mode: eq "autonomous"
+}

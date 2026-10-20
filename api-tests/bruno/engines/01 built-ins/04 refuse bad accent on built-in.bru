@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a built-in engine's accent that is not #rrggbb
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/claude
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "accent": "blue"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

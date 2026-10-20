@@ -1,0 +1,25 @@
+meta {
+  name: Show the task's escrow emptied
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the escrow of the task is back to zero, and the books balance", function () {
+  const body = res.getBody();
+    const escrow = body.accounts.find((a) => a.kind === "task_escrow" && a.owner_ref === bru.getVar("treasuryTask"));
+    expect(escrow.balance).to.equal(0);
+    expect(body.totals.credits).to.equal(body.totals.debits);
+  });
+}

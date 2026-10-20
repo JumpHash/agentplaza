@@ -1,0 +1,16 @@
+meta {
+  name: Archive the second test skill
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{arcSkillId}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

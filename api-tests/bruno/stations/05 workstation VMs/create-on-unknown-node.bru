@@ -1,0 +1,38 @@
+meta {
+  name: Refuse a workstation VM on a node that does not exist
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/vms
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "node": "n99",
+    "os": "linux",
+    "name": "t-stations-vm",
+    "cpus": 2,
+    "ram_mb": 4096,
+    "disk_gb": 16
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no node n99");
+  });
+}

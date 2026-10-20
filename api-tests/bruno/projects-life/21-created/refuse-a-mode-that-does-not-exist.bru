@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a mode that does not exist
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/mode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"mode": "sleep"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "unknown mode"
+  res.responseTime: lt {{budgetMs}}
+}

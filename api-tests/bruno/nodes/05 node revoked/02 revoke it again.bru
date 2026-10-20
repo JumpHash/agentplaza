@@ -1,0 +1,17 @@
+meta {
+  name: Revoking a revoked node again is still an answer 200
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/{{node_joined_id}}/revoke
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.revoked: eq true
+}

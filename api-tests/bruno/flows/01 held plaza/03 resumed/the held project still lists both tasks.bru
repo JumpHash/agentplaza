@@ -1,0 +1,24 @@
+meta {
+  name: the held project still lists both tasks
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{flowHeldPid}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("both tasks are on the project", function () {
+    const t = res.getBody().tasks;
+    expect(t).to.include(bru.getVar('flowHeldTaskBefore'));
+    expect(t).to.include(bru.getVar('flowHeldTaskDuring'));
+  });
+}

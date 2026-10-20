@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a settings body that is not JSON
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/unsplash
+  body: text
+  auth: none
+}
+
+body:text {
+  {enabled: true
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: contains "bad body"
+}

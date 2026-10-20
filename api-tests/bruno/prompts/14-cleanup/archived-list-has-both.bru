@@ -1,0 +1,24 @@
+meta {
+  name: Both test prompts are in the archived list
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts?archived=true
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("both are archived", function () {
+    const ids = res.getBody().prompts.map((p) => p.id);
+    expect(ids).to.include("t-prompt-life");
+    expect(ids).to.include("t-prompt-next");
+  });
+}

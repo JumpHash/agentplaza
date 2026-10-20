@@ -1,0 +1,43 @@
+meta {
+  name: Refuse a COPY whose files were never uploaded
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/templates/{{e2bRefusedTemplate}}/builds/{{e2bRefusedBuild}}
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "fromImage": "e2bdev/base",
+    "steps": [
+      {
+        "type": "COPY",
+        "args": [
+          "app",
+          "/home/user/app"
+        ],
+        "filesHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "invalid_request"
+}
+
+tests {
+  test("the message says why", function () {
+    expect(res.getBody().message).to.include("were not uploaded");
+  });
+}

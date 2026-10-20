@@ -1,0 +1,21 @@
+meta {
+  name: Answer 404 when reviewing a proposal that does not exist
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/connectors/proposals/cp-999/review
+  body: json
+  auth: none
+}
+
+body:json {
+  {"approve": true}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

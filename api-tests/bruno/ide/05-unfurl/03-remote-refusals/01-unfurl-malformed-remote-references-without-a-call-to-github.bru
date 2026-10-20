@@ -1,0 +1,56 @@
+meta {
+  name: Unfurl malformed remote references as unsupported without a call to GitHub
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/unfurl
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "refs": [
+      {
+        "kind": "github_pull",
+        "owner": "../x",
+        "repo": "t-ide-nope",
+        "number": 1
+      },
+      {
+        "kind": "gist",
+        "id": "t-ide-nope"
+      },
+      {
+        "kind": "github_repo",
+        "owner": "../x",
+        "repo": "y"
+      },
+      {
+        "kind": "link",
+        "url": "https://example.com/x"
+      },
+      {
+        "kind": "path",
+        "path": "src/main.rs",
+        "line": null,
+        "dir": false
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("each reference with no provider path is unsupported", function () {
+    const c = res.getBody().cards;
+    expect(c.length).to.equal(5);
+    expect(c.every((x) => x.ok === false && x.error === "unsupported")).to.equal(true);
+  });
+}

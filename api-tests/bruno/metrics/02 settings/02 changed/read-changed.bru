@@ -1,0 +1,25 @@
+meta {
+  name: Read back the saved settings
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.level: eq "basic"
+}
+
+tests {
+  test("the repaired settings are kept", function () {
+    const body = res.getBody();
+    expect(body.retention.calls_days).to.equal(1);
+    expect(body.budgets).to.have.lengthOf(1);
+  });
+}

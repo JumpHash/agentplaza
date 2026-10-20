@@ -1,0 +1,41 @@
+meta {
+  name: post a task before the hold
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "flows task before the hold",
+    "project": "{{flowHeldPid}}",
+    "budget": 300
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("flowHeldTaskBefore", res.getBody().id);
+}
+
+tests {
+  test("the task is open and unclaimed", function () {
+    const b = res.getBody();
+    expect(b.state).to.equal('open');
+    expect(b.agent_cid).to.equal(null);
+    expect(b.budget).to.equal(300);
+  });
+}

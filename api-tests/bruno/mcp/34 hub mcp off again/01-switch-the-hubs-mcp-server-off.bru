@@ -1,0 +1,32 @@
+meta {
+  name: Switch the hub's MCP server off again
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": false,
+    "bind": "local",
+    "allowed_origins": [],
+    "auth_mode": "secure",
+    "open_scope": "observe"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the server reports off", function () {
+    expect(res.getBody().enabled).to.equal(false);
+  });
+}

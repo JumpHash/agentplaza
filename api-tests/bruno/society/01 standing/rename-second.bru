@@ -1,0 +1,23 @@
+meta {
+  name: Rename the second agent
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/v1/agents/43002
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "Oro"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.name: eq "Oro"
+}

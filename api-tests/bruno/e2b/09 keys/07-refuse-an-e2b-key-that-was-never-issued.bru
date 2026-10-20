@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an E2B key that was never issued
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: e2b_0000000000000000000000000000000000000000
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "unauthorized"
+}

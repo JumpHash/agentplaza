@@ -1,0 +1,16 @@
+meta {
+  name: Forget the app the sign-in was declined on
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/v1/platforms/registrations/{{declined_app}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

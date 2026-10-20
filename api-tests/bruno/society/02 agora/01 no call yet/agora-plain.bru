@@ -1,0 +1,25 @@
+meta {
+  name: The agora lists no call for the plain task
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/agora
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.calls: isArray
+  res.body.truncated: isBoolean
+}
+
+tests {
+  test("the plain task is not a call", function () {
+    const id = bru.getVar("society_plain_task");
+    expect(res.getBody().calls.find((c) => c.task === id)).to.be.undefined;
+  });
+}

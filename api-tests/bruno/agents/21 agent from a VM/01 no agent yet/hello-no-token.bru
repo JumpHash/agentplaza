@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an agent's hello without the internal token
+  type: http
+  seq: 46
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/999999/hello
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "vm": 1
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("missing or wrong internal token");
+  });
+}

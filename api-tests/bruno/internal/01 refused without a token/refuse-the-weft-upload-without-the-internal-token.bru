@@ -1,0 +1,25 @@
+meta {
+  name: Refuse the weft upload without the internal token
+  type: http
+  seq: 37
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/weft/wire/objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  body: text
+  auth: none
+}
+
+headers {
+  Content-Type: text/plain
+}
+
+body:text {
+  abc
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

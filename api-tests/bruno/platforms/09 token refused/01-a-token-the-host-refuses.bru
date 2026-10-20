@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a token the platform cannot check, and never echo it
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "gitlab", "host": "http://127.0.0.1:1", "token": "t-platforms-token-0456"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 5000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal does not contain the token", function () {
+    expect(JSON.stringify(res.getBody())).to.not.include("t-platforms-token-0456");
+  });
+}

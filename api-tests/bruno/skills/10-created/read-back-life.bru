@@ -1,0 +1,27 @@
+meta {
+  name: Read the created skill back
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.skill.id: eq "t-skill-life"
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("one version, nothing live, the bindings kept", function () {
+    const body = res.getBody();
+    expect(body.versions).to.have.length(1);
+    expect(body.versions[0].version).to.equal(1);
+    expect(body.live).to.equal(null);
+    expect(body.skill.bindings).to.deep.equal(["role:t-tester"]);
+  });
+}

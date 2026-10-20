@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a series start that is not a time
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/series?from=abc
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

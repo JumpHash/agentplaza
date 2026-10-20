@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for a takeover of a workstation that does not exist
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/w-t-missing/control?session=shared
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

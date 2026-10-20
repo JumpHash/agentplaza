@@ -1,0 +1,31 @@
+meta {
+  name: Set one optional field, leaving the key as it is
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/unsplash/secret
+  body: json
+  auth: none
+}
+
+body:json {
+  {"field": "app_id", "value": "t-unsplash-app-42"}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the app id is set, the access key still is", function () {
+    const body = res.getBody();
+    const app = body.fields.find((f) => f.name === "app_id");
+    const key = body.fields.find((f) => f.name === "access_key");
+    expect(app.set).to.equal(true);
+    expect(key.set).to.equal(true);
+    expect(JSON.stringify(body)).to.not.include("t-unsplash-app-42");
+  });
+}

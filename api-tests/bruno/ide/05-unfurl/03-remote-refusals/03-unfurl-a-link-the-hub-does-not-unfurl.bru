@@ -1,0 +1,22 @@
+meta {
+  name: Unfurl a link the hub does not unfurl
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/unfurl?url=https://example.com/x
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("unsupported", function () {
+    expect(res.getBody().error).to.equal("unsupported");
+  });
+}

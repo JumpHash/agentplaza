@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a target filter of an unknown kind
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/shares?target=other:x
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

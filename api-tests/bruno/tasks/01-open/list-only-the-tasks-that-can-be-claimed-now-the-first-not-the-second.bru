@@ -1,0 +1,25 @@
+meta {
+  name: List only the tasks that can be claimed now: the first, not the second
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks?ready=true
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.tasks: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the ready filter keeps A and drops B", function () {
+    const ids = res.getBody().tasks.map((t) => t.id);
+    expect(ids).to.include(bru.getVar("tsk_a"));
+    expect(ids).to.not.include(bru.getVar("tsk_b"));
+  });
+}

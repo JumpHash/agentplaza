@@ -1,0 +1,32 @@
+meta {
+  name: List the tokens without their values
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/hub-mcp/tokens
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.tokens: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the three tokens are listed, and no token value is in the list", function () {
+    const body = res.getBody();
+    const ids = body.tokens.map((t) => t.id);
+    ["mcp_observe_id", "mcp_operate_id", "mcp_govern_id"].forEach((name) => {
+      expect(ids).to.include(bru.getVar(name));
+    });
+    body.tokens.forEach((t) => expect(t).to.not.have.property("token"));
+    const text = JSON.stringify(body);
+    ["mcp_observe_token", "mcp_operate_token", "mcp_govern_token"].forEach((name) => {
+      expect(text).to.not.include(bru.getVar(name));
+    });
+  });
+}

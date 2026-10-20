@@ -1,0 +1,22 @@
+meta {
+  name: A file target with no shares lists nothing
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/shares?target=file:fnope
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("empty", function () {
+    expect(res.getBody()).to.deep.equal([]);
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a model that is not text
+  type: http
+  seq: 9
+}
+
+patch {
+  url: {{baseUrl}}/v1/agents/41001
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "model": 123
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("must be a string or null");
+  });
+}

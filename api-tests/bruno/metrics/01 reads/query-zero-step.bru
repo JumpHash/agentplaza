@@ -1,0 +1,34 @@
+meta {
+  name: Refuse a query with a zero step
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/query
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "metric": "cpu",
+    "scope": "global",
+    "from_ms": 0,
+    "to_ms": 3600000,
+    "step_ms": 0,
+    "agg": "avg",
+    "group": "all"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error names the step", function () {
+    expect(res.getBody().error).to.include("step_ms");
+  });
+}

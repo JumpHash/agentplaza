@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a move that names no node
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/move
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("missing field `node`");
+  });
+}

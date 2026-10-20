@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when revoking an unknown node
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n999/revoke
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,31 @@
+meta {
+  name: Refuse an alert rule with an unknown severity
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/alerts/rules
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "",
+    "name": "t-bad severity",
+    "metric": "cpu",
+    "agg": "avg",
+    "scope": "global",
+    "cmp": "gt",
+    "threshold": 1,
+    "for_ms": 0,
+    "severity": "fatal"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Refuse the workstation link sent with a Basic scheme
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/link
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Basic dC1zdGF0aW9uczp4
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

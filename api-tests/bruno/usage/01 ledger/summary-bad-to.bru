@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a summary whose to is not a number
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/summary?to=soon
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error names to", function () {
+    expect(res.getBody().error).to.include("to");
+  });
+}

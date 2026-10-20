@@ -1,0 +1,26 @@
+meta {
+  name: Show the archive as present once uploaded
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/e2b/templates/{{e2bFailTemplate}}/files/{{e2bHash}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the archive is here now", function () {
+    expect(res.getBody().present).to.equal(true);
+  });
+}

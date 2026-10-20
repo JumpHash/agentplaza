@@ -1,0 +1,23 @@
+meta {
+  name: a test refuses again, offline
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/providers/anthropic/test
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it names the missing variable again", function () {
+    expect(res.getBody().ok).to.equal(false);
+    expect(res.getBody().error).to.include('ANTHROPIC_API_KEY is not set');
+  });
+}

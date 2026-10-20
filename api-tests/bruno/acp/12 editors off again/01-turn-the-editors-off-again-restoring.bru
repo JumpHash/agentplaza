@@ -1,0 +1,32 @@
+meta {
+  name: Turn the editors off again, restoring the saved settings
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("acp_settings_saved"));
+  s.acp_enabled = false;
+  req.setBody(s);
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the editors are off", function () {
+    expect(res.getBody().acp_enabled).to.equal(false);
+  });
+}

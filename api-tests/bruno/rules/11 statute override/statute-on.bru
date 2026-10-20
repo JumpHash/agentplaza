@@ -1,0 +1,27 @@
+meta {
+  name: Switch the statute back on
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/laws/overrides/S-000a
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "disabled": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.override: eq null
+  res.responseTime: lt {{budgetMs}}
+}

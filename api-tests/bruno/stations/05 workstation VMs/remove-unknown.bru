@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when removing a workstation VM that does not exist
+  type: http
+  seq: 22
+}
+
+delete {
+  url: {{baseUrl}}/v1/stations/vms/wv-t-missing
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

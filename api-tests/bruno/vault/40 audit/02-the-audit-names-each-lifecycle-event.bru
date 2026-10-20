@@ -1,0 +1,27 @@
+meta {
+  name: The audit names each lifecycle event of the secret
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/audit?limit=500
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("create, rotate, rollback and delete are recorded for the secret", function () {
+    const events = res.getBody().entries
+      .filter((e) => e.name === "BRU_LIFE_KEY")
+      .map((e) => e.event);
+    ["create", "rotate", "rollback", "delete"].forEach((event) => {
+      expect(events, event).to.include(event);
+    });
+  });
+}

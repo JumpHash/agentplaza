@@ -1,0 +1,22 @@
+meta {
+  name: The events of a revoked link stay readable
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/shares/{{sh6a_share}}/events
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a list", function () {
+    expect(res.getBody()).to.be.an("array");
+  });
+}

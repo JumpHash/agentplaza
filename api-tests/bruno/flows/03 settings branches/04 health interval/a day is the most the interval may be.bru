@@ -1,0 +1,42 @@
+meta {
+  name: a day is the most the interval may be
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("flowSettingsCurrent"));
+  s.health_interval_s = 86400;
+  req.setBody(s);
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setVar("flowSettingsCurrent", JSON.stringify(res.getBody()));
+  }
+}
+
+tests {
+  test("the interval is a day", function () {
+    expect(res.getBody().health_interval_s).to.equal(86400);
+  });
+}

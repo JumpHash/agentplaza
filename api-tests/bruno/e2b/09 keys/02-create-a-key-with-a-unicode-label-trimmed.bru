@@ -1,0 +1,33 @@
+meta {
+  name: Create a key with a unicode label, trimmed
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/e2b/keys
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "label": "  ünïcode ✓ 漢字  "
+  }
+}
+
+script:post-response {
+  bru.setVar("e2bUniKey", res.getBody().key);
+  bru.setVar("e2bUniKeyId", res.getBody().id);
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the label comes back trimmed, with its unicode", function () {
+    expect(res.getBody().label).to.equal("\u00fcn\u00efcode \u2713 \u6f22\u5b57");
+  });
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a model import from a relative path
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "path": "relative/t-model"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the path must be absolute", function () {
+    expect(res.getBody().error).to.equal("path is absolute");
+  });
+}

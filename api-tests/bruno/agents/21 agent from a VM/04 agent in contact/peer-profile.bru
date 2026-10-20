@@ -1,0 +1,17 @@
+meta {
+  name: Read the peer's profile
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41002/profile
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.cid: eq 41002
+}

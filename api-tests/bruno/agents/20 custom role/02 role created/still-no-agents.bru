@@ -1,0 +1,24 @@
+meta {
+  name: The custom role still has no agents after the refused spawn
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/roles
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("the role counts no agents", function () {
+    const role = res.getBody().find((r) => r.id === "t-agents-lead");
+    expect(role.agents).to.equal(0);
+  });
+}

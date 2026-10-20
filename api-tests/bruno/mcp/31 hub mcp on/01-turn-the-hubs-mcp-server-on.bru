@@ -1,0 +1,35 @@
+meta {
+  name: Turn the hub's MCP server on, locally, in secure mode
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": true,
+    "bind": "local",
+    "allowed_origins": [],
+    "auth_mode": "secure",
+    "open_scope": "observe"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the server is on, locally, in secure mode", function () {
+    const body = res.getBody();
+    expect(body.enabled).to.equal(true);
+    expect(body.bind).to.equal("local");
+    expect(body.auth_mode).to.equal("secure");
+  });
+}

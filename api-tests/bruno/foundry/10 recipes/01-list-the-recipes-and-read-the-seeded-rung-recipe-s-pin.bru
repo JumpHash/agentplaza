@@ -1,0 +1,33 @@
+meta {
+  name: List the recipes and read the seeded rung recipe's pin
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/recipes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+script:post-response {
+  const r = res.getBody().find(x => x.id === "rung-predictor@1");
+  bru.setVar("fdy_pin", r ? r.commit : "");
+}
+
+tests {
+  test("the seeded rung recipe is vetted as a local dev pin", function () {
+    const r = res.getBody().find(x => x.id === "rung-predictor@1");
+    expect(r).to.not.be.undefined;
+    expect(r.local_dev).to.equal(true);
+    expect(r.vetted_by).to.equal("local-dev");
+    expect(r.commit).to.match(/^dev-[0-9a-f]{16}$/);
+    expect(r.vetted_ms).to.be.a("number");
+  });
+}

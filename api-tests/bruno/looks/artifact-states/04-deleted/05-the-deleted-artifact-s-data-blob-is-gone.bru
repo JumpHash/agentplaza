@@ -1,0 +1,16 @@
+meta {
+  name: The deleted artifact's data blob is gone
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/blobs/{{looks_blob}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

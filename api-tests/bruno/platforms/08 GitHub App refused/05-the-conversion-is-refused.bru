@@ -1,0 +1,22 @@
+meta {
+  name: Take the browser back with a code the host refuses to convert
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/callback?code=t-manifest-code&state={{gh_state}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 5000
+}
+
+tests {
+  test("the page says the app was not authorized", function () {
+    expect(res.getBody()).to.include("Not authorized");
+  });
+}

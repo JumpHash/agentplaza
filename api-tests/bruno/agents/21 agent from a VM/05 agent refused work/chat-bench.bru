@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a chat message to an agent on the bench
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/chat
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "text": "Hello Mira"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("is on the bench");
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a vendor call with a vendor that does not exist
+  type: http
+  seq: 36
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/vendor/nosuch/v1/x
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 404
+  res.body.error: eq "unknown vendor"
+}

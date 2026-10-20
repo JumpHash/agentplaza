@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a vendor read while the Auggie engine is off
+  type: http
+  seq: 35
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/vendor/augment/v1/sessions
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+}
+
+tests {
+  test("the refusal names the engine", function () {
+    expect(res.getBody().error).to.include("auggie engine");
+  });
+}

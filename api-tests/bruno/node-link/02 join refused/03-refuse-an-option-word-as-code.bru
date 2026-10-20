@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an option word passed as the join code
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/node-link/join
+  body: json
+  auth: none
+}
+
+body:json {
+  {"code": "--state"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "that is not a join code"
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Read the journal and find every entry balanced
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/journal?limit=256
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.entries: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("every entry's postings sum to zero", function () {
+  const entries = res.getBody().entries;
+    expect(entries.length).to.be.above(0);
+    entries.forEach((e) => {
+      const sum = e.postings.reduce((total, p) => total + p.amount, 0);
+      expect(sum).to.equal(0);
+    });
+  });
+}

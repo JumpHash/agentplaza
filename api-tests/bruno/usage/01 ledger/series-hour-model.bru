@@ -1,0 +1,26 @@
+meta {
+  name: Show one hour's usage by model
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/series?from=0&to=3600000&bucket=hour&by=model
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("one hourly bucket covers the hour", function () {
+    const body = res.getBody();
+    expect(body.by).to.equal("model");
+    expect(body.bucket_ms).to.equal(3600000);
+    expect(body.points).to.have.lengthOf(1);
+    expect(body.points[0].at_ms).to.equal(0);
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a finish with an outcome that is neither done nor failed
+  type: http
+  seq: 22
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}/finish
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"outcome": "maybe"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "done"
+  res.responseTime: lt {{budgetMs}}
+}

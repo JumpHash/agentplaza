@@ -1,0 +1,22 @@
+meta {
+  name: Cancel a job that does not exist
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs/tj-0000000000/cancel
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the cancel names no job", function () {
+    expect(res.getBody().error).to.equal("no such job");
+  });
+}

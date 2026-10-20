@@ -1,0 +1,21 @@
+meta {
+  name: Read the plaza's budget before the project's credits are set aside
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{tsk_pid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.own: eq false
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("tsk_plaza_start", res.getBody().plaza);
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Answer 404 to putting a file of a workstation that does not exist into the Library
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/w-t-missing/files/notes/t-stations.txt
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "t-stations"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

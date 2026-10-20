@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a budget of zero GPU-hours
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"recipe": "rung-predictor@1", "datasets": ["ds-x"], "budget_gpu_hours": 0}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.equal("budget_gpu_hours is a number above 0");
+  });
+}

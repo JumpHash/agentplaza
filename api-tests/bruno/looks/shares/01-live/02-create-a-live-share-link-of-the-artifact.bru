@@ -1,0 +1,41 @@
+meta {
+  name: Create a live share link of the artifact
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh1_art}}"
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("sh1_share", res.getBody().id);
+}
+
+tests {
+  test("the link is live, not password protected and serves the latest", function () {
+    const b = res.getBody();
+    expect(b.state).to.equal("live");
+    expect(b.has_password).to.equal(false);
+    expect(b.version).to.equal(null);
+    expect(b.target.id).to.equal(bru.getVar("sh1_art"));
+    expect(b.links.public).to.equal("https://agentplaza.io/artifact/" + b.id);
+    expect(b.links.network).to.include("/artifact/" + b.id);
+  });
+}

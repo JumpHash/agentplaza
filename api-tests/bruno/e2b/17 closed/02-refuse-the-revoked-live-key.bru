@@ -1,0 +1,21 @@
+meta {
+  name: Refuse the revoked live key
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "unauthorized"
+}

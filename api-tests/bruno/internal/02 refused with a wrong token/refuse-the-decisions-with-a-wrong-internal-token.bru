@@ -1,0 +1,44 @@
+meta {
+  name: Refuse the decisions with a wrong internal token
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+}
+
+body:json {
+  {
+    "input": "Pick one",
+    "questions": [
+      {
+        "type": "choice",
+        "name": "q1",
+        "instructions": "Pick the better one",
+        "choices": [
+          {
+            "value": "a",
+            "label": "A"
+          },
+          {
+            "value": "b",
+            "label": "B"
+          }
+        ]
+      }
+    ]
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

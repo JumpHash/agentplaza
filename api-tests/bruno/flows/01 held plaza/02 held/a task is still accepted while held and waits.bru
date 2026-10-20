@@ -1,0 +1,40 @@
+meta {
+  name: a task is still accepted while held and waits
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "flows task during the hold",
+    "project": "{{flowHeldPid}}",
+    "budget": 300
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("flowHeldTaskDuring", res.getBody().id);
+}
+
+tests {
+  test("the task waits open with no agent", function () {
+    const b = res.getBody();
+    expect(b.state).to.equal('open');
+    expect(b.agent_cid).to.equal(null);
+  });
+}

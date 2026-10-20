@@ -1,0 +1,21 @@
+meta {
+  name: The start page is missing for a browser that asks for brotli
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/
+  body: none
+  auth: none
+}
+
+headers {
+  accept: text/html
+  accept-encoding: br, gzip
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

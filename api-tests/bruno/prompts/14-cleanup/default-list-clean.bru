@@ -1,0 +1,24 @@
+meta {
+  name: Neither test prompt is in the default list any more
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the test prompts are out of the default list", function () {
+    const ids = res.getBody().prompts.map((p) => p.id);
+    expect(ids).to.not.include("t-prompt-life");
+    expect(ids).to.not.include("t-prompt-next");
+  });
+}

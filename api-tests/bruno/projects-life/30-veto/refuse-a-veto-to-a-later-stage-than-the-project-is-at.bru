@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a veto to a later stage than the project is at
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_vpid}}/veto
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"stage": "implementation", "reason": "t-life forward"}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "earlier stage"
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Pause the whole board's deliveries
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/board/pause
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "on": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused_all: eq true
+  res.responseTime: lt {{budgetMs}}
+}

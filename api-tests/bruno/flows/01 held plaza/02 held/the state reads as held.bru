@@ -1,0 +1,24 @@
+meta {
+  name: the state reads as held
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/plaza/state
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the state shows the hold", function () {
+    const b = res.getBody();
+    expect(b.paused).to.equal(true);
+    expect(b.reason).to.equal('flows hold');
+  });
+}

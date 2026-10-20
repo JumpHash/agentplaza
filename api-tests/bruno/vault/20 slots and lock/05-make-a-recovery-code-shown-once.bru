@@ -1,0 +1,27 @@
+meta {
+  name: Make a recovery code, shown once
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/recovery
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.recovery_code: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("vault_recovery_code", res.getBody().recovery_code);
+}
+
+tests {
+  test("the code is long enough to be a recovery code", function () {
+    expect(res.getBody().recovery_code.length).to.be.above(15);
+  });
+}

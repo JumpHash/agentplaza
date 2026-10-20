@@ -1,0 +1,24 @@
+meta {
+  name: Read the open change by its name
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/changes/{{weft_change}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the change is on the repo it was opened in", function () {
+    const body = res.getBody();
+    expect(body.repo).to.equal("t-weft-repo-d");
+    expect(body.title).to.equal("t-weft lane");
+  });
+}

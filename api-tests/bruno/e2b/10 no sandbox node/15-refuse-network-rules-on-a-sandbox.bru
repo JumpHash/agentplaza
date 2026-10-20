@@ -1,0 +1,37 @@
+meta {
+  name: Refuse network rules on a sandbox
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "network": {
+      "rules": {
+        "api.example.com": []
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the message names network.rules", function () {
+    expect(res.getBody().message).to.include("network.rules are not served");
+  });
+}

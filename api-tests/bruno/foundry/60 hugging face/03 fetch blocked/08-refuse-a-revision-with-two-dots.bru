@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a revision with two dots
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/hf/models/t-org/t-model?revision=a..b
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says it is not a revision", function () {
+    expect(res.getBody().error).to.include("is not a revision");
+  });
+}

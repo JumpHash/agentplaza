@@ -19,7 +19,7 @@ body:json {
 
 assert {
   res.status: eq 201
-  res.responseTime: lt 1000
+  res.responseTime: lt {{budgetMs}}
   res.body.stage: eq "implementation"
   res.body.approved_by: eq "owner"
   res.body.paused: eq false

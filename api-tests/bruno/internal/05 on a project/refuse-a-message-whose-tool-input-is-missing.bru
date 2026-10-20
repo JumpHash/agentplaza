@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a message whose tool input is missing
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "x",
+    "name": "read_file"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 400
+}

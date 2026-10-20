@@ -1,0 +1,25 @@
+meta {
+  name: Refuse approval while the plan is at brief
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_vpid}}/approve
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"note": "t-life approve at brief"}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "not awaiting approval"
+  res.responseTime: lt {{budgetMs}}
+}

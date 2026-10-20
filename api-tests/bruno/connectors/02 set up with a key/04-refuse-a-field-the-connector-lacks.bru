@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a key for a field unsplash does not have
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/unsplash/secret
+  body: json
+  auth: none
+}
+
+body:json {
+  {"field": "t-no-such-field", "value": "t-value"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the field the connector lacks", function () {
+    expect(res.getBody().error).to.equal("`unsplash` has no field `t-no-such-field`");
+  });
+}

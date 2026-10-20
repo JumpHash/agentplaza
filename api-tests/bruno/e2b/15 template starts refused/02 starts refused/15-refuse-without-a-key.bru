@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a start without an E2B key
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/templates/{{e2bRefusedTemplate}}/builds/{{e2bRefusedBuild}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "fromImage": "e2bdev/base"
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "unauthorized"
+}

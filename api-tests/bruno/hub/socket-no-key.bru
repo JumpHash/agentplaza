@@ -1,0 +1,28 @@
+meta {
+  name: Refuse an event socket upgrade with no key
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/ws
+  body: none
+  auth: none
+}
+
+headers {
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Version: 13
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the answer names the missing key", function () {
+    expect(res.getBody().error).to.include("Sec-WebSocket-Key is missing");
+  });
+}

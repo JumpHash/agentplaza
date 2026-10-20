@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a task whose budget the project cannot cover: no task is made
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks too big", "budget": 500, "project": "{{bu_pid}}"}
+}
+
+assert {
+  res.status: neq 201
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

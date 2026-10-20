@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a VM checkpoint of an agent with no VM
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/vm-checkpoints
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "label": "c1"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("has no VM");
+  });
+}

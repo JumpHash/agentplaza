@@ -1,0 +1,16 @@
+meta {
+  name: The picture's link answers missing
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh_pic_share}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

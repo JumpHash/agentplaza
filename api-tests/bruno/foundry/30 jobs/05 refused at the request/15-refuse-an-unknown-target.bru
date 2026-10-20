@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an unknown target
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"recipe": "rung-predictor@1", "datasets": ["ds-x"], "budget_gpu_hours": 1, "target": "mips"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.equal("target is x86_64, aarch64 or any");
+  });
+}

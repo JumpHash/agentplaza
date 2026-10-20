@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a recordings list whose before is not a time
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/recordings?before=yesterday
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("before is a time in milliseconds");
+  });
+}

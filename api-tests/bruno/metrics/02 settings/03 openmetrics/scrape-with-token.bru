@@ -1,0 +1,27 @@
+meta {
+  name: Scrape OpenMetrics with its token
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/metrics
+  body: none
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{metrics_om_token}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the scrape ends with the OpenMetrics terminator", function () {
+    expect(res.getBody()).to.be.a("string");
+    expect(res.getBody()).to.include("# EOF");
+  });
+}

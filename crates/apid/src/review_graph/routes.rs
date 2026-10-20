@@ -117,10 +117,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Approve or decline a proposed recipe").errors(&[409]))
         .get("/v1/tasks/{id}/reviews", |app, _, p: &Params<'_>| {
+            // A task nothing has reviewed yet lists no runs; a task that is not there is a 404.
+            if app.plaza.tasks.find(p.get("id")).is_none() {
+                return Response::error(404, "no such task");
+            }
             let runs: Vec<Value> = app.reviews.runs_of(p.get("id")).iter().map(run_summary).collect();
             Response::json(200, &json!({ "task": p.get("id"), "runs": runs }))
         })
-        .doc(RouteDoc::new("List a task's review runs, newest first"))
+        .doc(RouteDoc::new("List a task's review runs, newest first").errors(&[404]))
         .get("/v1/reviews/{run}", |app, _, p: &Params<'_>| match app.reviews.run(p.get("run")) {
             Some(r) => Response::json(200, &run_view(&r)),
             None => Response::error(404, "no such review"),

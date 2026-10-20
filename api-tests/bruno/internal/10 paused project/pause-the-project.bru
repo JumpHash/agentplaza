@@ -1,0 +1,20 @@
+meta {
+  name: Pause the project
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{int_proj_pau}}/pause
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a search with a limit over the maximum
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/hf/models?search=t-llama&limit=101
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal gives the limit range", function () {
+    expect(res.getBody().error).to.include("1..=100");
+  });
+}

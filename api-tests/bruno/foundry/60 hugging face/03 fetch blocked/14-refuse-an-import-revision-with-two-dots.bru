@@ -1,0 +1,30 @@
+meta {
+  name: Refuse an import revision with two dots
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/hf/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-org/t-model",
+    "as": "base",
+    "revision": "a..b"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says it is not a revision", function () {
+    expect(res.getBody().error).to.include("is not a revision");
+  });
+}

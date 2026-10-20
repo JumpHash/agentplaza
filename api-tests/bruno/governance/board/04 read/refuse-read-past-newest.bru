@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a read up to a post that is past the newest
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/board/read
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent_cid": 8601,
+    "up_to": "p999999"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

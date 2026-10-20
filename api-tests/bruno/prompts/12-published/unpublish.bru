@@ -1,0 +1,23 @@
+meta {
+  name: Unpublish the prompt: no live version and no score
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/unpublish
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.prompt.active_version: eq null
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the score goes with the live version", function () {
+    expect(res.getBody().prompt.score).to.equal(null);
+  });
+}

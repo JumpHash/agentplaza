@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a share with no target
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "password": "long enough"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

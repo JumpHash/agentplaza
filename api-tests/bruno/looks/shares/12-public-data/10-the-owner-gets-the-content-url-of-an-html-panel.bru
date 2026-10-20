@@ -1,0 +1,23 @@
+meta {
+  name: The owner gets the content URL of an HTML panel
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{sh12_art}}/frame?panel=page
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the URL names the artifact and panel", function () {
+    const url = res.getBody().url;
+    expect(url).to.include("/a/" + bru.getVar("sh12_art") + "/1/page/");
+  });
+}

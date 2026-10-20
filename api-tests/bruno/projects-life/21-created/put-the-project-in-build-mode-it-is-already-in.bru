@@ -1,0 +1,26 @@
+meta {
+  name: Put the project in build mode it is already in
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/mode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"mode": "build"}
+}
+
+assert {
+  res.status: eq 200
+  res.body.mode: eq "build"
+  res.body.stage: eq "implementation"
+  res.responseTime: lt {{budgetMs}}
+}

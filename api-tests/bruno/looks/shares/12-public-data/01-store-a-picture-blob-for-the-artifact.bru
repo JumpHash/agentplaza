@@ -1,0 +1,29 @@
+meta {
+  name: Store a picture blob for the artifact
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts/blobs?content_type=image/png
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  content-type: image/png
+}
+
+body:text {
+  PNG-bytes-for-the-test
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("sh12_blob", res.getBody().blob.id);
+}

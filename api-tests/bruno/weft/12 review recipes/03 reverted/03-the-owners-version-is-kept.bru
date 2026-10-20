@@ -1,0 +1,18 @@
+meta {
+  name: The owner's version 2 is kept in the history after the revert
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/docs?version=2
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.recipe.version: eq 2
+  res.body.recipe.title: eq "Documentation (owner)"
+}

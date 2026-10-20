@@ -1,0 +1,22 @@
+meta {
+  name: Read the retired model
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_b}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it stays retired", function () {
+    expect(res.getBody().state).to.equal("retired");
+  });
+}

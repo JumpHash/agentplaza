@@ -1,0 +1,28 @@
+meta {
+  name: Open a project for the review tests
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-reviews", "goal": "The review runs of a task"}
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("rev_pid", res.getBody().id);
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Shadow a model that does not exist
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/t-no-model/shadow
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error names the model", function () {
+    expect(res.getBody().error).to.equal("no model t-no-model");
+  });
+}

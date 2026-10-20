@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for a file the version does not hold
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions/1/files/nope.md
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

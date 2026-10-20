@@ -1,0 +1,22 @@
+meta {
+  name: the project's budget is empty
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{flowActivePid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("nothing left in the project", function () {
+    expect(res.getBody().balance).to.equal(0);
+  });
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Read the provider back: keyed, and no value in the view
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/providers/t-prov-compat
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.credential: eq "secret"
+  res.body.auth.secret: eq "T_PROV_COMPAT_KEY"
+}
+
+tests {
+  test("no key value appears anywhere in the view", function () {
+    expect(JSON.stringify(res.getBody())).to.not.include("scratch-test-key");
+  });
+}

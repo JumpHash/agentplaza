@@ -1,0 +1,20 @@
+meta {
+  name: Refuse a recipe save with no TOML in it
+  type: http
+  seq: 12
+}
+
+put {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"title": "no toml here"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

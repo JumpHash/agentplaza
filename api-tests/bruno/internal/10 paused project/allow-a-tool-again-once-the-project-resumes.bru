@@ -1,0 +1,39 @@
+meta {
+  name: Allow a tool again once the project resumes
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61009/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "pa2",
+    "name": "read_file",
+    "input": {
+      "path": "/x"
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+}
+
+tests {
+  test("the decision is allow", function () {
+    expect(res.getBody().reply.decision).to.equal("allow");
+  });
+}

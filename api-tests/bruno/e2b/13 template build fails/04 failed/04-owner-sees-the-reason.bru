@@ -1,0 +1,26 @@
+meta {
+  name: Show the failed build and its reason in the owner's list
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/e2b/templates
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the owner sees the error, its step and when it finished", function () {
+    const t = res.getBody().templates.find((x) => x.templateID === bru.getVar("e2bFailTemplate"));
+    const b = t.builds.find((x) => x.buildID === bru.getVar("e2bFailBuild"));
+    expect(b.status).to.equal("error");
+    expect(b.reason.step).to.equal("base");
+    expect(b.finishedAt).to.be.a("string");
+  });
+}

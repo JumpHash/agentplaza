@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when archiving a project that does not exist
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/pr999999/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

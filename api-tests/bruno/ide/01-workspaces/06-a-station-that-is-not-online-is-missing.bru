@@ -1,0 +1,16 @@
+meta {
+  name: A station that is not online is missing
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/station:w999/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

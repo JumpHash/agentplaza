@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an unknown sandbox state in the list
+  type: http
+  seq: 25
+}
+
+get {
+  url: {{baseUrl}}/e2b/v2/sandboxes?state=frozen
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "invalid_request"
+}

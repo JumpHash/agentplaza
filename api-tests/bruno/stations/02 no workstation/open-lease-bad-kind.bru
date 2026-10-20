@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a lease of a kind that is not shared or pixel
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/w-t-missing/leases
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent": 1,
+    "kind": "exclusive"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

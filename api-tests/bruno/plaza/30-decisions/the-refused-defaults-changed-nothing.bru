@@ -1,0 +1,22 @@
+meta {
+  name: The refused defaults changed nothing
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/decisions/default
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the default is the same as before", function () {
+    expect(JSON.stringify(res.getBody())).to.equal(bru.getVar("dec_before"));
+  });
+}

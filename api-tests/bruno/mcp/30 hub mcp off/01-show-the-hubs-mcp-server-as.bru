@@ -1,0 +1,27 @@
+meta {
+  name: Show the hub's MCP server as switched off
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the server is off, secure, local, with a token count", function () {
+    const body = res.getBody();
+    expect(body.enabled).to.equal(false);
+    expect(body.auth_mode).to.equal("secure");
+    expect(body.bind).to.equal("local");
+    expect(body.tokens).to.be.a("number");
+    expect(body.url).to.match(/\/mcp$/);
+  });
+}

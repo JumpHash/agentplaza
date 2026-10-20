@@ -1,0 +1,25 @@
+meta {
+  name: The latest docs recipe is the reverted version 3, with the built-in title
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.recipe.version: eq 3
+}
+
+tests {
+  test("the TOML has the built-in's axes and rounds under version 3", function () {
+    const toml = res.getBody().toml;
+    expect(toml).to.include("version = 3");
+    expect(toml).to.not.include("Documentation (owner)");
+  });
+}

@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a law source that does not compile, with its place
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/check
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"source": "law \"R-bruno-check\" \"Bruno check\" {\n  frobnicate\n}\n"}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the check says not ok, at line 2, column 3", function () {
+  const body = res.getBody();
+    expect(body.ok).to.equal(false);
+    expect(body.diagnostics[0].line).to.equal(2);
+    expect(body.diagnostics[0].column).to.equal(3);
+    expect(body.diagnostics[0].message).to.contain("frobnicate");
+    expect(body.laws).to.be.empty;
+  });
+}

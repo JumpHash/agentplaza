@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a rating outside minus one to one
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/43001/rating
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": 1.5
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the range (the rating is not clamped)", function () {
+    expect(res.getBody().error).to.include("between -1 and 1");
+  });
+}

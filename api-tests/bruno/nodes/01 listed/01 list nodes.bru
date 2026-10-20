@@ -1,0 +1,25 @@
+meta {
+  name: List the plaza's machines
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("the hub's own machine n0 is listed, with an id for every node", function () {
+    const nodes = res.getBody();
+    expect(nodes.map((n) => n.id)).to.include("n0");
+    nodes.forEach((n) => expect(n.id).to.be.a("string"));
+  });
+}

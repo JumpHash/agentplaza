@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a model import from a directory that is not there
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "path": "/nonexistent-t-foundry/model"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says the card is unreadable", function () {
+    expect(res.getBody().error).to.match(/^reading model_card.json/);
+  });
+}

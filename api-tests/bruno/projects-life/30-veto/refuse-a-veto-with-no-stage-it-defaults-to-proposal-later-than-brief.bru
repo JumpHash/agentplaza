@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a veto with no stage: it defaults to proposal, later than brief
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_vpid}}/veto
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "earlier stage"
+  res.responseTime: lt {{budgetMs}}
+}

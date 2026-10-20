@@ -1,0 +1,26 @@
+meta {
+  name: Read the mint in the journal, balanced
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/journal?kind=mint&limit=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the newest mint is ours, for 1000 credits, and balanced", function () {
+  const entry = res.getBody().entries[0];
+    expect(entry.id).to.equal(Number(bru.getVar("treasuryMintEntry")));
+    expect(entry.kind).to.equal("mint");
+    expect(entry.amount).to.equal(1000);
+    expect(entry.postings.reduce((t, p) => t + p.amount, 0)).to.equal(0);
+  });
+}

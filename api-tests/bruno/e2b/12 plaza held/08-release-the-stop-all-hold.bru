@@ -1,0 +1,17 @@
+meta {
+  name: Release the STOP ALL hold
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.paused: eq false
+}

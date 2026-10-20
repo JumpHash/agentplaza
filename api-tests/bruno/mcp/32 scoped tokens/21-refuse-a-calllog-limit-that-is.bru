@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a call-log limit that is not a number
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{baseUrl}}/v1/hub-mcp/calls?limit=lots
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the limit is a number", function () {
+    expect(res.getBody().error).to.equal("limit is a number");
+  });
+}

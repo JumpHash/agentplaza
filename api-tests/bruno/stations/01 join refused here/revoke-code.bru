@@ -1,0 +1,16 @@
+meta {
+  name: Revoke the unused join code
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/v1/stations/codes/{{stations_code_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}

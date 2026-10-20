@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when enabling an unknown rule
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/rules/R-bruno-none/enable
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

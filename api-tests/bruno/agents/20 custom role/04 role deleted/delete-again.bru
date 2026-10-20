@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when deleting the role again
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/v1/roles/t-agents-lead
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

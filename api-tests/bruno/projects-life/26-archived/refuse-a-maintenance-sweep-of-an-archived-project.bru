@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a maintenance sweep of an archived project
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance/sweep
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

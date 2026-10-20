@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a single unfurl without a url
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/unfurl
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

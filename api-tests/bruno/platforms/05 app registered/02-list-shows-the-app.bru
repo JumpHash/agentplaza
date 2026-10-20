@@ -1,0 +1,27 @@
+meta {
+  name: List the registered app with no secret in the list
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the registered app is listed, its secret is not", function () {
+    const body = res.getBody();
+    const app = body.registrations.find((r) => r.id === bru.getVar("platforms_app"));
+    expect(app).to.exist;
+    expect(app.kind).to.equal("gitlab");
+    expect(app.client_id).to.equal("t-platforms-client");
+    expect(JSON.stringify(body)).to.not.include("t-platforms-secret-0123");
+  });
+}

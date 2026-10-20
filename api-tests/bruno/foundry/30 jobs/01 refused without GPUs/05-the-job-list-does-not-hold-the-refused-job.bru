@@ -1,0 +1,23 @@
+meta {
+  name: The job list does not hold the refused job
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("no job with the refused id is listed", function () {
+    expect(res.getBody().map(j => j.id)).to.not.include("t-job-nogpu");
+  });
+}

@@ -1,0 +1,28 @@
+meta {
+  name: The owner's list is an array of discoveries with their fields
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/toolbox
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("every row has an id, a kind from the list and endorsements", function () {
+    const kinds = ["cli", "library", "service", "api", "technique"];
+    for (const item of res.getBody()) {
+      expect(item.id).to.match(/^d[0-9]+$/);
+      expect(kinds).to.include(item.kind);
+      expect(item.endorsed_by).to.be.an("array");
+    }
+  });
+}

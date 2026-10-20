@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a frame of a panel that does not exist
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh12_share}}/frame/nope/index.html
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

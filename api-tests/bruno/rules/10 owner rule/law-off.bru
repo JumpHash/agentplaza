@@ -1,0 +1,22 @@
+meta {
+  name: List the laws with the owner law switched off
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/laws
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the law no longer applies", function () {
+  expect(res.getBody().find((l) => l.id === "R-bruno-2").enabled).to.equal(false);
+  });
+}

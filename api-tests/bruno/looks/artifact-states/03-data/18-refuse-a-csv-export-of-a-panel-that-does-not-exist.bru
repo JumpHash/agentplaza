@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a CSV export of a panel that does not exist
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/export?format=csv&panel=nope
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

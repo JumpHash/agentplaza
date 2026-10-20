@@ -1,0 +1,25 @@
+meta {
+  name: Put the project in build mode: a no-op for the active project
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/mode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"mode": "build"}
+}
+
+assert {
+  res.status: eq 200
+  res.body.mode: eq "build"
+  res.responseTime: lt {{budgetMs}}
+}

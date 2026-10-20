@@ -1,0 +1,28 @@
+meta {
+  name: Read this machine's link on a fresh hub: not joined, not running
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/node-link
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.joined: eq false
+  res.body.running: eq false
+}
+
+tests {
+  test("no hub, no node id, no cids and no pid", function () {
+    const body = res.getBody();
+    expect(body.hub).to.be.null;
+    expect(body.node_id).to.be.null;
+    expect(body.cids).to.be.null;
+    expect(body.pid).to.be.null;
+  });
+}

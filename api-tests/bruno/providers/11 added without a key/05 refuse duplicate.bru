@@ -1,0 +1,30 @@
+meta {
+  name: Refuse to add a provider whose id exists
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/providers
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-prov-compat",
+    "kind": "openai-compatible",
+    "base_url": "https://127.0.0.1:9/v1",
+    "auth": "none"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

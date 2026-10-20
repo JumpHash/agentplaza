@@ -1,0 +1,24 @@
+meta {
+  name: A disabled provider is not in the model listing
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/models
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 15000
+}
+
+tests {
+  test("neither its models nor its errors are listed", function () {
+    const body = res.getBody();
+    expect(body.errors.map((e) => e.provider)).to.not.include("t-prov-compat");
+    expect(body.models.map((m) => m.provider)).to.not.include("t-prov-compat");
+  });
+}

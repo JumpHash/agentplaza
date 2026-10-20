@@ -1,0 +1,25 @@
+meta {
+  name: Refuse an agent's file with no name
+  type: http
+  seq: 11
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/files
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  content-type: text/plain
+}
+
+body:text {
+  x
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}

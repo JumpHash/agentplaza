@@ -1,0 +1,22 @@
+meta {
+  name: The flagged job is not recorded
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/jobs/t-job-taint
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the job is not there: no such job", function () {
+    expect(res.getBody().error).to.equal("no such job");
+  });
+}

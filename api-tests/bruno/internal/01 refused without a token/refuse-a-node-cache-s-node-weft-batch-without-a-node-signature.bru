@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a node cache's node weft batch without a node signature
+  type: http
+  seq: 39
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/nodes/1/weft/wire/want
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "hashes": []
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "bad node signature"
+}

@@ -1,0 +1,23 @@
+meta {
+  name: The owner's list no longer has the template
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/e2b/templates
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the template is not listed any more", function () {
+    const ids = res.getBody().templates.map((x) => x.templateID);
+    expect(ids).to.not.include(bru.getVar("e2bFailTemplate"));
+  });
+}

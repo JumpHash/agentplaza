@@ -1,0 +1,26 @@
+meta {
+  name: List the models of every provider
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/models
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 10000
+  res.body.models: isArray
+  res.body.errors: isArray
+}
+
+tests {
+  test("the mock provider's models are listed, each with a provider and a favourite flag", function () {
+    const body = res.getBody();
+    expect(body.models.filter((m) => m.provider === "mock").length).to.be.above(0);
+    body.models.forEach((m) => { expect(m.provider).to.be.a("string"); expect(m.favourite).to.be.a("boolean"); });
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a model id with three parts
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/hf/models/a/b/c
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says it is not a repo id", function () {
+    expect(res.getBody().error).to.include("is not a Hugging Face repo id");
+  });
+}

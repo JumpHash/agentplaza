@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a callback that replays a state already used
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/callback?code=t-replayed-code&state={{declined_state}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the link is refused as expired or used", function () {
+    expect(res.getBody()).to.include("expired or was used already");
+  });
+}

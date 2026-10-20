@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a query whose tiny step over a long window would make too many points
+  type: http
+  seq: 45
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/query
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "metric": "cpu",
+    "scope": "global",
+    "from_ms": 0,
+    "to_ms": 7776000000,
+    "step_ms": 1,
+    "agg": "avg",
+    "group": "all"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: contains "limit of 10000"
+}

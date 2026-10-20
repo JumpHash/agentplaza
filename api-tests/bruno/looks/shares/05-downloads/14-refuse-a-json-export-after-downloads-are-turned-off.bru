@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a JSON export after downloads are turned off
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh5_share}}/export?format=json
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+}

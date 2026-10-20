@@ -1,0 +1,27 @@
+meta {
+  name: Read the artifact back
+  type: http
+  seq: 48
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts/{{int_art}}
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+}
+
+tests {
+  test("it is version 1 of 1 on the project", function () {
+    expect(res.getBody().latest).to.equal(1);
+    expect(res.getBody().project).to.equal(bru.getVar("int_proj_main"));
+  });
+}

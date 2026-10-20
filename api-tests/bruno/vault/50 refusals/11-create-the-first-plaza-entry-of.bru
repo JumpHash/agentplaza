@@ -1,0 +1,31 @@
+meta {
+  name: Create the first plaza entry of a name
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "BRU_DUP_KEY",
+    "kind": "generic",
+    "value": "bru-dup-value-0123",
+    "scope": {
+      "kind": "plaza"
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("vault_dup_id", res.getBody().id);
+}

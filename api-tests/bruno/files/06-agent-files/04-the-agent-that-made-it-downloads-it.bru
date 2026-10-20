@@ -1,0 +1,26 @@
+meta {
+  name: The agent that made it downloads it
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/files/{{file_agent}}
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the text", function () {
+    expect(String(res.getBody())).to.equal("from the agent");
+  });
+}

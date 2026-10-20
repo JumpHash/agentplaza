@@ -1,0 +1,37 @@
+meta {
+  name: Ask for an upload link for the archive
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/e2b/templates/{{e2bFailTemplate}}/files/{{e2bHash}}
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+script:pre-request {
+  bru.setVar("e2bHash", "abababababababababababababababababababababababababababababababab");
+}
+
+script:post-response {
+  bru.setVar("e2bUploadUrl", res.getBody().url);
+  bru.setVar("e2bUploadToken", res.getBody().headers["x-plaza-upload"]);
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the archive is not here yet, and the link carries a one-time token", function () {
+    expect(res.getBody().present).to.equal(false);
+    expect(res.getBody().url).to.include("/e2b/templates/" + bru.getVar("e2bFailTemplate") + "/files/" + bru.getVar("e2bHash"));
+    expect(res.getBody().headers["x-plaza-upload"]).to.match(/^[0-9a-f]{64}$/);
+  });
+}

@@ -1,0 +1,56 @@
+meta {
+  name: Issue a join code for a new node
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/codes
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "label": "t-node-a",
+    "ttl_minutes": 5
+  }
+}
+
+script:post-response {
+  function joinSecret(token) {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const payload = token.slice("apzj1.".length);
+    let bits = 0, count = 0, text = "";
+    for (const ch of payload) {
+      const v = alphabet.indexOf(ch);
+      if (v < 0) continue;
+      bits = ((bits << 6) | v) & 0xffffff;
+      count += 6;
+      if (count >= 8) { count -= 8; text += String.fromCharCode((bits >> count) & 0xff); }
+    }
+    return JSON.parse(text).s;
+  }
+  const body = res.getBody();
+  bru.setVar("node_code_a_id", body.id);
+  bru.setVar("node_join_a_secret", joinSecret(body.token));
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+  res.body.id: isString
+  res.body.token: isString
+  res.body.expires_ms: isNumber
+}
+
+tests {
+  test("the token is a join token and its value is not in the id or expiry", function () {
+    expect(res.getBody().token).to.match(/^apzj1\./);
+    expect(res.getBody().token.length).to.be.above(40);
+  });
+}

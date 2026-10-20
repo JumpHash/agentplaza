@@ -1,0 +1,29 @@
+meta {
+  name: Change a custom role by saving it again
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/roles
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "scout-test",
+    "title": "Scout Lead",
+    "purpose": "Finds sources for the team and leads the search.",
+    "responsibilities": ["Search the web", "Plan the search"],
+    "deliverables": ["A list of sources"]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.id: eq "scout-test"
+  res.body.title: eq "Scout Lead"
+  res.body.created_by: eq "owner"
+}

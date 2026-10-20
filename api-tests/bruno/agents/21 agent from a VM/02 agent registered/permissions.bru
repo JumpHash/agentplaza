@@ -1,0 +1,18 @@
+meta {
+  name: A registered agent's permission mode is the default
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001/permissions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.mode: eq "autonomous"
+  res.body.source: eq "default"
+}

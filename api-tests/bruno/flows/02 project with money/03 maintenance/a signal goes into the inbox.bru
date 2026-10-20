@@ -1,0 +1,30 @@
+meta {
+  name: a signal goes into the inbox
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/maintenance/signals
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "text": "flows signal from the owner"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("flowMoneySignal", res.getBody().id);
+}

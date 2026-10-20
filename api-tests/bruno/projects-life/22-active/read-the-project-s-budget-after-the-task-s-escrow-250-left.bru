@@ -1,0 +1,17 @@
+meta {
+  name: Read the project's budget after the task's escrow: 250 left
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.balance: eq 250
+  res.responseTime: lt {{budgetMs}}
+}

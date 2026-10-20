@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a create without an E2B key
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "templateID": "base"
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "unauthorized"
+}

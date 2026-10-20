@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a slot of an unknown kind
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/slots
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "yubikey"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,37 @@
+meta {
+  name: Change the rule's methods, path and state
+  type: http
+  seq: 1
+}
+
+patch {
+  url: {{baseUrl}}/v1/egress/inject/{{egress_rule_id}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "methods": [
+      "get",
+      "post"
+    ],
+    "path_prefix": "/v1/items",
+    "enabled": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the changes are kept and the id stays", function () {
+    const body = res.getBody();
+    expect(body.id).to.equal(bru.getVar("egress_rule_id"));
+    expect(body.methods).to.deep.equal(["GET", "POST"]);
+    expect(body.path_prefix).to.equal("/v1/items");
+    expect(body.enabled).to.equal(false);
+  });
+}

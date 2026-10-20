@@ -1,0 +1,24 @@
+meta {
+  name: The refused change leaves the saved title
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/roles
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body: isArray
+}
+
+tests {
+  test("the title is still the changed one", function () {
+    const role = res.getBody().find((r) => r.id === "t-agents-lead");
+    expect(role.title).to.equal("Lead scout");
+  });
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Answer 404 for a Weft object the hub does not hold
+  type: http
+  seq: 56
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/weft/wire/objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 404
+  res.body.error: eq "no such object"
+}

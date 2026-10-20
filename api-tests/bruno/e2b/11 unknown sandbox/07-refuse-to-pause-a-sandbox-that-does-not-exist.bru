@@ -1,0 +1,27 @@
+meta {
+  name: Refuse to pause a sandbox that does not exist
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes/sbffffffffffffffff/pause
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "memory": false
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error_code: eq "sandbox_not_found"
+}

@@ -139,6 +139,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always() && inputs.tests
         with: { name: "results-linux-${{ matrix.arch }}", path: results, retention-days: 7 }
+      # The AppImage runs where WebKitGTK is not installed, so its desktop app is built without the webview (its HTML
+      # artifacts show the still card); the packages depend on WebKitGTK and get the full one. arm64 has no webview.
+      - name: Build the AppImage's desktop app (no webview)
+        if: inputs.package && matrix.arch == 'x86_64'
+        run: >-
+          .github/ci/in-image.sh "cargo build --release --locked ${{ env.TARGET_ARG }} -p agentplaza-desktop --no-default-features &&
+          cp ${{ env.OUT }}/agentplaza-desktop ${{ env.OUT }}/agentplaza-desktop-portable"
       - name: Build the binaries
         if: inputs.package
         run: >-
@@ -168,7 +175,7 @@ jobs:
         if: inputs.package
         run: |
           .github/ci/in-image.sh "APZ_RELAY_DIR=relay packaging/scripts/stage.sh ${{ env.TRIPLE }} ${{ env.OUT }} stage \"\$VERSION\" &&
-            packaging/linux/build.sh stage \"\$VERSION\" ${{ matrix.arch }} out-linux-${{ matrix.arch }}"
+            APZ_APPIMAGE_DESKTOP=${{ matrix.arch == 'x86_64' && format('{0}/agentplaza-desktop-portable', env.OUT) || '' }} packaging/linux/build.sh stage \"\$VERSION\" ${{ matrix.arch }} out-linux-${{ matrix.arch }}"
           mkdir -p stage-out && tar -czf stage-out/stage-linux-${{ matrix.arch }}.tgz stage
       - name: Install and run on Ubuntu 24.04, Debian 12, Fedora 42, Arch; the AppImage on Ubuntu 22.04
         if: inputs.package

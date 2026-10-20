@@ -1,0 +1,31 @@
+meta {
+  name: a model call through the gateway is refused while held
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/1/gateway/anthropic/v1/messages
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the hold", function () {
+    expect(res.getBody().error).to.include('held (STOP ALL)');
+  });
+}

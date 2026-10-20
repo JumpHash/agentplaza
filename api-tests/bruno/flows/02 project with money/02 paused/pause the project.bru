@@ -1,0 +1,23 @@
+meta {
+  name: pause the project
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/pause
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the project is paused and still not archived", function () {
+    expect(res.getBody().paused).to.equal(true);
+    expect(res.getBody().archived).to.equal(false);
+  });
+}

@@ -1,0 +1,41 @@
+meta {
+  name: Refuse a Messages call to OpenRouter while the wallet is empty
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/openrouter/v1/messages
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "model": "anthropic/claude-haiku-5-5",
+    "max_tokens": 16,
+    "messages": [
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ]
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: gte 400
+  res.status: lt 600
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal is a wallet, key or provider refusal", function () {
+    expect([402, 502, 503]).to.include(res.status);
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Money adds up: the plaza is back where it started
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{bl_pid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.balance: eq 0
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the plaza's balance equals its balance before the project", function () {
+    expect(res.getBody().plaza).to.equal(Number(bru.getVar("bl_plaza_start")));
+  });
+}

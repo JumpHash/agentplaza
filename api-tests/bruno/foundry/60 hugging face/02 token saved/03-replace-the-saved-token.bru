@@ -1,0 +1,28 @@
+meta {
+  name: Replace the saved token
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/foundry/hf/token
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": "hf_t-test-token-replaced"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("still set", function () {
+    expect(res.getBody().hf_token_set).to.equal(true);
+  });
+}

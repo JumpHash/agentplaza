@@ -1,0 +1,27 @@
+meta {
+  name: List the imported entries with their bindings
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the imported entries carry the bindings the import named", function () {
+    const list = res.getBody();
+    const a = list.find((e) => e.id === bru.getVar("vault_imp_a"));
+    const b = list.find((e) => e.id === bru.getVar("vault_imp_b"));
+    expect(a.bindings).to.deep.equal(["tool:bru-import"]);
+    expect(b.bindings).to.deep.equal([]);
+    expect(JSON.stringify(list)).to.not.include("bru-imp-a-value");
+  });
+}

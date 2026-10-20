@@ -1,0 +1,30 @@
+meta {
+  name: Add a signal to the project's inbox
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance/signals
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"text": "t-life: CI is red on main"}
+}
+
+assert {
+  res.status: eq 201
+  res.body.text: contains "CI is red"
+  res.body.from: eq "owner"
+  res.responseTime: lt {{budgetMs}}
+}
+
+script:post-response {
+  bru.setVar("life_signal", res.getBody().id);
+}

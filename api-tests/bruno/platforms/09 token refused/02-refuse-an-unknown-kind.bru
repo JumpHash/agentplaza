@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a token for a platform the plaza does not know
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "sourcehut", "token": "t-platforms-token-0456"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "kind is github, gitlab or forgejo"
+}

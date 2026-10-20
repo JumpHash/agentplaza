@@ -1,0 +1,38 @@
+meta {
+  name: Refuse a macOS VM on a machine that is not an Apple Mac
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/vms
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "node": "n0",
+    "os": "macos",
+    "name": "t-stations-vm",
+    "cpus": 2,
+    "ram_mb": 4096,
+    "disk_gb": 16
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("Apple");
+  });
+}

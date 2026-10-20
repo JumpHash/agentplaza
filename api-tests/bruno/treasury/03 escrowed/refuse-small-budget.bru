@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a task whose budget is below the minimum
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "t-treasury small",
+    "project": "{{treasuryProject}}",
+    "budget": 10
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

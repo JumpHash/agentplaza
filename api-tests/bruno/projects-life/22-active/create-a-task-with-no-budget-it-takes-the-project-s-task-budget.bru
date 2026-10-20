@@ -1,0 +1,36 @@
+meta {
+  name: Create a task with no budget: it takes the project's task budget
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-life default budget task", "project": "{{life_pid}}"}
+}
+
+assert {
+  res.status: eq 201
+  res.body.budget: eq 400
+  res.body.state: eq "open"
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("its escrow comes out of the project's budget", function () {
+    expect(res.getBody().project).to.equal(bru.getVar("life_pid"));
+  });
+}
+
+script:post-response {
+  bru.setVar("life_task_default", res.getBody().id);
+}

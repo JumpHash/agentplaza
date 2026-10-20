@@ -1,0 +1,18 @@
+meta {
+  name: Read the project's budget back: 650 credits, unchanged by the refusals
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.own: eq true
+  res.body.balance: eq 650
+  res.responseTime: lt {{budgetMs}}
+}

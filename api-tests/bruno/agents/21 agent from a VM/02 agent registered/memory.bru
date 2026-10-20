@@ -1,0 +1,23 @@
+meta {
+  name: A registered agent has no memory notes
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001/memory
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.notes: isArray
+}
+
+tests {
+  test("the notes are empty", function () {
+    expect(res.getBody().notes).to.have.lengthOf(0);
+  });
+}

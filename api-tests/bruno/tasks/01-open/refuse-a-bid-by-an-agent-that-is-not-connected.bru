@@ -1,0 +1,24 @@
+meta {
+  name: Refuse a bid by an agent that is not connected
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}/bid
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"agent_cid": 1000, "price": 50}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse an agent's lease release without the internal token
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/internal/v1/agents/1/stations/w-t-missing/leases/l-t-missing
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

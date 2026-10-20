@@ -1,0 +1,41 @@
+meta {
+  name: Add an MCP server at a fake address
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/mcp/servers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "bru-fake-mcp",
+    "name": "Bru fake server",
+    "transport": {
+      "kind": "http",
+      "url": "http://127.0.0.1:9/mcp"
+    },
+    "allow_private": true,
+    "tools": {
+      "allow": "all"
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the server is kept with its transport and no tools yet", function () {
+    const body = res.getBody();
+    expect(body.id).to.equal("bru-fake-mcp");
+    expect(body.transport.kind).to.equal("http");
+    expect(body.tools_count).to.equal(0);
+    expect(body).to.have.property("status");
+  });
+}

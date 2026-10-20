@@ -1,0 +1,27 @@
+meta {
+  name: Check every enabled engine: the off ones answer off
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/engines/check
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 5000
+}
+
+tests {
+  test("the disabled built-ins answer off, the local instance has a status", function () {
+    const body = res.getBody();
+    expect(body.claude.status).to.equal("off");
+    expect(body.codex.status).to.equal("off");
+    expect(body.gemini.status).to.equal("off");
+    expect(body.vibe.status).to.not.equal("off");
+    expect(body["t-eng-local"].status).to.be.a("string");
+  });
+}

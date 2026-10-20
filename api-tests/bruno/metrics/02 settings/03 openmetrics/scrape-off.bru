@@ -1,0 +1,21 @@
+meta {
+  name: Answer 404 for the scrape once it is off again
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/metrics
+  body: none
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{metrics_om_token}}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

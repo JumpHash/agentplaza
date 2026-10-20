@@ -1,0 +1,26 @@
+meta {
+  name: List the rule with its settings and no value
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/egress/inject
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the rule is listed with its format and secret name", function () {
+    const rule = res.getBody().rules.find((r) => r.id === bru.getVar("egress_rule_id"));
+    expect(rule.format).to.equal("Bearer ${SECRET}");
+    expect(rule.header).to.equal("Authorization");
+    expect(rule.path_prefix).to.equal("/v1");
+    expect(JSON.stringify(res.getBody())).to.not.include("bru-egress-value-0123456789");
+  });
+}

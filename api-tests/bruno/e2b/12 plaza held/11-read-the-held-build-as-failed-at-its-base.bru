@@ -1,0 +1,32 @@
+meta {
+  name: Read the held build as failed at its base
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/e2b/templates/{{e2bHeldTemplate}}/builds/{{e2bHeldBuild}}/status
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+script:pre-request {
+  await bru.sleep(1500);
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the build failed in its base step, with the node's refusal", function () {
+    expect(res.getBody().status).to.equal("error");
+    expect(res.getBody().reason.step).to.equal("base");
+    expect(res.getBody().reason.message).to.match(/^noded unreachable: /);
+  });
+}

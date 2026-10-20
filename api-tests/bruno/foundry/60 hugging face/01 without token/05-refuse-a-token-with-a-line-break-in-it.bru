@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a token with a line break in it
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/foundry/hf/token
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": "hf-line\nbreak"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal says the token must be one line", function () {
+    expect(res.getBody().error).to.include("one line");
+  });
+}

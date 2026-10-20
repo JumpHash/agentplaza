@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a passphrase slot with no passphrase
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/slots
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "passphrase"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal asks for the passphrase", function () {
+    expect(res.getBody().error).to.equal("a passphrase slot needs a passphrase");
+  });
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a frame number that is not a number
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/recordings/r0-t-missing/frames/first
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

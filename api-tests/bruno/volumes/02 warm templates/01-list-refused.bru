@@ -1,0 +1,22 @@
+meta {
+  name: Refuse the warm template list while no node answers
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/templates
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the hub says the node is unreachable", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

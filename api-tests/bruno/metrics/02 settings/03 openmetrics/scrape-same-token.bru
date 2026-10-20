@@ -1,0 +1,26 @@
+meta {
+  name: Scrape again with the same token
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/metrics
+  body: none
+  auth: none
+}
+
+headers {
+  authorization: Bearer {{metrics_om_token}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the scrape still answers", function () {
+    expect(res.getBody()).to.include("# EOF");
+  });
+}

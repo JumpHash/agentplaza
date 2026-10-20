@@ -1,0 +1,21 @@
+meta {
+  name: Refuse the vendor call without the internal token
+  type: http
+  seq: 27
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/vendor/augment/v1/sessions
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

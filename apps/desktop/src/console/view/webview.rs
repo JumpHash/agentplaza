@@ -11,11 +11,15 @@ use serde_json::{Map, Value};
 
 use crate::theme;
 
-/// Whether this build draws live frames: the platforms that link a webview (the arm64 Linux packages do not).
-pub const LIVE: bool = cfg!(any(
-    windows,
-    target_os = "macos",
-    all(target_os = "linux", target_arch = "x86_64")
+/// Whether this build draws live frames: the platforms that link a webview, with the `webview` feature (the arm64
+/// Linux packages and the AppImage do not).
+pub const LIVE: bool = cfg!(all(
+    feature = "webview",
+    any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_arch = "x86_64")
+    )
 ));
 
 /// The most live frames at once: the focused one and the one opened before it.
@@ -598,10 +602,13 @@ impl Frames {
 }
 
 /// The native webview of one frame, where a webview is linked.
-#[cfg(any(
-    windows,
-    target_os = "macos",
-    all(target_os = "linux", target_arch = "x86_64")
+#[cfg(all(
+    feature = "webview",
+    any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_arch = "x86_64")
+    )
 ))]
 mod native {
     use iced::{Element, Length, Subscription, Task, window};
@@ -718,10 +725,13 @@ mod native {
 }
 
 /// Without a linked webview the frame is never made: the screen keeps the still card.
-#[cfg(not(any(
-    windows,
-    target_os = "macos",
-    all(target_os = "linux", target_arch = "x86_64")
+#[cfg(not(all(
+    feature = "webview",
+    any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", target_arch = "x86_64")
+    )
 )))]
 #[allow(dead_code)]
 mod native {

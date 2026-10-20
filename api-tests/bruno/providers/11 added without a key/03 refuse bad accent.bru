@@ -1,0 +1,36 @@
+meta {
+  name: Refuse a provider accent that is not #rrggbb
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/providers
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-prov-compat",
+    "kind": "openai-compatible",
+    "base_url": "https://127.0.0.1:9/v1",
+    "accent": "blue",
+    "auth": "none"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the answer names the accent", function () {
+    expect(res.getBody().error).to.include("accent");
+  });
+}

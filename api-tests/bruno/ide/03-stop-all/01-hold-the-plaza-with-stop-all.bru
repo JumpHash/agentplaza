@@ -1,0 +1,22 @@
+meta {
+  name: Hold the plaza with STOP ALL
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/stop
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the plaza reads as held", function () {
+    expect(res.getBody().paused).to.equal(true);
+  });
+}

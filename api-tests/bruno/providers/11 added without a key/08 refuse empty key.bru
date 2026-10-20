@@ -1,0 +1,27 @@
+meta {
+  name: Refuse an empty key
+  type: http
+  seq: 8
+}
+
+put {
+  url: {{baseUrl}}/v1/providers/t-prov-compat/secret
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "value": ""
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "value is empty"
+}

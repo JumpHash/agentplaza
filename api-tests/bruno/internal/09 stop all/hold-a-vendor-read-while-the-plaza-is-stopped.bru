@@ -1,0 +1,26 @@
+meta {
+  name: Hold a vendor read while the plaza is stopped
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61008/gateway/vendor/augment/v1/sessions
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 409
+}
+
+tests {
+  test("the refusal names STOP ALL", function () {
+    expect(res.getBody().error).to.include("STOP ALL");
+  });
+}

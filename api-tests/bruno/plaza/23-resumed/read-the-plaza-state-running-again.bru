@@ -1,0 +1,17 @@
+meta {
+  name: Read the plaza state: running again
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/plaza/state
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq false
+  res.responseTime: lt {{budgetMs}}
+}

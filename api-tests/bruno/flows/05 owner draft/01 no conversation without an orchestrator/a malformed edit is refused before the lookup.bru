@@ -1,0 +1,30 @@
+meta {
+  name: a malformed edit is refused before the lookup
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/v1/owner/conversations/conv-flow-none/draft
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the refusal names the body", function () {
+    expect(res.getBody().error).to.include('bad body');
+  });
+}

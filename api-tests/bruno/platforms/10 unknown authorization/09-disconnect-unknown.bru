@@ -1,0 +1,20 @@
+meta {
+  name: Answer 404 when disconnecting on an unknown authorization
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/gitlab-99/disconnect
+  body: json
+  auth: none
+}
+
+body:json {
+  {"weft_repo": "t-platforms-repo", "connection": "t-conn"}
+}
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+

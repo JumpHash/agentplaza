@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a list page of zero
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/conversations?limit=0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

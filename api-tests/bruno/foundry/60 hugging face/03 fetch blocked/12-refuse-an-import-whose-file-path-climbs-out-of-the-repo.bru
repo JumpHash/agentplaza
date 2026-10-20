@@ -1,0 +1,30 @@
+meta {
+  name: Refuse an import whose file path climbs out of the repo
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/hf/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-org/t-model",
+    "as": "base",
+    "files": ["../secret.bin"]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error says it is not a relative path", function () {
+    expect(res.getBody().error).to.include("is not a relative file path");
+  });
+}

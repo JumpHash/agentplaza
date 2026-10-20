@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a change to an unknown server
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/v1/mcp/servers/no-such-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "nobody"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

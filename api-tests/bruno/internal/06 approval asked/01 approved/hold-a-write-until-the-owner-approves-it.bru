@@ -1,0 +1,48 @@
+meta {
+  name: Hold a write until the owner approves it
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61004/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "ap1",
+    "name": "write_file",
+    "input": {
+      "path": "/workspace/a.txt",
+      "content": "a"
+    }
+  }
+}
+
+script:post-response {
+  bru.setVar("int_appr_1", /\((a\d+)\)/.exec(res.getBody().reply.output)[1]);
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+  res.body.reply.is_error: eq true
+}
+
+tests {
+  test("the decision is deny", function () {
+    expect(res.getBody().reply.decision).to.equal("deny");
+  });
+  test("the reply says the owner must approve", function () {
+    expect(res.getBody().reply.output).to.include("waiting for the owner's approval");
+  });
+}

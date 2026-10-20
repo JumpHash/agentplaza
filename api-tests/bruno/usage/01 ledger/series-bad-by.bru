@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a series grouped by an unknown key
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/series?from=0&to=3600000&by=team
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the error names the grouping", function () {
+    expect(res.getBody().error).to.include("by must be");
+  });
+}

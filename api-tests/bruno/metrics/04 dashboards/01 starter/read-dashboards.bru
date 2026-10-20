@@ -1,0 +1,25 @@
+meta {
+  name: Read the saved dashboards before any save
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/dashboards
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the dashboards have their pins, scopes and a starter flag", function () {
+    const body = res.getBody();
+    expect(body.starter).to.be.a("boolean");
+    expect(body.pins).to.be.an("array");
+    expect(body.scopes).to.be.an("array");
+  });
+}

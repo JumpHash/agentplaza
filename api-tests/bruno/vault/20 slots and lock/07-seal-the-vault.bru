@@ -1,0 +1,22 @@
+meta {
+  name: Seal the vault
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/seal
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the vault reports sealed", function () {
+    expect(res.getBody().state).to.equal("sealed");
+  });
+}
