@@ -159,7 +159,7 @@ pub struct Person {
 impl Person {
     pub fn parse(s: &str) -> Result<Person, String> {
         let lt = s.find('<').ok_or("bad person")?;
-        let gt = s.rfind('>').ok_or("bad person")?;
+        let gt = s.rfind('>').filter(|&at| at > lt).ok_or("bad person")?;
         let name = s[..lt].trim().to_string();
         let email = s[lt + 1..gt].to_string();
         let mut rest = s[gt + 1..].split_whitespace();
@@ -372,14 +372,7 @@ impl Repo {
 
     pub fn read(&self, id: &Oid) -> Result<(Kind, Vec<u8>), String> {
         if let Ok(z) = std::fs::read(self.loose_path(id)) {
-            let mut raw = Vec::new();
-            ZlibDecoder::new(&z[..])
-                .read_to_end(&mut raw)
-                .map_err(|e| format!("object {}: {e}", hex(id)))?;
-            let nul = raw.iter().position(|b| *b == 0).ok_or("bad loose object")?;
-            let head = String::from_utf8_lossy(&raw[..nul]).to_string();
-            let (k, _) = head.split_once(' ').ok_or("bad loose object")?;
-            return Ok((Kind::from_name(k)?, raw[nul + 1..].to_vec()));
+            return loose_object(id, &z);
         }
         let found = self.with_packs(|packs| {
             for p in packs {
@@ -592,6 +585,13 @@ impl Repo {
 
 // ── packfiles ────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/// Git's own cap on delta chain depth.
+const MAX_DELTA_DEPTH: usize = 50;
+/// The largest object, inflated or delta-applied, that a pack may hold.
+const MAX_OBJECT: u64 = 512 << 20;
+/// The most a declared size may pre-allocate; anything more grows as the data arrives.
+const MAX_PREALLOC: usize = 64 << 20;
+
 /// A packfile, indexed: by its `.idx` when it has one, else by reading it through once.
 pub struct Pack {
     bytes: Vec<u8>,
@@ -624,7 +624,8 @@ impl Pack {
             cache: Mutex::new(HashMap::new()),
         };
         let mut at = 12;
-        let mut offsets = Vec::with_capacity(count);
+        // The count is the sender's word: every object takes at least two bytes, so no more fit.
+        let mut offsets = Vec::with_capacity(count.min(pack.bytes.len() / 2));
         for _ in 0..count {
             offsets.push(at);
             at = pack.skip(at)?;
@@ -694,6 +695,9 @@ impl Pack {
         while c & 0x80 != 0 {
             i += 1;
             c = *b.get(i).ok_or("pack cut short")?;
+            if shift >= 64 {
+                return Err("pack object header too long".into());
+            }
             size |= ((c & 0x7f) as usize) << shift;
             shift += 7;
         }
@@ -707,16 +711,27 @@ impl Pack {
         while c & 0x80 != 0 {
             i += 1;
             c = *b.get(i).ok_or("pack cut short")?;
-            n = ((n + 1) << 7) | (c & 0x7f) as usize;
+            let up = n.checked_add(1).ok_or("bad delta offset")?;
+            n = (up << 7) | (c & 0x7f) as usize;
         }
         Ok((n, i + 1))
     }
 
+    /// The entry's zlib stream, which must hold exactly `size` bytes; returns them and where the stream ends.
     fn inflate(&self, at: usize, size: usize) -> Result<(Vec<u8>, usize), String> {
-        let mut d = ZlibDecoder::new(&self.bytes[at..]);
-        let mut out = Vec::with_capacity(size);
-        d.read_to_end(&mut out)
+        let compressed = self.bytes.get(at..).ok_or("pack cut short")?;
+        let mut d = ZlibDecoder::new(compressed);
+        let mut out = Vec::with_capacity(size.min(MAX_PREALLOC));
+        d.by_ref()
+            .take(MAX_OBJECT + 1)
+            .read_to_end(&mut out)
             .map_err(|e| format!("pack inflate: {e}"))?;
+        if out.len() as u64 > MAX_OBJECT || out.len() > size {
+            return Err("object larger than declared".into());
+        }
+        if out.len() != size {
+            return Err("object smaller than declared".into());
+        }
         Ok((out, at + d.total_in() as usize))
     }
 
@@ -725,7 +740,11 @@ impl Pack {
         if t == 6 {
             i = self.ofs(i)?.1;
         } else if t == 7 {
-            i += 20;
+            // A REF_DELTA carries a complete base object ID before the zlib stream.
+            i = i
+                .checked_add(20)
+                .filter(|end| *end <= self.bytes.len())
+                .ok_or("pack cut short")?;
         }
         Ok(self.inflate(i, size)?.1)
     }
@@ -736,6 +755,19 @@ impl Pack {
         at: usize,
         by_id: &dyn Fn(&Oid) -> Result<(Kind, Vec<u8>), String>,
     ) -> Result<(Kind, Vec<u8>), String> {
+        self.read_depth(at, 0, by_id)
+    }
+
+    /// `read_at`, `depth` delta links below the object the caller asked for.
+    fn read_depth(
+        &self,
+        at: usize,
+        depth: usize,
+        by_id: &dyn Fn(&Oid) -> Result<(Kind, Vec<u8>), String>,
+    ) -> Result<(Kind, Vec<u8>), String> {
+        if depth > MAX_DELTA_DEPTH {
+            return Err("delta chain too deep".into());
+        }
         if let Some((k, d)) = self
             .cache
             .lock()
@@ -749,8 +781,12 @@ impl Pack {
             1..=4 => (Kind::from_pack(t)?, self.inflate(i, size)?.0),
             6 => {
                 let (back, j) = self.ofs(i)?;
-                let base_at = at.checked_sub(back).ok_or("bad delta offset")?;
-                let (bk, base) = self.read_at(base_at, by_id)?;
+                // A base lies strictly before its delta, so an offset chain cannot loop.
+                let base_at = at
+                    .checked_sub(back)
+                    .filter(|&base| base < at)
+                    .ok_or("delta base offset out of range")?;
+                let (bk, base) = self.read_depth(base_at, depth + 1, by_id)?;
                 (bk, apply_delta(&base, &self.inflate(j, size)?.0)?)
             }
             7 => {
@@ -761,7 +797,7 @@ impl Pack {
                     .try_into()
                     .unwrap();
                 let (bk, base) = match self.find(&base_id) {
-                    Some(o) => self.read_at(o, by_id)?,
+                    Some(o) => self.read_depth(o, depth + 1, by_id)?,
                     None => by_id(&base_id)?,
                 };
                 (bk, apply_delta(&base, &self.inflate(i + 20, size)?.0)?)
@@ -780,21 +816,103 @@ impl Pack {
     }
 }
 
+/// A loose object's file contents: one zlib stream of `<type> <size>\0` and the content, checked against
+/// its own declared size. `id` names the object in errors.
+fn loose_object(id: &Oid, z: &[u8]) -> Result<(Kind, Vec<u8>), String> {
+    // `<type> <size>\0` and the content, in one zlib stream: bounded as a pack entry is, and the
+    // header must be honest about the content's size.
+    const HEADER_MAX: u64 = 64;
+    let mut raw = Vec::new();
+    ZlibDecoder::new(z)
+        .take(MAX_OBJECT + 1 + HEADER_MAX)
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("object {}: {e}", hex(id)))?;
+    let nul = raw
+        .iter()
+        .take(HEADER_MAX as usize)
+        .position(|b| *b == 0)
+        .ok_or("bad loose object")?;
+    let head = String::from_utf8_lossy(&raw[..nul]).to_string();
+    let (k, size) = head.split_once(' ').ok_or("bad loose object")?;
+    let kind = Kind::from_name(k)?;
+    let size: u64 = size.parse().map_err(|_| "bad loose object")?;
+    let data = raw.split_off(nul + 1);
+    let len = data.len() as u64;
+    if size > MAX_OBJECT || len > MAX_OBJECT {
+        return Err("object too large".into());
+    }
+    if len > size {
+        return Err("object larger than declared".into());
+    }
+    if len < size {
+        return Err("object smaller than declared".into());
+    }
+    Ok((kind, data))
+}
+
+/// Feeds untrusted bytes to git's in-memory object parsers, for the fuzz target. It writes nothing. Errors
+/// are the expected outcome for most inputs; a panic or an unbounded allocation is the bug.
+#[doc(hidden)]
+pub fn fuzz_parse(data: &[u8]) {
+    // A loose object, as its file would hold it.
+    let _ = loose_object(&ZERO, data);
+    // A version 2 pack index, as bytes.
+    let _ = read_idx(data);
+    // A pack with no index: its header, every entry skipped, and each object inflated.
+    let _ = Pack::from_bytes(data.to_vec());
+    // The same bytes as a pack body from offset 0, with no bases to resolve deltas against.
+    let pack = Pack {
+        bytes: data.to_vec(),
+        index: HashMap::new(),
+        cache: Mutex::new(HashMap::new()),
+    };
+    let _ = pack.read_at(0, &|_| Err("no base object".into()));
+}
+
+/// `len` bytes of a pack index from `at`; an index cut short is an error, not a panic.
+fn idx_bytes(i: &[u8], at: usize, len: usize) -> Result<&[u8], String> {
+    at.checked_add(len)
+        .and_then(|end| i.get(at..end))
+        .ok_or_else(|| "truncated pack index".to_string())
+}
+
+/// The big-endian word at `at` in a pack index.
+fn idx_u32(i: &[u8], at: usize) -> Result<u32, String> {
+    let b: [u8; 4] = idx_bytes(i, at, 4)?
+        .try_into()
+        .map_err(|_| "truncated pack index".to_string())?;
+    Ok(u32::from_be_bytes(b))
+}
+
 fn read_idx(i: &[u8]) -> Result<HashMap<Oid, usize>, String> {
     if !i.starts_with(&[0xff, b't', b'O', b'c']) {
         return Err("only pack index version 2 is read".into());
     }
-    let n = u32::from_be_bytes(i[8 + 255 * 4..8 + 256 * 4].try_into().unwrap()) as usize;
+    // After the 8-byte header, the fan-out: 256 counts, the last of which is the object count.
+    let n = idx_u32(i, 8 + 255 * 4)? as usize;
+    // Per object, in id order: a 20-byte id, a 4-byte CRC, then a 4-byte offset. Offsets past 2 GiB index a
+    // table of 8-byte values after those. The count must fit the file before anything is sized by it.
     let ids = 8 + 256 * 4;
-    let offs = ids + n * 20 + n * 4;
+    let table = n.checked_mul(28).ok_or("truncated pack index")?;
+    idx_bytes(i, ids, table)?;
+    let offs = ids + n * 24;
     let large = offs + n * 4;
     let mut out = HashMap::with_capacity(n);
     for k in 0..n {
-        let id: Oid = i[ids + k * 20..ids + k * 20 + 20].try_into().unwrap();
-        let o = u32::from_be_bytes(i[offs + k * 4..offs + k * 4 + 4].try_into().unwrap());
+        let id: Oid = idx_bytes(i, ids + k * 20, 20)?
+            .try_into()
+            .map_err(|_| "truncated pack index")?;
+        let o = idx_u32(i, offs + k * 4)?;
         let off = if o & 0x8000_0000 != 0 {
             let j = (o & 0x7fff_ffff) as usize;
-            u64::from_be_bytes(i[large + j * 8..large + j * 8 + 8].try_into().unwrap()) as usize
+            let at = j
+                .checked_mul(8)
+                .and_then(|d| d.checked_add(large))
+                .ok_or("truncated pack index")?;
+            let b: [u8; 8] = idx_bytes(i, at, 8)?
+                .try_into()
+                .map_err(|_| "truncated pack index")?;
+            u64::from_be_bytes(b) as usize
         } else {
             o as usize
         };
@@ -823,8 +941,14 @@ pub fn apply_delta(base: &[u8], delta: &[u8]) -> Result<Vec<u8>, String> {
     if src != base.len() {
         return Err("the delta's base has the wrong size".into());
     }
-    let mut out = Vec::with_capacity(dst);
+    if dst as u64 > MAX_OBJECT {
+        return Err("the delta makes an object too large".into());
+    }
+    let mut out = Vec::with_capacity(dst.min(MAX_PREALLOC));
     while i < delta.len() {
+        if out.len() > dst {
+            return Err("the delta made the wrong size".into());
+        }
         let op = delta[i];
         i += 1;
         if op & 0x80 != 0 {
@@ -962,5 +1086,168 @@ mod tests {
         let back = parse_commit(&signed).unwrap();
         assert_eq!(back.extra[0].0, "gpgsig");
         assert!(back.extra[0].1.contains("END SSH SIGNATURE"));
+    }
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut z = ZlibEncoder::new(Vec::new(), Compression::default());
+        z.write_all(data).unwrap();
+        z.finish().unwrap()
+    }
+
+    /// A delta's base offset in the pack's variable-length encoding.
+    fn ofs_bytes(mut back: usize) -> Vec<u8> {
+        let mut out = vec![(back & 0x7f) as u8];
+        back >>= 7;
+        while back > 0 {
+            back -= 1;
+            out.push(0x80 | (back & 0x7f) as u8);
+            back >>= 7;
+        }
+        out.reverse();
+        out
+    }
+
+    /// A packfile holding these raw entries, with no index, for reading single entries.
+    fn pack_of(entries: &[Vec<u8>]) -> Pack {
+        let mut bytes = b"PACK".to_vec();
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for e in entries {
+            bytes.extend_from_slice(e);
+        }
+        Pack {
+            bytes,
+            index: HashMap::new(),
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[test]
+    fn ofs_delta_to_itself_is_refused() {
+        // Type 6 (OFS_DELTA), size 2, base offset 0: the entry names itself as its base.
+        let mut entry: Vec<u8> = vec![0x62, 0x00];
+        entry.extend(zlib(&[0, 0]));
+        let pack = pack_of(&[entry]);
+        let err = pack.read_at(12, &|_| Err("no base".into())).unwrap_err();
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn delta_chains_are_capped() {
+        // A blob, then 60 deltas, each based on the entry just before it.
+        let mut first: Vec<u8> = vec![0x33];
+        first.extend(zlib(b"abc"));
+        let mut entries: Vec<Vec<u8>> = vec![first];
+        let mut offsets = vec![12usize];
+        let mut at = 12 + entries[0].len();
+        for _ in 0..60 {
+            let prev = *offsets.last().unwrap();
+            let mut e: Vec<u8> = vec![0x62];
+            e.extend(ofs_bytes(at - prev));
+            e.extend(zlib(&[0, 0]));
+            offsets.push(at);
+            at += e.len();
+            entries.push(e);
+        }
+        let pack = pack_of(&entries);
+        let top = *offsets.last().unwrap();
+        let err = pack.read_at(top, &|_| Err("no base".into())).unwrap_err();
+        assert!(err.contains("too deep"), "{err}");
+    }
+
+    #[test]
+    fn declared_size_must_match_the_data() {
+        // A blob declaring 10 bytes whose stream holds 3.
+        let mut short: Vec<u8> = vec![0x3a];
+        short.extend(zlib(b"abc"));
+        assert!(
+            pack_of(&[short])
+                .read_at(12, &|_| Err("no base".into()))
+                .is_err()
+        );
+        // A blob declaring 3 bytes whose stream holds 6.
+        let mut long: Vec<u8> = vec![0x33];
+        long.extend(zlib(b"abcdef"));
+        assert!(
+            pack_of(&[long])
+                .read_at(12, &|_| Err("no base".into()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn truncated_pack_index_is_an_error() {
+        // The header with the fan-out cut off after 20 bytes.
+        let mut idx = vec![0xff, b't', b'O', b'c', 0, 0, 0, 2];
+        idx.extend_from_slice(&[0; 12]);
+        assert_eq!(idx.len(), 20);
+        assert_eq!(read_idx(&idx).unwrap_err(), "truncated pack index");
+    }
+
+    #[test]
+    fn pack_index_count_must_fit_the_file() {
+        // A fan-out claiming five objects, with none of their tables after it.
+        let mut idx = vec![0xff, b't', b'O', b'c', 0, 0, 0, 2];
+        idx.extend_from_slice(&[0; 255 * 4]);
+        idx.extend_from_slice(&5u32.to_be_bytes());
+        assert_eq!(read_idx(&idx).unwrap_err(), "truncated pack index");
+    }
+
+    #[test]
+    fn loose_object_must_match_its_declared_size() {
+        let dir = std::env::temp_dir().join(format!("weft-git-loose-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = Repo::init_bare(&dir).unwrap();
+        // Reading does not check the id, so any id will place the hand-made object.
+        let id = oid(Kind::Blob, b"abc");
+        let path = repo.loose_path(&id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let put = |raw: &[u8]| {
+            std::fs::write(&path, zlib(raw)).unwrap();
+            repo.read(&id)
+        };
+        assert_eq!(put(b"blob 3\0abc").unwrap(), (Kind::Blob, b"abc".to_vec()));
+        // Declares 10 bytes, holds 3.
+        assert!(
+            put(b"blob 10\0abc")
+                .unwrap_err()
+                .contains("smaller than declared")
+        );
+        // Declares 3 bytes, holds 6.
+        assert!(
+            put(b"blob 3\0abcdef")
+                .unwrap_err()
+                .contains("larger than declared")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_pack_header_claiming_four_billion_objects_allocates_by_its_size() {
+        let mut bytes = b"PACK\0\0\0\x02\xff\xff\xff\xff".to_vec();
+        bytes.resize(40, 0);
+        assert!(Pack::from_bytes(bytes).is_err());
+    }
+
+    #[test]
+    fn fuzz_parse_survives_malformed_input() {
+        // Errors are expected here; the test passes only if nothing panics.
+        fuzz_parse(&[]);
+        // Twenty bytes that are no pack, index or loose object.
+        fuzz_parse(&[
+            0x9c, 0x41, 0x07, 0xfe, 0x00, 0x13, 0xa8, 0x5d, 0x6b, 0x22, 0xc4, 0x0f, 0x91, 0x78,
+            0x3e, 0x05, 0xdd, 0x4a, 0x80, 0xb3,
+        ]);
+        // A pack header cut short, after the magic and the version.
+        fuzz_parse(b"PACK\0\0\0\x02");
+        // An index header cut short, after its magic and version.
+        fuzz_parse(b"\xfftOc\0\0\0\x02");
+    }
+
+    #[test]
+    fn malformed_person_lines_are_refused() {
+        assert!(Person::parse("Irfan >owner<").is_err());
+        assert!(Person::parse("Irfan owner").is_err());
+        assert!(Person::parse("Irfan <owner@example.com> 1700000000 +0200").is_ok());
     }
 }
