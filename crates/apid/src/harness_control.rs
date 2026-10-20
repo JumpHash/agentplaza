@@ -639,9 +639,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/agents/{cid}/control", control_route)
         .doc(RouteDoc::new("Control an agent's running work").errors(&[400, 409]))
         .get("/v1/agents/{cid}/limits", |app, _, p| {
-            Response::json(200, &app.harness.limits(p.get("cid").parse().unwrap_or(0)))
+            let Ok(cid) = p.get("cid").parse::<u64>() else {
+                return Response::error(400, "bad agent id");
+            };
+            Response::json(200, &app.harness.limits(cid))
         })
-        .doc(RouteDoc::new("Show an agent's limits"))
+        .doc(RouteDoc::new("Show an agent's limits").errors(&[400]))
 }
 
 #[derive(Deserialize)]

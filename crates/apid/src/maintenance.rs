@@ -1706,11 +1706,22 @@ fn decide_route(app: &App, req: &Request, p: &Params<'_>, state: &str, key: &str
 }
 
 /// `PATCH /v1/projects/{id}/maintenance` `{every_hours?, watchers?, focus?}`.
+/// A maintenance config body: a JSON object, whose fields are read by name. A body that is not an object (a
+/// string, a list) names none, so it is refused rather than answered as a change to nothing.
+fn config_body(bytes: &[u8]) -> Result<Value, String> {
+    let body: Value = serde_json::from_slice(bytes).map_err(|e| format!("bad body: {e}"))?;
+    if body.is_object() {
+        Ok(body)
+    } else {
+        Err("the body must be a JSON object".into())
+    }
+}
+
 fn config_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     with_project(app, p, |app, id| {
-        let body: Value = match serde_json::from_slice(&req.body) {
+        let body = match config_body(&req.body) {
             Ok(body) => body,
-            Err(e) => return Response::error(400, &format!("bad body: {e}")),
+            Err(message) => return Response::error(400, &message),
         };
         let mut config = app.maintenance.get(id).config;
         if let Some(every) = body.get("every_hours") {
@@ -1887,6 +1898,24 @@ mod tests {
         assert_eq!(store.by_ingest(&sha256_hex(token)).as_deref(), Some("pr2"));
         assert_eq!(store.by_ingest(&sha256_hex("apzi_other")), None);
         assert!(!store.snapshot().contains(token));
+    }
+
+    #[test]
+    fn a_config_body_must_be_a_json_object() {
+        assert!(config_body(br#"{"focus": "the release"}"#).is_ok());
+        assert_eq!(
+            config_body(br#""x""#).unwrap_err(),
+            "the body must be a JSON object"
+        );
+        assert_eq!(
+            config_body(b"[1]").unwrap_err(),
+            "the body must be a JSON object"
+        );
+        assert_eq!(
+            config_body(b"null").unwrap_err(),
+            "the body must be a JSON object"
+        );
+        assert!(config_body(b"{").unwrap_err().starts_with("bad body: "));
     }
 
     #[test]

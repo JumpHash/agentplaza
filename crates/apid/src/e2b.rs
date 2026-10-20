@@ -1848,6 +1848,17 @@ struct ForkBody {
 /// The most forks one request makes (noded's limit).
 const MAX_FORKS: u32 = 8;
 
+/// A fork's `count`: 1 when none is asked, else 1 to [`MAX_FORKS`] (a count, not seconds).
+fn fork_count(count: Option<i64>) -> Result<u32, Refused> {
+    match count {
+        None => Ok(1),
+        Some(n) => match u32::try_from(n) {
+            Ok(v) if (1..=MAX_FORKS).contains(&v) => Ok(v),
+            _ => Err(invalid(format!("count must be 1 to {MAX_FORKS}"))),
+        },
+    }
+}
+
 /// Forks a running or paused sandbox into `count` new ones, each from one checkpoint taken now, with
 /// the source's template, metadata, environment and settings, and tokens of their own. Each fork
 /// stands or fails on its own: the answer has one `{"sandbox"}` or `{"error"}` entry per fork.
@@ -1856,10 +1867,7 @@ fn fork(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refus
         return Err(held());
     }
     let body: ForkBody = body_or_default(req)?;
-    let count = match body.count {
-        None => 1,
-        Some(n) => seconds(n, 1, MAX_FORKS, "count")?,
-    };
+    let count = fork_count(body.count)?;
     let timeout_s = match body.timeout {
         None => DEFAULT_TIMEOUT_S,
         Some(t) => seconds(t, 1, MAX_TIMEOUT_S, "timeout")?,
@@ -1903,7 +1911,8 @@ fn fork(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Refus
 pub(crate) fn delete_snapshot(app: &App, template: &str, key: &str) -> Result<Response, Refused> {
     let template = crate::plaza::percent_decode(template);
     let Some((owner, snap)) = snapshot_source(app, &template) else {
-        return Err(not_found(&template));
+        // Neither a built template nor a snapshot: E2B's template-not-found answer, not a sandbox's.
+        return Err(crate::e2b_tpl::template_not_found(&template));
     };
     match noded(
         app,
@@ -2102,6 +2111,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
             guard(app, req, |_| list_v2(app, req))
         })
         .doc(RouteDoc::new("List sandboxes by state"))
+        // Before `/e2b/sandboxes/{id}`: the first matching route wins, and `metrics` is not a sandbox id.
+        .get("/e2b/sandboxes/metrics", |app, req, _| {
+            guard(app, req, |_| metrics_many(app, req))
+        })
+        .doc(RouteDoc::new("Get the metrics of several sandboxes"))
         .get("/e2b/sandboxes/{id}", |app, req, p| {
             guard(app, req, |_| detail(app, p.get("id")))
         })
@@ -2144,10 +2158,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
             guard(app, req, |_| metrics(app, p.get("id")))
         })
         .doc(RouteDoc::new("Get a sandbox's current metrics").errors(&[502]))
-        .get("/e2b/sandboxes/metrics", |app, req, _| {
-            guard(app, req, |_| metrics_many(app, req))
-        })
-        .doc(RouteDoc::new("Get the metrics of several sandboxes"))
         .get("/e2b/v2/sandboxes/{id}/logs", |app, req, p| {
             guard(app, req, |_| logs(app, req, p.get("id"), true))
         })
@@ -2529,6 +2539,17 @@ mod tests {
         );
         assert_eq!(seconds(10, 0, 3600, "duration").unwrap(), 10);
         assert!(seconds(3601, 0, 3600, "duration").is_err());
+    }
+
+    #[test]
+    fn a_fork_count_is_a_count_of_1_to_the_limit_and_its_error_says_so() {
+        assert_eq!(fork_count(None).unwrap(), 1);
+        assert_eq!(fork_count(Some(MAX_FORKS.into())).unwrap(), MAX_FORKS);
+        for bad in [0, -1, i64::from(MAX_FORKS) + 1] {
+            let refused = fork_count(Some(bad)).unwrap_err();
+            assert_eq!(refused.message(), format!("count must be 1 to {MAX_FORKS}"));
+            assert!(!refused.message().contains("seconds"));
+        }
     }
 
     #[test]

@@ -1020,8 +1020,12 @@ fn valid_binding(binding: &str) -> bool {
             })
     };
     binding == "hf"
+        || binding == "egress"
         || binding.split_once(':').is_some_and(|(prefix, id)| {
-            matches!(prefix, "provider" | "connector" | "mcp" | "tool") && id_ok(id)
+            matches!(
+                prefix,
+                "provider" | "connector" | "mcp" | "tool" | "hub" | "project" | "usage"
+            ) && id_ok(id)
         })
 }
 

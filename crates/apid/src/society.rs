@@ -113,6 +113,16 @@ struct RatingBody {
     value: f64,
 }
 
+/// A rating as given: it is refused outside [-1, 1] (never clamped into it, which would store a
+/// rating the owner did not give).
+fn checked_rating(value: f64) -> Result<f64, String> {
+    if (-1.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!("the rating must be between -1 and 1, not {value}"))
+    }
+}
+
 /// The owner rates an agent: the owner is the root of trust (AP-072).
 fn owner_rating(app: &App, segment: &str, body: &[u8]) -> Response {
     let cid = match cid_of(segment) {
@@ -126,10 +136,11 @@ fn owner_rating(app: &App, segment: &str, body: &[u8]) -> Response {
         Ok(r) => r,
         Err(err) => return Response::error(400, &format!("invalid rating: {err}")),
     };
-    match app
-        .bonds
-        .owner_rate(cid, rating.value.clamp(-1.0, 1.0), now())
-    {
+    let value = match checked_rating(rating.value) {
+        Ok(value) => value,
+        Err(why) => return Response::error(400, &why),
+    };
+    match app.bonds.owner_rate(cid, value, now()) {
         Ok(opinion) => Response::json(200, &opinion),
         Err(err) => Response::error(400, &format!("{err:?}")),
     }
@@ -609,6 +620,16 @@ impl Society {
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+
+    #[test]
+    fn an_owner_rating_outside_minus_one_to_one_is_refused_not_clamped() {
+        assert_eq!(checked_rating(-1.0), Ok(-1.0));
+        assert_eq!(checked_rating(0.5), Ok(0.5));
+        assert_eq!(checked_rating(1.0), Ok(1.0));
+        assert!(checked_rating(1.5).is_err());
+        assert!(checked_rating(-2.0).is_err());
+        assert!(checked_rating(f64::NAN).is_err());
+    }
 
     #[test]
     fn society_snapshot_round_trips() {

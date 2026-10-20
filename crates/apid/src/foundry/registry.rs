@@ -905,12 +905,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 Ok(input) => input,
                 Err(resp) => return resp,
             };
-            match crate::foundry::breeder::invoke(app, p.get("id"), &input) {
-                Ok((output, ms)) => Response::json(200, &json!({ "output": output, "ms": ms })),
-                Err(e) => Response::error(400, &e),
-            }
+            invoked(crate::foundry::breeder::invoke(app, p.get("id"), &input))
         })
-        .doc(RouteDoc::new("Run a model on an input").errors(&[400]))
+        .doc(RouteDoc::new("Run a model on an input").errors(&[400, 404]))
         .post("/v1/foundry/models/{id}/retire", |app, _req, p| {
             outcome(app.models.retire(&app.agents, &app.looks, p.get("id")))
         })
@@ -935,9 +932,32 @@ fn outcome(result: Result<ModelRecord, String>) -> Response {
     }
 }
 
+/// An invoke's answer: the output, or 404 for an unknown model (as the other model routes answer it) and 400 for
+/// what the model refuses (its state, its input).
+fn invoked(result: Result<(Value, u128), String>) -> Response {
+    match result {
+        Ok((output, ms)) => Response::json(200, &json!({ "output": output, "ms": ms })),
+        Err(e) if e.starts_with("no model") => Response::error(404, &e),
+        Err(e) => Response::error(400, &e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_invoke_of_an_unknown_model_is_404_and_a_refused_input_or_state_is_400() {
+        let unknown = invoked(Err("no model m-missing".into()));
+        assert_eq!(unknown.status, 404);
+        let retired = invoked(Err(
+            "model m1 is retired: only shadow and promoted models run".into(),
+        ));
+        assert_eq!(retired.status, 400);
+        let bad_input = invoked(Err("input must be a list of numbers".into()));
+        assert_eq!(bad_input.status, 400);
+        assert_eq!(invoked(Ok((json!(1), 0))).status, 200);
+    }
 
     /// The fixture graph: 3 inputs to 3 classes (`tests/fixtures/linear3.onnx`).
     const LINEAR3: &[u8] = include_bytes!("../../tests/fixtures/linear3.onnx");

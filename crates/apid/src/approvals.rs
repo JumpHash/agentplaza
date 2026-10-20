@@ -618,6 +618,10 @@ fn put_mode(app: &App, req: &Request, p: &Params<'_>) -> Response {
             );
         }
     };
+    // A mode is set for an agent on the roster only: an unknown CID would keep a mode no agent uses.
+    if app.agents.get(cid).is_none() {
+        return Response::error(404, "no such agent");
+    }
     if let Err(e) = app.approvals.set_mode(cid, body.mode) {
         return Response::error(500, &format!("could not save the permission mode: {e}"));
     }

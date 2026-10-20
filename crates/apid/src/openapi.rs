@@ -278,6 +278,71 @@ mod tests {
         );
     }
 
+    /// A path made from `pattern` as a request would carry it: each `{name}` a sample segment, a `{name..}` two.
+    fn sample(pattern: &str) -> Vec<String> {
+        pattern
+            .split('/')
+            .flat_map(|seg| {
+                if seg.starts_with('{') && seg.ends_with("..}") {
+                    vec!["zq1".to_string(), "zq2".to_string()]
+                } else if seg.starts_with('{') {
+                    vec!["zq1".to_string()]
+                } else {
+                    vec![seg.to_string()]
+                }
+            })
+            .collect()
+    }
+
+    /// Whether `pattern` matches `path` by the router's rules (apz-http's `matches`): a `{name}` takes one
+    /// non-empty segment, a last `{name..}` the rest of the path, anything else must be equal.
+    fn would_match(pattern: &str, path: &[String]) -> bool {
+        let segs: Vec<&str> = pattern.split('/').collect();
+        for (i, seg) in segs.iter().enumerate() {
+            if seg.starts_with('{') && seg.ends_with("..}") && i == segs.len() - 1 {
+                return path.len() > i;
+            }
+            let Some(part) = path.get(i) else {
+                return false;
+            };
+            if seg.starts_with('{') {
+                if part.is_empty() {
+                    return false;
+                }
+            } else if seg != part {
+                return false;
+            }
+        }
+        segs.len() == path.len()
+    }
+
+    /// The first matching route wins, so a route listed after one that already answers its paths is never
+    /// reached (`GET /e2b/sandboxes/metrics` once sat behind `GET /e2b/sandboxes/{id}`). Register the literal
+    /// route first.
+    #[test]
+    fn no_route_is_shadowed_by_an_earlier_one() {
+        let router = crate::api::router();
+        let routes: Vec<_> = router.routes().collect();
+        let mut shadowed = Vec::new();
+        for (j, later) in routes.iter().enumerate() {
+            let path = sample(later.pattern);
+            if let Some(earlier) = routes[..j]
+                .iter()
+                .find(|r| r.method == later.method && would_match(r.pattern, &path))
+            {
+                shadowed.push(format!(
+                    "  {} {} is answered by the earlier {}",
+                    later.method, later.pattern, earlier.pattern
+                ));
+            }
+        }
+        assert!(
+            shadowed.is_empty(),
+            "routes no request can reach:\n{}",
+            shadowed.join("\n")
+        );
+    }
+
     #[test]
     fn operation_ids_are_unique() {
         let router = crate::api::router();

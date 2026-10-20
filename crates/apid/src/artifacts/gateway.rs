@@ -147,6 +147,9 @@ fn update_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 /// `PUT .../artifacts/blobs?content_type=`: the raw body of a data blob, for an artifact to refer to.
 fn blob_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     authorized(app, req, p.get("cid"), |cid| {
+        if app.agents.get(cid).is_none() {
+            return Err(Response::error(404, "unknown agent"));
+        }
         if req.body.is_empty() {
             return Err(Response::error(400, "the body is empty"));
         }

@@ -497,7 +497,12 @@ fn delete_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
 }
 
 fn put_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    authorized(app, req, p.get("cid"), |cid| Ok(put_file(app, req, cid)))
+    authorized(app, req, p.get("cid"), |cid| {
+        if app.agents.get(cid).is_none() {
+            return Err(Response::error(404, "unknown agent"));
+        }
+        Ok(put_file(app, req, cid))
+    })
 }
 
 fn agent_get_route(app: &App, req: &Request, p: &Params<'_>) -> Response {

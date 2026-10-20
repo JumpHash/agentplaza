@@ -1830,12 +1830,13 @@ fn valid_binding(binding: &str) -> bool {
     // `egress`: the hub's egress credential rules (`egress_inject`), which name the secret they add.
     // `hub:<id>`: the hub's own background consumers (`hub:weft`, Weft's keys; `hub:git-platforms`, the platforms').
     // `project:<id>.<env>`: a project environment's secrets and deploy hook (`environments`).
+    // `usage:<id>`: a usage hub's management key (`usage_providers`).
     binding == "hf"
         || binding == "egress"
         || binding.split_once(':').is_some_and(|(prefix, id)| {
             matches!(
                 prefix,
-                "provider" | "connector" | "mcp" | "tool" | "hub" | "project"
+                "provider" | "connector" | "mcp" | "tool" | "hub" | "project" | "usage"
             ) && id_ok(id)
         })
 }
