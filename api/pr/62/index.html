@@ -210,7 +210,7 @@ a { color: var(--info-ink); }
 <div class="head">
   <div>
     <h1>Hub API report</h1>
-    <div class="meta">Pull request #62 · commit <span class="mono">8a0d9fada0</span> · 2026-10-20 11:54 UTC · <a href="https://github.com/JumpHash/agentplaza/actions/runs/39416461808">the CI run</a></div>
+    <div class="meta">Pull request #62 · commit <span class="mono">84a68de9ed</span> · 2026-10-20 12:54 UTC · <a href="https://github.com/JumpHash/agentplaza/actions/runs/39423743464">the CI run</a></div>
   </div>
   <div class="verdict ok">All API tests pass</div>
 </div>
@@ -219,8 +219,8 @@ a { color: var(--info-ink); }
 <div class="tile ok"><div class="tile-label">Requests</div><div class="tile-value">244/244</div><div class="tile-note">Bruno requests passing</div></div>
 <div class="tile "><div class="tile-label">Checks</div><div class="tile-value">859/859</div><div class="tile-note">assertions and tests</div></div>
 <div class="tile "><div class="tile-label">Spec coverage</div><div class="tile-value">158/575</div><div class="tile-note">operations the tests call (27%)</div></div>
-<div class="tile "><div class="tile-label">p95, median route</div><div class="tile-value">1.71 ms</div><div class="tile-note">114 GET routes × 20</div></div>
-<div class="tile "><div class="tile-label">Slowest p95</div><div class="tile-value">45.8 ms</div><div class="tile-note">/v1/overview</div></div>
+<div class="tile "><div class="tile-label">p95, median route</div><div class="tile-value">7.34 ms</div><div class="tile-note">114 GET routes × 20</div></div>
+<div class="tile "><div class="tile-label">Slowest p95</div><div class="tile-value">96.1 ms</div><div class="tile-note">/v1/overview</div></div>
 <div class="tile warn"><div class="tile-label">Fuzzing findings</div><div class="tile-value">17</div><div class="tile-note">17 server error</div></div>
 </section>
 
@@ -230,13 +230,13 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">hub</span><span class="meta">3 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>Read the hub&#39;s identity</td><td class="mono"><span class="method">GET</span> /v1/hub/identity</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">16.0</td><td class="num mono">99 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">11.0</td><td class="num mono">99 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the hub&#39;s overview</td><td class="mono"><span class="method">GET</span> /v1/overview</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">202 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown endpoint</td><td class="mono"><span class="method">GET</span> /v1/no-such-endpoint</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">7.00</td><td class="num mono">28 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">6.00</td><td class="num mono">28 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -247,22 +247,22 @@ a { color: var(--info-ink); }
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">556 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Create a skill</td><td class="mono"><span class="method">POST</span> /v1/skills</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">55.0</td><td class="num mono">358 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">38.0</td><td class="num mono">358 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the skill back</td><td class="mono"><span class="method">GET</span> /v1/skills/pdf-forms</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">657 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">657 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Change a skill&#39;s title and tags</td><td class="mono"><span class="method">PUT</span> /v1/skills/pdf-forms</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">18.0</td><td class="num mono">374 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">38.0</td><td class="num mono">374 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List skills after the change</td><td class="mono"><span class="method">GET</span> /v1/skills</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">921 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">37.0</td><td class="num mono">921 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Archive a skill</td><td class="mono"><span class="method">POST</span> /v1/skills/pdf-forms/archive</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">36.0</td><td class="num mono">383 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">28.0</td><td class="num mono">383 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown skill</td><td class="mono"><span class="method">GET</span> /v1/skills/no-such-skill</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">36 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">4.00</td><td class="num mono">36 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a create without a title</td><td class="mono"><span class="method">POST</span> /v1/skills</td>
 <td class="num"><span class="badge warn">400</span></td><td class="num mono">5.00</td><td class="num mono">53 B</td>
@@ -273,28 +273,28 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">prompts</span><span class="meta">8 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>List the built-in prompts</td><td class="mono"><span class="method">GET</span> /v1/prompts</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">38.0</td><td class="num mono">5.3 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">5.3 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Create a system prompt</td><td class="mono"><span class="method">POST</span> /v1/prompts</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">41.0</td><td class="num mono">282 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">18.0</td><td class="num mono">282 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the created prompt back</td><td class="mono"><span class="method">GET</span> /v1/prompts/planner</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">525 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Edit the prompt&#39;s details</td><td class="mono"><span class="method">PUT</span> /v1/prompts/planner</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">17.0</td><td class="num mono">291 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">15.0</td><td class="num mono">291 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the prompts after the edit</td><td class="mono"><span class="method">GET</span> /v1/prompts</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">5.5 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">5.5 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Archive the prompt</td><td class="mono"><span class="method">POST</span> /v1/prompts/planner/archive</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">25.0</td><td class="num mono">300 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">27.0</td><td class="num mono">300 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown prompt id</td><td class="mono"><span class="method">GET</span> /v1/prompts/no-such-prompt</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">37 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">37 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Reject a create body without a title</td><td class="mono"><span class="method">POST</span> /v1/prompts</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">6.00</td><td class="num mono">53 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">53 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -302,28 +302,28 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">rules</span><span class="meta">8 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>List the owner&#39;s rules on an empty hub</td><td class="mono"><span class="method">GET</span> /v1/laws/rules</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">87 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">87 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Add a rule</td><td class="mono"><span class="method">POST</span> /v1/laws/rules</td>
 <td class="num"><span class="badge ok">201</span></td><td class="num mono">5.00</td><td class="num mono">325 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the rules after adding one</td><td class="mono"><span class="method">GET</span> /v1/laws/rules</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">6.00</td><td class="num mono">412 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">412 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Rename a rule</td><td class="mono"><span class="method">PUT</span> /v1/laws/rules/R-001</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">6.00</td><td class="num mono">334 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the rules after a rename</td><td class="mono"><span class="method">GET</span> /v1/laws/rules</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">421 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">421 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Delete a rule</td><td class="mono"><span class="method">DELETE</span> /v1/laws/rules/R-001</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">5.00</td><td class="num mono">19 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">19 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown rule</td><td class="mono"><span class="method">DELETE</span> /v1/laws/rules/no-such-rule</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">40 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">40 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a rule whose body is not a JSON object</td><td class="mono"><span class="method">POST</span> /v1/laws/rules</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">4.00</td><td class="num mono">42 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">42 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -334,25 +334,25 @@ a { color: var(--info-ink); }
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">6.3 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Add a provider</td><td class="mono"><span class="method">POST</span> /v1/providers</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">32.0</td><td class="num mono">333 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">16.0</td><td class="num mono">333 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the provider back</td><td class="mono"><span class="method">GET</span> /v1/providers/scratch-provider</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">6.00</td><td class="num mono">333 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">333 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Replace the provider&#39;s settings</td><td class="mono"><span class="method">PUT</span> /v1/providers/scratch-provider</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">42.0</td><td class="num mono">333 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">16.0</td><td class="num mono">333 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the providers again</td><td class="mono"><span class="method">GET</span> /v1/providers</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">13.0</td><td class="num mono">6.6 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">6.6 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Delete the provider</td><td class="mono"><span class="method">DELETE</span> /v1/providers/scratch-provider</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">13.0</td><td class="num mono">30 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">12.0</td><td class="num mono">30 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown provider</td><td class="mono"><span class="method">GET</span> /v1/providers/no-such-provider</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">5.00</td><td class="num mono">42 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">42 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a provider body that does not parse</td><td class="mono"><span class="method">POST</span> /v1/providers</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">8.00</td><td class="num mono">85 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">85 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -360,28 +360,28 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">vault</span><span class="meta">8 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>Show the vault&#39;s state</td><td class="mono"><span class="method">GET</span> /v1/vault</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">245 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">245 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the vault&#39;s entries before any secret of the owner&#39;s</td><td class="mono"><span class="method">GET</span> /v1/vault/secrets</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">6.00</td><td class="num mono">695 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">695 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Create a secret</td><td class="mono"><span class="method">POST</span> /v1/vault/secrets</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">29.0</td><td class="num mono">333 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">37.0</td><td class="num mono">333 B</td>
 <td><span class="pass">pass</span></td></tr>
-<tr class=""><td>Change a secret&#39;s label</td><td class="mono"><span class="method">PATCH</span> /v1/vault/secrets/sec_5m35k3kggb76</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">21.0</td><td class="num mono">342 B</td>
+<tr class=""><td>Change a secret&#39;s label</td><td class="mono"><span class="method">PATCH</span> /v1/vault/secrets/sec_5dq37pc55d7u</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">17.0</td><td class="num mono">342 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the secret&#39;s metadata back from the list</td><td class="mono"><span class="method">GET</span> /v1/vault/secrets</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">1.0 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">1.0 KiB</td>
 <td><span class="pass">pass</span></td></tr>
-<tr class=""><td>Delete a secret</td><td class="mono"><span class="method">DELETE</span> /v1/vault/secrets/sec_5m35k3kggb76</td>
-<td class="num"><span class="badge ok">204</span></td><td class="num mono">61.0</td><td class="num mono">0 B</td>
+<tr class=""><td>Delete a secret</td><td class="mono"><span class="method">DELETE</span> /v1/vault/secrets/sec_5dq37pc55d7u</td>
+<td class="num"><span class="badge ok">204</span></td><td class="num mono">44.0</td><td class="num mono">0 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown secret id</td><td class="mono"><span class="method">DELETE</span> /v1/vault/secrets/sec_doesnotexist</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">26 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">26 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a secret body without a value</td><td class="mono"><span class="method">POST</span> /v1/vault/secrets</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">53 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">53 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -389,25 +389,25 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">settings</span><span class="meta">7 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>Read the hub&#39;s settings</td><td class="mono"><span class="method">GET</span> /v1/settings</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">1.3 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">1.3 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Save a valid change to the settings</td><td class="mono"><span class="method">PUT</span> /v1/settings</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">1.3 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">1.3 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a settings value out of range</td><td class="mono"><span class="method">PUT</span> /v1/settings</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">10.0</td><td class="num mono">44 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">44 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a settings body that is not valid JSON for the type</td><td class="mono"><span class="method">PUT</span> /v1/settings</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">94 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">94 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the saved change back</td><td class="mono"><span class="method">GET</span> /v1/settings</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">1.3 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Check the session is signed in</td><td class="mono"><span class="method">GET</span> /v1/auth/check</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">11 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">11 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a sign-in with a wrong owner token</td><td class="mono"><span class="method">POST</span> /v1/auth/session</td>
-<td class="num"><span class="badge warn">401</span></td><td class="num mono">7.00</td><td class="num mono">39 B</td>
+<td class="num"><span class="badge warn">401</span></td><td class="num mono">1.00</td><td class="num mono">39 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -415,61 +415,61 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">plaza</span><span class="meta">20 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>List the tasks on an empty hub</td><td class="mono"><span class="method">GET</span> /v1/tasks</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">12 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">12 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Open a project for the tasks</td><td class="mono"><span class="method">POST</span> /v1/projects</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">26.0</td><td class="num mono">674 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">24.0</td><td class="num mono">674 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Create a task</td><td class="mono"><span class="method">POST</span> /v1/tasks</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">3.00</td><td class="num mono">346 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">2.00</td><td class="num mono">346 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the task back</td><td class="mono"><span class="method">GET</span> /v1/tasks/t1</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">346 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">7.00</td><td class="num mono">346 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the tasks after a create</td><td class="mono"><span class="method">GET</span> /v1/tasks</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">358 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">358 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Withdraw an open task</td><td class="mono"><span class="method">DELETE</span> /v1/tasks/t1</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">359 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">359 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown task</td><td class="mono"><span class="method">GET</span> /v1/tasks/t999999</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">15.0</td><td class="num mono">35 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">35 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a task with no goal</td><td class="mono"><span class="method">POST</span> /v1/tasks</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">75 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">75 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the board</td><td class="mono"><span class="method">GET</span> /v1/board</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">134 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">134 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a board post from an unknown agent</td><td class="mono"><span class="method">POST</span> /v1/board</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">37 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">37 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a board post with an empty subject</td><td class="mono"><span class="method">POST</span> /v1/board</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">37 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">37 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Create a task others will run after</td><td class="mono"><span class="method">POST</span> /v1/tasks</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">4.00</td><td class="num mono">301 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">1.00</td><td class="num mono">301 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Create a task that runs after another</td><td class="mono"><span class="method">POST</span> /v1/tasks</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">4.00</td><td class="num mono">320 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">2.00</td><td class="num mono">320 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List only the tasks that can be claimed now</td><td class="mono"><span class="method">GET</span> /v1/tasks?ready=true</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">313 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">313 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a ready filter that is not true or false</td><td class="mono"><span class="method">GET</span> /v1/tasks?ready=maybe</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">54 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">54 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse links that would close a cycle</td><td class="mono"><span class="method">PATCH</span> /v1/tasks/t2</td>
 <td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">80 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Relink an open task</td><td class="mono"><span class="method">PATCH</span> /v1/tasks/t3</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">311 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">311 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for relinking an unknown task</td><td class="mono"><span class="method">PATCH</span> /v1/tasks/t999999</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">5.00</td><td class="num mono">35 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">35 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a task outside a project</td><td class="mono"><span class="method">POST</span> /v1/tasks</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">93 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">93 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a task for an unknown project</td><td class="mono"><span class="method">POST</span> /v1/tasks</td>
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">38 B</td>
@@ -483,121 +483,121 @@ a { color: var(--info-ink); }
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for files of an unknown tool version</td><td class="mono"><span class="method">GET</span> /v1/library/no-such-tool/1/files</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">4.00</td><td class="num mono">27 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">27 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 409 when reviewing an unknown tool version</td><td class="mono"><span class="method">POST</span> /v1/library/no-such-tool/1/review</td>
-<td class="num"><span class="badge warn">409</span></td><td class="num mono">2.00</td><td class="num mono">27 B</td>
+<td class="num"><span class="badge warn">409</span></td><td class="num mono">1.00</td><td class="num mono">27 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 400 when a review has no approve field</td><td class="mono"><span class="method">POST</span> /v1/library/no-such-tool/1/review</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">54 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">54 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when deleting an unknown tool version</td><td class="mono"><span class="method">DELETE</span> /v1/library/no-such-tool/1</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">27 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">27 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the projects</td><td class="mono"><span class="method">GET</span> /v1/projects</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">939 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">939 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown project</td><td class="mono"><span class="method">GET</span> /v1/projects/no-such-project</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">27 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">27 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 409 when approving an unknown project</td><td class="mono"><span class="method">POST</span> /v1/projects/no-such-project/approve</td>
-<td class="num"><span class="badge warn">409</span></td><td class="num mono">2.00</td><td class="num mono">44 B</td>
+<td class="num"><span class="badge warn">409</span></td><td class="num mono">1.00</td><td class="num mono">44 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown project&#39;s task graph</td><td class="mono"><span class="method">GET</span> /v1/projects/no-such-project/graph</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">4.00</td><td class="num mono">27 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">27 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List a project&#39;s agents, none yet</td><td class="mono"><span class="method">GET</span> /v1/projects/pr1/members</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown project&#39;s agents</td><td class="mono"><span class="method">GET</span> /v1/projects/no-such-project/members</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">27 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">27 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse to add an agent with no cid</td><td class="mono"><span class="method">POST</span> /v1/projects/pr1/members</td>
 <td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">60 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when adding an unknown agent</td><td class="mono"><span class="method">POST</span> /v1/projects/pr1/members</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">25 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">25 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when benching an agent not on the project</td><td class="mono"><span class="method">DELETE</span> /v1/projects/pr1/members/4242</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">44 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">44 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Pause a project</td><td class="mono"><span class="method">POST</span> /v1/projects/pr1/pause</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">1010 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">1010 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Resume a paused project</td><td class="mono"><span class="method">POST</span> /v1/projects/pr1/resume</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">1.1 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">1.1 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a project with no title</td><td class="mono"><span class="method">POST</span> /v1/projects</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">45 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">7.00</td><td class="num mono">45 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Open a project to archive</td><td class="mono"><span class="method">POST</span> /v1/projects</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">35.0</td><td class="num mono">634 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">24.0</td><td class="num mono">634 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Archive a project</td><td class="mono"><span class="method">POST</span> /v1/projects/pr2/archive</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">709 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">709 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a task for an archived project</td><td class="mono"><span class="method">POST</span> /v1/tasks</td>
-<td class="num"><span class="badge warn">409</span></td><td class="num mono">2.00</td><td class="num mono">58 B</td>
+<td class="num"><span class="badge warn">409</span></td><td class="num mono">1.00</td><td class="num mono">58 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse to resume an archived project</td><td class="mono"><span class="method">POST</span> /v1/projects/pr2/resume</td>
-<td class="num"><span class="badge warn">409</span></td><td class="num mono">2.00</td><td class="num mono">35 B</td>
+<td class="num"><span class="badge warn">409</span></td><td class="num mono">1.00</td><td class="num mono">35 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when pausing an unknown project</td><td class="mono"><span class="method">POST</span> /v1/projects/no-such-project/pause</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">16.0</td><td class="num mono">27 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">27 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when moving an unknown task into a project</td><td class="mono"><span class="method">POST</span> /v1/tasks/t999/move</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">32 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">32 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse to move a task out of its project</td><td class="mono"><span class="method">POST</span> /v1/tasks/t1/move</td>
-<td class="num"><span class="badge warn">409</span></td><td class="num mono">3.00</td><td class="num mono">70 B</td>
+<td class="num"><span class="badge warn">409</span></td><td class="num mono">1.00</td><td class="num mono">70 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a move that names no project</td><td class="mono"><span class="method">POST</span> /v1/tasks/t1/move</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">46 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">46 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Suggest no agents for a project nobody worked on</td><td class="mono"><span class="method">GET</span> /v1/projects/pr1/suggested-members</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown project&#39;s suggested agents</td><td class="mono"><span class="method">GET</span> /v1/projects/no-such-project/suggested-members</td>
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">27 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read a project&#39;s settings, none set yet</td><td class="mono"><span class="method">GET</span> /v1/projects/pr1/settings</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Override a project&#39;s effort and task budget</td><td class="mono"><span class="method">PATCH</span> /v1/projects/pr1/settings</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">36 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">36 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse an effort the plaza does not know</td><td class="mono"><span class="method">PATCH</span> /v1/projects/pr1/settings</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">101 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">101 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a setting projects do not have</td><td class="mono"><span class="method">PATCH</span> /v1/projects/pr1/settings</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">209 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">209 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Show where each of a project&#39;s settings comes from</td><td class="mono"><span class="method">GET</span> /v1/projects/pr1/settings/effective</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">562 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">562 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Set a project&#39;s effort back to the plaza&#39;s</td><td class="mono"><span class="method">PATCH</span> /v1/projects/pr1/settings</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">20 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">20 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown project&#39;s settings</td><td class="mono"><span class="method">GET</span> /v1/projects/no-such-project/settings</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">27 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">27 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read a project&#39;s budget, none set aside yet</td><td class="mono"><span class="method">GET</span> /v1/projects/pr1/budget</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">55 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">55 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Set credits aside for a project</td><td class="mono"><span class="method">POST</span> /v1/projects/pr1/budget</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">57 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">57 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Give some of a project&#39;s budget back to the plaza</td><td class="mono"><span class="method">POST</span> /v1/projects/pr1/budget</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">56 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">56 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse to move no credits</td><td class="mono"><span class="method">POST</span> /v1/projects/pr1/budget</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">28 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">28 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse to give back more than a project has</td><td class="mono"><span class="method">POST</span> /v1/projects/pr1/budget</td>
-<td class="num"><span class="badge warn">409</span></td><td class="num mono">3.00</td><td class="num mono">102 B</td>
+<td class="num"><span class="badge warn">409</span></td><td class="num mono">2.00</td><td class="num mono">102 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse to set budget aside for an archived project</td><td class="mono"><span class="method">POST</span> /v1/projects/pr2/budget</td>
-<td class="num"><span class="badge warn">409</span></td><td class="num mono">2.00</td><td class="num mono">66 B</td>
+<td class="num"><span class="badge warn">409</span></td><td class="num mono">1.00</td><td class="num mono">66 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -605,33 +605,33 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">mcp</span><span class="meta">10 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>List the MCP servers on an empty hub</td><td class="mono"><span class="method">GET</span> /v1/mcp/servers</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Add an MCP server</td><td class="mono"><span class="method">POST</span> /v1/mcp/servers</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">10.0</td><td class="num mono">505 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">505 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the MCP server back</td><td class="mono"><span class="method">GET</span> /v1/mcp/servers/test-server</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">505 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">505 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Change an MCP server&#39;s name</td><td class="mono"><span class="method">PATCH</span> /v1/mcp/servers/test-server</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">5.00</td><td class="num mono">508 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">508 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown MCP server</td><td class="mono"><span class="method">GET</span> /v1/mcp/servers/no-such-server</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">4.00</td><td class="num mono">55 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">55 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse an MCP server with an invalid id</td><td class="mono"><span class="method">POST</span> /v1/mcp/servers</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">5.00</td><td class="num mono">110 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">110 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Delete an MCP server</td><td class="mono"><span class="method">DELETE</span> /v1/mcp/servers/test-server</td>
-<td class="num"><span class="badge ok">204</span></td><td class="num mono">5.00</td><td class="num mono">0 B</td>
+<td class="num"><span class="badge ok">204</span></td><td class="num mono">1.00</td><td class="num mono">0 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Create an MCP token</td><td class="mono"><span class="method">POST</span> /v1/hub-mcp/tokens</td>
 <td class="num"><span class="badge ok">201</span></td><td class="num mono">2.00</td><td class="num mono">252 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the MCP tokens</td><td class="mono"><span class="method">GET</span> /v1/hub-mcp/tokens</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">183 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">183 B</td>
 <td><span class="pass">pass</span></td></tr>
-<tr class=""><td>Revoke an MCP token</td><td class="mono"><span class="method">DELETE</span> /v1/hub-mcp/tokens/mcp_29afbab8ce9d</td>
+<tr class=""><td>Revoke an MCP token</td><td class="mono"><span class="method">DELETE</span> /v1/hub-mcp/tokens/mcp_664aaa09824a</td>
 <td class="num"><span class="badge ok">204</span></td><td class="num mono">2.00</td><td class="num mono">0 B</td>
 <td><span class="pass">pass</span></td></tr>
 
@@ -640,28 +640,28 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">metrics</span><span class="meta">11 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>Read the metric catalog</td><td class="mono"><span class="method">GET</span> /v1/metrics/catalog</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">28.4 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">28.4 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Compose the overview view on an empty hub</td><td class="mono"><span class="method">GET</span> /v1/metrics/view?tab=overview&amp;range=24h</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">18.0</td><td class="num mono">3.7 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">3.7 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a view with an unknown range</td><td class="mono"><span class="method">GET</span> /v1/metrics/view?tab=overview&amp;range=2w</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">6.00</td><td class="num mono">75 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">75 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read a metric series grouped by all</td><td class="mono"><span class="method">POST</span> /v1/metrics/query</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">13 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a query with an unknown group</td><td class="mono"><span class="method">POST</span> /v1/metrics/query</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">4.00</td><td class="num mono">88 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">88 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the metrics settings</td><td class="mono"><span class="method">GET</span> /v1/metrics/settings</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">11.0</td><td class="num mono">292 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">9.00</td><td class="num mono">292 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for the scrape endpoint while OpenMetrics is off</td><td class="mono"><span class="method">GET</span> /metrics</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">4.00</td><td class="num mono">21 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">21 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Summarize usage over a valid window</td><td class="mono"><span class="method">GET</span> /v1/usage/summary?from=0&amp;to=1000</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">231 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">7.00</td><td class="num mono">231 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a usage window that ends before it starts</td><td class="mono"><span class="method">GET</span> /v1/usage/summary?from=2000&amp;to=1000</td>
 <td class="num"><span class="badge warn">400</span></td><td class="num mono">5.00</td><td class="num mono">42 B</td>
@@ -670,7 +670,7 @@ a { color: var(--info-ink); }
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">9.00</td><td class="num mono">488.7 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for a model with no price</td><td class="mono"><span class="method">GET</span> /v1/prices/no-such-model-xyz</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">42 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">42 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -678,22 +678,22 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">joining</span><span class="meta">17 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>List the node join codes on an empty hub</td><td class="mono"><span class="method">GET</span> /v1/nodes/codes</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">17.0</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Issue a join code for a new node</td><td class="mono"><span class="method">POST</span> /v1/nodes/codes</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">3.00</td><td class="num mono">221 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">2.00</td><td class="num mono">221 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the join codes shows the new code as active</td><td class="mono"><span class="method">GET</span> /v1/nodes/codes</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">120 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Revoke an unused node join code</td><td class="mono"><span class="method">DELETE</span> /v1/nodes/codes/c1</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">26 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">26 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the join codes after revoking shows the code as revoked</td><td class="mono"><span class="method">GET</span> /v1/nodes/codes</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">121 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">121 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when revoking an unknown node join code</td><td class="mono"><span class="method">DELETE</span> /v1/nodes/codes/c999999</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">16.0</td><td class="num mono">24 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">4.00</td><td class="num mono">24 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 400 when the node join code body is not JSON</td><td class="mono"><span class="method">POST</span> /v1/nodes/codes</td>
 <td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">111 B</td>
@@ -702,10 +702,10 @@ a { color: var(--info-ink); }
 <td class="num"><span class="badge warn">403</span></td><td class="num mono">3.00</td><td class="num mono">39 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the workstation join codes on an empty hub</td><td class="mono"><span class="method">GET</span> /v1/stations/codes</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 400 when the workstation join code body is not JSON</td><td class="mono"><span class="method">POST</span> /v1/stations/codes</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">111 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">111 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when revoking an unknown workstation join code</td><td class="mono"><span class="method">DELETE</span> /v1/stations/codes/c999999</td>
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">24 B</td>
@@ -717,16 +717,16 @@ a { color: var(--info-ink); }
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">24 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when resuming an unknown node</td><td class="mono"><span class="method">POST</span> /v1/nodes/n999/resume</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">24 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">4.00</td><td class="num mono">24 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Stopping the hub&#39;s own node n0 takes it out of service</td><td class="mono"><span class="method">POST</span> /v1/nodes/n0/stop</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">5.00</td><td class="num mono">310 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">310 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Resuming the hub&#39;s own node n0 puts it back in service</td><td class="mono"><span class="method">POST</span> /v1/nodes/n0/resume</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">310 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>A dry-run rebalance lists its moves and starts none</td><td class="mono"><span class="method">POST</span> /v1/nodes/rebalance</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">6.00</td><td class="num mono">28 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">7.00</td><td class="num mono">28 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -734,40 +734,40 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">agents</span><span class="meta">13 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>List the agents on a hub with no node</td><td class="mono"><span class="method">GET</span> /v1/agents</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an agent that does not exist</td><td class="mono"><span class="method">GET</span> /v1/agents/999999</td>
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">25 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 400 for an agent id that is not a number</td><td class="mono"><span class="method">GET</span> /v1/agents/not-a-number</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">4.00</td><td class="num mono">32 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">32 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when deleting an agent that does not exist</td><td class="mono"><span class="method">DELETE</span> /v1/agents/999999</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">5.00</td><td class="num mono">25 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">25 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the roles before any custom role exists</td><td class="mono"><span class="method">GET</span> /v1/roles</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">5.00</td><td class="num mono">52.0 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">52.0 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a custom role with missing fields</td><td class="mono"><span class="method">POST</span> /v1/roles</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">62 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">62 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Create a custom role</td><td class="mono"><span class="method">POST</span> /v1/roles</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">278 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">278 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the custom role back from the list</td><td class="mono"><span class="method">GET</span> /v1/roles</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">52.4 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">52.4 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Change a custom role by saving it again</td><td class="mono"><span class="method">POST</span> /v1/roles</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">322 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">322 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Delete a custom role</td><td class="mono"><span class="method">DELETE</span> /v1/roles/scout-test</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">34 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">6.00</td><td class="num mono">34 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when deleting a role that is already gone</td><td class="mono"><span class="method">DELETE</span> /v1/roles/scout-test</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">30 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">4.00</td><td class="num mono">30 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the bench on a hub with no node</td><td class="mono"><span class="method">GET</span> /v1/agents?project=bench</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown project&#39;s roster</td><td class="mono"><span class="method">GET</span> /v1/agents?project=no-such-project</td>
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">38 B</td>
@@ -781,34 +781,34 @@ a { color: var(--info-ink); }
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read an agent&#39;s permission mode before any change</td><td class="mono"><span class="method">GET</span> /v1/agents/7/permissions</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">40 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">40 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Set an agent&#39;s permission mode to read_only</td><td class="mono"><span class="method">PUT</span> /v1/agents/7/permissions</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">50.0</td><td class="num mono">20 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">34.0</td><td class="num mono">20 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read back the permission mode after the change</td><td class="mono"><span class="method">GET</span> /v1/agents/7/permissions</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">37 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">11.0</td><td class="num mono">37 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a permission mode that is not one of the three</td><td class="mono"><span class="method">PUT</span> /v1/agents/7/permissions</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">4.00</td><td class="num mono">77 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">11.0</td><td class="num mono">77 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Decide an approval that does not exist</td><td class="mono"><span class="method">POST</span> /v1/approvals/no-such-approval</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">28 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">6.00</td><td class="num mono">28 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the sanctions on an empty hub</td><td class="mono"><span class="method">GET</span> /v1/sanctions</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">33 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Lift a sanction that does not exist</td><td class="mono"><span class="method">POST</span> /v1/sanctions/999999/lift</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">15.0</td><td class="num mono">30 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">30 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a default decision model without a provider and model</td><td class="mono"><span class="method">PUT</span> /v1/decisions/default</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">68 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">68 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the agent proposals on an empty hub</td><td class="mono"><span class="method">GET</span> /v1/agent-proposals</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Approve an agent proposal that does not exist</td><td class="mono"><span class="method">POST</span> /v1/agent-proposals/no-such-proposal/approve</td>
-<td class="num"><span class="badge warn">409</span></td><td class="num mono">3.00</td><td class="num mono">40 B</td>
+<td class="num"><span class="badge warn">409</span></td><td class="num mono">2.00</td><td class="num mono">40 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -816,7 +816,7 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">foundry</span><span class="meta">9 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>List the datasets (empty on a fresh hub)</td><td class="mono"><span class="method">GET</span> /v1/foundry/datasets</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">5.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the jobs (empty on a fresh hub)</td><td class="mono"><span class="method">GET</span> /v1/foundry/jobs</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
@@ -825,22 +825,22 @@ a { color: var(--info-ink); }
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">23 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the events of a job that does not exist</td><td class="mono"><span class="method">GET</span> /v1/foundry/jobs/no-such-job/events?after=0</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">23 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">5.00</td><td class="num mono">23 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Export a dataset from a body that is not JSON</td><td class="mono"><span class="method">POST</span> /v1/foundry/datasets</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">58 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">58 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Upload a dataset with no file named</td><td class="mono"><span class="method">POST</span> /v1/foundry/datasets/upload</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">41 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">41 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the IDE&#39;s workspaces (only project repos on a fresh hub)</td><td class="mono"><span class="method">GET</span> /v1/ide/workspaces</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">5.00</td><td class="num mono">337 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">337 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the checkpoints of a workspace that does not exist</td><td class="mono"><span class="method">GET</span> /v1/ide/workspaces/repo:no-such-repo@main/checkpoints</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">47 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">4.00</td><td class="num mono">47 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the checkpoints of a malformed workspace id</td><td class="mono"><span class="method">GET</span> /v1/ide/workspaces/not-a-workspace/checkpoints</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">66 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">66 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -848,28 +848,28 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">e2b</span><span class="meta">8 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>Create an E2B key for the reads</td><td class="mono"><span class="method">POST</span> /v1/e2b/keys</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">34.0</td><td class="num mono">131 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">25.0</td><td class="num mono">131 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the running sandboxes (empty)</td><td class="mono"><span class="method">GET</span> /e2b/sandboxes</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">5.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the sandboxes by state (empty)</td><td class="mono"><span class="method">GET</span> /e2b/v2/sandboxes?state=running,paused</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">8.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List every sandbox for the owner&#39;s console (empty)</td><td class="mono"><span class="method">GET</span> /v1/e2b/sandboxes</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">16 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Get a sandbox that does not exist</td><td class="mono"><span class="method">GET</span> /e2b/sandboxes/sb0000000000000000</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">87 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">87 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse the sandbox list without an E2B key</td><td class="mono"><span class="method">GET</span> /e2b/sandboxes</td>
-<td class="num"><span class="badge warn">401</span></td><td class="num mono">3.00</td><td class="num mono">92 B</td>
+<td class="num"><span class="badge warn">401</span></td><td class="num mono">2.00</td><td class="num mono">92 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the templates and their builds (empty)</td><td class="mono"><span class="method">GET</span> /v1/e2b/templates</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">16 B</td>
 <td><span class="pass">pass</span></td></tr>
-<tr class=""><td>Revoke the E2B key</td><td class="mono"><span class="method">DELETE</span> /v1/e2b/keys/e2k-980e0e8787d5</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">25.0</td><td class="num mono">11 B</td>
+<tr class=""><td>Revoke the E2B key</td><td class="mono"><span class="method">DELETE</span> /v1/e2b/keys/e2k-e2eb073fb4d2</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">34.0</td><td class="num mono">11 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -877,49 +877,49 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">conversations</span><span class="meta">15 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>List the owner&#39;s conversations on a hub with none</td><td class="mono"><span class="method">GET</span> /v1/owner/conversations</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a conversation while no orchestrator is connected</td><td class="mono"><span class="method">POST</span> /v1/owner/conversations</td>
-<td class="num"><span class="badge warn">409</span></td><td class="num mono">3.00</td><td class="num mono">118 B</td>
+<td class="num"><span class="badge warn">409</span></td><td class="num mono">2.00</td><td class="num mono">118 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a conversation with no text</td><td class="mono"><span class="method">POST</span> /v1/owner/conversations</td>
 <td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">34 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a conversation with an empty message</td><td class="mono"><span class="method">POST</span> /v1/owner/conversations</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">34 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">34 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown conversation</td><td class="mono"><span class="method">GET</span> /v1/owner/conversations/conv-999</td>
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">32 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for a message to an unknown conversation</td><td class="mono"><span class="method">POST</span> /v1/owner/conversations/conv-999/messages</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">36 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">36 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when renaming an unknown conversation</td><td class="mono"><span class="method">PATCH</span> /v1/owner/conversations/conv-999</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">36 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">12.0</td><td class="num mono">36 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse an empty title</td><td class="mono"><span class="method">PATCH</span> /v1/owner/conversations/conv-999</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">4.00</td><td class="num mono">37 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">37 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown conversation&#39;s transcript</td><td class="mono"><span class="method">GET</span> /v1/owner/conversations/conv-999/transcript</td>
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">32 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the conversations with the archived ones</td><td class="mono"><span class="method">GET</span> /v1/owner/conversations?archived=true</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an unknown conversation&#39;s draft</td><td class="mono"><span class="method">GET</span> /v1/owner/conversations/conv-999/draft</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">32 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">32 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when editing an unknown conversation&#39;s draft</td><td class="mono"><span class="method">PATCH</span> /v1/owner/conversations/conv-999/draft</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">6.00</td><td class="num mono">32 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">32 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a draft edit with a field drafts do not have</td><td class="mono"><span class="method">PATCH</span> /v1/owner/conversations/conv-999/draft</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">162 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">162 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when starting an unknown conversation&#39;s project</td><td class="mono"><span class="method">POST</span> /v1/owner/conversations/conv-999/start</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">19.0</td><td class="num mono">36 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">36 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a start that names no revision</td><td class="mono"><span class="method">POST</span> /v1/owner/conversations/conv-999/start</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">65 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">65 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -927,25 +927,25 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">weft</span><span class="meta">7 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>Show whether Weft is running on a fresh hub</td><td class="mono"><span class="method">GET</span> /v1/weft</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">46 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">46 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the Weft repositories on a fresh hub</td><td class="mono"><span class="method">GET</span> /v1/weft/repos</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">5.00</td><td class="num mono">361 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">6.00</td><td class="num mono">361 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the language packs Weft has loaded</td><td class="mono"><span class="method">GET</span> /v1/weft/packs</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">318 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">6.00</td><td class="num mono">318 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the Weft keys, with the owner&#39;s on a fresh hub</td><td class="mono"><span class="method">GET</span> /v1/weft/keys</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">634 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">6.00</td><td class="num mono">634 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the Weft operations log, newest first</td><td class="mono"><span class="method">GET</span> /v1/weft/ops?limit=20</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">741 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">741 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the review recipes and the proposals waiting</td><td class="mono"><span class="method">GET</span> /v1/recipes</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">556 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">556 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Show the code review recipe as its TOML</td><td class="mono"><span class="method">GET</span> /v1/recipes/code</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">6.0 KiB</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">6.0 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -953,7 +953,7 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">platforms</span><span class="meta">4 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>List the git platforms on a fresh hub</td><td class="mono"><span class="method">GET</span> /v1/platforms</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">4.00</td><td class="num mono">323 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">323 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Start creating the GitHub App</td><td class="mono"><span class="method">POST</span> /v1/platforms/github/app</td>
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">129 B</td>
@@ -973,49 +973,49 @@ a { color: var(--info-ink); }
 <td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">371 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Bring in a finished project from a git address</td><td class="mono"><span class="method">POST</span> /v1/projects/adopt</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">23.0</td><td class="num mono">1.4 KiB</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">38.0</td><td class="num mono">1.4 KiB</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Put the project back in build</td><td class="mono"><span class="method">POST</span> /v1/projects/pr3/mode</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">988 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">8.00</td><td class="num mono">988 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 400 for a mode that does not exist</td><td class="mono"><span class="method">POST</span> /v1/projects/pr3/mode</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">35 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">35 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Get the maintenance view of a fresh project</td><td class="mono"><span class="method">GET</span> /v1/projects/pr3/maintenance</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">357 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">357 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Add a signal to the project&#39;s inbox</td><td class="mono"><span class="method">POST</span> /v1/projects/pr3/maintenance/signals</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">1.00</td><td class="num mono">183 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">3.00</td><td class="num mono">183 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Make the project&#39;s ingest address</td><td class="mono"><span class="method">POST</span> /v1/projects/pr3/maintenance/ingest</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">1.00</td><td class="num mono">139 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">3.00</td><td class="num mono">139 B</td>
 <td><span class="pass">pass</span></td></tr>
-<tr class=""><td>Send a signal to the ingest address without a token</td><td class="mono"><span class="method">POST</span> /v1/ingest/apzi_be240a7f350dee89859e5d345bc24e04862ad526e846d8b5</td>
-<td class="num"><span class="badge ok">202</span></td><td class="num mono">1.00</td><td class="num mono">11 B</td>
+<tr class=""><td>Send a signal to the ingest address without a token</td><td class="mono"><span class="method">POST</span> /v1/ingest/apzi_fa9cc819ec2a5986d3d31d05bb02fcdcbf8dbd50d998edd0</td>
+<td class="num"><span class="badge ok">202</span></td><td class="num mono">2.00</td><td class="num mono">11 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 for an ingest address that does not exist</td><td class="mono"><span class="method">POST</span> /v1/ingest/apzi_not-a-real-address</td>
 <td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">34 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Answer 404 when approving a proposal that does not exist</td><td class="mono"><span class="method">POST</span> /v1/projects/pr3/maintenance/proposals/mp999/approve</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">28 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">28 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the project&#39;s environments</td><td class="mono"><span class="method">GET</span> /v1/projects/pr3/environments</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">247 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">247 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Put a staging environment that tracks main</td><td class="mono"><span class="method">PUT</span> /v1/projects/pr3/environments/staging</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">239 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">239 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Deploy a named version to staging</td><td class="mono"><span class="method">POST</span> /v1/projects/pr3/environments/staging/deploy</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">96 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">14.0</td><td class="num mono">96 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Put a secret for the staging environment</td><td class="mono"><span class="method">PUT</span> /v1/projects/pr3/environments/staging/secrets/STAGING_DEPLOY_TOKEN</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">53.0</td><td class="num mono">63 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">48.0</td><td class="num mono">63 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Upload a file&#39;s bytes into the project</td><td class="mono"><span class="method">PUT</span> /v1/projects/pr3/uploads</td>
-<td class="num"><span class="badge ok">201</span></td><td class="num mono">26.0</td><td class="num mono">85 B</td>
+<td class="num"><span class="badge ok">201</span></td><td class="num mono">35.0</td><td class="num mono">85 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Land the uploaded file on main as one change</td><td class="mono"><span class="method">POST</span> /v1/projects/pr3/files</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">43.0</td><td class="num mono">109 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">63.0</td><td class="num mono">109 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details>
@@ -1023,43 +1023,43 @@ a { color: var(--info-ink); }
 <summary><span class="group-name">looks</span><span class="meta">13 requests</span></summary>
 <table><thead><tr><th>Request</th><th>Call</th><th class="num">Status</th><th class="num">ms</th><th class="num">Size</th><th>Result</th></tr></thead><tbody>
 <tr class=""><td>Read the appearance (the default look)</td><td class="mono"><span class="method">GET</span> /v1/appearance</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">112 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">112 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Save a chosen built-in look</td><td class="mono"><span class="method">PUT</span> /v1/appearance</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">115 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">115 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a look that names no known theme</td><td class="mono"><span class="method">PUT</span> /v1/appearance</td>
 <td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">43 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Save a valid custom theme</td><td class="mono"><span class="method">PUT</span> /v1/appearance/themes/my-theme</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">250 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">250 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a custom theme that takes a built-in id</td><td class="mono"><span class="method">PUT</span> /v1/appearance/themes/loom-clay</td>
 <td class="num"><span class="badge warn">400</span></td><td class="num mono">2.00</td><td class="num mono">68 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a theme whose body id differs from the URL</td><td class="mono"><span class="method">PUT</span> /v1/appearance/themes/other</td>
-<td class="num"><span class="badge warn">400</span></td><td class="num mono">1.00</td><td class="num mono">56 B</td>
+<td class="num"><span class="badge warn">400</span></td><td class="num mono">3.00</td><td class="num mono">56 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Delete the custom theme</td><td class="mono"><span class="method">DELETE</span> /v1/appearance/themes/my-theme</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">115 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">7.00</td><td class="num mono">115 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Put the default look back</td><td class="mono"><span class="method">PUT</span> /v1/appearance</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">2.00</td><td class="num mono">112 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">112 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the artifacts</td><td class="mono"><span class="method">GET</span> /v1/artifacts</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read an artifact that does not exist</td><td class="mono"><span class="method">GET</span> /v1/artifacts/aunknownid00</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">39 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">3.00</td><td class="num mono">39 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>List the share links</td><td class="mono"><span class="method">GET</span> /v1/shares</td>
-<td class="num"><span class="badge ok">200</span></td><td class="num mono">1.00</td><td class="num mono">2 B</td>
+<td class="num"><span class="badge ok">200</span></td><td class="num mono">3.00</td><td class="num mono">2 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Refuse a share link for an artifact that does not exist</td><td class="mono"><span class="method">POST</span> /v1/shares</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">36 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">36 B</td>
 <td><span class="pass">pass</span></td></tr>
 <tr class=""><td>Read the data of an artifact that does not exist</td><td class="mono"><span class="method">GET</span> /artifact/0123456789abcdef0123456789abcdef/data</td>
-<td class="num"><span class="badge warn">404</span></td><td class="num mono">1.00</td><td class="num mono">19 B</td>
+<td class="num"><span class="badge warn">404</span></td><td class="num mono">2.00</td><td class="num mono">19 B</td>
 <td><span class="pass">pass</span></td></tr>
 
 </tbody></table></details></div>
@@ -1067,354 +1067,354 @@ a { color: var(--info-ink); }
 <h2>Timings</h2>
 <p class="note">Every GET in the spec without path parameters, requested 20 times in a row on the CI runner, slowest p95 first. Times are milliseconds on a shared runner: compare them run to run, not to production. The last column is the p95's change against main.</p>
 <div class="group scroll"><table><thead><tr><th>Route</th><th>What it does</th><th class="num">Status</th><th class="num">p50</th><th class="num">p95</th><th class="num">max</th><th>p95</th><th class="num">Size</th><th class="num">vs main</th></tr></thead><tbody><tr><td class="mono">/v1/overview</td><td>Read the hub&#39;s overview</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.45</td><td class="num mono">45.8</td><td class="num mono">45.8</td>
+<td class="num mono">5.07</td><td class="num mono">96.1</td><td class="num mono">96.1</td>
 <td class="bar-cell"><span class="bar" style="width:100.0%"></span></td>
-<td class="num mono">224 B</td><td class="num mono ok">-53%</td></tr><tr><td class="mono">/v1/laws</td><td>List the laws and how often each refused a call</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.43</td><td class="num mono">11.9</td><td class="num mono">11.9</td>
-<td class="bar-cell"><span class="bar" style="width:26.0%"></span></td>
-<td class="num mono">104.2 KiB</td><td class="num mono crit">+109%</td></tr><tr><td class="mono">/v1/conversations</td><td>List the conversations</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.67</td><td class="num mono">9.22</td><td class="num mono">9.22</td>
-<td class="bar-cell"><span class="bar" style="width:20.1%"></span></td>
-<td class="num mono">147 B</td><td class="num mono crit">+176%</td></tr><tr><td class="mono">/v1/prices</td><td>List the model prices</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">7.23</td><td class="num mono">7.87</td><td class="num mono">7.87</td>
-<td class="bar-cell"><span class="bar" style="width:17.2%"></span></td>
-<td class="num mono">488.7 KiB</td><td class="num mono ">-7%</td></tr><tr><td class="mono">/v1/owner/conversations</td><td>List the owner&#39;s conversations with the orchestrator</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.83</td><td class="num mono">6.79</td><td class="num mono">6.79</td>
-<td class="bar-cell"><span class="bar" style="width:14.8%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/motions</td><td>List the motions</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.03</td><td class="num mono">6.65</td><td class="num mono">6.65</td>
-<td class="bar-cell"><span class="bar" style="width:14.5%"></span></td>
-<td class="num mono">214 B</td><td class="num mono ">+10%</td></tr><tr><td class="mono">/v1/foundry/recipes</td><td>List the recipes</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.59</td><td class="num mono">6.30</td><td class="num mono">6.30</td>
-<td class="bar-cell"><span class="bar" style="width:13.8%"></span></td>
-<td class="num mono">541 B</td><td class="num mono ok">-25%</td></tr><tr><td class="mono">/v1/acp</td><td>Open an editor&#39;s ACP socket</td><td class="num"><span class="badge warn">409</span></td>
-<td class="num mono">1.93</td><td class="num mono">5.79</td><td class="num mono">5.79</td>
-<td class="bar-cell"><span class="bar" style="width:12.6%"></span></td>
-<td class="num mono">104 B</td><td class="num mono ">-4%</td></tr><tr><td class="mono">/v1/treasury/series</td><td>Show the treasury over time</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.09</td><td class="num mono">4.97</td><td class="num mono">4.97</td>
-<td class="bar-cell"><span class="bar" style="width:10.9%"></span></td>
-<td class="num mono">9.9 KiB</td><td class="num mono crit">+16%</td></tr><tr><td class="mono">/v1/decisions/default</td><td>Get the default decision model</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.12</td><td class="num mono">4.95</td><td class="num mono">4.95</td>
-<td class="bar-cell"><span class="bar" style="width:10.8%"></span></td>
-<td class="num mono">30 B</td><td class="num mono ok">-19%</td></tr><tr><td class="mono">/v1/metrics/export</td><td>Export a view as CSV</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">4.13</td><td class="num mono">4.80</td><td class="num mono">4.80</td>
-<td class="bar-cell"><span class="bar" style="width:10.5%"></span></td>
-<td class="num mono">24 B</td><td class="num mono ">-8%</td></tr><tr><td class="mono">/v1/metrics/view</td><td>Compose a metrics view</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">4.23</td><td class="num mono">4.77</td><td class="num mono">4.77</td>
-<td class="bar-cell"><span class="bar" style="width:10.4%"></span></td>
-<td class="num mono">3.7 KiB</td><td class="num mono ok">-44%</td></tr><tr><td class="mono">/v1/provider-kinds</td><td>List the provider kinds you can add</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.39</td><td class="num mono">4.34</td><td class="num mono">4.34</td>
-<td class="bar-cell"><span class="bar" style="width:9.5%"></span></td>
-<td class="num mono">8.3 KiB</td><td class="num mono ok">-58%</td></tr><tr><td class="mono">/v1/vault/secrets</td><td>List the vault&#39;s entries</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.84</td><td class="num mono">4.31</td><td class="num mono">4.31</td>
-<td class="bar-cell"><span class="bar" style="width:9.4%"></span></td>
-<td class="num mono">1.1 KiB</td><td class="num mono crit">+134%</td></tr><tr><td class="mono">/v1/providers</td><td>List the providers</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.63</td><td class="num mono">4.20</td><td class="num mono">4.20</td>
-<td class="bar-cell"><span class="bar" style="width:9.2%"></span></td>
-<td class="num mono">7.0 KiB</td><td class="num mono ok">-38%</td></tr><tr><td class="mono">/v1/machine</td><td>Read this machine&#39;s facts</td><td class="num"><span class="badge crit">502</span></td>
-<td class="num mono">1.77</td><td class="num mono">3.83</td><td class="num mono">3.83</td>
+<td class="num mono">224 B</td><td class="num mono ">-1%</td></tr><tr><td class="mono">/v1/prices</td><td>List the model prices</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">13.7</td><td class="num mono">53.9</td><td class="num mono">53.9</td>
+<td class="bar-cell"><span class="bar" style="width:56.0%"></span></td>
+<td class="num mono">488.7 KiB</td><td class="num mono crit">+540%</td></tr><tr><td class="mono">/v1/laws/rules</td><td>List the owner&#39;s rules and overrides</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">5.73</td><td class="num mono">50.2</td><td class="num mono">50.2</td>
+<td class="bar-cell"><span class="bar" style="width:52.2%"></span></td>
+<td class="num mono">87 B</td><td class="num mono crit">+2598%</td></tr><tr><td class="mono">/v1/foundry/jobs</td><td>List the jobs, newest first</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.18</td><td class="num mono">28.4</td><td class="num mono">28.4</td>
+<td class="bar-cell"><span class="bar" style="width:29.6%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+660%</td></tr><tr><td class="mono">/v1/stations/recording-defaults</td><td>Show the recording defaults for new workstations</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">5.41</td><td class="num mono">25.8</td><td class="num mono">25.8</td>
+<td class="bar-cell"><span class="bar" style="width:26.8%"></span></td>
+<td class="num mono">74 B</td><td class="num mono crit">+2286%</td></tr><tr><td class="mono">/v1/metrics/alerts</td><td>List the alerts and their state</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">4.36</td><td class="num mono">25.7</td><td class="num mono">25.7</td>
+<td class="bar-cell"><span class="bar" style="width:26.7%"></span></td>
+<td class="num mono">2.3 KiB</td><td class="num mono crit">+491%</td></tr><tr><td class="mono">/v1/stations</td><td>List the workstations</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.67</td><td class="num mono">23.3</td><td class="num mono">23.3</td>
+<td class="bar-cell"><span class="bar" style="width:24.2%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+1905%</td></tr><tr><td class="mono">/v1/machine</td><td>Read this machine&#39;s facts</td><td class="num"><span class="badge crit">502</span></td>
+<td class="num mono">3.92</td><td class="num mono">21.5</td><td class="num mono">21.5</td>
+<td class="bar-cell"><span class="bar" style="width:22.4%"></span></td>
+<td class="num mono">101 B</td><td class="num mono crit">+162%</td></tr><tr><td class="mono">/v1/machines</td><td>List the machines on this plaza</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">4.60</td><td class="num mono">20.6</td><td class="num mono">20.6</td>
+<td class="bar-cell"><span class="bar" style="width:21.4%"></span></td>
+<td class="num mono">58 B</td><td class="num mono crit">+177%</td></tr><tr><td class="mono">/v1/acp</td><td>Open an editor&#39;s ACP socket</td><td class="num"><span class="badge warn">409</span></td>
+<td class="num mono">2.91</td><td class="num mono">19.6</td><td class="num mono">19.6</td>
+<td class="bar-cell"><span class="bar" style="width:20.4%"></span></td>
+<td class="num mono">104 B</td><td class="num mono crit">+227%</td></tr><tr><td class="mono">/v1/loops</td><td>List the scheduled loops</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.12</td><td class="num mono">18.6</td><td class="num mono">18.6</td>
+<td class="bar-cell"><span class="bar" style="width:19.3%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+502%</td></tr><tr><td class="mono">/v1/runs</td><td>List the runs on this machine</td><td class="num"><span class="badge crit">502</span></td>
+<td class="num mono">4.03</td><td class="num mono">18.5</td><td class="num mono">18.5</td>
+<td class="bar-cell"><span class="bar" style="width:19.2%"></span></td>
+<td class="num mono">101 B</td><td class="num mono ">+12%</td></tr><tr><td class="mono">/v1/hub</td><td>Read the hub&#39;s status</td><td class="num"><span class="badge crit">502</span></td>
+<td class="num mono">2.83</td><td class="num mono">17.8</td><td class="num mono">17.8</td>
+<td class="bar-cell"><span class="bar" style="width:18.6%"></span></td>
+<td class="num mono">101 B</td><td class="num mono crit">+157%</td></tr><tr><td class="mono">/v1/ide/audit</td><td>List the IDE&#39;s audit log</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.95</td><td class="num mono">17.6</td><td class="num mono">17.6</td>
+<td class="bar-cell"><span class="bar" style="width:18.3%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+184%</td></tr><tr><td class="mono">/v1/mcp/catalog</td><td>List the MCP server presets</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.93</td><td class="num mono">17.4</td><td class="num mono">17.4</td>
+<td class="bar-cell"><span class="bar" style="width:18.1%"></span></td>
+<td class="num mono">4.2 KiB</td><td class="num mono crit">+765%</td></tr><tr><td class="mono">/v1/toolbox</td><td>List the toolbox discoveries</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">4.28</td><td class="num mono">16.3</td><td class="num mono">16.3</td>
+<td class="bar-cell"><span class="bar" style="width:16.9%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+540%</td></tr><tr><td class="mono">/v1/usage/calls</td><td>List the newest model calls</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">1.87</td><td class="num mono">15.4</td><td class="num mono">15.4</td>
+<td class="bar-cell"><span class="bar" style="width:16.0%"></span></td>
+<td class="num mono">41 B</td><td class="num mono crit">+467%</td></tr><tr><td class="mono">/v1/prompts</td><td>List the prompts</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">5.93</td><td class="num mono">15.0</td><td class="num mono">15.0</td>
+<td class="bar-cell"><span class="bar" style="width:15.6%"></span></td>
+<td class="num mono">5.3 KiB</td><td class="num mono crit">+615%</td></tr><tr><td class="mono">/v1/vault</td><td>Show the vault&#39;s state</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.94</td><td class="num mono">14.5</td><td class="num mono">14.5</td>
+<td class="bar-cell"><span class="bar" style="width:15.1%"></span></td>
+<td class="num mono">245 B</td><td class="num mono crit">+639%</td></tr><tr><td class="mono">/v1/providers</td><td>List the providers</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">6.77</td><td class="num mono">14.1</td><td class="num mono">14.1</td>
+<td class="bar-cell"><span class="bar" style="width:14.6%"></span></td>
+<td class="num mono">7.0 KiB</td><td class="num mono crit">+108%</td></tr><tr><td class="mono">/v1/decisions/default</td><td>Get the default decision model</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.21</td><td class="num mono">13.4</td><td class="num mono">13.4</td>
+<td class="bar-cell"><span class="bar" style="width:14.0%"></span></td>
+<td class="num mono">30 B</td><td class="num mono crit">+120%</td></tr><tr><td class="mono">/v1/metrics/forecast</td><td>Show the capacity forecast</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">6.61</td><td class="num mono">12.9</td><td class="num mono">12.9</td>
+<td class="bar-cell"><span class="bar" style="width:13.4%"></span></td>
+<td class="num mono">187 B</td><td class="num mono crit">+221%</td></tr><tr><td class="mono">/v1/skills/rules</td><td>List the skill rules and the template</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">5.19</td><td class="num mono">12.6</td><td class="num mono">12.6</td>
+<td class="bar-cell"><span class="bar" style="width:13.1%"></span></td>
+<td class="num mono">2.3 KiB</td><td class="num mono crit">+378%</td></tr><tr><td class="mono">/v1/ide/workspaces</td><td>List the IDE&#39;s workspaces</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">6.10</td><td class="num mono">11.9</td><td class="num mono">11.9</td>
+<td class="bar-cell"><span class="bar" style="width:12.4%"></span></td>
+<td class="num mono">511 B</td><td class="num mono crit">+260%</td></tr><tr><td class="mono">/v1/stations/audit</td><td>List the station audit, newest first</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.93</td><td class="num mono">11.8</td><td class="num mono">11.8</td>
+<td class="bar-cell"><span class="bar" style="width:12.3%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+828%</td></tr><tr><td class="mono">/v1/metrics/view</td><td>Compose a metrics view</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">7.41</td><td class="num mono">11.5</td><td class="num mono">11.5</td>
+<td class="bar-cell"><span class="bar" style="width:11.9%"></span></td>
+<td class="num mono">3.7 KiB</td><td class="num mono crit">+35%</td></tr><tr><td class="mono">/v1/hub-mcp/tokens</td><td>List the MCP tokens</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.21</td><td class="num mono">11.0</td><td class="num mono">11.0</td>
+<td class="bar-cell"><span class="bar" style="width:11.5%"></span></td>
+<td class="num mono">192 B</td><td class="num mono crit">+279%</td></tr><tr><td class="mono">/v1/prompts/rules</td><td>List the prompt rules and templates</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.38</td><td class="num mono">11.0</td><td class="num mono">11.0</td>
+<td class="bar-cell"><span class="bar" style="width:11.5%"></span></td>
+<td class="num mono">5.5 KiB</td><td class="num mono crit">+427%</td></tr><tr><td class="mono">/v1/motions</td><td>List the motions</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">1.98</td><td class="num mono">11.0</td><td class="num mono">11.0</td>
+<td class="bar-cell"><span class="bar" style="width:11.4%"></span></td>
+<td class="num mono">214 B</td><td class="num mono crit">+81%</td></tr><tr><td class="mono">/v1/metrics/slos</td><td>List the service-level objectives</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">6.26</td><td class="num mono">10.7</td><td class="num mono">10.7</td>
+<td class="bar-cell"><span class="bar" style="width:11.2%"></span></td>
+<td class="num mono">785 B</td><td class="num mono crit">+219%</td></tr><tr><td class="mono">/v1/laws</td><td>List the laws and how often each refused a call</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">6.54</td><td class="num mono">10.6</td><td class="num mono">10.6</td>
+<td class="bar-cell"><span class="bar" style="width:11.1%"></span></td>
+<td class="num mono">104.2 KiB</td><td class="num mono crit">+87%</td></tr><tr><td class="mono">/v1/metrics/export</td><td>Export a view as CSV</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">6.99</td><td class="num mono">10.6</td><td class="num mono">10.6</td>
+<td class="bar-cell"><span class="bar" style="width:11.0%"></span></td>
+<td class="num mono">24 B</td><td class="num mono crit">+103%</td></tr><tr><td class="mono">/v1/agents</td><td>List the agents</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.19</td><td class="num mono">9.90</td><td class="num mono">9.90</td>
+<td class="bar-cell"><span class="bar" style="width:10.3%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+182%</td></tr><tr><td class="mono">/v1/treasury/series</td><td>Show the treasury over time</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.34</td><td class="num mono">9.67</td><td class="num mono">9.67</td>
+<td class="bar-cell"><span class="bar" style="width:10.1%"></span></td>
+<td class="num mono">9.9 KiB</td><td class="num mono crit">+126%</td></tr><tr><td class="mono">/v1/connectors/proposals</td><td>List connector proposals, newest first</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.42</td><td class="num mono">9.53</td><td class="num mono">9.53</td>
+<td class="bar-cell"><span class="bar" style="width:9.9%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+410%</td></tr><tr><td class="mono">/v1/tasks</td><td>List the tasks</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.89</td><td class="num mono">9.36</td><td class="num mono">9.36</td>
+<td class="bar-cell"><span class="bar" style="width:9.7%"></span></td>
+<td class="num mono">985 B</td><td class="num mono crit">+92%</td></tr><tr><td class="mono">/v1/volumes</td><td>List the data volumes</td><td class="num"><span class="badge crit">502</span></td>
+<td class="num mono">5.14</td><td class="num mono">9.22</td><td class="num mono">9.22</td>
+<td class="bar-cell"><span class="bar" style="width:9.6%"></span></td>
+<td class="num mono">101 B</td><td class="num mono crit">+86%</td></tr><tr><td class="mono">/v1/sanctions</td><td>List the sanctions and suspensions</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.65</td><td class="num mono">9.18</td><td class="num mono">9.18</td>
+<td class="bar-cell"><span class="bar" style="width:9.6%"></span></td>
+<td class="num mono">33 B</td><td class="num mono crit">+263%</td></tr><tr><td class="mono">/v1/skills/export</td><td>Export several skills as one zip</td><td class="num"><span class="badge warn">422</span></td>
+<td class="num mono">5.47</td><td class="num mono">8.93</td><td class="num mono">8.93</td>
+<td class="bar-cell"><span class="bar" style="width:9.3%"></span></td>
+<td class="num mono">24 B</td><td class="num mono crit">+224%</td></tr><tr><td class="mono">/v1/foundry/hf/status</td><td>Show the Hugging Face status</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.94</td><td class="num mono">8.69</td><td class="num mono">8.69</td>
+<td class="bar-cell"><span class="bar" style="width:9.0%"></span></td>
+<td class="num mono">115 B</td><td class="num mono crit">+78%</td></tr><tr><td class="mono">/v1/templates</td><td>List the warm templates</td><td class="num"><span class="badge crit">502</span></td>
+<td class="num mono">2.87</td><td class="num mono">8.62</td><td class="num mono">8.62</td>
+<td class="bar-cell"><span class="bar" style="width:9.0%"></span></td>
+<td class="num mono">101 B</td><td class="num mono ">+14%</td></tr><tr><td class="mono">/v1/hub/identity</td><td>Show the hub&#39;s identity</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.69</td><td class="num mono">8.59</td><td class="num mono">8.59</td>
+<td class="bar-cell"><span class="bar" style="width:8.9%"></span></td>
+<td class="num mono">99 B</td><td class="num mono crit">+232%</td></tr><tr><td class="mono">/v1/foundry/recipes</td><td>List the recipes</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.03</td><td class="num mono">8.58</td><td class="num mono">8.58</td>
+<td class="bar-cell"><span class="bar" style="width:8.9%"></span></td>
+<td class="num mono">541 B</td><td class="num mono ">+3%</td></tr><tr><td class="mono">/v1/agora</td><td>Show the agora&#39;s calls</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.28</td><td class="num mono">8.42</td><td class="num mono">8.42</td>
+<td class="bar-cell"><span class="bar" style="width:8.8%"></span></td>
+<td class="num mono">52 B</td><td class="num mono crit">+132%</td></tr><tr><td class="mono">/v1/roles</td><td>List the built-in and custom roles</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.82</td><td class="num mono">8.37</td><td class="num mono">8.37</td>
+<td class="bar-cell"><span class="bar" style="width:8.7%"></span></td>
+<td class="num mono">52.0 KiB</td><td class="num mono ">-5%</td></tr><tr><td class="mono">/v1/society</td><td>Show the society: agents, bonds and reputations</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.70</td><td class="num mono">8.34</td><td class="num mono">8.34</td>
+<td class="bar-cell"><span class="bar" style="width:8.7%"></span></td>
+<td class="num mono">52 B</td><td class="num mono ok">-17%</td></tr><tr><td class="mono">/v1/treasury/journal</td><td>List the treasury journal</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.41</td><td class="num mono">8.15</td><td class="num mono">8.15</td>
+<td class="bar-cell"><span class="bar" style="width:8.5%"></span></td>
+<td class="num mono">2.3 KiB</td><td class="num mono ">-7%</td></tr><tr><td class="mono">/v1/appearance</td><td>Read the owner&#39;s appearance and saved themes</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.11</td><td class="num mono">8.07</td><td class="num mono">8.07</td>
 <td class="bar-cell"><span class="bar" style="width:8.4%"></span></td>
-<td class="num mono">101 B</td><td class="num mono ok">-53%</td></tr><tr><td class="mono">/v1/templates</td><td>List the warm templates</td><td class="num"><span class="badge crit">502</span></td>
-<td class="num mono">1.96</td><td class="num mono">3.78</td><td class="num mono">3.78</td>
-<td class="bar-cell"><span class="bar" style="width:8.3%"></span></td>
-<td class="num mono">101 B</td><td class="num mono ok">-50%</td></tr><tr><td class="mono">/v1/treasury/journal</td><td>List the treasury journal</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.48</td><td class="num mono">3.76</td><td class="num mono">3.76</td>
-<td class="bar-cell"><span class="bar" style="width:8.2%"></span></td>
-<td class="num mono">2.3 KiB</td><td class="num mono ok">-57%</td></tr><tr><td class="mono">/v1/hub-mcp/tokens</td><td>List the MCP tokens</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.85</td><td class="num mono">3.73</td><td class="num mono">3.73</td>
+<td class="num mono">112 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/projects</td><td>List the projects</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.85</td><td class="num mono">7.83</td><td class="num mono">7.83</td>
 <td class="bar-cell"><span class="bar" style="width:8.1%"></span></td>
-<td class="num mono">192 B</td><td class="num mono crit">+28%</td></tr><tr><td class="mono">/v1/hub</td><td>Read the hub&#39;s status</td><td class="num"><span class="badge crit">502</span></td>
-<td class="num mono">1.62</td><td class="num mono">3.63</td><td class="num mono">3.63</td>
+<td class="num mono">2.7 KiB</td><td class="num mono crit">+114%</td></tr><tr><td class="mono">/v1/laws/violations</td><td>List the recorded refusals of a law</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">4.27</td><td class="num mono">7.81</td><td class="num mono">7.81</td>
+<td class="bar-cell"><span class="bar" style="width:8.1%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+379%</td></tr><tr><td class="mono">/v1/files</td><td>List the files agents handed in</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.34</td><td class="num mono">7.62</td><td class="num mono">7.62</td>
 <td class="bar-cell"><span class="bar" style="width:7.9%"></span></td>
-<td class="num mono">101 B</td><td class="num mono ok">-48%</td></tr><tr><td class="mono">/v1/usage/summary</td><td>Summarize usage over a time window</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.66</td><td class="num mono">3.30</td><td class="num mono">3.30</td>
-<td class="bar-cell"><span class="bar" style="width:7.2%"></span></td>
-<td class="num mono">252 B</td><td class="num mono ok">-52%</td></tr><tr><td class="mono">/v1/metrics/forecast</td><td>Show the capacity forecast</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.67</td><td class="num mono">3.27</td><td class="num mono">3.27</td>
-<td class="bar-cell"><span class="bar" style="width:7.1%"></span></td>
-<td class="num mono">187 B</td><td class="num mono ok">-19%</td></tr><tr><td class="mono">/v1/machines</td><td>List the machines on this plaza</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.39</td><td class="num mono">3.21</td><td class="num mono">3.21</td>
-<td class="bar-cell"><span class="bar" style="width:7.0%"></span></td>
-<td class="num mono">58 B</td><td class="num mono ok">-57%</td></tr><tr><td class="mono">/v1/hub-mcp/calls</td><td>List the recent MCP calls</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.73</td><td class="num mono">3.13</td><td class="num mono">3.13</td>
-<td class="bar-cell"><span class="bar" style="width:6.8%"></span></td>
-<td class="num mono">12 B</td><td class="num mono ok">-26%</td></tr><tr><td class="mono">/v1/vault/consumers</td><td>List each consumer and its resolved entry</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.26</td><td class="num mono">3.12</td><td class="num mono">3.12</td>
-<td class="bar-cell"><span class="bar" style="width:6.8%"></span></td>
-<td class="num mono">4.0 KiB</td><td class="num mono crit">+17%</td></tr><tr><td class="mono">/v1/ide/workspaces</td><td>List the IDE&#39;s workspaces</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.38</td><td class="num mono">2.95</td><td class="num mono">2.95</td>
-<td class="bar-cell"><span class="bar" style="width:6.4%"></span></td>
-<td class="num mono">511 B</td><td class="num mono ">-11%</td></tr><tr><td class="mono">/v1/library</td><td>List the library&#39;s tool versions</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.90</td><td class="num mono">2.90</td><td class="num mono">2.90</td>
-<td class="bar-cell"><span class="bar" style="width:6.3%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ">+4%</td></tr><tr><td class="mono">/v1/metrics/around</td><td>Show what changed around a time</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.44</td><td class="num mono">2.83</td><td class="num mono">2.83</td>
-<td class="bar-cell"><span class="bar" style="width:6.2%"></span></td>
-<td class="num mono">202 B</td><td class="num mono ok">-49%</td></tr><tr><td class="mono">/v1/vault/audit</td><td>Read the audit log, verifying it on request</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.00</td><td class="num mono">2.77</td><td class="num mono">2.77</td>
-<td class="bar-cell"><span class="bar" style="width:6.1%"></span></td>
-<td class="num mono">1.6 KiB</td><td class="num mono crit">+42%</td></tr><tr><td class="mono">/v1/treasury</td><td>Show the treasury balances</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.46</td><td class="num mono">2.73</td><td class="num mono">2.73</td>
-<td class="bar-cell"><span class="bar" style="width:6.0%"></span></td>
-<td class="num mono">759 B</td><td class="num mono ok">-29%</td></tr><tr><td class="mono">/v1/connectors</td><td>List the connectors and their settings</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.17</td><td class="num mono">2.69</td><td class="num mono">2.69</td>
-<td class="bar-cell"><span class="bar" style="width:5.9%"></span></td>
-<td class="num mono">11.6 KiB</td><td class="num mono ok">-77%</td></tr><tr><td class="mono">/v1/tasks</td><td>List the tasks</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.25</td><td class="num mono">2.55</td><td class="num mono">2.55</td>
-<td class="bar-cell"><span class="bar" style="width:5.6%"></span></td>
-<td class="num mono">985 B</td><td class="num mono ok">-48%</td></tr><tr><td class="mono">/v1/volumes</td><td>List the data volumes</td><td class="num"><span class="badge crit">502</span></td>
-<td class="num mono">2.09</td><td class="num mono">2.49</td><td class="num mono">2.49</td>
-<td class="bar-cell"><span class="bar" style="width:5.4%"></span></td>
-<td class="num mono">101 B</td><td class="num mono ok">-50%</td></tr><tr><td class="mono">/v1/metrics/alerts</td><td>List the alerts and their state</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.08</td><td class="num mono">2.43</td><td class="num mono">2.43</td>
-<td class="bar-cell"><span class="bar" style="width:5.3%"></span></td>
-<td class="num mono">2.3 KiB</td><td class="num mono ok">-44%</td></tr><tr><td class="mono">/v1/foundry/hf/status</td><td>Show the Hugging Face status</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.81</td><td class="num mono">2.29</td><td class="num mono">2.29</td>
-<td class="bar-cell"><span class="bar" style="width:5.0%"></span></td>
-<td class="num mono">115 B</td><td class="num mono ok">-53%</td></tr><tr><td class="mono">/v1/roles</td><td>List the built-in and custom roles</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.57</td><td class="num mono">2.27</td><td class="num mono">2.27</td>
-<td class="bar-cell"><span class="bar" style="width:5.0%"></span></td>
-<td class="num mono">52.0 KiB</td><td class="num mono ok">-74%</td></tr><tr><td class="mono">/v1/provider-catalog</td><td>What the Add provider dialog offers: the API kinds and the coding engines</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">2.09</td><td class="num mono">2.26</td><td class="num mono">2.26</td>
-<td class="bar-cell"><span class="bar" style="width:4.9%"></span></td>
-<td class="num mono">9.6 KiB</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/ws</td><td>Open a socket that streams the hub&#39;s events</td><td class="num"><span class="badge warn">400</span></td>
-<td class="num mono">1.93</td><td class="num mono">2.25</td><td class="num mono">2.25</td>
-<td class="bar-cell"><span class="bar" style="width:4.9%"></span></td>
-<td class="num mono">79 B</td><td class="num mono ok">-65%</td></tr><tr><td class="mono">/v1/runs</td><td>List the runs on this machine</td><td class="num"><span class="badge crit">502</span></td>
-<td class="num mono">1.71</td><td class="num mono">2.15</td><td class="num mono">2.15</td>
-<td class="bar-cell"><span class="bar" style="width:4.7%"></span></td>
-<td class="num mono">101 B</td><td class="num mono ok">-87%</td></tr><tr><td class="mono">/v1/files</td><td>List the files agents handed in</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.64</td><td class="num mono">2.15</td><td class="num mono">2.15</td>
-<td class="bar-cell"><span class="bar" style="width:4.7%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-67%</td></tr><tr><td class="mono">/v1/board</td><td>Read the board</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.47</td><td class="num mono">2.08</td><td class="num mono">2.08</td>
-<td class="bar-cell"><span class="bar" style="width:4.5%"></span></td>
-<td class="num mono">134 B</td><td class="num mono ok">-76%</td></tr><tr><td class="mono">/v1/prompts</td><td>List the prompts</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.91</td><td class="num mono">2.07</td><td class="num mono">2.07</td>
-<td class="bar-cell"><span class="bar" style="width:4.5%"></span></td>
-<td class="num mono">5.3 KiB</td><td class="num mono ">-1%</td></tr><tr><td class="mono">/v1/engines</td><td>List the coding engines: the built-in ones and the instances the owner added</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.20</td><td class="num mono">2.02</td><td class="num mono">2.02</td>
-<td class="bar-cell"><span class="bar" style="width:4.4%"></span></td>
-<td class="num mono">4.2 KiB</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/sanctions</td><td>List the sanctions and suspensions</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.80</td><td class="num mono">2.01</td><td class="num mono">2.01</td>
-<td class="bar-cell"><span class="bar" style="width:4.4%"></span></td>
-<td class="num mono">33 B</td><td class="num mono ok">-21%</td></tr><tr><td class="mono">/v1/metrics/scopes</td><td>List the metric scopes</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.34</td><td class="num mono">2.01</td><td class="num mono">2.01</td>
-<td class="bar-cell"><span class="bar" style="width:4.4%"></span></td>
-<td class="num mono">6.3 KiB</td><td class="num mono ok">-42%</td></tr><tr><td class="mono">/v1/usage-providers</td><td>List the usage providers (CLIProxyAPI hubs) and their last readings</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.90</td><td class="num mono">2.00</td><td class="num mono">2.00</td>
-<td class="bar-cell"><span class="bar" style="width:4.4%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/nodes</td><td>List the plaza&#39;s machines</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.30</td><td class="num mono">1.99</td><td class="num mono">1.99</td>
-<td class="bar-cell"><span class="bar" style="width:4.3%"></span></td>
-<td class="num mono">312 B</td><td class="num mono ok">-15%</td></tr><tr><td class="mono">/v1/agents</td><td>List the agents</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.59</td><td class="num mono">1.91</td><td class="num mono">1.91</td>
-<td class="bar-cell"><span class="bar" style="width:4.2%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-46%</td></tr><tr><td class="mono">/v1/metrics/slos</td><td>List the service-level objectives</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.48</td><td class="num mono">1.89</td><td class="num mono">1.89</td>
-<td class="bar-cell"><span class="bar" style="width:4.1%"></span></td>
-<td class="num mono">785 B</td><td class="num mono ok">-44%</td></tr><tr><td class="mono">/v1/settings</td><td>Get the hub&#39;s settings</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.45</td><td class="num mono">1.87</td><td class="num mono">1.87</td>
-<td class="bar-cell"><span class="bar" style="width:4.1%"></span></td>
-<td class="num mono">1.3 KiB</td><td class="num mono ok">-67%</td></tr><tr><td class="mono">/v1/society</td><td>Show the society: agents, bonds and reputations</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.51</td><td class="num mono">1.87</td><td class="num mono">1.87</td>
-<td class="bar-cell"><span class="bar" style="width:4.1%"></span></td>
-<td class="num mono">52 B</td><td class="num mono ok">-81%</td></tr><tr><td class="mono">/v1/vault</td><td>Show the vault&#39;s state</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.66</td><td class="num mono">1.87</td><td class="num mono">1.87</td>
-<td class="bar-cell"><span class="bar" style="width:4.1%"></span></td>
-<td class="num mono">245 B</td><td class="num mono ">-5%</td></tr><tr><td class="mono">/v1/metrics/calls/page</td><td>Load the next page of calls</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.34</td><td class="num mono">1.87</td><td class="num mono">1.87</td>
-<td class="bar-cell"><span class="bar" style="width:4.1%"></span></td>
-<td class="num mono">351 B</td><td class="num mono ok">-34%</td></tr><tr><td class="mono">/v1/skills/export</td><td>Export several skills as one zip</td><td class="num"><span class="badge warn">422</span></td>
-<td class="num mono">0.61</td><td class="num mono">1.74</td><td class="num mono">1.74</td>
-<td class="bar-cell"><span class="bar" style="width:3.8%"></span></td>
-<td class="num mono">24 B</td><td class="num mono ok">-37%</td></tr><tr><td class="mono">/v1/recipes</td><td>List the review recipes and the orchestrator&#39;s proposals</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.16</td><td class="num mono">1.73</td><td class="num mono">1.73</td>
-<td class="bar-cell"><span class="bar" style="width:3.8%"></span></td>
-<td class="num mono">556 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/egress/inject</td><td>List the egress injection rules</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.67</td><td class="num mono">1.73</td><td class="num mono">1.73</td>
-<td class="bar-cell"><span class="bar" style="width:3.8%"></span></td>
-<td class="num mono">12 B</td><td class="num mono ">+11%</td></tr><tr><td class="mono">/v1/metrics/calls</td><td>List the agents&#39; calls</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.20</td><td class="num mono">1.71</td><td class="num mono">1.71</td>
-<td class="bar-cell"><span class="bar" style="width:3.7%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-48%</td></tr><tr><td class="mono">/v1/board/export</td><td>Export a board thread as Markdown or JSON</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.64</td><td class="num mono">1.68</td><td class="num mono">1.68</td>
-<td class="bar-cell"><span class="bar" style="width:3.7%"></span></td>
-<td class="num mono">69 B</td><td class="num mono ok">-41%</td></tr><tr><td class="mono">/v1/acp/sessions</td><td>List the editor (ACP) sessions</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.31</td><td class="num mono">1.64</td><td class="num mono">1.64</td>
-<td class="bar-cell"><span class="bar" style="width:3.6%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-74%</td></tr><tr><td class="mono">/v1/platforms/callback</td><td>Take the browser back from a platform</td><td class="num"><span class="badge warn">400</span></td>
-<td class="num mono">1.20</td><td class="num mono">1.64</td><td class="num mono">1.64</td>
-<td class="bar-cell"><span class="bar" style="width:3.6%"></span></td>
-<td class="num mono">501 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/fleet</td><td>List the machines and the agents on them</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.17</td><td class="num mono">1.64</td><td class="num mono">1.64</td>
-<td class="bar-cell"><span class="bar" style="width:3.6%"></span></td>
-<td class="num mono">295 B</td><td class="num mono ok">-26%</td></tr><tr><td class="mono">/v1/auth/check</td><td>Check that the session is signed in</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.60</td><td class="num mono">1.62</td><td class="num mono">1.62</td>
-<td class="bar-cell"><span class="bar" style="width:3.5%"></span></td>
-<td class="num mono">11 B</td><td class="num mono ok">-29%</td></tr><tr><td class="mono">/v1/connectors/proposals</td><td>List connector proposals, newest first</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.71</td><td class="num mono">1.61</td><td class="num mono">1.61</td>
-<td class="bar-cell"><span class="bar" style="width:3.5%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ">-14%</td></tr><tr><td class="mono">/v1/shares</td><td>List the share links, all of them or those of one target</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.70</td><td class="num mono">1.59</td><td class="num mono">1.59</td>
-<td class="bar-cell"><span class="bar" style="width:3.5%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+15%</td></tr><tr><td class="mono">/v1/metrics/around</td><td>Show what changed around a time</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">4.42</td><td class="num mono">7.60</td><td class="num mono">7.60</td>
+<td class="bar-cell"><span class="bar" style="width:7.9%"></span></td>
+<td class="num mono">202 B</td><td class="num mono crit">+36%</td></tr><tr><td class="mono">/v1/treasury</td><td>Show the treasury balances</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.10</td><td class="num mono">7.48</td><td class="num mono">7.48</td>
+<td class="bar-cell"><span class="bar" style="width:7.8%"></span></td>
+<td class="num mono">759 B</td><td class="num mono crit">+96%</td></tr><tr><td class="mono">/v1/usage-providers</td><td>List the usage providers (CLIProxyAPI hubs) and their last readings</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.69</td><td class="num mono">7.39</td><td class="num mono">7.39</td>
+<td class="bar-cell"><span class="bar" style="width:7.7%"></span></td>
 <td class="num mono">2 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/agent-proposals</td><td>List the agent proposals</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.07</td><td class="num mono">1.59</td><td class="num mono">1.59</td>
-<td class="bar-cell"><span class="bar" style="width:3.5%"></span></td>
-<td class="num mono">2 B</td><td class="num mono crit">+49%</td></tr><tr><td class="mono">/v1/appearance</td><td>Read the owner&#39;s appearance and saved themes</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.60</td><td class="num mono">1.58</td><td class="num mono">1.58</td>
-<td class="bar-cell"><span class="bar" style="width:3.5%"></span></td>
-<td class="num mono">112 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/foundry/hf/imports</td><td>List the Hugging Face imports</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.63</td><td class="num mono">1.54</td><td class="num mono">1.54</td>
+<td class="num mono">2.45</td><td class="num mono">7.38</td><td class="num mono">7.38</td>
+<td class="bar-cell"><span class="bar" style="width:7.7%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+590%</td></tr><tr><td class="mono">/v1/skills</td><td>List the skills, or the archived ones</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.94</td><td class="num mono">7.38</td><td class="num mono">7.38</td>
+<td class="bar-cell"><span class="bar" style="width:7.7%"></span></td>
+<td class="num mono">556 B</td><td class="num mono crit">+481%</td></tr><tr><td class="mono">/v1/robots/species</td><td>List the robot species with counts</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">4.50</td><td class="num mono">7.34</td><td class="num mono">7.34</td>
+<td class="bar-cell"><span class="bar" style="width:7.6%"></span></td>
+<td class="num mono">1.2 KiB</td><td class="num mono crit">+43%</td></tr><tr><td class="mono">/v1/board/export</td><td>Export a board thread as Markdown or JSON</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.69</td><td class="num mono">7.20</td><td class="num mono">7.20</td>
+<td class="bar-cell"><span class="bar" style="width:7.5%"></span></td>
+<td class="num mono">69 B</td><td class="num mono crit">+153%</td></tr><tr><td class="mono">/v1/library</td><td>List the library&#39;s tool versions</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.59</td><td class="num mono">7.10</td><td class="num mono">7.10</td>
+<td class="bar-cell"><span class="bar" style="width:7.4%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+154%</td></tr><tr><td class="mono">/v1/platforms</td><td>List the git platforms the plaza is authorized on</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.64</td><td class="num mono">7.10</td><td class="num mono">7.10</td>
+<td class="bar-cell"><span class="bar" style="width:7.4%"></span></td>
+<td class="num mono">323 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/vault/audit</td><td>Read the audit log, verifying it on request</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">4.75</td><td class="num mono">6.88</td><td class="num mono">6.88</td>
+<td class="bar-cell"><span class="bar" style="width:7.2%"></span></td>
+<td class="num mono">1.6 KiB</td><td class="num mono crit">+253%</td></tr><tr><td class="mono">/v1/conversations</td><td>List the conversations</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.20</td><td class="num mono">6.79</td><td class="num mono">6.79</td>
+<td class="bar-cell"><span class="bar" style="width:7.1%"></span></td>
+<td class="num mono">147 B</td><td class="num mono crit">+103%</td></tr><tr><td class="mono">/v1/foundry/hf/imports</td><td>List the Hugging Face imports</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.78</td><td class="num mono">6.56</td><td class="num mono">6.56</td>
+<td class="bar-cell"><span class="bar" style="width:6.8%"></span></td>
+<td class="num mono">14 B</td><td class="num mono crit">+90%</td></tr><tr><td class="mono">/v1/stations/recordings</td><td>List the station recordings, newest first</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.95</td><td class="num mono">6.50</td><td class="num mono">6.50</td>
+<td class="bar-cell"><span class="bar" style="width:6.8%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+491%</td></tr><tr><td class="mono">/v1/auth/check</td><td>Check that the session is signed in</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.69</td><td class="num mono">6.49</td><td class="num mono">6.49</td>
+<td class="bar-cell"><span class="bar" style="width:6.8%"></span></td>
+<td class="num mono">11 B</td><td class="num mono crit">+185%</td></tr><tr><td class="mono">/v1/hub-mcp/calls</td><td>List the recent MCP calls</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.35</td><td class="num mono">6.27</td><td class="num mono">6.27</td>
+<td class="bar-cell"><span class="bar" style="width:6.5%"></span></td>
+<td class="num mono">12 B</td><td class="num mono crit">+48%</td></tr><tr><td class="mono">/v1/mcp/servers</td><td>List the MCP servers</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.91</td><td class="num mono">6.21</td><td class="num mono">6.21</td>
+<td class="bar-cell"><span class="bar" style="width:6.5%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+103%</td></tr><tr><td class="mono">/v1/vault/consumers</td><td>List each consumer and its resolved entry</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.29</td><td class="num mono">6.21</td><td class="num mono">6.21</td>
+<td class="bar-cell"><span class="bar" style="width:6.5%"></span></td>
+<td class="num mono">4.0 KiB</td><td class="num mono crit">+133%</td></tr><tr><td class="mono">/v1/shares</td><td>List the share links, all of them or those of one target</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.21</td><td class="num mono">6.08</td><td class="num mono">6.08</td>
+<td class="bar-cell"><span class="bar" style="width:6.3%"></span></td>
+<td class="num mono">2 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/foundry/datasets</td><td>List the datasets</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.57</td><td class="num mono">6.02</td><td class="num mono">6.02</td>
+<td class="bar-cell"><span class="bar" style="width:6.3%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+179%</td></tr><tr><td class="mono">/v1/fleet</td><td>List the machines and the agents on them</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.16</td><td class="num mono">5.97</td><td class="num mono">5.97</td>
+<td class="bar-cell"><span class="bar" style="width:6.2%"></span></td>
+<td class="num mono">295 B</td><td class="num mono crit">+169%</td></tr><tr><td class="mono">/v1/platforms/callback</td><td>Take the browser back from a platform</td><td class="num"><span class="badge warn">400</span></td>
+<td class="num mono">3.06</td><td class="num mono">5.94</td><td class="num mono">5.94</td>
+<td class="bar-cell"><span class="bar" style="width:6.2%"></span></td>
+<td class="num mono">501 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/connectors</td><td>List the connectors and their settings</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.85</td><td class="num mono">5.92</td><td class="num mono">5.92</td>
+<td class="bar-cell"><span class="bar" style="width:6.2%"></span></td>
+<td class="num mono">11.6 KiB</td><td class="num mono ok">-50%</td></tr><tr><td class="mono">/v1/project-modes</td><td>List the modes a project can be in</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.10</td><td class="num mono">5.89</td><td class="num mono">5.89</td>
+<td class="bar-cell"><span class="bar" style="width:6.1%"></span></td>
+<td class="num mono">371 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/vault/secrets</td><td>List the vault&#39;s entries</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.63</td><td class="num mono">5.83</td><td class="num mono">5.83</td>
+<td class="bar-cell"><span class="bar" style="width:6.1%"></span></td>
+<td class="num mono">1.1 KiB</td><td class="num mono crit">+217%</td></tr><tr><td class="mono">/v1/owner/conversations</td><td>List the owner&#39;s conversations with the orchestrator</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.20</td><td class="num mono">5.70</td><td class="num mono">5.70</td>
+<td class="bar-cell"><span class="bar" style="width:5.9%"></span></td>
+<td class="num mono">2 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/hub-mcp</td><td>Show the hub&#39;s MCP server status</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.40</td><td class="num mono">5.61</td><td class="num mono">5.61</td>
+<td class="bar-cell"><span class="bar" style="width:5.8%"></span></td>
+<td class="num mono">278 B</td><td class="num mono crit">+80%</td></tr><tr><td class="mono">/v1/foundry/devices</td><td>List the accelerators and the jobs holding them</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.60</td><td class="num mono">5.60</td><td class="num mono">5.60</td>
+<td class="bar-cell"><span class="bar" style="width:5.8%"></span></td>
+<td class="num mono">15 B</td><td class="num mono crit">+28%</td></tr><tr><td class="mono">/v1/infractions</td><td>List the recent infractions</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.29</td><td class="num mono">5.59</td><td class="num mono">5.59</td>
+<td class="bar-cell"><span class="bar" style="width:5.8%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+94%</td></tr><tr><td class="mono">/v1/engines</td><td>List the coding engines: the built-in ones and the instances the owner added</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.60</td><td class="num mono">5.29</td><td class="num mono">5.29</td>
+<td class="bar-cell"><span class="bar" style="width:5.5%"></span></td>
+<td class="num mono">4.2 KiB</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/egress/inject</td><td>List the egress injection rules</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.19</td><td class="num mono">5.22</td><td class="num mono">5.22</td>
+<td class="bar-cell"><span class="bar" style="width:5.4%"></span></td>
+<td class="num mono">12 B</td><td class="num mono crit">+235%</td></tr><tr><td class="mono">/v1/metrics/traces</td><td>List the kept traces</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.35</td><td class="num mono">5.21</td><td class="num mono">5.21</td>
+<td class="bar-cell"><span class="bar" style="width:5.4%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+218%</td></tr><tr><td class="mono">/v1/foundry/models</td><td>List the foundry&#39;s models</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.23</td><td class="num mono">5.12</td><td class="num mono">5.12</td>
+<td class="bar-cell"><span class="bar" style="width:5.3%"></span></td>
+<td class="num mono">13 B</td><td class="num mono crit">+45%</td></tr><tr><td class="mono">/v1/metrics/events</td><td>List the metric events</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.73</td><td class="num mono">5.10</td><td class="num mono">5.10</td>
+<td class="bar-cell"><span class="bar" style="width:5.3%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+217%</td></tr><tr><td class="mono">/v1/node-link</td><td>Read this machine&#39;s link to a hub</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.28</td><td class="num mono">5.02</td><td class="num mono">5.02</td>
+<td class="bar-cell"><span class="bar" style="width:5.2%"></span></td>
+<td class="num mono">81 B</td><td class="num mono crit">+118%</td></tr><tr><td class="mono">/v1/weft</td><td>Show whether Weft, the plaza&#39;s version control, is running</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.09</td><td class="num mono">4.99</td><td class="num mono">4.99</td>
+<td class="bar-cell"><span class="bar" style="width:5.2%"></span></td>
+<td class="num mono">46 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/metrics/calls/page</td><td>Load the next page of calls</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.54</td><td class="num mono">4.97</td><td class="num mono">4.97</td>
+<td class="bar-cell"><span class="bar" style="width:5.2%"></span></td>
+<td class="num mono">351 B</td><td class="num mono crit">+76%</td></tr><tr><td class="mono">/v1/nodes</td><td>List the plaza&#39;s machines</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.62</td><td class="num mono">4.95</td><td class="num mono">4.95</td>
+<td class="bar-cell"><span class="bar" style="width:5.1%"></span></td>
+<td class="num mono">312 B</td><td class="num mono crit">+111%</td></tr><tr><td class="mono">/v1/usage/series</td><td>Show usage over time, bucketed</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.65</td><td class="num mono">4.86</td><td class="num mono">4.86</td>
+<td class="bar-cell"><span class="bar" style="width:5.1%"></span></td>
+<td class="num mono">28.0 KiB</td><td class="num mono crit">+78%</td></tr><tr><td class="mono">/v1/provider-catalog</td><td>What the Add provider dialog offers: the API kinds and the coding engines</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.21</td><td class="num mono">4.80</td><td class="num mono">4.80</td>
+<td class="bar-cell"><span class="bar" style="width:5.0%"></span></td>
+<td class="num mono">9.6 KiB</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/nodes/codes</td><td>List the join codes</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">1.98</td><td class="num mono">4.78</td><td class="num mono">4.78</td>
+<td class="bar-cell"><span class="bar" style="width:5.0%"></span></td>
+<td class="num mono">121 B</td><td class="num mono crit">+149%</td></tr><tr><td class="mono">/v1/usage/summary</td><td>Summarize usage over a time window</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.47</td><td class="num mono">4.77</td><td class="num mono">4.77</td>
+<td class="bar-cell"><span class="bar" style="width:5.0%"></span></td>
+<td class="num mono">252 B</td><td class="num mono ok">-31%</td></tr><tr><td class="mono">/v1/settings</td><td>Get the hub&#39;s settings</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.49</td><td class="num mono">4.66</td><td class="num mono">4.66</td>
+<td class="bar-cell"><span class="bar" style="width:4.8%"></span></td>
+<td class="num mono">1.3 KiB</td><td class="num mono ok">-18%</td></tr><tr><td class="mono">/v1/metrics/dashboards</td><td>Read the saved dashboards</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.36</td><td class="num mono">4.59</td><td class="num mono">4.59</td>
+<td class="bar-cell"><span class="bar" style="width:4.8%"></span></td>
+<td class="num mono">50 B</td><td class="num mono crit">+410%</td></tr><tr><td class="mono">/v1/metrics/catalog</td><td>Read the metric catalog</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.03</td><td class="num mono">4.53</td><td class="num mono">4.53</td>
+<td class="bar-cell"><span class="bar" style="width:4.7%"></span></td>
+<td class="num mono">28.4 KiB</td><td class="num mono crit">+189%</td></tr><tr><td class="mono">/v1/recipes</td><td>List the review recipes and the orchestrator&#39;s proposals</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">3.11</td><td class="num mono">4.52</td><td class="num mono">4.52</td>
+<td class="bar-cell"><span class="bar" style="width:4.7%"></span></td>
+<td class="num mono">556 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/metrics</td><td>Scrape the hub&#39;s Prometheus metrics</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.02</td><td class="num mono">4.39</td><td class="num mono">4.39</td>
+<td class="bar-cell"><span class="bar" style="width:4.6%"></span></td>
+<td class="num mono">5.1 KiB</td><td class="num mono crit">+129%</td></tr><tr><td class="mono">/v1/e2b/sandboxes</td><td>List all sandboxes for the owner&#39;s console</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.82</td><td class="num mono">4.37</td><td class="num mono">4.37</td>
+<td class="bar-cell"><span class="bar" style="width:4.5%"></span></td>
+<td class="num mono">16 B</td><td class="num mono crit">+150%</td></tr><tr><td class="mono">/v1/e2b/templates</td><td>List the templates and their builds</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.03</td><td class="num mono">4.31</td><td class="num mono">4.31</td>
+<td class="bar-cell"><span class="bar" style="width:4.5%"></span></td>
+<td class="num mono">16 B</td><td class="num mono crit">+168%</td></tr><tr><td class="mono">/v1/metrics/settings</td><td>Read the metrics settings</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.44</td><td class="num mono">4.28</td><td class="num mono">4.28</td>
+<td class="bar-cell"><span class="bar" style="width:4.5%"></span></td>
+<td class="num mono">292 B</td><td class="num mono crit">+163%</td></tr><tr><td class="mono">/v1/artifacts</td><td>List the artifacts, newest first (?project=, ?q=)</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">1.93</td><td class="num mono">4.18</td><td class="num mono">4.18</td>
+<td class="bar-cell"><span class="bar" style="width:4.3%"></span></td>
+<td class="num mono">2 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/stations/link</td><td>Open the workstation daemon&#39;s link socket</td><td class="num"><span class="badge warn">401</span></td>
+<td class="num mono">1.70</td><td class="num mono">4.10</td><td class="num mono">4.10</td>
+<td class="bar-cell"><span class="bar" style="width:4.3%"></span></td>
+<td class="num mono">61 B</td><td class="num mono crit">+204%</td></tr><tr><td class="mono">/v1/metrics/calls</td><td>List the agents&#39; calls</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.37</td><td class="num mono">3.79</td><td class="num mono">3.79</td>
+<td class="bar-cell"><span class="bar" style="width:3.9%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+16%</td></tr><tr><td class="mono">/v1/approvals</td><td>List the approvals, pending and decided</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.42</td><td class="num mono">3.78</td><td class="num mono">3.78</td>
+<td class="bar-cell"><span class="bar" style="width:3.9%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+122%</td></tr><tr><td class="mono">/v1/metrics/scopes</td><td>List the metric scopes</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.48</td><td class="num mono">3.63</td><td class="num mono">3.63</td>
+<td class="bar-cell"><span class="bar" style="width:3.8%"></span></td>
+<td class="num mono">6.3 KiB</td><td class="num mono ">+4%</td></tr><tr><td class="mono">/v1/acp/sessions</td><td>List the editor (ACP) sessions</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.37</td><td class="num mono">3.30</td><td class="num mono">3.30</td>
 <td class="bar-cell"><span class="bar" style="width:3.4%"></span></td>
-<td class="num mono">14 B</td><td class="num mono ok">-55%</td></tr><tr><td class="mono">/v1/hub-mcp</td><td>Show the hub&#39;s MCP server status</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.77</td><td class="num mono">1.50</td><td class="num mono">1.50</td>
-<td class="bar-cell"><span class="bar" style="width:3.3%"></span></td>
-<td class="num mono">278 B</td><td class="num mono ok">-52%</td></tr><tr><td class="mono">/v1/laws/violations</td><td>List the recorded refusals of a law</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.81</td><td class="num mono">1.46</td><td class="num mono">1.46</td>
+<td class="num mono">2 B</td><td class="num mono ok">-48%</td></tr><tr><td class="mono">/v1/e2b/keys</td><td>List the E2B API keys</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.44</td><td class="num mono">3.29</td><td class="num mono">3.29</td>
+<td class="bar-cell"><span class="bar" style="width:3.4%"></span></td>
+<td class="num mono">11 B</td><td class="num mono crit">+75%</td></tr><tr><td class="mono">/v1/treasury/wallets</td><td>List the agent wallets</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.35</td><td class="num mono">3.28</td><td class="num mono">3.28</td>
+<td class="bar-cell"><span class="bar" style="width:3.4%"></span></td>
+<td class="num mono">2 B</td><td class="num mono ">+14%</td></tr><tr><td class="mono">/v1/stations/vms</td><td>List the workstation VMs</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.03</td><td class="num mono">3.24</td><td class="num mono">3.24</td>
+<td class="bar-cell"><span class="bar" style="width:3.4%"></span></td>
+<td class="num mono">2 B</td><td class="num mono crit">+122%</td></tr><tr><td class="mono">/v1/stations/codes</td><td>List the join codes</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.43</td><td class="num mono">3.08</td><td class="num mono">3.08</td>
 <td class="bar-cell"><span class="bar" style="width:3.2%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ">-10%</td></tr><tr><td class="mono">/v1/laws/rules</td><td>List the owner&#39;s rules and overrides</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.64</td><td class="num mono">1.45</td><td class="num mono">1.45</td>
-<td class="bar-cell"><span class="bar" style="width:3.2%"></span></td>
-<td class="num mono">87 B</td><td class="num mono ok">-22%</td></tr><tr><td class="mono">/v1/prompts/rules</td><td>List the prompt rules and templates</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.69</td><td class="num mono">1.43</td><td class="num mono">1.43</td>
+<td class="num mono">2 B</td><td class="num mono crit">+18%</td></tr><tr><td class="mono">/v1/plaza/state</td><td>Show whether the plaza is stopped</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.11</td><td class="num mono">3.02</td><td class="num mono">3.02</td>
 <td class="bar-cell"><span class="bar" style="width:3.1%"></span></td>
-<td class="num mono">5.5 KiB</td><td class="num mono ok">-32%</td></tr><tr><td class="mono">/v1/platforms</td><td>List the git platforms the plaza is authorized on</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.29</td><td class="num mono">1.40</td><td class="num mono">1.40</td>
-<td class="bar-cell"><span class="bar" style="width:3.1%"></span></td>
-<td class="num mono">323 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/ide/audit</td><td>List the IDE&#39;s audit log</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.60</td><td class="num mono">1.38</td><td class="num mono">1.38</td>
+<td class="num mono">63 B</td><td class="num mono crit">+80%</td></tr><tr><td class="mono">/v1/ws</td><td>Open a socket that streams the hub&#39;s events</td><td class="num"><span class="badge warn">400</span></td>
+<td class="num mono">2.26</td><td class="num mono">2.84</td><td class="num mono">2.84</td>
 <td class="bar-cell"><span class="bar" style="width:3.0%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-78%</td></tr><tr><td class="mono">/v1/e2b/sandboxes</td><td>List all sandboxes for the owner&#39;s console</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.25</td><td class="num mono">1.38</td><td class="num mono">1.38</td>
-<td class="bar-cell"><span class="bar" style="width:3.0%"></span></td>
-<td class="num mono">16 B</td><td class="num mono ok">-21%</td></tr><tr><td class="mono">/v1/loops</td><td>List the scheduled loops</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.64</td><td class="num mono">1.36</td><td class="num mono">1.36</td>
-<td class="bar-cell"><span class="bar" style="width:3.0%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-56%</td></tr><tr><td class="mono">/v1/usage/calls</td><td>List the newest model calls</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.09</td><td class="num mono">1.35</td><td class="num mono">1.35</td>
-<td class="bar-cell"><span class="bar" style="width:2.9%"></span></td>
-<td class="num mono">41 B</td><td class="num mono ok">-50%</td></tr><tr><td class="mono">/v1/weft</td><td>Show whether Weft, the plaza&#39;s version control, is running</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.64</td><td class="num mono">1.34</td><td class="num mono">1.34</td>
-<td class="bar-cell"><span class="bar" style="width:2.9%"></span></td>
-<td class="num mono">46 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/plaza/state</td><td>Show whether the plaza is stopped</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.72</td><td class="num mono">1.34</td><td class="num mono">1.34</td>
-<td class="bar-cell"><span class="bar" style="width:2.9%"></span></td>
-<td class="num mono">63 B</td><td class="num mono ok">-20%</td></tr><tr><td class="mono">/v1/metrics/traces</td><td>List the kept traces</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">1.21</td><td class="num mono">1.33</td><td class="num mono">1.33</td>
-<td class="bar-cell"><span class="bar" style="width:2.9%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-19%</td></tr><tr><td class="mono">/v1/infractions</td><td>List the recent infractions</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.79</td><td class="num mono">1.30</td><td class="num mono">1.30</td>
-<td class="bar-cell"><span class="bar" style="width:2.8%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-55%</td></tr><tr><td class="mono">/v1/agora</td><td>Show the agora&#39;s calls</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.67</td><td class="num mono">1.28</td><td class="num mono">1.28</td>
-<td class="bar-cell"><span class="bar" style="width:2.8%"></span></td>
-<td class="num mono">52 B</td><td class="num mono ok">-65%</td></tr><tr><td class="mono">/v1/metrics/events</td><td>List the metric events</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.60</td><td class="num mono">1.27</td><td class="num mono">1.27</td>
-<td class="bar-cell"><span class="bar" style="width:2.8%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-21%</td></tr><tr><td class="mono">/v1/mcp/servers</td><td>List the MCP servers</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.68</td><td class="num mono">1.24</td><td class="num mono">1.24</td>
+<td class="num mono">79 B</td><td class="num mono ok">-55%</td></tr><tr><td class="mono">/v1/provider-kinds</td><td>List the provider kinds you can add</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">2.06</td><td class="num mono">2.59</td><td class="num mono">2.59</td>
 <td class="bar-cell"><span class="bar" style="width:2.7%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-59%</td></tr><tr><td class="mono">/v1/artifacts</td><td>List the artifacts, newest first (?project=, ?q=)</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.70</td><td class="num mono">1.23</td><td class="num mono">1.23</td>
-<td class="bar-cell"><span class="bar" style="width:2.7%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/usage/series</td><td>Show usage over time, bucketed</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.77</td><td class="num mono">1.23</td><td class="num mono">1.23</td>
-<td class="bar-cell"><span class="bar" style="width:2.7%"></span></td>
-<td class="num mono">28.0 KiB</td><td class="num mono ok">-55%</td></tr><tr><td class="mono">/v1/metrics/dashboards</td><td>Read the saved dashboards</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.62</td><td class="num mono">1.21</td><td class="num mono">1.21</td>
-<td class="bar-cell"><span class="bar" style="width:2.6%"></span></td>
-<td class="num mono">50 B</td><td class="num mono crit">+34%</td></tr><tr><td class="mono">/v1/toolbox</td><td>List the toolbox discoveries</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.96</td><td class="num mono">1.18</td><td class="num mono">1.18</td>
-<td class="bar-cell"><span class="bar" style="width:2.6%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-54%</td></tr><tr><td class="mono">/v1/skills</td><td>List the skills, or the archived ones</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.73</td><td class="num mono">1.11</td><td class="num mono">1.11</td>
-<td class="bar-cell"><span class="bar" style="width:2.4%"></span></td>
-<td class="num mono">556 B</td><td class="num mono ">-13%</td></tr><tr><td class="mono">/v1/node-link</td><td>Read this machine&#39;s link to a hub</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.61</td><td class="num mono">1.10</td><td class="num mono">1.10</td>
-<td class="bar-cell"><span class="bar" style="width:2.4%"></span></td>
-<td class="num mono">81 B</td><td class="num mono ok">-52%</td></tr><tr><td class="mono">/v1/project-modes</td><td>List the modes a project can be in</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.69</td><td class="num mono">1.05</td><td class="num mono">1.05</td>
-<td class="bar-cell"><span class="bar" style="width:2.3%"></span></td>
-<td class="num mono">371 B</td><td class="num mono ">new</td></tr><tr><td class="mono">/v1/approvals</td><td>List the approvals, pending and decided</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.75</td><td class="num mono">1.04</td><td class="num mono">1.04</td>
-<td class="bar-cell"><span class="bar" style="width:2.3%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-39%</td></tr><tr><td class="mono">/v1/projects</td><td>List the projects</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.82</td><td class="num mono">1.03</td><td class="num mono">1.03</td>
-<td class="bar-cell"><span class="bar" style="width:2.2%"></span></td>
-<td class="num mono">2.7 KiB</td><td class="num mono ok">-72%</td></tr><tr><td class="mono">/v1/metrics/catalog</td><td>Read the metric catalog</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.66</td><td class="num mono">1.02</td><td class="num mono">1.02</td>
-<td class="bar-cell"><span class="bar" style="width:2.2%"></span></td>
-<td class="num mono">28.4 KiB</td><td class="num mono ok">-35%</td></tr><tr><td class="mono">/v1/treasury/wallets</td><td>List the agent wallets</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.72</td><td class="num mono">0.99</td><td class="num mono">0.99</td>
-<td class="bar-cell"><span class="bar" style="width:2.2%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-66%</td></tr><tr><td class="mono">/v1/foundry/devices</td><td>List the accelerators and the jobs holding them</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.75</td><td class="num mono">0.96</td><td class="num mono">0.96</td>
-<td class="bar-cell"><span class="bar" style="width:2.1%"></span></td>
-<td class="num mono">15 B</td><td class="num mono ok">-78%</td></tr><tr><td class="mono">/v1/stations</td><td>List the workstations</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.62</td><td class="num mono">0.89</td><td class="num mono">0.89</td>
-<td class="bar-cell"><span class="bar" style="width:1.9%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-23%</td></tr><tr><td class="mono">/v1/nodes/codes</td><td>List the join codes</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.61</td><td class="num mono">0.88</td><td class="num mono">0.88</td>
-<td class="bar-cell"><span class="bar" style="width:1.9%"></span></td>
-<td class="num mono">121 B</td><td class="num mono ok">-54%</td></tr><tr><td class="mono">/v1/stations/audit</td><td>List the station audit, newest first</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.63</td><td class="num mono">0.85</td><td class="num mono">0.85</td>
-<td class="bar-cell"><span class="bar" style="width:1.9%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-33%</td></tr><tr><td class="mono">/v1/metrics/settings</td><td>Read the metrics settings</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.58</td><td class="num mono">0.84</td><td class="num mono">0.84</td>
-<td class="bar-cell"><span class="bar" style="width:1.8%"></span></td>
-<td class="num mono">292 B</td><td class="num mono ok">-48%</td></tr><tr><td class="mono">/v1/stations/recordings</td><td>List the station recordings, newest first</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.63</td><td class="num mono">0.82</td><td class="num mono">0.82</td>
-<td class="bar-cell"><span class="bar" style="width:1.8%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-25%</td></tr><tr><td class="mono">/v1/stations/recording-defaults</td><td>Show the recording defaults for new workstations</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.59</td><td class="num mono">0.79</td><td class="num mono">0.79</td>
-<td class="bar-cell"><span class="bar" style="width:1.7%"></span></td>
-<td class="num mono">74 B</td><td class="num mono ok">-27%</td></tr><tr><td class="mono">/v1/skills/rules</td><td>List the skill rules and the template</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.69</td><td class="num mono">0.78</td><td class="num mono">0.78</td>
-<td class="bar-cell"><span class="bar" style="width:1.7%"></span></td>
-<td class="num mono">2.3 KiB</td><td class="num mono ok">-70%</td></tr><tr><td class="mono">/v1/stations/link</td><td>Open the workstation daemon&#39;s link socket</td><td class="num"><span class="badge warn">401</span></td>
-<td class="num mono">0.62</td><td class="num mono">0.75</td><td class="num mono">0.75</td>
-<td class="bar-cell"><span class="bar" style="width:1.6%"></span></td>
-<td class="num mono">61 B</td><td class="num mono ok">-44%</td></tr><tr><td class="mono">/v1/foundry/datasets</td><td>List the datasets</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.60</td><td class="num mono">0.74</td><td class="num mono">0.74</td>
-<td class="bar-cell"><span class="bar" style="width:1.6%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-66%</td></tr><tr><td class="mono">/v1/stations/vms</td><td>List the workstation VMs</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.55</td><td class="num mono">0.72</td><td class="num mono">0.72</td>
-<td class="bar-cell"><span class="bar" style="width:1.6%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-51%</td></tr><tr><td class="mono">/v1/robots/species</td><td>List the robot species with counts</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.64</td><td class="num mono">0.72</td><td class="num mono">0.72</td>
-<td class="bar-cell"><span class="bar" style="width:1.6%"></span></td>
-<td class="num mono">1.2 KiB</td><td class="num mono ok">-86%</td></tr><tr><td class="mono">/v1/mcp/catalog</td><td>List the MCP server presets</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.59</td><td class="num mono">0.71</td><td class="num mono">0.71</td>
-<td class="bar-cell"><span class="bar" style="width:1.6%"></span></td>
-<td class="num mono">4.2 KiB</td><td class="num mono ok">-65%</td></tr><tr><td class="mono">/v1/e2b/keys</td><td>List the E2B API keys</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.55</td><td class="num mono">0.68</td><td class="num mono">0.68</td>
-<td class="bar-cell"><span class="bar" style="width:1.5%"></span></td>
-<td class="num mono">11 B</td><td class="num mono ok">-64%</td></tr><tr><td class="mono">/v1/metrics</td><td>Scrape the hub&#39;s Prometheus metrics</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.57</td><td class="num mono">0.67</td><td class="num mono">0.67</td>
-<td class="bar-cell"><span class="bar" style="width:1.5%"></span></td>
-<td class="num mono">5.1 KiB</td><td class="num mono ok">-65%</td></tr><tr><td class="mono">/v1/e2b/templates</td><td>List the templates and their builds</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.59</td><td class="num mono">0.66</td><td class="num mono">0.66</td>
-<td class="bar-cell"><span class="bar" style="width:1.4%"></span></td>
-<td class="num mono">16 B</td><td class="num mono ok">-59%</td></tr><tr><td class="mono">/v1/stations/codes</td><td>List the join codes</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.57</td><td class="num mono">0.65</td><td class="num mono">0.65</td>
-<td class="bar-cell"><span class="bar" style="width:1.4%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-75%</td></tr><tr><td class="mono">/v1/hub/identity</td><td>Show the hub&#39;s identity</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.58</td><td class="num mono">0.65</td><td class="num mono">0.65</td>
-<td class="bar-cell"><span class="bar" style="width:1.4%"></span></td>
-<td class="num mono">99 B</td><td class="num mono ok">-75%</td></tr><tr><td class="mono">/v1/foundry/jobs</td><td>List the jobs, newest first</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.59</td><td class="num mono">0.65</td><td class="num mono">0.65</td>
-<td class="bar-cell"><span class="bar" style="width:1.4%"></span></td>
-<td class="num mono">2 B</td><td class="num mono ok">-83%</td></tr><tr><td class="mono">/v1/foundry/models</td><td>List the foundry&#39;s models</td><td class="num"><span class="badge ok">200</span></td>
-<td class="num mono">0.59</td><td class="num mono">0.64</td><td class="num mono">0.64</td>
-<td class="bar-cell"><span class="bar" style="width:1.4%"></span></td>
-<td class="num mono">13 B</td><td class="num mono ok">-82%</td></tr></tbody></table></div>
+<td class="num mono">8.3 KiB</td><td class="num mono ok">-75%</td></tr><tr><td class="mono">/v1/board</td><td>Read the board</td><td class="num"><span class="badge ok">200</span></td>
+<td class="num mono">1.95</td><td class="num mono">2.37</td><td class="num mono">2.37</td>
+<td class="bar-cell"><span class="bar" style="width:2.5%"></span></td>
+<td class="num mono">134 B</td><td class="num mono ok">-72%</td></tr></tbody></table></div>
 
 <h2>Fuzzing (Schemathesis)</h2>
 <p class="note">Requests generated from <code>docs/api/openapi.json</code>: a 5xx answer or a connection dropped without an answer is a finding. 502 and 503 come from the scratch hub's missing node daemon and git host. Reported here; findings do not fail the pull request yet.</p>
 <details class="group"><summary><span class="group-name">Server error</span><span class="meta">17</span></summary>
 <table><thead><tr><th>Operation</th><th>What happened</th></tr></thead><tbody>
-<tr><td class="mono nowrap">POST /v1/agent-proposals/{id}/approve</td><td><pre>1. Test Case ID: Cld1Rt
+<tr><td class="mono nowrap">POST /v1/agent-proposals/{id}/approve</td><td><pre>1. Test Case ID: SVlIBE
 
 - Server error
 
@@ -1424,7 +1424,7 @@ a { color: var(--info-ink); }
 
 Reproduce with:
 
-    curl -X POST http://127.0.0.1:17777/v1/nodes/0/runs</pre></td></tr><tr><td class="mono nowrap">POST /v1/nodes/{id}/stop</td><td><pre>1. Test Case ID: YcAW7x
+    curl -X POST http://127.0.0.1:17777/v1/nodes/0/runs</pre></td></tr><tr><td class="mono nowrap">POST /v1/nodes/{id}/results</td><td><pre>1. Test Case ID: WfGQJY
 
 - Server error
 
@@ -1434,7 +1434,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X POST http://127.0.0.1:17777/v1/runs</pre></td></tr><tr><td class="mono nowrap">POST /v1/runs/{id}/input</td><td><pre>1. Test Case ID: HwYvCl
+    curl -X POST http://127.0.0.1:17777/v1/runs</pre></td></tr><tr><td class="mono nowrap">POST /v1/sanctions/{id}/lift</td><td><pre>1. Test Case ID: bLlnag
 
 - Server error
 
@@ -1444,7 +1444,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X POST http://127.0.0.1:17777/v1/runs/0/input</pre></td></tr><tr><td class="mono nowrap">POST /v1/sanctions/{id}/lift</td><td><pre>1. Test Case ID: zKHajm
+    curl -X POST http://127.0.0.1:17777/v1/runs/0/input</pre></td></tr><tr><td class="mono nowrap">POST /v1/skills</td><td><pre>1. Test Case ID: kOst0l
 
 - Server error
 
@@ -1454,7 +1454,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X POST -H &#39;Authorization: [Filtered]&#39; http://127.0.0.1:17777/v1/vault/recovery</pre></td></tr><tr><td class="mono nowrap">POST /v1/vault/rekey</td><td><pre>1. Test Case ID: JQHQeZ
+    curl -X POST -H &#39;Authorization: [Filtered]&#39; http://127.0.0.1:17777/v1/vault/recovery</pre></td></tr><tr><td class="mono nowrap">POST /v1/vault/seal</td><td><pre>1. Test Case ID: j3rOke
 
 - Server error
 
@@ -1464,7 +1464,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X POST http://127.0.0.1:17777/v1/volumes</pre></td></tr><tr><td class="mono nowrap">POST /v1/weft/{rest}</td><td><pre>1. Test Case ID: 5ku3N6
+    curl -X POST http://127.0.0.1:17777/v1/volumes</pre></td></tr><tr><td class="mono nowrap">POST /v1/weft/{rest}</td><td><pre>1. Test Case ID: r3Dvbm
 
 - Server error
 
@@ -1474,7 +1474,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X GET http://127.0.0.1:17777/v1/hub</pre></td></tr><tr><td class="mono nowrap">GET /v1/hub-mcp</td><td><pre>1. Test Case ID: psXCGc
+    curl -X GET http://127.0.0.1:17777/v1/hub</pre></td></tr><tr><td class="mono nowrap">GET /v1/hub-mcp</td><td><pre>1. Test Case ID: egZf4m
 
 - Server error
 
@@ -1484,7 +1484,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X GET http://127.0.0.1:17777/v1/machine</pre></td></tr><tr><td class="mono nowrap">GET /v1/machines</td><td><pre>1. Test Case ID: 8Q3Pad
+    curl -X GET http://127.0.0.1:17777/v1/machine</pre></td></tr><tr><td class="mono nowrap">GET /v1/mcp/servers</td><td><pre>1. Test Case ID: XfuSdX
 
 - Server error
 
@@ -1494,7 +1494,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X GET http://127.0.0.1:17777/v1/nodes/0/machine</pre></td></tr><tr><td class="mono nowrap">GET /v1/nodes/{id}/runs</td><td><pre>1. Test Case ID: UjBqch
+    curl -X GET http://127.0.0.1:17777/v1/nodes/0/machine</pre></td></tr><tr><td class="mono nowrap">GET /v1/nodes</td><td><pre>1. Test Case ID: t51xDF
 
 - Server error
 
@@ -1504,7 +1504,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X GET http://127.0.0.1:17777/v1/nodes/0/runs</pre></td></tr><tr><td class="mono nowrap">GET /v1/nodes/{id}/stats</td><td><pre>1. Test Case ID: jeUQcT
+    curl -X GET http://127.0.0.1:17777/v1/nodes/0/stats</pre></td></tr><tr><td class="mono nowrap">GET /v1/nodes/{id}/runs</td><td><pre>1. Test Case ID: YGfqVP
 
 - Server error
 
@@ -1514,7 +1514,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X GET http://127.0.0.1:17777/v1/nodes/0/stats</pre></td></tr><tr><td class="mono nowrap">GET /v1/overview</td><td><pre>1. Test Case ID: 7qG3Eu
+    curl -X GET http://127.0.0.1:17777/v1/nodes/0/runs</pre></td></tr><tr><td class="mono nowrap">GET /v1/owner/conversations</td><td><pre>1. Test Case ID: sREvjD
 
 - Server error
 
@@ -1524,7 +1524,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X GET http://127.0.0.1:17777/v1/runs</pre></td></tr><tr><td class="mono nowrap">GET /v1/runs/{id}</td><td><pre>1. Test Case ID: oS5KSP
+    curl -X GET http://127.0.0.1:17777/v1/runs</pre></td></tr><tr><td class="mono nowrap">GET /v1/runs/{id}</td><td><pre>1. Test Case ID: wUVx2k
 
 - Server error
 
@@ -1534,7 +1534,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X GET http://127.0.0.1:17777/v1/runs/0</pre></td></tr><tr><td class="mono nowrap">GET /v1/sanctions</td><td><pre>1. Test Case ID: ELJmBo
+    curl -X GET http://127.0.0.1:17777/v1/runs/0</pre></td></tr><tr><td class="mono nowrap">GET /v1/sanctions</td><td><pre>1. Test Case ID: WQh3ay
 
 - Server error
 
@@ -1544,7 +1544,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X GET http://127.0.0.1:17777/v1/templates</pre></td></tr><tr><td class="mono nowrap">GET /v1/toolbox</td><td><pre>1. Test Case ID: VZNLFX
+    curl -X GET http://127.0.0.1:17777/v1/templates</pre></td></tr><tr><td class="mono nowrap">GET /v1/treasury/journal</td><td><pre>1. Test Case ID: Raunbk
 
 - Server error
 
@@ -1554,7 +1554,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X GET http://127.0.0.1:17777/v1/volumes</pre></td></tr><tr><td class="mono nowrap">GET /v1/weft</td><td><pre>1. Test Case ID: 8HJrp7
+    curl -X GET http://127.0.0.1:17777/v1/volumes</pre></td></tr><tr><td class="mono nowrap">GET /v1/weft</td><td><pre>1. Test Case ID: UHBt3y
 
 - Server error
 
@@ -1564,7 +1564,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X DELETE http://127.0.0.1:17777/v1/runs/0</pre></td></tr><tr><td class="mono nowrap">DELETE /v1/shares/{id}</td><td><pre>1. Test Case ID: OB0Vde
+    curl -X DELETE http://127.0.0.1:17777/v1/runs/0</pre></td></tr><tr><td class="mono nowrap">DELETE /v1/shares/{id}</td><td><pre>1. Test Case ID: BYCWfD
 
 - Server error
 
@@ -1574,7 +1574,7 @@ Reproduce with:
 
 Reproduce with:
 
-    curl -X DELETE http://127.0.0.1:17777/v1/templates/0</pre></td></tr><tr><td class="mono nowrap">DELETE /v1/toolbox/{id}</td><td><pre>1. Test Case ID: VDQkAN
+    curl -X DELETE http://127.0.0.1:17777/v1/templates/0</pre></td></tr><tr><td class="mono nowrap">DELETE /v1/toolbox/{id}</td><td><pre>1. Test Case ID: 0MDTvh
 
 - Server error
 
