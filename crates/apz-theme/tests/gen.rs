@@ -14,7 +14,10 @@ fn check(path: &str, want: &str) {
         std::fs::write(&path, want).unwrap();
         return;
     }
-    let have = std::fs::read_to_string(&path).unwrap_or_default();
+    // A Windows checkout may hold the file with CRLF line endings; the content is what matters.
+    let have = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
     assert!(
         have == want,
         "{} is stale: run APZ_REGEN=1 cargo test -p apz-theme --test gen",

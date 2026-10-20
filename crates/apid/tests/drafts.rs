@@ -212,7 +212,7 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
         Duration::from_secs(15),
         |task| task["agent_cid"] == SPAWNED_QA,
     );
-    assert_eq!(claimed["agent_cid"], SPAWNED_QA, "{claimed}");
+    assert_eq!(claimed["agent_cid"], SPAWNED_QA, "{claimed}\n{}", hub.log());
 
     // The orchestrator is told in the conversation, and a task it posts there goes to the project.
     let notice = pushed(&gateway, ORCHESTRATOR)
