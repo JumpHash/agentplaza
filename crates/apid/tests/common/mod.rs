@@ -21,7 +21,9 @@ const APID: &str = env!("CARGO_BIN_EXE_apid");
 /// Ports the owner's own hub and daemons use. A test never picks one of them.
 const OWNER_PORTS: [u16; 3] = [7700, 8899, 19080];
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
-const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// One request's answer. Generous: a busy CI runner (thousands of tests at once) can take over ten seconds for a
+/// call that compiles a Weft language pack on its first use (review_tree), and a hang still fails.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTEMPTS: u32 = 3;
 
 /// A temp directory removed on drop.
