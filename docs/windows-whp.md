@@ -100,8 +100,10 @@ Expected: the kernel banner and boot log on the console (`Linux version …`, `t
 In one terminal, the host end of the guest protocol for guest CID 3:
 
 ```powershell
-vsockd --cids 3
+vsockd --cids 3 --insecure-no-token
 ```
+
+(A test run without a hub: `--insecure-no-token` leaves its HTTP API open on loopback. A real node passes `--internal-token-file`.)
 
 It listens at `%LOCALAPPDATA%\AgentPlaza\state\vsock\vm3_5000` (the guest protocol) and `vm3_5001`
 (the egress proxy), and serves its status on `http://127.0.0.1:19080`.

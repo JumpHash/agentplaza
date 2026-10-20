@@ -53,7 +53,7 @@ const VIRTIO_RING_F_EVENT_IDX: u64 = 1 << 29;
 const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
 /// `VIRTIO_BLK_F_RO` (feature bit 5): the volume is read-only. Offered only by
 /// a device opened with [`VirtioBlock::new_read_only`]; the device refuses every
-/// write-type request on such a volume.
+/// write-type request and every FLUSH on such a volume.
 const VIRTIO_BLK_F_RO: u64 = 1 << 5;
 
 /// The features a writable volume's device offers the driver: the modern-transport
@@ -191,8 +191,8 @@ pub struct DiskProperties {
     file: File,
     /// The volume's capacity, in 512-byte sectors.
     nsectors: u64,
-    /// Whether the volume was opened read-only: every write-type request is
-    /// refused, and the device offers `VIRTIO_BLK_F_RO`.
+    /// Whether the volume was opened read-only: every write-type request and
+    /// FLUSH is refused, and the device offers `VIRTIO_BLK_F_RO`.
     read_only: bool,
     /// What a `VIRTIO_BLK_T_GET_ID` request returns.
     ///
@@ -278,19 +278,37 @@ impl DiskProperties {
         count: u32,
     ) -> Result<u32, IoErr> {
         self.file.seek(SeekFrom::Start(offset))?;
-        #[cfg_attr(windows, allow(unused_mut))]
-        let mut slice = mem
-            .get_slice(addr, u64_to_usize(u64::from(count)))
-            .map_err(IoErr::GuestMemory)?;
         #[cfg(unix)]
-        self.file.read_exact_volatile(&mut slice)?;
-        // Windows has no volatile file transfer in `vm-memory`: the bytes go through a buffer.
+        {
+            let mut slice = mem
+                .get_slice(addr, u64_to_usize(u64::from(count)))
+                .map_err(IoErr::GuestMemory)?;
+            self.file.read_exact_volatile(&mut slice)?;
+        }
+        // Windows has no volatile file transfer in `vm-memory`: the bytes go through a
+        // scratch buffer, one chunk at a time. A request can cover the whole volume, so
+        // the buffer is capped at `WINDOWS_CHUNK` rather than sized to the request.
         #[cfg(windows)]
         {
             use std::io::Read;
-            let mut buffer = vec![0u8; slice.len()];
-            self.file.read_exact(&mut buffer)?;
-            slice.copy_from(&buffer);
+            const WINDOWS_CHUNK: u32 = 1 << 20;
+            // The whole guest range is checked first, so a bad address fails before any file read.
+            mem.get_slice(addr, u64_to_usize(u64::from(count)))
+                .map_err(IoErr::GuestMemory)?;
+            let mut buffer = vec![0u8; u64_to_usize(u64::from(count.min(WINDOWS_CHUNK)))];
+            let mut done = 0u32;
+            while done < count {
+                let len = (count - done).min(WINDOWS_CHUNK);
+                let bytes = u64_to_usize(u64::from(len));
+                self.file.read_exact(&mut buffer[..bytes])?;
+                mem.get_slice(
+                    vm_memory::Address::unchecked_add(&addr, u64::from(done)),
+                    bytes,
+                )
+                .map_err(IoErr::GuestMemory)?
+                .copy_from(&buffer[..bytes]);
+                done += len;
+            }
         }
         self.counters
             .read_bytes
@@ -307,17 +325,34 @@ impl DiskProperties {
         count: u32,
     ) -> Result<u32, IoErr> {
         self.file.seek(SeekFrom::Start(offset))?;
-        let slice = mem
-            .get_slice(addr, u64_to_usize(u64::from(count)))
-            .map_err(IoErr::GuestMemory)?;
         #[cfg(unix)]
-        self.file.write_all_volatile(&slice)?;
+        {
+            let slice = mem
+                .get_slice(addr, u64_to_usize(u64::from(count)))
+                .map_err(IoErr::GuestMemory)?;
+            self.file.write_all_volatile(&slice)?;
+        }
+        // Windows: the same chunking as `read`, in the other direction.
         #[cfg(windows)]
         {
             use std::io::Write;
-            let mut buffer = vec![0u8; slice.len()];
-            slice.copy_to(&mut buffer[..]);
-            self.file.write_all(&buffer)?;
+            const WINDOWS_CHUNK: u32 = 1 << 20;
+            mem.get_slice(addr, u64_to_usize(u64::from(count)))
+                .map_err(IoErr::GuestMemory)?;
+            let mut buffer = vec![0u8; u64_to_usize(u64::from(count.min(WINDOWS_CHUNK)))];
+            let mut done = 0u32;
+            while done < count {
+                let len = (count - done).min(WINDOWS_CHUNK);
+                let bytes = u64_to_usize(u64::from(len));
+                mem.get_slice(
+                    vm_memory::Address::unchecked_add(&addr, u64::from(done)),
+                    bytes,
+                )
+                .map_err(IoErr::GuestMemory)?
+                .copy_to(&mut buffer[..bytes]);
+                self.file.write_all(&buffer[..bytes])?;
+                done += len;
+            }
         }
         self.counters
             .write_bytes
@@ -386,8 +421,9 @@ impl VirtioBlock {
     /// VMs.
     ///
     /// The file is opened `O_RDONLY` and the device offers `VIRTIO_BLK_F_RO`.
-    /// Every write-type request is answered `VIRTIO_BLK_S_IOERR` without touching
-    /// the file; `GET_ID` returns `id`, cut to 20 bytes and zero-padded.
+    /// Every write-type request and FLUSH is answered `VIRTIO_BLK_S_IOERR`
+    /// without touching the file; `GET_ID` returns `id`, cut to 20 bytes and
+    /// zero-padded.
     pub fn new_read_only(path: &Path, id: &str) -> Result<VirtioBlock, VirtioBlockError> {
         let disk = DiskProperties::open(path, true, device_id(id))?;
         Ok(Self::from_disk(disk, AVAIL_FEATURES | VIRTIO_BLK_F_RO))
@@ -1082,5 +1118,63 @@ mod tests {
             let (_file, mut block) = read_only_volume(&[0u8; 4096], id);
             assert_eq!(get_id_of(&mut block), want, "{case}");
         }
+    }
+
+    /// A FLUSH on a read-only device is refused with `VIRTIO_BLK_S_IOERR`, the
+    /// status a write gets, before any I/O reaches the file.
+    #[test]
+    fn a_flush_on_a_read_only_device_is_refused_like_a_write() {
+        let (_file, mut block) = read_only_volume(&[0u8; 4096], "");
+        let mem = default_mem();
+        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+        block.queue = vq.create_queue();
+        activate(&mut block, &mem);
+
+        let chain = RequestDescriptorChain::new(&vq);
+        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_FLUSH, 0));
+        chain.set_data_flags(VIRTQ_DESC_F_NEXT);
+        chain.set_data_len(0);
+        chain.publish();
+
+        block.process_queue().expect("a well-formed ring drains");
+        assert_eq!(chain.status(), VIRTIO_BLK_S_IOERR);
+        assert_eq!(vq.used_elem(0), (0, 1), "only the status byte is written");
+    }
+
+    /// `GET_ID` with a buffer longer than the id is answered `VIRTIO_BLK_S_OK`:
+    /// the id, zero-padded, fills the buffer's first `VIRTIO_BLK_ID_BYTES` bytes
+    /// and the rest of the buffer is left as it was.
+    #[test]
+    fn a_get_id_with_a_long_buffer_is_answered_ok_with_the_id_first() {
+        let (_file, mut block) = read_only_volume(&[0u8; 4096], "ws-42");
+        let mem = default_mem();
+        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+        block.queue = vq.create_queue();
+        activate(&mut block, &mem);
+
+        const BUFFER_LEN: u32 = 64;
+        let chain = RequestDescriptorChain::new(&vq);
+        chain.set_header(RequestHeader::new(VIRTIO_BLK_T_GET_ID, 0));
+        chain.set_data_len(BUFFER_LEN);
+        chain.write_data(&[0xaa; BUFFER_LEN as usize]);
+        chain.publish();
+
+        block.process_queue().expect("a well-formed ring drains");
+        assert_eq!(chain.status(), VIRTIO_BLK_S_OK);
+        // The id plus the status byte.
+        assert_eq!(vq.used_elem(0), (0, 21));
+
+        let read = chain.read_data(BUFFER_LEN as usize);
+        let mut want = b"ws-42".to_vec();
+        want.resize(VIRTIO_BLK_ID_BYTES as usize, 0);
+        assert_eq!(
+            &read[..want.len()],
+            &want[..],
+            "the id, zero-padded, comes first"
+        );
+        assert!(
+            read[want.len()..].iter().all(|&byte| byte == 0xaa),
+            "the rest of the buffer is untouched"
+        );
     }
 }

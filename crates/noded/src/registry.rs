@@ -911,6 +911,16 @@ fn sandbox_workspace_path(run_dir: &Path, index: usize) -> PathBuf {
     run_dir.join(format!("workspace-{index}.ext4"))
 }
 
+/// Lays `target` down as a clone of the template disk `disk`. The target's directory is made private
+/// (0700), as every other maker of it makes it: it may be the persistent workspaces directory, which
+/// holds every keepalive agent's files.
+fn lay_down(disk: &Path, target: &Path) -> std::io::Result<()> {
+    if let Some(dir) = target.parent() {
+        snapshots::private_dir(dir)?;
+    }
+    vmm::clonefile::clone_file(disk, target).map(|_| ())
+}
+
 /// The template start of one new VM of the shape `shape` (guest CID `cid`), whose workspace is `target`
 /// (`None` for a VM with no workspace volume): the template for the shape (built on first use) with
 /// `target` laid down as a clone of its disk. The result is the template's snapshot to restore the VM
@@ -929,11 +939,7 @@ fn template_start(
         }
     };
     let laid = match (target, template.workspace.as_deref()) {
-        (Some(target), Some(disk)) => target
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| vmm::clonefile::clone_file(disk, target))
-            .map(|_| ()),
+        (Some(target), Some(disk)) => lay_down(disk, target),
         // No disk on either side: the VM has no workspace volume, so there is nothing to lay down.
         (None, None) => Ok(()),
         // The template is of the VM's own shape, so its disk and the VM's always agree.
@@ -5539,6 +5545,29 @@ mod sandbox_tests {
                 .join("cid-20.ext4")
                 .exists()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A template's disk laid down for a keepalive VM makes the persistent workspaces directory
+    /// private, as `prepare_persistent_workspace` does when it makes the copy itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_laid_down_workspace_gets_a_private_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("apz-noded-lay-down-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let disk = dir.join("template.img");
+        std::fs::write(&disk, b"disk").expect("the template disk");
+        let target = persistent_workspace_path(&dir.join("persist"), 20);
+        lay_down(&disk, &target).expect("laid down");
+        assert_eq!(std::fs::read(&target).expect("the copy"), b"disk");
+        let parent = target.parent().expect("a parent");
+        let mode = std::fs::metadata(parent)
+            .expect("the directory")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

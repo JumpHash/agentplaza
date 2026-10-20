@@ -7,7 +7,12 @@ Amazon.com, Inc. or its affiliates, licensed under the Apache License,
 Version 2.0 (see LICENSE in this directory).
 
 Files under crates/vmm/src/{vstate,arch,devices,builder} are derived from
-Firecracker's src/vmm crate (tree/main), and crates/vmm/src/builder.rs
+Firecracker's src/vmm crate as of its main branch on 2026-10-10: upstream
+commit fd9fc7a9f164b73002d22065d17c150d8c262d91 (2026-10-08), the newest on
+main at the port. Upstream's security advisories up to then are in that tree;
+the two published in 2026 (GHSA-776c-mpj7-jm3r, the virtio-pci transport, and
+GHSA-36j2-f825-qvgc, the jailer) are in code this port does not carry. A later
+upstream fix is taken by comparing against that commit. crates/vmm/src/builder.rs
 additionally from Firecracker's src/device_manager/legacy.rs (outside src/vmm),
 and adapted:
 

@@ -246,14 +246,16 @@ impl VsockPacketTx {
             Err(err) => return Err(VsockError::GuestMemoryMmap(err.into())),
         }
 
-        if hdr.len > defs::MAX_PKT_BUF_SIZE {
-            return Err(VsockError::InvalidPktLen(hdr.len));
+        // Read the length through the accessor: it converts from the packet's
+        // little-endian wire order, which the raw field does not.
+        if hdr.len() > defs::MAX_PKT_BUF_SIZE {
+            return Err(VsockError::InvalidPktLen(hdr.len()));
         }
 
-        if hdr.len > self.buffer.len() - VSOCK_PKT_HDR_SIZE {
+        if hdr.len() > self.buffer.len() - VSOCK_PKT_HDR_SIZE {
             return Err(VsockError::DescChainTooShortForPacket(
                 self.buffer.len(),
-                hdr.len,
+                hdr.len(),
             ));
         }
         self.hdr = hdr;
@@ -353,8 +355,8 @@ impl VsockPacketRx {
     /// packet's payload as described by this [`VsockPacket`] would exceed
     /// [`defs::MAX_PKT_BUF_SIZE`].
     pub fn commit_hdr(&mut self) -> Result<(), VsockError> {
-        if self.hdr.len > defs::MAX_PKT_BUF_SIZE {
-            return Err(VsockError::InvalidPktLen(self.hdr.len));
+        if self.hdr.len() > defs::MAX_PKT_BUF_SIZE {
+            return Err(VsockError::InvalidPktLen(self.hdr.len()));
         }
         self.buffer
             .write_all_volatile_at(self.hdr.as_slice(), 0)

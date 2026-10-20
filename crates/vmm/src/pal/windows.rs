@@ -446,8 +446,8 @@ pub mod epoll {
             unsafe {
                 getsockopt(
                     sock as SOCKET,
-                    SOL_SOCKET as i32,
-                    SO_TYPE as i32,
+                    SOL_SOCKET,
+                    SO_TYPE,
                     std::ptr::addr_of_mut!(ty).cast(),
                     &mut len,
                 )

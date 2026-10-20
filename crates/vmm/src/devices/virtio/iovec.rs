@@ -363,7 +363,9 @@ impl<const L: u16> IoVecBufferMut<L> {
     /// This will drop memory described by the `IoVecBufferMut` from the beginning.
     pub fn drop_chain_front(&mut self, parse_descriptor: &ParsedDescriptorChain) {
         self.vecs.pop_front(parse_descriptor.nr_iovecs);
-        self.len -= parse_descriptor.length;
+        // A chain larger than what the buffer holds must not wrap `len`: clamp it
+        // to empty in release builds, the same as the debug build would reject.
+        self.len = self.len.saturating_sub(parse_descriptor.length);
     }
 
     /// Drop descriptor chain from the `IoVecBufferMut` back
@@ -510,6 +512,29 @@ mod tests {
     use crate::devices::virtio::queue::{FIRECRACKER_MAX_QUEUE_SIZE, VIRTQ_DESC_F_WRITE};
     use crate::devices::virtio::test_utils::{VirtQueue, default_mem};
     use crate::vstate::memory::{Bytes, GuestAddress};
+
+    #[test]
+    fn drop_chain_front_does_not_wrap_len() {
+        let mut buffer: IoVecBufferMut = IoVecBufferMut::new().unwrap();
+        // A chain claiming more bytes than the buffer holds clamps `len` to zero
+        // rather than wrapping it.
+        buffer.len = 10;
+        buffer.drop_chain_front(&ParsedDescriptorChain {
+            head_index: 0,
+            length: 25,
+            nr_iovecs: 0,
+        });
+        assert_eq!(buffer.len(), 0);
+
+        // A chain that fits still subtracts exactly.
+        buffer.len = 10;
+        buffer.drop_chain_front(&ParsedDescriptorChain {
+            head_index: 0,
+            length: 4,
+            nr_iovecs: 0,
+        });
+        assert_eq!(buffer.len(), 6);
+    }
 
     #[test]
     fn iovec_buffer_rejects_write_only_descriptor() {

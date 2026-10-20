@@ -117,7 +117,7 @@ fn check_layout(mem: &GuestMemoryMmap, regions: &[RegionMeta]) -> Result<(), Sna
 fn layout_end(regions: &[RegionMeta]) -> u64 {
     regions
         .iter()
-        .map(|meta| meta.offset + meta.len)
+        .map(|meta| meta.offset.saturating_add(meta.len))
         .max()
         .unwrap_or(0)
 }

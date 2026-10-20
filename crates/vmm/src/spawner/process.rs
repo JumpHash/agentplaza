@@ -132,6 +132,7 @@
 use crate::cgroup::{VmCgroup, VmLimits};
 
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -139,7 +140,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{
     CHILD_BOOT_TIMEOUT, CHILD_READY, IoStats, MemoryControl, MemoryStats, SnapshotInfo,
@@ -783,32 +784,193 @@ fn parse_stats(fields: &str) -> Result<MemoryStats, String> {
     })
 }
 
+/// Connects to the Unix socket at `path`, and gives up after `timeout`.
+///
+/// A Unix-socket `connect` has no timeout of its own, so the socket is made
+/// non-blocking and the connect is retried every 10 ms on the answers that mean
+/// "not accepting yet": Linux refuses a full backlog with `EAGAIN`, macOS with
+/// `ECONNREFUSED` while the listener exists, and `EINPROGRESS` is waited on
+/// ([`finish_connect`]). A missing path and any other error return at once.
+/// No thread is started, so none is left behind when the deadline passes.
+fn connect_within(path: &Path, timeout: Duration) -> std::io::Result<UnixStream> {
+    const RETRY: Duration = Duration::from_millis(10);
+    let (addr, len) = sockaddr_un(path)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        // A fresh socket per attempt, since a refused connect is not reused.
+        let fd = new_socket()?;
+        match connect_once(&fd, &addr, len) {
+            Ok(()) => return blocking(fd),
+            Err(err) => match err.raw_os_error() {
+                Some(libc::EINPROGRESS) => return finish_connect(fd, deadline),
+                Some(libc::EAGAIN | libc::ECONNREFUSED) => {}
+                Some(libc::EINTR) => continue,
+                _ => return Err(err),
+            },
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(timed_out());
+        }
+        thread::sleep(RETRY.min(left));
+    }
+}
+
+fn timed_out() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "the connect did not complete in time",
+    )
+}
+
+/// The `sockaddr_un` for `path`, and its length. A path that leaves no room for
+/// the terminating NUL in `sun_path` (`SUN_LEN`) is refused.
+#[allow(unsafe_code)]
+fn sockaddr_un(path: &Path) -> std::io::Result<(libc::sockaddr_un, libc::socklen_t)> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un is plain old data, so all-zero bytes are a valid value;
+    // every field the kernel reads is set below.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.len() >= addr.sun_path.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "the socket path {} is too long for sun_path",
+                path.display()
+            ),
+        ));
+    }
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (slot, byte) in addr.sun_path.iter_mut().zip(bytes) {
+        *slot = *byte as libc::c_char;
+    }
+    let len = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        addr.sun_len = len as u8;
+    }
+    Ok((addr, len as libc::socklen_t))
+}
+
+/// A new close-on-exec, non-blocking Unix stream socket.
+#[allow(unsafe_code)]
+fn new_socket() -> std::io::Result<OwnedFd> {
+    #[cfg(target_os = "linux")]
+    let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let kind = libc::SOCK_STREAM;
+    // SAFETY: `socket` takes plain integers; a non-negative result is a new
+    // descriptor that nothing else holds.
+    let raw = unsafe { libc::socket(libc::AF_UNIX, kind, 0) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `raw` was just returned by `socket`, is open, and is handed over
+    // to `fd` alone, which closes it.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: `fd` is open; FD_CLOEXEC is a descriptor flag and takes no pointer.
+        let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+        if rc < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    // SAFETY: `fd` is open; F_GETFL takes no pointer.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is open; the new flags are the current ones plus O_NONBLOCK.
+    let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(fd)
+}
+
+/// One non-blocking `connect(2)` of `fd` to `addr`.
+#[allow(unsafe_code)]
+fn connect_once(
+    fd: &OwnedFd,
+    addr: &libc::sockaddr_un,
+    len: libc::socklen_t,
+) -> std::io::Result<()> {
+    // SAFETY: `fd` is an open socket we own, and `addr` holds `len` initialized
+    // bytes of a sockaddr_un; both outlive the call.
+    let rc = unsafe { libc::connect(fd.as_raw_fd(), std::ptr::from_ref(addr).cast(), len) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Waits, until `deadline`, for the connect in progress on `fd` to finish, then
+/// returns the stream, or the error the socket reports (`SO_ERROR`).
+#[allow(unsafe_code)]
+fn finish_connect(fd: OwnedFd, deadline: Instant) -> std::io::Result<UnixStream> {
+    let mut waiting = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let ms = libc::c_int::try_from(left.as_millis()).unwrap_or(libc::c_int::MAX);
+        // SAFETY: `waiting` is one valid pollfd for the call, and `fd` stays open
+        // until this function returns.
+        let ready = unsafe { libc::poll(&mut waiting, 1, ms) };
+        if ready > 0 {
+            break;
+        }
+        if ready == 0 {
+            return Err(timed_out());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EINTR) {
+            return Err(err);
+        }
+    }
+    let stream = UnixStream::from(fd);
+    if let Some(err) = stream.take_error()? {
+        return Err(err);
+    }
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
+
+/// The connected socket, switched back to blocking mode: the caller bounds each
+/// I/O step with its own timeouts.
+fn blocking(fd: OwnedFd) -> std::io::Result<UnixStream> {
+    let stream = UnixStream::from(fd);
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
+
 /// One exchange with the child's control socket: connect, send `request` as one
 /// line, read the reply line. `timeout` bounds the connect and each I/O step, so
 /// a request that the child is still working on (a snapshot) gets its budget.
 ///
-/// The connect runs on a helper thread, so a listener that stops accepting
-/// cannot hold the caller past `timeout` (a Unix-socket `connect` has no timeout
-/// of its own). If the caller gives up while that thread is still connecting,
-/// the thread finishes or fails on its own and its result is dropped.
+/// The connect is bounded by `timeout` and starts no thread ([`connect_within`]),
+/// so a listener that stops accepting cannot hold the caller past it, and no
+/// detached thread is left blocked in `connect` when it does.
 fn exchange(path: &Path, request: &str, timeout: Duration) -> Result<String, String> {
     use std::io::BufRead;
 
-    let (connected, answer) = mpsc::channel();
-    let target = path.to_path_buf();
-    thread::spawn(move || {
-        let _ = connected.send(UnixStream::connect(target));
-    });
-    let stream = answer
-        .recv_timeout(timeout)
-        .map_err(|_| {
+    let stream = connect_within(path, timeout).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::TimedOut {
             format!(
                 "the control socket {} did not accept within {}s",
                 path.display(),
                 timeout.as_secs()
             )
-        })?
-        .map_err(|err| format!("cannot reach the control socket {}: {err}", path.display()))?;
+        } else {
+            format!("cannot reach the control socket {}: {err}", path.display())
+        }
+    })?;
     stream
         .set_read_timeout(Some(timeout))
         .and_then(|()| stream.set_write_timeout(Some(timeout)))
@@ -1039,6 +1201,102 @@ mod tests {
     use crate::spawner::{DataVolume, GicVersion, VsockConfig};
     use std::io::BufRead;
     use std::os::unix::net::UnixListener;
+
+    /// A socket path for one test, with nothing left at it.
+    fn test_socket(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("apz-connect-{}-{name}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// A listener that never accepts, with a backlog of zero: one connect waits in
+    /// the queue and the next is refused with `EAGAIN`.
+    #[allow(unsafe_code)]
+    fn listener_with_zero_backlog(path: &Path) -> OwnedFd {
+        let (addr, len) = sockaddr_un(path).expect("a short test path");
+        let fd = new_socket().expect("a socket");
+        // SAFETY: `fd` is an open socket and `addr` holds `len` initialized bytes;
+        // both outlive the call.
+        let rc = unsafe { libc::bind(fd.as_raw_fd(), std::ptr::from_ref(&addr).cast(), len) };
+        assert_eq!(rc, 0, "bind: {}", std::io::Error::last_os_error());
+        // SAFETY: `fd` is a bound socket we own.
+        let rc = unsafe { libc::listen(fd.as_raw_fd(), 0) };
+        assert_eq!(rc, 0, "listen: {}", std::io::Error::last_os_error());
+        fd
+    }
+
+    #[test]
+    // `connect_within` starts no thread (it retries a non-blocking connect), so nothing is left behind when it gives
+    // up; this pins that it gives up in time.
+    fn connect_within_gives_up_on_a_full_backlog_in_time() {
+        let path = test_socket("full");
+        let _listener = listener_with_zero_backlog(&path);
+        let (addr, len) = sockaddr_un(&path).expect("a short test path");
+        // Fill the backlog: connects succeed until one is refused with EAGAIN.
+        let mut queued = Vec::new();
+        let refused = (0..16).any(|_| {
+            let fd = new_socket().expect("a socket");
+            match connect_once(&fd, &addr, len) {
+                Ok(()) => {
+                    queued.push(fd);
+                    false
+                }
+                Err(err) => err.raw_os_error() == Some(libc::EAGAIN),
+            }
+        });
+        assert!(refused, "a full backlog should refuse with EAGAIN");
+
+        let started = Instant::now();
+        let err = connect_within(&path, Duration::from_millis(200))
+            .expect_err("a full backlog must not connect");
+        let took = started.elapsed();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        // The upper bound only catches a hang: an emulated or loaded runner is slow.
+        assert!(
+            (Duration::from_millis(200)..Duration::from_secs(10)).contains(&took),
+            "connect_within took {took:?}"
+        );
+        drop(queued);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn connect_within_reaches_a_listener_and_exchanges_a_line() {
+        let path = test_socket("normal");
+        let listener = UnixListener::bind(&path).expect("bind");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .expect("read");
+            writeln!(&stream, "echo {}", line.trim_end()).expect("write");
+        });
+        let mut stream = connect_within(&path, Duration::from_secs(2)).expect("connect");
+        writeln!(stream, "ping").expect("write");
+        let mut reply = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut reply)
+            .expect("read");
+        assert_eq!(reply, "echo ping\n");
+        server.join().expect("server thread");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn connect_within_refuses_a_missing_path_at_once() {
+        let path = test_socket("missing");
+        let started = Instant::now();
+        let err = connect_within(&path, Duration::from_secs(2)).expect_err("no socket there");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(started.elapsed() < Duration::from_millis(500));
+
+        let long = std::env::temp_dir().join("x".repeat(200));
+        let err = connect_within(&long, Duration::from_secs(2))
+            .expect_err("a path too long for sun_path");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
 
     /// Every `VmSpec` field reaches the child's command line, including the
     /// exact vsock socket path (never a directory the child re-derives) and the

@@ -258,6 +258,23 @@ pub fn connect_unix_nonblocking(path: &str) -> io::Result<UnixStream> {
     Ok(stream)
 }
 
+/// Sets the accept queue of `listener`, which already listens, to `backlog` connections:
+/// `listen(2)` again only changes the backlog. For tests that fill the queue: std listens with the
+/// system's largest backlog (`somaxconn`, 4096 on a current Linux), more connections than a default
+/// limit of 1024 descriptors allows.
+#[cfg(test)]
+pub fn set_listen_backlog(
+    listener: &std::os::unix::net::UnixListener,
+    backlog: libc::c_int,
+) -> io::Result<()> {
+    // SAFETY: `listener` owns a valid, listening AF_UNIX descriptor for the duration of the call,
+    // and `listen(2)` takes no pointers. The return value is checked below.
+    if unsafe { libc::listen(listener.as_raw_fd(), backlog) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::page_out;

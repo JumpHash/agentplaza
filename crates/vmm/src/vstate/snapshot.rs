@@ -270,14 +270,35 @@ pub fn write_state(dir: &Path, snapshot: &VmSnapshot, durable: bool) -> Result<(
     fs::rename(&tmp, &path).map_err(|err| SnapshotError::io(&path, err))
 }
 
+/// The most bytes a [`STATE_FILE`] may hold. A state is a VM's registers, its devices' transports and
+/// a serial buffer, far under this; a larger file is refused rather than read whole.
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-/// Reads [`STATE_FILE`] from `dir` and refuses a snapshot this VMM cannot restore.
+pub const MAX_STATE_BYTES: u64 = 16 << 20;
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+/// Reads [`STATE_FILE`] from `dir` and refuses a snapshot this VMM cannot restore. A file over
+/// [`MAX_STATE_BYTES`] is refused, and at most one byte past that cap is read.
 pub fn read_state(dir: &Path) -> Result<VmSnapshot, SnapshotError> {
+    use std::io::Read;
     let path = dir.join(STATE_FILE);
-    let bytes = fs::read(&path).map_err(|err| SnapshotError::io(&path, err))?;
+    let file = File::open(&path).map_err(|err| SnapshotError::io(&path, err))?;
+    let mut bytes = Vec::new();
+    // One byte past the cap, so an oversized file is seen as oversized, not read whole.
+    file.take(MAX_STATE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| SnapshotError::io(&path, err))?;
+    if bytes.len() as u64 > MAX_STATE_BYTES {
+        return Err(SnapshotError::State(format!(
+            "{}: larger than the {MAX_STATE_BYTES}-byte cap on a state file",
+            path.display()
+        )));
+    }
     let snapshot: VmSnapshot =
         serde_json::from_slice(&bytes).map_err(|source| SnapshotError::Malformed {
             path: path.display().to_string(),
@@ -366,6 +387,25 @@ pub fn write_memory_file(
     Ok((metas, written))
 }
 
+/// Refuses guest memory regions that do not lie inside a memory file of `file_len` bytes: each
+/// region's `offset` and `len` must sum to no more than the file's length, without overflow. Checked
+/// before a region is read or mapped, so a snapshot cannot name bytes its file does not hold.
+pub fn check_regions(metas: &[RegionMeta], file_len: u64) -> Result<(), SnapshotError> {
+    for meta in metas {
+        if meta
+            .offset
+            .checked_add(meta.len)
+            .is_none_or(|end| end > file_len)
+        {
+            return Err(SnapshotError::State(format!(
+                "the guest memory region at {:#x} (offset {}, {} bytes) lies outside the {file_len}-byte memory file",
+                meta.guest_addr, meta.offset, meta.len
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Reads [`MEMORY_FILE`] in `dir` back into the guest's RAM regions (`(guest address, bytes)`), which
 /// must be the regions the snapshot's meta lists, in its order.
 pub fn read_memory_file(
@@ -387,6 +427,8 @@ pub fn read_memory_file(
     }
     let path = dir.join(MEMORY_FILE);
     let mut file = File::open(&path).map_err(|err| file_error(&path, err))?;
+    let file_len = file.metadata().map_err(|err| file_error(&path, err))?.len();
+    check_regions(metas, file_len)?;
     for (meta, (_, bytes)) in metas.iter().zip(regions.iter_mut()) {
         file.seek(SeekFrom::Start(meta.offset))
             .and_then(|_| file.read_exact(bytes))
@@ -612,5 +654,44 @@ mod tests {
         fs::write(dir.join(WORKING_SET_FILE), [1u8, 2, 3]).unwrap();
         assert_eq!(read_working_set(&dir), Vec::<Run>::new());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn a_state_file_over_the_cap_is_refused_before_it_is_parsed() {
+        let dir = std::env::temp_dir().join(format!("apz-state-cap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        File::create(dir.join(STATE_FILE))
+            .unwrap()
+            .set_len(MAX_STATE_BYTES + 1)
+            .unwrap();
+        let err = read_state(&dir).expect_err("an oversized state file is refused");
+        assert!(
+            matches!(&err, SnapshotError::State(message) if message.contains("cap")),
+            "{err}"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_region_past_the_end_of_the_memory_file_is_refused() {
+        let region = |offset, len| RegionMeta {
+            guest_addr: 0,
+            len,
+            offset,
+        };
+        assert!(check_regions(&[region(0, 4096)], 4096).is_ok());
+        assert!(
+            check_regions(&[region(0, 4097)], 4096).is_err(),
+            "past the end"
+        );
+        assert!(
+            check_regions(&[region(u64::MAX, 1)], u64::MAX).is_err(),
+            "overflows"
+        );
     }
 }

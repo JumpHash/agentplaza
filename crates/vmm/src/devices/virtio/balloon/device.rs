@@ -656,13 +656,30 @@ fn discard_pages(
     flush_run(&mut run, discard);
 }
 
-/// Discards the pending run, if any.
+/// Discards the pending run, if any, shrunk to the host pages it holds whole. The balloon's frames are
+/// 4 KiB (the virtio unit), but `madvise` works on host pages: on a 16 KiB-page host (the Raspberry Pi 5's
+/// default kernel, Asahi Linux) it refuses an unaligned start and rounds the length up, so a run passed as
+/// it is would discard guest pages the guest never gave back. Only the host pages wholly inside it go.
 fn flush_run(run: &mut Option<(usize, usize)>, discard: &mut dyn Discard) {
-    if let Some((host, len)) = run.take()
-        && let Err(err) = discard.discard(host as *mut u8, len)
-    {
+    let Some((host, len)) = run.take() else {
+        return;
+    };
+    let page = crate::vstate::memory::host_page_size();
+    let Some((start, len)) = whole_host_pages(host, len, page) else {
+        return;
+    };
+    if let Err(err) = discard.discard(start as *mut u8, len) {
         eprintln!("warning: virtio-balloon: cannot discard {len} bytes of guest memory: {err}");
     }
+}
+
+/// `[host, host + len)` shrunk to the `page`-sized pages it holds whole (`page` a power of two), or `None`
+/// when it holds none.
+fn whole_host_pages(host: usize, len: usize, page: usize) -> Option<(usize, usize)> {
+    let mask = page.checked_sub(1)?;
+    let start = host.checked_add(mask)? & !mask;
+    let end = host.checked_add(len)? & !mask;
+    (end > start).then(|| (start, end - start))
 }
 
 #[cfg(test)]
@@ -825,6 +842,29 @@ mod tests {
         // The guest's configuration write goes through the trait to `actual`.
         VirtioDevice::write_config(&mut balloon, 4, &7u32.to_le_bytes());
         assert_eq!(balloon.actual_pages(), 7);
+    }
+
+    #[test]
+    fn a_run_is_shrunk_to_the_host_pages_it_holds_whole() {
+        // 4 KiB host pages: a run of frames passes as it is.
+        assert_eq!(
+            whole_host_pages(0x1000, 0x3000, 0x1000),
+            Some((0x1000, 0x3000))
+        );
+        // 16 KiB host pages: one 4 KiB frame holds no whole host page, and nothing is discarded.
+        assert_eq!(whole_host_pages(0x4000, 0x1000, 0x4000), None);
+        // A run that starts and ends inside host pages keeps only the page between.
+        assert_eq!(
+            whole_host_pages(0x5000, 0x8000, 0x4000),
+            Some((0x8000, 0x4000))
+        );
+        // An aligned run of whole host pages passes as it is.
+        assert_eq!(
+            whole_host_pages(0x4000, 0x8000, 0x4000),
+            Some((0x4000, 0x8000))
+        );
+        // No overflow at the top of the address space.
+        assert_eq!(whole_host_pages(usize::MAX - 0xfff, 0x1000, 0x4000), None);
     }
 
     #[test]

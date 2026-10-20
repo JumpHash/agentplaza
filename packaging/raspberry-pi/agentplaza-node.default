@@ -10,8 +10,8 @@
 #
 # Memory: the agents' memory comes out of the board's RAM, and the OS, the
 # hub and the desktop need some too. A Raspberry Pi 4 with 4 GB runs about
-# 4 agents at 512 MiB each; a Raspberry Pi 5 with 8 GB about 10. Add
-# --agents-memory-mib 512 to the arguments below to run agents that size
-# (the noded default of 1024 MiB is too large for a Pi).
+# 4 agents at 512 MiB each; a Raspberry Pi 5 with 8 GB about 10.
+# The shipped arguments run agents at 512 MiB, since the noded default of
+# 1024 MiB is too large for a Pi.
 
-APZ_NODE_ARGS="--agents-vcpus 1"
+APZ_NODE_ARGS="--agents-vcpus 1 --agents-memory-mib 512"
