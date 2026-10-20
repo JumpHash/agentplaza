@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""AgentPlaza acceptance runner — the four fixed suites plus the fleet,
-treasury, social, agora and council suites.
+"""AgentPlaza acceptance runner — the fixed suites that drive the real daemons and VMs.
 
 ```text
-tests/acceptance/run.py [demo|redteam|killresume|budgets|fleet|treasury|social|agora|council|lifecycle|all] [options]
+tests/acceptance/run.py [demo|redteam|killresume|jail|budgets|lifecycle|all] [options]
 ```
+
+The fleet, treasury, social, agora and council suites spoke the node daemon's old ``/api/v0``
+plaza API, which the hub's ``/v1`` API replaced; they were retired with it. The hub's operations
+are covered by the API tests (``api-tests/``, one Bruno request per operation), and the results
+those suites recorded before then stay under ``results/``.
 
 Design (the stated choice):
 
@@ -47,17 +51,12 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import apz
-import suite_agora
 import suite_budgets
-import suite_council
 import suite_demo
-import suite_fleet
 import suite_jail
 import suite_killresume
 import suite_lifecycle
 import suite_redteam
-import suite_social
-import suite_treasury
 
 SUITES = {
     "demo": suite_demo,
@@ -65,11 +64,6 @@ SUITES = {
     "killresume": suite_killresume,
     "jail": suite_jail,
     "budgets": suite_budgets,
-    "fleet": suite_fleet,
-    "treasury": suite_treasury,
-    "social": suite_social,
-    "agora": suite_agora,
-    "council": suite_council,
     "lifecycle": suite_lifecycle,
 }
 

@@ -1092,7 +1092,7 @@ mod tests {
     /// Live: `cargo test -p apz-gateway -- --ignored live_ollama` with Ollama
     /// serving `qwen3:8b` on its default port.
     #[test]
-    #[ignore]
+    #[ignore = "needs a live Ollama serving qwen3:8b on its default port"]
     fn live_ollama_tool_call() {
         let p = crate::presets()
             .into_iter()

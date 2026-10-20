@@ -1436,7 +1436,7 @@ mod tests {
     /// so the output comes back) with the NVIDIA runtime's device flags on the CUDA base image. Needs
     /// the image `nvidia/cuda:12.8.1-base-ubuntu24.04` locally: `cargo test -p noded -- --ignored --nocapture docker_gpu_smoke`.
     #[test]
-    #[ignore]
+    #[ignore = "needs Docker with the NVIDIA runtime and the nvidia/cuda:12.8.1-base-ubuntu24.04 image local"]
     fn docker_gpu_smoke() {
         let host = docker_host();
         let mut job = request("smoke", "apz-trainer:cuda");
@@ -1483,7 +1483,7 @@ mod tests {
     /// after it exits, and `DELETE` removes them. Labels are set by hand (a job image is not needed);
     /// `cargo test -p noded -- --ignored --nocapture a_finished_job_is_read_then_deleted` (needs alpine).
     #[test]
-    #[ignore]
+    #[ignore = "needs Docker and the alpine:latest image local"]
     fn a_finished_job_is_read_then_deleted() {
         let server = crate::Server::start(crate::Config {
             port: 0,
@@ -1568,7 +1568,7 @@ mod tests {
     /// read paths and a start that fails validation, so nothing runs:
     /// `cargo test -p noded -- --ignored --nocapture routes_answer`.
     #[test]
-    #[ignore]
+    #[ignore = "a live check: starts a daemon on an ephemeral port and asks it over HTTP; run with --ignored --nocapture"]
     fn routes_answer_the_foundry_endpoints() {
         use std::io::{Read, Write};
         let server = crate::Server::start(crate::Config {

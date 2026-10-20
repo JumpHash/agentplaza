@@ -9,6 +9,8 @@ apps/web/dist/
 # Harness / runtime scratch
 .omp/
 .claude/
+# Schemathesis's cache (api-tests/run.sh runs it from the repository root)
+.schemathesis/
 
 # Local agent tooling and notes, not part of the repository
 .agents/

@@ -763,7 +763,7 @@ fn import_skips_what_it_must_and_says_why() {
 }
 
 #[test]
-fn a_sealed_vault_answers_503_on_its_secret_routes() {
+fn a_sealed_vault_answers_423_on_its_secret_routes() {
     let (store, _dir) = fresh("sealed-routes");
     store
         .create(
@@ -785,7 +785,7 @@ fn a_sealed_vault_answers_503_on_its_secret_routes() {
         bus: &bus,
         nodes: &nodes,
     };
-    assert_eq!(routes::list(&ctx).status, 503);
+    assert_eq!(routes::list(&ctx).status, 423);
     assert_eq!(
         routes::status(&ctx).status,
         200,
@@ -871,7 +871,7 @@ fn no_value_appears_in_any_route_response_event_or_file() {
     keep(routes::recovery(&ctx));
     keep(routes::seal(&ctx));
     let sealed = routes::list(&ctx);
-    assert_eq!(sealed.status, 503);
+    assert_eq!(sealed.status, 423);
     assert!(
         !String::from_utf8_lossy(sealed.bytes()).contains(HINT),
         "a sealed vault shows no hint"

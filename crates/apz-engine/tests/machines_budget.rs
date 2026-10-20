@@ -1,7 +1,8 @@
 //! The Machines view's budgets, on the CPU side (no GPU needed): the 15-machine fixture and a 128-machine fleet built
-//! from it. What the renderer is handed per frame (triangles, line segments and draw calls) is counted in every build;
-//! the time to build the grid and to step one frame is asserted only without debug assertions (release, as Linux x86_64
-//! tests), scaled by the slack below.
+//! from it. What the renderer is handed per frame (triangles, line segments and draw calls) is counted in every build.
+//! The time to build the grid and to step one frame is checked in two places: the default run asserts a loose ceiling
+//! (ten times the budget, without debug assertions: release, as Linux x86_64 tests), which only a hang exceeds; the
+//! strict budgets are the `#[ignore]`d tests, run with `--ignored` on an idle machine.
 
 use std::time::{Duration, Instant};
 
@@ -78,6 +79,29 @@ fn perf_slack() -> f64 {
     }
 }
 
+/// The frame budgets in milliseconds, for the release build on an idle machine: the `#[ignore]`d tests assert them.
+const FIXTURE_BUILD_MS: f64 = 80.0;
+const FIXTURE_STEP_MS: f64 = 2.0;
+const FLEET_BUILD_MS: f64 = 150.0;
+const FLEET_STEP_MS: f64 = 4.0;
+
+/// The default run's ceiling, as a multiple of the budget (scaled by [`perf_slack`] as well). A busy runner stays under
+/// it; a hang does not.
+const CEILING: f64 = 10.0;
+
+/// Asserts the build and the step against the budgets, each multiplied by `factor` and by [`perf_slack`].
+fn assert_timing(build: Duration, step: Duration, build_ms: f64, step_ms: f64, factor: f64) {
+    let slack = perf_slack() * factor;
+    assert!(
+        build.as_secs_f64() * 1e3 <= build_ms * slack,
+        "build {build:?}, budget {build_ms} ms x {slack}"
+    );
+    assert!(
+        step.as_secs_f64() * 1e3 <= step_ms * slack,
+        "step {step:?}, budget {step_ms} ms x {slack}"
+    );
+}
+
 /// How many times [`measure`] builds and steps the view: the budgets judge the fastest run.
 const RUNS: usize = 5;
 
@@ -131,9 +155,16 @@ fn the_fifteen_machine_fixture_stays_inside_its_frame_budget() {
     assert!(load.segments <= 120_000, "{} line segments", load.segments);
     assert!(load.draws <= 160, "{} draws", load.draws);
     if cfg!(not(debug_assertions)) {
-        let slack = perf_slack();
-        assert!(build.as_secs_f64() * 1e3 <= 80.0 * slack, "build {build:?}");
-        assert!(step.as_secs_f64() * 1e3 <= 2.0 * slack, "step {step:?}");
+        assert_timing(build, step, FIXTURE_BUILD_MS, FIXTURE_STEP_MS, CEILING);
+    }
+}
+
+#[test]
+#[ignore = "timing budget: run with --ignored on an idle machine"]
+fn the_fifteen_machine_fixture_meets_its_frame_budget() {
+    let (build, step, _) = measure(fixture());
+    if cfg!(not(debug_assertions)) {
+        assert_timing(build, step, FIXTURE_BUILD_MS, FIXTURE_STEP_MS, 1.0);
     }
 }
 
@@ -149,11 +180,15 @@ fn a_128_machine_fleet_stays_inside_its_frame_budget() {
     // Two load bars a machine are dynamic draws; the rest merge into a few batches.
     assert!(load.draws <= 300, "{} draws", load.draws);
     if cfg!(not(debug_assertions)) {
-        let slack = perf_slack();
-        assert!(
-            build.as_secs_f64() * 1e3 <= 150.0 * slack,
-            "build {build:?}"
-        );
-        assert!(step.as_secs_f64() * 1e3 <= 4.0 * slack, "step {step:?}");
+        assert_timing(build, step, FLEET_BUILD_MS, FLEET_STEP_MS, CEILING);
+    }
+}
+
+#[test]
+#[ignore = "timing budget: run with --ignored on an idle machine"]
+fn a_128_machine_fleet_meets_its_frame_budget() {
+    let (build, step, _) = measure(fleet_of(128));
+    if cfg!(not(debug_assertions)) {
+        assert_timing(build, step, FLEET_BUILD_MS, FLEET_STEP_MS, 1.0);
     }
 }

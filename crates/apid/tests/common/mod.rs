@@ -17,6 +17,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 /// The apid binary built for this test run.
+/// How much slower than a developer machine this run is: `APZ_PERF_SLACK` when set and positive (the arm64
+/// tests under qemu set it), else 1. Waits scale by it, so an emulated run waits longer before it fails.
+#[allow(dead_code)] // not every test binary that includes `common` waits
+pub fn slack() -> f64 {
+    std::env::var("APZ_PERF_SLACK")
+        .ok()
+        .and_then(|text| text.parse::<f64>().ok())
+        .filter(|slack| *slack > 0.0)
+        .unwrap_or(1.0)
+}
+
 const APID: &str = env!("CARGO_BIN_EXE_apid");
 /// Ports the owner's own hub and daemons use. A test never picks one of them.
 const OWNER_PORTS: [u16; 3] = [7700, 8899, 19080];
@@ -154,9 +165,10 @@ impl Hub {
         assert_eq!(agent["name"], name, "{body}\n{agent}");
     }
 
-    /// Waits up to `timeout` for `ready` to hold of the owner's `GET path`; the last answer either way.
+    /// Waits up to `timeout` (times [`slack`]) for `ready` to hold of the owner's `GET path`; the last answer
+    /// either way.
     pub fn wait_for(&self, path: &str, timeout: Duration, ready: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now() + timeout.mul_f64(slack());
         loop {
             let (_, body) = self.call("GET", path, None);
             if ready(&body) || Instant::now() >= deadline {
@@ -298,7 +310,7 @@ fn boot(
         child.stderr.take().expect("piped stderr"),
         Arc::clone(&output),
     );
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    let deadline = Instant::now() + STARTUP_TIMEOUT.mul_f64(slack());
     loop {
         let listening = output
             .lock()

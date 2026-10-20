@@ -55,7 +55,9 @@ package() {
 code=false ci=false release=false web=false platform=false tests=""
 for f in "${files[@]}"; do
   case "$f" in
-    docs/agents/* | docs/api/*) code=true release=true ;;
+    docs/agents/* | docs/api/* | docs/codex-draft/roles/* | \
+    crates/apz-prompt/src/templates/* | crates/apz-skill/src/templates/* | crates/apid/src/skills/builtin/*)
+      code=true release=true ;;
     *.md | docs/* | .claude/* | LICENSE* | VERSION | .github/CODEOWNERS | .github/actionlint.yaml) continue ;;
     .gitignore | */.gitignore | .gitattributes | */.gitattributes | .editorconfig | */.editorconfig) continue ;;
     .github/workflows/pr.yml | .github/workflows/nightly.yml | .github/workflows/ci-image.yml | \
@@ -63,6 +65,8 @@ for f in "${files[@]}"; do
     .github/workflows/* | .github/ci/*) ci=true release=true ;;
     *) code=true release=true ;;
   esac
+  # The hub's catalogue parity test reads harness source without a Cargo dependency.
+  case "$f" in crates/agent-harness/src/acp/catalog.rs) tests=all ;; esac
   # Which tests: the package the file is in; `all` past one package's directory (or for CI).
   if [ "$tests" != all ]; then
     name=$(package "$f")
@@ -74,7 +78,7 @@ for f in "${files[@]}"; do
   fi
   case "$f" in
     apps/web/* | crates/apz-engine/* | crates/apz-engine-web/* | crates/apz-ide/* | crates/apz-ide-web/* | \
-    crates/apz-metrics-view/* | assets/hardware/* | assets/robots/* | .github/workflows/console.yml) web=true ;;
+    crates/apz-metrics-view/* | crates/apz-graph*/* | crates/apz-theme*/* | crates/apz-view/* | tools/apz-pack/* | assets/hardware/* | assets/robots/* | .github/workflows/console.yml) web=true ;;
   esac
   case "$f" in
     crates/apz-desktop*/* | crates/vmm/* | crates/noded/* | crates/vsockd/* | crates/vmctl/* | \

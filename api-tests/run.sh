@@ -6,7 +6,7 @@
 #   1. Bruno (api-tests/bruno): the collection's requests and assertions. A failure fails the run.
 #   2. Timings (bench.mjs): every parameterless GET in the spec, 20 times: p50, p95, size.
 #   3. Schemathesis: requests generated from docs/api/openapi.json, looking for 5xx answers and
-#      dropped connections. Reported, not (yet) failing the run.
+#      dropped connections. A server error fails the run.
 #   4. The report (report/build.mjs): OUT/site/index.html.
 #
 # The hub is a scratch one: an empty env file (so no database and no keys), state in a temporary
@@ -36,7 +36,8 @@ HOME="$state/home" XDG_CONFIG_HOME="$state/home/.config" XDG_DATA_HOME="$state/h
   --vault-key "$state/vault.key" --noded-port 1 --hub-port 2 --console "$state/no-console" \
   > "$out/apid.log" 2>&1 &
 hub=$!
-trap 'kill "$hub" 2>/dev/null || true; wait "$hub" 2>/dev/null || true; rm -rf "$state"' EXIT
+# The hub's children (weft serve) are listed before the kill: once the hub is gone they are reparented to init.
+trap 'kids="$(pgrep -P "$hub" || true)"; kill "$hub" $kids 2>/dev/null || true; wait "$hub" 2>/dev/null || true; rm -rf "$state"' EXIT
 
 for _ in $(seq 60); do
   kill -0 "$hub" 2>/dev/null || { echo "the scratch hub exited:"; cat "$out/apid.log"; exit 1; }
@@ -84,12 +85,16 @@ echo "== timings"
 node api-tests/bench.mjs docs/api/openapi.json "$base" "$out/bench.json"
 
 if [ "${APZ_API_FUZZ:-1}" = 1 ]; then
-  echo "== schemathesis (reported, not failing)"
+  echo "== schemathesis"
   node api-tests/fuzz-spec.mjs docs/api/openapi.json "$out/fuzz-spec.json"
+  # The node-daemon routes are out of reach here (the scratch hub has no daemon), so they are excluded, as deepfuzz.sh does.
+  st_status=0
   "$st" run "$out/fuzz-spec.json" --url "$base" --checks not_a_server_error --max-examples 3 \
+    --exclude-path-regex '^/v1/(runs|volumes|templates|machine$|hub$|nodes/[^/]+/(runs|machine|stats))' \
     --request-timeout 5 --workers 2 --seed 1 --report junit --report-dir "$out/schemathesis" \
-    > "$out/schemathesis.log" 2>&1 || true
+    > "$out/schemathesis.log" 2>&1 || st_status=$?
   tail -n 20 "$out/schemathesis.log"
+  [ "$st_status" -eq 0 ] || { echo "schemathesis: exit $st_status (a server error, or the run broke)"; status=1; }
 fi
 
 echo "== report"

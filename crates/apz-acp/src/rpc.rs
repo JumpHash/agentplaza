@@ -525,6 +525,10 @@ mod tests {
     /// A peer whose request handler echoes the params back, unless the method is "fail" (an error) or
     /// "boom" (a panic). Notifications are passed to the test through `notes`.
     fn harness() -> Harness {
+        harness_with_hold(None)
+    }
+
+    fn harness_with_hold(hold: Option<Arc<(Mutex<bool>, std::sync::Condvar)>>) -> Harness {
         let (input, chunks) = mpsc::channel();
         let (out_tx, output) = mpsc::channel();
         let (note_tx, notes) = mpsc::channel();
@@ -535,11 +539,15 @@ mod tests {
                 at: 0,
             },
             Sink(out_tx),
-            |_peer, method, params| match method {
+            move |_peer, method, params| match method {
                 "fail" => Err(types::Error::new(-32000, "refused").data(json!({"why": "test"}))),
                 "boom" => panic!("handler failure on purpose"),
                 "hold" => {
-                    thread::sleep(Duration::from_millis(300));
+                    let (released, wake) = hold.as_ref().expect("hold gate provided").as_ref();
+                    let (released, _) = wake
+                        .wait_timeout_while(lock(released), WAIT, |released| !*released)
+                        .unwrap();
+                    assert!(*released, "test did not release the held requests");
                     Ok(json!("held"))
                 }
                 _ => Ok(json!({"echo": params})),
@@ -692,7 +700,8 @@ mod tests {
 
     #[test]
     fn requests_beyond_the_in_flight_limit_are_refused_at_once() {
-        let harness = harness();
+        let held = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let harness = harness_with_hold(Some(Arc::clone(&held)));
         for id in 1..=MAX_IN_FLIGHT_REQUESTS {
             feed(
                 &harness,
@@ -703,8 +712,10 @@ mod tests {
             &harness,
             "{\"jsonrpc\":\"2.0\",\"id\":\"extra\",\"method\":\"echo\"}\n",
         );
-        // The refusal comes back before any held reply, which takes 300 ms.
+        // No held handler can finish until the overflow response has arrived.
         let refused = next_message(&harness);
+        *lock(&held.0) = true;
+        held.1.notify_all();
         assert_eq!(refused["id"], json!("extra"));
         assert_eq!(refused["error"]["code"], json!(-32603));
         for _ in 0..MAX_IN_FLIGHT_REQUESTS {

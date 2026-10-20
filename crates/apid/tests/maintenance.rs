@@ -54,7 +54,8 @@ fn pushed(gateway: &FakeDaemon, cid: u64) -> Vec<(u64, String, String)> {
 
 /// Waits for a work item on `thread` pushed to `cid` after the first `seen` ones; its (work, prompt).
 fn next_work(gateway: &FakeDaemon, cid: u64, thread: &str, seen: usize) -> (u64, String) {
-    for _ in 0..100 {
+    // Up to 10 s, times the test slack.
+    for _ in 0..(100.0 * common::slack()) as usize {
         let mine: Vec<_> = pushed(gateway, cid)
             .into_iter()
             .filter(|(_, t, _)| t == thread)
@@ -581,8 +582,8 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     // time: the test then ends the task's turn, as the builder would, and the chat goes out next.
     let chat_thread = format!("op-{BUILDER}");
     let mut ended = Vec::new();
-    // Up to 45 s: a busy runner took longer than 15 to deliver it.
-    let (_, _, prompt) = (0..450)
+    // Up to 45 s, times the test slack: a busy runner took longer than 15 to deliver it.
+    let (_, _, prompt) = (0..(450.0 * common::slack()) as usize)
         .find_map(|_| {
             let list = pushed(&gateway, BUILDER);
             if let Some(chat) = list.iter().find(|(_, thread, _)| *thread == chat_thread) {
