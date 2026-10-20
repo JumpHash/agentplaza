@@ -71,7 +71,8 @@ api_bin="$CARGO_TARGET_DIR/release/apid"
 # here and for the hub that api-tests/run.sh starts from it.
 env_sh="$(cargo llvm-cov show-env --sh --release)"
 eval "$env_sh"
-cargo build --locked --release -p apid --bin apid
+# Weft too: the hub runs the `weft` beside it as a process, so it is this commit's and counts toward Weft's coverage.
+cargo build --locked --release -p apid --bin apid -p weft --bin weft
 [ -x "$api_bin" ] || { echo "no instrumented apid at $api_bin"; exit 1; }
 # A profile is written when a process exits, and apid does not handle SIGTERM (run.sh stops the hub with one). The
 # wrapper preloads profile-exit.so, which makes that signal an exit; exec keeps the hub's PID, the one run.sh stops.

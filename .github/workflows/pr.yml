@@ -231,8 +231,10 @@ jobs:
         run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
       - name: Keep the build directory fresh
         run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
+      # Weft too: the hub runs the `weft` beside it as a process, and the build directory persists on the runner, so
+      # without this the tests would meet a Weft another job built from other code.
       - name: Build the hub
-        run: .github/ci/in-image.sh 'cargo build --release --locked -p apid --bin apid'
+        run: .github/ci/in-image.sh 'cargo build --release --locked -p apid --bin apid -p weft --bin weft'
       - name: Run the API tests
         id: run
         continue-on-error: true
