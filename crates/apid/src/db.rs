@@ -21,7 +21,8 @@
 //!   station_audit(seq bigserial, at_ms bigint, station text, agent bigint, kind text, data jsonb)
 //!              (append-only: the owner's workstation actions and lease changes, migration 0010)
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -192,15 +193,347 @@ fn fnv1a(bytes: &[u8]) -> i64 {
     hash as i64
 }
 
+/// Why `url` must not carry plaza state, or `None` when it may. This build connects without TLS, so a database off
+/// this machine would receive the plaza's state in clear text: refused. Allowed: loopback, a Unix socket, and
+/// `sslmode=disable`, the owner's explicit choice (its warning is printed here; called once, at start).
+/// `sslmode=require` is refused even on loopback, as this build cannot satisfy it.
+fn tls_refusal(url: &str) -> Option<String> {
+    const HINT: &str = "use a database on this machine, or add sslmode=disable to accept an unencrypted connection";
+    let config = match url.parse::<postgres::Config>() {
+        Ok(config) => config,
+        // tokio-postgres knows only disable, prefer and require: verify-ca and verify-full stop here.
+        Err(e) => {
+            return Some(format!(
+                "db: APZ_DATABASE_URL cannot be used ({e}): this build connects without TLS; {HINT}"
+            ));
+        }
+    };
+    let remote =
+        config.get_hosts().iter().any(
+            |host| matches!(host, postgres::config::Host::Tcp(name) if !is_loopback_host(name)),
+        ) || config.get_hostaddrs().iter().any(|ip| !ip.is_loopback());
+    match config.get_ssl_mode() {
+        postgres::config::SslMode::Disable => {
+            if remote {
+                eprintln!(
+                    "db: APZ_DATABASE_URL has sslmode=disable and names a database off this machine: the connection is not encrypted"
+                );
+            }
+            None
+        }
+        postgres::config::SslMode::Prefer if !remote => None,
+        postgres::config::SslMode::Prefer => Some(format!(
+            "db: APZ_DATABASE_URL names a database off this machine, and this build cannot encrypt the connection; {HINT}"
+        )),
+        // sslmode=require, verify-ca and verify-full (and any mode added later): not satisfiable here.
+        _ => Some(format!(
+            "db: APZ_DATABASE_URL asks for sslmode=require or stronger, which this build cannot provide; {HINT}"
+        )),
+    }
+}
+
+/// A host name that is this machine: `localhost`, or a loopback address (IPv6 brackets allowed).
+fn is_loopback_host(name: &str) -> bool {
+    let bare = name.trim_start_matches('[').trim_end_matches(']');
+    bare.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// Opens a connection (no schema work: the migrations run once, on connect).
 fn connect_raw(url: &str) -> Result<postgres::Client, postgres::Error> {
     postgres::Client::connect(url, postgres::NoTls)
+}
+
+/// Connects, retrying with a doubling wait (1 s, 2 s, 4 s, ...) until `budget` runs out. The
+/// wait is cut to what is left of the budget, so the last attempt falls at its end; the error
+/// returned is the last one seen.
+fn connect_with_retry(url: &str, budget: Duration) -> Result<postgres::Client, String> {
+    let started = Instant::now();
+    let mut wait = Duration::from_secs(1);
+    loop {
+        let err = match connect_raw(url) {
+            Ok(client) => return Ok(client),
+            Err(err) => err,
+        };
+        let left = budget.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return Err(err.to_string());
+        }
+        std::thread::sleep(wait.min(left));
+        wait *= 2;
+    }
 }
 
 /// Whether a log line last written at `last` may be written again now.
 fn due(last: Option<Instant>) -> bool {
     last.is_none_or(|t| t.elapsed() >= MINUTE)
 }
+
+/// A transcript record Postgres has not taken yet (see `Spool`).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PendingRow {
+    cid: u64,
+    seq: u64,
+    work: u64,
+    kind: String,
+    at_ms: u64,
+    data: Value,
+}
+
+/// The most transcript records held while Postgres is unreachable: about 50 000, a few tens of MB. Enough to ride
+/// out a restart or a short outage of the database; beyond it the oldest records are dropped and counted.
+const SPOOL_CAP: usize = 50_000;
+
+/// The file held records are saved to under the state dir, so a restart keeps them (see `Db::attach_spool`).
+const SPOOL_FILE: &str = "transcript-spool.jsonl";
+
+/// Held records at which the writer saves the spool file (at most once a minute).
+const SPOOL_SAVE_AT: usize = 1_000;
+
+/// The most records the transcript writer (`db/appender.rs`) puts in one transaction: one batch of new records, or
+/// one pass over the held ones. The writer pass on shutdown writes every held record.
+const APPEND_DRAIN: usize = 500;
+
+/// Transcript records waiting for Postgres, oldest first, at most `cap` of them, and the file they are saved to.
+struct Spool {
+    rows: VecDeque<PendingRow>,
+    cap: usize,
+    /// The spool file (`SPOOL_FILE` under the state dir), once `Db::attach_spool` has set it.
+    file: Option<std::path::PathBuf>,
+    /// When the writer last saved the spool file.
+    saved: Option<Instant>,
+}
+
+impl Spool {
+    fn new(cap: usize) -> Spool {
+        Spool {
+            rows: VecDeque::new(),
+            cap,
+            file: None,
+            saved: None,
+        }
+    }
+
+    /// Adds `row` at the back. Returns true when the spool was full: its oldest row was dropped to make room.
+    fn push(&mut self, row: PendingRow) -> bool {
+        let full = self.rows.len() >= self.cap;
+        if full {
+            self.rows.pop_front();
+        }
+        self.rows.push_back(row);
+        full
+    }
+
+    /// Removes rows from the front, at most `limit` of them, while `written` returns true for them (stored, or refused
+    /// for good). Stops at the first row it returns false for, which stays where it is. Returns how many were removed.
+    fn drain_while(&mut self, limit: usize, mut written: impl FnMut(&PendingRow) -> bool) -> usize {
+        let mut removed = 0;
+        while removed < limit && self.rows.front().is_some_and(&mut written) {
+            self.rows.pop_front();
+            removed += 1;
+        }
+        removed
+    }
+
+    /// Removes the rows `keep` returns false for: a wipe takes the held records of its transcript out.
+    fn retain(&mut self, keep: impl FnMut(&PendingRow) -> bool) {
+        self.rows.retain(keep);
+    }
+}
+
+/// Writes `rows` to `path`, one JSON record per line. The bytes go to a temp file beside `path`, which is fsynced and
+/// then renamed over it: a crash leaves the old file or the new one, never half of either.
+fn save_spool(path: &std::path::Path, rows: &[PendingRow]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("jsonl.tmp");
+    let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+    for row in rows {
+        let line = serde_json::to_string(row).map_err(std::io::Error::other)?;
+        writeln!(out, "{line}")?;
+    }
+    let file = out.into_inner()?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, path)
+}
+
+/// The records `save_spool` wrote, oldest first. A missing file holds none; an unreadable one is logged and holds
+/// none; a line that does not parse is logged and skipped.
+fn load_spool(path: &std::path::Path) -> Vec<PendingRow> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "db: reading the transcript spool file {} failed: {e}",
+                    path.display()
+                );
+            }
+            return Vec::new();
+        }
+    };
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| match serde_json::from_str::<PendingRow>(line) {
+            Ok(row) => Some(row),
+            Err(e) => {
+                eprintln!(
+                    "db: a record of the transcript spool file does not parse and is skipped: {e}"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod spool_tests {
+    use super::*;
+
+    fn row(seq: u64) -> PendingRow {
+        PendingRow {
+            cid: 7,
+            seq,
+            work: 1,
+            kind: "tool".to_string(),
+            at_ms: seq,
+            data: Value::Null,
+        }
+    }
+
+    fn seqs(spool: &Spool) -> Vec<u64> {
+        spool.rows.iter().map(|r| r.seq).collect()
+    }
+
+    #[test]
+    fn spool_push_keeps_arrival_order_under_the_cap() {
+        let mut spool = Spool::new(3);
+        assert!(!spool.push(row(1)));
+        assert!(!spool.push(row(2)));
+        assert!(!spool.push(row(3)));
+        assert_eq!(seqs(&spool), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn spool_overflow_drops_the_oldest_row_and_reports_it() {
+        let mut spool = Spool::new(2);
+        spool.push(row(1));
+        spool.push(row(2));
+        assert!(spool.push(row(3)));
+        assert_eq!(seqs(&spool), vec![2, 3]);
+    }
+
+    #[test]
+    fn spool_drain_writes_oldest_first_and_stops_at_the_first_failure() {
+        let mut spool = Spool::new(10);
+        for seq in 1..=5 {
+            spool.push(row(seq));
+        }
+        let mut written = Vec::new();
+        let removed = spool.drain_while(usize::MAX, |r| {
+            if r.seq == 4 {
+                return false;
+            }
+            written.push(r.seq);
+            true
+        });
+        assert_eq!(removed, 3);
+        assert_eq!(written, vec![1, 2, 3]);
+        assert_eq!(seqs(&spool), vec![4, 5]);
+    }
+
+    #[test]
+    fn spool_drain_empties_it_when_every_write_lands() {
+        let mut spool = Spool::new(10);
+        spool.push(row(1));
+        spool.push(row(2));
+        assert_eq!(spool.drain_while(usize::MAX, |_| true), 2);
+        assert!(spool.rows.is_empty());
+    }
+
+    #[test]
+    fn spool_failed_drain_keeps_rows_and_new_rows_queue_behind() {
+        let mut spool = Spool::new(10);
+        spool.push(row(1));
+        assert_eq!(spool.drain_while(usize::MAX, |_| false), 0);
+        spool.push(row(2));
+        assert_eq!(seqs(&spool), vec![1, 2]);
+    }
+
+    #[test]
+    fn spool_drain_stops_at_its_limit_and_leaves_the_rest() {
+        let mut spool = Spool::new(10);
+        for seq in 1..=5 {
+            spool.push(row(seq));
+        }
+        assert_eq!(spool.drain_while(2, |_| true), 2);
+        assert_eq!(seqs(&spool), vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn spool_retain_drops_only_the_given_cid() {
+        let mut spool = Spool::new(10);
+        let mut other = row(1);
+        other.cid = 8;
+        spool.push(other);
+        spool.push(row(2));
+        spool.retain(|r| r.cid != 8);
+        assert_eq!(seqs(&spool), vec![2]);
+    }
+
+    #[test]
+    fn spool_file_round_trips_the_held_records() {
+        let dir = std::env::temp_dir().join(format!("apz-spool-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(SPOOL_FILE);
+        let mut second = row(2);
+        second.cid = 9;
+        second.kind = "assistant".to_string();
+        second.data = serde_json::json!({"text": "hello"});
+        save_spool(&path, &[row(1), second]).unwrap();
+        let back = load_spool(&path);
+        assert_eq!(back.len(), 2);
+        assert_eq!(
+            (back[0].cid, back[0].seq, back[0].kind.as_str()),
+            (7, 1, "tool")
+        );
+        assert_eq!(
+            (back[1].cid, back[1].seq, back[1].kind.as_str()),
+            (9, 2, "assistant")
+        );
+        assert_eq!(back[1].data, serde_json::json!({"text": "hello"}));
+        assert!(load_spool(&dir.join("missing.jsonl")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn db_counts_held_and_dropped_records_without_postgres() {
+        let db = Db::with(String::new(), None);
+        {
+            let mut spool = db.spool.lock().unwrap_or_else(PoisonError::into_inner);
+            for seq in 0..=SPOOL_CAP as u64 {
+                db.hold_row(&mut spool, row(seq), "test");
+            }
+        }
+        assert_eq!(db.spooled(), (SPOOL_CAP, 1));
+    }
+}
+
+/// Whether `e` means the database is unavailable (no answer, or SQLSTATE class 08 or 57: shutting down or
+/// restarting) rather than a refusal of this record. An unavailable database holds the record; a refusal drops it.
+fn database_unavailable(e: &postgres::Error) -> bool {
+    match e.as_db_error() {
+        None => true,
+        Some(db) => {
+            let code = db.code().code();
+            code.starts_with("08") || code.starts_with("57")
+        }
+    }
+}
+
+pub mod appender;
 
 /// The connection, and the hash of what each component last stored.
 pub struct Db {
@@ -211,12 +544,20 @@ pub struct Db {
     /// Components whose stored state must not be overwritten this run: a failed load, or a
     /// restore that was refused.
     held: Mutex<BTreeSet<String>>,
-    append_logged: Mutex<Option<Instant>>,
+    /// Shared with the transcript writer, which logs through it too.
+    append_logged: Arc<Mutex<Option<Instant>>>,
     infraction_logged: Mutex<Option<Instant>>,
     ide_audit_logged: Mutex<Option<Instant>>,
     station_audit_logged: Mutex<Option<Instant>>,
     /// The file fallback for transcripts, infractions and the IDE audit (see `attach_files`).
     files: std::sync::OnceLock<files::Files>,
+    /// Transcript records Postgres has not taken yet, written again oldest first (see `hold_row`). Shared with the
+    /// transcript writer, which drains it.
+    spool: Arc<Mutex<Spool>>,
+    /// Records the spool dropped to stay within `SPOOL_CAP`, since start.
+    spool_dropped: Arc<AtomicU64>,
+    /// The queue of the transcript writer (see `start_appender`): unset without Postgres.
+    appender: std::sync::OnceLock<std::sync::mpsc::SyncSender<appender::Msg>>,
 }
 
 impl Db {
@@ -226,43 +567,60 @@ impl Db {
             client: client.map(Mutex::new),
             stored: Mutex::new(BTreeMap::new()),
             held: Mutex::new(BTreeSet::new()),
-            append_logged: Mutex::new(None),
+            append_logged: Arc::new(Mutex::new(None)),
             infraction_logged: Mutex::new(None),
             ide_audit_logged: Mutex::new(None),
             station_audit_logged: Mutex::new(None),
             files: std::sync::OnceLock::new(),
+            spool: Arc::new(Mutex::new(Spool::new(SPOOL_CAP))),
+            spool_dropped: Arc::new(AtomicU64::new(0)),
+            appender: std::sync::OnceLock::new(),
         }
     }
 
     /// Connects to `APZ_DATABASE_URL` from `env` and migrates the schema to this build's. Without
-    /// the variable (or when the connection fails, logged) the plaza runs without Postgres. A
-    /// migration that refuses (a changed applied file, a failed statement) stops apid at start.
+    /// the variable the plaza runs without Postgres, on its files. With the variable set, a database
+    /// that does not answer within 30 s, or a migration that refuses (a changed applied file, a
+    /// failed statement), stops apid at start: it never runs on files when a database is configured.
     pub fn connect(env: &BTreeMap<String, String>) -> Db {
         let url = match env.get("APZ_DATABASE_URL") {
             Some(url) if !url.trim().is_empty() => url.clone(),
             _ => return Db::with(String::new(), None),
         };
-        match connect_raw(&url) {
-            Ok(mut client) => {
-                if let Err(e) = migrate::migrate(&mut client) {
-                    eprintln!("db: refusing to start: {e}");
-                    std::process::exit(1);
-                }
-                if let Err(e) = data_migrate::run(&mut client) {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-                Db::with(url, Some(client))
-            }
-            Err(e) => {
-                eprintln!("db: connect failed: {e}");
-                Db::with(String::new(), None)
-            }
+        if let Some(reason) = tls_refusal(&url) {
+            eprintln!("{reason}");
+            std::process::exit(1);
         }
+        let mut client = match connect_with_retry(&url, Duration::from_secs(30)) {
+            Ok(client) => client,
+            Err(e) => {
+                eprintln!(
+                    "db: APZ_DATABASE_URL is set but the database did not answer within 30 s: {e}; refusing to start on files"
+                );
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = migrate::migrate(&mut client) {
+            eprintln!("db: refusing to start: {e}");
+            std::process::exit(1);
+        }
+        if let Err(e) = data_migrate::run(&mut client) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        let db = Db::with(url, Some(client));
+        db.start_appender();
+        db
     }
 
-    /// Deletes the stored transcript rows of `cid` (a wipe).
+    /// Deletes the stored transcript rows of `cid` (a wipe), and the records of `cid` held in the spool. The writer
+    /// first writes the records it has queued, so none of them lands after the delete.
     pub fn delete_transcript(&self, cid: u64) {
+        self.flush_transcripts();
+        self.spool
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|row| row.cid != cid);
         if let Some(files) = self.file_store() {
             if let Err(err) = files.delete_transcript(cid) {
                 eprintln!("apid: delete transcript {cid}: {err}");
@@ -287,6 +645,66 @@ impl Db {
     /// `ide-audit.jsonl` there (see `db::files`).
     pub fn attach_files(&self, state_dir: &std::path::Path) {
         let _ = self.files.set(files::Files::open(state_dir));
+    }
+
+    /// Sets the spool file under `state_dir`. With Postgres connected, puts the records a previous run saved there
+    /// back in the spool, oldest first, and removes the file. Without Postgres nothing is held, so the file waits
+    /// for a run that has Postgres.
+    pub fn attach_spool(&self, state_dir: &std::path::Path) {
+        let path = state_dir.join(SPOOL_FILE);
+        let mut spool = self.spool.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.enabled() && path.exists() {
+            let rows = load_spool(&path);
+            let count = rows.len();
+            for row in rows {
+                if spool.push(row) {
+                    self.spool_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!(
+                    "db: the transcript spool file {} could not be removed: {e}",
+                    path.display()
+                );
+            }
+            if count > 0 {
+                eprintln!(
+                    "db: {count} transcript records from the last run are held until Postgres takes them"
+                );
+            }
+        }
+        spool.file = Some(path);
+    }
+
+    /// Saves the held records to the spool file: at shutdown (`force`) whatever is held. From the writer, a file once
+    /// written is kept in step with the spool, and a new one is written when `SPOOL_SAVE_AT` records are held; both at
+    /// most once a minute. An empty spool removes the file. Without Postgres nothing is held, so nothing is saved.
+    fn persist_spool(&self, force: bool) {
+        if !self.enabled() {
+            return;
+        }
+        let mut spool = self.spool.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(path) = spool.file.clone() else {
+            return;
+        };
+        if spool.rows.is_empty() {
+            // A file left over is stale: its records are in Postgres now, or were wiped.
+            let _ = std::fs::remove_file(&path);
+            spool.saved = None;
+            return;
+        }
+        let wanted = force || spool.saved.is_some() || spool.rows.len() >= SPOOL_SAVE_AT;
+        if !wanted || (!force && !due(spool.saved)) {
+            return;
+        }
+        let result = save_spool(&path, spool.rows.make_contiguous());
+        match result {
+            Ok(()) => spool.saved = Some(Instant::now()),
+            Err(e) => eprintln!(
+                "db: saving the transcript spool to {} failed: {e}",
+                path.display()
+            ),
+        }
     }
 
     /// The file fallback, when this run has no Postgres and `attach_files` was called.
@@ -396,8 +814,43 @@ impl Db {
         Ok(true)
     }
 
-    /// Appends one transcript record. A failed append is dropped; the failure is logged at
-    /// most once a minute.
+    /// Upserts every item in one transaction, so the components stored together are persisted from one instant:
+    /// all of them or none. Empty and unchanged items are skipped, as `store` skips them. A failed transaction
+    /// keeps every hash, so the next pass stores them again.
+    pub fn store_many(&self, items: &[(&str, String)]) -> Result<(), String> {
+        if !self.enabled() {
+            return Ok(());
+        }
+        let mut stored = self.stored.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut changed: Vec<(&str, &str, i64)> = Vec::new();
+        for (component, json) in items {
+            if json.is_empty() {
+                continue;
+            }
+            let hash = fnv1a(json.as_bytes());
+            if stored.get(*component) != Some(&hash) {
+                changed.push((*component, json.as_str(), hash));
+            }
+        }
+        if changed.is_empty() {
+            return Ok(());
+        }
+        self.run(|c| {
+            let mut tx = c.transaction()?;
+            for &(component, json, hash) in &changed {
+                tx.execute(sql::STATE_UPSERT, &[&component, &json, &hash])?;
+            }
+            tx.commit()
+        })?;
+        for (component, _, hash) in changed {
+            stored.insert(component.to_string(), hash);
+        }
+        Ok(())
+    }
+
+    /// Appends one transcript record, in order: records held from an outage are written first. A record Postgres
+    /// cannot take now (it is unreachable) is held in the spool and written on a later append or writer pass; a
+    /// record it turns down is dropped, logged at most once a minute.
     pub fn append_transcript(
         &self,
         cid: u64,
@@ -425,22 +878,97 @@ impl Db {
         if !self.enabled() {
             return;
         }
-        let (cid, seq, work, at_ms) = (cid as i64, seq as i64, work as i64, at_ms as i64);
-        if let Err(e) = self.run(|c| {
-            c.execute(
-                sql::TRANSCRIPT_APPEND,
-                &[&cid, &seq, &work, &kind, &at_ms, data],
-            )
-        }) {
-            let mut logged = self
-                .append_logged
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if due(*logged) {
-                *logged = Some(Instant::now());
-                eprintln!("db: transcript append failed: {e} (dropped; logged once a minute)");
-            }
+        let row = PendingRow {
+            cid,
+            seq,
+            work,
+            kind: kind.to_string(),
+            at_ms,
+            data: data.clone(),
+        };
+        let Some(writer) = self.appender.get() else {
+            let mut spool = self.spool.lock().unwrap_or_else(PoisonError::into_inner);
+            self.hold_row(&mut spool, row, "no transcript writer");
+            return;
+        };
+        if let Err(err) = writer.try_send(appender::Msg::Row(row)) {
+            // The queue is full (the database is slow) or the writer has stopped: the record is held instead.
+            let msg = match err {
+                std::sync::mpsc::TrySendError::Full(msg)
+                | std::sync::mpsc::TrySendError::Disconnected(msg) => msg,
+            };
+            let appender::Msg::Row(row) = msg else {
+                return;
+            };
+            let mut spool = self.spool.lock().unwrap_or_else(PoisonError::into_inner);
+            self.hold_row(
+                &mut spool,
+                row,
+                "the transcript queue is full or its writer has stopped",
+            );
         }
+    }
+
+    /// Waits until the transcript writer has written every record sent before this call, and one pass of the spool.
+    /// A read or a wipe after it therefore sees them. Without a writer there is nothing to wait for.
+    pub fn flush_transcripts(&self) {
+        self.ask(appender::Msg::Flush);
+    }
+
+    /// At shutdown: the writer writes what it holds, the spool included while the database answers, and stops. Waits
+    /// at most `appender::ANSWER_WAIT` for it.
+    pub fn close_appender(&self) {
+        self.ask(appender::Msg::Close);
+    }
+
+    /// Sends a control message to the writer and waits for its answer, at most `appender::ANSWER_WAIT`.
+    fn ask(&self, control: fn(std::sync::mpsc::SyncSender<()>) -> appender::Msg) {
+        let Some(writer) = self.appender.get() else {
+            return;
+        };
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        if writer.send(control(reply)).is_ok()
+            && let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                answer.recv_timeout(appender::ANSWER_WAIT)
+        {
+            eprintln!(
+                "db: the transcript writer did not answer within {:?}",
+                appender::ANSWER_WAIT
+            );
+        }
+    }
+
+    /// Starts the transcript writer (see `appender`): a thread with a connection of its own, which writes the records
+    /// `append_transcript` queues for it. Without Postgres there is none.
+    fn start_appender(&self) {
+        if !self.enabled() {
+            return;
+        }
+        if let Some(writer) = appender::spawn(
+            self.url.clone(),
+            Arc::clone(&self.spool),
+            Arc::clone(&self.spool_dropped),
+            Arc::clone(&self.append_logged),
+        ) {
+            let _ = self.appender.set(writer);
+        }
+    }
+
+    /// The transcript records held while Postgres is unreachable, and the records dropped since start because the
+    /// spool was full.
+    pub fn spooled(&self) -> (usize, u64) {
+        let held = self
+            .spool
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .rows
+            .len();
+        (held, self.spool_dropped.load(Ordering::Relaxed))
+    }
+
+    /// Holds a record Postgres could not take, behind the records already held (see `appender::hold_row`).
+    fn hold_row(&self, spool: &mut Spool, row: PendingRow, reason: &str) {
+        appender::hold_row(spool, &self.spool_dropped, &self.append_logged, row, reason);
     }
 
     /// The newest `limit` records of `cid`'s transcript, oldest first, as (seq, work, kind, at_ms, data).
@@ -454,6 +982,7 @@ impl Db {
         if !self.enabled() {
             return Vec::new();
         }
+        self.flush_transcripts();
         let cid = cid as i64;
         let rows = self.run(|c| c.query(sql::TRANSCRIPT_PAGE, &[&cid, &limit]));
         match rows {
@@ -488,6 +1017,7 @@ impl Db {
         if !self.enabled() {
             return Vec::new();
         }
+        self.flush_transcripts();
         match self.run(|c| c.query(sql::TRANSCRIPT_CIDS, &[])) {
             Ok(rows) => rows.iter().map(|r| r.get::<_, i64>(0) as u64).collect(),
             Err(e) => {
@@ -817,6 +1347,49 @@ fn restore_components(app: &App) {
             }
         }
     }
+    reconcile_escrows(app);
+}
+
+/// The finished tasks (done, failed, withdrawn) whose escrow still holds money, from `(id, state, escrow)` triples.
+fn stranded_escrows(tasks: &[(String, String, i128)]) -> Vec<&(String, String, i128)> {
+    tasks
+        .iter()
+        .filter(|(_, state, escrow)| {
+            matches!(state.as_str(), "done" | "failed" | "withdrawn") && *escrow > 0
+        })
+        .collect()
+}
+
+/// After a restore, refunds each finished task whose escrow still holds money: a stop between the treasury's store
+/// and the task ledger's can leave one (the task finished, its escrow not yet paid back). Returns how many it found.
+fn reconcile_escrows(app: &App) -> usize {
+    let tasks: Vec<(String, String, i128)> = app
+        .plaza
+        .tasks
+        .list()
+        .iter()
+        .map(|task| {
+            let view = task.view();
+            let escrow = app.plaza.treasury.escrow_balance(view.id);
+            (view.id.to_string(), view.state.to_string(), escrow)
+        })
+        .collect();
+    let stranded = stranded_escrows(&tasks);
+    for (id, state, escrow) in &stranded {
+        eprintln!(
+            "db: restore: task {id} is {state} but its escrow holds {escrow}; refunding it to the plaza's budget"
+        );
+        if let Err(e) = app.plaza.treasury.refund_task_to_budget(id) {
+            eprintln!("db: restore: refund of task {id} failed: {e}");
+        }
+    }
+    if !stranded.is_empty() {
+        eprintln!(
+            "db: restore: {} finished tasks had escrow to refund",
+            stranded.len()
+        );
+    }
+    stranded.len()
 }
 
 /// Loads the stored transcripts and infractions (from Postgres, or the files when there is none),
@@ -868,31 +1441,71 @@ fn wire_violations(app: &App) {
     ));
 }
 
+/// One pass of the writer: store every component that is not held, then sync the files. A store that fails is
+/// passed to `on_error` with its name and the error; the loop throttles its log, the final pass logs each one.
+fn write_pass_with(app: &App, mut on_error: impl FnMut(&str, &str)) {
+    // The transcript records held while Postgres was unreachable go first, oldest first.
+    app.db.flush_transcripts();
+    // A run without Postgres has no component stores to write; its files are only synced.
+    let components: &[&str] = if app.db.enabled() { COMPONENTS } else { &[] };
+    // The ledgers name each other (a task names its escrow, the agora names tasks), so they are snapshotted back to
+    // back, before any store, and stored in one transaction: a stop cannot persist them from different instants.
+    const LEDGERS: &[&str] = &["treasury", "tasks", "agora"];
+    let ledgers: Vec<(&str, String)> = components
+        .iter()
+        .copied()
+        .filter(|name| LEDGERS.contains(name) && !app.db.is_held(name))
+        .map(|name| (name, snapshot_of(app, name)))
+        .collect();
+    if let Err(e) = app.db.store_many(&ledgers) {
+        for &(name, _) in &ledgers {
+            on_error(name, &e);
+        }
+    }
+    for &name in components {
+        if LEDGERS.contains(&name) || app.db.is_held(name) {
+            continue;
+        }
+        if let Err(e) = app.db.store(name, &snapshot_of(app, name)) {
+            on_error(name, &e.to_string());
+        }
+    }
+    app.db.sync_files();
+    app.db.persist_spool(false);
+}
+
+/// The final pass at shutdown: every component and file, and every store error logged. Transcript records still
+/// held at shutdown are counted and saved to the spool file: they are not in Postgres.
+pub fn write_pass(app: &App) {
+    write_pass_with(app, |name, err| eprintln!("db: store {name} failed: {err}"));
+    app.db.close_appender();
+    app.db.persist_spool(true);
+    let (held, dropped) = app.db.spooled();
+    if held > 0 || dropped > 0 {
+        eprintln!(
+            "db: transcript spool at shutdown: {held} records held (not in Postgres), {dropped} dropped since start"
+        );
+    }
+}
+
 /// The writer: every two seconds, store each component whose snapshot changed.
 pub fn spawn_writer(app: Arc<App>) {
     if !app.db.enabled() && app.db.file_store().is_none() {
         return;
     }
+    app.db.attach_spool(&app.config.state_dir);
     let spawned = std::thread::Builder::new()
         .name("db-writer".into())
         .spawn(move || {
-            let mut logged: BTreeMap<&str, Instant> = BTreeMap::new();
+            let mut logged: BTreeMap<String, Instant> = BTreeMap::new();
             loop {
                 std::thread::sleep(Duration::from_secs(2));
-                // A run without Postgres has no component stores to write; its files are only synced.
-                let components: &[&str] = if app.db.enabled() { COMPONENTS } else { &[] };
-                for &name in components {
-                    if app.db.is_held(name) {
-                        continue;
+                write_pass_with(&app, |name, err| {
+                    if due(logged.get(name).copied()) {
+                        eprintln!("db: store {name} failed: {err}");
+                        logged.insert(name.to_string(), Instant::now());
                     }
-                    if let Err(e) = app.db.store(name, &snapshot_of(&app, name))
-                        && due(logged.get(name).copied())
-                    {
-                        eprintln!("db: store {name} failed: {e}");
-                        logged.insert(name, Instant::now());
-                    }
-                }
-                app.db.sync_files();
+                });
             }
         });
     if let Err(e) = spawned {
@@ -945,10 +1558,97 @@ pub fn test_database(label: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A finished task whose escrow still holds money is stranded; open or claimed tasks, and empty escrows, are not.
+    #[test]
+    fn the_ledger_components_are_stored_together_and_read_back() {
+        let Some(url) = test_database("store_many") else {
+            return;
+        };
+        let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
+        let db = Db::connect(&env);
+        assert!(db.enabled());
+        let items = [
+            ("treasury", r#"{"entries":[1]}"#.to_string()),
+            ("tasks", r#"{"tasks":[]}"#.to_string()),
+            ("agora", r#"{"calls":[]}"#.to_string()),
+        ];
+        db.store_many(&items).expect("one transaction");
+        for (name, json) in &items {
+            let stored: serde_json::Value =
+                serde_json::from_str(&db.load(name).expect("stored")).expect("json");
+            let wanted: serde_json::Value = serde_json::from_str(json).expect("json");
+            assert_eq!(stored, wanted, "{name}");
+        }
+        // An unchanged item is skipped; a changed one is written again.
+        db.store_many(&[("tasks", r#"{"tasks":[1]}"#.to_string())])
+            .expect("a second pass");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&db.load("tasks").expect("stored"))
+                .expect("json"),
+            serde_json::json!({"tasks": [1]})
+        );
+    }
+
+    #[test]
+    fn stranded_escrows_are_finished_tasks_with_money_in_escrow() {
+        let tasks = [
+            ("t1".to_string(), "done".to_string(), 5),
+            ("t2".to_string(), "withdrawn".to_string(), 0),
+            ("t3".to_string(), "open".to_string(), 9),
+            ("t4".to_string(), "failed".to_string(), 3),
+            ("t5".to_string(), "claimed".to_string(), 0),
+        ];
+        let stranded = stranded_escrows(&tasks);
+        let ids: Vec<&str> = stranded.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert_eq!(ids, ["t1", "t4"]);
+    }
+
     /// The registry is a snapshotted component: restored at start and written by the writer.
     #[test]
     fn models_is_a_component() {
         assert!(COMPONENTS.contains(&"models"));
+    }
+
+    /// A database that never answers is retried for the budget, then given up on with the last error: port 9 on
+    /// loopback refuses at once, so the call returns within about the budget (here 300 ms), not after the 30 s
+    /// `connect` allows.
+    #[test]
+    fn tls_loopback_and_unix_socket_are_allowed() {
+        for url in [
+            "postgres://plaza:x@127.0.0.1:5432/plaza",
+            "postgres://plaza:x@localhost/plaza",
+            "postgres://plaza:x@[::1]:5432/plaza",
+            "postgres://plaza@/plaza?host=/var/run/postgresql",
+            "postgres://plaza@%2Fvar%2Frun%2Fpostgresql/plaza",
+        ] {
+            assert_eq!(tls_refusal(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn tls_refuses_remote_hosts_unless_sslmode_disable() {
+        for url in [
+            "postgres://plaza:x@db.example.com/plaza",
+            "postgres://plaza:x@db.example.com/plaza?sslmode=prefer",
+            "postgres://plaza:x@localhost/plaza?hostaddr=10.0.0.5",
+            "postgres://plaza:x@localhost/plaza?sslmode=require",
+            "postgres://plaza:x@localhost/plaza?sslmode=verify-ca",
+            "postgres://plaza:x@localhost/plaza?sslmode=verify-full",
+        ] {
+            assert!(tls_refusal(url).is_some(), "{url}");
+        }
+        assert_eq!(
+            tls_refusal("postgres://plaza:x@db.example.com/plaza?sslmode=disable"),
+            None
+        );
+    }
+
+    #[test]
+    fn connect_with_retry_gives_up_within_the_budget() {
+        let started = Instant::now();
+        let result = connect_with_retry("postgres://x:y@127.0.0.1:9/x", Duration::from_millis(300));
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     /// The unfurl cache on Postgres: a miss, a store, a read back, and an upsert that replaces the row. A database

@@ -29,6 +29,8 @@ tokens, node keys, pinned TLS, owner tokens), `apz-os` (platform differences),
 I/O), `apz-metrics-view` (the Metrics view's model, composed by the hub and drawn by both consoles), `jhrl` (the law
 language), `acpi-tables`.
 
+`Bonds` (`crates/apz-plaza/src/bonds.rs`) is the one file-backed store in `apz-plaza`: it loads and writes its own file, and no other file in that crate does file I/O.
+
 All daemons bind loopback only and reject a non-loopback `Host` header. The node daemons' own HTTP APIs
 (`noded`, and `vsockd`'s except `GET /healthz`) also require the machine's internal token in `x-apz-internal`
 (`apz_http::auth`): `--internal-token-file` names it, the hub's `<state-dir>/internal.token` on a hub machine and
