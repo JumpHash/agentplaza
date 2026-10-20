@@ -15,7 +15,12 @@ pub type PResult<T> = Result<T, Diag>;
 
 pub fn parse_module(file: u32, text: &str) -> PResult<Module> {
     let toks = lex(file, text)?;
-    let mut p = Parser { toks, pos: 0, file };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        file,
+        depth: 0,
+    };
     p.module()
 }
 
@@ -26,7 +31,12 @@ pub fn parse_expr_at(file: u32, text: &str, base: usize) -> PResult<Expr> {
         t.span.lo += base as u32;
         t.span.hi += base as u32;
     }
-    let mut p = Parser { toks, pos: 0, file };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        file,
+        depth: 0,
+    };
     let e = p.expr()?;
     if !matches!(p.peek(), Tok::Eof) {
         return Err(p.err_here("unexpected text after the expression"));
@@ -34,10 +44,33 @@ pub fn parse_expr_at(file: u32, text: &str, base: usize) -> PResult<Expr> {
     Ok(e)
 }
 
+/// The deepest nesting of recursive expression parses the parser accepts (each level costs about 6 KiB of
+/// stack in a release build and 40 KiB in a debug one, so 32 fits a default 2 MiB thread). Deeper input is refused
+/// with a diagnostic instead of overflowing the stack.
+const MAX_NESTING: u32 = 32;
+
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
     file: u32,
+    /// Open recursive expression parses around the current position.
+    depth: u32,
+}
+
+impl Parser {
+    /// Runs one recursive expression parse a level deeper. The level is given back on every exit,
+    /// error or not, so the caller sees the depth it entered with.
+    fn nested<T>(&mut self, parse: impl FnOnce(&mut Self) -> PResult<T>) -> PResult<T> {
+        if self.depth >= MAX_NESTING {
+            return Err(self.err_here(format!(
+                "expression nested deeper than {MAX_NESTING} levels"
+            )));
+        }
+        self.depth += 1;
+        let out = parse(self);
+        self.depth -= 1;
+        out
+    }
 }
 
 fn describe(t: &Tok) -> String {
@@ -1847,13 +1880,17 @@ impl Parser {
     fn pow(&mut self) -> PResult<Expr> {
         let a = self.unary()?;
         if self.eat_sym("^") {
-            let b = self.pow()?;
+            let b = self.nested(Self::pow)?;
             return Ok(Self::bin(BinOp::Pow, a, b));
         }
         Ok(a)
     }
 
     fn unary(&mut self) -> PResult<Expr> {
+        self.nested(Self::unary_body)
+    }
+
+    fn unary_body(&mut self) -> PResult<Expr> {
         let lo = self.span();
         if self.eat_sym("-") {
             let e = self.unary()?;
@@ -2108,6 +2145,25 @@ mod tests {
             ExprKind::Index(a, i) => format!("{}[{}]", shape(a), shape(i)),
             _ => "…".into(),
         }
+    }
+
+    #[test]
+    fn nesting_past_the_budget_is_refused_with_a_diagnostic() {
+        // 100 open parentheses is deeper than MAX_NESTING (32): refused, not a stack overflow.
+        let deep = format!("{}true{}", "(".repeat(100), ")".repeat(100));
+        match parse_expr_at(0, &deep, 0) {
+            Err(d) => assert!(d.msg.contains("nested deeper than 32 levels"), "{}", d.msg),
+            Ok(_) => panic!("100 nested parentheses parsed"),
+        }
+    }
+
+    #[test]
+    fn nesting_within_the_budget_parses() {
+        let inside = format!("{}true{}", "(".repeat(30), ")".repeat(30));
+        assert!(
+            parse_expr_at(0, &inside, 0).is_ok(),
+            "30 nested parentheses are within the budget"
+        );
     }
 
     #[test]

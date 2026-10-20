@@ -3,6 +3,7 @@
 //! A number is exact (a rational over i128) until an operation forces it to be a real
 //! (`ln`, a fractional power, `inf`). Unit literals convert to base units exactly, so
 //! `1000 cr/d * 1 d == 1000 cr` holds without rounding. Overflow is an error, never a wrap.
+//! A real that arithmetic makes NaN or infinite is an error too, and NaN has no order.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -14,20 +15,22 @@ pub enum Num {
     Real(f64),
 }
 
-fn gcd(mut a: i128, mut b: i128) -> i128 {
-    a = a.abs();
-    b = b.abs();
+/// The greatest common divisor of the magnitudes, at least 1. The one value that does not fit
+/// in an i128 (both inputs are 0 or i128::MIN) is reported as an overflow.
+fn gcd(a: i128, b: i128) -> Result<i128, String> {
+    let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
     while b != 0 {
         let t = a % b;
         a = b;
         b = t;
     }
-    a
+    i128::try_from(a.max(1)).map_err(|_| OVERFLOW.to_string())
 }
 
 pub type NumResult = Result<Num, String>;
 
 const OVERFLOW: &str = "integer overflow";
+const NOT_FINITE: &str = "not a finite number";
 
 // Checked arithmetic returns `Result` (overflow and division by zero are errors), so the
 // std operator traits don't fit; the method names say what they compute.
@@ -41,7 +44,7 @@ impl Num {
         if d == 0 {
             return Err("division by zero".into());
         }
-        let g = gcd(n, d).max(1);
+        let g = gcd(n, d)?;
         let (mut n, mut d) = (n / g, d / g);
         if d < 0 {
             n = n.checked_neg().ok_or(OVERFLOW)?;
@@ -56,6 +59,15 @@ impl Num {
             Num::Rat(x as i128, 1)
         } else {
             Num::Real(x)
+        }
+    }
+
+    /// A real produced by arithmetic: NaN and infinity are errors, not values.
+    pub fn finite(x: f64) -> NumResult {
+        if x.is_finite() {
+            Ok(Num::real(x))
+        } else {
+            Err(NOT_FINITE.into())
         }
     }
 
@@ -77,8 +89,12 @@ impl Num {
         };
         let digits = format!("{int_part}{frac_part}");
         let mut n: i128 = digits.parse().map_err(|_| format!("bad number `{text}`"))?;
+        if n == 0 {
+            return Ok(Num::int(0));
+        }
+        let frac_len = i32::try_from(frac_part.len()).map_err(|_| OVERFLOW)?;
+        let mut e = exp.checked_sub(frac_len).ok_or(OVERFLOW)?;
         let mut d: i128 = 1;
-        let mut e = exp - frac_part.len() as i32;
         while e > 0 {
             n = n.checked_mul(10).ok_or(OVERFLOW)?;
             e -= 1;
@@ -123,7 +139,7 @@ impl Num {
                     _ => Err(OVERFLOW.into()),
                 }
             }
-            _ => Ok(Num::real(self.to_f64() + o.to_f64())),
+            _ => Num::finite(self.to_f64() + o.to_f64()),
         }
     }
 
@@ -142,13 +158,13 @@ impl Num {
         match (self, o) {
             (Num::Rat(a, b), Num::Rat(c, d)) => {
                 // Cross-reduce first to keep intermediate values small.
-                let g1 = gcd(a, d).max(1);
-                let g2 = gcd(c, b).max(1);
+                let g1 = gcd(a, d)?;
+                let g2 = gcd(c, b)?;
                 let n = (a / g1).checked_mul(c / g2).ok_or(OVERFLOW)?;
                 let den = (b / g2).checked_mul(d / g1).ok_or(OVERFLOW)?;
                 Num::rat(n, den)
             }
-            _ => Ok(Num::real(self.to_f64() * o.to_f64())),
+            _ => Num::finite(self.to_f64() * o.to_f64()),
         }
     }
 
@@ -158,18 +174,18 @@ impl Num {
         }
         match o {
             Num::Rat(c, d) => self.mul(Num::rat(d, c)?),
-            Num::Real(x) => Ok(Num::real(self.to_f64() / x)),
+            Num::Real(x) => Num::finite(self.to_f64() / x),
         }
     }
 
     /// `self ^ e`. Exact for an integer exponent on a rational base.
     pub fn pow(self, e: Num) -> NumResult {
         if let (Num::Rat(..), Some(k)) = (self, e.as_int()) {
-            if k.abs() > 4096 {
-                return Ok(Num::real(self.to_f64().powf(k as f64)));
+            if k.unsigned_abs() > 4096 {
+                return Num::finite(self.to_f64().powf(k as f64));
             }
             let mut acc = Num::int(1);
-            for _ in 0..k.abs() {
+            for _ in 0..k.unsigned_abs() {
                 acc = acc.mul(self)?;
             }
             return if k < 0 { Num::int(1).div(acc) } else { Ok(acc) };
@@ -178,7 +194,7 @@ impl Num {
         if r.is_nan() {
             return Err(format!("{self} ^ {e} is not a real number"));
         }
-        Ok(Num::real(r))
+        Num::finite(r)
     }
 
     pub fn floor(self) -> NumResult {
@@ -196,11 +212,14 @@ impl Num {
     pub fn round(self) -> NumResult {
         match self {
             Num::Rat(n, d) => {
+                // Half away from zero: floor((2n + d) / 2d) for n >= 0, mirrored for n < 0.
                 let twice = n.checked_mul(2).ok_or(OVERFLOW)?;
+                let den = d.checked_mul(2).ok_or(OVERFLOW)?;
                 let q = if n >= 0 {
-                    (twice + d).div_euclid(2 * d)
+                    twice.checked_add(d).ok_or(OVERFLOW)?.div_euclid(den)
                 } else {
-                    -((-twice + d).div_euclid(2 * d))
+                    let mag = twice.checked_neg().ok_or(OVERFLOW)?;
+                    -mag.checked_add(d).ok_or(OVERFLOW)?.div_euclid(den)
                 };
                 Ok(Num::int(q))
             }
@@ -209,31 +228,37 @@ impl Num {
     }
 
     pub fn abs(self) -> NumResult {
-        if self.cmp_num(Num::int(0)) == Ordering::Less {
+        if self.try_cmp(Num::int(0))? == Ordering::Less {
             self.neg()
         } else {
             Ok(self)
         }
     }
 
-    /// Total order: rationals exactly, floats by value (NaN never arises; see `pow`).
-    pub fn cmp_num(self, o: Num) -> Ordering {
+    /// Total order over real values. A NaN has no place in it, so comparing one is an error.
+    pub fn try_cmp(self, o: Num) -> Result<Ordering, String> {
         match (self, o) {
-            (Num::Rat(a, b), Num::Rat(c, d)) => match (a.checked_mul(d), c.checked_mul(b)) {
+            (Num::Rat(a, b), Num::Rat(c, d)) => Ok(match (a.checked_mul(d), c.checked_mul(b)) {
                 (Some(x), Some(y)) => x.cmp(&y),
                 _ => self.to_f64().total_cmp(&o.to_f64()),
-            },
+            }),
             _ => self
                 .to_f64()
                 .partial_cmp(&o.to_f64())
-                .unwrap_or(Ordering::Equal),
+                .ok_or_else(|| NOT_FINITE.to_string()),
         }
+    }
+
+    /// `try_cmp` for values known not to be NaN. A NaN compares Equal here, so use `try_cmp`
+    /// wherever a NaN can arrive.
+    pub fn cmp_num(self, o: Num) -> Ordering {
+        self.try_cmp(o).unwrap_or(Ordering::Equal)
     }
 }
 
 impl PartialEq for Num {
     fn eq(&self, o: &Num) -> bool {
-        self.cmp_num(*o) == Ordering::Equal
+        self.try_cmp(*o) == Ok(Ordering::Equal)
     }
 }
 
@@ -259,11 +284,17 @@ impl fmt::Display for Num {
                 }
                 if dd == 1 && k <= 18 {
                     let scale = 10i128.pow(k);
-                    let scaled = n * (scale / d);
-                    let sign = if scaled < 0 { "-" } else { "" };
-                    let a = scaled.abs();
-                    let s = format!("{}.{:0width$}", a / scale, a % scale, width = k as usize);
-                    write!(f, "{sign}{}", s.trim_end_matches('0'))
+                    // A scaled numerator that overflows is printed as a fraction instead.
+                    match n.checked_mul(scale / d) {
+                        Some(scaled) if scaled != i128::MIN => {
+                            let sign = if scaled < 0 { "-" } else { "" };
+                            let a = scaled.abs();
+                            let s =
+                                format!("{}.{:0width$}", a / scale, a % scale, width = k as usize);
+                            write!(f, "{sign}{}", s.trim_end_matches('0'))
+                        }
+                        _ => write!(f, "{n}/{d}"),
+                    }
                 } else {
                     write!(f, "{n}/{d}")
                 }
@@ -281,6 +312,9 @@ impl fmt::Display for Num {
 }
 
 // ---------------------------------------------------------------------------- dimensions
+
+/// The error for a unit whose exponent leaves the range an exponent can hold.
+pub const DIM_RANGE: &str = "a unit's exponent is out of range (beyond 127)";
 
 /// Base dimensions, in this order.
 pub const BASES: [&str; 5] = ["credits", "money", "time", "information", "tokens"];
@@ -302,29 +336,30 @@ impl Dim {
     pub fn is_none(self) -> bool {
         self == Dim::NONE
     }
-    pub fn mul(self, o: Dim) -> Dim {
+    /// The product's exponents, or `None` when one leaves the range an exponent can hold (±127).
+    pub fn mul(self, o: Dim) -> Option<Dim> {
         let mut r = [0; 5];
         for (i, x) in r.iter_mut().enumerate() {
-            *x = self.0[i] + o.0[i];
+            *x = self.0[i].checked_add(o.0[i])?;
         }
-        Dim(r)
+        Some(Dim(r))
     }
-    pub fn inv(self) -> Dim {
+    pub fn inv(self) -> Option<Dim> {
         let mut r = self.0;
         for x in r.iter_mut() {
-            *x = -*x;
+            *x = x.checked_neg()?;
         }
-        Dim(r)
+        Some(Dim(r))
     }
-    pub fn div(self, o: Dim) -> Dim {
-        self.mul(o.inv())
+    pub fn div(self, o: Dim) -> Option<Dim> {
+        self.mul(o.inv()?)
     }
-    pub fn pow(self, k: i128) -> Dim {
+    pub fn pow(self, k: i128) -> Option<Dim> {
         let mut r = self.0;
         for x in r.iter_mut() {
-            *x = (*x as i128 * k) as i8;
+            *x = i8::try_from((*x as i128).checked_mul(k)?).ok()?;
         }
-        Dim(r)
+        Some(Dim(r))
     }
 
     /// The dimension a type name stands for (`Credits`, `Duration`, `Frequency` …).
@@ -336,7 +371,7 @@ impl Dim {
             "Duration" => Dim::TIME,
             "Information" => Dim::INFO,
             "Tokens" => Dim::TOKENS,
-            "Frequency" => Dim::TIME.inv(),
+            "Frequency" => Dim([0, 0, -1, 0, 0]),
             _ => return None,
         })
     }
@@ -435,10 +470,10 @@ pub fn unit_expr(text: &str) -> Result<(Num, Dim), String> {
         let (f, d) = unit(part).ok_or_else(|| format!("unknown unit `{part}`"))?;
         if i == 0 {
             factor = factor.mul(f)?;
-            dim = dim.mul(d);
+            dim = dim.mul(d).ok_or(DIM_RANGE)?;
         } else {
             factor = factor.div(f)?;
-            dim = dim.div(d);
+            dim = dim.div(d).ok_or(DIM_RANGE)?;
         }
     }
     Ok((factor, dim))
@@ -468,8 +503,8 @@ mod tests {
         let (f, d) = unit_expr("cr/d").unwrap();
         let (g, e) = unit_expr("d").unwrap();
         assert_eq!(f.mul(g).unwrap(), Num::int(1));
-        assert_eq!(d.mul(e), Dim::CREDITS);
-        assert_eq!(unit_expr("/min").unwrap().1, Dim::TIME.inv());
+        assert_eq!(d.mul(e), Some(Dim::CREDITS));
+        assert_eq!(unit_expr("/min").unwrap().1, Dim::TIME.inv().unwrap());
         assert_eq!(
             unit_expr("KiB").unwrap().0,
             Num::int(16384).div(Num::int(16)).unwrap()
@@ -487,5 +522,34 @@ mod tests {
         );
         assert_eq!(Num::rat(-7, 2).unwrap().floor().unwrap(), Num::int(-4));
         assert!(Num::int(i128::MAX).add(Num::int(1)).is_err());
+    }
+
+    #[test]
+    fn overflow_and_nan_are_errors_not_wraps() {
+        assert!(Num::int(i128::MAX).mul(Num::int(2)).is_err());
+        assert!(Num::int(i128::MIN).neg().is_err());
+        assert!(Num::int(1).div(Num::int(0)).is_err());
+        assert!(Num::rat(i128::MAX, 3).unwrap().round().is_err());
+        assert!(Num::real(1e308).mul(Num::real(1e308)).is_err());
+        assert!(Num::int(i128::MIN).abs().is_err());
+        assert_eq!(Num::int(-3).abs().unwrap(), Num::int(3));
+        let nan = Num::Real(f64::NAN);
+        assert!(nan.try_cmp(Num::int(1)).is_err());
+        assert!(nan.abs().is_err());
+        // A unit's exponents leave their range as an error too, never as a wrapped dimension.
+        assert_eq!(Dim::TIME.pow(127), Some(Dim([0, 0, 127, 0, 0])));
+        assert_eq!(Dim::TIME.pow(128), None);
+        assert_eq!(Dim::TIME.pow(i128::MAX), None);
+        assert_eq!(Dim([0, 0, -128, 0, 0]).inv(), None);
+        assert_eq!(Dim([0, 0, 127, 0, 0]).mul(Dim::TIME), None);
+        assert_eq!(Dim::TIME.div(Dim([0, 0, -127, 0, 0])), None);
+    }
+
+    #[test]
+    fn display_falls_back_to_a_fraction_when_scaling_overflows() {
+        assert_eq!(
+            format!("{}", Num::rat(i128::MAX, 2).unwrap()),
+            format!("{}/2", i128::MAX)
+        );
     }
 }
