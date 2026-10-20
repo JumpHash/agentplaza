@@ -82,6 +82,11 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
         "qa": role("qa", "QA"),
     } });
     let scratch = Scratch::new("drafts");
+    scratch.name_agents(&[
+        (ORCHESTRATOR, "Ada"),
+        (BUILDER, "Kofi"),
+        (SPAWNED_QA, "Lena"),
+    ]);
     let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
     for (cid, role) in [(ORCHESTRATOR, "orchestrator"), (BUILDER, "builder")] {
         let agent = hub.wait_for(

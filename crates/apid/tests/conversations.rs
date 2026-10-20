@@ -97,6 +97,7 @@ fn two_conversations_are_two_threads_and_each_gets_its_own_answers() {
         }
     });
     let scratch = Scratch::new("conversations");
+    scratch.name_agents(&[(ORCHESTRATOR, "Ada")]);
     let hub = Hub::start(&scratch, Some(gateway.port), Some(noded.port));
 
     // No conversation before the orchestrator is there, and none with an empty message.

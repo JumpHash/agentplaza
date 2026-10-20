@@ -652,12 +652,21 @@ fn the_probe_child() {
             // not kill the child — the platform does not apply a filter — which
             // the parent reads from the absence of a signal.
         }
-        _ => std::process::exit(72),
+        _ => exit_jailed(72),
     }
     // The probe syscall was admitted: report the state the parent prints when it
     // explains a skip, and leave the status it reads as "not refused".
     note(format!(
         "vmm-jail-probe: {what} arm={arm} Seccomp: 2 — the probe syscall was admitted"
     ));
-    std::process::exit(0);
+    exit_jailed(0);
+}
+
+/// Ends the probe from inside the jail without the process's exit handlers:
+/// under coverage one of them writes the profile, with file syscalls the
+/// allowlist does not name, and the jail would kill a probe it had admitted.
+fn exit_jailed(code: i32) -> ! {
+    // SAFETY: `_exit` takes no pointers and does not return; stderr is
+    // unbuffered, so the notes above are already written.
+    unsafe { libc::_exit(code) }
 }
