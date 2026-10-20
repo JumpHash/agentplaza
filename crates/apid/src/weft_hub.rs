@@ -368,6 +368,14 @@ fn restart_if_dead(app: &Arc<App>) {
 
 /// What the hub does when Weft says something happened: a landing is exported to the repo's connections.
 fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
+    // A signed release goes to the environments that run releases (a protected one asks the owner first).
+    if kind == "release.sign"
+        && let (Some(repo), Some(version)) = (body["repo"].as_str(), body["version"].as_str())
+    {
+        let (app, repo, version) = (Arc::clone(app), repo.to_string(), version.to_string());
+        std::thread::spawn(move || crate::environments::tracked(&app, &repo, "releases", &version));
+        return;
+    }
     if kind != "land" {
         return;
     }
@@ -394,6 +402,8 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
             crate::review_graph::post_land(&app, &repo, &change, task);
         }
         export_all(&app, &repo);
+        // And the landing goes to the environments that run main.
+        crate::environments::tracked(&app, &repo, "main", &change);
     });
 }
 

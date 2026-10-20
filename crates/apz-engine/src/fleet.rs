@@ -9,7 +9,7 @@ use std::f32::consts::TAU;
 use std::sync::Arc;
 
 use glam::Vec3;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use super::geometry::{self, edges::feature_edges};
 use super::kit;
@@ -18,25 +18,35 @@ use super::style::{Lamp, Palette};
 
 // ---- Data: GET /v1/fleet ----------------------------------------------------------------------
 
+/// A null field reads as its default. The hub sends null for what a machine has not reported yet (the hub's own node
+/// before it starts, as on a Mac), and one null must not refuse the whole fleet: that left the 3D view empty.
+fn nullable<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 /// `GET /v1/fleet`: the machines and the links between them.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct FleetResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub machines: Vec<Machine>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub links: Vec<Link>,
 }
 
 /// One machine. `role` is `hub` or `node`; `status` is `online`, `draining`, `offline` or `revoked`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Machine {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub role: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub kind: String,
     #[serde(default)]
     pub vendor: Option<String>,
@@ -44,31 +54,31 @@ pub struct Machine {
     pub model: Option<String>,
     #[serde(default)]
     pub apple: Option<Apple>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub status: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub arch: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub os: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub backend: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub cpu: Cpu,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub memory_mib: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub gpus: Vec<Gpu>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub storage_gib: u64,
     /// The cids of the agents running here.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub agents: Vec<u64>,
     /// Of those agents, how many are working.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub working: u32,
     #[serde(default)]
     pub stats: Option<Stats>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub last_seen_ms: u64,
     /// A workstation's facts (the fleet's `station` field); `None` for the hub and the nodes.
     #[serde(default)]
@@ -79,51 +89,51 @@ pub struct Machine {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Station {
     /// `macos`, `windows` or `linux`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub os: String,
     /// `laptop`, `desktop`, `mini`, `server` or `vm`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub form: String,
     /// Every lease, queued ones included.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub leases: u32,
     /// The leases that are active (the agent works on the machine now).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub active: u32,
 }
 
 /// A Mac's chip and core counts (only on Macs).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Apple {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub chip: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub p_cores: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub e_cores: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub gpu_cores: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub neural_cores: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub unified_memory_gib: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Cpu {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub model: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub cores: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub threads: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Gpu {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub vendor: String,
     /// Null when the hub cannot read the GPU's memory.
     #[serde(default)]
@@ -133,20 +143,20 @@ pub struct Gpu {
 /// Live load; remote nodes send it with every heartbeat.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Stats {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub cpu_pct: f64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub mem_used_mib: u64,
 }
 
 /// A cable between two machines, by id.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Link {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub a: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub b: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub online: bool,
 }
 
@@ -915,6 +925,25 @@ mod tests {
 
     fn ink() -> Palette {
         Palette::of(crate::style::Style::Ink, true)
+    }
+
+    #[test]
+    fn a_machine_that_has_not_reported_reads_with_nulls_as_empty() {
+        // The hub's own machine on a Mac before its node starts: GET /v1/fleet as the hub sends it.
+        let json = r#"{"machines":[{"id":"n0","name":"hub","role":"hub","kind":null,"vendor":null,"model":null,
+            "apple":null,"status":"offline","arch":null,"os":null,"backend":null,"cpu":null,"memory_mib":null,
+            "gpus":null,"storage_gib":null,"agents":[],"working":0,"stats":null,"last_seen_ms":1792359170409}],
+            "links":null}"#;
+        let fleet: FleetResponse = serde_json::from_str(json).expect("nulls read as empty");
+        let hub = &fleet.machines[0];
+        assert_eq!(
+            (hub.kind.as_str(), hub.arch.as_str(), hub.memory_mib),
+            ("", "", 0)
+        );
+        assert_eq!(hub.cpu, Cpu::default());
+        assert!(hub.gpus.is_empty() && fleet.links.is_empty());
+        let scene = build_fleet(&fleet, &ink());
+        assert_eq!(scene.machines.len(), 1);
     }
 
     #[test]

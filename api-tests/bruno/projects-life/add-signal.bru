@@ -1,0 +1,40 @@
+meta {
+  name: Add a signal to the project's inbox
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/maintenance/signals
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "kind": "feedback",
+    "title": "Checkout is slow on phones",
+    "text": "Two people said the cart takes ten seconds to load on a phone."
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.id: isString
+  res.body.kind: eq "feedback"
+}
+
+tests {
+  test("the signal is numbered in the project's inbox", function () {
+    expect(res.getBody().id).to.match(/^s\d+$/);
+  });
+}
+
+script:post-response {
+  bru.setVar("signalId", res.getBody().id);
+}

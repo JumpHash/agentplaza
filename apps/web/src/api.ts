@@ -277,7 +277,9 @@ export const PROJECT_STAGES: ProjectStage[] = ['brief', 'research', 'proposal', 
 export interface ProjectDoc { kind: string; title: string; file: string | null; repo_path: string | null; commit: string | null; summary: string; by_cid: number; by: string; at_ms: number }
 export interface ProjectCritique { by_cid: number; by: string; verdict: 'approve' | 'revise' | 'comment'; text: string; revision: number; at_ms: number }
 export interface ProjectEvent { at_ms: number; by_cid: number; by: string; what: string; note: string }
-export interface Project { id: string; title: string; goal: string; kind: 'code' | 'other'; stage: ProjectStage; lead_cid: number; owner_approval: boolean; repo: string | null; docs: ProjectDoc[]; critiques: ProjectCritique[]; revision: number; approved_by: string | null; tasks: string[]; history: ProjectEvent[]; created_ms: number; updated_ms: number; paused?: boolean; archived?: boolean }
+export interface Project { id: string; title: string; goal: string; kind: 'code' | 'other'; stage: ProjectStage; lead_cid: number; owner_approval: boolean; repo: string | null; docs: ProjectDoc[]; critiques: ProjectCritique[]; revision: number; approved_by: string | null; tasks: string[]; history: ProjectEvent[]; created_ms: number; updated_ms: number; paused?: boolean; archived?: boolean;
+  /** How it is worked (api-projects.ts): build unless the owner put it in maintenance. */
+  mode?: 'build' | 'maintenance' }
 /** A project's overrides of the plaza's settings; every field optional (unset: the plaza's). */
 export interface ProjectSettings {
   default_model?: string; role_models?: Record<string, string>; effort?: string; max_tokens?: number; max_turns?: number;
@@ -293,7 +295,11 @@ export interface EffectiveSettings { project: string; settings: Record<string, E
 export type SuggestedMember = Agent & { tasks: string[] };
 /** A message of the owner's conversation with the orchestrator: the owner's, the orchestrator's answer (with how its
  * work ended), or a plaza notice (a project started, a task ended). */
-export interface OwnerMessage { from: 'owner' | 'orchestrator' | 'plaza'; text: string; at_ms: number; work: number; status?: 'done' | 'failed' | 'stopped' }
+export interface OwnerMessage {
+  from: 'owner' | 'orchestrator' | 'plaza'; text: string; at_ms: number; work: number; status?: 'done' | 'failed' | 'stopped';
+  /** The files the owner attached (api-projects.ts `attach`). */
+  attachments?: { id: string; name: string; size: number; type: string }[];
+}
 export interface DraftTask { key: string; goal: string; acceptance?: string; role?: string; budget?: number; after?: string[] }
 /** One role on a draft's team: `count` agents, of which `bench` (guest CIDs) come from the bench and the rest are spawned. */
 export interface DraftSeat { role: string; count: number; bench?: number[]; model?: string }
@@ -669,7 +675,8 @@ export const api = {
   setAgentModel: (cid: number, model: string | null) => patch<Agent>(`/v1/agents/${cid}`, { model }),
   renameAgent: (cid: number, name: string) => patch<Agent>(`/v1/agents/${cid}`, { name }),
   killAgent: (cid: number) => del<unknown>(`/v1/agents/${cid}`),
-  chat: (cid: number, text: string) => post<{ work: number }>(`/v1/agents/${cid}/chat`, { text }),
+  /** `attachments`: ids from api-projects.ts `attach`, which the agent may read from this turn on. */
+  chat: (cid: number, text: string, attachments: string[] = []) => post<{ work: number }>(`/v1/agents/${cid}/chat`, attachments.length ? { text, attachments } : { text }),
   assign: (cid: number, task_id: string) => post<{ work: number }>(`/v1/agents/${cid}/assign`, { task_id }),
   cancel: (cid: number) => post<{ cancelled: boolean }>(`/v1/agents/${cid}/cancel`),
   stop: (cid: number) => post<unknown>(`/v1/agents/${cid}/stop`),
@@ -757,8 +764,8 @@ export const api = {
   ownerConversations: (archived = false) => get<OwnerConversationSummary[]>(`/v1/owner/conversations${archived ? '?archived=true' : ''}`),
   ownerConversation: (id: string) => get<OwnerConversation>(`/v1/owner/conversations/${id}`),
   /** Starts a conversation with the orchestrator, `text` its first message. */
-  openConversation: (text: string) => post<OwnerConversation>('/v1/owner/conversations', { text }),
-  sayInConversation: (id: string, text: string) => post<OwnerConversation>(`/v1/owner/conversations/${id}/messages`, { text }),
+  openConversation: (text: string, attachments: string[] = []) => post<OwnerConversation>('/v1/owner/conversations', attachments.length ? { text, attachments } : { text }),
+  sayInConversation: (id: string, text: string, attachments: string[] = []) => post<OwnerConversation>(`/v1/owner/conversations/${id}/messages`, attachments.length ? { text, attachments } : { text }),
   patchConversation: (id: string, change: { title?: string; archived?: boolean }) => patch<OwnerConversation>(`/v1/owner/conversations/${id}`, change),
   conversationTranscript: (id: string, after = 0, limit = 1000) => get<Entry[]>(`/v1/owner/conversations/${id}/transcript${query({ after, limit })}`),
   conversationDraft: (id: string) => get<ProjectDraft>(`/v1/owner/conversations/${id}/draft`),
@@ -771,7 +778,7 @@ export const api = {
   startLoop: (cid: number, prompt: string, every_minutes: number, max_runs: number) => post<HarnessLoop>('/v1/loops', { cid, prompt, every_minutes, max_runs }),
   stopLoop: (id: string) => del<HarnessLoop>(`/v1/loops/${id}`),
   agentLimits: (cid: number) => get<HarnessLimits>(`/v1/agents/${cid}/limits`),
-  agentControl: (cid: number, body: { action: 'compress' | 'steer' | 'extend_turns' | 'set_limits'; text?: string; turns?: number; max_turns?: number; compress_at?: number; keep_recent?: number }) => post<unknown>(`/v1/agents/${cid}/control`, body),
+  agentControl: (cid: number, body: { action: 'compress' | 'steer' | 'extend_turns' | 'set_limits'; text?: string; attachments?: string[]; turns?: number; max_turns?: number; compress_at?: number; keep_recent?: number }) => post<unknown>(`/v1/agents/${cid}/control`, body),
   laws: () => get<LawInfo[]>('/v1/laws'),
   lawRules: () => get<LawRules>('/v1/laws/rules'),
   createLawRule: (r: { title: string; source: string }) => post<LawRule>('/v1/laws/rules', r),

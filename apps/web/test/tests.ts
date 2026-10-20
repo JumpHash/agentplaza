@@ -2038,3 +2038,7 @@ sectionEnd('machine view helper tests: ok');
 import './history-tests';
 import './review-tests';
 import './platforms-tests';
+import './attachments-tests';
+import './new-project-tests';
+import './environments-tests';
+import './maintenance-tests';

@@ -16,6 +16,7 @@ mod repl;
 
 use std::collections::HashSet;
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,11 +24,14 @@ use serde_json::{Value, json};
 
 use super::projects::settings::pairs;
 use super::tasks::title_of;
+use crate::cmd::prompts::json_reply;
 use crate::ctx::{self, Client, Ctx};
 use crate::rich;
 
 /// How often a message sent off a terminal checks for its answer.
 const ANSWER_POLL: Duration = Duration::from_secs(1);
+/// A file to attach can be large (the hub takes up to 100 MiB): its upload may take this long.
+const ATTACH_TIMEOUT: Duration = Duration::from_secs(600);
 /// The width of a draft's field labels.
 const LABEL: usize = 8;
 
@@ -46,6 +50,10 @@ pub struct Args {
     /// Off a terminal: the seconds to wait for the answer (0 sends the message and does not wait).
     #[arg(long, default_value_t = 600, value_name = "SECONDS")]
     pub wait: u64,
+    /// Attach a file to the message; repeat for more. The files are uploaded first, and the message carries them. With
+    /// one, the answer prints and the command ends, even on a terminal.
+    #[arg(long = "attach", value_name = "FILE")]
+    pub attach: Vec<PathBuf>,
     /// The message; its words are joined with spaces, and `-` reads it from stdin. On a terminal the chat goes on
     /// after it; off one, the answer prints and the command ends.
     pub message: Vec<String>,
@@ -61,13 +69,21 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<(), String> {
         .map(conversation_id)
         .transpose()?;
     let message = (!args.message.is_empty()).then(|| args.message.join(" "));
+    if !args.attach.is_empty() {
+        let attachments = attach_files(&ctx.client, &args.attach)?;
+        let text = message
+            .map(|m| ctx::text_arg(&m))
+            .transpose()?
+            .unwrap_or_default();
+        return once(ctx, id.as_deref(), &text, args.wait, &attachments);
+    }
     let from_stdin = message.as_deref() == Some("-");
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     if terminal && !ctx.json && !from_stdin {
         return repl::Repl::open(ctx, id)?.run(message);
     }
     match (message, id) {
-        (Some(text), id) => once(ctx, id.as_deref(), &ctx::text_arg(&text)?, args.wait),
+        (Some(text), id) => once(ctx, id.as_deref(), &ctx::text_arg(&text)?, args.wait, &[]),
         (None, Some(id)) => show(ctx, &id),
         (None, None) => Err(
             "give the message: `agentplaza chat <message>`, or run it on a terminal to chat".into(),
@@ -111,10 +127,87 @@ fn path_of(id: &str) -> String {
 /// Sends `text` to the orchestrator: in conversation `id`, or as the first message of a new conversation. The hub
 /// answers with the conversation, the message queued.
 fn send(client: &Client, id: Option<&str>, text: &str) -> Result<Value, String> {
-    let body = json!({ "text": text });
+    send_with(client, id, text, &[])
+}
+
+/// [`send`] with files attached: their ids, from `PUT /v1/files`.
+fn send_with(
+    client: &Client,
+    id: Option<&str>,
+    text: &str,
+    attachments: &[String],
+) -> Result<Value, String> {
+    let mut body = json!({ "text": text });
+    if !attachments.is_empty() {
+        body["attachments"] = json!(attachments);
+    }
     match id {
         Some(id) => client.post(&format!("{}/messages", path_of(id)), &body),
         None => client.post("/v1/owner/conversations", &body),
+    }
+}
+
+/// Uploads each file (`PUT /v1/files?name=`, with its type from its extension) and returns the ids in order. Nothing
+/// is sent until every file is in.
+fn attach_files(client: &Client, paths: &[PathBuf]) -> Result<Vec<String>, String> {
+    paths
+        .iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| format!("{}: the name is not text", path.display()))?;
+            let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let mut target = client.target.clone();
+            target.headers.push((
+                "Content-Type".to_string(),
+                content_type_of(path).to_string(),
+            ));
+            let url = format!("/v1/files?name={}", ctx::seg(name));
+            let reply =
+                apz_http::client::request(&target, "PUT", &url, Some(&bytes), ATTACH_TIMEOUT)
+                    .map_err(|e| format!("{} {name}: {e}", client.base()))?;
+            let file = json_reply(name, &reply)?;
+            file["id"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{name}: the hub gave no id for the file"))
+        })
+        .collect()
+}
+
+/// A file's content type from its extension; `application/octet-stream` when it is not one of the common ones.
+fn content_type_of(path: &Path) -> &'static str {
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "txt" | "log" => "text/plain",
+        "md" | "markdown" => "text/markdown",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "mjs" => "text/javascript",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "yaml" | "yml" => "application/yaml",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "zip" => "application/zip",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
     }
 }
 
@@ -560,8 +653,14 @@ fn show(ctx: &Ctx, id: &str) -> Result<(), String> {
 /// the orchestrator's answer to it, and prints the answer (`--json`: the conversation), then the draft when the answer
 /// changed it. A new conversation's id goes to stderr, so a script can go on with it. An answer whose work failed or
 /// stopped is an error with its reason.
-fn once(ctx: &Ctx, id: Option<&str>, text: &str, wait: u64) -> Result<(), String> {
-    let sent = send(&ctx.client, id, text)?;
+fn once(
+    ctx: &Ctx,
+    id: Option<&str>,
+    text: &str,
+    wait: u64,
+    attachments: &[String],
+) -> Result<(), String> {
+    let sent = send_with(&ctx.client, id, text, attachments)?;
     let conversation = ctx::s(&sent, "id").to_string();
     if id.is_none() && !ctx.json {
         eprintln!(
@@ -645,6 +744,23 @@ mod tests {
             ],
             "works": [41, 42], "pending": [42]
         })
+    }
+
+    #[test]
+    fn an_attached_file_goes_up_with_its_type_from_its_extension() {
+        assert_eq!(
+            content_type_of(Path::new("notes/Plan.PDF")),
+            "application/pdf"
+        );
+        assert_eq!(content_type_of(Path::new("shot.png")), "image/png");
+        assert_eq!(
+            content_type_of(Path::new("data")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            content_type_of(Path::new("deck.pptx")),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        );
     }
 
     #[test]

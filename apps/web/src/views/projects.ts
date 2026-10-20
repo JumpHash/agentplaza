@@ -12,6 +12,10 @@ import { openNewProject } from '../ui/new-project';
 import { isLive, refreshProjects } from '../scope';
 import { settingsTab } from './project-settings';
 import { teamTab } from './project-team';
+import { maintenanceTab } from './project-maintenance';
+import { environmentsTab } from './project-environments';
+import { projectsApi, type ModeDef, type ProjectMode } from '../api-projects';
+import { dropZone, pickFiles, uploadToProject, type PickedFile } from '../ui/file-drop';
 import { embedContextFromStore } from '../ui/embeds';
 import { h, icon, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
@@ -51,7 +55,85 @@ function track(stage: ProjectStage): HTMLElement {
 function lifeBadge(p: Project): HTMLElement | null {
   if (p.archived) return badge('Archived', 'muted');
   if (p.paused) return badge('Paused', 'warn');
+  if (p.mode === 'maintenance') return badge('Maintenance', 'info');
   return null;
+}
+
+/** The modes, read once from the hub (their words are the hub's). */
+let modes: Promise<ModeDef[]> | null = null;
+const modesOnce = (): Promise<ModeDef[]> => (modes ??= projectsApi.modes().catch(() => {
+  modes = null;
+  return [];
+}));
+
+/** Choose how the project is worked: each mode with what it means; the current one marked. */
+function openMode(p: Project, done: () => void): void {
+  void modesOnce().then((list) => {
+    const current = p.mode ?? 'build';
+    let chosen: ProjectMode = current;
+    const options = list.map((m) =>
+      h(
+        'label.pj-mode',
+        { class: m.id === current ? 'current' : null },
+        h('input', { type: 'radio', name: 'pj-mode', value: m.id, checked: m.id === current, onchange: () => (chosen = m.id) }),
+        h('span', null, h('strong', null, m.label), m.id === current ? h('span.pj-muted', null, ' (now)') : null, h('span.pj-mode-text', null, m.summary)),
+      ),
+    );
+    const close = modal(
+      'How this project is worked',
+      h(
+        'div.pj-form',
+        null,
+        options,
+        p.stage === 'delivered' ? h('p.pj-muted', null, 'It is delivered: back in build it opens again at implementation.') : null,
+        h(
+          'div.actions',
+          null,
+          button('Cancel', () => close(), { kind: 'ghost' }),
+          button('Switch', () => {
+            if (chosen === current) {
+              close();
+              return;
+            }
+            void attempt(() => projectsApi.setMode(p.id, chosen), `${p.title} is in ${chosen} now`).then((r) => {
+              if (!r) return;
+              close();
+              done();
+            });
+          }, { kind: 'primary' }),
+        ),
+      ),
+    );
+  });
+}
+
+/** The repository's Files card: drop files or a folder (or choose them) and they land on main as one change. */
+function filesCard(p: Project): HTMLElement {
+  const status = h('p.pj-muted', null, 'Drop files or a folder here, or choose them. They land on main as one change of yours; .git, node_modules and .DS_Store are left out.');
+  const send = (files: PickedFile[]): void => {
+    if (!files.length) return;
+    status.textContent = `Sending ${files.length} files…`;
+    void uploadToProject(p.id, files, {
+      onProgress: (x) => (status.textContent = `Sending ${x.done} of ${x.total} files…`),
+    }).then(
+      ({ added, skipped }) => {
+        const left = skipped ? `, ${skipped} left out` : '';
+        status.textContent = added ? `Added ${added.files} files as change ${added.landed.change}${left}.` : `Nothing to add${left}.`;
+        if (added) toast(`Added ${added.files} files to ${added.repo}`);
+      },
+      (err: unknown) => {
+        status.textContent = `Not sent: ${err instanceof Error ? err.message : String(err)}`;
+      },
+    );
+  };
+  const zone = h(
+    'div.drop-zone',
+    null,
+    status,
+    h('div.drop-actions', null, button('Choose files', () => void pickFiles().then(send), { size: 'sm', icon: 'upload' }), button('Choose a folder', () => void pickFiles({ folder: true }).then(send), { size: 'sm', icon: 'folder' })),
+  );
+  dropZone(zone, send);
+  return card('Add files', zone);
 }
 
 function projectRow(p: Project): HTMLElement {
@@ -258,6 +340,8 @@ function openRepo(name: string): void {
 /** The detail page's tabs: its plan and history, the agents working on it, its settings and budget. */
 const TABS = [
   { key: 'plan', label: 'Plan' },
+  { key: 'maintenance', label: 'Maintenance' },
+  { key: 'environments', label: 'Environments' },
   { key: 'team', label: 'Team' },
   { key: 'settings', label: 'Settings' },
 ];
@@ -273,6 +357,14 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let timer = 0;
   let list: Project[] = [];
   let current: Project | null = null;
+  // The Maintenance and Environments tabs follow their own events: one kept across this page's redraws (for the same
+  // project and mode) keeps its scroll, its selection and its data.
+  const kept = new Map<string, HTMLElement>();
+  const keep = (key: string, make: () => HTMLElement): HTMLElement => {
+    let el = kept.get(key);
+    if (!el) kept.set(key, (el = make()));
+    return el;
+  };
 
   const listNodes = (): Node[] => {
     // The live projects first, newest first; the ones that are over after them.
@@ -308,6 +400,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         h('a.btn', { href: href('work', p.id), title: 'The project as one flow: its plan, its tasks in order, delivery' }, icon('commit'), 'Open in Work'),
         live && !p.paused ? button('Pause', () => void attempt(() => api.pauseProject(p.id), `${p.title} paused: its agents wait`).then(refresh), { title: 'Its agents stop taking work until you resume it' }) : null,
         live && p.paused ? button('Resume', () => void attempt(() => api.resumeProject(p.id), `${p.title} resumed`).then(refresh), { kind: 'primary' }) : null,
+        p.archived ? null : button(`Mode: ${p.mode === 'maintenance' ? 'Maintenance' : 'Build'}`, () => openMode(p, refresh), { title: 'Build: agents make it. Maintenance: agents watch it and propose; you pick what is done' }),
         live ? button('Archive…', () => openArchive(p, refresh), { kind: 'ghost' }) : null,
       ),
     ];
@@ -321,13 +414,18 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         ),
       );
     }
+    if (!p.archived && p.kind === 'code') sections.push(filesCard(p));
     sections.push(card('History', historyBody(p)));
     const body =
       tab === 'team'
         ? teamTab(p, refresh)
         : tab === 'settings'
           ? settingsTab(p)
-          : h('div.pj-sections', null, sections);
+          : tab === 'maintenance'
+            ? keep(`maintenance:${p.id}:${p.mode ?? 'build'}`, () => maintenanceTab(p, refresh))
+            : tab === 'environments'
+              ? keep(`environments:${p.id}:${p.archived ? 'archived' : 'live'}`, () => environmentsTab(p))
+              : h('div.pj-sections', null, sections);
     return [
       h('div.pj-back-row', null, h('a.pj-back', { href: href('projects') }, '← All projects')),
       h(

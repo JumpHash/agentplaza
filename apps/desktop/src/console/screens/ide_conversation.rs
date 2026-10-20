@@ -4,11 +4,15 @@
 //! settings, what still stops Start, the owner's edits, and Start. Once started, the conversation stays the project's
 //! line to the orchestrator.
 
+use std::path::PathBuf;
+
 use iced::widget::{Space, column, container, row, text_editor, text_input};
 use iced::{Alignment, Element, Length, Padding, Task};
 use serde_json::{Value, json};
 
 use super::Id;
+use super::ide_panels;
+use crate::console::files::{self, Attachment};
 use crate::console::shell;
 use crate::console::{Ctx, client, roles, scope, ui};
 use crate::theme;
@@ -200,6 +204,9 @@ pub struct Conversation {
     /// A line for the owner: Start's outcome, a saved edit.
     pub notice: Option<String>,
     pub composer: text_editor::Content,
+    /// The files the next message carries: uploaded, and how many are still going up.
+    pub attachments: Vec<Attachment>,
+    pub uploading: usize,
     pub sending: bool,
     pub starting: bool,
     /// What each pending answer has streamed so far, as (work, text) in arrival order.
@@ -215,6 +222,8 @@ impl Conversation {
             error: None,
             notice: None,
             composer: text_editor::Content::new(),
+            attachments: Vec::new(),
+            uploading: 0,
             sending: false,
             starting: false,
             deltas: Vec::new(),
@@ -233,8 +242,22 @@ pub enum Msg {
     /// The conversation as the hub answered, for the id it was asked for.
     Loaded(String, Result<Value, String>),
     Compose(text_editor::Action),
+    /// The paperclip: opens the file picker.
+    Pick,
+    /// Files to attach to the next message: picked, or dropped on the window.
+    Attach {
+        id: String,
+        paths: Vec<PathBuf>,
+    },
+    Attached {
+        id: String,
+        res: Result<Attachment, String>,
+    },
+    /// A file taken off the next message, by its id.
+    Detach(String),
     Send,
-    Sent(Result<Value, String>),
+    /// The message went: the files it carried (by id) leave the composer.
+    Sent(Vec<String>, Result<Value, String>),
     /// Start the drafted project at the revision on screen.
     Start,
     Started(Result<Value, String>),
@@ -282,9 +305,58 @@ pub fn update(conv: &mut Conversation, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             conv.composer.perform(action);
             Task::none()
         }
+        Msg::Pick => {
+            let id = conv.id.clone();
+            Task::perform(ide_panels::pick_files(), move |paths| Msg::Attach {
+                id: id.clone(),
+                paths,
+            })
+        }
+        Msg::Attach { id, paths } => {
+            let archived = conv
+                .data
+                .as_ref()
+                .is_some_and(|c| c["archived"].as_bool().unwrap_or(false));
+            if id != conv.id || paths.is_empty() || archived {
+                return Task::none();
+            }
+            conv.uploading += paths.len();
+            conv.error = None;
+            let key = conv.id.clone();
+            Task::batch(paths.into_iter().map(|path| {
+                let c = ctx.client.clone();
+                let key = key.clone();
+                client::task(
+                    move || files::attach(&c, &path),
+                    move |res| Msg::Attached {
+                        id: key.clone(),
+                        res,
+                    },
+                )
+            }))
+        }
+        Msg::Attached { id, res } => {
+            if id != conv.id {
+                return Task::none();
+            }
+            conv.uploading = conv.uploading.saturating_sub(1);
+            match res {
+                Ok(file) => conv.attachments.push(file),
+                Err(e) => conv.error = Some(format!("The file was not attached: {e}")),
+            }
+            Task::none()
+        }
+        Msg::Detach(id) => {
+            conv.attachments.retain(|a| a.id != id);
+            Task::none()
+        }
         Msg::Send => {
             let text = conv.composer.text().trim().to_string();
-            if text.is_empty() || conv.sending || conv.data.is_none() {
+            if (text.is_empty() && conv.attachments.is_empty())
+                || conv.sending
+                || conv.uploading > 0
+                || conv.data.is_none()
+            {
                 return Task::none();
             }
             if text.chars().count() > MESSAGE_MAX {
@@ -293,19 +365,22 @@ pub fn update(conv: &mut Conversation, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             conv.sending = true;
             conv.error = None;
+            let sent: Vec<String> = conv.attachments.iter().map(|a| a.id.clone()).collect();
             let c = ctx.client.clone();
             let path = format!("/v1/owner/conversations/{}/messages", conv.id);
+            let body = json!({ "text": text, "attachments": sent });
             client::task(
-                move || c.post::<Value>(&path, &json!({ "text": text })),
-                Msg::Sent,
+                move || c.post::<Value>(&path, &body),
+                move |res| Msg::Sent(sent.clone(), res),
             )
         }
-        Msg::Sent(res) => {
+        Msg::Sent(sent, res) => {
             conv.sending = false;
             match res {
                 Ok(data) => {
                     adopt(conv, data);
                     conv.composer = text_editor::Content::new();
+                    conv.attachments.retain(|a| !sent.contains(&a.id));
                     conv.error = None;
                 }
                 Err(e) => conv.error = Some(e),
@@ -469,10 +544,19 @@ pub fn on_event(conv: &mut Conversation, kind: &str, data: &Value) -> bool {
 
 // ---- Views -------------------------------------------------------------------------------------------------------
 
-/// The owner's message: a bubble on the right.
-fn owner_bubble<'a, M: 'a>(body: &str) -> Element<'a, M> {
+/// The owner's message: a bubble on the right, its text, then the files it carried as "name · size" lines.
+fn owner_bubble<'a, M: 'a>(body: &str, files: &[Value]) -> Element<'a, M> {
     let p = theme::palette();
-    let bubble = container(ui::prose(body.to_string()))
+    let mut inner = column![].spacing(6);
+    if !body.is_empty() {
+        inner = inner.push(ui::prose(body.to_string()));
+    }
+    for file in files {
+        let name = file["name"].as_str().unwrap_or("file");
+        let size = files::size_text(file["size"].as_u64().unwrap_or(0));
+        inner = inner.push(ui::faint(format!("{name} · {size}")).size(11.5));
+    }
+    let bubble = container(inner)
         .padding([8, 12])
         .max_width(520.0)
         .style(move |_| container::Style {
@@ -558,8 +642,9 @@ pub fn chat<'a, M: Clone + 'a>(
             for m in c["messages"].as_array().into_iter().flatten() {
                 let text = m["text"].as_str().unwrap_or("");
                 let at = m["at_ms"].as_u64().unwrap_or(0);
+                let files: &[Value] = m["attachments"].as_array().map_or(&[], Vec::as_slice);
                 log = log.push(match m["from"].as_str() {
-                    Some("owner") => owner_bubble(text),
+                    Some("owner") => owner_bubble(text, files),
                     Some("plaza") => notice_line(text),
                     _ => answer(&who, ago(at), text, m["status"].as_str()),
                 });
@@ -604,13 +689,21 @@ pub fn chat<'a, M: Clone + 'a>(
                 text_editor::Binding::from_key_press(press)
             }
         });
+    let has_text = !conv.composer.text().trim().is_empty();
     let can_send = !conv.sending
         && !archived
         && conv.data.is_some()
-        && !conv.composer.text().trim().is_empty();
+        && conv.uploading == 0
+        && (has_text || !conv.attachments.is_empty());
     let mut foot = row![
         ui::sans(format!("Sending to: {who}"), 11.5, p.ink_3),
         Space::new().width(Length::Fill),
+        ui::btn(
+            "Attach",
+            Some("file"),
+            ui::Kind::Secondary,
+            (!archived && conv.data.is_some()).then(|| wrap(Msg::Pick))
+        ),
         ui::btn(
             "Send",
             Some("send"),
@@ -623,7 +716,15 @@ pub fn chat<'a, M: Clone + 'a>(
     if archived {
         foot = foot.push(ui::faint("Archived: it takes no more messages."));
     }
-    let mut composer = column![editor, foot].spacing(8);
+    let mut composer = column![].spacing(8);
+    if let Some(chips) =
+        ide_panels::attachment_chips(&conv.attachments, conv.uploading, move |id| {
+            wrap(Msg::Detach(id))
+        })
+    {
+        composer = composer.push(chips);
+    }
+    composer = composer.push(editor).push(foot);
     if let Some(e) = &conv.error {
         composer = composer.push(ui::error_line(e));
     }

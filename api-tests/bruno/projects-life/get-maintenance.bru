@@ -1,0 +1,30 @@
+meta {
+  name: Get the maintenance view of a fresh project
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/maintenance
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.config.every_hours: eq 24
+  res.body.sources.ingest: eq false
+  res.body.signals: isArray
+  res.body.proposals: isArray
+}
+
+tests {
+  test("nothing has been swept, mapped or proposed yet", function () {
+    const b = res.getBody();
+    expect(b.config.focus).to.eql("");
+    expect(b.map.areas).to.eql([]);
+    expect(b.proposals).to.eql([]);
+    expect(b.sweep.runs).to.eql(0);
+  });
+}

@@ -522,6 +522,7 @@
 .ide-chat-actions {
   flex: 0 0 auto;
   display: flex;
+  gap: var(--s1);
 }
 
 /* Buttons are 32px tall, with the shared focus ring. */

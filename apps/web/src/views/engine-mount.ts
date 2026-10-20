@@ -136,6 +136,18 @@ interface EngineGlue {
   start_hardware_lab: (canvas: HTMLCanvasElement, opts: HardwareLabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
 }
 
+/**
+ * Hands the engine the fleet. A feed it refuses is logged and skipped: the engine keeps the last one it read and keeps
+ * drawing. Before, one field the engine could not read stopped the 3D view, which then said the browser lacked WebGPU.
+ */
+function feedEngine(engine: WebEngine | null, fleet: FleetResponse | null, agents: Agent[] | null, fleetError: string | null): void {
+  try {
+    engine?.set_feed(JSON.stringify({ fleet, agents, fleet_error: fleetError }));
+  } catch (e: unknown) {
+    console.warn('the 3D engine did not read the fleet:', e instanceof Error ? e.message : String(e));
+  }
+}
+
 /** The same cadence as the DOM Machines view and the desktop. */
 const FLEET_POLL_MS = 5000;
 const AGENTS_POLL_MS = 4000;
@@ -172,19 +184,50 @@ export function loadLabCatalog(): Promise<LabCatalog> {
 const backendOf = (): 'auto' | 'webgl2' => (new URLSearchParams(location.search).get('gl') === '1' ? 'webgl2' : 'auto');
 
 
+/**
+ * Starts `start` on the canvas with the page's backend. When WebGPU is there but does not start (its device or surface
+ * fails, as some Mac browsers' can), the engine starts again on WebGL2. A canvas once bound to WebGPU cannot take WebGL2,
+ * so the retry draws on a fresh canvas that takes the old one's place, class and style.
+ */
+async function startWithFallback<O extends object>(
+  canvas: HTMLCanvasElement,
+  opts: O,
+  start: (canvas: HTMLCanvasElement, opts: O & { backend: 'auto' | 'webgl2' }) => Promise<WebEngine>,
+): Promise<WebEngine> {
+  const backend = backendOf();
+  try {
+    return await start(canvas, { ...opts, backend });
+  } catch (e: unknown) {
+    const reason = e instanceof Error ? e.message : String(e);
+    // No adapter at all already fell back inside the engine; only a WebGPU that started and then failed is retried.
+    if (backend === 'webgl2' || /no WebGPU or WebGL2 adapter/.test(reason)) throw e;
+    console.warn('WebGPU did not start, drawing with WebGL2:', reason);
+    const fresh = document.createElement('canvas');
+    fresh.className = canvas.className;
+    fresh.style.cssText = canvas.style.cssText;
+    fresh.width = canvas.width;
+    fresh.height = canvas.height;
+    canvas.replaceWith(fresh);
+    return start(fresh, { ...opts, backend: 'webgl2' });
+  }
+}
+
 /** Loads the glue and starts an engine on the canvas: the Machines view and the stages share it. Throws without a glue. */
 export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine> {
-  return (await loadGlue()).start(canvas, { backend: backendOf() });
+  const glue = await loadGlue();
+  return startWithFallback(canvas, {}, (c, o) => glue.start(c, o));
 }
 
 /** The robot lab on the wasm engine: the route's options under the engine's APZ_ROBOT_* names. Throws without a glue. */
 export async function startLabEngine(canvas: HTMLCanvasElement, lab: LabOptions): Promise<WebEngine> {
-  return (await loadGlue()).start_lab(canvas, { ...lab, backend: backendOf() });
+  const glue = await loadGlue();
+  return startWithFallback(canvas, lab, (c, o) => glue.start_lab(c, o));
 }
 
 /** The hardware lab on the wasm engine: the route's options under the engine's APZ_HW_* names. Throws without a glue. */
 export async function startHardwareLabEngine(canvas: HTMLCanvasElement, lab: HardwareLabOptions): Promise<WebEngine> {
-  return (await loadGlue()).start_hardware_lab(canvas, { ...lab, backend: backendOf() });
+  const glue = await loadGlue();
+  return startWithFallback(canvas, lab, (c, o) => glue.start_hardware_lab(c, o));
 }
 
 /** A lab's engine in a box under its controls. `restart` destroys the engine and starts one with the new options on a
@@ -322,9 +365,7 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string | 
   });
   stopped.catch(() => undefined);
 
-  const pushFeed = (): void => {
-    engine?.set_feed(JSON.stringify({ fleet, agents, fleet_error: fleetError }));
-  };
+  const pushFeed = (): void => feedEngine(engine, fleet, agents, fleetError);
   const tryShow = (): void => {
     if (machineId === null || shown || engine === null || fleet === null) return;
     if (!fleet.machines.some((x) => x.id === machineId)) return; // show_machine finds nothing until the fleet lists it
@@ -415,8 +456,11 @@ export function startThumbEngine(): EngineStage {
   const canvas = document.createElement('canvas');
   canvas.width = 1;
   canvas.height = 1;
-  canvas.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
-  document.body.append(canvas);
+  // In a holder of its own, so the cleanup removes the canvas the engine drew on, a WebGL2 retry's included.
+  const holder = document.createElement('div');
+  holder.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none';
+  holder.append(canvas);
+  document.body.append(holder);
   const stage = startEngineStage(canvas, null);
   return {
     thumbnail: (id, w, h) => stage.thumbnail(id, w, h),
@@ -426,7 +470,7 @@ export function startThumbEngine(): EngineStage {
     gpuCards: (id) => stage.gpuCards(id),
     destroy() {
       stage.destroy();
-      canvas.remove();
+      holder.remove();
     },
   };
 }
@@ -608,9 +652,7 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
   let raf = 0;
   const timers: number[] = [];
 
-  const pushFeed = (): void => {
-    engine?.set_feed(JSON.stringify({ fleet, agents, fleet_error: fleetError }));
-  };
+  const pushFeed = (): void => feedEngine(engine, fleet, agents, fleetError);
 
   const agentName = (cid: number): string => agentNames.get(cid) ?? `agent ${cid}`;
 

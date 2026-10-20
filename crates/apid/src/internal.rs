@@ -636,6 +636,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             }
             app.work.complete(app, cid, work, status, &summary);
             crate::harness_control::work_ended(app, cid, work, &summary);
+            crate::maintenance::work_ended(app, cid, work, &summary);
             forget_tools(cid);
             collect::agent_state(app, cid, "idle");
             None

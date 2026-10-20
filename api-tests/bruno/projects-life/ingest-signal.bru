@@ -1,0 +1,36 @@
+meta {
+  name: Send a signal to the ingest address without a token
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/ingest/{{ingestToken}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "kind": "report",
+    "title": "Login loop on Safari",
+    "text": "After signing in, the page reloads and asks again.",
+    "url": "https://shop.example.com/login"
+  }
+}
+
+assert {
+  res.status: eq 202
+  res.responseTime: lt 1000
+  res.body.id: isString
+}
+
+tests {
+  test("the signal is accepted and numbered", function () {
+    expect(res.getBody().id).to.match(/^s\d+$/);
+  });
+}

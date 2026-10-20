@@ -545,8 +545,12 @@ fn composer(st: &State) -> Element<'_, Msg> {
             }
         });
     let len = st.panels.steer.text().trim().chars().count();
-    let can_send =
-        !st.panels.steer_busy && len > 0 && len <= ide_panels::STEER_MAX && agent.is_some();
+    let files = !st.panels.attachments.is_empty();
+    let can_send = !st.panels.steer_busy
+        && (len > 0 || files)
+        && len <= ide_panels::STEER_MAX
+        && st.panels.uploading == 0
+        && agent.is_some();
     let working = agent.is_some_and(|a| a.status == "working");
     let stop = working && !st.cancelling;
     let foot = row![
@@ -556,6 +560,14 @@ fn composer(st: &State) -> Element<'_, Msg> {
             theme::palette().ink_3
         ),
         Space::new().width(Length::Fill),
+        ui::btn(
+            "Attach",
+            Some("file"),
+            Kind::Secondary,
+            agent
+                .is_some()
+                .then_some(Msg::Panels(ide_panels::Msg::Pick))
+        ),
         ui::btn(
             "Stop",
             Some("stop"),
@@ -571,7 +583,15 @@ fn composer(st: &State) -> Element<'_, Msg> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    let mut col = column![editor, foot].spacing(8);
+    let mut col = column![].spacing(8);
+    if let Some(chips) =
+        ide_panels::attachment_chips(&st.panels.attachments, st.panels.uploading, |id| {
+            Msg::Panels(ide_panels::Msg::Detach(id))
+        })
+    {
+        col = col.push(chips);
+    }
+    col = col.push(editor).push(foot);
     if let Some(notice) = &st.panels.steer_notice {
         col = col.push(ui::faint(notice.clone()));
     }

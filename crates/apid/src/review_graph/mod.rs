@@ -882,6 +882,16 @@ fn assign(app: &App, run: &Run, node: &str, cid: u64) {
         task: None,
         ..Origin::default()
     };
+    // The step is the agent's before its work goes out: the agent can call review_tree before enqueue returns, and
+    // until the work id is recorded `step_for` finds the step by its running assignee.
+    app.reviews.update(&run.id, |r| {
+        if let Some(n) = r.node_mut(node) {
+            n.state = NodeState::Running;
+            n.assignee = Some(cid);
+            n.tries += 1;
+            n.started_ms = apz_plaza::now_ms();
+        }
+    });
     let work = app.work.enqueue(
         app,
         cid,
@@ -892,11 +902,7 @@ fn assign(app: &App, run: &Run, node: &str, cid: u64) {
     );
     app.reviews.update(&run.id, |r| {
         if let Some(n) = r.node_mut(node) {
-            n.state = NodeState::Running;
-            n.assignee = Some(cid);
             n.work = Some(work);
-            n.tries += 1;
-            n.started_ms = apz_plaza::now_ms();
         }
     });
     app.bus.publish(

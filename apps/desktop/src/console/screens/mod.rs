@@ -49,6 +49,8 @@ pub mod models;
 pub mod nodes;
 pub mod overview;
 pub mod platforms;
+pub mod project_environments;
+pub mod project_maintenance;
 pub mod project_settings;
 pub mod project_team;
 pub mod projects;

@@ -1,0 +1,25 @@
+meta {
+  name: List the project's environments
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/environments
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the environment the project was brought in with, and no secrets yet", function () {
+    const b = res.getBody();
+    expect(b.map((e) => e.name)).to.eql(["production"]);
+    expect(b[0].secrets).to.eql([]);
+    expect(b[0].hook).to.eql(false);
+  });
+}

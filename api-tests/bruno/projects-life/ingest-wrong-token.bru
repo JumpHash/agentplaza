@@ -1,0 +1,25 @@
+meta {
+  name: Answer 404 for an ingest address that does not exist
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/ingest/apzi_not-a-real-address
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"text": "A signal to a wrong address"}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

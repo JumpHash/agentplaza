@@ -22,6 +22,7 @@ import { attempt, button, toast } from '../ui/components';
 import type { EmbedContext } from '../ui/embeds';
 import { h, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
+import { attachBar, maySend } from '../ui/attach-bar';
 import { prewake } from '../prewake';
 
 export interface ChatPane {
@@ -181,13 +182,8 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
       void send();
     }
   });
-  // Image paste is off: the hub has no owner upload route to store a pasted image in, so the image is not taken. Text pastes.
-  input.addEventListener('paste', (ev) => {
-    const images = [...(ev.clipboardData?.files ?? [])].some((f) => f.type.startsWith('image/'));
-    if (!images) return;
-    ev.preventDefault();
-    toast('Pasting images is not available yet: the hub has no upload route for them.', 'error');
-  });
+  // Files: picked, dropped on the pane or pasted into it. Each uploads as it is taken and goes with the next message.
+  const bar = attachBar({ onChange: () => syncComposer() });
 
   const sendBtn = button('Send', () => void send(), { kind: 'primary' });
   const stopBtn = button('Stop', () => void stop(), { kind: 'danger' });
@@ -200,6 +196,7 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
       'div.ide-chat-composer-inner',
       null,
       h('div.ide-chat-target', null, `Sending to: ${opts.agentName} on ${opts.project ?? 'no project'}`),
+      bar.el,
       h(
         'div.ide-chat-input-row',
         null,
@@ -210,26 +207,29 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
   );
 
   const el = h('div.ide-chat', null, log, composer);
+  const unbind = bar.bind(el);
 
   function syncComposer(): void {
     const working = opts.working();
-    replace(actions, working ? stopBtn : sendBtn);
-    sendBtn.disabled = sending;
+    replace(actions, bar.button, working ? stopBtn : sendBtn);
+    sendBtn.disabled = sending || bar.busy() || bar.failed();
     stopBtn.disabled = stopping;
   }
 
   async function send(): Promise<void> {
     const text = input.value.trim();
-    if (!text || sending) return;
+    const ids = bar.ids();
+    if (!maySend(text, ids, sending || bar.busy() || bar.failed())) return;
     sending = true;
     syncComposer();
     try {
       // Working, the text steers the work in flight; idle, it is a chat turn of its own (the hub says so when the agent
       // is on the bench, or its project is paused).
-      if (opts.working()) await api.agentControl(opts.cid, { action: 'steer', text });
-      else await api.chat(opts.cid, text);
+      if (opts.working()) await api.agentControl(opts.cid, { action: 'steer', text, attachments: ids });
+      else await api.chat(opts.cid, text, ids);
       if (!alive) return;
       input.value = '';
+      bar.clear();
       resize();
       pinned = true;
       schedule();
@@ -427,6 +427,7 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
     timer = undefined;
     for (const off of offs) off();
     log.removeEventListener('scroll', onScroll);
+    unbind();
   }
 
   void load(true);

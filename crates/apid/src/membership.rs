@@ -202,7 +202,10 @@ pub fn hold_reason(
 pub fn project_state(app: &App, id: &str) -> ProjectState {
     match app.projects.get(id) {
         None => ProjectState::Missing,
-        Some(p) if p.archived || p.stage == "delivered" => ProjectState::Over,
+        // A delivered project in maintenance is still worked: its watchers sweep and the owner's picks run.
+        Some(p) if p.archived || (p.stage == "delivered" && !p.in_maintenance()) => {
+            ProjectState::Over
+        }
         Some(p) if p.paused => ProjectState::Paused,
         Some(_) => ProjectState::Active,
     }

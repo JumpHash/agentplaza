@@ -7,6 +7,7 @@ import { go, href } from '../router';
 import { inScope, isLive, onBench, projectTitle, scope } from '../scope';
 import { agents, on, overview } from '../store';
 import { ago, attempt, badge, button, card, clip, empty, stat, textarea } from '../ui/components';
+import { attachBar, maySend } from '../ui/attach-bar';
 import { h, icon, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { flowLine } from './work';
@@ -19,6 +20,7 @@ export function mount(root: HTMLElement): Cleanup {
   const inProject = scope.get();
   const stats = h('div.grid.cols-4');
   const orchestrator = h('div');
+  const orchBox = orchestratorBox();
   const feed = h('ol.feed');
   const fleet = h('div');
   const projects = h('div');
@@ -96,7 +98,7 @@ export function mount(root: HTMLElement): Cleanup {
   const offs = [
     overview.watch(() => drawStats()),
     agents.watch((list) => {
-      renderOrchestrator(orchestrator, list.find((a) => a.tier === 'orchestrator'));
+      renderOrchestrator(orchestrator, list.find((a) => a.tier === 'orchestrator'), orchBox);
       renderFleet(fleet, inProject ? list.filter((a) => inScope(a, inProject)) : list);
       drawStats();
     }),
@@ -122,6 +124,7 @@ export function mount(root: HTMLElement): Cleanup {
   return () => {
     window.clearTimeout(projectsTimer);
     offs.forEach((off) => off());
+    orchBox.unbind();
   };
 }
 
@@ -154,24 +157,60 @@ function renderProjects(root: HTMLElement, list: Project[], tasks: Task[], stepO
   );
 }
 
-function renderOrchestrator(root: HTMLElement, orch: Agent | undefined): void {
-  if (!orch) {
-    replace(root, card('Orchestrator', empty('orchestrator', 'No orchestrator connected', 'Add the orchestrator role to the fleet to delegate work by goal.')));
-    return;
-  }
+/** The message box to the orchestrator. It is made once per mount, so a draft and its files survive the card's redraws. */
+interface OrchestratorBox {
+  /** The text and the files, stacked. */
+  el: HTMLElement;
+  /** The attach button and Send, for the card's row. */
+  controls: HTMLElement;
+  /** The agent the next message goes to. */
+  aim: (cid: number) => void;
+  unbind: () => void;
+}
+
+function orchestratorBox(): OrchestratorBox {
+  let cid = 0;
+  let sending = false;
   const goal = textarea({ placeholder: 'Tell the orchestrator what you want done…', rows: 3 });
-  const send = button('Send', () => submit(), { kind: 'primary', icon: 'send' });
-  const submit = async () => {
+  const bar = attachBar({ onChange: () => syncSend() });
+  const send = button('Send', () => void submit(), { kind: 'primary', icon: 'send' });
+  const syncSend = (): void => {
+    send.disabled = sending || bar.busy() || bar.failed();
+  };
+  const submit = async (): Promise<void> => {
     const text = goal.value.trim();
-    if (!text) return;
-    send.disabled = true;
-    const ok = await attempt(() => api.chat(orch.cid, text), 'Sent to the orchestrator');
-    send.disabled = false;
-    if (ok) goal.value = '';
+    const ids = bar.ids();
+    if (!maySend(text, ids, sending || bar.busy() || bar.failed())) return;
+    sending = true;
+    syncSend();
+    const ok = await attempt(() => api.chat(cid, text, ids), 'Sent to the orchestrator');
+    sending = false;
+    syncSend();
+    if (ok) {
+      goal.value = '';
+      bar.clear();
+    }
   };
   goal.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit();
   });
+  const el = h('div.stack', null, bar.el, goal);
+  return {
+    el,
+    controls: h('div.row', null, bar.button, send),
+    aim: (next) => {
+      cid = next;
+    },
+    unbind: bar.bind(el),
+  };
+}
+
+function renderOrchestrator(root: HTMLElement, orch: Agent | undefined, box: OrchestratorBox): void {
+  if (!orch) {
+    replace(root, card('Orchestrator', empty('orchestrator', 'No orchestrator connected', 'Add the orchestrator role to the fleet to delegate work by goal.')));
+    return;
+  }
+  box.aim(orch.cid);
   const status = orch.status === 'working' ? badge('Working', 'info', true) : orch.status === 'idle' ? badge('Idle', 'ok', true) : orch.status === 'asleep' ? badge('Asleep', 'muted', true) : orch.status === 'dozing' ? badge('Asleep (light)', 'muted', true) : badge('Offline', 'muted', true);
   replace(
     root,
@@ -181,8 +220,8 @@ function renderOrchestrator(root: HTMLElement, orch: Agent | undefined): void {
         'div.stack',
         null,
         h('p.muted', null, `Plans the work and delegates it to the fleet · ${orch.model}`),
-        goal,
-        h('div.row', null, h('span.faint', null, 'Ctrl+Enter to send'), h('span', { style: 'flex:1' }), h('a', { href: href('agents', orch.cid) }, 'Open transcript'), send),
+        box.el,
+        h('div.row', null, h('span.faint', null, 'Ctrl+Enter to send'), h('span', { style: 'flex:1' }), h('a', { href: href('agents', orch.cid) }, 'Open transcript'), box.controls),
       ),
     ),
   );

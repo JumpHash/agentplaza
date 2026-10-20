@@ -18,10 +18,11 @@ export function mountGrid(root: HTMLElement, bindReset: (reset: (() => void) | n
   let inner: Cleanup = () => undefined;
   inner = mountEngine(
     root,
-    () => {
+    (reason) => {
+      console.warn('the 3D engine did not start:', reason);
       bindReset(null);
       inner();
-      inner = showEmpty(root);
+      inner = showEmpty(root, reason);
     },
     bindReset,
   );
@@ -31,17 +32,16 @@ export function mountGrid(root: HTMLElement, bindReset: (reset: (() => void) | n
   };
 }
 
-function showEmpty(root: HTMLElement): Cleanup {
+function showEmpty(root: HTMLElement, reason?: string): Cleanup {
   const link = document.createElement('a');
   link.href = `${href('machines')}?view=list`;
   link.textContent = 'Show the list';
+  // Only a missing adapter means the browser cannot draw 3D; anything else is the engine's own failure, said as it is.
+  const noGpu = reason === undefined || /adapter|WebGPU|WebGL/i.test(reason);
   root.replaceChildren(
-    empty(
-      'floor',
-      '3D needs WebGPU or WebGL2',
-      'This browser cannot draw the machines in 3D. Their list is one click away.',
-      link,
-    ),
+    noGpu
+      ? empty('floor', '3D needs WebGPU or WebGL2', 'This browser cannot draw the machines in 3D. Their list is one click away.', link)
+      : empty('floor', 'The 3D view did not start', `${reason}. Their list is one click away.`, link),
   );
   return () => root.replaceChildren();
 }

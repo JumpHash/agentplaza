@@ -741,6 +741,19 @@ struct Patch {
 }
 
 /// Whether `setting`'s project list lets in an agent on `project` (`None`: on none).
+/// The connectors a project's agents may use: `(id, label, category)` of each enabled, configured one that admits it.
+pub fn for_project(app: &App, project: &str) -> Vec<(&'static str, &'static str, &'static str)> {
+    let store = &app.connectors;
+    catalog()
+        .into_iter()
+        .filter(|c| {
+            let setting = store.setting(c.id);
+            setting.enabled && store.configured(c) && admits_project(&setting, Some(project))
+        })
+        .map(|c| (c.id, c.label, c.category))
+        .collect()
+}
+
 fn admits_project(setting: &Setting, project: Option<&str>) -> bool {
     setting.projects.is_empty()
         || project.is_some_and(|p| setting.projects.iter().any(|id| id == p))

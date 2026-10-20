@@ -223,3 +223,27 @@ law "T-023" "QA and incident agents bisect; release agents draft notes" {
   resource is Tool
   when (resource.name == "weft_bisect" and principal.role in ["qa", "incident"]) or (resource.name == "weft_release_notes" and principal.role == "release")
 }
+
+law "T-024" "Every agent may look after a project in maintenance" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent on a project in maintenance may read its signals, map and proposals, update its map, add what it read in the project's tools as a signal, and propose work; it posts no task there, since the owner picks what is done."
+  rationale "Maintenance is the owner deciding from evidence: the watchers gather it and propose, each proposal saying what would change and what it is worth, and only the owner's pick becomes work."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name in ["plaza_maintenance", "plaza_maintenance_map", "plaza_maintenance_propose", "plaza_maintenance_signal"]
+}
+
+law "T-025" "Agents read their project's environments; delivery roles deploy" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may read its project's environments (never their secrets' values). Only builder, qa, release, incident and edge-operator agents may deploy, and a deploy to a protected environment waits for the owner."
+  rationale "Where a project runs is common knowledge for its team; changing what runs there belongs to the roles that deliver, under the owner's hand where it matters."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "plaza_environments" or (resource.name == "plaza_deploy" and principal.role in ["builder", "qa", "release", "incident", "edge-operator"])
+}

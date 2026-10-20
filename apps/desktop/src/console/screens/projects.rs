@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::wizard::WizardMsg;
-use super::{Id, ide, project_settings, project_team};
+use super::{Id, ide, project_environments, project_maintenance, project_settings, project_team};
 use crate::console::{Ctx, client, events, ui};
 
 /// The document types a system viewer shows as plain content; any other file is not opened.
@@ -70,12 +70,19 @@ pub struct Project {
     /// Archived: nothing more is done for it.
     #[serde(default)]
     pub archived: bool,
+    /// How it is worked: `build`, or `maintenance` (its agents watch it and propose; the owner picks).
+    #[serde(default)]
+    pub mode: String,
 }
 
 impl Project {
-    /// Whether it still has work: not archived, not delivered.
+    /// Whether it still has work: not archived, and not delivered unless it is in maintenance.
     pub fn live(&self) -> bool {
-        !self.archived && self.stage != "delivered"
+        !self.archived && (self.stage != "delivered" || self.in_maintenance())
+    }
+
+    pub fn in_maintenance(&self) -> bool {
+        self.mode == "maintenance"
     }
 }
 
@@ -118,17 +125,27 @@ pub struct Event {
 pub enum Tab {
     #[default]
     Plan,
+    Maintenance,
+    Environments,
     Team,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Plan, Tab::Team, Tab::Settings];
+    pub const ALL: [Tab; 5] = [
+        Tab::Plan,
+        Tab::Maintenance,
+        Tab::Environments,
+        Tab::Team,
+        Tab::Settings,
+    ];
 
-    /// A tab by its name (`plan`, `team`, `settings`), as the web's route names it.
+    /// A tab by its name (`plan`, `maintenance`, `environments`, `team`, `settings`), as the web's route names it.
     pub fn named(name: &str) -> Option<Tab> {
         match name.trim() {
             "plan" => Some(Tab::Plan),
+            "maintenance" => Some(Tab::Maintenance),
+            "environments" => Some(Tab::Environments),
             "team" => Some(Tab::Team),
             "settings" => Some(Tab::Settings),
             _ => None,
@@ -138,6 +155,8 @@ impl Tab {
     pub fn label(self) -> &'static str {
         match self {
             Tab::Plan => "Plan",
+            Tab::Maintenance => "Maintenance",
+            Tab::Environments => "Environments",
             Tab::Team => "Team",
             Tab::Settings => "Settings",
         }
@@ -176,6 +195,12 @@ pub struct State {
     pub confirm_archive: bool,
     pub team: project_team::State,
     pub settings: project_settings::State,
+    pub maintenance: project_maintenance::State,
+    pub environments: project_environments::State,
+    /// The mode chooser is open.
+    pub choose_mode: bool,
+    /// Files being added to the repository: the line saying how it went.
+    pub files_note: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +240,16 @@ pub enum Msg {
     CancelArchive,
     Team(project_team::Msg),
     Settings(project_settings::Msg),
+    Maintenance(project_maintenance::Msg),
+    Environments(project_environments::Msg),
+    /// The mode chooser: open it, pick a mode (`build` or `maintenance`), or close it.
+    OpenMode,
+    SetMode(&'static str),
+    CancelMode,
+    /// Add files to the repository: pick them (files or a folder), then send them; or they were dropped on the window.
+    PickFiles(bool),
+    FilesPicked(Vec<std::path::PathBuf>),
+    FilesAdded(Result<serde_json::Value, String>),
 }
 
 /// The navigation this message asks for, if any.
@@ -223,6 +258,8 @@ pub fn go(msg: &Msg) -> Option<Id> {
         Msg::Go(id) => Some(id.clone()),
         Msg::Team(m) => project_team::go(m),
         Msg::Settings(m) => project_settings::go(m),
+        Msg::Maintenance(m) => project_maintenance::go(m),
+        Msg::Environments(m) => project_environments::go(m),
         _ => None,
     }
 }
@@ -255,6 +292,8 @@ fn load_tab(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
     let live = state.detail.as_ref().is_none_or(Project::live);
     match state.tab {
         Tab::Plan => Task::none(),
+        Tab::Maintenance => project_maintenance::load(id, ctx).map(Msg::Maintenance),
+        Tab::Environments => project_environments::load(id, ctx).map(Msg::Environments),
         Tab::Team => project_team::load(id, live, ctx).map(Msg::Team),
         Tab::Settings => project_settings::load(id, ctx).map(Msg::Settings),
     }
@@ -310,6 +349,98 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             };
             project_settings::update(&mut state.settings, m, &id, ctx).map(Msg::Settings)
         }
+        Msg::Maintenance(m) => {
+            let Some(id) = state.open.clone() else {
+                return Task::none();
+            };
+            project_maintenance::update(&mut state.maintenance, m, &id, ctx).map(Msg::Maintenance)
+        }
+        Msg::Environments(m) => {
+            let Some(id) = state.open.clone() else {
+                return Task::none();
+            };
+            project_environments::update(&mut state.environments, m, &id, ctx)
+                .map(Msg::Environments)
+        }
+        Msg::OpenMode => {
+            state.choose_mode = true;
+            Task::none()
+        }
+        Msg::CancelMode => {
+            state.choose_mode = false;
+            Task::none()
+        }
+        Msg::SetMode(mode) => {
+            state.choose_mode = false;
+            let Some(id) = state.open.clone() else {
+                return Task::none();
+            };
+            let client = ctx.client.clone();
+            let done = if mode == "maintenance" {
+                "In maintenance: its agents watch it and propose"
+            } else {
+                "In build: its agents make it"
+            };
+            client::task(
+                move || {
+                    client.post::<Project>(
+                        &format!("/v1/projects/{id}/mode"),
+                        &json!({ "mode": mode }),
+                    )
+                },
+                move |r| Msg::Acted(r, done),
+            )
+        }
+        Msg::PickFiles(folder) => Task::perform(
+            async move {
+                let dialog = rfd::AsyncFileDialog::new();
+                let picked = if folder {
+                    dialog.pick_folder().await.map(|f| vec![f])
+                } else {
+                    dialog.pick_files().await
+                };
+                picked
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|f| f.path().to_path_buf())
+                    .collect()
+            },
+            Msg::FilesPicked,
+        ),
+        Msg::FilesPicked(paths) => {
+            let Some(id) = state.open.clone() else {
+                return Task::none();
+            };
+            if paths.is_empty() {
+                return Task::none();
+            }
+            state.files_note = Some(format!("Sending {}…", files_text(paths.len())));
+            let client = ctx.client.clone();
+            client::task(
+                move || crate::console::files::upload_to_project(&client, &id, &paths, None),
+                Msg::FilesAdded,
+            )
+        }
+        Msg::FilesAdded(res) => {
+            state.files_note = Some(match res {
+                Ok(v) => {
+                    let n = v["files"].as_u64().unwrap_or(0);
+                    let skipped = v["skipped"].as_u64().unwrap_or(0);
+                    let left = if skipped > 0 {
+                        format!(", {skipped} left out")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "Added {} as change {}{left}.",
+                        files_text(n as usize),
+                        v["landed"]["change"].as_str().unwrap_or("?")
+                    )
+                }
+                Err(e) => format!("Not sent: {e}"),
+            });
+            Task::none()
+        }
         // The screen navigates through `Msg::Go`, the same as its other links.
         Msg::OpenRepo(repo) => Task::done(Msg::Go(Id::Ide(Some(ide::target(
             &format!("repo:{repo}@main"),
@@ -339,7 +470,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             landed(state, ctx)
         }
         Msg::Event(event) => {
-            if !matches!(event.kind.as_str(), "project" | "task") {
+            if !matches!(
+                event.kind.as_str(),
+                "project" | "task" | "maintenance" | "environment"
+            ) {
                 return Task::none();
             }
             if state.loading {
@@ -741,8 +875,19 @@ fn life_badge<'a>(p: &Project) -> Option<Element<'a, Msg>> {
         Some(ui::badge("Archived", ui::Tone::Muted))
     } else if p.paused {
         Some(ui::badge("Paused", ui::Tone::Warn))
+    } else if p.in_maintenance() {
+        Some(ui::badge("Maintenance", ui::Tone::Info))
     } else {
         None
+    }
+}
+
+/// "1 file", "12 files".
+fn files_text(n: usize) -> String {
+    if n == 1 {
+        "1 file".into()
+    } else {
+        format!("{n} files")
     }
 }
 
@@ -915,6 +1060,18 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         ui::Kind::Secondary,
         Some(Msg::Go(Id::WorkOn(p.id.clone()))),
     ));
+    if !p.archived {
+        actions.push(ui::btn(
+            if p.in_maintenance() {
+                "Mode: Maintenance"
+            } else {
+                "Mode: Build"
+            },
+            None,
+            ui::Kind::Secondary,
+            Some(Msg::OpenMode),
+        ));
+    }
     if live && !p.paused {
         actions.push(ui::btn(
             "Pause",
@@ -954,6 +1111,54 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             .spacing(10)
             .into(),
         ));
+    }
+
+    if state.choose_mode {
+        let current = if p.in_maintenance() {
+            "maintenance"
+        } else {
+            "build"
+        };
+        let choice =
+            |mode: &'static str, name: &'static str, what: &'static str| -> Element<'a, Msg> {
+                let now = if mode == current { " (now)" } else { "" };
+                column![
+                    ui::btn(
+                        &format!("{name}{now}"),
+                        None,
+                        if mode == current {
+                            ui::Kind::Ghost
+                        } else {
+                            ui::Kind::Primary
+                        },
+                        (mode != current).then_some(Msg::SetMode(mode)),
+                    ),
+                    ui::faint(what),
+                ]
+                .spacing(4)
+                .into()
+            };
+        let mut form = column![
+            choice("build", "Build", "The project is being made: agents plan the work, post tasks and build them."),
+            choice(
+                "maintenance",
+                "Maintenance",
+                "It is (nearly) finished: agents read its analytics, user reports and feedback, keep a map of it and propose work. Nothing runs until you pick a proposal."
+            ),
+        ]
+        .spacing(12);
+        if p.stage == "delivered" {
+            form = form.push(ui::faint(
+                "It is delivered: back in build it opens again at implementation.",
+            ));
+        }
+        form = form.push(ui::btn(
+            "Cancel",
+            None,
+            ui::Kind::Ghost,
+            Some(Msg::CancelMode),
+        ));
+        body.push(ui::card("How this project is worked", form.into()));
     }
 
     if let Some(note) = &state.approve {
@@ -1028,6 +1233,19 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             body.push(project_settings::view(&state.settings, &p.id, live).map(Msg::Settings));
             return page(p, badges, body);
         }
+        Tab::Maintenance => {
+            body.push(
+                project_maintenance::view(&state.maintenance, &p.id, p.in_maintenance())
+                    .map(Msg::Maintenance),
+            );
+            return page(p, badges, body);
+        }
+        Tab::Environments => {
+            body.push(
+                project_environments::view(&state.environments, &p.id).map(Msg::Environments),
+            );
+            return page(p, badges, body);
+        }
         Tab::Plan => {}
     }
 
@@ -1049,6 +1267,21 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         .spacing(8)
         .into();
         sections.push(ui::card("Repository", repo_card));
+    }
+    if !p.archived && p.kind == "code" {
+        let mut files = column![
+            ui::faint("Choose files or a folder, or drop them on the window: they land on main as one change of yours. .git, node_modules and .DS_Store are left out."),
+            row![
+                ui::btn_sm("Choose files", Some("file"), ui::Kind::Secondary, Some(Msg::PickFiles(false))),
+                ui::btn_sm("Choose a folder", Some("file"), ui::Kind::Secondary, Some(Msg::PickFiles(true))),
+            ]
+            .spacing(8),
+        ]
+        .spacing(8);
+        if let Some(note) = &state.files_note {
+            files = files.push(ui::faint(note.as_str()));
+        }
+        sections.push(ui::card("Add files", files.into()));
     }
     sections.push(ui::card("History", history_body(p)));
     body.push(column(sections).spacing(16).into());
@@ -1207,7 +1440,16 @@ fn event_row<'a>(e: &'a Event) -> Element<'a, Msg> {
 
 /// The hub events this screen follows live: a project or task changed, so the page reloads.
 pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
-    events::subscription(&ctx.client).map(Msg::Event)
+    Subscription::batch([
+        events::subscription(&ctx.client).map(Msg::Event),
+        // Files dropped on the window while a project is open go into its repository.
+        iced::event::listen_with(|event, _, _| match event {
+            iced::Event::Window(iced::window::Event::FileDropped(path)) => {
+                Some(Msg::FilesPicked(vec![path]))
+            }
+            _ => None,
+        }),
+    ])
 }
 
 /// A load landed: the reload that an event asked for meanwhile runs now.

@@ -397,8 +397,8 @@ fn act(app: &App, cid: u64, input: &Value, by: &str) -> Result<String, String> {
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
                 .ok_or("steer needs text")?;
-            if text.chars().count() > 2000 {
-                return Err("steer text is over 2000 characters".into());
+            if text.chars().count() > 6000 {
+                return Err("steer text is over 6000 characters".into());
             }
             let note = Control::Steer {
                 from: by.to_string(),
@@ -692,10 +692,33 @@ fn control_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let Ok(cid) = p.get("cid").parse::<u64>() else {
         return Response::error(400, "bad agent id");
     };
-    let body: Value = match req.json() {
+    let mut body: Value = match req.json() {
         Ok(body) => body,
         Err(e) => return Response::error(400, &format!("bad body: {e}")),
     };
+    // The owner's files can go with a steer: the agent may read them, and the steer says where they are.
+    let files: Vec<String> = body["attachments"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if body["action"] == "steer" && !files.is_empty() {
+        let lines = match crate::deliverables::attach(app, &files, cid) {
+            Ok(lines) => lines,
+            Err(e) => return Response::error(400, &e),
+        };
+        let text = body["text"].as_str().unwrap_or("").trim().to_string();
+        let text = if text.is_empty() {
+            "(files attached)".to_string()
+        } else {
+            text
+        };
+        body["text"] = json!(format!("{text}\n\n{lines}"));
+    }
     match act(app, cid, &body, "owner") {
         Ok(result) => Response::json(200, &json!({ "ok": true, "result": result })),
         Err(e) => Response::error(409, &e),
