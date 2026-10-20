@@ -1,0 +1,17 @@
+meta {
+  name: A sweep of the held project is refused for having no agents, not for the hold
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{plz_held_pid}}/maintenance/sweep
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "no agents to watch"
+  res.responseTime: lt 1000
+}

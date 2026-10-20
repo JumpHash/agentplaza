@@ -1,0 +1,21 @@
+meta {
+  name: Refuse the v2 logs of a sandbox that does not exist
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/e2b/v2/sandboxes/sbffffffffffffffff/logs?limit=10
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error_code: eq "sandbox_not_found"
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Refuse the local machine's facts when noded does not answer
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/machine
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

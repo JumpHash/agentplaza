@@ -1,0 +1,42 @@
+meta {
+  name: a worker role model may be any model
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("flowSettingsCurrent"));
+  s.role_models = { builder: "xai/grok-4.7" };
+  req.setBody(s);
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setVar("flowSettingsCurrent", JSON.stringify(res.getBody()));
+  }
+}
+
+tests {
+  test("the worker role keeps its model", function () {
+    expect(res.getBody().role_models.builder).to.equal('xai/grok-4.7');
+  });
+}

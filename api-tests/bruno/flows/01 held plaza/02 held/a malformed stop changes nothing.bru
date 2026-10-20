@@ -1,0 +1,30 @@
+meta {
+  name: a malformed stop changes nothing
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/stop
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the body", function () {
+    expect(res.getBody().error).to.include('bad body');
+  });
+}

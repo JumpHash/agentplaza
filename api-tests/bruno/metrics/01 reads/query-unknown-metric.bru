@@ -1,0 +1,34 @@
+meta {
+  name: Answer no groups for an unknown metric
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/query
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "metric": "no.such.metric",
+    "scope": "global",
+    "from_ms": 0,
+    "to_ms": 3600000,
+    "step_ms": 60000,
+    "agg": "avg",
+    "group": "all"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("an unknown metric has no series", function () {
+    expect(res.getBody().groups).to.have.lengthOf(0);
+  });
+}

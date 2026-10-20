@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when removing the key of an unknown connector
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/connectors/t-no-such-connector/secret
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

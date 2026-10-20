@@ -1,0 +1,24 @@
+meta {
+  name: resume the plaza
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the plaza is released and the reason is cleared", function () {
+    const b = res.getBody();
+    expect(b.paused).to.equal(false);
+    expect(b.reason).to.equal('');
+  });
+}

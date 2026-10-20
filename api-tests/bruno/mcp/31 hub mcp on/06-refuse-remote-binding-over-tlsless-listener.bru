@@ -1,0 +1,25 @@
+meta {
+  name: Refuse remote binding over TLS-less listener even while on
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": true,
+    "bind": "remote",
+    "allowed_origins": []
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

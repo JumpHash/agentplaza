@@ -1,0 +1,26 @@
+meta {
+  name: Renew the live lease for a console view
+  type: http
+  seq: 41
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/live
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "scope": "global",
+    "tab": "overview",
+    "group": "all",
+    "range": "15m"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.ok: eq true
+}

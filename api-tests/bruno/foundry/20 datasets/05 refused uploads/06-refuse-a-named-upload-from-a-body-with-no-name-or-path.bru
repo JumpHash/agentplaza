@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a named upload from a body with no name or path
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload
+  body: json
+  auth: none
+}
+
+body:json {
+  {"name": "no-path.jsonl"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the two fields", function () {
+    expect(res.getBody().error).to.equal("{name, path} names the upload");
+  });
+}

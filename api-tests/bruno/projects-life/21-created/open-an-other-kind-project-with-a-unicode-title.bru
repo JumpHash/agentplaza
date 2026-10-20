@@ -1,0 +1,26 @@
+meta {
+  name: Open an other-kind project with a unicode title
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-life Écrire 日本語", "goal": "Unicode names survive", "kind": "other"}
+}
+
+assert {
+  res.status: eq 201
+  res.body.kind: eq "other"
+  res.body.title: contains "日本語"
+  res.responseTime: lt 1000
+}

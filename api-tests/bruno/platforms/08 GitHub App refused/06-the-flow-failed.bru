@@ -1,0 +1,17 @@
+meta {
+  name: Show the failed app creation as failed
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/flows/{{gh_state}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.status: eq "failed"
+}

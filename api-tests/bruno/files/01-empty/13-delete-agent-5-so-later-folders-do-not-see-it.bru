@@ -1,0 +1,16 @@
+meta {
+  name: Delete agent 5 again, so later folders do not see it
+  type: http
+  seq: 13
+}
+
+delete {
+  url: {{baseUrl}}/v1/agents/5
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

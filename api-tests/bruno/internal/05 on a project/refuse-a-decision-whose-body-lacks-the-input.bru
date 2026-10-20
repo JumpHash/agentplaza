@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a decision whose body lacks the input
+  type: http
+  seq: 34
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+}
+
+tests {
+  test("the error names the missing field", function () {
+    expect(res.getBody().error).to.include("input");
+  });
+}

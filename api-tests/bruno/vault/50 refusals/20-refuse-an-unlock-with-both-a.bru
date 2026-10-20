@@ -1,0 +1,30 @@
+meta {
+  name: Refuse an unlock with both a passphrase and a recovery code
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/unseal
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "passphrase": "bru-both-0123456789",
+    "recovery_code": "bru-both-code"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal asks for one of the two", function () {
+    expect(res.getBody().error).to.include("not both");
+  });
+}

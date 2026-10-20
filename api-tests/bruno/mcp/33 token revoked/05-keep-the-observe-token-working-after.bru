@@ -1,0 +1,36 @@
+meta {
+  name: Keep the observe token working after the operate token is revoked
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_observe_token}}
+  Mcp-Session-Id: {{mcp_observe_session}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/list",
+    "params": {}
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the observe token still lists its tools", function () {
+    expect(res.getBody().result.tools).to.be.an("array");
+  });
+}

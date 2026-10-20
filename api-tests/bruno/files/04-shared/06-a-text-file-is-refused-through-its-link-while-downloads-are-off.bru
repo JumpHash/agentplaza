@@ -1,0 +1,22 @@
+meta {
+  name: A text file is refused through its link while downloads are off
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh_note_share}}/file
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("downloads are off", function () {
+    expect(res.getBody().error).to.include("downloads are off");
+  });
+}

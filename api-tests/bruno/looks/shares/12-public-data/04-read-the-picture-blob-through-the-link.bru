@@ -1,0 +1,23 @@
+meta {
+  name: Read the picture blob through the link
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh12_share}}/blobs/{{sh12_blob}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the picture is served sandboxed", function () {
+    expect(res.getHeader("content-type")).to.include("image/png");
+    expect(res.getHeader("content-security-policy")).to.equal("default-src 'none'; sandbox");
+  });
+}

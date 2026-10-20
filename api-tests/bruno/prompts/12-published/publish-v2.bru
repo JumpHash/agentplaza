@@ -1,0 +1,33 @@
+meta {
+  name: Publish version 2 as the live one
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/publish
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "version": 2
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.prompt.active_version: eq 2
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the live score is the version's score", function () {
+    expect(res.getBody().prompt.score).to.be.a("number");
+  });
+}

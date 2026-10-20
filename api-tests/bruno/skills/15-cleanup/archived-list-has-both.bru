@@ -1,0 +1,24 @@
+meta {
+  name: Both test skills are in the archived list
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/skills?archived=true
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("both are archived", function () {
+    const ids = res.getBody().skills.map((s) => s.id);
+    expect(ids).to.include("t-skill-life");
+    expect(ids).to.include("t-skill-arc");
+  });
+}

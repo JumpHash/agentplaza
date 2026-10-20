@@ -1,0 +1,24 @@
+meta {
+  name: List the laws with the statute on again
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/laws
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the statute applies again", function () {
+  const law = res.getBody().find((l) => l.id === "S-000a");
+    expect(law.enabled).to.equal(true);
+    expect(law.overridden).to.equal(null);
+  });
+}

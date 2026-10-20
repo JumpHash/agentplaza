@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a Weft object whose bytes do not match its hash
+  type: http
+  seq: 57
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/weft/wire/objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: application/octet-stream
+}
+
+body:text {
+  abc
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+}
+
+tests {
+  test("the error names the hash mismatch", function () {
+    expect(res.getBody().error).to.include("hash to");
+  });
+}

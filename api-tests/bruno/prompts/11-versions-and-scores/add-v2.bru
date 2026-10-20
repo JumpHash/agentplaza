@@ -1,0 +1,35 @@
+meta {
+  name: Add version 2 with a Rules section
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "body": "# Tester\n\nYou are the test role. Check each request against the plan.\n\n## Rules\n\n- Stay in scope.\n- Name what you could not check.\n",
+    "note": "adds rules",
+    "base_version": 1
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("version 2 is created", function () {
+    expect(res.getBody().created).to.equal(true);
+    expect(res.getBody().version.version).to.equal(2);
+  });
+}

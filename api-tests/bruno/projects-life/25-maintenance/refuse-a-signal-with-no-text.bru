@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a signal with no text
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance/signals
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"text": ""}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "empty"
+  res.responseTime: lt 1000
+}

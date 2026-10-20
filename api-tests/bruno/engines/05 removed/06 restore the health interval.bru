@@ -1,0 +1,35 @@
+meta {
+  name: the settings go back to what they were before the folder
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:pre-request {
+  req.setBody(JSON.parse(bru.getVar("engSettingsSnapshot")));
+}
+
+tests {
+  test("the health interval is what it was before the folder", function () {
+    const s = JSON.parse(bru.getVar("engSettingsSnapshot"));
+    expect(res.getBody().health_interval_s).to.equal(s.health_interval_s);
+  });
+}

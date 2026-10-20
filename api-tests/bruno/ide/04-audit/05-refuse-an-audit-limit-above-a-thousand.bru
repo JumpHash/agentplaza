@@ -1,0 +1,16 @@
+meta {
+  name: Refuse an audit limit above a thousand
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/audit?limit=1001
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

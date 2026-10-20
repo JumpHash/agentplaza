@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an upload from a relative path
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload
+  body: json
+  auth: none
+}
+
+body:json {
+  {"name": "t-ds-rel", "path": "relative/rows.jsonl"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the path must be absolute", function () {
+    expect(res.getBody().error).to.equal("path is absolute");
+  });
+}

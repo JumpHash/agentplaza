@@ -1,0 +1,37 @@
+meta {
+  name: Refuse a denyOut entry that names a host
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "network": {
+      "denyOut": [
+        "example.com"
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("denyOut takes addresses only", function () {
+    expect(res.getBody().message).to.include("denyOut takes IP addresses");
+  });
+}

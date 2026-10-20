@@ -1,0 +1,16 @@
+meta {
+  name: The old note's content is gone
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/files/{{file_note}}/content
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

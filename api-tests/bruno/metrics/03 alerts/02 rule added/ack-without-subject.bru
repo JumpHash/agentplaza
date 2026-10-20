@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an acknowledgement without a subject
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/alerts/{{metrics_rule_id}}/ack
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Refuse an engine without an id
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "engine": "acp-local",
+    "command": "scratch-agent"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: eq "id is required"
+}

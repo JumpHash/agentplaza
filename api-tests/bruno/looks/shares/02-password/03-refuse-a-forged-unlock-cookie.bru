@@ -1,0 +1,20 @@
+meta {
+  name: Refuse a forged unlock cookie
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh2_share}}/data
+  body: none
+  auth: none
+}
+
+headers {
+  Cookie: apz_share_{{sh2_share}}=ffffffff.0000
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,30 @@
+meta {
+  name: Refuse an import of an absolute file path
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/hf/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-org/t-model",
+    "as": "base",
+    "files": ["/etc/passwd"]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the file path is not relative", function () {
+    expect(res.getBody().error).to.include("is not a relative file path");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Check every enabled provider: the deleted one is not in it
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/providers/check
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 15000
+}
+
+tests {
+  test("the answer has no entry for it", function () {
+    expect(res.getBody()).to.not.have.property("t-prov-compat");
+  });
+}

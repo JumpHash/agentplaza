@@ -1,0 +1,19 @@
+meta {
+  name: Read back the saved recording defaults
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/recording-defaults
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.retention_days: eq 30
+  res.body.record_fps: eq 3
+  res.body.record: eq true
+}

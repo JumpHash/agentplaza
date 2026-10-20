@@ -1,0 +1,24 @@
+meta {
+  name: Refuse a relink whose after is not a list
+  type: http
+  seq: 13
+}
+
+patch {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"after": "t1"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

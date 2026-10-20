@@ -1,0 +1,28 @@
+meta {
+  name: Refuse an owner post for an unknown project
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/board/posts
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "body": "Hello?",
+    "project": "pr-none"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "no project"
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a default with no model
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/decisions/default
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai-decisions"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "body must be"
+  res.responseTime: lt 1000
+}

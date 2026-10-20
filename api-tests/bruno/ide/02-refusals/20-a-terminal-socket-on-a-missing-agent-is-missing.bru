@@ -1,0 +1,16 @@
+meta {
+  name: A terminal socket on a missing agent is missing
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/terminal/agent:999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

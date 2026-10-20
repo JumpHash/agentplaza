@@ -1,0 +1,28 @@
+meta {
+  name: Answer 404 when switching an unknown law off
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/laws/overrides/S-999z
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "disabled": true,
+    "reason": "x"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

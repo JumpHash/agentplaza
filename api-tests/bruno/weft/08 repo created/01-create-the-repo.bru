@@ -1,0 +1,32 @@
+meta {
+  name: Create a Weft repo as the owner, through the console
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "repo.create",
+    "body": {"repo": "t-weft-repo-a", "project": "t-weft-project", "description": "bru repo"}
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+  res.body.seq: isNumber
+}
+
+tests {
+  test("the statement is signed and its summary names the repo", function () {
+    const body = res.getBody();
+    expect(body.summary).to.include("t-weft-repo-a");
+    expect(body.summary).to.include("created");
+  });
+}

@@ -1,0 +1,47 @@
+meta {
+  name: Refuse more than 16 tags
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-skill-tags",
+    "title": "Tags",
+    "tags": [
+      "t0",
+      "t1",
+      "t2",
+      "t3",
+      "t4",
+      "t5",
+      "t6",
+      "t7",
+      "t8",
+      "t9",
+      "t10",
+      "t11",
+      "t12",
+      "t13",
+      "t14",
+      "t15",
+      "t16"
+    ],
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n"
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt 1000
+}

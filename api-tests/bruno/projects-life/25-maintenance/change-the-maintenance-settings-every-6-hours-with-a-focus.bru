@@ -1,0 +1,26 @@
+meta {
+  name: Change the maintenance settings: every 6 hours, with a focus
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"every_hours": 6, "focus": "the tests"}
+}
+
+assert {
+  res.status: eq 200
+  res.body.config.every_hours: eq 6
+  res.body.config.focus: eq "the tests"
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Read the first link before revoking it
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh6a_share}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

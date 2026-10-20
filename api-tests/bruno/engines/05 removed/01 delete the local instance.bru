@@ -1,0 +1,17 @@
+meta {
+  name: Remove an engine instance the owner added
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.deleted: eq "t-eng-local"
+}

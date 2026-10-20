@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a vet of a recipe that does not exist
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/recipes/no-such-recipe@1/vet
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "commit": "abcdef1"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the missing recipe", function () {
+    expect(res.getBody().error).to.equal("no recipe no-such-recipe@1");
+  });
+}

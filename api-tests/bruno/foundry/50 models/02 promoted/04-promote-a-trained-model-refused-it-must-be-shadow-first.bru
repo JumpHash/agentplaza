@@ -1,0 +1,22 @@
+meta {
+  name: Promote a trained model: refused, it must be shadow first
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/promote
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error says the move needs shadow", function () {
+    expect(res.getBody().error).to.include("is trained: a model is promoted from shadow");
+  });
+}

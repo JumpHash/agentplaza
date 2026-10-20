@@ -1,0 +1,23 @@
+meta {
+  name: Refuse the gemini call without the internal token
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/gemini/v1beta/models/gemini-x:generateContent
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "contents": []
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

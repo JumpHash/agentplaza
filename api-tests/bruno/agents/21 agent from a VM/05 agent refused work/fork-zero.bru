@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a fork of zero agents
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/fork
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "n": 0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("n must be 1 to 8");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Answer 405 to a GET on the MCP endpoint while it is on
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/mcp
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 405
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the endpoint names POST as the method it takes", function () {
+    expect(res.getHeader("allow")).to.equal("POST");
+  });
+}

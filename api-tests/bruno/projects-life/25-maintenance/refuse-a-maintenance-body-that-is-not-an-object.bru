@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a maintenance settings body that is a JSON string, not an object
+  type: http
+  seq: 28
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  "x"
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: eq "the body must be a JSON object"
+  res.responseTime: lt 1000
+}

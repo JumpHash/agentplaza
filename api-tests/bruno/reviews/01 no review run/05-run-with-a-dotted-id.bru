@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for a review id that only looks like a run
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/reviews/..%2Fr-1.2
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

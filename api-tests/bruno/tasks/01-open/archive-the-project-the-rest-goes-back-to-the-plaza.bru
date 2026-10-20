@@ -1,0 +1,17 @@
+meta {
+  name: Archive the project: the rest goes back to the plaza
+  type: http
+  seq: 55
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{tsk_pid}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.archived: eq true
+  res.responseTime: lt 1000
+}

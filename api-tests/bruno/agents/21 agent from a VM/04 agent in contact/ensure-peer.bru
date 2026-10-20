@@ -1,0 +1,33 @@
+meta {
+  name: Register the second agent from its VM
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/41002/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "vm": 2
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the hello answers the agent's profile", function () {
+    expect(res.getBody().profile).to.be.an("object");
+    expect(res.getBody().profile.system).to.include("(CID 41002)");
+  });
+}

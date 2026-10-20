@@ -1,0 +1,29 @@
+meta {
+  name: Create the first share link
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh6_art}}"
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("sh6a_share", res.getBody().id);
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a token that is not a string
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/foundry/hf/token
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": 7
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the value is not a string", function () {
+    expect(res.getBody().error).to.include("expected a string");
+  });
+}

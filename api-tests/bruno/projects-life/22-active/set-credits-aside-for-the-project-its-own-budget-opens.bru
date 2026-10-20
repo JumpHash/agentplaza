@@ -1,0 +1,32 @@
+meta {
+  name: Set credits aside for the project: its own budget opens
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"credits": 500}
+}
+
+assert {
+  res.status: eq 200
+  res.body.own: eq true
+  res.body.balance: eq 500
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the plaza gives up exactly the credits set aside", function () {
+    expect(res.getBody().plaza).to.equal(Number(bru.getVar("life_plaza_start")) - 500);
+  });
+}

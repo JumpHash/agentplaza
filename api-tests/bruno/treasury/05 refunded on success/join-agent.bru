@@ -1,0 +1,26 @@
+meta {
+  name: Put the test agent on the treasury project
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{treasuryProject}}/members
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "cid": 8803
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

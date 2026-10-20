@@ -1,0 +1,24 @@
+meta {
+  name: Read version 2: no findings to recheck
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions/2
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.version: eq 2
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("version 2 is current with the rules", function () {
+    expect(res.getBody().stale).to.equal(false);
+    expect(res.getBody().recheck).to.equal(null);
+  });
+}

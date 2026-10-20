@@ -1,0 +1,17 @@
+meta {
+  name: Resuming a project that is not paused changes nothing
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq false
+  res.responseTime: lt 1000
+}

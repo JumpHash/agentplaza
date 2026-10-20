@@ -1,0 +1,16 @@
+meta {
+  name: Archive the test skill with its versions
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

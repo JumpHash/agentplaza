@@ -1,0 +1,27 @@
+meta {
+  name: Turn Codex off
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/codex
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "enabled": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.enabled: eq false
+}

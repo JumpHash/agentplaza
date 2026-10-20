@@ -1,0 +1,21 @@
+meta {
+  name: Answer 404 for an e2b sandbox the hub does not know
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/internal/e2b/sandboxes/sb-t-internal-none
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 404
+  res.body.error: eq "no such sandbox"
+}

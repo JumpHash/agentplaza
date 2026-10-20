@@ -1,0 +1,27 @@
+meta {
+  name: Accept the longest timeout a sandbox may have
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "timeout": 86400
+  }
+}
+
+assert {
+  res.status: eq 503
+  res.responseTime: lt 1000
+}

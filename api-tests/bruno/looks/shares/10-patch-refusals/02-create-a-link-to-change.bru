@@ -1,0 +1,29 @@
+meta {
+  name: Create a link to change
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh10_art}}"
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("sh10_share", res.getBody().id);
+}

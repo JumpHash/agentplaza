@@ -1,0 +1,34 @@
+meta {
+  name: An upload without a title takes its name as the title
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/files?name=t-files-untitled.txt
+  body: text
+  auth: none
+}
+
+headers {
+  content-type: text/plain
+}
+
+body:text {
+  untitled
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("file_untitled", res.getBody().id);
+}
+
+tests {
+  test("the title is the name", function () {
+    expect(res.getBody().title).to.equal("t-files-untitled.txt");
+  });
+}

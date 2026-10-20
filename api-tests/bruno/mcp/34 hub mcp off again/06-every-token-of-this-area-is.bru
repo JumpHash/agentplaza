@@ -1,0 +1,26 @@
+meta {
+  name: Every token of this area is revoked at the end
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/hub-mcp/tokens
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the three tokens of this area carry a revocation time", function () {
+    const tokens = res.getBody().tokens;
+    ["mcp_observe_id", "mcp_operate_id", "mcp_govern_id"].forEach((name) => {
+      const token = tokens.find((t) => t.id === bru.getVar(name));
+      expect(token.revoked_at_ms, name).to.be.a("number");
+    });
+  });
+}

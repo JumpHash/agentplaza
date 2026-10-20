@@ -1,0 +1,24 @@
+meta {
+  name: Refuse the egress cert without the internal token
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/internal/egress/cert
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": 61003,
+    "host": "example.com"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

@@ -1,0 +1,30 @@
+meta {
+  name: Register an agent's VM without the internal token: refused
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/9101/hello
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "role": "",
+    "vm": 1,
+    "caps": []
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the token is missing or wrong", function () {
+    expect(res.getBody().error).to.equal("missing or wrong internal token");
+  });
+}

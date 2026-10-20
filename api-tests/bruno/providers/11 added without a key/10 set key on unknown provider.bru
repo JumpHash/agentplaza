@@ -1,0 +1,26 @@
+meta {
+  name: Answer 404 when setting the key of an unknown provider
+  type: http
+  seq: 10
+}
+
+put {
+  url: {{baseUrl}}/v1/providers/no-such-provider/secret
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "value": "scratch-test-key-0003"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

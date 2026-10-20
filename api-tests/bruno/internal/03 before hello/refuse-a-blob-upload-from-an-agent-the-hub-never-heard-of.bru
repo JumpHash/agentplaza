@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a blob upload from an agent the hub never heard of
+  type: http
+  seq: 24
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61001/gateway/artifacts/blobs?content_type=text/plain
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: text/plain
+}
+
+body:text {
+  ghost
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 404
+  res.body.error: eq "unknown agent"
+}

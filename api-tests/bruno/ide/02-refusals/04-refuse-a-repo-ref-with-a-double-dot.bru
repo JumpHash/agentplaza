@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a repo ref with a double dot
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/repo:x@a..b/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

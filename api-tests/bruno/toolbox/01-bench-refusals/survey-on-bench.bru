@@ -1,0 +1,39 @@
+meta {
+  name: Deny the toolbox survey from an agent on the bench
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/9001/message
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "t-call-2",
+    "name": "plaza_toolbox",
+    "input": {
+      "query": "ffmpeg"
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the survey is denied", function () {
+    expect(res.getBody().reply.decision).to.equal("deny");
+  });
+}

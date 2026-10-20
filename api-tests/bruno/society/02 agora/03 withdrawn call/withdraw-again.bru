@@ -1,0 +1,23 @@
+meta {
+  name: Refuse to withdraw a task twice
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/tasks/{{society_withdrawn_task}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("withdrawn to withdrawn");
+  });
+}

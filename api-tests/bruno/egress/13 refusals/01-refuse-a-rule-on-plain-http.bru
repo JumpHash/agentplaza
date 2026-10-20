@@ -1,0 +1,37 @@
+meta {
+  name: Refuse a rule on plain HTTP
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/egress/inject
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "host": "api.bru-egress.test",
+    "port": 80,
+    "methods": [
+      "GET"
+    ],
+    "path_prefix": "/v1",
+    "header": "Authorization",
+    "format": "Bearer ${SECRET}",
+    "secret": "BRU_EGRESS_KEY"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says a credential is only added to HTTPS", function () {
+    expect(res.getBody().error).to.include("only added to HTTPS");
+  });
+}

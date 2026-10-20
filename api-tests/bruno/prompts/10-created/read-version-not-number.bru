@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for a version that is not a number
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/versions/one
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

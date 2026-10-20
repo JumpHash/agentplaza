@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a reject whose body is not JSON for a proposal that does not exist
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/agent-proposals/ap-none/reject
+  body: text
+  auth: none
+}
+
+body:text {
+  not json
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no proposal ap-none");
+  });
+}

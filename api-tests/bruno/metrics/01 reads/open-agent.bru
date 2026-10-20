@@ -1,0 +1,17 @@
+meta {
+  name: Mark agent 1 as open in the traces
+  type: http
+  seq: 43
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/open/1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.ok: eq true
+}

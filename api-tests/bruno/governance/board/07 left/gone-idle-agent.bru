@@ -1,0 +1,25 @@
+meta {
+  name: Mark the second test agent gone
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/8602/gone
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

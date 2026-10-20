@@ -1,0 +1,25 @@
+meta {
+  name: Refuse approval of a project whose plan is not awaiting approval
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/approve
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"note": "t-life approve"}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "not awaiting approval"
+  res.responseTime: lt 1000
+}

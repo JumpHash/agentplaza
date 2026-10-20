@@ -1,0 +1,31 @@
+meta {
+  name: Refuse the egress inject with a wrong internal token
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/internal/egress/inject
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+}
+
+body:json {
+  {
+    "cid": 61003,
+    "host": "example.com",
+    "port": 443,
+    "method": "GET",
+    "path": "/v1"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

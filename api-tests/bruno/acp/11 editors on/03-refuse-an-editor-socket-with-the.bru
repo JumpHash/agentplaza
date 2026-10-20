@@ -1,0 +1,30 @@
+meta {
+  name: Refuse an editor socket with the wrong WebSocket version
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/acp
+  body: none
+  auth: none
+}
+
+headers {
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Version: 8
+  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+}
+
+assert {
+  res.status: eq 426
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the answer names version 13", function () {
+    expect(res.getHeader("sec-websocket-version")).to.equal("13");
+  });
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a command with arguments in it on edit (400, nothing changes)
+  type: http
+  seq: 8
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "command": "two words"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

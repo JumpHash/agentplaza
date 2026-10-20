@@ -1,0 +1,16 @@
+meta {
+  name: Delete the accented-name upload
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{baseUrl}}/v1/files/{{file_unicode}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

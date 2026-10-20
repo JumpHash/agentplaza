@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a mute without an end time
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/alerts/{{metrics_rule_id}}/mute
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "until": 1
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

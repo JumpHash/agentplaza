@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a mint whose amount is not a whole number
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/treasury/mint
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "amount": 1.5
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

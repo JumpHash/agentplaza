@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a default body that is not JSON
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/decisions/default
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  x
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "bad body"
+  res.responseTime: lt 1000
+}

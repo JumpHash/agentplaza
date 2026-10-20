@@ -1,0 +1,30 @@
+meta {
+  name: Owner declines the held command
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/approvals/{{int_appr_d}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "approve": false,
+    "reason": "not needed"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.state: eq "denied"
+}
+
+tests {
+  test("the reason is kept", function () {
+    expect(res.getBody().reason).to.equal("not needed");
+  });
+}

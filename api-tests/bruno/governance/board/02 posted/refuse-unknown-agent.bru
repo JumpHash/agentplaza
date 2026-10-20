@@ -1,0 +1,29 @@
+meta {
+  name: Answer 404 for a post by an unknown agent
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/board
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent_cid": 8699,
+    "subject": "t-board ghost",
+    "body": "No such agent."
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

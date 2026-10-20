@@ -1,0 +1,22 @@
+meta {
+  name: Cancel the refused job: there is no such job
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs/t-job-nogpu/cancel
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the cancel names no job", function () {
+    expect(res.getBody().error).to.equal("no such job");
+  });
+}

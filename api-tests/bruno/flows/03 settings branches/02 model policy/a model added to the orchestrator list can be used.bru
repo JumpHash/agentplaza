@@ -1,0 +1,44 @@
+meta {
+  name: a model added to the orchestrator list can be used
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("flowSettingsCurrent"));
+  s.model_policy.orchestrator.push("deepseek/deepseek-flash");
+  s.orchestrator_model = "deepseek/deepseek-flash";
+  req.setBody(s);
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setVar("flowSettingsCurrent", JSON.stringify(res.getBody()));
+  }
+}
+
+tests {
+  test("the orchestrator now runs the added model", function () {
+    expect(res.getBody().orchestrator_model).to.equal('deepseek/deepseek-flash');
+    expect(res.getBody().model_policy.orchestrator).to.include('deepseek/deepseek-flash');
+  });
+}

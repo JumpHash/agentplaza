@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a label longer than 200 characters
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "BRU_REF_KEY",
+    "kind": "api_key",
+    "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "value": "bru-ref-value-0123",
+    "scope": {
+      "kind": "plaza"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the label limit", function () {
+    expect(res.getBody().error).to.include("longer than 200");
+  });
+}

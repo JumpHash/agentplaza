@@ -1,0 +1,23 @@
+meta {
+  name: Read back the saved dashboards
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/dashboards
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.starter: eq false
+}
+
+tests {
+  test("the scope pin is kept", function () {
+    expect(res.getBody().scopes).to.include("global");
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Set 500 credits aside for the project
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{bl_pid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"credits": 500}
+}
+
+assert {
+  res.status: eq 200
+  res.body.balance: eq 500
+  res.responseTime: lt 1000
+}

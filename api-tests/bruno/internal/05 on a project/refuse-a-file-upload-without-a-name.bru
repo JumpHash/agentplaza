@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a file upload without a name
+  type: http
+  seq: 40
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/files
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: text/plain
+}
+
+body:text {
+  x
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+  res.body.error: eq "name is required"
+}

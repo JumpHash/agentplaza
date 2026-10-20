@@ -1,0 +1,17 @@
+meta {
+  name: Suggest agents for the project from the agents that hold its tasks
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/suggested-members
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+  res.responseTime: lt 1000
+}

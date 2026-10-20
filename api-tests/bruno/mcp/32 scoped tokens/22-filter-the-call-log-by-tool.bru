@@ -1,0 +1,24 @@
+meta {
+  name: Filter the call log by tool and limit
+  type: http
+  seq: 22
+}
+
+get {
+  url: {{baseUrl}}/v1/hub-mcp/calls?tool=plaza_status&limit=5
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("every row is the tool asked for, at most five", function () {
+    const calls = res.getBody().calls;
+    expect(calls.length).to.be.at.most(5);
+    calls.forEach((c) => expect(c.tool).to.equal("plaza_status"));
+  });
+}

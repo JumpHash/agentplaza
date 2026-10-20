@@ -1,0 +1,18 @@
+meta {
+  name: Withdraw an open task that has links: A is withdrawn
+  type: http
+  seq: 49
+}
+
+delete {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "withdrawn"
+  res.body.outcome: eq "cancelled"
+  res.responseTime: lt 1000
+}

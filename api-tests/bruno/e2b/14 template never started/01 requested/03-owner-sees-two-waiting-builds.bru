@@ -1,0 +1,24 @@
+meta {
+  name: The owner sees both waiting builds
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/e2b/templates
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("two builds, both waiting", function () {
+    const t = res.getBody().templates.find((x) => x.templateID === bru.getVar("e2bWaitTemplate"));
+    expect(t.builds).to.have.lengthOf(2);
+    t.builds.forEach((b) => expect(b.status).to.equal("waiting"));
+  });
+}

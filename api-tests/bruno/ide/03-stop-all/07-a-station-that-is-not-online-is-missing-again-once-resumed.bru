@@ -1,0 +1,16 @@
+meta {
+  name: A station that is not online is missing again once resumed
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/station:w1/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,32 @@
+meta {
+  name: Refuse a guest message with an unknown type
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61001/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "nope"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+}
+
+tests {
+  test("the error lists the known types", function () {
+    expect(res.getBody().error).to.include("unknown variant");
+  });
+}

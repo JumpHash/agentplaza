@@ -1,0 +1,17 @@
+meta {
+  name: Refuse the weft read without the internal token
+  type: http
+  seq: 35
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/weft/wire/objects/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

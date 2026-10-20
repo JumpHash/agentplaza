@@ -1,0 +1,35 @@
+meta {
+  name: Ignore a stats report from an agent the hub never heard of
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61001/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "stats",
+    "workspace_used_mib": 1,
+    "workspace_size_mib": 10,
+    "top": []
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the guest gets no reply", function () {
+    expect(res.getBody().reply).to.be.null;
+  });
+}

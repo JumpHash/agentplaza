@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a version that is not a number
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}?v=abc
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

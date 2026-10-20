@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to remove an environment that is already gone
+  type: http
+  seq: 27
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/environments/probe-env
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: contains "no such environment"
+  res.responseTime: lt 1000
+}

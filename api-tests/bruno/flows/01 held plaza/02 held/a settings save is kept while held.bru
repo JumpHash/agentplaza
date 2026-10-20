@@ -1,0 +1,38 @@
+meta {
+  name: a settings save is kept while held
+  type: http
+  seq: 8
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("flowHeldSettings"));
+  req.setBody(s);
+}
+
+tests {
+  test("the save returns the same settings it was given", function () {
+    const b = res.getBody();
+    const s = JSON.parse(bru.getVar('flowHeldSettings'));
+    expect(b.orchestrator_model).to.equal(s.orchestrator_model);
+    expect(b.max_turns).to.equal(s.max_turns);
+  });
+}

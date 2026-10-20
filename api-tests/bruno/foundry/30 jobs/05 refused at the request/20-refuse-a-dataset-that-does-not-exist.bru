@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a dataset that does not exist
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"recipe": "rung-predictor@1", "datasets": ["ds-t-missing"], "budget_gpu_hours": 1}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.equal("no dataset ds-t-missing");
+  });
+}

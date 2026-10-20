@@ -1,0 +1,17 @@
+meta {
+  name: The paused-period task is withdrawn too
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{life_task_paused}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "withdrawn"
+  res.responseTime: lt 1000
+}

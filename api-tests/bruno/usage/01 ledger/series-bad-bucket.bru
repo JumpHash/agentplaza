@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a series with an unknown bucket
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/series?from=0&to=3600000&bucket=week
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the bucket", function () {
+    expect(res.getBody().error).to.include("bucket");
+  });
+}

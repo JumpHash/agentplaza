@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when forgetting an app already forgotten
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/v1/platforms/registrations/{{platforms_app}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: eq "no such app"
+}

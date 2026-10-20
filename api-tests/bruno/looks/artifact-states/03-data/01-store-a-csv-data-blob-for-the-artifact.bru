@@ -1,0 +1,38 @@
+meta {
+  name: Store a CSV data blob for the artifact
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts/blobs?content_type=text/csv
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  content-type: text/csv
+}
+
+body:text {
+  region,total
+  north,12
+  south,9
+
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("looks_blob", res.getBody().blob.id);
+}
+
+tests {
+  test("the blob id is returned", function () {
+    expect(res.getBody().blob.id).to.match(/^b[0-9a-f]+$/);
+  });
+}

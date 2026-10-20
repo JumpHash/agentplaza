@@ -1,0 +1,23 @@
+meta {
+  name: List the project's agents: none on it yet
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/members
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no agent is on the project", function () {
+    expect(res.getBody()).to.deep.equal([]);
+  });
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Read the share with the unlock cookie
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh2_share}}/data
+  body: none
+  auth: none
+}
+
+headers {
+  Cookie: {{sh2_cookie}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the artifact comes back", function () {
+    expect(res.getBody().artifact.id).to.equal(bru.getVar("sh2_art"));
+  });
+}

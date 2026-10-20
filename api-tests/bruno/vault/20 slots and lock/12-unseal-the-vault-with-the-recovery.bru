@@ -1,0 +1,32 @@
+meta {
+  name: Unseal the vault with the recovery code
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/unseal
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  req.setBody({ recovery_code: bru.getVar("vault_recovery_code") });
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the recovery slot unlocked the vault", function () {
+    const body = res.getBody();
+    expect(body.state).to.equal("unsealed");
+    expect(body.slots.find((s) => s.kind === "recovery").unsealed_with).to.equal(true);
+  });
+}

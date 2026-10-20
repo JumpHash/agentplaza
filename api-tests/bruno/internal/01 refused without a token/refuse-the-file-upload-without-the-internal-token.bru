@@ -1,0 +1,25 @@
+meta {
+  name: Refuse the file upload without the internal token
+  type: http
+  seq: 28
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/files?name=t-internal.txt
+  body: text
+  auth: none
+}
+
+headers {
+  Content-Type: text/plain
+}
+
+body:text {
+  x
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

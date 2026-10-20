@@ -1,0 +1,36 @@
+meta {
+  name: Check a draft with an unknown template variable
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/check
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "kind": "system",
+    "body": "# Tester\n\nHello {{nope}}\n"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.errors: isNumber
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("template-var is an error finding", function () {
+    const found = res.getBody().findings.find((f) => f.rule === "template-var");
+    expect(found).to.be.an("object");
+    expect(found.severity).to.equal("error");
+  });
+}

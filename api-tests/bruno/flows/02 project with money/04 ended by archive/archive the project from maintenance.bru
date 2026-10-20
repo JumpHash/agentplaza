@@ -1,0 +1,25 @@
+meta {
+  name: archive the project from maintenance
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("archived, not paused, and the mode is kept", function () {
+    const b = res.getBody();
+    expect(b.archived).to.equal(true);
+    expect(b.paused).to.equal(false);
+    expect(b.mode).to.equal('maintenance');
+  });
+}

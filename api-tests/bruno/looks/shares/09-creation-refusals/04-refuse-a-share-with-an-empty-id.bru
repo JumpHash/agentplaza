@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a share with an empty id
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": ""
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

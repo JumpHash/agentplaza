@@ -1,0 +1,27 @@
+meta {
+  name: Refuse an open-mode anonymous scope that is not a scope
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": true,
+    "bind": "local",
+    "allowed_origins": [],
+    "auth_mode": "open",
+    "open_scope": "root"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

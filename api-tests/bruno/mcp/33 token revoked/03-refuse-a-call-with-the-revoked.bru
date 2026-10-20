@@ -1,0 +1,37 @@
+meta {
+  name: Refuse a call with the revoked token
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_operate_token}}
+  Mcp-Session-Id: {{mcp_operate_session}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/list",
+    "params": {}
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the token is revoked", function () {
+    expect(res.getBody().error).to.equal("token revoked");
+  });
+}

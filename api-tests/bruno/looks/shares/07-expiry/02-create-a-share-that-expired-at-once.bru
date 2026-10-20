@@ -1,0 +1,36 @@
+meta {
+  name: Create a share that expired at once
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh7_art}}"
+    },
+    "expires_ms": 1
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("sh7_expired", res.getBody().id);
+}
+
+tests {
+  test("the state is expired", function () {
+    expect(res.getBody().state).to.equal("expired");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: List the editor sessions
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/acp/sessions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the sessions answer a list", function () {
+    expect(res.getBody()).to.be.an("array");
+  });
+}

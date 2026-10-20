@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a Responses call through OpenCode for a model that is not a Responses model
+  type: http
+  seq: 22
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/opencode/v1/responses
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "model": "x",
+    "input": "hi"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+  res.body.error: contains "serves only"
+}

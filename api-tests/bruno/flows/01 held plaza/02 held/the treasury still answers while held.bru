@@ -1,0 +1,16 @@
+meta {
+  name: the treasury still answers while held
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

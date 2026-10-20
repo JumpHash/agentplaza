@@ -1,0 +1,39 @@
+meta {
+  name: Accept an egress policy with no internet, then refuse for the node
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "metadata": {
+      "e2bcase": "policy"
+    },
+    "network": {
+      "allowOut": [
+        "*.example.com",
+        "10.0.0.0/8"
+      ],
+      "denyOut": [
+        "192.0.2.0/24"
+      ],
+      "allow_internet_access": false
+    }
+  }
+}
+
+assert {
+  res.status: eq 503
+  res.responseTime: lt 1000
+}

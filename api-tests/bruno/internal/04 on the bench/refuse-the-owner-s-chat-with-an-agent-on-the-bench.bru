@@ -1,0 +1,29 @@
+meta {
+  name: Refuse the owner's chat with an agent on the bench
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/61002/chat
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "text": "t-internal chat"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 409
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the reason", function () {
+    expect(res.getBody().error).to.include("on the bench");
+  });
+}

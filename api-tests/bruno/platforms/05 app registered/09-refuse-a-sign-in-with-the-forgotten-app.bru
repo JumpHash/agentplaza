@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a sign-in with an app that was forgotten
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/authorize
+  body: json
+  auth: none
+}
+
+body:json {
+  {"registration": "{{platforms_app}}"}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: eq "no such app"
+}

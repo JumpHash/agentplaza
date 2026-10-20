@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a Messages socket for an agent when the provider has no key
+  type: http
+  seq: 30
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/anthropic/v1/messages
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Connection: Upgrade
+  Upgrade: websocket
+  Sec-WebSocket-Version: 13
+  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: gte 500
+  res.status: lt 600
+  res.body.error: isString
+}

@@ -1,0 +1,63 @@
+meta {
+  name: Join a new node with a code: 201 and its CID range
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/join
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "secret": "{{node_join_a_secret}}",
+    "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "name": "t-node-scratch",
+    "machine": {
+      "kind": "edge",
+      "os": "linux"
+    }
+  }
+}
+
+script:pre-request {
+  function joinSecret(token) {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const payload = token.slice("apzj1.".length);
+    let bits = 0, count = 0, text = "";
+    for (const ch of payload) {
+      const v = alphabet.indexOf(ch);
+      if (v < 0) continue;
+      bits = ((bits << 6) | v) & 0xffffff;
+      count += 6;
+      if (count >= 8) { count -= 8; text += String.fromCharCode((bits >> count) & 0xff); }
+    }
+    return JSON.parse(text).s;
+  }
+  req.setBody({secret: bru.getVar("node_join_a_secret"), public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", name: "t-node-scratch", machine: {kind: "edge", os: "linux"}});
+}
+
+script:post-response {
+  bru.setVar("node_joined_id", res.getBody().node_id);
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.node_id: isString
+  res.body.cid_count: eq 100
+  res.body.cid_base: isNumber
+  res.body.hub: isString
+}
+
+tests {
+  test("the node's CIDs start at the remote base", function () {
+    expect(res.getBody().cid_base).to.be.at.least(1000);
+  });
+}

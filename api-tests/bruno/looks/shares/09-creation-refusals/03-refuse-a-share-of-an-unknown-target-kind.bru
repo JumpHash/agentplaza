@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a share of an unknown target kind
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "folder",
+      "id": "{{sh9_art}}"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

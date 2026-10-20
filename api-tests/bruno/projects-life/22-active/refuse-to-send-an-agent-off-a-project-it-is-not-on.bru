@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to send an agent off a project it is not on
+  type: http
+  seq: 19
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/members/1000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: contains "is not on project"
+  res.responseTime: lt 1000
+}

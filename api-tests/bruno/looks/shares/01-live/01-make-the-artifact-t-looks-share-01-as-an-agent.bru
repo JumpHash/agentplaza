@@ -1,0 +1,53 @@
+meta {
+  name: Make the artifact t-looks share 01 as an agent
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-looks share 01",
+      "panels": [
+        {
+          "id": "notes",
+          "title": "Notes",
+          "span": 12,
+          "body": {
+            "type": "document",
+            "markdown": "A note the test wrote."
+          }
+        }
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("sh1_art", res.getBody().id);
+}
+
+tests {
+  test("the agent gets the id, version 1 and its author", function () {
+    const b = res.getBody();
+    expect(b.id).to.be.a("string");
+    expect(b.version).to.equal(1);
+    expect(b.title).to.equal("t-looks share 01");
+    expect(b.ref).to.equal("artifact:" + b.id);
+  });
+}

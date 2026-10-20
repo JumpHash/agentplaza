@@ -1,0 +1,17 @@
+meta {
+  name: Refuse the e2b sandbox without the internal token
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/internal/e2b/sandboxes/sb-t-internal-none
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

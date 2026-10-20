@@ -1,0 +1,23 @@
+meta {
+  name: List recordings with a limit over the ceiling
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/recordings?station=w-t-missing&limit=500
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the list is capped at 200 rows", function () {
+    expect(res.getBody().length).to.be.at.most(200);
+  });
+}

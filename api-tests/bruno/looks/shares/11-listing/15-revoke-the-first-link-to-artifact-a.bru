@@ -1,0 +1,16 @@
+meta {
+  name: Revoke the first link to artifact a
+  type: http
+  seq: 15
+}
+
+delete {
+  url: {{baseUrl}}/v1/shares/{{sh11a_share}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

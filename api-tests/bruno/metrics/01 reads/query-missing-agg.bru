@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a query without an aggregate
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/query
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "metric": "cpu",
+    "scope": "global",
+    "from_ms": 0,
+    "to_ms": 3600000,
+    "step_ms": 60000,
+    "group": "all"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Archive the prompt: its binding is released
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("archived_ms is set", function () {
+    expect(res.getBody().prompt.archived_ms).to.be.a("number");
+  });
+}

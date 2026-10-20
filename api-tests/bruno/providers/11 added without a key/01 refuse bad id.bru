@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a provider id with capitals and a space
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/providers
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "Bad ID",
+    "kind": "openai-compatible",
+    "base_url": "https://127.0.0.1:9/v1",
+    "auth": "none"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

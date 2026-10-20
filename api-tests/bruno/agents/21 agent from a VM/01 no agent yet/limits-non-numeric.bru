@@ -1,0 +1,17 @@
+meta {
+  name: Refuse the limits of an agent whose id is not a number
+  type: http
+  seq: 51
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/abc/limits
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

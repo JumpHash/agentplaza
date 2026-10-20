@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a join with an empty code
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/node-link/join
+  body: json
+  auth: none
+}
+
+body:json {
+  {"code": ""}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: eq "the join code is empty"
+}

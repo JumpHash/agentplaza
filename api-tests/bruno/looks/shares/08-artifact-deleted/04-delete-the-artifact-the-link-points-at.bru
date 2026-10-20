@@ -1,0 +1,16 @@
+meta {
+  name: Delete the artifact the link points at
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/v1/artifacts/{{sh8_art}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

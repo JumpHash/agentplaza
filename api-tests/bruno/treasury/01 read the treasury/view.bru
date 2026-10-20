@@ -1,0 +1,26 @@
+meta {
+  name: Show the treasury balances, with credits equal to debits
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the books balance and the view names the plaza budget", function () {
+  const body = res.getBody();
+    expect(body.totals.credits).to.equal(body.totals.debits);
+    expect(body.totals.balance).to.equal(0);
+    expect(body.accounts).to.be.an("array");
+    expect(body.plaza_budget).to.be.a("number");
+  });
+}

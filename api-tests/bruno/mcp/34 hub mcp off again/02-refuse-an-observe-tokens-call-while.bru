@@ -1,0 +1,37 @@
+meta {
+  name: Refuse an observe token's call while the server is off
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_observe_token}}
+  Mcp-Session-Id: {{mcp_observe_session}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/list",
+    "params": {}
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the endpoint is not there, whatever the token", function () {
+    expect(res.getBody().error).to.equal("no such endpoint");
+  });
+}

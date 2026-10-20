@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a steer when the agent has no running work
+  type: http
+  seq: 29
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/control
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "action": "steer",
+    "text": "look here"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("has no running work");
+  });
+}

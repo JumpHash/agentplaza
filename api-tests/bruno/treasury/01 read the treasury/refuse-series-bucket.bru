@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a series bucket other than hour or day
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/series?bucket=week
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

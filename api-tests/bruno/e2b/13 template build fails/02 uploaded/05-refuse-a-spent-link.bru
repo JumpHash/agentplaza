@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a second upload on a spent link
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{e2bUploadUrl}}
+  body: text
+  auth: none
+}
+
+headers {
+  x-plaza-upload: {{e2bUploadToken}}
+}
+
+body:text {
+  e2b archive bytes
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+  res.body.error_code: eq "upload_forbidden"
+}

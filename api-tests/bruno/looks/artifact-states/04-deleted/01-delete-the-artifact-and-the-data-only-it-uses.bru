@@ -1,0 +1,22 @@
+meta {
+  name: Delete the artifact and the data only it uses
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the deleted id is echoed", function () {
+    expect(res.getBody().deleted).to.equal(bru.getVar("looks_art"));
+  });
+}

@@ -1,0 +1,24 @@
+meta {
+  name: List the IDE's workspaces
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("each workspace has an id and a known kind", function () {
+    const b = res.getBody();
+    expect(b).to.be.an("array");
+    expect(b.every((w) => typeof w.id === "string" && ["agent", "repo", "station"].includes(w.kind))).to.equal(true);
+  });
+}

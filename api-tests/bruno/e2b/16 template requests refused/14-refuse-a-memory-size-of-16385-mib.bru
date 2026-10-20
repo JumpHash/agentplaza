@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a memory size of 16385 MiB
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "e2b-mem-tmpl",
+    "memoryMB": 16385
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error_code: eq "invalid_request"
+}

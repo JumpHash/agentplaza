@@ -1,0 +1,29 @@
+meta {
+  name: Unseal the vault from its key file
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/unseal
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  const slot = res.getBody().slots.find((s) => s.kind === "keyfile");
+  bru.setVar("vault_keyfile_slot", slot.id);
+}
+
+tests {
+  test("an empty body unseals from the key file slot", function () {
+    const body = res.getBody();
+    expect(body.state).to.equal("unsealed");
+    expect(body.slots.find((s) => s.kind === "keyfile").unsealed_with).to.equal(true);
+  });
+}

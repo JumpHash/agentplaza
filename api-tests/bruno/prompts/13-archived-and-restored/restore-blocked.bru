@@ -1,0 +1,23 @@
+meta {
+  name: Refuse to restore while another prompt holds the role (409)
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/restore
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the holder", function () {
+    expect(res.getBody().error).to.contain("t-prompt-next");
+  });
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a patch that is not JSON
+  type: http
+  seq: 15
+}
+
+patch {
+  url: {{baseUrl}}/v1/vault/secrets/sec_doesnotexist
+  body: text
+  auth: none
+}
+
+body:text {
+  label=nobody
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

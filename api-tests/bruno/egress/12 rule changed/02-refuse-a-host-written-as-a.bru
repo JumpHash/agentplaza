@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a host written as a URL
+  type: http
+  seq: 2
+}
+
+patch {
+  url: {{baseUrl}}/v1/egress/inject/{{egress_rule_id}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "host": "https://api.bru-egress.test"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says what a host is", function () {
+    expect(res.getBody().error).to.include("the host is a name");
+  });
+}

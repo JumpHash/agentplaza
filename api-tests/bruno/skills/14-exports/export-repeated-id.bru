@@ -1,0 +1,16 @@
+meta {
+  name: Export a skill named twice: it is zipped once
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/export?ids={{lifeSkillId}},{{lifeSkillId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

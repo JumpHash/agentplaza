@@ -1,0 +1,27 @@
+meta {
+  name: Refuse an edit to an empty title
+  type: http
+  seq: 18
+}
+
+put {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "",
+    "tags": []
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt 1000
+}

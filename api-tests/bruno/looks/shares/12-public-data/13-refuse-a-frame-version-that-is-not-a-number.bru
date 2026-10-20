@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a frame version that is not a number
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{sh12_art}}/frame?panel=page&v=x
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

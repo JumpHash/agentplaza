@@ -1,0 +1,47 @@
+meta {
+  name: Change a local engine's label, accent, arguments, variables and route
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "label": "Scratch local 2",
+    "accent": "#00ff88",
+    "args": [
+      "--stdio",
+      "--verbose"
+    ],
+    "env": {
+      "SCRATCH_FLAG": "2",
+      "SCRATCH_MODE": "dev"
+    },
+    "route": "mock/t-model-2"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.label: eq "Scratch local 2"
+  res.body.accent: eq "#00ff88"
+  res.body.route: eq "mock/t-model-2"
+  res.body.install.command: eq "scratch-agent"
+}
+
+tests {
+  test("the arguments and variables are the new ones", function () {
+    expect(res.getBody().args).to.deep.equal(["--stdio", "--verbose"]);
+    expect(res.getBody().env).to.deep.equal({SCRATCH_FLAG: "2", SCRATCH_MODE: "dev"});
+  });
+}

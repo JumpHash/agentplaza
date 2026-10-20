@@ -1,0 +1,23 @@
+meta {
+  name: An agent that does not exist has no memory notes
+  type: http
+  seq: 28
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/999999/memory
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.notes: isArray
+}
+
+tests {
+  test("the notes are empty", function () {
+    expect(res.getBody().notes).to.have.lengthOf(0);
+  });
+}

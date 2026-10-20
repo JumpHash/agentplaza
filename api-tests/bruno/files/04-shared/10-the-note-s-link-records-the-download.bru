@@ -1,0 +1,22 @@
+meta {
+  name: The note's link records the download
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/shares/{{sh_note_share}}/events
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a download event", function () {
+    expect(res.getBody().some((e) => e.kind === "download")).to.equal(true);
+  });
+}

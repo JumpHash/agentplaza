@@ -1,0 +1,31 @@
+meta {
+  name: Invoke a shadow model on a valid input
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/invoke
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "x0": 0.5, "x1": -0.2, "x2": 1.0
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the output is one of the labels with probabilities", function () {
+    const out = res.getBody().output;
+    expect(["cat", "dog", "bird"]).to.include(out.label);
+    expect(out.probabilities).to.be.an("object");
+    expect(res.getBody().ms).to.be.a("number");
+  });
+}

@@ -1,0 +1,37 @@
+meta {
+  name: Add an owner rule with a law
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/rules
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "Bruno law rule", "source": "law \"R-bruno-2\" \"Bruno law\" {\n  statement \"A rule the API suite adds and changes.\"\n  enforcement preventive\n  severity info\n  permit tool.exec\n  principal is Agent\n}\n", "enabled": true}
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("lawRuleId", res.getBody().id);
+}
+
+tests {
+  test("the rule is enabled and owned by the owner", function () {
+  const body = res.getBody();
+    expect(body.id).to.match(/^R-\d+$/);
+    expect(body.enabled).to.equal(true);
+    expect(body.author).to.equal("owner");
+  });
+}

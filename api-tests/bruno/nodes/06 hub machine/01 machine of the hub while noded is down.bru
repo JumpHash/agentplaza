@@ -1,0 +1,22 @@
+meta {
+  name: Answer 502 for the hub's own machine while its noded is down
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/n0/machine
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the daemon is unreachable", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

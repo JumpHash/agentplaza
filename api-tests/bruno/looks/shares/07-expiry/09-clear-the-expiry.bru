@@ -1,0 +1,30 @@
+meta {
+  name: Clear the expiry
+  type: http
+  seq: 9
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh7_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "expires_ms": null
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no expiry and live again", function () {
+    const b = res.getBody();
+    expect(b.expires_ms).to.equal(null);
+    expect(b.state).to.equal("live");
+  });
+}

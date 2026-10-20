@@ -1,0 +1,24 @@
+meta {
+  name: The engine listing no longer has the removed instance
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/engines
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the removed instance is not listed, and the built-ins still are", function () {
+    const ids = res.getBody().map((e) => e.id);
+    expect(ids).to.not.include("t-eng-local");
+    expect(ids).to.include("claude");
+  });
+}

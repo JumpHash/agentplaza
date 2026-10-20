@@ -1,0 +1,27 @@
+meta {
+  name: Refuse to publish a version with an error
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/publish
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "version": 3
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

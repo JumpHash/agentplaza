@@ -1,0 +1,23 @@
+meta {
+  name: Set the agent's permission mode to ask
+  type: http
+  seq: 15
+}
+
+put {
+  url: {{baseUrl}}/v1/agents/41001/permissions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "mode": "ask"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.mode: eq "ask"
+}

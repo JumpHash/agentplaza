@@ -1,0 +1,32 @@
+meta {
+  name: a task draws 500 from it
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "flows active task",
+    "project": "{{flowActivePid}}",
+    "budget": 500
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("flowActiveTask", res.getBody().id);
+}

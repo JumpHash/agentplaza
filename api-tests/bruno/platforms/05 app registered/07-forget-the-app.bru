@@ -1,0 +1,22 @@
+meta {
+  name: Forget the registered app and its secret
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/v1/platforms/registrations/{{platforms_app}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the answer names the app that was removed", function () {
+    expect(res.getBody().removed).to.equal(bru.getVar("platforms_app"));
+  });
+}

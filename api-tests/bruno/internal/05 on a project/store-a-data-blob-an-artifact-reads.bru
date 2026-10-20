@@ -1,0 +1,32 @@
+meta {
+  name: Store a data blob an artifact reads
+  type: http
+  seq: 43
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts/blobs?content_type=text/plain
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: text/plain
+}
+
+body:text {
+  abc
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 201
+}
+
+tests {
+  test("the blob keeps its size and type", function () {
+    expect(res.getBody().blob.bytes).to.equal(3);
+    expect(res.getBody().blob.content_type).to.equal("text/plain");
+  });
+}

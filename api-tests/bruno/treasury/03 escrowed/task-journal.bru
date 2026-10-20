@@ -1,0 +1,28 @@
+meta {
+  name: Read the escrow entry for the task, balanced
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/journal?task={{treasuryTask}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the budget moved from the town budget into escrow", function () {
+  const body = res.getBody();
+    expect(body.total).to.equal(1);
+    const entry = body.entries[0];
+    expect(entry.kind).to.equal("subcontract");
+    expect(entry.amount).to.equal(300);
+    expect(entry.postings.reduce((t, p) => t + p.amount, 0)).to.equal(0);
+    expect(entry.postings.find((p) => p.kind === "task_escrow").amount).to.equal(300);
+  });
+}

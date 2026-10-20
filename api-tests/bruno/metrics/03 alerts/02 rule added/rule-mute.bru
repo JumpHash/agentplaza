@@ -1,0 +1,23 @@
+meta {
+  name: Mute the owner's rule until 2100
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/alerts/{{metrics_rule_id}}/mute
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "until_ms": 4102444800000
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.ok: eq true
+}

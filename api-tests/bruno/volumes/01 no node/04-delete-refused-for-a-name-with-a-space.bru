@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a volume delete for a name with a space
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/v1/volumes/t%20vol
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+}

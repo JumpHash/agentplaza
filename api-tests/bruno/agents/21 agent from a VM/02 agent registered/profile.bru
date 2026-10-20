@@ -1,0 +1,28 @@
+meta {
+  name: A registered agent's profile starts with no money or work
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001/profile
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.cid: eq 41001
+}
+
+tests {
+  test("nothing is posted, earned, or spent yet", function () {
+    const b = res.getBody();
+    expect(b.wallet).to.equal(0);
+    expect(b.tasks.posted).to.equal(0);
+    expect(b.contacts).to.equal(0);
+    expect(b.memory_notes).to.equal(0);
+    expect(b.fines.count).to.equal(0);
+  });
+}

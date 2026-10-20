@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a journal page of zero entries
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/journal?limit=0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

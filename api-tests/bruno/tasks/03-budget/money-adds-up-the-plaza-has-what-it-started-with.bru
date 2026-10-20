@@ -1,0 +1,23 @@
+meta {
+  name: Money adds up: the plaza has what it started with
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{bu_pid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.balance: eq 0
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the plaza's balance equals its balance before this folder", function () {
+    expect(res.getBody().plaza).to.equal(Number(bru.getVar("bu_plaza_start")));
+  });
+}

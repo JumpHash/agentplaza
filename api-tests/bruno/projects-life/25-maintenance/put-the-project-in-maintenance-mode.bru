@@ -1,0 +1,26 @@
+meta {
+  name: Put the project in maintenance mode
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/mode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"mode": "maintenance"}
+}
+
+assert {
+  res.status: eq 200
+  res.body.mode: eq "maintenance"
+  res.body.stage: eq "implementation"
+  res.responseTime: lt 1000
+}

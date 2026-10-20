@@ -1,0 +1,27 @@
+meta {
+  name: Refuse an upload with a line that is not JSON
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload?name=t-ds-bad
+  body: text
+  auth: none
+}
+
+body:text {
+  {"ts":1700000000000,"label":"cheap","prompt_chars":100,"prompt_tokens":25,"tool_count":0,"history_turns":0,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-00"}
+  not json
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the line", function () {
+    expect(res.getBody().error).to.match(/^line 2: not JSON/);
+  });
+}

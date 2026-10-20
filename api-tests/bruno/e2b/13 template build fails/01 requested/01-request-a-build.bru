@@ -1,0 +1,46 @@
+meta {
+  name: Request a build of a new template
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "e2b-fail-tmpl",
+    "tags": [
+      "beta"
+    ],
+    "cpuCount": 1,
+    "memoryMB": 512
+  }
+}
+
+script:post-response {
+  bru.setVar("e2bFailTemplate", res.getBody().templateID);
+  bru.setVar("e2bFailBuild", res.getBody().buildID);
+}
+
+assert {
+  res.status: eq 202
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a new template, with its build waiting and its tag", function () {
+    expect(res.getBody().templateID).to.be.a("string");
+    expect(res.getBody().buildID).to.be.a("string");
+    expect(res.getBody().names).to.deep.equal(["e2b-fail-tmpl"]);
+    expect(res.getBody().tags).to.deep.equal(["beta"]);
+    expect(res.getBody().public).to.equal(false);
+  });
+}

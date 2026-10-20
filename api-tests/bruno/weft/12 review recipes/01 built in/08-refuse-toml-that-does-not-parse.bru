@@ -1,0 +1,26 @@
+meta {
+  name: Refuse recipe TOML that does not parse
+  type: http
+  seq: 8
+}
+
+put {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"toml": "id = \"docs\"\nversion = "}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the recipe as the problem", function () {
+    expect(res.getBody().error).to.match(/^recipe: /);
+  });
+}

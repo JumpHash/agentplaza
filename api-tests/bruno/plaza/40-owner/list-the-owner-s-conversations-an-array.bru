@@ -1,0 +1,17 @@
+meta {
+  name: List the owner's conversations: an array
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/owner/conversations
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+  res.responseTime: lt 1000
+}

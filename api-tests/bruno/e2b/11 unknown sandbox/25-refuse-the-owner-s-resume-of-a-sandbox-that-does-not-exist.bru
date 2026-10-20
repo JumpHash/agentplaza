@@ -1,0 +1,16 @@
+meta {
+  name: Refuse the owner's resume of a sandbox that does not exist
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{baseUrl}}/v1/e2b/sandboxes/sbffffffffffffffff/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

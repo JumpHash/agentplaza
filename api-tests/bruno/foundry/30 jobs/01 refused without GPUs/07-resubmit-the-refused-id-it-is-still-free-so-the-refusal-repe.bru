@@ -1,0 +1,33 @@
+meta {
+  name: Resubmit the refused id: it is still free, so the refusal repeats
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "job_id": "t-job-nogpu",
+    "recipe": "rung-predictor@1",
+    "datasets": [
+      "{{fjob_clean}}"
+    ],
+    "budget_gpu_hours": 2
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a refused id is not taken (no 409)", function () {
+    expect(res.getBody().error).to.match(/^no eligible devices:/);
+  });
+}

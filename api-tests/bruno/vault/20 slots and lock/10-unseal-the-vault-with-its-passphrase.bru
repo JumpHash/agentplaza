@@ -1,0 +1,31 @@
+meta {
+  name: Unseal the vault with its passphrase
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/unseal
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "passphrase": "bru-passphrase-0123456789"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the passphrase slot unlocked the vault", function () {
+    const body = res.getBody();
+    expect(body.state).to.equal("unsealed");
+    expect(body.slots.find((s) => s.kind === "passphrase").unsealed_with).to.equal(true);
+    expect(JSON.stringify(res.getBody())).to.not.include("bru-passphrase-0123456789");
+  });
+}

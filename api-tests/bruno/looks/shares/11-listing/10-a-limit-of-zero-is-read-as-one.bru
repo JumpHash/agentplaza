@@ -1,0 +1,22 @@
+meta {
+  name: A limit of zero is read as one
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/shares/{{sh11a_share}}/events?limit=0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("one event", function () {
+    expect(res.getBody().length).to.equal(1);
+  });
+}

@@ -1,0 +1,18 @@
+meta {
+  name: Withdraw the unicode task: its escrow goes back to the project
+  type: http
+  seq: 46
+}
+
+delete {
+  url: {{baseUrl}}/v1/tasks/{{tsk_unicode}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "withdrawn"
+  res.body.outcome: eq "cancelled"
+  res.responseTime: lt 1000
+}

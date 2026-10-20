@@ -1,0 +1,22 @@
+meta {
+  name: a maintenance sweep is refused while paused
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/maintenance/sweep
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says paused or archived", function () {
+    expect(res.getBody().error).to.include('paused or archived');
+  });
+}

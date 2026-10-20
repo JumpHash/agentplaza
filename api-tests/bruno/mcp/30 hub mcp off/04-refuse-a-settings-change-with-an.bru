@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a settings change with an unknown bind
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": true,
+    "bind": "anywhere",
+    "allowed_origins": []
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the bind values", function () {
+    expect(res.getBody().error).to.equal("bind is local or remote");
+  });
+}

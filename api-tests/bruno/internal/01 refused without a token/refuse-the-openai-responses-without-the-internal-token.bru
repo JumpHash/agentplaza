@@ -1,0 +1,24 @@
+meta {
+  name: Refuse the openai responses without the internal token
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/openai/v1/responses
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "model": "gpt-6-luna",
+    "input": "hi"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

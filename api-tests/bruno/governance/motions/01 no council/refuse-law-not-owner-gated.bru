@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a law proposal that says the owner does not ratify it
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/motions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "proposer_cid": 8603,
+    "kind": "law_proposal",
+    "text": "t-motion law",
+    "needs_owner": false
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

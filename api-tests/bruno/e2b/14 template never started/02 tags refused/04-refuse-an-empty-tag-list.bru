@@ -1,0 +1,27 @@
+meta {
+  name: Refuse an empty list of tags
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/e2b/templates/tags
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "target": "e2b-wait-tmpl",
+    "tags": []
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

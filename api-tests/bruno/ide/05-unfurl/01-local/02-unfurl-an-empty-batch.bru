@@ -1,0 +1,28 @@
+meta {
+  name: Unfurl an empty batch
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/unfurl
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "refs": []
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no cards", function () {
+    expect(res.getBody().cards).to.deep.equal([]);
+  });
+}

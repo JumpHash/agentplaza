@@ -1,0 +1,30 @@
+meta {
+  name: A spawn of an architect reaches noded and is refused
+  type: http
+  seq: 44
+}
+
+post {
+  url: {{baseUrl}}/v1/agents
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "role": "architect",
+    "count": 1
+  }
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal comes from the node", function () {
+    expect(res.getBody().error).to.match(/^noded/);
+  });
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Invoke a retired model: refused
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/invoke
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "x0": 0.5, "x1": -0.2, "x2": 1.0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("only shadow and promoted models run", function () {
+    expect(res.getBody().error).to.include("is retired: only shadow and promoted models run");
+  });
+}

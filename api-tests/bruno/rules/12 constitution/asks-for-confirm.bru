@@ -1,0 +1,34 @@
+meta {
+  name: Ask for the typed confirmation before a constitutional law goes off
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/laws/overrides/C-001a
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "disabled": true,
+    "reason": "Bruno suite"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal asks for confirm with the law's id", function () {
+  expect(res.getBody().error).to.contain('send confirm: "C-001a"');
+  });
+}

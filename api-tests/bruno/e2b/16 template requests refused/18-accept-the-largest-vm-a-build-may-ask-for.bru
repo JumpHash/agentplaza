@@ -1,0 +1,38 @@
+meta {
+  name: Accept the largest VM a build may ask for
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "e2b-max-tmpl",
+    "cpuCount": 8,
+    "memoryMB": 16384
+  }
+}
+
+script:post-response {
+  bru.setVar("e2bMaxTemplate", res.getBody().templateID);
+}
+
+assert {
+  res.status: eq 202
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the largest VM is accepted", function () {
+    expect(res.getBody().templateID).to.be.a("string");
+  });
+}

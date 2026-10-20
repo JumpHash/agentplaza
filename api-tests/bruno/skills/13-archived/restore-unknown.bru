@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when restoring an unknown skill
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/no-such-skill/restore
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

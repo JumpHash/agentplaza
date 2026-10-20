@@ -1,0 +1,32 @@
+meta {
+  name: Refuse an editor socket from a host that does not name loopback
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/acp
+  body: none
+  auth: none
+}
+
+headers {
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Version: 13
+  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+  Sec-WebSocket-Protocol: apz.acp.v1
+  Host: evil.test
+}
+
+assert {
+  res.status: eq 403
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the Host gate answers before the editors' check", function () {
+    expect(res.getBody().error).to.equal("the Host header must name loopback");
+  });
+}

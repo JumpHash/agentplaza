@@ -1,0 +1,24 @@
+meta {
+  name: Give the agent its own model
+  type: http
+  seq: 7
+}
+
+patch {
+  url: {{baseUrl}}/v1/agents/41001
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "model": "deepseek/deepseek-flash"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.model_override: eq "deepseek/deepseek-flash"
+  res.body.model_source: eq "agent"
+}

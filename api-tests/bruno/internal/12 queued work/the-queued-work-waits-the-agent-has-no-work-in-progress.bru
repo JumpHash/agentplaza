@@ -1,0 +1,23 @@
+meta {
+  name: The queued work waits: the agent has no work in progress
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/61011
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("nothing is running and the work waits", function () {
+    expect(res.getBody().work).to.be.null;
+    expect(res.getBody().queue).to.be.at.least(1);
+  });
+}

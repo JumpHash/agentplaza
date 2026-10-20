@@ -1,0 +1,24 @@
+meta {
+  name: Compare version 1 with version 2
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/diff?from=1&to=2
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.lines: isArray
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("both versions are named", function () {
+    expect(res.getBody().from.version).to.equal(1);
+    expect(res.getBody().to.version).to.equal(2);
+  });
+}

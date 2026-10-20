@@ -1,0 +1,23 @@
+meta {
+  name: List the revoked token with its revocation time
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/hub-mcp/tokens
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the revoked token is listed with a revocation time", function () {
+    const token = res.getBody().tokens.find((t) => t.id === bru.getVar("mcp_operate_id"));
+    expect(token.revoked_at_ms).to.be.a("number");
+  });
+}

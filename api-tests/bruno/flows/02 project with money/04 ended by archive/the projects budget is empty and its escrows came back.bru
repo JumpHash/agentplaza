@@ -1,0 +1,23 @@
+meta {
+  name: the project's budget is empty and its escrows came back
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("nothing left in the project", function () {
+    expect(res.getBody().balance).to.equal(0);
+    expect(res.getBody().own).to.equal(true);
+  });
+}

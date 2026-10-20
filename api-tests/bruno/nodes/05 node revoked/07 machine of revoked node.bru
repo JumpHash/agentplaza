@@ -1,0 +1,22 @@
+meta {
+  name: Answer 502 for a revoked node's machine: refused at once
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/{{node_joined_id}}/machine
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says it is revoked", function () {
+    expect(res.getBody().error).to.include("revoked");
+  });
+}

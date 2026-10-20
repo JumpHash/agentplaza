@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an unsigned command result from a node
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/{{node_joined_id}}/results
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "command": "k1",
+    "ok": true,
+    "status": 200,
+    "body": {}
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,16 @@
+meta {
+  name: archive the small-budget project
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowSmallPid}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

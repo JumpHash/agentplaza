@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an unknown field (400, nothing changes)
+  type: http
+  seq: 10
+}
+
+put {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "bogus": 1
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

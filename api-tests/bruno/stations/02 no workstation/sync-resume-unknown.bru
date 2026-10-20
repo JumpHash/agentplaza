@@ -1,0 +1,27 @@
+meta {
+  name: Answer 404 to resuming the sync of a workstation that does not exist
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/w-t-missing/sync/resume
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "apply_deletions": true
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

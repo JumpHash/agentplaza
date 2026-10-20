@@ -1,0 +1,29 @@
+meta {
+  name: Register a test agent that holds no council seat
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/8603/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "role": "",
+    "vm": 88,
+    "caps": []
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

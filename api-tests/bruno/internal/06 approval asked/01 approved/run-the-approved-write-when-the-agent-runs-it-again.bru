@@ -1,0 +1,40 @@
+meta {
+  name: Run the approved write when the agent runs it again
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61004/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "ap1",
+    "name": "write_file",
+    "input": {
+      "path": "/workspace/a.txt",
+      "content": "a"
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+}
+
+tests {
+  test("the decision is allow", function () {
+    expect(res.getBody().reply.decision).to.equal("allow");
+  });
+}

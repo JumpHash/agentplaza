@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for a removed engine instance
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

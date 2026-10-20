@@ -1,0 +1,28 @@
+meta {
+  name: Test an unreachable provider's connection: the report says it failed, with the reason
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/providers/t-prov-compat/test
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "model": "t-model-a"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 15000
+  res.body.ok: eq false
+  res.body.error: isString
+}

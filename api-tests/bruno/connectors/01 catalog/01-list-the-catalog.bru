@@ -1,0 +1,39 @@
+meta {
+  name: List the connectors, with unsplash unset and no value anywhere
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/connectors
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the catalog lists unsplash, unset, with its key field described", function () {
+    const list = res.getBody();
+    expect(list).to.be.an("array");
+    const u = list.find((c) => c.id === "unsplash");
+    expect(u).to.exist;
+    expect(u.enabled).to.equal(false);
+    expect(u.configured).to.equal(false);
+    expect(u.roles).to.eql([]);
+    expect(u.projects).to.eql([]);
+    const key = u.fields.find((f) => f.name === "access_key");
+    expect(key.required).to.equal(true);
+    expect(key.secret).to.equal(true);
+    expect(key.set).to.equal(false);
+    expect(u.actions.map((a) => a.name)).to.include("search");
+  });
+  test("no field of any connector carries a value", function () {
+    const text = JSON.stringify(res.getBody());
+    expect(text).to.not.include("t-unsplash-key-0789");
+    expect(res.getBody().find((c) => c.id === "github").fields[0].name).to.equal("token");
+  });
+}

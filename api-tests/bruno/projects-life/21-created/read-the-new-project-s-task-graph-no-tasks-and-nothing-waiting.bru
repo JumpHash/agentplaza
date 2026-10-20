@@ -1,0 +1,26 @@
+meta {
+  name: Read the new project's task graph: no tasks and nothing waiting
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/graph
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.stage: eq "implementation"
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the graph is empty", function () {
+    const g = res.getBody();
+    expect(g.tasks).to.deep.equal([]);
+    expect(g.edges).to.deep.equal([]);
+    expect(g.frontier).to.deep.equal([]);
+  });
+}

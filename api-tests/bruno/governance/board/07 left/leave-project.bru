@@ -1,0 +1,16 @@
+meta {
+  name: Take the first test agent off the board project
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{boardProject}}/members/8601
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

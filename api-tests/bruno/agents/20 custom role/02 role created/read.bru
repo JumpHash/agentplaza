@@ -1,0 +1,28 @@
+meta {
+  name: Read the new custom role back in the list
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/roles
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the new role is listed as custom with its definition", function () {
+    const role = res.getBody().find((r) => r.id === "t-agents-lead");
+    expect(role).to.not.be.undefined;
+    expect(role.source).to.equal("custom");
+    expect(role.title).to.equal("Lead, équipe");
+    expect(role.agents).to.equal(0);
+    expect(role.def.responsibilities).to.have.lengthOf(2);
+  });
+}

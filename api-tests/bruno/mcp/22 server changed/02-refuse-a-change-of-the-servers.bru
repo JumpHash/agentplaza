@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a change of the server's id
+  type: http
+  seq: 2
+}
+
+patch {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "bru-other-mcp"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.field: eq id
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a model import with no path
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the missing path field", function () {
+    expect(res.getBody().error).to.include("path");
+  });
+}

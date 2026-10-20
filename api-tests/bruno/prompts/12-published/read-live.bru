@@ -1,0 +1,25 @@
+meta {
+  name: The live version shows what was published
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.prompt.active_version: eq 2
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the live body is version 2's", function () {
+    const body = res.getBody();
+    expect(body.live.version).to.equal(2);
+    expect(body.live.body).to.contain("## Rules");
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: A terminal socket on a repo is refused: a repo has no shell
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/terminal/repo:agentplaza@main
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a GET of an agent's hello
+  type: http
+  seq: 50
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/999999/hello
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 405
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

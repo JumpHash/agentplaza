@@ -1,0 +1,22 @@
+meta {
+  name: The audit of a missing agent's workspace is empty
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/audit?workspace=agent:999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("nothing", function () {
+    expect(res.getBody()).to.deep.equal([]);
+  });
+}

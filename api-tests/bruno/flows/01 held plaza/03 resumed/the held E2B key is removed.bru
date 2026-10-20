@@ -1,0 +1,17 @@
+meta {
+  name: the held E2B key is removed
+  type: http
+  seq: 9
+}
+
+delete {
+  url: {{baseUrl}}/v1/e2b/keys/{{flowHeldE2bKeyId}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the key is gone", function () {
+    expect([200, 204]).to.include(res.status);
+  });
+}

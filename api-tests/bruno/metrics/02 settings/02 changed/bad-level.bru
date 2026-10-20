@@ -1,0 +1,23 @@
+meta {
+  name: Refuse settings with an unknown level
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "level": "loud"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

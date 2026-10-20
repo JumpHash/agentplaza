@@ -1,0 +1,22 @@
+meta {
+  name: Archive the test project
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{floop_project}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the test project is the one archived", function () {
+    expect(res.getBody().id).to.equal(bru.getVar("floop_project"));
+  });
+}

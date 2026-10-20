@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a PNG export of a table panel
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/export?format=png&panel=sales
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an agent's session-ended report without the internal token
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/41001/gone
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "reason": "no token"
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("missing or wrong internal token");
+  });
+}

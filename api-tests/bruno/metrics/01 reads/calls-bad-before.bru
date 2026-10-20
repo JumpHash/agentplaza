@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a calls page with a before that is not a number
+  type: http
+  seq: 31
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/calls?scope=global&before=x
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names before", function () {
+    expect(res.getBody().error).to.include("before");
+  });
+}

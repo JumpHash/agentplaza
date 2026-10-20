@@ -1,0 +1,29 @@
+meta {
+  name: Create a task of 200 credits: its escrow comes out of the project
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-life paused archive task", "budget": 200, "project": "{{life_xpid}}"}
+}
+
+assert {
+  res.status: eq 201
+  res.body.budget: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("life_xtask", res.getBody().id);
+}

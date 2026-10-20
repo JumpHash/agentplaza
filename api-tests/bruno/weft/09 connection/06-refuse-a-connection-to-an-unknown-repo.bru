@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a connection to a repo that does not exist
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "connection.add",
+    "body": {
+      "repo": "t-weft-no-such-repo",
+      "id": "t-conn-x",
+      "remote": "file:///nonexistent/t-weft-remote.git",
+      "author_name": "Owner",
+      "author_email": "owner@example.test"
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+}

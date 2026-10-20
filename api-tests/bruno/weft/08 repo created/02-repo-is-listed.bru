@@ -1,0 +1,25 @@
+meta {
+  name: The new repo is in the list of repos, with its project
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/repos
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the list holds the repo under its project", function () {
+    const repo = res.getBody().repos.find((r) => r.name === "t-weft-repo-a");
+    expect(repo).to.exist;
+    expect(repo.project).to.equal("t-weft-project");
+    expect(repo.connections).to.eql([]);
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a model kind other than base
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/models?kind=other
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the kind", function () {
+    expect(res.getBody().error).to.equal("kind must be base, got \"other\"");
+  });
+}

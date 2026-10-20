@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to revoke the same key twice
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{baseUrl}}/v1/e2b/keys/{{e2bUniKeyId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error_code: eq "key_not_found"
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Retire a trained model (the deny branch)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_b}}/retire
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("retired with no agent", function () {
+    expect(res.getBody().state).to.equal("retired");
+    expect(res.getBody().agent_cid).to.be.null;
+  });
+}

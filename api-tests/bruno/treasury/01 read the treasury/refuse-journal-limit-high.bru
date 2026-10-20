@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a journal page above 256 entries
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/journal?limit=257
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

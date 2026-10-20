@@ -1,0 +1,22 @@
+meta {
+  name: List the artifacts with a query that matches the title
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts?q=t-looks%20Notes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the list has the artifact", function () {
+    expect(res.getBody().map((a) => a.id)).to.include(bru.getVar("looks_art"));
+  });
+}

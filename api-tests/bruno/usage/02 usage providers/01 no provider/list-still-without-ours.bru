@@ -1,0 +1,22 @@
+meta {
+  name: List the usage providers after the refused adds
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/usage-providers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("none of the refused adds was kept", function () {
+    expect(res.getBody().find((p) => p.id === "t-usage-hub")).to.be.undefined;
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Read the restored settings
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.level: eq "standard"
+}
+
+tests {
+  test("the settings read back as the defaults", function () {
+    expect(res.getBody().outside.openmetrics).to.equal(false);
+  });
+}

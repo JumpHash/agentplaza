@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a hello whose CID is not a number
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/abc/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "role": "orchestrator",
+    "vm": 1,
+    "caps": []
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+  res.body.error: eq "the CID must be a number"
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a download setting that is not true or false
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh10_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "allow_download": "yes"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

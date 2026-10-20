@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a single unfurl of text that is no reference
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/unfurl?url=not%20a%20reference
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt 1000
+}

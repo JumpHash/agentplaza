@@ -1,0 +1,16 @@
+meta {
+  name: deleting that signal again is not found
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/maintenance/signals/{{flowMoneySignal}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

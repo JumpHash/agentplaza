@@ -1,0 +1,25 @@
+meta {
+  name: Refuse an import preview that is not a zip
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/import/preview
+  body: text
+  auth: none
+}
+
+headers {
+  Content-Type: application/zip
+}
+
+body:text {
+  not a zip
+}
+
+assert {
+  res.status: eq 422
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

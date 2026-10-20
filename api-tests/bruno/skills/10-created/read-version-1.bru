@@ -1,0 +1,31 @@
+meta {
+  name: Read version 1 with its file and findings
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions/1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.version: eq 1
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("lifeRefSha", res.getBody().files[0].sha256);
+}
+
+tests {
+  test("SKILL.md is kept and the reference file is listed", function () {
+    const v = res.getBody();
+    expect(v.skill_md).to.contain("Test skill");
+    expect(v.files.map((f) => f.path)).to.deep.equal(["reference.md"]);
+    expect(v.stale).to.equal(false);
+    expect(v.recheck).to.equal(null);
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a check whose body is not a JSON object
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/check
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  [
+    "not",
+    "a",
+    "source"
+  ]
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: eq "the body must be a JSON object"
+  res.responseTime: lt 1000
+}

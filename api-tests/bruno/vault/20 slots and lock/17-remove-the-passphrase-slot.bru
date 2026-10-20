@@ -1,0 +1,24 @@
+meta {
+  name: Remove the passphrase slot
+  type: http
+  seq: 17
+}
+
+delete {
+  url: {{baseUrl}}/v1/vault/slots/{{vault_pass_slot}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the passphrase slot is gone and the key file slot is kept", function () {
+    const body = res.getBody();
+    expect(body.slots.some((s) => s.kind === "passphrase")).to.equal(false);
+    expect(body.slots.some((s) => s.kind === "keyfile")).to.equal(true);
+  });
+}

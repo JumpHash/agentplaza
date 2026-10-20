@@ -1,0 +1,29 @@
+meta {
+  name: Create a second link to artifact a
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh11a_art}}"
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("sh11a2_share", res.getBody().id);
+}

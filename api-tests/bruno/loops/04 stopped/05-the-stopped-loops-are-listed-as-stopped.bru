@@ -1,0 +1,25 @@
+meta {
+  name: The stopped loops are listed as stopped
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/loops
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("none of our loops is running", function () {
+    const ids = [bru.getVar("floop_a"), bru.getVar("floop_b"), bru.getVar("floop_c")];
+    const mine = res.getBody().filter(l => ids.includes(l.id));
+    expect(mine.length).to.equal(3);
+    for (const lp of mine) expect(lp.state).to.equal("stopped");
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a volume create while no node answers
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/volumes
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "t-vol-data",
+    "source": "/srv/t-vol-data"
+  }
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the hub says the node is unreachable", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

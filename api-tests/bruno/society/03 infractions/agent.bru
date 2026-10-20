@@ -1,0 +1,23 @@
+meta {
+  name: A registered agent has no infractions
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/43001/infractions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the list is empty", function () {
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

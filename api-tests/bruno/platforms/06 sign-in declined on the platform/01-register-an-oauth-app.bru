@@ -1,0 +1,29 @@
+meta {
+  name: Record a Forgejo OAuth app for a sign-in the platform declines
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/registrations
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "forgejo",
+    "host": "http://127.0.0.1:1",
+    "client_id": "t-platforms-declined-client",
+    "client_secret": "t-platforms-declined-secret"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("declined_app", res.getBody().id);
+}

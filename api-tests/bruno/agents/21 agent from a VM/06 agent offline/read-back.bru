@@ -1,0 +1,17 @@
+meta {
+  name: The agent is idle after its hello again
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.status: eq "idle"
+}

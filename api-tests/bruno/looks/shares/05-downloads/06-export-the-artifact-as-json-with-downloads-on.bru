@@ -1,0 +1,23 @@
+meta {
+  name: Export the artifact as JSON with downloads on
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh5_share}}/export?format=json
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("an attachment named after the title", function () {
+    expect(res.getBody().id).to.equal(bru.getVar("sh5_art"));
+    expect(res.getHeader("content-disposition")).to.include("t-looks-share-05.json");
+  });
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to delete a signal that does not exist
+  type: http
+  seq: 11
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance/signals/s999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: contains "no such signal"
+  res.responseTime: lt 1000
+}

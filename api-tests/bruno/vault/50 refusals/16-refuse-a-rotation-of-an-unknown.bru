@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a rotation of an unknown secret
+  type: http
+  seq: 16
+}
+
+put {
+  url: {{baseUrl}}/v1/vault/secrets/sec_doesnotexist/value
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": "bru-unknown-value-0123"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

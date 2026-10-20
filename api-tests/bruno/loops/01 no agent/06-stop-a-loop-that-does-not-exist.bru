@@ -1,0 +1,22 @@
+meta {
+  name: Stop a loop that does not exist
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/v1/loops/l999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the loop", function () {
+    expect(res.getBody().error).to.equal("no loop l999999");
+  });
+}

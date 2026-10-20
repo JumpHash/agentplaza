@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a roled task with no project
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "goal": "Scout sources",
+    "role": "architect",
+    "budget": 300
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("belongs to a project");
+  });
+}

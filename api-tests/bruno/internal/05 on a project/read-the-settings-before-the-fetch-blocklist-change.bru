@@ -1,0 +1,27 @@
+meta {
+  name: Read the settings before the fetch blocklist change
+  type: http
+  seq: 70
+}
+
+get {
+  url: {{baseUrl}}/v1/settings
+  body: none
+  auth: none
+}
+
+script:post-response {
+  bru.setVar("int_settings_json", JSON.stringify(res.getBody()));
+  bru.setVar("int_fetch_block_before", JSON.stringify(res.getBody().fetch_block));
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the blocklist is a list", function () {
+    expect(res.getBody().fetch_block).to.be.an("array");
+  });
+}

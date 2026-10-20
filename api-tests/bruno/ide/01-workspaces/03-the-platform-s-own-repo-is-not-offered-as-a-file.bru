@@ -1,0 +1,16 @@
+meta {
+  name: The platform's own repo is not offered as a file
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/repo:agentplaza@main/file?path=README.md
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+}

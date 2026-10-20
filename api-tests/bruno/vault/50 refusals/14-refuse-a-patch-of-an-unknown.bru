@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a patch of an unknown secret
+  type: http
+  seq: 14
+}
+
+patch {
+  url: {{baseUrl}}/v1/vault/secrets/sec_doesnotexist
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "label": "nobody"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

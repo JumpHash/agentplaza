@@ -11,7 +11,12 @@
 #
 # The hub is a scratch one: an empty env file (so no database and no keys), state in a temporary
 # directory, no node daemon or hub behind it (ports 1 and 2 refuse), and requests from 127.0.0.1,
-# which the hub takes as the owner's. Tools: BRU (default `bru`), ST (default `st`), node.
+# which the hub takes as the owner's. Its HOME is in that directory too, so it never reads or writes the
+# owner's own config. Bruno gets the hub's internal token as `internalToken`, for the agents' internal API.
+# Tools: BRU (default `bru`), ST (default `st`), node.
+# APZ_API_ONLY="folder ..." runs only those Bruno folders (each on its own: OUT/bruno-<folder>.json) and skips
+# the timings, fuzzing and report, a quick check of one area while writing its tests; APZ_API_PORT picks the
+# hub's port (default 17777).
 # APZ_API_FUZZ=0 skips Schemathesis (a quicker local run).
 set -euo pipefail
 
@@ -25,6 +30,8 @@ st="${ST:-st}"
 
 state="$(mktemp -d)"
 : > "$state/empty.env"
+mkdir -p "$state/home"
+HOME="$state/home" XDG_CONFIG_HOME="$state/home/.config" XDG_DATA_HOME="$state/home/.local/share" \
 "$apid" --port "$port" --state-dir "$state/hub" --env-file "$state/empty.env" \
   --vault-key "$state/vault.key" --noded-port 1 --hub-port 2 --console "$state/no-console" \
   > "$out/apid.log" 2>&1 &
@@ -32,16 +39,33 @@ hub=$!
 trap 'kill "$hub" 2>/dev/null || true; wait "$hub" 2>/dev/null || true; rm -rf "$state"' EXIT
 
 for _ in $(seq 60); do
-  curl -sf "$base/v1/hub/identity" > /dev/null && break
   kill -0 "$hub" 2>/dev/null || { echo "the scratch hub exited:"; cat "$out/apid.log"; exit 1; }
+  # Ready when this hub says it listens on the port (another server already on it would answer the curl too).
+  grep -q "listening on http://127.0.0.1:$port" "$out/apid.log" && curl -sf "$base/v1/hub/identity" > /dev/null && break
   sleep 0.5
 done
+kill -0 "$hub" 2>/dev/null && grep -q "listening on http://127.0.0.1:$port" "$out/apid.log" ||
+  { echo "the scratch hub is not listening on $port:"; cat "$out/apid.log"; exit 1; }
 grep -q "no APZ_DATABASE_URL" "$out/apid.log" || { echo "the scratch hub found a database: refusing"; exit 1; }
 
 status=0
+token="$(cat "$state/hub/internal.token")"
+# The internal token stays out of the saved results.
+bruno() {
+  (cd api-tests/bruno && "$bru" run "$@" -r --env ci --env-var "baseUrl=$base" \
+    --env-var "internalToken=$token" --reporter-skip-headers x-apz-internal)
+}
 echo "== bruno"
-(cd api-tests/bruno && "$bru" run -r --env ci --env-var "baseUrl=$base" \
-  --reporter-json "$out/bruno.json" --reporter-junit "$out/bruno.xml") > "$out/bruno.log" 2>&1 || status=1
+if [ -n "${APZ_API_ONLY:-}" ]; then
+  # One run per folder: `bru run -r` with several folders runs the whole collection.
+  : > "$out/bruno.log"
+  for folder in $APZ_API_ONLY; do
+    bruno "$folder" --reporter-json "$out/bruno-$folder.json" >> "$out/bruno.log" 2>&1 || status=1
+  done
+  grep -E "Status|Requests|Tests  " "$out/bruno.log"
+  exit "$status"
+fi
+bruno --reporter-json "$out/bruno.json" --reporter-junit "$out/bruno.xml" > "$out/bruno.log" 2>&1 || status=1
 tail -n 25 "$out/bruno.log"
 
 echo "== timings"

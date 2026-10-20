@@ -1,0 +1,22 @@
+meta {
+  name: Limit the events to one
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/shares/{{sh11a_share}}/events?limit=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("one event", function () {
+    expect(res.getBody().length).to.equal(1);
+  });
+}

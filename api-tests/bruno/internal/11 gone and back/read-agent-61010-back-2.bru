@@ -1,0 +1,22 @@
+meta {
+  name: Read agent 61010 back
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/61010
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the agent reads back as offline", function () {
+    expect(res.getBody().status).to.equal("offline");
+  });
+}

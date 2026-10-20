@@ -1,0 +1,31 @@
+meta {
+  name: Check a SKILL.md with no frontmatter
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/check
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "skill_md": "# Just a body\n",
+    "files": []
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the missing frontmatter is an error finding", function () {
+    const found = res.getBody().findings.find((f) => f.rule === "frontmatter");
+    expect(found).to.be.an("object");
+    expect(found.severity).to.equal("error");
+  });
+}

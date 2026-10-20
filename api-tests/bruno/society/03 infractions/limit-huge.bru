@@ -1,0 +1,17 @@
+meta {
+  name: A limit above the largest is clamped
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/infractions?limit=10001
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}

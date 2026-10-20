@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when pausing a project that does not exist
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/pr999999/pause
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

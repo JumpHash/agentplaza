@@ -1,0 +1,33 @@
+meta {
+  name: Edit the title, description, tags and keep the binding
+  type: http
+  seq: 21
+}
+
+put {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "Tester ✓ (Prüfer)",
+    "description": "Edited for the Bruno run.",
+    "tags": [
+      "t-test",
+      "plan"
+    ],
+    "binding": "role:t-tester"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.prompt.description: eq "Edited for the Bruno run."
+  res.responseTime: lt 1000
+}

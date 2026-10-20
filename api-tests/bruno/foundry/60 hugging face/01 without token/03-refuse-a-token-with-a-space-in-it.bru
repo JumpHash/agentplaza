@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a token with a space in it
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/foundry/hf/token
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": "hf has space"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error says one line with no spaces", function () {
+    expect(res.getBody().error).to.equal("the token must be one line with no spaces");
+  });
+}

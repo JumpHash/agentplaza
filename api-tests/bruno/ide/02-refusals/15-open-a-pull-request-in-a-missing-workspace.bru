@@ -1,0 +1,22 @@
+meta {
+  name: Open a pull request in a missing workspace
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/ide/workspaces/agent:999999/pulls
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "t-ide pull"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

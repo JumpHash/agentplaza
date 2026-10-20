@@ -1,0 +1,16 @@
+meta {
+  name: Signing out twice is still an answer 200
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/v1/auth/session
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

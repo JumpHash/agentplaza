@@ -1,0 +1,22 @@
+meta {
+  name: The audit of a station is empty: refused writes are not audited
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/audit?workspace=station:w1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("nothing", function () {
+    expect(res.getBody()).to.deep.equal([]);
+  });
+}

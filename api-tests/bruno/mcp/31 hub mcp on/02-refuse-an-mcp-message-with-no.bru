@@ -1,0 +1,40 @@
+meta {
+  name: Refuse an MCP message with no token in secure mode
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-06-18",
+      "capabilities": {},
+      "clientInfo": {
+        "name": "bru",
+        "version": "0"
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal asks for a bearer token", function () {
+    expect(res.getBody().error).to.equal("a bearer token is required");
+    expect(res.getHeader("www-authenticate")).to.equal("Bearer");
+  });
+}

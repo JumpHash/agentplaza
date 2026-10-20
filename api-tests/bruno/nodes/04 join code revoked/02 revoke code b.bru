@@ -1,0 +1,17 @@
+meta {
+  name: Revoke an unused join code
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/nodes/codes/{{node_code_b_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.revoked: eq true
+}

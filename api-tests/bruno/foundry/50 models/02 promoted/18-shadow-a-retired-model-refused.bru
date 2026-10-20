@@ -1,0 +1,22 @@
+meta {
+  name: Shadow a retired model: refused
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/shadow
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error says the move needs trained", function () {
+    expect(res.getBody().error).to.include("is retired: this move needs it to be trained");
+  });
+}

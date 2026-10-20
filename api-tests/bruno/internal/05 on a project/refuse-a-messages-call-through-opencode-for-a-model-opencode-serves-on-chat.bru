@@ -1,0 +1,34 @@
+meta {
+  name: Refuse a Messages call through OpenCode for a model OpenCode serves on chat
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/opencode/v1/messages
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "model": "x",
+    "max_tokens": 16,
+    "messages": [
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ]
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+  res.body.error: contains "chat completions"
+}

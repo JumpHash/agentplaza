@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for a repo that does not exist
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/repos/t-weft-no-such-repo
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 2000
+  res.body.error: eq "no such repo"
+}

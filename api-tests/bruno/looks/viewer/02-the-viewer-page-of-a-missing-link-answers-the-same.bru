@@ -1,0 +1,16 @@
+meta {
+  name: The viewer page of a missing link answers the same
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/artifact/00000000000000000000000000000000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

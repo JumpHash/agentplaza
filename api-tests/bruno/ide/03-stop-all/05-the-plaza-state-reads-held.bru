@@ -1,0 +1,22 @@
+meta {
+  name: The plaza state reads held
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/plaza/state
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("paused", function () {
+    expect(res.getBody().paused).to.equal(true);
+  });
+}

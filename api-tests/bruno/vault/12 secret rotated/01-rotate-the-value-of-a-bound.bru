@@ -1,0 +1,31 @@
+meta {
+  name: Rotate the value of a bound secret
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/vault/secrets/{{vault_life_id}}/value
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": "bru-life-value-v2-0123456789"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the rotation answers version 2 and no value", function () {
+    const body = res.getBody();
+    expect(body.current).to.equal(2);
+    expect(body).to.not.have.property("value");
+    expect(JSON.stringify(res.getBody())).to.not.include("bru-life-value-v2-0123456789");expect(JSON.stringify(res.getBody())).to.not.include("bru-life-value-0123456789");
+  });
+}

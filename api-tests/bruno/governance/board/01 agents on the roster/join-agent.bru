@@ -1,0 +1,32 @@
+meta {
+  name: Put the first test agent on the project
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{boardProject}}/members
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "cid": 8601
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the agent is on the project", function () {
+  expect(res.getBody().project).to.equal(bru.getVar("boardProject"));
+  });
+}

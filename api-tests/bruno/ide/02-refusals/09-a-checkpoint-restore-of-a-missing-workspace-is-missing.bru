@@ -1,0 +1,16 @@
+meta {
+  name: A checkpoint restore of a missing workspace is missing
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/ide/workspaces/agent:999999/checkpoints/1/restore
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

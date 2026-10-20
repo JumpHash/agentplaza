@@ -1,0 +1,26 @@
+meta {
+  name: Answer 404 when editing an unknown prompt
+  type: http
+  seq: 20
+}
+
+put {
+  url: {{baseUrl}}/v1/prompts/no-such-prompt
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "X"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Read the next, older page of mints
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/journal?kind=mint&limit=1&before={{treasuryMintCursor}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the older page holds an entry below the cursor", function () {
+  const body = res.getBody();
+    expect(body.entries.length).to.equal(1);
+    expect(body.entries[0].id).to.be.below(Number(bru.getVar("treasuryMintEntry")));
+  });
+}

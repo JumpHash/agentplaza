@@ -1,0 +1,22 @@
+meta {
+  name: The deleted artifact is not listed
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts?q=t-looks%20Notes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the list no longer has it", function () {
+    expect(res.getBody().map((a) => a.id)).to.not.include(bru.getVar("looks_art"));
+  });
+}

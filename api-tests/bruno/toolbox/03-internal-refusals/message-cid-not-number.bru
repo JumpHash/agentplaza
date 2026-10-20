@@ -1,0 +1,32 @@
+meta {
+  name: Refuse an agent message whose CID is not a number
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/abc/message
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "t-call-n",
+    "name": "plaza_toolbox",
+    "input": {}
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

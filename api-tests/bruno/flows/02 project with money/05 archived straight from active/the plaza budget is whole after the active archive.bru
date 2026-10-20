@@ -1,0 +1,22 @@
+meta {
+  name: the plaza budget is whole after the active archive
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the plaza budget is what it was before", function () {
+    expect(res.getBody().plaza_budget).to.equal(Number(bru.getVar('flowActivePlazaBefore')));
+  });
+}

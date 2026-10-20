@@ -1,0 +1,28 @@
+meta {
+  name: Read the rules: the law is off and the change is in the history
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/laws/rules
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.constitutional_off: isArray
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the change is confirmed in the history", function () {
+  const body = res.getBody();
+    expect(body.constitutional_off).to.include("C-001a");
+    const last = body.history[body.history.length - 1];
+    expect(last.law).to.equal("C-001a");
+    expect(last.disabled).to.equal(true);
+    expect(last.confirmed).to.equal(true);
+  });
+}

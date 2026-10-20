@@ -1,0 +1,25 @@
+meta {
+  name: Refuse an agent's file sent to a recipient that is not a number
+  type: http
+  seq: 12
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/files?name=t-files-agent.txt&to=abc
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  content-type: text/plain
+}
+
+body:text {
+  x
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

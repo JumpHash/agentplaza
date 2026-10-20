@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a station id without the w
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/station:12/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

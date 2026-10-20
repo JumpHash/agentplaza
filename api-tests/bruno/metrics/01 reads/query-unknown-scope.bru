@@ -1,0 +1,34 @@
+meta {
+  name: Read a series for a scope that does not exist
+  type: http
+  seq: 22
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/query
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "metric": "cpu",
+    "scope": "node:no-such-node",
+    "from_ms": 0,
+    "to_ms": 3600000,
+    "step_ms": 60000,
+    "agg": "avg",
+    "group": "all"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the answer lists groups", function () {
+    expect(res.getBody().groups).to.be.an("array");
+  });
+}

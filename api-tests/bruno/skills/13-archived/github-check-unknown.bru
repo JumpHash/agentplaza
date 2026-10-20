@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for a GitHub check on an unknown skill
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/no-such-skill/github/check
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

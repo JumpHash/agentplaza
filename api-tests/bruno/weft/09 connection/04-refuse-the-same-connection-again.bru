@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a second connection with the same id on the repo
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "connection.add",
+    "body": {
+      "repo": "t-weft-repo-b",
+      "id": "t-conn-a",
+      "remote": "file:///nonexistent/t-weft-other.git",
+      "author_name": "Owner",
+      "author_email": "owner@example.test"
+    }
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the refusal says the repo already has that connection", function () {
+    expect(res.getBody().error).to.include("already has a connection t-conn-a");
+  });
+}

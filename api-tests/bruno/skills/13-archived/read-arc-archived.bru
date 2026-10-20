@@ -1,0 +1,23 @@
+meta {
+  name: An archived skill still reads with its versions
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{arcSkillId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("its archive time is set", function () {
+    expect(res.getBody().skill.archived_ms).to.be.a("number");
+    expect(res.getBody().versions).to.have.length(1);
+  });
+}

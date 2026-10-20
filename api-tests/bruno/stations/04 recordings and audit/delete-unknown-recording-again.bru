@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when a deleted recording is deleted again
+  type: http
+  seq: 8
+}
+
+delete {
+  url: {{baseUrl}}/v1/stations/recordings/r0-t-missing
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

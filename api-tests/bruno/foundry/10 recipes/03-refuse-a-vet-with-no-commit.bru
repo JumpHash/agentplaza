@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a vet with no commit
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/recipes/rung-predictor@1/vet
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the same refusal as a bad commit", function () {
+    expect(res.getBody().error).to.equal("commit is 7 to 64 hex characters");
+  });
+}

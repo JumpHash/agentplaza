@@ -1,0 +1,17 @@
+meta {
+  name: Archiving an archived project changes nothing
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.archived: eq true
+  res.responseTime: lt 1000
+}

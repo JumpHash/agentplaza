@@ -1,0 +1,22 @@
+meta {
+  name: Refuse an around-time that is not a number
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/around?tab=overview&range=1h&t=now
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names t", function () {
+    expect(res.getBody().error).to.include("t must be a number");
+  });
+}

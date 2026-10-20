@@ -1,0 +1,22 @@
+meta {
+  name: stop the ingest address
+  type: http
+  seq: 9
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/maintenance/ingest
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no ingest address now", function () {
+    expect(res.getBody().ingest).to.equal(false);
+  });
+}

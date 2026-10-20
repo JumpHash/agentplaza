@@ -1,0 +1,21 @@
+meta {
+  name: Refuse the OpenMetrics scrape with a wrong token
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/metrics
+  body: none
+  auth: none
+}
+
+headers {
+  authorization: Bearer not-the-token
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

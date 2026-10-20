@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a snapshot of a sandbox that does not exist
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes/sbffffffffffffffff/snapshots
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "before-change"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error_code: eq "sandbox_not_found"
+}

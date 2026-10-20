@@ -1,0 +1,33 @@
+meta {
+  name: Open a lane on the repo's main for a task, as the owner
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/lanes
+  body: json
+  auth: none
+}
+
+body:json {
+  {"repo": "t-weft-repo-d", "ref": "main", "title": "t-weft lane", "author": "owner", "kind": "normal"}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+script:post-response {
+  bru.setVar("weft_change", res.getBody().change);
+}
+
+tests {
+  test("the change is named w-<n> and its detail is that change, titled", function () {
+    expect(res.getBody().change).to.match(/^w-\d+$/);
+    const detail = res.getBody().detail;
+    expect(detail.change).to.equal(bru.getVar("weft_change"));
+    expect(detail.title).to.equal("t-weft lane");
+  });
+}

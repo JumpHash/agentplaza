@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a connection whose exported commits have no author email
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "connection.add",
+    "body": {
+      "repo": "t-weft-repo-b",
+      "id": "t-conn-noemail",
+      "remote": "file:///nonexistent/t-weft-remote.git",
+      "author_name": "Owner",
+      "author_email": ""
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the refusal names the missing email", function () {
+    expect(res.getBody().error).to.include("author's email");
+  });
+}

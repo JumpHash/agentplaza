@@ -1,0 +1,22 @@
+meta {
+  name: a repeated delete is not found
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/vault/secrets/{{flowKeyId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says no such secret", function () {
+    expect(res.getBody().error).to.equal('no such secret');
+  });
+}

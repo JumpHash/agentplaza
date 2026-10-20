@@ -1,0 +1,22 @@
+meta {
+  name: A pull request in the platform's repo is refused
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/v1/ide/workspaces/repo:agentplaza@main/pulls
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "t-ide pull"
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+}

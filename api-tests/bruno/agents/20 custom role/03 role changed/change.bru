@@ -1,0 +1,39 @@
+meta {
+  name: Change a custom role by saving it again with a new title
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/roles
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-agents-lead",
+    "title": "Lead scout",
+    "purpose": "Leads the search.",
+    "responsibilities": [
+      "Plan the search"
+    ],
+    "deliverables": [
+      "A list of sources",
+      "A short memo"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.title: eq "Lead scout"
+  res.body.created_by: eq "owner"
+}
+
+tests {
+  test("the creation time of the role is kept", function () {
+    expect(res.getBody().created_ms).to.equal(bru.getVar("agents_role_created_ms"));
+  });
+}

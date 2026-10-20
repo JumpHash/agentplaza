@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a maintenance sweep while the plaza is held
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{plz_held_pid}}/maintenance/sweep
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "STOP ALL"
+  res.responseTime: lt 1000
+}

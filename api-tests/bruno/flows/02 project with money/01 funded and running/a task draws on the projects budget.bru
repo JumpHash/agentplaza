@@ -1,0 +1,40 @@
+meta {
+  name: a task draws on the project's budget
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "flows money task one",
+    "project": "{{flowMoneyPid}}",
+    "budget": 400
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("flowMoneyT1", res.getBody().id);
+}
+
+tests {
+  test("the task is open with its budget", function () {
+    const b = res.getBody();
+    expect(b.state).to.equal('open');
+    expect(b.budget).to.equal(400);
+  });
+}

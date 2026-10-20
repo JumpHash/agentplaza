@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a view with a zero width
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/view?tab=overview&width=0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the width", function () {
+    expect(res.getBody().error).to.include("width");
+  });
+}

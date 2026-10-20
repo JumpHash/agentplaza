@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when a removed workstation VM is removed again
+  type: http
+  seq: 23
+}
+
+delete {
+  url: {{baseUrl}}/v1/stations/vms/wv-t-missing
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

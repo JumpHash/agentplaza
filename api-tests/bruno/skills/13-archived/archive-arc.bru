@@ -1,0 +1,24 @@
+meta {
+  name: Archive the published skill
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{arcSkillId}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("archived_ms is set and the live version stays", function () {
+    const s = res.getBody().skill;
+    expect(s.archived_ms).to.be.a("number");
+    expect(s.active_version).to.equal(1);
+  });
+}

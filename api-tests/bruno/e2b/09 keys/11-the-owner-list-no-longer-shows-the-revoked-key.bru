@@ -1,0 +1,24 @@
+meta {
+  name: The owner list no longer shows the revoked key
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/e2b/keys
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the revoked key is gone and the live one is still listed", function () {
+    const ids = res.getBody().keys.map((k) => k.id);
+    expect(ids).to.not.include(bru.getVar("e2bUniKeyId"));
+    expect(ids).to.include(bru.getVar("e2bLiveKeyId"));
+  });
+}

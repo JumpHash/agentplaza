@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a registry instance whose id is taken (409, before any registry fetch)
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "claude",
+    "engine": "acp:some-agent"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}

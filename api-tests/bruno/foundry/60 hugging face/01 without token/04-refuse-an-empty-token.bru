@@ -1,0 +1,28 @@
+meta {
+  name: Refuse an empty token
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/foundry/hf/token
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": "   "
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the same refusal", function () {
+    expect(res.getBody().error).to.equal("the token must be one line with no spaces");
+  });
+}

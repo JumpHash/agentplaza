@@ -1,0 +1,17 @@
+meta {
+  name: Read the capacity forecast panel over 30 days
+  type: http
+  seq: 38
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/forecast?range=30d
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: eq "forecast"
+}

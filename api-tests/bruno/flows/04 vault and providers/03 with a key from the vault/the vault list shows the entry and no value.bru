@@ -1,0 +1,25 @@
+meta {
+  name: the vault list shows the entry and no value
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the entry is listed without its value", function () {
+    const e = res.getBody().find((x) => x.id === bru.getVar('flowKeyId'));
+    expect(e, 'listed entry').to.not.be.undefined;
+    expect(e).to.not.have.property('value');
+    expect(JSON.stringify(res.getBody())).to.not.include('flows-provider-key-0123456789');
+  });
+}

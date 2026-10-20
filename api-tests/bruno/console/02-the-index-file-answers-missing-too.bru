@@ -1,0 +1,16 @@
+meta {
+  name: The index file answers missing too
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/index.html
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

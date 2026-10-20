@@ -1,0 +1,21 @@
+meta {
+  name: Answer 404 for a file the agent cannot read
+  type: http
+  seq: 42
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/files/fb-t-internal-none
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 404
+  res.body.error: eq "no such file"
+}

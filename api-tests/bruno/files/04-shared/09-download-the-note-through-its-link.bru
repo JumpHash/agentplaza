@@ -1,0 +1,23 @@
+meta {
+  name: Download the note through its link
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh_note_share}}/file
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("an attachment with the text", function () {
+    expect(res.getHeader("content-disposition")).to.include("attachment");
+    expect(String(res.getBody())).to.include("Second version");
+  });
+}

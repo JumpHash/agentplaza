@@ -1,0 +1,23 @@
+meta {
+  name: Read the CSV blob the dataset references
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/blobs/{{looks_blob}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the blob is the CSV, served as text/csv", function () {
+    expect(res.getHeader("content-type")).to.include("text/csv");
+    expect(String(res.getBody())).to.include("north");
+  });
+}

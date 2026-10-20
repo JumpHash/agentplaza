@@ -1,0 +1,22 @@
+meta {
+  name: Promote a retired model: refused
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_b}}/promote
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the retired model cannot be promoted", function () {
+    expect(res.getBody().error).to.include("is retired");
+  });
+}

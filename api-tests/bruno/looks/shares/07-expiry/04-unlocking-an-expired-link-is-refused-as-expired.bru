@@ -1,0 +1,20 @@
+meta {
+  name: Unlocking an expired link is refused as expired
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/artifact/{{sh7_expired}}/unlock
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 410
+  res.responseTime: lt 1000
+}

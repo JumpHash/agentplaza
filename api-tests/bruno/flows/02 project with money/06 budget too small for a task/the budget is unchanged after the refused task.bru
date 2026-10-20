@@ -1,0 +1,23 @@
+meta {
+  name: the budget is unchanged after the refused task
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{flowSmallPid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("still 300", function () {
+    expect(res.getBody().balance).to.equal(300);
+    expect(res.getBody().plaza).to.equal(Number(bru.getVar('flowSmallPlazaBefore')) - 300);
+  });
+}

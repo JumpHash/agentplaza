@@ -1,0 +1,61 @@
+meta {
+  name: Save changed settings and see them repaired
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "level": "basic",
+    "retention": {
+      "chunks_hours": 48,
+      "minute_days": 14,
+      "hour_days": 400,
+      "calls_days": 0,
+      "traces_days": 7,
+      "traces_cap_mb": 2048,
+      "events_days": 90
+    },
+    "budgets": [
+      {
+        "scope": "global",
+        "cap_usd": 25
+      },
+      {
+        "scope": "agent:4417",
+        "cap_usd": -3
+      }
+    ],
+    "monthly_budget_usd": 50,
+    "basis_days": 7,
+    "outside": {
+      "openmetrics": false,
+      "otlp": false,
+      "otlp_url": "",
+      "otlp_confirmed": false
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.level: eq "basic"
+}
+
+tests {
+  test("values outside their range are repaired and bad budgets dropped", function () {
+    const body = res.getBody();
+    expect(body.retention.calls_days).to.equal(1);
+    expect(body.basis_days).to.equal(14);
+    expect(body.monthly_budget_usd).to.equal(50);
+    expect(body.budgets).to.have.lengthOf(1);
+    expect(body.budgets[0].scope).to.equal("global");
+  });
+}

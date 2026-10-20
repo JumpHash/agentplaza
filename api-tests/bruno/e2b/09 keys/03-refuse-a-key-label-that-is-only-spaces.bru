@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a key label that is only spaces
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/e2b/keys
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "label": "   "
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error_code: eq "invalid_request"
+}

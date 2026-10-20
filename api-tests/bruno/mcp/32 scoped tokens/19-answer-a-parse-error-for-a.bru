@@ -1,0 +1,31 @@
+meta {
+  name: Answer a parse error for a message that is not JSON
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: text
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_observe_token}}
+  Mcp-Session-Id: {{mcp_observe_session}}
+}
+
+body:text {
+  not json at all
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the answer is a JSON-RPC parse error", function () {
+    expect(res.getBody().error.code).to.equal(-32700);
+  });
+}

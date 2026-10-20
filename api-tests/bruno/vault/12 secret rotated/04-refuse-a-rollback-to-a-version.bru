@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a rollback to a version that does not exist
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets/{{vault_life_id}}/rollback
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "v": 9
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Put the bench agent on the project
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{floop_project}}/members
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": 9101
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the bench agent is on the project", function () {
+    expect(res.getBody().cid).to.equal(9101);
+    expect(res.getBody().project).to.equal(bru.getVar("floop_project"));
+  });
+}

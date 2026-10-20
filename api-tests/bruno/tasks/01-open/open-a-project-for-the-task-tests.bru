@@ -1,0 +1,29 @@
+meta {
+  name: Open a project for the task tests
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-tasks open", "goal": "The task states on a live project"}
+}
+
+assert {
+  res.status: eq 201
+  res.body.stage: eq "implementation"
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("tsk_pid", res.getBody().id);
+}

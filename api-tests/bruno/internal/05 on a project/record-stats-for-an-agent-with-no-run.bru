@@ -1,0 +1,41 @@
+meta {
+  name: Record stats for an agent with no run
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "stats",
+    "workspace_used_mib": 5,
+    "workspace_size_mib": 100,
+    "top": [
+      [
+        "bash",
+        1.5,
+        20.0
+      ]
+    ]
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the guest gets no reply", function () {
+    expect(res.getBody().reply).to.be.null;
+  });
+}

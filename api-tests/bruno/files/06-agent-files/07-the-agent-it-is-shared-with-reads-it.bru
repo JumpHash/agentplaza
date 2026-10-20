@@ -1,0 +1,26 @@
+meta {
+  name: The agent it is shared with reads it
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/6/gateway/files/{{file_priv}}
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the text", function () {
+    expect(String(res.getBody())).to.equal("for six");
+  });
+}

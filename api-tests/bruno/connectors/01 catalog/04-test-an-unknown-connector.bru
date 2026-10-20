@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when testing an unknown connector
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/connectors/t-no-such-connector/test
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

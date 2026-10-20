@@ -1,0 +1,23 @@
+meta {
+  name: Answer 404 for an approval the hub does not hold
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/approvals/a-t-internal-none
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "approve": true
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 404
+  res.body.error: eq "no such approval"
+}

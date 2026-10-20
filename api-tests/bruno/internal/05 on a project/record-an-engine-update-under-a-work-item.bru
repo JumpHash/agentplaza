@@ -1,0 +1,40 @@
+meta {
+  name: Record an engine update under a work item
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "engine_update",
+    "work": 1,
+    "call": "c1",
+    "engine": "auggie",
+    "session": "s1",
+    "seq": 1,
+    "update": {
+      "sessionUpdate": "agent_message_chunk"
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the guest gets no reply", function () {
+    expect(res.getBody().reply).to.be.null;
+  });
+}

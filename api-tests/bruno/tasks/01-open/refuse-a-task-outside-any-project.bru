@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a task outside any project
+  type: http
+  seq: 40
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks no project", "budget": 200}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "belongs to a project"
+  res.responseTime: lt 1000
+}

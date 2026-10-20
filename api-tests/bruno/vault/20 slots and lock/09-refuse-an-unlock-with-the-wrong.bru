@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an unlock with the wrong passphrase
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/unseal
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "passphrase": "bru-wrong-passphrase-0000"
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal does not say which part was wrong", function () {
+    expect(res.getBody().error).to.equal("wrong passphrase or recovery code");
+  });
+}

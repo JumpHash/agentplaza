@@ -1,0 +1,37 @@
+meta {
+  name: Upload a second version of the note under the same name
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/files?name=t-files-notes.md
+  body: text
+  auth: none
+}
+
+headers {
+  content-type: text/markdown
+}
+
+body:text {
+  # Notes
+
+  Second version of the notes.
+
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("file_note2", res.getBody().id);
+}
+
+tests {
+  test("a new id", function () {
+    expect(res.getBody().id).to.not.equal(bru.getVar("file_note"));
+  });
+}

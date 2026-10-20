@@ -1,0 +1,34 @@
+meta {
+  name: Refuse a file sent by a sha256 the hub does not hold
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n\nAlso keep the answer short.\n",
+    "files": [
+      {
+        "path": "reference.md",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "note": "more",
+    "base_version": 2
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt 1000
+}

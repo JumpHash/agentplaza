@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an unsigned metrics batch from a node
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/{{node_joined_id}}/metrics
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "z": "AAAA"
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt 1000
+}

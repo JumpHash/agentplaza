@@ -1,0 +1,41 @@
+meta {
+  name: Add version 2 with a changed SKILL.md
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n\nAlso keep the answer short.\n",
+    "files": [
+      {
+        "path": "reference.md",
+        "content_b64": "IyBSZWZlcmVuY2UK"
+      }
+    ],
+    "note": "more",
+    "base_version": 1
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("version 2 is created", function () {
+    expect(res.getBody().created).to.equal(true);
+    expect(res.getBody().version.version).to.equal(2);
+  });
+}

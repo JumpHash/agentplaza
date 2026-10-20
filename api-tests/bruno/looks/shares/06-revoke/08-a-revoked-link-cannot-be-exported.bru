@@ -1,0 +1,16 @@
+meta {
+  name: A revoked link cannot be exported
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh6a_share}}/export?format=json
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

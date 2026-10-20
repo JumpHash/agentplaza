@@ -1,0 +1,17 @@
+meta {
+  name: a task posted during the hold is still open
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{flowHeldTaskDuring}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "open"
+  res.responseTime: lt 1000
+}

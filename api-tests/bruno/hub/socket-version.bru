@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an event socket upgrade that speaks another WebSocket version (426)
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/ws
+  body: none
+  auth: none
+}
+
+headers {
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Version: 12
+  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+}
+
+assert {
+  res.status: eq 426
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the answer names version 13", function () {
+    expect(res.getHeader("sec-websocket-version")).to.equal("13");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: read the settings and keep them
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  const s = res.getBody();
+  delete s.dev_models;
+  bru.setVar("engSettingsSnapshot", JSON.stringify(s));
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a well-formed join code the link cannot redeem, without echoing it
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/node-link/join
+  body: json
+  auth: none
+}
+
+body:json {
+  {"code": "t-join-code-not-real-0001"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 60000
+}
+
+tests {
+  test("the refusal does not repeat the code", function () {
+    expect(JSON.stringify(res.getBody())).to.not.include("t-join-code-not-real-0001");
+  });
+}

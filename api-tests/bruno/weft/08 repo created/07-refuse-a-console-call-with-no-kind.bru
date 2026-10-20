@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a console statement with no kind
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {"body": {"repo": "t-weft-repo-x"}}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+  res.body.error: eq "kind is required"
+}

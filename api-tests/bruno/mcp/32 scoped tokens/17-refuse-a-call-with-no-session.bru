@@ -1,0 +1,39 @@
+meta {
+  name: Refuse a call with no session
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_observe_token}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "tools/call",
+    "params": {
+      "name": "plaza_status",
+      "arguments": {}
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal asks for initialize first", function () {
+    expect(res.getBody().error).to.include("send initialize first");
+  });
+}

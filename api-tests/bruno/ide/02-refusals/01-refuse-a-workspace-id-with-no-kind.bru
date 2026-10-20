@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a workspace id with no kind
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/nonsense/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Refuse an agent id with a leading zero
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/agent:007/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

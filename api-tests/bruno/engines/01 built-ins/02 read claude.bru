@@ -1,0 +1,20 @@
+meta {
+  name: Show one built-in engine
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/engines/claude
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: eq "claude"
+  res.body.builtin: eq true
+  res.body.package: eq "@agentclientprotocol/claude-agent-acp"
+  res.body.label: eq "Claude Code"
+}

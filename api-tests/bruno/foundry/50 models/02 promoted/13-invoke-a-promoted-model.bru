@@ -1,0 +1,28 @@
+meta {
+  name: Invoke a promoted model
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/invoke
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "x0": 0.5, "x1": -0.2, "x2": 1.0
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the promoted model answers", function () {
+    expect(["cat", "dog", "bird"]).to.include(res.getBody().output.label);
+  });
+}

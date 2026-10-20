@@ -1,0 +1,22 @@
+meta {
+  name: Cancel a job id with a space in it
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs/bad%20id/cancel
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("still no such job", function () {
+    expect(res.getBody().error).to.equal("no such job");
+  });
+}

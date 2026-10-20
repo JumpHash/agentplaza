@@ -1,0 +1,27 @@
+meta {
+  name: Find the scratch provider key in the vault, so this folder deletes it
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  const hit = res.getBody().find((s) => s.name === "T_PROV_COMPAT_KEY");
+  bru.setVar("prov_compat_key", hit ? hit.id : "");
+}
+
+tests {
+  test("the scratch key the provider was given is in the vault", function () {
+    expect(bru.getVar("prov_compat_key")).to.match(/^sec_/);
+  });
+}

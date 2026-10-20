@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a template name with accents
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "é-tmpl"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error_code: eq "invalid_request"
+}

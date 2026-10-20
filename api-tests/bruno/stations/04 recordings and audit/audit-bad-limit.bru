@@ -1,0 +1,17 @@
+meta {
+  name: List the audit with a limit that is not a number
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/audit?limit=lots
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}

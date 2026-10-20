@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 to a release of a lease that does not exist
+  type: http
+  seq: 16
+}
+
+delete {
+  url: {{baseUrl}}/v1/stations/w-t-missing/leases/l-t-missing
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

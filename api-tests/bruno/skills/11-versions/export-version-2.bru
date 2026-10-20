@@ -1,0 +1,22 @@
+meta {
+  name: Export version 2 as a zip
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions/2/export
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the zip comes back as a zip", function () {
+    expect(res.getHeader("content-type")).to.contain("zip");
+  });
+}

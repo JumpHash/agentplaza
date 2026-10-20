@@ -1,0 +1,37 @@
+meta {
+  name: an E2B key can still be made while held
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/e2b/keys
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "label": "flows held key"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("flowHeldE2bKeyId", res.getBody().id);
+  bru.setVar("flowHeldE2bKey", res.getBody().key);
+}
+
+tests {
+  test("the key is returned once with its prefix", function () {
+    expect(res.getBody().key).to.match(/^e2b_/);
+  });
+}

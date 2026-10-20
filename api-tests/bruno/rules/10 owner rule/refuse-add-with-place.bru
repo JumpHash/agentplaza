@@ -1,0 +1,36 @@
+meta {
+  name: Refuse a rule that does not compile, with its place
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/rules
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "Bruno broken rule",
+    "source": "law \"R-bruno-bad\" \"Broken\" {\n  frobnicate\n}\n"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: eq "the source does not compile"
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the diagnostic names line 2, column 3", function () {
+  const d = res.getBody().diagnostics[0];
+    expect(d.line).to.equal(2);
+    expect(d.column).to.equal(3);
+  });
+}

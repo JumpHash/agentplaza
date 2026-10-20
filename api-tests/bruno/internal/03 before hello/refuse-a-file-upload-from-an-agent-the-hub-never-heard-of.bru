@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a file upload from an agent the hub never heard of
+  type: http
+  seq: 23
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61001/gateway/files?name=t-ghost-file.txt
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: text/plain
+}
+
+body:text {
+  ghost
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 404
+  res.body.error: eq "unknown agent"
+}

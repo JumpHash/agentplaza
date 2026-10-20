@@ -1,0 +1,25 @@
+meta {
+  name: The detail names the best version: never the broken one
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.prompt.latest_version: eq 3
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the best version is 1 or 2 and nothing is live", function () {
+    const p = res.getBody().prompt;
+    expect([1, 2]).to.include(p.best_version);
+    expect(p.score).to.equal(null);
+  });
+}

@@ -1,0 +1,38 @@
+meta {
+  name: Allow an agent a connection the laws permit
+  type: http
+  seq: 64
+}
+
+post {
+  url: {{baseUrl}}/internal/egress/check
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "cid": 61003,
+    "host": "example.com",
+    "port": 443
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.intercept: eq false
+}
+
+tests {
+  test("the verdict says whether the host may be reached", function () {
+    expect(res.getBody().allow).to.equal(true);
+  });
+  test("no law is named", function () {
+    expect(res.getBody().law).to.be.null;
+  });
+}

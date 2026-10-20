@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a job document that is not a JSON object
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  []
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.equal("the job is a JSON object");
+  });
+}

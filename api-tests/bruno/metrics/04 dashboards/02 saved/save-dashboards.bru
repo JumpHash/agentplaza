@@ -1,0 +1,35 @@
+meta {
+  name: Save the dashboards with a pinned scope
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/dashboards
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "scopes": [
+      "global"
+    ],
+    "pins": [],
+    "recent": [
+      "global"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.starter: eq false
+}
+
+tests {
+  test("the saved scopes are returned", function () {
+    expect(res.getBody().scopes).to.include("global");
+  });
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Promote a shadow model to a model agent
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/promote
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("fmdl_agent", res.getBody().agent_cid);
+}
+
+tests {
+  test("it is promoted with a model agent cid in the reserved range", function () {
+    const body = res.getBody();
+    expect(body.state).to.equal("promoted");
+    expect(body.agent_cid).to.be.within(10000, 10999);
+  });
+}

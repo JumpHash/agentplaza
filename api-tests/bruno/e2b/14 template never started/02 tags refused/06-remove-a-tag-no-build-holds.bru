@@ -1,0 +1,29 @@
+meta {
+  name: Remove tags no build holds
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/e2b/templates/tags
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "e2b-wait-tmpl",
+    "tags": [
+      "stable"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt 1000
+}

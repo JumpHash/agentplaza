@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a review body that is not JSON
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/connectors/proposals/cp-999/review
+  body: text
+  auth: none
+}
+
+body:text {
+  approve: yes
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: contains "bad body"
+}

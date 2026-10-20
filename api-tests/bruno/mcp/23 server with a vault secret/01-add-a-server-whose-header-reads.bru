@@ -1,0 +1,42 @@
+meta {
+  name: Add a server whose header reads a vault secret
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/mcp/servers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "bru-vault-mcp",
+    "name": "Bru vault server",
+    "transport": {
+      "kind": "http",
+      "url": "http://127.0.0.1:9/mcp"
+    },
+    "allow_private": true,
+    "headers": {
+      "Authorization": {
+        "secret": "BRU_MCP_TOKEN",
+        "format": "Bearer {}"
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the header keeps its secret name, never a value", function () {
+    const body = res.getBody();
+    expect(body.headers.Authorization.secret).to.equal("BRU_MCP_TOKEN");
+    expect(JSON.stringify(body)).to.not.include("Bearer bru");
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Download the note's content as an attachment
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/files/{{file_note}}/content?download=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("an attachment named after the file", function () {
+    expect(res.getHeader("content-disposition")).to.include("attachment");
+    expect(res.getHeader("content-disposition")).to.include("t-files-notes.md");
+  });
+}

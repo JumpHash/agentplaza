@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a vendor path that is not a plain path
+  type: http
+  seq: 37
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/vendor/augment/..%2Fsecret
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+  res.body.error: eq "the vendor path is not a plain path"
+}

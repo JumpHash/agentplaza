@@ -1,0 +1,33 @@
+meta {
+  name: List the robot species with how many agents show each
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/robots/species
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("each species has an id, a name and a count", function () {
+    for (const s of res.getBody()) {
+      expect(s.id).to.be.a("string");
+      expect(s.name).to.be.a("string");
+      expect(s.count).to.be.a("number");
+      expect(s.count).to.be.at.least(0);
+    }
+  });
+
+  test("each species id is listed once", function () {
+    const ids = res.getBody().map((s) => s.id);
+    expect(new Set(ids).size).to.eq(ids.length);
+  });
+}

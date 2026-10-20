@@ -1,0 +1,51 @@
+meta {
+  name: Create an artifact on the project
+  type: http
+  seq: 47
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-internal artifact",
+      "panels": [
+        {
+          "id": "p1",
+          "title": "Note",
+          "span": 12,
+          "body": {
+            "type": "document",
+            "markdown": "hi"
+          }
+        }
+      ]
+    },
+    "project": "{{int_proj_main}}"
+  }
+}
+
+script:post-response {
+  bru.setVar("int_art", res.getBody().id);
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 201
+}
+
+tests {
+  test("the artifact is a document at version 1", function () {
+    expect(res.getBody().kind).to.equal("document");
+    expect(res.getBody().version).to.equal(1);
+  });
+}

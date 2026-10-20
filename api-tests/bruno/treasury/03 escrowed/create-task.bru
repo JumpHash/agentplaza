@@ -1,0 +1,39 @@
+meta {
+  name: Post a task with a budget, which escrows it
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "t-treasury task",
+    "project": "{{treasuryProject}}",
+    "budget": 300
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("treasuryTask", res.getBody().id);
+}
+
+tests {
+  test("the task is open with its budget", function () {
+  expect(res.getBody().budget).to.equal(300);
+    expect(res.getBody().state).to.equal("open");
+  });
+}

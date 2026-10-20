@@ -1,0 +1,28 @@
+meta {
+  name: Put agent 61008 on the project
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{int_proj_stp}}/members
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": 61008
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the agent's view names the project", function () {
+    expect(res.getBody().project).to.equal(bru.getVar("int_proj_stp"));
+  });
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a lease that names no agent
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/w-t-missing/leases
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "kind": "shared"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

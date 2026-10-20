@@ -1,0 +1,22 @@
+meta {
+  name: List the events of the global scope
+  type: http
+  seq: 27
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/events?scope=global&limit=5
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the events are a list", function () {
+    expect(res.getBody()).to.be.an("array");
+  });
+}

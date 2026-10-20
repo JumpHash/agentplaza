@@ -1,0 +1,24 @@
+meta {
+  name: Show the server as off with its live tokens
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the server is off and two tokens are live", function () {
+    const body = res.getBody();
+    expect(body.enabled).to.equal(false);
+    expect(body.tokens).to.be.a("number");
+  });
+}

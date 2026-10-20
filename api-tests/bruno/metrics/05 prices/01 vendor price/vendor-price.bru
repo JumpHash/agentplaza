@@ -1,0 +1,25 @@
+meta {
+  name: Show the price of a model a vendor publishes
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/prices/meta%2Fmuse-wonder-1.0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.model: eq "meta/muse-wonder-1.0"
+}
+
+tests {
+  test("the price comes from the vendor list", function () {
+    const body = res.getBody();
+    expect(body.price.source).to.equal("vendor");
+    expect(body.price.input).to.equal(4);
+  });
+}

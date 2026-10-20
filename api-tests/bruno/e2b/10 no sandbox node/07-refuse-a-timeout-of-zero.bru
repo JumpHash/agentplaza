@@ -1,0 +1,34 @@
+meta {
+  name: Refuse a timeout of zero
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "timeout": 0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error_code: eq "invalid_request"
+}
+
+tests {
+  test("the message gives the range", function () {
+    expect(res.getBody().message).to.equal("timeout must be 1 to 86400 seconds");
+  });
+}

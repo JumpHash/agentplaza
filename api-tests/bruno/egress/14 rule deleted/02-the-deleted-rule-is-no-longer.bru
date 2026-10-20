@@ -1,0 +1,23 @@
+meta {
+  name: The deleted rule is no longer listed
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/egress/inject
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the rule is gone", function () {
+    const found = res.getBody().rules.find((r) => r.id === bru.getVar("egress_rule_id"));
+    expect(found).to.be.undefined;
+  });
+}

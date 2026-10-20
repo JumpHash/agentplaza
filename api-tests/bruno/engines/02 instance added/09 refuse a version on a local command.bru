@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a version for a local command engine (only npm engines have one)
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-eng-bad",
+    "engine": "acp-local",
+    "command": "scratch-agent",
+    "version": "1.0.0"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

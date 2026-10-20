@@ -1,0 +1,24 @@
+meta {
+  name: Refuse an environment kind that does not exist
+  type: http
+  seq: 22
+}
+
+put {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/environments/probe-env
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"kind": "moon"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

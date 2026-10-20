@@ -1,0 +1,37 @@
+meta {
+  name: Refuse an allowOut entry that is not a host
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "network": {
+      "allowOut": [
+        "not a host!"
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the message names allowOut", function () {
+    expect(res.getBody().message).to.include("allowOut");
+  });
+}

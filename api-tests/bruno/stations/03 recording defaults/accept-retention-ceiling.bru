@@ -1,0 +1,31 @@
+meta {
+  name: Accept the longest retention the hub allows
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/stations/recording-defaults
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "record": true,
+    "retention_days": 3650,
+    "record_fps": 5,
+    "record_takeovers": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.retention_days: eq 3650
+  res.body.record_fps: eq 5
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a version without its base_version
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "body": "# Tester\n\nYou are the test role. Check each request against the plan.\n\n## Rules\n\n- Stay in scope.\n- Name what you could not check.\n"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Refuse the workstation link with a token no workstation holds
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/link
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer t-stations-not-a-token
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

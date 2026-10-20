@@ -1,0 +1,24 @@
+meta {
+  name: Refuse an upload whose name is only dots
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/files?name=..
+  body: text
+  auth: none
+}
+
+headers {
+  content-type: text/plain
+}
+
+body:text {
+  x
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a thread whose agent id is not a guest CID
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/conversations/abc/8702
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,22 @@
+meta {
+  name: After the removal the repo lists no connection
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/weft/repos/t-weft-repo-b
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the connection is gone", function () {
+    expect(res.getBody().connections).to.eql([]);
+  });
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Answer 404 when updating the settings of an unknown connector
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/t-no-such-connector
+  body: json
+  auth: none
+}
+
+body:json {
+  {"enabled": true}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the connector", function () {
+    expect(res.getBody().error).to.equal("no connector `t-no-such-connector`");
+  });
+}

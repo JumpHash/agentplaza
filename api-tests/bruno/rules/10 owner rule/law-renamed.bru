@@ -1,0 +1,24 @@
+meta {
+  name: List the laws after the edit: the new law, not the old
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/laws
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("R-bruno-3 is listed and R-bruno-2 is gone", function () {
+  const ids = res.getBody().map((l) => l.id);
+    expect(ids).to.include("R-bruno-3");
+    expect(ids).to.not.include("R-bruno-2");
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Open a project so its tasks can be posted
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "t-agents agora",
+    "goal": "Check the agora's calls",
+    "kind": "code"
+  }
+}
+
+script:post-response {
+  bru.setVar("society_project", res.getBody().id);
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+  res.body.stage: eq "implementation"
+}

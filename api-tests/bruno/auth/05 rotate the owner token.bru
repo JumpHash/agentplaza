@@ -1,0 +1,27 @@
+meta {
+  name: Rotate the owner token: the new one is answered once
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/hub/owner-token/rotate
+  body: none
+  auth: none
+}
+
+script:post-response {
+  bru.setVar("auth_owner_token", res.getBody().token);
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.token: isString
+}
+
+tests {
+  test("the new token is long enough to be one", function () {
+    expect(res.getBody().token.length).to.be.above(30);
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a recording frame rate that does not fit a byte
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/stations/recording-defaults
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"record": true, "retention_days": 30, "record_fps": 300, "record_takeovers": false}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an upload row with no timestamp
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload?name=t-ds-bad
+  body: text
+  auth: none
+}
+
+body:text {
+  {"label": "cheap"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names ts", function () {
+    expect(res.getBody().error).to.equal("line 1: ts must be a unix millisecond number");
+  });
+}

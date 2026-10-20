@@ -1,0 +1,36 @@
+meta {
+  name: Ignore a tool report from an agent the hub never heard of
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61001/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_report",
+    "work": 1,
+    "call": "u1",
+    "ok": true,
+    "output": "x"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the guest gets no reply", function () {
+    expect(res.getBody().reply).to.be.null;
+  });
+}

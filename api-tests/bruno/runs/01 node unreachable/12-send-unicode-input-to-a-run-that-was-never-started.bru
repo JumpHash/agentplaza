@@ -1,0 +1,28 @@
+meta {
+  name: Send unicode input to a run that was never started
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/runs/t-run-1/input
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "text": "héllo 世界"
+  }
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the hub says the node is unreachable", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

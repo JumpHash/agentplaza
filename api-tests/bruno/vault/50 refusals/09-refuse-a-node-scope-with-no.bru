@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a node scope with no node
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "BRU_REF_KEY",
+    "kind": "api_key",
+    "value": "bru-ref-value-0123",
+    "scope": {
+      "kind": "nodes",
+      "nodes": []
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

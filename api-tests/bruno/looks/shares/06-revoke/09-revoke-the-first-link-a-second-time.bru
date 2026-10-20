@@ -1,0 +1,22 @@
+meta {
+  name: Revoke the first link a second time
+  type: http
+  seq: 9
+}
+
+delete {
+  url: {{baseUrl}}/v1/shares/{{sh6a_share}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the first revocation time is kept", function () {
+    expect(res.getBody().revoked_ms).to.equal(bru.getVar("sh6a_revoked_ms"));
+  });
+}

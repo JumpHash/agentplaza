@@ -1,0 +1,25 @@
+meta {
+  name: Refuse an egress check whose body is malformed
+  type: http
+  seq: 68
+}
+
+post {
+  url: {{baseUrl}}/internal/egress/check
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  Content-Type: application/json
+}
+
+body:text {
+  {bad
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+}

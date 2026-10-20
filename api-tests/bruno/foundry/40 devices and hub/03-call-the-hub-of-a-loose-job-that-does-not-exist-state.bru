@@ -1,0 +1,22 @@
+meta {
+  name: Call the hub of a loose job that does not exist (state)
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/jobs/t-job-nohub/hub/state
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("there is no loose hub for that job", function () {
+    expect(res.getBody().error).to.equal("no loose hub for this job");
+  });
+}

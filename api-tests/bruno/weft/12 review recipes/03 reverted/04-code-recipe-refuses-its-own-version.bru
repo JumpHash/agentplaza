@@ -1,0 +1,25 @@
+meta {
+  name: Refuse saving the code recipe at version 3, which the built-in holds
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/recipes/code
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  req.setBody({ toml: 'id = "code"\nversion = 3\ntitle = "t"\n\n[[node]]\nid = "gate"\nkind = "gate"\n' });
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: eq "code is already at version 3 or later"
+}

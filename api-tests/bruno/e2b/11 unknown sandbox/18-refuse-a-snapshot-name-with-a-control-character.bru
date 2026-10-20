@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a snapshot name with a control character
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes/sbffffffffffffffff/snapshots
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "bad\u0007name"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error_code: eq "invalid_request"
+}

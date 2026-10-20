@@ -1,0 +1,41 @@
+meta {
+  name: Make sure the custom role exists before it is deleted
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/roles
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-agents-lead",
+    "title": "Lead, équipe",
+    "purpose": "Mène la recherche.",
+    "responsibilities": [
+      "Plan the search",
+      "Lead the team"
+    ],
+    "deliverables": [
+      "A list of sources"
+    ],
+    "budget": 300,
+    "collaboration": "Works with the scouts.",
+    "boundaries": [
+      "No publishing"
+    ]
+  }
+}
+
+script:post-response {
+  bru.setVar("agents_role_created_ms", res.getBody().created_ms);
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: eq "t-agents-lead"
+}

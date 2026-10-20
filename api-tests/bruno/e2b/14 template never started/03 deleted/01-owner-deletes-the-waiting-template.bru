@@ -1,0 +1,16 @@
+meta {
+  name: Delete the waiting template from the owner console
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/e2b/templates/{{e2bWaitTemplate}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt 1000
+}

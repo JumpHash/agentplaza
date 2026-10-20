@@ -1,0 +1,22 @@
+meta {
+  name: Answer 404 for a trace that was not kept
+  type: http
+  seq: 36
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/traces/no-such-trace
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the trace", function () {
+    expect(res.getBody().error).to.include("no kept trace");
+  });
+}

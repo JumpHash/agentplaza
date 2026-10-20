@@ -1,0 +1,22 @@
+meta {
+  name: List the laws after the delete: the law is gone
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/laws
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("R-bruno-3 is no longer listed", function () {
+  expect(res.getBody().map((l) => l.id)).to.not.include("R-bruno-3");
+  });
+}

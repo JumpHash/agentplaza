@@ -1,0 +1,16 @@
+meta {
+  name: Revoke the link to artifact b
+  type: http
+  seq: 17
+}
+
+delete {
+  url: {{baseUrl}}/v1/shares/{{sh11b_share}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Sign out of this browser: the cookie is cleared
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/v1/auth/session
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.ok: eq true
+}
+
+tests {
+  test("the cookie expires at once", function () {
+    expect(JSON.stringify(res.getHeader("set-cookie"))).to.include("Max-Age=0");
+  });
+}

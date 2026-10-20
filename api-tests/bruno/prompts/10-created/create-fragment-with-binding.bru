@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a fragment bound to a role
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-prompt-frag",
+    "kind": "fragment",
+    "title": "Tester ✓ (Prüfer)",
+    "description": "A test role prompt for the Bruno run.",
+    "tags": [
+      "t-test"
+    ],
+    "binding": "role:t-tester",
+    "body": "A reusable line.",
+    "note": "first draft"
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt 1000
+}

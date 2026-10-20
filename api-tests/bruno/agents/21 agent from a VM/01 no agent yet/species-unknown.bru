@@ -1,0 +1,29 @@
+meta {
+  name: Answer 404 when giving a species to an agent that does not exist
+  type: http
+  seq: 26
+}
+
+put {
+  url: {{baseUrl}}/v1/agents/999999/species
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "species": "cube"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no such agent");
+  });
+}

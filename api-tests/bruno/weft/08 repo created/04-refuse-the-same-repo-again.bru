@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a second repo with the same name
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "repo.create", "body": {"repo": "t-weft-repo-a"}}
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the refusal names the repo that exists", function () {
+    expect(res.getBody().error).to.include("t-weft-repo-a");
+  });
+}

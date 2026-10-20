@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a create with a key that was never issued
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: e2b_0000000000000000000000000000000000000000
+}
+
+body:json {
+  {
+    "templateID": "base"
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt 1000
+}

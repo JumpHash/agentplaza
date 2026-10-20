@@ -1,0 +1,41 @@
+meta {
+  name: Refuse a tool no law permits
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "p3",
+    "name": "no_such_tool",
+    "input": {}
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+  res.body.reply.is_error: eq true
+}
+
+tests {
+  test("the decision is deny", function () {
+    expect(res.getBody().reply.decision).to.equal("deny");
+  });
+  test("no law permits a tool nobody offers", function () {
+    expect(res.getBody().reply.output).to.include("no law permits");
+  });
+}

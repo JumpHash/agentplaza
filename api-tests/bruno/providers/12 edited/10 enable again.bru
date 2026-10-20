@@ -1,0 +1,38 @@
+meta {
+  name: Enable the provider again
+  type: http
+  seq: 10
+}
+
+put {
+  url: {{baseUrl}}/v1/providers/t-prov-compat
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-prov-compat",
+    "kind": "openai-compatible",
+    "label": "Scratch compatible 2",
+    "accent": "#ff8800",
+    "base_url": "https://127.0.0.1:9/v1",
+    "auth": {
+      "secret": "T_PROV_COMPAT_KEY"
+    },
+    "models": [
+      "t-model-c"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.enabled: eq true
+  res.body.credential: eq "secret"
+}

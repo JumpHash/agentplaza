@@ -1,0 +1,26 @@
+meta {
+  name: Refuse removing a connection that is already gone
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "connection.remove", "body": {"repo": "t-weft-repo-b", "id": "t-conn-a"}}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+}
+
+tests {
+  test("the refusal names the connection", function () {
+    expect(res.getBody().error).to.include("no connection t-conn-a");
+  });
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Accept an E2B key sent as a Bearer token
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{e2bLiveKey}}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the sandbox list answers to a Bearer key", function () {
+    expect(res.getBody()).to.be.an("array");
+  });
+}

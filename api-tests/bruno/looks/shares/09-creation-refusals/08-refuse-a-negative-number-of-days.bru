@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a negative number of days
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "artifact",
+      "id": "{{sh9_art}}"
+    },
+    "expires_in_days": -1
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

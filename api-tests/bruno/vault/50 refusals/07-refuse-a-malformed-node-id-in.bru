@@ -1,0 +1,37 @@
+meta {
+  name: Refuse a malformed node id in a scope
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "BRU_REF_KEY",
+    "kind": "api_key",
+    "value": "bru-ref-value-0123",
+    "scope": {
+      "kind": "nodes",
+      "nodes": [
+        "x1"
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the bad node id", function () {
+    expect(res.getBody().error).to.equal("x1 is not a node of this plaza");
+  });
+}

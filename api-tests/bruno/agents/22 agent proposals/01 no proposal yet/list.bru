@@ -1,0 +1,26 @@
+meta {
+  name: List the agent proposals
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/agent-proposals
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("each proposal has an id and a known state", function () {
+    for (const p of res.getBody()) {
+      expect(p.id).to.be.a("string");
+      expect(["pending", "approved", "rejected"]).to.include(p.state);
+    }
+  });
+}

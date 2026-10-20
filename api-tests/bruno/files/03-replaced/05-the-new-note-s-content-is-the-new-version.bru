@@ -1,0 +1,22 @@
+meta {
+  name: The new note's content is the new version
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/files/{{file_note2}}/content
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the second version", function () {
+    expect(String(res.getBody())).to.include("Second version");
+  });
+}

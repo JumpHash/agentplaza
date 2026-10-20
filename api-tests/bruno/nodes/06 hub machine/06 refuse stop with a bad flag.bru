@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a stop whose now flag is not a boolean
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n0/stop
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "now": "yes"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

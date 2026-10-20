@@ -1,0 +1,38 @@
+meta {
+  name: Refuse an egress check for an agent the hub never heard of
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/internal/egress/check
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "cid": 61001,
+    "host": "example.com",
+    "port": 443
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.allow: eq false
+  res.body.reason: eq "unknown agent"
+  res.body.intercept: eq false
+}
+
+tests {
+  test("the verdict is a refusal with no law", function () {
+    expect(res.getBody().allow).to.be.false;
+    expect(res.getBody().law).to.be.null;
+  });
+}

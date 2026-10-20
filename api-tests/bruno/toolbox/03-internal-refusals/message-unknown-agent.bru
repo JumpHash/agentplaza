@@ -1,0 +1,51 @@
+meta {
+  name: Deny a tool request from an agent the hub does not know
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/9999/message
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "t-call-u",
+    "name": "plaza_toolbox_share",
+    "input": {
+      "name": "t-ffmpeg",
+      "kind": "cli",
+      "what_for": "Converts and trims video files.",
+      "how": "apt install ffmpeg; run ffmpeg -i in.mp4 out.webm",
+      "verdict": "Worked on a 10 second clip; slow on large files.",
+      "url": "https://ffmpeg.org",
+      "tags": [
+        "video",
+        "t-test"
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the decision is deny with unknown agent", function () {
+    const r = res.getBody().reply;
+    expect(r.decision).to.equal("deny");
+    expect(r.is_error).to.equal(true);
+    expect(r.output).to.equal("unknown agent");
+  });
+}

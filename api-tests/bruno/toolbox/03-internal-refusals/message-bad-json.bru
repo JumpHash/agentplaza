@@ -1,0 +1,25 @@
+meta {
+  name: Refuse an agent message whose body is not JSON
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/9001/message
+  body: text
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  x-apz-internal: {{internalToken}}
+}
+
+body:text {
+  not json
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

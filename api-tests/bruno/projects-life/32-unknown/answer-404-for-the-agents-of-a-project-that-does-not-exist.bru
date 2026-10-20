@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for the agents of a project that does not exist
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/pr999999/members
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,22 @@
+meta {
+  name: List the tools of an unreachable server: none
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp/tools
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no tool is listed for a server that never answered", function () {
+    expect(res.getBody()).to.deep.equal([]);
+  });
+}

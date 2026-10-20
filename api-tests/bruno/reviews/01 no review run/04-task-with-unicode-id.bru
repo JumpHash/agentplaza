@@ -1,0 +1,17 @@
+meta {
+  name: A task with a unicode id that does not exist answers 404
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/t-%C3%BCnicode-%E2%9C%93/reviews
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: eq "no such task"
+  res.responseTime: lt 1000
+}

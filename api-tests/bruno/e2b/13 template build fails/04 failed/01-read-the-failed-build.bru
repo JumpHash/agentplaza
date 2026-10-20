@@ -1,0 +1,34 @@
+meta {
+  name: Read the build as failed at its base
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/e2b/templates/{{e2bFailTemplate}}/builds/{{e2bFailBuild}}/status
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+script:pre-request {
+  await bru.sleep(1500);
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the build failed in its base step, with the node's refusal", function () {
+    const body = res.getBody();
+    expect(body.status).to.equal("error");
+    expect(body.reason.step).to.equal("base");
+    expect(body.reason.message).to.match(/^noded unreachable: /);
+    expect(body.logs.some((l) => l.includes("Build failed in step base"))).to.equal(true);
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a rotation to an empty value
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/vault/secrets/{{vault_life_id}}/value
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "value": ""
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the value is empty", function () {
+    expect(res.getBody().error).to.equal("the value is empty");
+  });
+}

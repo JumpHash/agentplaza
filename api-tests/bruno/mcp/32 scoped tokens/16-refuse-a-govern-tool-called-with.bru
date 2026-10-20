@@ -1,0 +1,39 @@
+meta {
+  name: Refuse a govern tool called with the operate token
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_operate_token}}
+  Mcp-Session-Id: {{mcp_operate_session}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "tools/call",
+    "params": {
+      "name": "skill_publish",
+      "arguments": {}
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the call is refused as an unknown tool", function () {
+    expect(res.getBody().error.message).to.equal("unknown tool: skill_publish");
+  });
+}

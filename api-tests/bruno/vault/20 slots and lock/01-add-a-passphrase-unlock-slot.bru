@@ -1,0 +1,37 @@
+meta {
+  name: Add a passphrase unlock slot
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/slots
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "passphrase",
+    "passphrase": "bru-passphrase-0123456789"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  const slot = res.getBody().slots.find((s) => s.kind === "passphrase");
+  bru.setVar("vault_pass_slot", slot.id);
+}
+
+tests {
+  test("the vault has a passphrase slot and stays unsealed", function () {
+    const body = res.getBody();
+    expect(body.state).to.equal("unsealed");
+    expect(body.slots.some((s) => s.kind === "passphrase")).to.equal(true);
+    expect(JSON.stringify(res.getBody())).to.not.include("bru-passphrase-0123456789");
+  });
+}

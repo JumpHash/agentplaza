@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a token that expires in zero days
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/hub-mcp/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "bru zero",
+    "scope": "observe",
+    "expires_days": 0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal gives the range", function () {
+    expect(res.getBody().error).to.equal("expires_days is 1 to 3650");
+  });
+}

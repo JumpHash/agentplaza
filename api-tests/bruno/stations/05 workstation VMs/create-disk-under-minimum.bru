@@ -1,0 +1,38 @@
+meta {
+  name: Refuse a workstation VM with a disk under 8 GiB
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/vms
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "node": "n0",
+    "os": "linux",
+    "name": "t-stations-vm",
+    "cpus": 2,
+    "ram_mb": 4096,
+    "disk_gb": 7
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("disk_gb");
+  });
+}

@@ -1,0 +1,36 @@
+meta {
+  name: Set the bindings of a skill (sorted and without repeats)
+  type: http
+  seq: 20
+}
+
+put {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/bindings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "bindings": [
+      "role:t-tester",
+      "plaza",
+      "plaza"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the bindings come back sorted with no repeats", function () {
+    expect(res.getBody().skill.bindings).to.deep.equal(["plaza", "role:t-tester"]);
+  });
+}

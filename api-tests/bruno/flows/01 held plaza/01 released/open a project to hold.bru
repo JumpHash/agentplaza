@@ -1,0 +1,41 @@
+meta {
+  name: open a project to hold
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "flows held plaza",
+    "goal": "A project whose work STOP ALL holds"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("flowHeldPid", res.getBody().id);
+}
+
+tests {
+  test("the project is in implementation and not paused", function () {
+    const b = res.getBody();
+    expect(b.stage).to.equal('implementation');
+    expect(b.mode).to.equal('build');
+    expect(b.paused).to.equal(false);
+    expect(b.archived).to.equal(false);
+  });
+}

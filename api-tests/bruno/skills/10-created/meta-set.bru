@@ -1,0 +1,30 @@
+meta {
+  name: Rename the skill and retag it
+  type: http
+  seq: 23
+}
+
+put {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "Formulare ✓ renamed",
+    "tags": [
+      "t-test"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.skill.title: eq "Formulare ✓ renamed"
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,34 @@
+meta {
+  name: Check a law source that compiles and allows
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/check
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"source": "law \"R-bruno-check\" \"Bruno check\" {\n  statement \"A check the API suite runs.\"\n  enforcement preventive\n  severity info\n  forbid tool.exec\n  principal is Agent\n}\n"}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the check says ok, lists the law, and applies nothing", function () {
+  const body = res.getBody();
+    expect(body.ok).to.equal(true);
+    expect(body.diagnostics).to.be.an("array").that.is.empty;
+    expect(body.laws).to.include("R-bruno-check");
+    expect(body.would_refuse).to.be.an("array");
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Search a missing workspace
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/agent:999999/search?q=x
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

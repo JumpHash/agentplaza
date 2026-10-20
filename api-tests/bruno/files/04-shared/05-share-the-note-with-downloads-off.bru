@@ -1,0 +1,29 @@
+meta {
+  name: Share the note with downloads off
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "file",
+      "id": "{{file_note2}}"
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("sh_note_share", res.getBody().id);
+}

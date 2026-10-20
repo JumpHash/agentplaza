@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when removing a provider that does not exist
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/v1/usage-providers/t-usage-hub
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

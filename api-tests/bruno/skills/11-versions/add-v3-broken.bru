@@ -1,0 +1,41 @@
+meta {
+  name: Add version 3 that links a file it does not hold (an error finding)
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n\nSee [the notes](notes.md) too.\n",
+    "files": [
+      {
+        "path": "reference.md",
+        "sha256": "{{lifeRefSha}}"
+      }
+    ],
+    "note": "links the notes",
+    "base_version": 2
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the version is stored with one error", function () {
+    expect(res.getBody().version.version).to.equal(3);
+    expect(res.getBody().version.errors).to.equal(1);
+  });
+}

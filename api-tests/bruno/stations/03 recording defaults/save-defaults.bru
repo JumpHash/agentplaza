@@ -1,0 +1,39 @@
+meta {
+  name: Save new recording defaults for the workstations that join from now on
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/stations/recording-defaults
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "record": true,
+    "retention_days": 30,
+    "record_fps": 3,
+    "record_takeovers": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.retention_days: eq 30
+  res.body.record_fps: eq 3
+}
+
+tests {
+  test("the saved defaults are the ones sent", function () {
+    const b = res.getBody();
+    expect(b.record).to.eq(true);
+    expect(b.record_takeovers).to.eq(false);
+  });
+}

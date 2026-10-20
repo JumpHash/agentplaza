@@ -1,0 +1,22 @@
+meta {
+  name: Stop the running loop
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/loops/{{floop_a}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the loop is stopped", function () {
+    expect(res.getBody().state).to.equal("stopped");
+  });
+}

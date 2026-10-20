@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a mint whose amount is text
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/treasury/mint
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "amount": "x"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

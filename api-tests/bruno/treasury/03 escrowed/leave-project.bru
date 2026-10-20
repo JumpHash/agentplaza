@@ -1,0 +1,16 @@
+meta {
+  name: Take the test agent off the treasury project
+  type: http
+  seq: 9
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{treasuryProject}}/members/8801
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

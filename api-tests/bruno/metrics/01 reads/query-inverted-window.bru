@@ -1,0 +1,34 @@
+meta {
+  name: Refuse a query that ends before it starts
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/v1/metrics/query
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "metric": "cpu",
+    "scope": "global",
+    "from_ms": 3600000,
+    "to_ms": 0,
+    "step_ms": 60000,
+    "agg": "avg",
+    "group": "all"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the window", function () {
+    expect(res.getBody().error).to.include("to_ms");
+  });
+}

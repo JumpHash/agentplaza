@@ -1,0 +1,17 @@
+meta {
+  name: Cancel an agent with no work in progress
+  type: http
+  seq: 34
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/cancel
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.cancelled: eq false
+}

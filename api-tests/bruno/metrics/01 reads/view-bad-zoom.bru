@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a zoom whose ends are out of order
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/view?tab=overview&zoom=0.8,0.2
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the zoom", function () {
+    expect(res.getBody().error).to.include("zoom");
+  });
+}

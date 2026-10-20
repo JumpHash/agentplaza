@@ -1,0 +1,31 @@
+meta {
+  name: Request a build for the held checks
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "e2b-held-tmpl"
+  }
+}
+
+script:post-response {
+  bru.setVar("e2bHeldTemplate", res.getBody().templateID);
+  bru.setVar("e2bHeldBuild", res.getBody().buildID);
+}
+
+assert {
+  res.status: eq 202
+  res.responseTime: lt 1000
+}

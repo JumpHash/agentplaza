@@ -1,0 +1,102 @@
+meta {
+  name: Add a version that reads the CSV blob in a dataset panel
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts/{{looks_art}}
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "spec": {
+      "title": "t-looks Notes",
+      "panels": [
+        {
+          "id": "notes",
+          "title": "Notes",
+          "span": 12,
+          "body": {
+            "type": "document",
+            "markdown": "A note the test wrote."
+          }
+        },
+        {
+          "id": "sales",
+          "title": "Sales",
+          "span": 6,
+          "body": {
+            "type": "dataset",
+            "columns": [
+              {
+                "key": "region",
+                "label": "Region"
+              },
+              {
+                "key": "total",
+                "label": "Total",
+                "kind": "number"
+              }
+            ],
+            "rows": [],
+            "blob": {
+              "id": "{{looks_blob}}",
+              "content_type": "text/csv",
+              "bytes": 31
+            },
+            "total": 2
+          }
+        },
+        {
+          "id": "trend",
+          "title": "Trend",
+          "span": 6,
+          "body": {
+            "type": "chart",
+            "unit": "count",
+            "height": 200,
+            "x": {
+              "type": "labels",
+              "labels": [
+                "mon",
+                "tue",
+                "wed"
+              ]
+            },
+            "series": [
+              {
+                "name": "orders",
+                "tone": "chart-1",
+                "values": [
+                  3,
+                  5,
+                  4
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the version is 3 and the kind is a dashboard", function () {
+    const b = res.getBody();
+    expect(b.version).to.equal(3);
+    expect(b.kind).to.equal("dashboard");
+  });
+}

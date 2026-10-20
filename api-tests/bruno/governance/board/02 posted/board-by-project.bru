@@ -1,0 +1,27 @@
+meta {
+  name: Read the board for the project: both posts are there
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/board?project={{boardProject}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.posts: isArray
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the owner's and the agent's posts are listed, all on the project", function () {
+  const posts = res.getBody().posts;
+    const ids = posts.map((p) => p.id);
+    expect(ids).to.include(bru.getVar("boardOwnerPost"));
+    expect(ids).to.include(bru.getVar("boardAgentPost"));
+    posts.forEach((p) => expect(p.project).to.equal(bru.getVar("boardProject")));
+  });
+}

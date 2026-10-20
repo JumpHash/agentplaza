@@ -1,0 +1,16 @@
+meta {
+  name: An empty asset name is missing
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/assets/
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

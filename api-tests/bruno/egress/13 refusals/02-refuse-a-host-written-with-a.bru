@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a host written with a scheme
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/egress/inject
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "host": "https://api.bru-egress.test",
+    "port": 443,
+    "methods": [
+      "GET"
+    ],
+    "path_prefix": "/v1",
+    "header": "Authorization",
+    "format": "Bearer ${SECRET}",
+    "secret": "BRU_EGRESS_KEY"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Read the changed role back
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/roles
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the list shows the new definition", function () {
+    const role = res.getBody().find((r) => r.id === "t-agents-lead");
+    expect(role.title).to.equal("Lead scout");
+    expect(role.def.responsibilities).to.have.lengthOf(1);
+    expect(role.def.deliverables).to.have.lengthOf(2);
+    expect(role.def.created_by).to.equal("owner");
+  });
+}

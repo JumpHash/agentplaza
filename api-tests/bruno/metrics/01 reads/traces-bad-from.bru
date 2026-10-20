@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a trace window whose start is not a number
+  type: http
+  seq: 35
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/traces?scope=global&from=x
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names from", function () {
+    expect(res.getBody().error).to.include("from");
+  });
+}

@@ -1,0 +1,26 @@
+meta {
+  name: List the OpenRouter models for the agent
+  type: http
+  seq: 27
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/openrouter/v1/models
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the list is an OpenAI-shaped list", function () {
+    expect(res.getBody().data).to.be.an("array");
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Read the link before the artifact is deleted
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh8_share}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

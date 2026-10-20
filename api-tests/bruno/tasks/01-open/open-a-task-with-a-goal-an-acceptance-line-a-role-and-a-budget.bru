@@ -1,0 +1,34 @@
+meta {
+  name: Open a task with a goal, an acceptance line, a role and a budget
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks A: write the notes", "acceptance": "every merged change is listed", "budget": 400, "role": "writer", "project": "{{tsk_pid}}"}
+}
+
+assert {
+  res.status: eq 201
+  res.body.state: eq "open"
+  res.body.ready: eq true
+  res.body.outcome: isNull
+  res.body.agent_cid: isNull
+  res.body.budget: eq 400
+  res.body.role: eq "writer"
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("tsk_a", res.getBody().id);
+}

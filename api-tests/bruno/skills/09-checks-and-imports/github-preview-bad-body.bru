@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a GitHub preview whose body has no url
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/github/preview
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "link": "https://github.com/t-owner/t-skills"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

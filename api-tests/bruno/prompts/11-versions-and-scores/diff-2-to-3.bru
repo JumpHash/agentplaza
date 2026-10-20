@@ -1,0 +1,22 @@
+meta {
+  name: Compare version 2 with the broken version 3
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/diff?from=2&to=3
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the added variable shows in the diff", function () {
+    expect(JSON.stringify(res.getBody().lines)).to.contain("nope");
+  });
+}

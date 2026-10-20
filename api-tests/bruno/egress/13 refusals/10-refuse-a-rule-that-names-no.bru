@@ -1,0 +1,37 @@
+meta {
+  name: Refuse a rule that names no secret
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/egress/inject
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "host": "api.bru-egress.test",
+    "port": 443,
+    "methods": [
+      "GET"
+    ],
+    "path_prefix": "/v1",
+    "header": "Authorization",
+    "format": "Bearer ${SECRET}",
+    "secret": "  "
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal asks for a secret", function () {
+    expect(res.getBody().error).to.equal("a rule names a vault secret");
+  });
+}

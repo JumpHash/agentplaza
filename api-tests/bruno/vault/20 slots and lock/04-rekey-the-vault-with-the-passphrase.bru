@@ -1,0 +1,37 @@
+meta {
+  name: Rekey the vault with the passphrase of its slot
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/rekey
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "secrets": {
+      "placeholder": "bru-passphrase-0123456789"
+    }
+  }
+}
+
+script:pre-request {
+  req.setBody({ secrets: { [bru.getVar("vault_pass_slot")]: "bru-passphrase-0123456789" } });
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the rekey is recorded and the vault stays unsealed", function () {
+    const body = res.getBody();
+    expect(body.state).to.equal("unsealed");
+    expect(body.rekeyed_ms).to.be.a("number");
+    expect(JSON.stringify(res.getBody())).to.not.include("bru-passphrase-0123456789");
+  });
+}

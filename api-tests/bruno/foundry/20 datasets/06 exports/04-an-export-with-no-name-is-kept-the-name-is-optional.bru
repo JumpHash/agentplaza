@@ -1,0 +1,28 @@
+meta {
+  name: An export with no name is kept (the name is optional)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "cascade"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the export has an id", function () {
+    expect(res.getBody().id).to.match(/^ds-/);
+  });
+}

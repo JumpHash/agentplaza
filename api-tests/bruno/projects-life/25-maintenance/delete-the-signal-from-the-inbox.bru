@@ -1,0 +1,17 @@
+meta {
+  name: Delete the signal from the inbox
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance/signals/{{life_signal}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.deleted: eq true
+  res.responseTime: lt 1000
+}

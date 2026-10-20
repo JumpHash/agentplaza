@@ -1,0 +1,24 @@
+meta {
+  name: List the usage providers before adding one
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/usage-providers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the list is a list and has no provider of ours", function () {
+    const body = res.getBody();
+    expect(body).to.be.an("array");
+    expect(body.find((p) => p.id === "t-usage-hub")).to.be.undefined;
+  });
+}

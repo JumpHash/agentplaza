@@ -1,0 +1,16 @@
+meta {
+  name: A repo that is not a project's repo is missing
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/repo:t-ide-nope@main/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

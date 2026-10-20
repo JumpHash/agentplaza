@@ -1,0 +1,22 @@
+meta {
+  name: The events record the downloads
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/shares/{{sh5_share}}/events
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("at least one download is recorded", function () {
+    expect(res.getBody().some((e) => e.kind === "download")).to.equal(true);
+  });
+}

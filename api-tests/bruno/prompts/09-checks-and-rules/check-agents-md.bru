@@ -1,0 +1,28 @@
+meta {
+  name: Check an AGENTS.md draft
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/check
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "kind": "agents_md",
+    "body": "# House rules\n\n## Commands\n\nRun `npm test` before you finish.\n"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.errors: eq 0
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,32 @@
+meta {
+  name: Switch the starter rule back on
+  type: http
+  seq: 8
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/alerts/rules
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "starter-ttft",
+    "name": "First token p95 over 2 s",
+    "metric": "llm.ttft_ms",
+    "agg": "p95",
+    "scope": "global",
+    "cmp": "gt",
+    "threshold": 2000,
+    "for_ms": 600000,
+    "severity": "critical",
+    "on": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.rule.on: eq true
+}

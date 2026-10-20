@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a GitHub check on a skill made in the app
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{arcSkillId}}/github/check
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 422
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

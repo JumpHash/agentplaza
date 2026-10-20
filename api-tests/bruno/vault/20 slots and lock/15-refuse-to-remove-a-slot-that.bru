@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to remove a slot that does not exist
+  type: http
+  seq: 15
+}
+
+delete {
+  url: {{baseUrl}}/v1/vault/slots/slt_doesnotexist
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,18 @@
+meta {
+  name: Show the default permission mode for an agent that is not on the hub
+  type: http
+  seq: 31
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/999999/permissions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.mode: eq "autonomous"
+  res.body.source: eq "default"
+}

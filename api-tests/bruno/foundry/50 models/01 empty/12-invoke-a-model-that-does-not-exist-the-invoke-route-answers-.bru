@@ -1,0 +1,28 @@
+meta {
+  name: Invoke a model that does not exist is refused and the error names it
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/t-no-model/invoke
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "x0": 0.1, "x1": 0.2, "x2": 0.3
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the model", function () {
+    expect(res.getBody().error).to.equal("no model t-no-model");
+  });
+}

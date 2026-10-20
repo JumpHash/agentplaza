@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a build request without an E2B key
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "e2b-nokey-tmpl"
+  }
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt 1000
+  res.body.error_code: eq "unauthorized"
+}

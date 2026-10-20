@@ -1,0 +1,17 @@
+meta {
+  name: the paused-time task is withdrawn
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{flowMoneyT3}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "withdrawn"
+  res.responseTime: lt 1000
+}

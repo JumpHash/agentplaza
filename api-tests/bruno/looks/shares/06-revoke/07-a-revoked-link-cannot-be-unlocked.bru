@@ -1,0 +1,22 @@
+meta {
+  name: A revoked link cannot be unlocked
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/artifact/{{sh6a_share}}/unlock
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "password": "anything"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

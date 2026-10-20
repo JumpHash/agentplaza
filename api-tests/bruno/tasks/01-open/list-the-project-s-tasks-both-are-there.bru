@@ -1,0 +1,26 @@
+meta {
+  name: List the project's tasks: both are there
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks?project={{tsk_pid}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.tasks: isArray
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("both tasks of the project are listed, in order", function () {
+    const ids = res.getBody().tasks.map((t) => t.id);
+    expect(ids).to.include(bru.getVar("tsk_a"));
+    expect(ids).to.include(bru.getVar("tsk_b"));
+    expect(ids.indexOf(bru.getVar("tsk_a"))).to.be.below(ids.indexOf(bru.getVar("tsk_b")));
+  });
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a negative timeout
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes/sbffffffffffffffff/timeout
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "timeout": -1
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

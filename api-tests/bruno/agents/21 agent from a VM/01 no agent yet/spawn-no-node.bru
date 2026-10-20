@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a spawn on a node that does not exist
+  type: http
+  seq: 40
+}
+
+post {
+  url: {{baseUrl}}/v1/agents
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "role": "architect",
+    "count": 1,
+    "node": "no-node"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no node no-node");
+  });
+}

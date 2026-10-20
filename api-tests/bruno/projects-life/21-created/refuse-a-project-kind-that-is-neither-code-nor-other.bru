@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a project kind that is neither code nor other
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-life kind", "goal": "A kind", "kind": "video"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "kind must be"
+  res.responseTime: lt 1000
+}

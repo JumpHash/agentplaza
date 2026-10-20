@@ -1,0 +1,47 @@
+meta {
+  name: Save OpenMetrics on again without a new token
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/metrics/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "level": "standard",
+    "retention": {
+      "chunks_hours": 48,
+      "minute_days": 14,
+      "hour_days": 400,
+      "calls_days": 90,
+      "traces_days": 7,
+      "traces_cap_mb": 2048,
+      "events_days": 90
+    },
+    "budgets": [],
+    "monthly_budget_usd": null,
+    "basis_days": 14,
+    "outside": {
+      "openmetrics": true,
+      "otlp": false,
+      "otlp_url": "",
+      "otlp_confirmed": false
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.outside.openmetrics: eq true
+}
+
+tests {
+  test("the token is not sent a second time", function () {
+    expect(res.getBody()).to.not.have.property("openmetrics_token");
+  });
+}

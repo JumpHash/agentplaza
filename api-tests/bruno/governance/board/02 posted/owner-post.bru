@@ -1,0 +1,40 @@
+meta {
+  name: Post to the board as the owner, for the project
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/board/posts
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "subject": "t-board owner note",
+    "body": "Owner note for the board tests.",
+    "project": "{{boardProject}}"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("boardOwnerPost", res.getBody().id);
+}
+
+tests {
+  test("the post is the owner's and is on the project", function () {
+  const p = res.getBody();
+    expect(p.owner).to.equal(true);
+    expect(p.project).to.equal(bru.getVar("boardProject"));
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Hold the plaza with STOP ALL
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/stop
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "reason": "bruno e2b held checks"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.paused: eq true
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an alias no template has
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/e2b/templates/aliases/e2b-no-such-tmpl
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error_code: eq "template_not_found"
+}

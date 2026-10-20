@@ -1,0 +1,28 @@
+meta {
+  name: Refuse the opencode responses with a wrong internal token
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/opencode/v1/responses
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+}
+
+body:json {
+  {
+    "model": "x",
+    "input": "hi"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

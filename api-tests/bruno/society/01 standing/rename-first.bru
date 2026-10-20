@@ -1,0 +1,23 @@
+meta {
+  name: Rename the first agent
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/v1/agents/43001
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "Nia"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.name: eq "Nia"
+}

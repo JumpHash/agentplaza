@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a connection to a subdomain of a blocked host
+  type: http
+  seq: 73
+}
+
+post {
+  url: {{baseUrl}}/internal/egress/check
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "cid": 61003,
+    "host": "sub.t-internal-blocked.test",
+    "port": 443
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.intercept: eq false
+}
+
+tests {
+  test("the verdict says whether the host may be reached", function () {
+    expect(res.getBody().allow).to.equal(false);
+  });
+}

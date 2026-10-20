@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a view with an unknown tab
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/view?tab=nowhere
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the tab", function () {
+    expect(res.getBody().error).to.include("tab");
+  });
+}

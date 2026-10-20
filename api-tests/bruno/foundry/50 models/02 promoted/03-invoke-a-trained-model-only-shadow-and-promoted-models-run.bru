@@ -1,0 +1,28 @@
+meta {
+  name: Invoke a trained model: only shadow and promoted models run
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/invoke
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "x0": 0.5, "x1": -0.2, "x2": 1.0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the state", function () {
+    expect(res.getBody().error).to.equal("model " + bru.getVar("fmdl_a") + " is trained: only shadow and promoted models run");
+  });
+}

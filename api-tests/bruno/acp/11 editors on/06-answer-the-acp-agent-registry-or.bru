@@ -1,0 +1,27 @@
+meta {
+  name: Answer the ACP agent registry, or 502 when it cannot be fetched
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/acp/registry
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the registry answers its agents, or says it could not be read", function () {
+    if (res.status === 200) {
+      expect(res.getBody().agents).to.be.an("array");
+      expect(res.getBody().fetched_ms).to.be.a("number");
+    } else {
+      expect(res.status).to.equal(502);
+      expect(res.getBody().error).to.include("could not be read");
+    }
+  });
+}

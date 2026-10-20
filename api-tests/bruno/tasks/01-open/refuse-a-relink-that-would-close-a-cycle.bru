@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a relink that would close a cycle
+  type: http
+  seq: 11
+}
+
+patch {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"after": ["{{tsk_b}}"]}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "cycle"
+  res.responseTime: lt 1000
+}

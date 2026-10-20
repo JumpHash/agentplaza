@@ -1,0 +1,22 @@
+meta {
+  name: Enable the owner rule again
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/laws/rules/{{lawRuleId}}/enable
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the rule is on", function () {
+  expect(res.getBody().enabled).to.equal(true);
+  });
+}

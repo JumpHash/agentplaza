@@ -1,0 +1,31 @@
+meta {
+  name: List the machines on this plaza with the hub's own machine
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/machines
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the hub's own machine is listed as n0", function () {
+    const hub = res.getBody().find((m) => m.id === "n0");
+    expect(hub).to.not.eq(undefined);
+    expect(hub.name).to.be.a("string");
+  });
+
+  test("without noded the hub's machine is unreachable and its kind unknown", function () {
+    const hub = res.getBody().find((m) => m.id === "n0");
+    expect(hub.reachable).to.eq(false);
+    expect(hub.kind).to.eq(null);
+  });
+}

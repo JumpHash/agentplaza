@@ -1,0 +1,25 @@
+meta {
+  name: A registered agent's context is empty
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001/context
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.cid: eq 41001
+}
+
+tests {
+  test("no tokens are used and six parts are listed", function () {
+    const b = res.getBody();
+    expect(b.used).to.equal(0);
+    expect(b.parts).to.have.lengthOf(6);
+  });
+}

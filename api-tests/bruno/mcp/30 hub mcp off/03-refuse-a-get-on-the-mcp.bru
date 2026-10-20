@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a GET on the MCP endpoint while the server is off
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/mcp
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

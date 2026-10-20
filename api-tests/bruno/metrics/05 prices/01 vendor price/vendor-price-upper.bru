@@ -1,0 +1,22 @@
+meta {
+  name: Show a vendor price with the model id in capitals
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/prices/META%2Fmuse-wonder-1.0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the lookup ignores case", function () {
+    expect(res.getBody().price.source).to.equal("vendor");
+  });
+}

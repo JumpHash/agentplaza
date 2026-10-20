@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a stop whose body is not JSON
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/stop
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  x
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "bad body"
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a repositories list with no namespace on an unknown authorization
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/gitlab-99/repos
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+

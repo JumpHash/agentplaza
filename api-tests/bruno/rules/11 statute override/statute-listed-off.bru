@@ -1,0 +1,24 @@
+meta {
+  name: List the laws with the statute switched off
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/laws
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the statute is off and shows its override", function () {
+  const law = res.getBody().find((l) => l.id === "S-000a");
+    expect(law.enabled).to.equal(false);
+    expect(law.overridden).to.not.equal(null);
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a veto to a stage that does not exist
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/veto
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"stage": "nowhere", "reason": "t-life"}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "unknown stage"
+  res.responseTime: lt 1000
+}

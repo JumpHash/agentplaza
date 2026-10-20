@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a calls page whose cid is not a number
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/calls?cid=x
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names cid", function () {
+    expect(res.getBody().error).to.include("cid");
+  });
+}

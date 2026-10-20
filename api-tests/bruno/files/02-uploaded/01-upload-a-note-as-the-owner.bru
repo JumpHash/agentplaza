@@ -1,0 +1,40 @@
+meta {
+  name: Upload a note as the owner
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/files?name=t-files-notes.md&title=t-files%20notes
+  body: text
+  auth: none
+}
+
+headers {
+  content-type: text/markdown
+}
+
+body:text {
+  # Notes
+
+  Hello from the files test.
+
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("file_note", res.getBody().id);
+}
+
+tests {
+  test("an attachment for the owner, private, with its size", function () {
+    const b = res.getBody();
+    expect(b.kind).to.equal("attachment");
+    expect(b.audience).to.equal("private");
+    expect(b.size).to.equal(36);
+  });
+}

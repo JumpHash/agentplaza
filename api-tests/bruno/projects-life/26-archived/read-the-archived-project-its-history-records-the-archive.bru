@@ -1,0 +1,24 @@
+meta {
+  name: Read the archived project: its history records the archive
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.archived: eq true
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the history ends with the archive", function () {
+    const kinds = res.getBody().history.map((e) => e.what);
+    expect(kinds).to.include("archived");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Remove an import number that is not a number
+  type: http
+  seq: 22
+}
+
+delete {
+  url: {{baseUrl}}/v1/foundry/hf/imports/abc
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the import number must be a whole number", function () {
+    expect(res.getBody().error).to.include("whole number");
+  });
+}

@@ -1,0 +1,29 @@
+meta {
+  name: Show the agent's control state
+  type: http
+  seq: 26
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/control
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "action": "show"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.ok: eq true
+}
+
+tests {
+  test("the state names the limits", function () {
+    expect(res.getBody().result).to.include("limits");
+  });
+}

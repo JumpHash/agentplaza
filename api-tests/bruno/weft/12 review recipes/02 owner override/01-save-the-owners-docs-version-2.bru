@@ -1,0 +1,26 @@
+meta {
+  name: Save the owner's docs recipe as version 2
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  req.setBody({ toml: 'id = "docs"\nversion = 2\ntitle = "Documentation (owner)"\naxes = ["cln", "mnt"]\nrounds = 1\n\n[applies]\nkinds = ["docs"]\n\n[[node]]\nid = "tree"\nkind = "tool"\ntool = "tree"\n\n[[node]]\nid = "style"\nkind = "agent"\nrole = "librarian"\naxes = ["cln", "mnt"]\nafter = ["tree"]\n\n[[node]]\nid = "gate"\nkind = "gate"\nafter = ["style"]\n\n[[rule]]\nwhen = "failed"\nthen = "rework"\n' });
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.recipe.version: eq 2
+  res.body.recipe.title: eq "Documentation (owner)"
+}

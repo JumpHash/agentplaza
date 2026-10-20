@@ -1,0 +1,25 @@
+meta {
+  name: Revoke the first link
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/shares/{{sh6a_share}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the link is revoked and its time is kept", function () {
+    const b = res.getBody();
+    expect(b.state).to.equal("revoked");
+    expect(b.revoked_ms).to.be.a("number");
+    bru.setVar("sh6a_revoked_ms", b.revoked_ms);
+  });
+}

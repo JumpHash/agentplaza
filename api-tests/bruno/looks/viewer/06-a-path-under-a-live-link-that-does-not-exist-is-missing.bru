@@ -1,0 +1,16 @@
+meta {
+  name: A path under a live link that does not exist is missing
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh1_share}}/nope
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an install with no registration named
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/github/install
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: eq "no such GitHub App"
+}

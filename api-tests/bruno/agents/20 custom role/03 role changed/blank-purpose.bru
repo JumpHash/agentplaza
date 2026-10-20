@@ -1,0 +1,43 @@
+meta {
+  name: Refuse a change that empties the purpose
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/roles
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-agents-lead",
+    "title": "Should not save",
+    "purpose": "   ",
+    "responsibilities": [
+      "Plan the search",
+      "Lead the team"
+    ],
+    "deliverables": [
+      "A list of sources"
+    ],
+    "budget": 300,
+    "collaboration": "Works with the scouts.",
+    "boundaries": [
+      "No publishing"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the purpose", function () {
+    expect(res.getBody().error).to.include("purpose is empty");
+  });
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a default that is a chat provider, not a decision model
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/v1/decisions/default
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai", "model": "gpt-6-luna"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "chat provider"
+  res.responseTime: lt 1000
+}

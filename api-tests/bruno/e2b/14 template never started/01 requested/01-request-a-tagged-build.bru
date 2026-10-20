@@ -1,0 +1,42 @@
+meta {
+  name: Request a build named with a tag, and more tags
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "e2b-wait-tmpl:beta",
+    "tags": [
+      "stable"
+    ],
+    "cpuCount": 2,
+    "memoryMB": 256
+  }
+}
+
+script:post-response {
+  bru.setVar("e2bWaitTemplate", res.getBody().templateID);
+  bru.setVar("e2bWaitBuild", res.getBody().buildID);
+}
+
+assert {
+  res.status: eq 202
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the name tag and the body tags are both asked for", function () {
+    expect(res.getBody().tags).to.deep.equal(["beta", "stable"]);
+  });
+}

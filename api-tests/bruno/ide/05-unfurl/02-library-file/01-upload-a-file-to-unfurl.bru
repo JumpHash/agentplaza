@@ -1,0 +1,28 @@
+meta {
+  name: Upload a file to unfurl
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/files?name=t-ide-card.txt
+  body: text
+  auth: none
+}
+
+headers {
+  content-type: text/plain
+}
+
+body:text {
+  card body
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("unf_file", res.getBody().id);
+}

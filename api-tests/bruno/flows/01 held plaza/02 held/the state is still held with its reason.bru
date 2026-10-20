@@ -1,0 +1,24 @@
+meta {
+  name: the state is still held with its reason
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/v1/plaza/state
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the hold and its reason survived the bad request", function () {
+    const b = res.getBody();
+    expect(b.paused).to.equal(true);
+    expect(b.reason).to.equal('flows hold');
+  });
+}

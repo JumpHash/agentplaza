@@ -1,0 +1,23 @@
+meta {
+  name: A registered agent's transcript is empty
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001/transcript
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("nothing was said yet", function () {
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

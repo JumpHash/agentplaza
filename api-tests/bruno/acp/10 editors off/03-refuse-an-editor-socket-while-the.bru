@@ -1,0 +1,31 @@
+meta {
+  name: Refuse an editor socket while the editors are off
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/acp
+  body: none
+  auth: none
+}
+
+headers {
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Version: 13
+  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+  Sec-WebSocket-Protocol: apz.acp.v1
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the ACP server is off", function () {
+    expect(res.getBody().error).to.include("is off");
+  });
+}

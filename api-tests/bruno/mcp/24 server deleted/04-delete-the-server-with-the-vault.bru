@@ -1,0 +1,16 @@
+meta {
+  name: Delete the server with the vault header
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/v1/mcp/servers/bru-vault-mcp
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt 1000
+}

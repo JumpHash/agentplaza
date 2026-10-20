@@ -1,0 +1,21 @@
+meta {
+  name: Refuse to stop an agent whose node cannot be reached
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/stop
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

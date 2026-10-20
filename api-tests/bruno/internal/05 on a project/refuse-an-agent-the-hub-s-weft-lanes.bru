@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an agent the hub's Weft lanes
+  type: http
+  seq: 63
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/weft/lanes
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "that is the hub's to do"
+}

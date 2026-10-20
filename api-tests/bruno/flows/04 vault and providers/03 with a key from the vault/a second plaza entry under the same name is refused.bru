@@ -1,0 +1,41 @@
+meta {
+  name: a second plaza entry under the same name is refused
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "name": "ANTHROPIC_API_KEY",
+    "kind": "api_key",
+    "label": "flows provider key",
+    "value": "flows-provider-key-0123456789",
+    "scope": {
+      "kind": "plaza"
+    },
+    "bindings": [
+      "provider:anthropic"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says a name has one plaza entry", function () {
+    expect(res.getBody().error).to.include('one plaza entry');
+  });
+}

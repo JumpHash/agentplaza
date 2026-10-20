@@ -1,0 +1,17 @@
+meta {
+  name: Read the effective settings: the task budget comes from the project
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/settings/effective
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.settings.task_budget.value: eq 400
+  res.responseTime: lt 1000
+}

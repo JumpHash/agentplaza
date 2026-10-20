@@ -1,0 +1,16 @@
+meta {
+  name: A terminal socket on a malformed id is refused
+  type: http
+  seq: 22
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/terminal/nonsense
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

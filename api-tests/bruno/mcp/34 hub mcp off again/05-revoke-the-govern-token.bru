@@ -1,0 +1,16 @@
+meta {
+  name: Revoke the govern token
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/v1/hub-mcp/tokens/{{mcp_govern_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt 1000
+}

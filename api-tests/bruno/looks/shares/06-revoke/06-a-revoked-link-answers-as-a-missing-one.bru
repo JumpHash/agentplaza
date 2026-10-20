@@ -1,0 +1,22 @@
+meta {
+  name: A revoked link answers as a missing one
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh6a_share}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal is the same as for a link that never existed", function () {
+    expect(res.getBody().error).to.equal("missing");
+  });
+}

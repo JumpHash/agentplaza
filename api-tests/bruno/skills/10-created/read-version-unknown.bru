@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 for a version that does not exist
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions/9
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

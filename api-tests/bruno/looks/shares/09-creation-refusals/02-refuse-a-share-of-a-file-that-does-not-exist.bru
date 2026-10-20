@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a share of a file that does not exist
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/shares
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "target": {
+      "kind": "file",
+      "id": "fnope"
+    }
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

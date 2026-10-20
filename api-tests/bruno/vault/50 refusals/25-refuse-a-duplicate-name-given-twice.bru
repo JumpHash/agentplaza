@@ -1,0 +1,35 @@
+meta {
+  name: Refuse a duplicate name given twice in a dotenv file
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "format": "dotenv",
+    "text": "BRU_DUP_IMP=first-0123\nBRU_DUP_IMP=second-0123\n",
+    "scope": {
+      "kind": "plaza"
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("neither copy is imported and both are reported", function () {
+    const body = res.getBody();
+    expect(body.imported).to.deep.equal([]);
+    expect(body.skipped.length).to.be.at.least(2);
+    expect(JSON.stringify(body)).to.not.include("first-0123");
+  });
+}

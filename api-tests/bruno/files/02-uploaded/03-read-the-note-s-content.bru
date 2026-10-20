@@ -1,0 +1,23 @@
+meta {
+  name: Read the note's content
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/files/{{file_note}}/content
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the text is the note and it is served as markdown", function () {
+    expect(String(res.getBody())).to.include("Hello from the files test.");
+    expect(res.getHeader("content-type")).to.include("text/markdown");
+  });
+}

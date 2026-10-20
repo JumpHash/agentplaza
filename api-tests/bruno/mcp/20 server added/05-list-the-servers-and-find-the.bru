@@ -1,0 +1,26 @@
+meta {
+  name: List the servers and find the added one
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/mcp/servers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the added server is listed with its url and no tools", function () {
+    const found = res.getBody().find((s) => s.id === "bru-fake-mcp");
+    expect(found, "added server is listed").to.not.be.undefined;
+    expect(found.transport.url).to.equal("http://127.0.0.1:9/mcp");
+    expect(found.tools_count).to.equal(0);
+    expect(found.name).to.equal("Bru fake server");
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Archive the second prompt: the role is free again
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/t-prompt-next/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

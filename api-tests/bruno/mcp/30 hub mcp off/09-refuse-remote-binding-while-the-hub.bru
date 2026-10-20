@@ -1,0 +1,31 @@
+meta {
+  name: Refuse remote binding while the hub is not on TLS
+  type: http
+  seq: 9
+}
+
+put {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": false,
+    "bind": "remote",
+    "allowed_origins": []
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says TLS is needed", function () {
+    expect(res.getBody().error).to.include("not serving TLS");
+  });
+}

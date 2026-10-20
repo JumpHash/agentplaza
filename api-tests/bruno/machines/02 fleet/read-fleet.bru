@@ -1,0 +1,38 @@
+meta {
+  name: Read the fleet with the hub's machine and no noded
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/fleet
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.machines: isArray
+  res.body.links: isArray
+}
+
+tests {
+  test("the first machine row is the hub's, n0", function () {
+    const hub = res.getBody().machines[0];
+    expect(hub.id).to.eq("n0");
+    expect(hub.role).to.eq("hub");
+    expect(["online", "draining", "offline"]).to.include(hub.status);
+  });
+
+  test("every machine row lists its agents and working count", function () {
+    for (const m of res.getBody().machines) {
+      expect(m.agents).to.be.an("array");
+      expect(m.working).to.be.a("number");
+    }
+  });
+
+  test("without noded the hub row carries no live stats", function () {
+    expect(res.getBody().machines[0].stats).to.eq(null);
+  });
+}

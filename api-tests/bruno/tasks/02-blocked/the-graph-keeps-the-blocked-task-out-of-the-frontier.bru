@@ -1,0 +1,24 @@
+meta {
+  name: The graph keeps the blocked task out of the frontier
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{bl_pid}}/graph
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the blocked task is not in the frontier", function () {
+    const g = res.getBody();
+    expect(g.frontier).to.not.include(bru.getVar("bl_b"));
+    expect(g.tasks.map((t) => t.id)).to.include(bru.getVar("bl_a"));
+  });
+}

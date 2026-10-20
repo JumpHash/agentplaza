@@ -1,0 +1,23 @@
+meta {
+  name: Refuse a change whose body is a list
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh10_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  [
+    1,
+    2
+  ]
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

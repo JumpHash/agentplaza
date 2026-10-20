@@ -1,0 +1,28 @@
+meta {
+  name: Read the newest mint as a page of one
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury/journal?kind=mint&limit=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("treasuryMintCursor", res.getBody().next_before);
+}
+
+tests {
+  test("the page is cut short, with a cursor for the older mints", function () {
+  const body = res.getBody();
+    expect(body.truncated).to.equal(true);
+    expect(body.next_before).to.be.a("number");
+  });
+}

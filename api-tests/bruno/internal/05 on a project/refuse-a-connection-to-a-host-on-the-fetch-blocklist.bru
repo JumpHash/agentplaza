@@ -1,0 +1,38 @@
+meta {
+  name: Refuse a connection to a host on the fetch blocklist
+  type: http
+  seq: 72
+}
+
+post {
+  url: {{baseUrl}}/internal/egress/check
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "cid": 61003,
+    "host": "t-internal-blocked.test",
+    "port": 443
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.intercept: eq false
+}
+
+tests {
+  test("the verdict says whether the host may be reached", function () {
+    expect(res.getBody().allow).to.equal(false);
+  });
+  test("the reason names the blocklist", function () {
+    expect(res.getBody().reason).to.include("fetch blocklist");
+  });
+}

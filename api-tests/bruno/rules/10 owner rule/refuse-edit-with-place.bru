@@ -1,0 +1,33 @@
+meta {
+  name: Refuse an edit whose source does not compile, and keep the rule
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/laws/rules/{{lawRuleId}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "source": "law \"R-bruno-2\" \"Bruno law\" {\n  frobnicate\n}\n"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: eq "the source does not compile"
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the diagnostic names line 2, column 3", function () {
+  expect(res.getBody().diagnostics[0].line).to.equal(2);
+  });
+}

@@ -1,0 +1,24 @@
+meta {
+  name: Refuse a vendor write while the Auggie engine is off
+  type: http
+  seq: 38
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/vendor/augment/v1/sessions
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+}

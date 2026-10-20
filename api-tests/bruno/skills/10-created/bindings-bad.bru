@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a binding that names no consumer
+  type: http
+  seq: 21
+}
+
+put {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/bindings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "bindings": [
+      "role:"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt 1000
+}

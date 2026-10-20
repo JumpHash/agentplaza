@@ -1,0 +1,18 @@
+meta {
+  name: The default-budget task is withdrawn with its escrow returned
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{life_task_default}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "withdrawn"
+  res.body.outcome: eq "cancelled"
+  res.responseTime: lt 1000
+}

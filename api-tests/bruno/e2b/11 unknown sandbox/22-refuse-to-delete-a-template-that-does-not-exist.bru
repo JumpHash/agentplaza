@@ -1,0 +1,21 @@
+meta {
+  name: Refuse to delete a template that does not exist
+  type: http
+  seq: 22
+}
+
+delete {
+  url: {{baseUrl}}/e2b/templates/e2b-nope-tmpl
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+assert {
+  res.status: eq 404
+  res.body.error_code: eq "template_not_found"
+  res.responseTime: lt 1000
+}

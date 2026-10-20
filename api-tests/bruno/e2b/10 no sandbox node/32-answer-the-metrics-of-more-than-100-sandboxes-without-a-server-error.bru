@@ -1,0 +1,26 @@
+meta {
+  name: Refuse the metrics of more than 100 sandboxes
+  type: http
+  seq: 32
+}
+
+get {
+  url: {{baseUrl}}/e2b/sandboxes/metrics?sandbox_ids=sbe2bmany000,sbe2bmany001,sbe2bmany002,sbe2bmany003,sbe2bmany004,sbe2bmany005,sbe2bmany006,sbe2bmany007,sbe2bmany008,sbe2bmany009,sbe2bmany010,sbe2bmany011,sbe2bmany012,sbe2bmany013,sbe2bmany014,sbe2bmany015,sbe2bmany016,sbe2bmany017,sbe2bmany018,sbe2bmany019,sbe2bmany020,sbe2bmany021,sbe2bmany022,sbe2bmany023,sbe2bmany024,sbe2bmany025,sbe2bmany026,sbe2bmany027,sbe2bmany028,sbe2bmany029,sbe2bmany030,sbe2bmany031,sbe2bmany032,sbe2bmany033,sbe2bmany034,sbe2bmany035,sbe2bmany036,sbe2bmany037,sbe2bmany038,sbe2bmany039,sbe2bmany040,sbe2bmany041,sbe2bmany042,sbe2bmany043,sbe2bmany044,sbe2bmany045,sbe2bmany046,sbe2bmany047,sbe2bmany048,sbe2bmany049,sbe2bmany050,sbe2bmany051,sbe2bmany052,sbe2bmany053,sbe2bmany054,sbe2bmany055,sbe2bmany056,sbe2bmany057,sbe2bmany058,sbe2bmany059,sbe2bmany060,sbe2bmany061,sbe2bmany062,sbe2bmany063,sbe2bmany064,sbe2bmany065,sbe2bmany066,sbe2bmany067,sbe2bmany068,sbe2bmany069,sbe2bmany070,sbe2bmany071,sbe2bmany072,sbe2bmany073,sbe2bmany074,sbe2bmany075,sbe2bmany076,sbe2bmany077,sbe2bmany078,sbe2bmany079,sbe2bmany080,sbe2bmany081,sbe2bmany082,sbe2bmany083,sbe2bmany084,sbe2bmany085,sbe2bmany086,sbe2bmany087,sbe2bmany088,sbe2bmany089,sbe2bmany090,sbe2bmany091,sbe2bmany092,sbe2bmany093,sbe2bmany094,sbe2bmany095,sbe2bmany096,sbe2bmany097,sbe2bmany098,sbe2bmany099,sbe2bmany100
+  body: none
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the answer refuses more than 100 ids", function () {
+    expect(res.getBody().message).to.equal("at most 100 sandbox_ids");
+  });
+}

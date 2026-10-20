@@ -1,0 +1,17 @@
+meta {
+  name: The project's budget: 1000 less the two escrows
+  type: http
+  seq: 31
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{tsk_pid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.balance: eq 300
+  res.responseTime: lt 1000
+}

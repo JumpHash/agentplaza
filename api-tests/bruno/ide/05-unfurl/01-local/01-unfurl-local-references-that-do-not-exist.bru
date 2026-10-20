@@ -1,0 +1,54 @@
+meta {
+  name: Unfurl local references that do not exist
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/unfurl
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "refs": [
+      {
+        "kind": "task",
+        "number": 999999
+      },
+      {
+        "kind": "agent",
+        "name": "t-ide-nobody",
+        "cid": null
+      },
+      {
+        "kind": "agent",
+        "name": null,
+        "cid": 999999
+      },
+      {
+        "kind": "library",
+        "id": "dnope"
+      },
+      {
+        "kind": "library_tool",
+        "name": "t-ide-nope",
+        "version": 1
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("five cards, each not found", function () {
+    const c = res.getBody().cards;
+    expect(c.length).to.equal(5);
+    expect(c.every((x) => x.ok === false && x.error === "not_found")).to.equal(true);
+  });
+}

@@ -1,0 +1,33 @@
+meta {
+  name: Adopt a finished project: it opens delivered, in maintenance
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/adopt
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-life adopted", "finished": true}
+}
+
+assert {
+  res.status: eq 201
+  res.body.project.stage: eq "delivered"
+  res.body.project.mode: eq "maintenance"
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the adopted project is a project of its own", function () {
+    expect(res.getBody().project.id).to.match(/^pr\d+$/);
+    expect(res.getBody().project.id).to.not.equal(bru.getVar("life_pid"));
+  });
+}

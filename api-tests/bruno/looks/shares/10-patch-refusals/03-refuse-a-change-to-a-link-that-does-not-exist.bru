@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a change to a link that does not exist
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/00000000000000000000000000000000
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "allow_download": true
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

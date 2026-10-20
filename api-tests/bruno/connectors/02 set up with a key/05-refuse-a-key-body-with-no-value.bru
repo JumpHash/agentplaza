@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a key body that has no value
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/unsplash/secret
+  body: json
+  auth: none
+}
+
+body:json {
+  {"field": "secret_key"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: contains "value"
+}

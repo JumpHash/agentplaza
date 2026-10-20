@@ -1,0 +1,24 @@
+meta {
+  name: archive straight from active
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowActivePid}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("archived, still in build", function () {
+    const b = res.getBody();
+    expect(b.archived).to.equal(true);
+    expect(b.mode).to.equal('build');
+  });
+}

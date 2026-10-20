@@ -1,0 +1,17 @@
+meta {
+  name: remove the key
+  type: http
+  seq: 1
+}
+
+delete {
+  url: {{baseUrl}}/v1/vault/secrets/{{flowKeyId}}
+  body: none
+  auth: none
+}
+
+tests {
+  test("the entry is deleted", function () {
+    expect([200, 204]).to.include(res.status);
+  });
+}

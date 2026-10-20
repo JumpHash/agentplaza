@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 when forgetting an unknown authorization
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/platforms/gitlab-99
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+

@@ -1,0 +1,27 @@
+meta {
+  name: Summarize the last 30 days with no window
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/summary
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the summary has totals and groups", function () {
+    const body = res.getBody();
+    expect(body.totals.calls).to.be.a("number");
+    expect(body.by_model).to.be.an("array");
+    expect(body.by_provider).to.be.an("array");
+    expect(body.unpriced).to.be.an("array");
+    expect(body.from_ms).to.be.at.most(body.to_ms);
+  });
+}

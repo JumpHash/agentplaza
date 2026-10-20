@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when checking an unknown provider
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/providers/no-such-provider/check
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse an adoption with a kind that is neither code nor other
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/adopt
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "t-life adopt kind", "kind": "video", "finished": true}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "kind must be"
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,24 @@
+meta {
+  name: A station's write is refused while the plaza is held
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/v1/ide/workspaces/station:w1/file
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "path": "a.txt",
+    "text": "x",
+    "expected_hash": null
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}

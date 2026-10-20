@@ -1,0 +1,26 @@
+meta {
+  name: a signal from outside arrives at the address
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/ingest/{{flowMoneyIngest}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "text": "flows outside signal"
+  }
+}
+
+assert {
+  res.status: eq 202
+  res.responseTime: lt 1000
+}

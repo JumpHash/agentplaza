@@ -1,0 +1,35 @@
+meta {
+  name: an edit to an unknown draft is not found
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/v1/owner/conversations/conv-flow-none/draft
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "revision": 0,
+    "title": "flows draft",
+    "goal": "flows goal",
+    "kind": "code"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says no such conversation", function () {
+    expect(res.getBody().error).to.equal('no such conversation');
+  });
+}

@@ -1,0 +1,39 @@
+meta {
+  name: Allow a read in read-only mode
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61006/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "r3",
+    "name": "read_file",
+    "input": {
+      "path": "/workspace/a.txt"
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+}
+
+tests {
+  test("the decision is allow", function () {
+    expect(res.getBody().reply.decision).to.equal("allow");
+  });
+}

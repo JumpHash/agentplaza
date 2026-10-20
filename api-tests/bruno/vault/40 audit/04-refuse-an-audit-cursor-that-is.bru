@@ -1,0 +1,23 @@
+meta {
+  name: Refuse an audit cursor that is not a number
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/audit?after=abc
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the cursor", function () {
+    expect(res.getBody().error).to.equal("after must be a number");
+  });
+}

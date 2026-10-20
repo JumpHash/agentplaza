@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a binding that is not one
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/v1/vault/secrets/{{vault_life_id}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "bindings": [
+      "bogus"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the binding", function () {
+    expect(res.getBody().error).to.include("is not a binding");
+  });
+}

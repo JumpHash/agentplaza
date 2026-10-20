@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a new task on an archived project
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-life after archive", "budget": 200, "project": "{{life_pid}}"}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "takes no new tasks"
+  res.responseTime: lt 1000
+}

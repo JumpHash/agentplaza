@@ -1,0 +1,18 @@
+meta {
+  name: Read the open task back: its escrow came out of the project's budget
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "open"
+  res.body.project: eq {{tsk_pid}}
+  res.responseTime: lt 1000
+}

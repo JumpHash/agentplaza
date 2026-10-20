@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a pause that does not say on or off
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/board/pause
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "project": "{{boardProject}}"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

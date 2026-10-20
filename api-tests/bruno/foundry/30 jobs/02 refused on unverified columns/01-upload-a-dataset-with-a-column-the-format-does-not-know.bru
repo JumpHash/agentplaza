@@ -1,0 +1,49 @@
+meta {
+  name: Upload a dataset with a column the format does not know
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload?name=t-job-unknown
+  body: text
+  auth: none
+}
+
+body:text {
+  {"ts":1700000000000,"label":"cheap","prompt_chars":100,"prompt_tokens":25,"tool_count":0,"history_turns":0,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-00","owner_note":"x"}
+  {"ts":1700000001000,"label":"mid","prompt_chars":101,"prompt_tokens":26,"tool_count":1,"history_turns":1,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-01"}
+  {"ts":1700000002000,"label":"cheap","prompt_chars":102,"prompt_tokens":27,"tool_count":2,"history_turns":2,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-02"}
+  {"ts":1700000003000,"label":"mid","prompt_chars":103,"prompt_tokens":28,"tool_count":0,"history_turns":3,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-03"}
+  {"ts":1700000004000,"label":"cheap","prompt_chars":104,"prompt_tokens":29,"tool_count":1,"history_turns":4,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-04"}
+  {"ts":1700000005000,"label":"mid","prompt_chars":105,"prompt_tokens":30,"tool_count":2,"history_turns":0,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-05"}
+  {"ts":1700000006000,"label":"cheap","prompt_chars":106,"prompt_tokens":31,"tool_count":0,"history_turns":1,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-06"}
+  {"ts":1700000007000,"label":"mid","prompt_chars":107,"prompt_tokens":32,"tool_count":1,"history_turns":2,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-07"}
+  {"ts":1700000008000,"label":"cheap","prompt_chars":108,"prompt_tokens":33,"tool_count":2,"history_turns":3,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-08"}
+  {"ts":1700000009000,"label":"mid","prompt_chars":109,"prompt_tokens":34,"tool_count":0,"history_turns":4,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-09"}
+  {"ts":1700000010000,"label":"cheap","prompt_chars":110,"prompt_tokens":35,"tool_count":1,"history_turns":0,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-10"}
+  {"ts":1700000011000,"label":"mid","prompt_chars":111,"prompt_tokens":36,"tool_count":2,"history_turns":1,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-11"}
+  {"ts":1700000012000,"label":"cheap","prompt_chars":112,"prompt_tokens":37,"tool_count":0,"history_turns":2,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-12"}
+  {"ts":1700000013000,"label":"mid","prompt_chars":113,"prompt_tokens":38,"tool_count":1,"history_turns":3,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-13"}
+  {"ts":1700000014000,"label":"cheap","prompt_chars":114,"prompt_tokens":39,"tool_count":2,"history_turns":4,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-14"}
+  {"ts":1700000015000,"label":"mid","prompt_chars":115,"prompt_tokens":40,"tool_count":0,"history_turns":0,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-15"}
+  {"ts":1700000016000,"label":"cheap","prompt_chars":116,"prompt_tokens":41,"tool_count":1,"history_turns":1,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-16"}
+  {"ts":1700000017000,"label":"mid","prompt_chars":117,"prompt_tokens":42,"tool_count":2,"history_turns":2,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-17"}
+  {"ts":1700000018000,"label":"cheap","prompt_chars":118,"prompt_tokens":43,"tool_count":0,"history_turns":3,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-18"}
+  {"ts":1700000019000,"label":"mid","prompt_chars":119,"prompt_tokens":44,"tool_count":1,"history_turns":4,"attachments":0,"prior_failures":0,"task_kind":"chat","domain":"support","tenant_tier":"free","requested_model":"m-small","task_id":"t-ds-19"}
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("fjob_unknown", res.getBody().id);
+}
+
+tests {
+  test("the upload is flagged", function () {
+    expect(res.getBody().taint).to.include("unverified_upload");
+  });
+}

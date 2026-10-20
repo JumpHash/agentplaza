@@ -1,0 +1,22 @@
+meta {
+  name: A branch in the platform's repo is refused
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/v1/ide/workspaces/repo:agentplaza@main/branch
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "t-ide-branch"
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+}

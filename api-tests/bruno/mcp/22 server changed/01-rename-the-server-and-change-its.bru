@@ -1,0 +1,36 @@
+meta {
+  name: Rename the server and change its limits
+  type: http
+  seq: 1
+}
+
+patch {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "Bru fake renamed",
+    "limits": {
+      "timeout_s": 5,
+      "max_output_kb": 64,
+      "idle_stop_min": 10
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.name: eq Bru fake renamed
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the new limit is kept and the transport is not changed", function () {
+    const body = res.getBody();
+    expect(body.limits.timeout_s).to.equal(5);
+    expect(body.transport.url).to.equal("http://127.0.0.1:9/mcp");
+  });
+}

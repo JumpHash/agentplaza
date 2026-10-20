@@ -1,0 +1,33 @@
+meta {
+  name: Refuse an unknown open scope
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": false,
+    "bind": "local",
+    "allowed_origins": [],
+    "auth_mode": "secure",
+    "open_scope": "root"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the scopes", function () {
+    expect(res.getBody().error).to.equal("open_scope is observe, operate or govern");
+  });
+}

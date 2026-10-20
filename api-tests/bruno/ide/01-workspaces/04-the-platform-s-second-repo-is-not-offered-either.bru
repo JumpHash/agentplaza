@@ -1,0 +1,16 @@
+meta {
+  name: The platform's second repo is not offered either
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/repo:agentplaza-mvp@main/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+}

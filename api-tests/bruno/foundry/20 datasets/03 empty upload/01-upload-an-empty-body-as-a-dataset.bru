@@ -1,0 +1,28 @@
+meta {
+  name: Upload an empty body as a dataset
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/datasets/upload?name=t-ds-empty
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("fdy_empty", res.getBody().id);
+}
+
+tests {
+  test("an empty upload has no rows and is flagged empty", function () {
+    const body = res.getBody();
+    expect(body.rows).to.equal(0);
+    expect(body.taint).to.include("empty");
+  });
+}

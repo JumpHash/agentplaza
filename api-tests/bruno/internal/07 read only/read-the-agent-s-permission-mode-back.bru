@@ -1,0 +1,22 @@
+meta {
+  name: Read the agent's permission mode back
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/61006/permissions
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the mode is read only", function () {
+    expect(res.getBody().mode).to.equal("read_only");
+  });
+}

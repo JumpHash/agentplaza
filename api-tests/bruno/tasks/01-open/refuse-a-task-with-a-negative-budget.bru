@@ -1,0 +1,24 @@
+meta {
+  name: Refuse a task with a negative budget
+  type: http
+  seq: 38
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks negative budget", "budget": -5, "project": "{{tsk_pid}}"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

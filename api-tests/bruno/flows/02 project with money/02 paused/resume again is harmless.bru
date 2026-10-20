@@ -1,0 +1,22 @@
+meta {
+  name: resume again is harmless
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("still not paused", function () {
+    expect(res.getBody().paused).to.equal(false);
+  });
+}

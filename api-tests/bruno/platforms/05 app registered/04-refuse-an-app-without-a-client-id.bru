@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an OAuth app whose client id is blank
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/registrations
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "gitlab", "host": "http://127.0.0.1:1", "client_id": "   ", "client_secret": "x"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: eq "client_id is required"
+}

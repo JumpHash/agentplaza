@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a join code whose ttl is not a number
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/codes
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "label": "t-node-bad",
+    "ttl_minutes": "soon"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

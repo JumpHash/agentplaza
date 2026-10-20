@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for the mirrored files of a workstation that does not exist
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/w-t-missing/files?prefix=notes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

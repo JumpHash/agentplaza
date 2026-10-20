@@ -1,0 +1,30 @@
+meta {
+  name: Read the recording defaults before changing them
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/recording-defaults
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.record: isBoolean
+  res.body.retention_days: isNumber
+  res.body.record_fps: isNumber
+  res.body.record_takeovers: isBoolean
+}
+
+script:post-response {
+  bru.setVar("stations_defaults_before", JSON.stringify(res.getBody()));
+}
+
+tests {
+  test("the frame rate is within the hub's cap", function () {
+    expect(res.getBody().record_fps).to.be.at.most(5);
+  });
+}

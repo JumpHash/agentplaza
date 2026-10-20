@@ -1,0 +1,32 @@
+meta {
+  name: Set unsplash's key, which the view then shows only as set
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/unsplash/secret
+  body: json
+  auth: none
+}
+
+body:json {
+  {"value": "t-unsplash-key-0789"}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: eq "unsplash"
+  res.body.configured: eq true
+}
+
+tests {
+  test("the key field is set from the vault and its value is not in the answer", function () {
+    const body = res.getBody();
+    const key = body.fields.find((f) => f.name === "access_key");
+    expect(key.set).to.equal(true);
+    expect(key.source).to.equal("vault");
+    expect(JSON.stringify(body)).to.not.include("t-unsplash-key-0789");
+  });
+}

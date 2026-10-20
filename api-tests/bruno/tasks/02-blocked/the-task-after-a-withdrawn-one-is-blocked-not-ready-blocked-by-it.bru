@@ -1,0 +1,23 @@
+meta {
+  name: The task after a withdrawn one is blocked: not ready, blocked by it
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{bl_b}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.ready: eq false
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("blocked_by names A", function () {
+    expect(res.getBody().blocked_by).to.deep.equal([bru.getVar("bl_a")]);
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Refuse to delete a file that does not exist
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/v1/files/fnope
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

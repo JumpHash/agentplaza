@@ -1,0 +1,20 @@
+meta {
+  name: read the plaza budget before this project
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("flowActivePlazaBefore", res.getBody().plaza_budget);
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Invoke a shadow model with a feature missing
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/invoke
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "x0": 0.5, "x1": -0.2
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error is a string", function () {
+    expect(res.getBody().error).to.be.a("string");
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Answer 502 for the hub status while its daemon is down
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/hub
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal says the daemon is unreachable", function () {
+    expect(res.getBody().error).to.include("unreachable");
+  });
+}

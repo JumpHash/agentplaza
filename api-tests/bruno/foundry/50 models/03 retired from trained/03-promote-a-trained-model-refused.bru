@@ -1,0 +1,22 @@
+meta {
+  name: Promote a trained model: refused
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_b}}/promote
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says a trained model is promoted from shadow", function () {
+    expect(res.getBody().error).to.include("is trained");
+  });
+}

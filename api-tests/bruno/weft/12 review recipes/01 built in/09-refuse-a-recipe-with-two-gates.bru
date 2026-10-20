@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a recipe with two gates
+  type: http
+  seq: 9
+}
+
+put {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  req.setBody({ toml: 'id = "docs"\nversion = 9\ntitle = "t"\n\n[[node]]\nid = "gate"\nkind = "gate"\n\n[[node]]\nid = "gate2"\nkind = "gate"\n' });
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: eq "a recipe has exactly one gate"
+}

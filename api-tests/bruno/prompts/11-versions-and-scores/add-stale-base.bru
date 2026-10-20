@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a version built on an old base (409)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "body": "# Tester\n\nYou are the test role. Check each request against the plan.\n",
+    "base_version": 1
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

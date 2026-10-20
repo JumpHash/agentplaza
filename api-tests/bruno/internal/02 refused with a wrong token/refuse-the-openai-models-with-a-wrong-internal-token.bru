@@ -1,0 +1,21 @@
+meta {
+  name: Refuse the openai models with a wrong internal token
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/openai/v1/models
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

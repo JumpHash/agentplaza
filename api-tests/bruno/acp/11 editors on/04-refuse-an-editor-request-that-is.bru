@@ -1,0 +1,23 @@
+meta {
+  name: Refuse an editor request that is not a WebSocket upgrade
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/acp
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says what an upgrade needs", function () {
+    expect(res.getBody().error).to.include("not a WebSocket upgrade");
+  });
+}

@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a loop with no max_runs
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/loops
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": 424242,
+    "prompt": "Check the queue",
+    "every_minutes": 5
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error says bad body", function () {
+    expect(res.getBody().error).to.match(/^bad body/);
+  });
+}

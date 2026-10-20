@@ -1,0 +1,27 @@
+meta {
+  name: Answer 404 when adding a version to an unknown prompt
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/prompts/no-such-prompt/versions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "body": "# Tester\n\nYou are the test role. Check each request against the plan.\n",
+    "base_version": 1
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

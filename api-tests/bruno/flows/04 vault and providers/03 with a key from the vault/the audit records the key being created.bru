@@ -1,0 +1,24 @@
+meta {
+  name: the audit records the key being created
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/audit?verify=1&after={{flowAuditCursor}}&limit=500
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a create event names the key, and the chain verifies", function () {
+    const b = res.getBody();
+    expect(b.entries.some((e) => e.event === 'create' && e.entry === bru.getVar('flowKeyId'))).to.equal(true);
+    expect(b.chain_ok).to.equal(true);
+  });
+}

@@ -1,0 +1,32 @@
+meta {
+  name: starting an unknown conversation is not found
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/owner/conversations/conv-flow-none/start
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "revision": 0
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the conversation", function () {
+    expect(res.getBody().error).to.include('conv-flow-none');
+  });
+}

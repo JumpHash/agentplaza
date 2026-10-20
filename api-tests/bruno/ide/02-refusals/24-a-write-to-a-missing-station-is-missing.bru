@@ -1,0 +1,24 @@
+meta {
+  name: A write to a missing station is missing
+  type: http
+  seq: 24
+}
+
+put {
+  url: {{baseUrl}}/v1/ide/workspaces/station:w1/file
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "path": "a.txt",
+    "text": "x",
+    "expected_hash": null
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

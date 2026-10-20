@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a Weft statement for an agent the hub never heard of
+  type: http
+  seq: 21
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61001/gateway/weft/records/unsigned
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "kind": "attest",
+    "body": {}
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 409
+  res.body.error: eq "no agent 61001"
+}

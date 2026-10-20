@@ -1,0 +1,36 @@
+meta {
+  name: Refuse a recording frame rate over 5
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/stations/recording-defaults
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "record": true,
+    "retention_days": 30,
+    "record_fps": 6,
+    "record_takeovers": false
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("record_fps is 0 to 5");
+  });
+}

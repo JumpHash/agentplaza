@@ -1,0 +1,36 @@
+meta {
+  name: switch the background health checks off
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("provSettingsSnapshot"));
+  s.health_interval_s = 0;
+  req.setBody(s);
+}
+
+tests {
+  test("the background health checks are off", function () {
+    expect(res.getBody().health_interval_s).to.equal(0);
+  });
+}

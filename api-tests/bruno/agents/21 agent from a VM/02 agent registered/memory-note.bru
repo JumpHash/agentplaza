@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for a memory note the agent does not have
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001/memory/notes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

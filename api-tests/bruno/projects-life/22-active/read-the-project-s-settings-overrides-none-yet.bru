@@ -1,0 +1,23 @@
+meta {
+  name: Read the project's settings overrides: none yet
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/settings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no override is set yet", function () {
+    expect(res.getBody()).to.be.an("object");
+    expect(res.getBody()).to.not.have.property("task_budget");
+  });
+}

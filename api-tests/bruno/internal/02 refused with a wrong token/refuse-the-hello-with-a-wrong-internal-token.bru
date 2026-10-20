@@ -1,0 +1,29 @@
+meta {
+  name: Refuse the hello with a wrong internal token
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+}
+
+body:json {
+  {
+    "role": "orchestrator",
+    "vm": 1,
+    "caps": []
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

@@ -1,0 +1,17 @@
+meta {
+  name: An agent that does not exist has no infractions
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/999998/infractions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}

@@ -1,0 +1,35 @@
+meta {
+  name: Stop all work and hold the plaza, with a reason
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/stop
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"reason": "t-plaza probe: held for the test"}
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq true
+  res.body.by: eq "owner"
+  res.body.reason: eq "t-plaza probe: held for the test"
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the hold has a time and a count of cancelled work", function () {
+    const b = res.getBody();
+    expect(b.since_ms).to.be.above(0);
+    expect(b.cancelled).to.be.a("number");
+  });
+}

@@ -1,0 +1,42 @@
+meta {
+  name: Refuse an ENV step whose name is not a variable name
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/templates/{{e2bRefusedTemplate}}/builds/{{e2bRefusedBuild}}
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "fromImage": "e2bdev/base",
+    "steps": [
+      {
+        "type": "ENV",
+        "args": [
+          "1A",
+          "x"
+        ]
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error_code: eq "invalid_request"
+}
+
+tests {
+  test("the message says why", function () {
+    expect(res.getBody().message).to.include("not a variable name");
+  });
+}

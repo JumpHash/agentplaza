@@ -1,0 +1,16 @@
+meta {
+  name: Delete agent 61002 again, so the hub has no live agent left for the nodes folder
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{baseUrl}}/v1/agents/61002
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

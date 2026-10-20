@@ -1,0 +1,20 @@
+meta {
+  name: Refuse a lane on a repo that does not exist
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/lanes
+  body: json
+  auth: none
+}
+
+body:json {
+  {"repo": "t-weft-no-such-repo", "ref": "main", "title": "t lane", "author": "owner"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+}

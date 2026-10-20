@@ -1,0 +1,17 @@
+meta {
+  name: Show the expired page for the go link of a flow that was never started
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/flows/0123456789abcdef0123456789abcdef/go
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+

@@ -1,0 +1,39 @@
+meta {
+  name: Run the approved engine request when the engine asks again
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61007/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "e1",
+    "name": "engine.exec",
+    "input": {
+      "command": "make test"
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+}
+
+tests {
+  test("the decision is allow", function () {
+    expect(res.getBody().reply.decision).to.equal("allow");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Read the refused job: there is no such job
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/jobs/t-job-nogpu
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refused job was never recorded", function () {
+    expect(res.getBody().error).to.equal("no such job");
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: List the catalog of MCP server presets
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/mcp/catalog
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the catalog answers a non-empty body", function () {
+    expect(res.getBody()).to.be.an("array");
+    expect(res.getBody().length).to.be.above(0);
+  });
+}

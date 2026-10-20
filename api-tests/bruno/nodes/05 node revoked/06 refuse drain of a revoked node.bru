@@ -1,0 +1,26 @@
+meta {
+  name: Refuse to drain on a revoked node (409)
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/{{node_joined_id}}/drain
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "on": true
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}

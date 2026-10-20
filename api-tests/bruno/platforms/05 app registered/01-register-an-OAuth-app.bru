@@ -1,0 +1,42 @@
+meta {
+  name: Record a GitLab OAuth app, its secret kept out of the answer
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/registrations
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "kind": "gitlab",
+    "host": "http://127.0.0.1:1",
+    "client_id": "t-platforms-client",
+    "client_secret": "t-platforms-secret-0123"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: isString
+  res.body.kind: eq "gitlab"
+}
+
+script:post-response {
+  bru.setVar("platforms_app", res.getBody().id);
+}
+
+tests {
+  test("the app's id names its kind, and its secret is not in the answer", function () {
+    const body = res.getBody();
+    expect(body.id).to.match(/^gitlab-app-\d+$/);
+    expect(body.host).to.equal("http://127.0.0.1:1");
+    expect(body.client_id).to.equal("t-platforms-client");
+    expect(JSON.stringify(body)).to.not.include("t-platforms-secret-0123");
+    expect(body).to.not.have.property("client_secret");
+  });
+}

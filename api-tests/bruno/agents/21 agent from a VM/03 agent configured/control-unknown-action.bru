@@ -1,0 +1,29 @@
+meta {
+  name: Refuse an unknown control action
+  type: http
+  seq: 27
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/control
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "action": "pause"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("unknown action");
+  });
+}

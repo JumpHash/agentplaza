@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a network rule that is not an address on deny
+  type: http
+  seq: 16
+}
+
+put {
+  url: {{baseUrl}}/e2b/sandboxes/sbffffffffffffffff/network
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "denyOut": [
+      "not-an-ip"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

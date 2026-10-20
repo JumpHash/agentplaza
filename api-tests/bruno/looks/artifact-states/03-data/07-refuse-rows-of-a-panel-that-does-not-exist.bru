@@ -1,0 +1,16 @@
+meta {
+  name: Refuse rows of a panel that does not exist
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/rows?panel=nope
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

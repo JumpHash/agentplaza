@@ -1,0 +1,37 @@
+meta {
+  name: Refuse a node scope that names a node not of this plaza
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "BRU_REF_KEY",
+    "kind": "api_key",
+    "value": "bru-ref-value-0123",
+    "scope": {
+      "kind": "nodes",
+      "nodes": [
+        "n9"
+      ]
+    }
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the node is not of this plaza", function () {
+    expect(res.getBody().error).to.include("is not a node of this plaza");
+  });
+}

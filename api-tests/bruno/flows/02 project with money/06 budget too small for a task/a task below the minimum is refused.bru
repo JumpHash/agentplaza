@@ -1,0 +1,34 @@
+meta {
+  name: a task below the minimum is refused
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "flows below minimum",
+    "project": "{{flowSmallPid}}",
+    "budget": 150
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the minimum", function () {
+    expect(res.getBody().error).to.include('below the minimum of 200');
+  });
+}

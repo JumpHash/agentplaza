@@ -1,0 +1,28 @@
+meta {
+  name: Refuse an instance whose id is a built-in engine's (409)
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/engines
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "claude",
+    "engine": "acp-local",
+    "command": "scratch-agent"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}

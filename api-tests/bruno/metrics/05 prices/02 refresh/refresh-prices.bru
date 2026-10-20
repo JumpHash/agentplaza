@@ -1,0 +1,25 @@
+meta {
+  name: Refresh the model prices and list both sources
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/prices/refresh
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refresh answers both sources and the vendor list", function () {
+    const body = res.getBody();
+    expect(body.sources.map((s) => s.name)).to.deep.equal(["openrouter", "litellm"]);
+    expect(body.fetched_at_ms).to.be.above(0);
+    expect(body.models.find((m) => m.model === "meta/muse-wonder-1.0")).to.not.be.undefined;
+  });
+}

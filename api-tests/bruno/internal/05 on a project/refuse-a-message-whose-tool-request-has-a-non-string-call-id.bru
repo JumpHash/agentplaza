@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a message whose tool request has a non-string call id
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": 7,
+    "name": "read_file",
+    "input": {}
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 400
+}

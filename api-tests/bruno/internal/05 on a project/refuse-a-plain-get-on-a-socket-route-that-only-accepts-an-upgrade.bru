@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a plain GET on a socket route that only accepts an upgrade
+  type: http
+  seq: 32
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/anthropic/v1/messages
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 405
+}
+
+tests {
+  test("the refusal says the route takes POST", function () {
+    expect(res.getBody().error).to.include("POST");
+  });
+}

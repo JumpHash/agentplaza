@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a maintenance interval over 720 hours
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"every_hours": 1000}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "every_hours"
+  res.responseTime: lt 1000
+}

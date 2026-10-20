@@ -1,0 +1,17 @@
+meta {
+  name: List an unreachable provider's models: 502 with the reason
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/providers/t-prov-compat/models
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 5000
+  res.body.error: isString
+}

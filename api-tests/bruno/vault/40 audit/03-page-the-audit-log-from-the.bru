@@ -1,0 +1,24 @@
+meta {
+  name: Page the audit log from the start with a limit
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/audit?after=0&limit=2
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the page holds at most two entries, all after the cursor", function () {
+    const entries = res.getBody().entries;
+    expect(entries.length).to.be.at.most(2);
+    entries.forEach((e) => expect(e.seq).to.be.above(0));
+  });
+}

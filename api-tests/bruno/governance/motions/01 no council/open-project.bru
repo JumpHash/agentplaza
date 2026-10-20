@@ -1,0 +1,32 @@
+meta {
+  name: Open a project for the motion tests
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "t-motion project",
+    "goal": "Motion tests",
+    "kind": "code"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("motionProject", res.getBody().id);
+}

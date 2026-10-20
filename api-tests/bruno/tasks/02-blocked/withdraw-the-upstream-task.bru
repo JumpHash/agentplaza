@@ -1,0 +1,17 @@
+meta {
+  name: Withdraw the upstream task
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/v1/tasks/{{bl_a}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.state: eq "withdrawn"
+  res.responseTime: lt 1000
+}

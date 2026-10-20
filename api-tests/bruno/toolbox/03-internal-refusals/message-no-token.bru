@@ -1,0 +1,31 @@
+meta {
+  name: Refuse an agent message without the internal token
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/9001/message
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "t-call-x",
+    "name": "plaza_toolbox",
+    "input": {}
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

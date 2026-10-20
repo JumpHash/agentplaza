@@ -1,0 +1,22 @@
+meta {
+  name: The viewer page answers not built while no console is built
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh1_share}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("it is JSON saying the viewer is not built", function () {
+    expect(res.getBody().error).to.equal("the viewer is not built");
+  });
+}

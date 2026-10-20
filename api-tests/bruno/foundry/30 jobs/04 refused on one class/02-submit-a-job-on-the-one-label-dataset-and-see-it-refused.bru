@@ -1,0 +1,33 @@
+meta {
+  name: Submit a job on the one-label dataset and see it refused
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "job_id": "t-job-oneclass",
+    "recipe": "rung-predictor@1",
+    "datasets": [
+      "{{fjob_oneclass}}"
+    ],
+    "budget_gpu_hours": 2
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the single_class flag is named", function () {
+    expect(res.getBody().error).to.include("tainted (single_class)");
+  });
+}

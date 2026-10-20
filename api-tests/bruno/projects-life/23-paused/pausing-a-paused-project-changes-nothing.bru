@@ -1,0 +1,17 @@
+meta {
+  name: Pausing a paused project changes nothing
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/pause
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq true
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,227 @@
+meta {
+  name: Refuse a batch over the limit
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/unfurl
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "refs": [
+      {
+        "kind": "task",
+        "number": 900000
+      },
+      {
+        "kind": "task",
+        "number": 900001
+      },
+      {
+        "kind": "task",
+        "number": 900002
+      },
+      {
+        "kind": "task",
+        "number": 900003
+      },
+      {
+        "kind": "task",
+        "number": 900004
+      },
+      {
+        "kind": "task",
+        "number": 900005
+      },
+      {
+        "kind": "task",
+        "number": 900006
+      },
+      {
+        "kind": "task",
+        "number": 900007
+      },
+      {
+        "kind": "task",
+        "number": 900008
+      },
+      {
+        "kind": "task",
+        "number": 900009
+      },
+      {
+        "kind": "task",
+        "number": 900010
+      },
+      {
+        "kind": "task",
+        "number": 900011
+      },
+      {
+        "kind": "task",
+        "number": 900012
+      },
+      {
+        "kind": "task",
+        "number": 900013
+      },
+      {
+        "kind": "task",
+        "number": 900014
+      },
+      {
+        "kind": "task",
+        "number": 900015
+      },
+      {
+        "kind": "task",
+        "number": 900016
+      },
+      {
+        "kind": "task",
+        "number": 900017
+      },
+      {
+        "kind": "task",
+        "number": 900018
+      },
+      {
+        "kind": "task",
+        "number": 900019
+      },
+      {
+        "kind": "task",
+        "number": 900020
+      },
+      {
+        "kind": "task",
+        "number": 900021
+      },
+      {
+        "kind": "task",
+        "number": 900022
+      },
+      {
+        "kind": "task",
+        "number": 900023
+      },
+      {
+        "kind": "task",
+        "number": 900024
+      },
+      {
+        "kind": "task",
+        "number": 900025
+      },
+      {
+        "kind": "task",
+        "number": 900026
+      },
+      {
+        "kind": "task",
+        "number": 900027
+      },
+      {
+        "kind": "task",
+        "number": 900028
+      },
+      {
+        "kind": "task",
+        "number": 900029
+      },
+      {
+        "kind": "task",
+        "number": 900030
+      },
+      {
+        "kind": "task",
+        "number": 900031
+      },
+      {
+        "kind": "task",
+        "number": 900032
+      },
+      {
+        "kind": "task",
+        "number": 900033
+      },
+      {
+        "kind": "task",
+        "number": 900034
+      },
+      {
+        "kind": "task",
+        "number": 900035
+      },
+      {
+        "kind": "task",
+        "number": 900036
+      },
+      {
+        "kind": "task",
+        "number": 900037
+      },
+      {
+        "kind": "task",
+        "number": 900038
+      },
+      {
+        "kind": "task",
+        "number": 900039
+      },
+      {
+        "kind": "task",
+        "number": 900040
+      },
+      {
+        "kind": "task",
+        "number": 900041
+      },
+      {
+        "kind": "task",
+        "number": 900042
+      },
+      {
+        "kind": "task",
+        "number": 900043
+      },
+      {
+        "kind": "task",
+        "number": 900044
+      },
+      {
+        "kind": "task",
+        "number": 900045
+      },
+      {
+        "kind": "task",
+        "number": 900046
+      },
+      {
+        "kind": "task",
+        "number": 900047
+      },
+      {
+        "kind": "task",
+        "number": 900048
+      },
+      {
+        "kind": "task",
+        "number": 900049
+      },
+      {
+        "kind": "task",
+        "number": 900050
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

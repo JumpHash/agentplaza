@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a summary whose from is not a number
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/summary?from=soon
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names from", function () {
+    expect(res.getBody().error).to.include("from");
+  });
+}

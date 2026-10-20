@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a vote with no reason
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/motions/m-none/vote
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "agent_cid": 8603,
+    "vote": "yes",
+    "reason": ""
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

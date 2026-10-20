@@ -1,0 +1,39 @@
+meta {
+  name: Call an observe tool with the observe token
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{mcp_observe_token}}
+  Mcp-Session-Id: {{mcp_observe_session}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "plaza_status",
+      "arguments": {}
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the call succeeds", function () {
+    expect(res.getBody().result.isError).to.equal(false);
+  });
+}

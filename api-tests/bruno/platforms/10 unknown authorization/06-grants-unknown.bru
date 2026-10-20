@@ -1,0 +1,20 @@
+meta {
+  name: Answer 404 when choosing the grants of an unknown authorization
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/platforms/gitlab-99/grants
+  body: json
+  auth: none
+}
+
+body:json {
+  {"namespaces": {"t-platforms-group": {"all": true, "repos": []}}}
+}
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+

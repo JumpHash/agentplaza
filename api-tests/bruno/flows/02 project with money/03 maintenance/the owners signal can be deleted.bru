@@ -1,0 +1,22 @@
+meta {
+  name: the owner's signal can be deleted
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}/maintenance/signals/{{flowMoneySignal}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the delete says deleted", function () {
+    expect(res.getBody().deleted).to.equal(true);
+  });
+}

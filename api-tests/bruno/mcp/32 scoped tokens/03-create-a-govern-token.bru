@@ -1,0 +1,35 @@
+meta {
+  name: Create a govern token
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/hub-mcp/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "bru govern",
+    "scope": "govern"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.token: isString
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("mcp_govern_token", res.getBody().token);
+  bru.setVar("mcp_govern_id", res.getBody().record.id);
+}
+
+tests {
+  test("the record names the govern scope", function () {
+    expect(res.getBody().record.scope).to.equal("govern");
+  });
+}

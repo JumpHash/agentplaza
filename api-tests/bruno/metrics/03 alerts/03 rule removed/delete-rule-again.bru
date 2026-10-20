@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to delete the same rule twice
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/metrics/alerts/rules/{{metrics_rule_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: eq "no such rule"
+}

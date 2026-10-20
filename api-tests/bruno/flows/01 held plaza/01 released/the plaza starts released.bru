@@ -1,0 +1,22 @@
+meta {
+  name: the plaza starts released
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/plaza/state
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the plaza is not held before the flow", function () {
+    expect(res.getBody().paused).to.equal(false);
+  });
+}

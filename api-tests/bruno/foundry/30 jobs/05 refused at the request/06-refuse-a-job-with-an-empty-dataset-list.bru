@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a job with an empty dataset list
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"recipe": "rung-predictor@1", "datasets": [], "budget_gpu_hours": 1}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.equal("datasets is a non-empty array of dataset ids");
+  });
+}

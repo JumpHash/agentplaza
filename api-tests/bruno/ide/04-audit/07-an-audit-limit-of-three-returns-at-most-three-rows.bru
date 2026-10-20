@@ -1,0 +1,22 @@
+meta {
+  name: An audit limit of three returns at most three rows
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/audit?limit=3
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("at most three", function () {
+    expect(res.getBody().length).to.be.at.most(3);
+  });
+}

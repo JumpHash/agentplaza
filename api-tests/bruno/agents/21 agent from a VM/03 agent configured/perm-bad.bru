@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a permission mode that is not one of the three
+  type: http
+  seq: 17
+}
+
+put {
+  url: {{baseUrl}}/v1/agents/41001/permissions
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "mode": "yolo"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("body must be");
+  });
+}

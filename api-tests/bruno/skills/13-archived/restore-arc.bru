@@ -1,0 +1,22 @@
+meta {
+  name: Restore the archived skill
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{arcSkillId}}/restore
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("archived_ms is cleared", function () {
+    expect(res.getBody().skill.archived_ms).to.equal(null);
+  });
+}

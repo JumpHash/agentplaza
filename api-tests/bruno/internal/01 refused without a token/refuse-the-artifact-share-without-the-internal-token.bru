@@ -1,0 +1,23 @@
+meta {
+  name: Refuse the artifact share without the internal token
+  type: http
+  seq: 34
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/artifacts/art-t-internal-none/share
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "reason": "x"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

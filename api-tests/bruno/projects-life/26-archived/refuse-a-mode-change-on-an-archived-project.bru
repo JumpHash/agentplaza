@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a mode change on an archived project
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/mode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"mode": "build"}
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: contains "archived"
+  res.responseTime: lt 1000
+}

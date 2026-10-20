@@ -1,0 +1,24 @@
+meta {
+  name: the project stays in maintenance
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{flowMoneyPid}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("maintenance, not paused", function () {
+    const b = res.getBody();
+    expect(b.mode).to.equal('maintenance');
+    expect(b.paused).to.equal(false);
+  });
+}

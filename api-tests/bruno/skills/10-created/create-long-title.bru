@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a title of 121 characters
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/skills
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "id": "t-skill-longtitle",
+    "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "skill_md": "---\nname: t-skill-life\ndescription: Test skill for the Bruno run. Use when a test needs a skill with a reference file.\n---\n# Test skill\n\nRead [the reference](reference.md) first.\n"
+  }
+}
+
+assert {
+  res.status: eq 422
+  res.responseTime: lt 1000
+}

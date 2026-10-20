@@ -1,0 +1,23 @@
+meta {
+  name: Check a provider with no key: critical, and nothing is called
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/providers/t-prov-compat/check
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.health.status: eq "crit"
+}
+
+tests {
+  test("the message asks for a key", function () {
+    expect(res.getBody().health.message).to.include("add a key");
+  });
+}

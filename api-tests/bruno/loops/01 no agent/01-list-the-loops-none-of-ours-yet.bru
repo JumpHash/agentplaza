@@ -1,0 +1,17 @@
+meta {
+  name: List the loops (none of ours yet)
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/loops
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}

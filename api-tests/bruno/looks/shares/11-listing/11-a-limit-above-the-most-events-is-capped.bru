@@ -1,0 +1,16 @@
+meta {
+  name: A limit above the most events is capped
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/shares/{{sh11a_share}}/events?limit=5000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

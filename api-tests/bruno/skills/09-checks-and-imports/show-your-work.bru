@@ -1,0 +1,26 @@
+meta {
+  name: The built-in skill is live and bound to the whole plaza
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/show-your-work
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("it is tagged builtin, bound to plaza and published", function () {
+    const s = res.getBody().skill;
+    expect(s.tags).to.include("builtin");
+    expect(s.bindings).to.deep.equal(["plaza"]);
+    expect(s.active_version).to.be.a("number");
+    expect(res.getBody().live).to.be.an("object");
+  });
+}

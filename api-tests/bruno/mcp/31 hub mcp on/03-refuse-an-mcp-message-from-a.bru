@@ -1,0 +1,30 @@
+meta {
+  name: Refuse an MCP message from a foreign origin
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+headers {
+  Origin: https://evil.test
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {}
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

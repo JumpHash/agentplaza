@@ -1,0 +1,21 @@
+meta {
+  name: Refuse settings that are not JSON
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/hub-mcp
+  body: text
+  auth: none
+}
+
+body:text {
+  enabled=yes
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

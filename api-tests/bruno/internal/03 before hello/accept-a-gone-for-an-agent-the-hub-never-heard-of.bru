@@ -1,0 +1,32 @@
+meta {
+  name: Accept a gone for an agent the hub never heard of
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61001/gone
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "reason": "session ended"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the reply is empty", function () {
+    expect(res.getBody()).to.deep.equal({});
+  });
+}

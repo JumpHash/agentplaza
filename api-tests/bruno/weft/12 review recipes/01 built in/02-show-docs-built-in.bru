@@ -1,0 +1,31 @@
+meta {
+  name: Show the built-in docs recipe, with its TOML
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/docs
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.recipe.id: eq "docs"
+  res.body.recipe.version: eq 1
+  res.body.recipe.title: eq "Documentation"
+}
+
+script:post-response {
+  bru.setVar("docs_v1_toml", res.getBody().toml);
+}
+
+tests {
+  test("the TOML names the recipe and its version", function () {
+    const toml = res.getBody().toml;
+    expect(toml).to.include('id = "docs"');
+    expect(toml).to.include("version = 1");
+  });
+}

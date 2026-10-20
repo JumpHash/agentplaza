@@ -1,0 +1,17 @@
+meta {
+  name: List the recent infractions
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/infractions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}

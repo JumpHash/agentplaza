@@ -1,0 +1,34 @@
+meta {
+  name: Register an agent with a cid that is not a number
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/abc/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "role": "",
+    "vm": 1,
+    "caps": []
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error says the CID is a number", function () {
+    expect(res.getBody().error).to.equal("the CID must be a number");
+  });
+}

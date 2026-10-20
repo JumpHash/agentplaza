@@ -1,0 +1,28 @@
+meta {
+  name: Upload a picture as the owner
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/files?name=t-files-pic.png
+  body: text
+  auth: none
+}
+
+headers {
+  content-type: image/png
+}
+
+body:text {
+  fake-png-bytes
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("file_pic", res.getBody().id);
+}

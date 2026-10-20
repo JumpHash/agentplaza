@@ -1,0 +1,20 @@
+meta {
+  name: Refuse a repo name with non-ASCII letters
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/weft/console
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "repo.create", "body": {"repo": "wéft-ünïcode"}}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 2000
+}

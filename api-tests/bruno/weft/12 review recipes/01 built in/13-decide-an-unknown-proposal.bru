@@ -1,0 +1,21 @@
+meta {
+  name: Answer 409 when deciding a recipe proposal that is not pending
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/recipes/proposals/rp-999
+  body: json
+  auth: none
+}
+
+body:json {
+  {"approve": true}
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+  res.body.error: eq "no pending proposal rp-999"
+}

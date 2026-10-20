@@ -1,0 +1,24 @@
+meta {
+  name: List the links of artifact a
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/shares?target=artifact:{{sh11a_art}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("two links, both of artifact a", function () {
+    const b = res.getBody();
+    expect(b.length).to.equal(2);
+    expect(b.every((s) => s.target.id === bru.getVar("sh11a_art"))).to.equal(true);
+  });
+}

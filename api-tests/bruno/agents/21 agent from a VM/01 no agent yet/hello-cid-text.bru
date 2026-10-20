@@ -1,0 +1,33 @@
+meta {
+  name: Refuse an agent's hello whose CID is not a number
+  type: http
+  seq: 48
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/abc/hello
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "vm": 1
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("the CID must be a number");
+  });
+}

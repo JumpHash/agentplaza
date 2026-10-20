@@ -1,0 +1,38 @@
+meta {
+  name: Refuse volume mounts on a sandbox
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "templateID": "base",
+    "volumeMounts": [
+      {
+        "name": "data",
+        "mountPath": "/data/x"
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the message says volumes are given by role", function () {
+    expect(res.getBody().message).to.include("volumeMounts are not served");
+  });
+}

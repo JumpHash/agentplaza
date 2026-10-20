@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a dataset id that is not a string
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"recipe": "rung-predictor@1", "datasets": [7], "budget_gpu_hours": 1}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.equal("datasets are strings");
+  });
+}

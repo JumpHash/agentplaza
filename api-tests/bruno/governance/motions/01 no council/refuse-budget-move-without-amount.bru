@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a budget move that names no amount
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/motions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "proposer_cid": 8603,
+    "kind": "budget_move",
+    "text": "t-motion move"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

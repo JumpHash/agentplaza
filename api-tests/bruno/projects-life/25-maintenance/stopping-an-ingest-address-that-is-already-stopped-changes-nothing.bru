@@ -1,0 +1,17 @@
+meta {
+  name: Stopping an ingest address that is already stopped changes nothing
+  type: http
+  seq: 16
+}
+
+delete {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/maintenance/ingest
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.ingest: eq false
+  res.responseTime: lt 1000
+}

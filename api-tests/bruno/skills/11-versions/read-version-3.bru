@@ -1,0 +1,24 @@
+meta {
+  name: Read the broken version: the finding names the missing file
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/skills/{{lifeSkillId}}/versions/3
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("missing-file is an error finding on SKILL.md", function () {
+    const found = res.getBody().findings.find((f) => f.rule === "missing-file");
+    expect(found).to.be.an("object");
+    expect(found.severity).to.equal("error");
+  });
+}

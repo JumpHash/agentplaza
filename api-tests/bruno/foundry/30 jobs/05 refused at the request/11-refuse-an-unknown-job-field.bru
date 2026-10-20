@@ -1,0 +1,26 @@
+meta {
+  name: Refuse an unknown job field
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {"recipe": "rung-predictor@1", "datasets": ["ds-x"], "budget_gpu_hours": 1, "priority": 1}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.equal('unknown job field "priority"');
+  });
+}

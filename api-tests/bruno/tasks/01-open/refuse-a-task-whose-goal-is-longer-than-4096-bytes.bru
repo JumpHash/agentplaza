@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a task whose goal is longer than 4096 bytes
+  type: http
+  seq: 35
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "x", "budget": 200, "project": "{{tsk_pid}}"}
+}
+
+script:pre-request {
+  req.setBody({ goal: "a".repeat(4097), budget: 200, project: bru.getVar("tsk_pid") });
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "at most"
+  res.responseTime: lt 1000
+}

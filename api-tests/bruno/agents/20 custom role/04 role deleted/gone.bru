@@ -1,0 +1,23 @@
+meta {
+  name: The deleted role is no longer listed
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/roles
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("no role with the test id is listed", function () {
+    expect(res.getBody().find((r) => r.id === "t-agents-lead")).to.be.undefined;
+  });
+}

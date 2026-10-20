@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a settings change that names no such setting
+  type: http
+  seq: 12
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"colour": "red"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "unknown field"
+  res.responseTime: lt 1000
+}

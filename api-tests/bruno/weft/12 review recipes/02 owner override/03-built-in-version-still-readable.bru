@@ -1,0 +1,18 @@
+meta {
+  name: The built-in docs version 1 still reads as built in
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/docs?version=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.recipe.version: eq 1
+  res.body.recipe.title: eq "Documentation"
+}

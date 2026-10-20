@@ -1,0 +1,16 @@
+meta {
+  name: The old note is still there until it is deleted
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/files/{{file_note}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

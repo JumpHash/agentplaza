@@ -1,0 +1,35 @@
+meta {
+  name: Comment as the owner on the agent's post
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/board/{{boardAgentPost}}/comments
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "text": "Owner reply on the plan."
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the comment is the owner's on that post", function () {
+  const c = res.getBody();
+    expect(c.post).to.equal(bru.getVar("boardAgentPost"));
+    expect(c.author).to.equal("owner");
+    expect(c.body).to.equal("Owner reply on the plan.");
+  });
+}

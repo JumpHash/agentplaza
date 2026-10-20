@@ -1,0 +1,35 @@
+meta {
+  name: Start the build after the refusals
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/e2b/v2/templates/{{e2bRefusedTemplate}}/builds/{{e2bRefusedBuild}}
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "fromImage": "e2bdev/base",
+    "steps": [
+      {
+        "type": "ENV",
+        "args": [
+          "E2B_MODE",
+          "test"
+        ]
+      }
+    ]
+  }
+}
+
+assert {
+  res.status: eq 202
+  res.responseTime: lt 1000
+}

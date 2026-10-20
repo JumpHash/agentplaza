@@ -1,0 +1,23 @@
+meta {
+  name: Refuse to remove the last key slot
+  type: http
+  seq: 18
+}
+
+delete {
+  url: {{baseUrl}}/v1/vault/slots/{{vault_keyfile_slot}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the key file slot is the last one and is kept", function () {
+    expect(res.getBody().error).to.equal("the last keyslot cannot be removed");
+  });
+}

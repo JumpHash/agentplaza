@@ -1,0 +1,40 @@
+meta {
+  name: open a project with no budget of its own
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "title": "flows money life",
+    "goal": "A project whose budget the flow follows"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("flowMoneyPid", res.getBody().id);
+}
+
+tests {
+  test("the project opens in implementation, in build, not paused", function () {
+    const b = res.getBody();
+    expect(b.stage).to.equal('implementation');
+    expect(b.mode).to.equal('build');
+    expect(b.paused).to.equal(false);
+  });
+}

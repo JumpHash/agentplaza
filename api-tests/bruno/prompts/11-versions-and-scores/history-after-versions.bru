@@ -1,0 +1,23 @@
+meta {
+  name: The history records each version written
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/history
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("three version events", function () {
+    const versions = res.getBody().events.filter((e) => e.action === "version");
+    expect(versions.length).to.be.at.least(3);
+  });
+}

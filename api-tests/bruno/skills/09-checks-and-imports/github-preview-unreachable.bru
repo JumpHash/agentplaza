@@ -1,0 +1,26 @@
+meta {
+  name: Answer 502 for a GitHub preview the scratch hub cannot reach
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/github/preview
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "url": "https://github.com/t-owner/t-skills"
+  }
+}
+
+assert {
+  res.status: eq 502
+  res.body.error: isString
+}

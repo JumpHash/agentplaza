@@ -1,0 +1,18 @@
+meta {
+  name: Archive the paused project: the pause ends with it
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_xpid}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.archived: eq true
+  res.body.paused: eq false
+  res.responseTime: lt 1000
+}

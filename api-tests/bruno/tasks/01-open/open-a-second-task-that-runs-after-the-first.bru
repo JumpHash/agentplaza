@@ -1,0 +1,35 @@
+meta {
+  name: Open a second task that runs after the first
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "t-tasks B: publish the notes", "budget": 300, "project": "{{tsk_pid}}", "after": ["{{tsk_a}}"]}
+}
+
+assert {
+  res.status: eq 201
+  res.body.ready: eq false
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("it waits on A", function () {
+    expect(res.getBody().waiting_on).to.deep.equal([bru.getVar("tsk_a")]);
+  });
+}
+
+script:post-response {
+  bru.setVar("tsk_b", res.getBody().id);
+}

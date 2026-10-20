@@ -1,0 +1,25 @@
+meta {
+  name: Read the shared artifact through its link
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh1_share}}/data
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the viewer gets the artifact, the link and the theme", function () {
+    const b = res.getBody();
+    expect(b.artifact.id).to.equal(bru.getVar("sh1_art"));
+    expect(b.share.kind).to.equal("artifact");
+    expect(b.theme).to.not.be.undefined;
+  });
+}

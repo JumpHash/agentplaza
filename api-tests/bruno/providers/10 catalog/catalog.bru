@@ -1,0 +1,29 @@
+meta {
+  name: Show what the Add provider dialog offers
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/provider-catalog
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.api: isArray
+  res.body.engines: isArray
+  res.body.registry: isString
+}
+
+tests {
+  test("it lists the API kinds and the built-in engines by id", function () {
+    const c = res.getBody();
+    expect(c.api.map((a) => a.kind)).to.include("anthropic");
+    expect(c.engines.map((e) => e.id)).to.include.members(["claude", "codex", "opencode"]);
+    expect(c.engines.find((e) => e.id === "claude").source).to.equal("npm");
+    expect(c.registry).to.match(/^https:\/\//);
+  });
+}

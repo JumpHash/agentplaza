@@ -1,0 +1,21 @@
+meta {
+  name: Leave and forget this node's identity when there is none
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/node-link/leave
+  body: json
+  auth: none
+}
+
+body:json {
+  {"forget": true}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.joined: eq false
+}

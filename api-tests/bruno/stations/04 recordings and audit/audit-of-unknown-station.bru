@@ -1,0 +1,23 @@
+meta {
+  name: List the audit of a workstation with no rows
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/audit?station=w-t-missing
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("a workstation nobody made has no audit rows", function () {
+    expect(res.getBody()).to.have.lengthOf(0);
+  });
+}

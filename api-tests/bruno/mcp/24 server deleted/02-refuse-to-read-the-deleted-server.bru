@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to read the deleted server
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

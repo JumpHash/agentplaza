@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a move to a node that does not exist
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/move
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "node": "no-such-node"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("no node no-such-node");
+  });
+}

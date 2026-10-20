@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an install of a GitHub App that was never created
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/github/install
+  body: json
+  auth: none
+}
+
+body:json {
+  {"registration": "github-app-999"}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: eq "no such GitHub App"
+}

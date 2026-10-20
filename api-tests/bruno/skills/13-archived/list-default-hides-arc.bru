@@ -1,0 +1,23 @@
+meta {
+  name: The default list leaves an archived skill out
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/skills
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.skills: isArray
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the archived skill is not in the default list", function () {
+    expect(res.getBody().skills.map((s) => s.id)).to.not.include("t-skill-arc");
+  });
+}

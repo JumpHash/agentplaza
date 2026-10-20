@@ -1,0 +1,22 @@
+meta {
+  name: The status shows a token is set
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/hf/status
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a token is set", function () {
+    expect(res.getBody().hf_token_set).to.equal(true);
+  });
+}

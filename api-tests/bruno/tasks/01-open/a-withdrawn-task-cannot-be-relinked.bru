@@ -1,0 +1,24 @@
+meta {
+  name: A withdrawn task cannot be relinked
+  type: http
+  seq: 51
+}
+
+patch {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"after": []}
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}

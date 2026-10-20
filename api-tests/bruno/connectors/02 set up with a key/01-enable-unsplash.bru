@@ -1,0 +1,35 @@
+meta {
+  name: Enable unsplash for two roles and a project, trimming blank entries
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/v1/connectors/unsplash
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": true,
+    "roles": ["  t-platforms-role  ", ""],
+    "projects": ["t-platforms-project"]
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: eq "unsplash"
+  res.body.enabled: eq true
+}
+
+tests {
+  test("the roles and projects are kept trimmed, blanks dropped", function () {
+    const body = res.getBody();
+    expect(body.roles).to.eql(["t-platforms-role"]);
+    expect(body.projects).to.eql(["t-platforms-project"]);
+    expect(body.configured).to.equal(false);
+  });
+}

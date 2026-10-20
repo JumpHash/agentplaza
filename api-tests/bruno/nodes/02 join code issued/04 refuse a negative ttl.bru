@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a join code with a negative ttl
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/codes
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "label": "t-node-bad",
+    "ttl_minutes": -5
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

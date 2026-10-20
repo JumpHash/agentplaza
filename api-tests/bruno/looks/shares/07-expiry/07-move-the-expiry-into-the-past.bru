@@ -1,0 +1,28 @@
+meta {
+  name: Move the expiry into the past
+  type: http
+  seq: 7
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh7_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "expires_ms": 1
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the link is expired now", function () {
+    expect(res.getBody().state).to.equal("expired");
+  });
+}

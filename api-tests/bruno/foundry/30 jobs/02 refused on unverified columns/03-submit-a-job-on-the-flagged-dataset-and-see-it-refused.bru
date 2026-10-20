@@ -1,0 +1,33 @@
+meta {
+  name: Submit a job on the flagged dataset and see it refused
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/jobs
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "job_id": "t-job-taint",
+    "recipe": "rung-predictor@1",
+    "datasets": [
+      "{{fjob_unknown}}"
+    ],
+    "budget_gpu_hours": 2
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the flag is named", function () {
+    expect(res.getBody().error).to.include("tainted (unverified_upload)");
+  });
+}

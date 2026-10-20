@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a repository-level token that names no repository
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/platforms/tokens
+  body: json
+  auth: none
+}
+
+body:json {
+  {"kind": "forgejo", "host": "http://127.0.0.1:1", "token": "t-platforms-token-0456", "level": "repo"}
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: eq "an organisation- or repository-level token names its target"
+}

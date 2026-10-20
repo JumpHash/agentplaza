@@ -1,0 +1,21 @@
+meta {
+  name: Refuse an upload without its link token
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{e2bUploadUrl}}
+  body: text
+  auth: none
+}
+
+body:text {
+  e2b archive bytes
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+  res.body.error_code: eq "upload_forbidden"
+}

@@ -1,0 +1,22 @@
+meta {
+  name: The model listing forgets the deleted provider
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/models
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 15000
+}
+
+tests {
+  test("no error names it", function () {
+    expect(res.getBody().errors.map((e) => e.provider)).to.not.include("t-prov-compat");
+  });
+}

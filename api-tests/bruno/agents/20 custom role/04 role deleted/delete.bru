@@ -1,0 +1,23 @@
+meta {
+  name: Delete a custom role
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/roles/t-agents-lead
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.id: eq "t-agents-lead"
+}
+
+tests {
+  test("the role is reported removed", function () {
+    expect(res.getBody().removed).to.equal(true);
+  });
+}

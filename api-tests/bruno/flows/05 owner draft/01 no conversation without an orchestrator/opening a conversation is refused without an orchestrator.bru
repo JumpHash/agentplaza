@@ -1,0 +1,32 @@
+meta {
+  name: opening a conversation is refused without an orchestrator
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/owner/conversations
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "text": "flows draft probe"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the missing orchestrator", function () {
+    expect(res.getBody().error).to.include('no orchestrator is on the roster');
+  });
+}

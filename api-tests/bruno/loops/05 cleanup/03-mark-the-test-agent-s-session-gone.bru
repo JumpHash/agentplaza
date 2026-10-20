@@ -1,0 +1,32 @@
+meta {
+  name: Mark the test agent's session gone
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/9101/gone
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "reason": "loops test done"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the agent's session is marked gone (an empty answer)", function () {
+    expect(res.getBody()).to.be.an("object");
+  });
+}

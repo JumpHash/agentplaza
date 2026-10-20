@@ -1,0 +1,23 @@
+meta {
+  name: The artifact stays shared while the second link is live
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts?q=t-looks%20share%2006
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("shared is true", function () {
+    const row = res.getBody().find((a) => a.id === bru.getVar("sh6_art"));
+    expect(row.shared).to.equal(true);
+  });
+}

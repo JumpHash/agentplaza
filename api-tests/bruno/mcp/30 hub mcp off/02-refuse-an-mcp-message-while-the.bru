@@ -1,0 +1,39 @@
+meta {
+  name: Refuse an MCP message while the server is off
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/mcp
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-06-18",
+      "capabilities": {},
+      "clientInfo": {
+        "name": "bru",
+        "version": "0"
+      }
+    }
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the endpoint says it is not there", function () {
+    expect(res.getBody().error).to.equal("no such endpoint");
+  });
+}

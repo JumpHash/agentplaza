@@ -1,0 +1,24 @@
+meta {
+  name: The used approval reads back as used
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/approvals
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the approval is used", function () {
+    const a = res.getBody().find((x) => x.id === bru.getVar("int_appr_1"));
+    expect(a, "approval").to.exist;
+    expect(a.state).to.equal("used");
+  });
+}

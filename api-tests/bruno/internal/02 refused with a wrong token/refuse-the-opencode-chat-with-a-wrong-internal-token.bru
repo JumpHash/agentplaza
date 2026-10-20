@@ -1,0 +1,33 @@
+meta {
+  name: Refuse the opencode chat with a wrong internal token
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/opencode/v1/chat/completions
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+}
+
+body:json {
+  {
+    "model": "x",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ]
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

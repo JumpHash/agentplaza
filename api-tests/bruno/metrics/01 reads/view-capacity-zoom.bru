@@ -1,0 +1,24 @@
+meta {
+  name: Compose the capacity tab zoomed to a part of the month
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/metrics/view?tab=capacity&range=30d&zoom=0.25,0.75&width=400&tz=60&compare=prev
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.tab: eq "capacity"
+}
+
+tests {
+  test("the capacity tab carries the forecast panel", function () {
+    const ids = res.getBody().panels.map((p) => p.id);
+    expect(ids).to.include("forecast");
+  });
+}

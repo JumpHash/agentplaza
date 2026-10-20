@@ -1,0 +1,28 @@
+meta {
+  name: Clear the pinned version
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/v1/shares/{{sh4_share}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "version": null
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no version pinned", function () {
+    expect(res.getBody().version).to.equal(null);
+  });
+}

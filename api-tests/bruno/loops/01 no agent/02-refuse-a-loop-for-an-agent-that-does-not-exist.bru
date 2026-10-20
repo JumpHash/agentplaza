@@ -1,0 +1,31 @@
+meta {
+  name: Refuse a loop for an agent that does not exist
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/loops
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": 424242,
+    "prompt": "Check the queue",
+    "every_minutes": 5,
+    "max_runs": 0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the agent", function () {
+    expect(res.getBody().error).to.equal("no agent 424242");
+  });
+}

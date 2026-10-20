@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a name of one character
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{baseUrl}}/v1/agents/41001
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "x"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("2 to 16 characters");
+  });
+}

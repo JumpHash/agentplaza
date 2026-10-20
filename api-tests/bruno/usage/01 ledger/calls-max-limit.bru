@@ -1,0 +1,22 @@
+meta {
+  name: List calls at the limit of 200
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/calls?limit=200
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no more than 200 calls come back", function () {
+    expect(res.getBody().calls.length).to.be.at.most(200);
+  });
+}

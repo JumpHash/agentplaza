@@ -1,0 +1,16 @@
+meta {
+  name: Delete the scratch provider key: the provider is gone, and its key is not kept
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{baseUrl}}/v1/vault/secrets/{{prov_compat_key}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a task with a goal that is only spaces
+  type: http
+  seq: 34
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"goal": "   ", "budget": 200, "project": "{{tsk_pid}}"}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "must not be empty"
+  res.responseTime: lt 1000
+}

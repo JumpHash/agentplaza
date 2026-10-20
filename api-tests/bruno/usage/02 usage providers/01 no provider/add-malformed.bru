@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a usage provider body that is not JSON
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/usage-providers
+  body: json
+  auth: none
+}
+
+body:json {
+  { "url": 
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

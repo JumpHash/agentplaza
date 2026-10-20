@@ -1,0 +1,23 @@
+meta {
+  name: the provider list agrees
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/providers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("anthropic is listed with a secret credential", function () {
+    const p = res.getBody().find((x) => x.id === 'anthropic');
+    expect(p.credential).to.equal('secret');
+  });
+}

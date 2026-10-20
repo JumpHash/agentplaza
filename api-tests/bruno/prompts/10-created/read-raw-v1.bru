@@ -1,0 +1,24 @@
+meta {
+  name: Download version 1 as Markdown
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}/versions/1/raw
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("it comes back as Markdown named for the prompt", function () {
+    expect(res.getHeader("content-type")).to.contain("text/markdown");
+    expect(res.getHeader("content-disposition")).to.contain("t-prompt-life-v1.md");
+    expect(res.getBody()).to.contain("# Tester");
+  });
+}

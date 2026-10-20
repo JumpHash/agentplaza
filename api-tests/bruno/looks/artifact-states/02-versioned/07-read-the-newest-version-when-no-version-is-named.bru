@@ -1,0 +1,22 @@
+meta {
+  name: Read the newest version when no version is named
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the newest is version 2", function () {
+    expect(res.getBody().version).to.equal(2);
+  });
+}

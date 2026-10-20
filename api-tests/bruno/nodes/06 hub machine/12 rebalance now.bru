@@ -1,0 +1,26 @@
+meta {
+  name: Rebalance now: the answer lists the moves and whether they started
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/rebalance
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.moves: isArray
+  res.body.started: isBoolean
+}

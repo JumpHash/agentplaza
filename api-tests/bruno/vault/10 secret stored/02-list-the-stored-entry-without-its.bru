@@ -1,0 +1,28 @@
+meta {
+  name: List the stored entry without its value
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/vault/secrets
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the list shows the stored entry, unbound, and no value", function () {
+    const body = res.getBody();
+    const entry = body.find((e) => e.id === bru.getVar("vault_life_id"));
+    expect(entry, "stored entry is listed").to.not.be.undefined;
+    expect(entry.bindings).to.deep.equal([]);
+    expect(entry.current).to.equal(1);
+    expect(entry).to.not.have.property("value");
+    expect(JSON.stringify(res.getBody())).to.not.include("bru-life-value-0123456789");
+  });
+}

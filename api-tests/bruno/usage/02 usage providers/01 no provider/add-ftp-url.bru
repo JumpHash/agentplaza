@@ -1,0 +1,26 @@
+meta {
+  name: Refuse a usage provider address that is not http
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/usage-providers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-usage-hub",
+    "url": "ftp://cliproxy.invalid",
+    "label": "t usage hub",
+    "key": "t-usage-key-0123456789"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

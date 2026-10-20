@@ -1,0 +1,26 @@
+meta {
+  name: Show the task's escrow holding its budget
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/treasury
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the escrow account of the task holds 300 credits, and the books balance", function () {
+  const body = res.getBody();
+    const escrow = body.accounts.find((a) => a.kind === "task_escrow" && a.owner_ref === bru.getVar("treasuryTask"));
+    expect(escrow).to.not.be.undefined;
+    expect(escrow.balance).to.equal(300);
+    expect(body.totals.credits).to.equal(body.totals.debits);
+  });
+}

@@ -1,0 +1,23 @@
+meta {
+  name: The forgotten app is gone from the list
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no registration keeps the forgotten id", function () {
+    const ids = res.getBody().registrations.map((r) => r.id);
+    expect(ids).to.not.include(bru.getVar("platforms_app"));
+  });
+}

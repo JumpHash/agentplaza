@@ -1,0 +1,29 @@
+meta {
+  name: Invoke a shadow model with a feature that is a string
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/invoke
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "x0": "half", "x1": -0.2, "x2": 1.0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal names the feature that is not a number", function () {
+    expect(res.getBody().error).to.include("x0");
+    expect(res.getBody().error).to.include("must be a number");
+  });
+}

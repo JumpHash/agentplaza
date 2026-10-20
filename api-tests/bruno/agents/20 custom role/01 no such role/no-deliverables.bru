@@ -1,0 +1,41 @@
+meta {
+  name: Refuse a custom role with no deliverables
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/roles
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-agents-lead",
+    "title": "Lead, équipe",
+    "purpose": "Mène la recherche.",
+    "responsibilities": [
+      "Plan the search",
+      "Lead the team"
+    ],
+    "deliverables": [],
+    "budget": 300,
+    "collaboration": "Works with the scouts.",
+    "boundaries": [
+      "No publishing"
+    ]
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("a role needs at least one deliverable");
+  });
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Refuse waking an agent that is not asleep
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/wake
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("not asleep or dozing");
+  });
+}

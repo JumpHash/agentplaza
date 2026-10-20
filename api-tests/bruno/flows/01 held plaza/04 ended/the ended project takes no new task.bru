@@ -1,0 +1,34 @@
+meta {
+  name: the ended project takes no new task
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "flows task after the end",
+    "project": "{{flowHeldPid}}",
+    "budget": 300
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the refusal says the project is archived", function () {
+    expect(res.getBody().error).to.include('archived');
+  });
+}

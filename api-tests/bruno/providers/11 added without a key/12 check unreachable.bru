@@ -1,0 +1,18 @@
+meta {
+  name: Check a keyed provider that is unreachable: critical, not a server error
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/providers/t-prov-compat/check
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 5000
+  res.body.health.status: eq "crit"
+  res.body.health.message: isString
+}

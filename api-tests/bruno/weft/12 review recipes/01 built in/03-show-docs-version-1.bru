@@ -1,0 +1,17 @@
+meta {
+  name: Show the docs recipe at the version named
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/docs?version=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.recipe.version: eq 1
+}

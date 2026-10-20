@@ -1,0 +1,42 @@
+meta {
+  name: switch the background provider checks off
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("flowVaultSettingsCurrent"));
+  s.health_interval_s = 0;
+  req.setBody(s);
+}
+
+script:post-response {
+  if (res.status === 200) {
+    bru.setVar("flowVaultSettingsCurrent", JSON.stringify(res.getBody()));
+  }
+}
+
+tests {
+  test("the interval is off", function () {
+    expect(res.getBody().health_interval_s).to.equal(0);
+  });
+}

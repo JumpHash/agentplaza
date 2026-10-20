@@ -1,0 +1,16 @@
+meta {
+  name: Revoke the link to the deleted artifact
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{baseUrl}}/v1/shares/{{sh8_share}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

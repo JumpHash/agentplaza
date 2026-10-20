@@ -1,0 +1,32 @@
+meta {
+  name: Open the go page, which redirects to the platform's authorize page
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/flows/{{declined_state}}/go
+  body: none
+  auth: none
+}
+
+settings {
+  followRedirects: false
+  maxRedirects: 0
+}
+
+assert {
+  res.status: eq 302
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the redirect carries the client, the state and the PKCE challenge", function () {
+    const location = res.getHeader("location");
+    expect(location).to.include("http://127.0.0.1:1/login/oauth/authorize?");
+    expect(location).to.include("client_id=t-platforms-declined-client");
+    expect(location).to.include("state=" + bru.getVar("declined_state"));
+    expect(location).to.include("code_challenge_method=S256");
+    expect(location).to.not.include("t-platforms-declined-secret");
+  });
+}

@@ -1,0 +1,32 @@
+meta {
+  name: Refuse a usage provider address with a query
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/usage-providers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "id": "t-usage-hub",
+    "url": "https://cliproxy.invalid:8317/?k=1",
+    "label": "t usage hub",
+    "key": "t-usage-key-0123456789"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the error names the url", function () {
+    expect(res.getBody().error).to.include("url");
+  });
+}

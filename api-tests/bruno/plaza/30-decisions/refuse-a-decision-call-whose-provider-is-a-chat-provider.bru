@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a decision call whose provider is a chat provider
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "xai", "model": "grok-4.7", "input": "t-dec chat", "questions": [{"type": "predicate", "name": "flaky", "instructions": "Is the test flaky?"}]}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "chat provider"
+  res.responseTime: lt 1000
+}

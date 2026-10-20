@@ -1,0 +1,26 @@
+meta {
+  name: Let the agent download the file it stored
+  type: http
+  seq: 41
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/files/{{int_file}}
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the bytes are the ones stored", function () {
+    expect(res.getBody()).to.equal("hello from the internal tests");
+  });
+}

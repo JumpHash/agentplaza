@@ -1,0 +1,16 @@
+meta {
+  name: Refuse a blob the artifact does not reference
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/artifacts/{{looks_art}}/blobs/b0000000000000000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

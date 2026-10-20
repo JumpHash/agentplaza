@@ -1,0 +1,30 @@
+meta {
+  name: Clear the project's task budget setting: the plaza's default applies again
+  type: http
+  seq: 16
+}
+
+patch {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/settings
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"task_budget": null}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the override is gone", function () {
+    expect(res.getBody()).to.not.have.property("task_budget");
+  });
+}

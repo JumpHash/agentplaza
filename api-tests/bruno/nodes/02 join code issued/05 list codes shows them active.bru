@@ -1,0 +1,27 @@
+meta {
+  name: List the join codes: the new ones are active and unused
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/codes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("code a is active and unused, and its label is kept", function () {
+    const c = res.getBody().find((x) => x.id === bru.getVar("node_code_a_id"));
+    expect(c, "code a listed").to.not.equal(undefined);
+    expect(c.state).to.equal("active");
+    expect(c.used_by == null).to.equal(true);
+    expect(c.label).to.equal("t-node-a");
+    expect(res.getBody().some((x) => x.label === "t-node-bad")).to.equal(false);
+  });
+}

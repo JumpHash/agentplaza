@@ -1,0 +1,37 @@
+meta {
+  name: An agent hands in a public file
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/files?name=t-files-agent.txt&kind=deliverable
+  body: text
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  content-type: text/plain
+}
+
+body:text {
+  from the agent
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("file_agent", res.getBody().id);
+}
+
+tests {
+  test("a public deliverable with the plaza link", function () {
+    const b = res.getBody();
+    expect(b.url).to.equal("http://plaza.gateway/files/" + b.id);
+    expect(b.audience).to.equal("public");
+  });
+}

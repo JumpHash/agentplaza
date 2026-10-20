@@ -1,0 +1,16 @@
+meta {
+  name: Answer 404 when removing an instance twice
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/v1/engines/t-eng-local
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

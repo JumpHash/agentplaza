@@ -1,0 +1,16 @@
+meta {
+  name: Refuse rows through a file link: only artifacts have rows
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh_note_share}}/rows?panel=x
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

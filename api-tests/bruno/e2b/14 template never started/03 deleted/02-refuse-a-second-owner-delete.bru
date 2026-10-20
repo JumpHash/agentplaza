@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a second owner delete of the template
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/e2b/templates/{{e2bWaitTemplate}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error_code: eq "template_not_found"
+}

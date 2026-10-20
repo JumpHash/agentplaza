@@ -1,0 +1,23 @@
+meta {
+  name: Adding the same contact again answers the same contact
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/41001/contacts
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "peer_cid": 41002
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.peer_cid: eq 41002
+}

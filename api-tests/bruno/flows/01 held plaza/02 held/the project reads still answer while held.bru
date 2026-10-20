@@ -1,0 +1,25 @@
+meta {
+  name: the project reads still answer while held
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{flowHeldPid}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the project still shows its stage and its task", function () {
+    const b = res.getBody();
+    expect(b.stage).to.equal('implementation');
+    expect(b.paused).to.equal(false);
+    expect(b.tasks).to.include(bru.getVar('flowHeldTaskBefore'));
+  });
+}

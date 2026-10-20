@@ -1,0 +1,16 @@
+meta {
+  name: Answer 502 for a revoked node's runs
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/{{node_joined_id}}/runs
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+}

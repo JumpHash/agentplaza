@@ -1,0 +1,52 @@
+meta {
+  name: Refuse a join from the hub's own host even with a live code
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/stations/join
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "code": "{{stations_code_token}}",
+    "name": "t-stations-ws",
+    "facts": {
+      "os": "linux",
+      "os_version": "6.0",
+      "arch": "x86_64",
+      "hostname": "bruno-ws",
+      "form": "desktop",
+      "cpus": 4,
+      "ram_mb": 8192,
+      "gpus": [],
+      "displays": [],
+      "account": {
+        "mode": "agent_user",
+        "name": "agents"
+      },
+      "apps": 0,
+      "virtual_displays": false,
+      "ui_tree": false
+    }
+  }
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("another machine");
+  });
+}

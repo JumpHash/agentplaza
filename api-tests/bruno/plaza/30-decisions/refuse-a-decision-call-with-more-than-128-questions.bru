@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a decision call with more than 128 questions
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/decisions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"provider": "openai-decisions", "model": "gpt-6-luna", "input": "t-dec many", "questions": [{"type": "predicate", "name": "flaky", "instructions": "Is the test flaky?"}]}
+}
+
+script:pre-request {
+  const qs = []; for (let i = 0; i < 129; i++) qs.push({ type: "predicate", name: "q" + i, instructions: "Is it " + i + "?" });
+  req.setBody({ provider: "openai-decisions", model: "gpt-6-luna", input: "t-dec many", questions: qs });
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "128"
+  res.responseTime: lt 1000
+}

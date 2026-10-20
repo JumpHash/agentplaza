@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a data blob with an empty body
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/internal/v1/agents/5/gateway/artifacts/blobs?content_type=text/csv
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+  content-type: text/csv
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}

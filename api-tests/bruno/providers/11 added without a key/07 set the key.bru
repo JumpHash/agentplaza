@@ -1,0 +1,33 @@
+meta {
+  name: Set the provider's key: the view shows the slot, not the value
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/providers/t-prov-compat/secret
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "value": "scratch-test-key-0001"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.credential: eq "secret"
+}
+
+tests {
+  test("the key value is not echoed", function () {
+    expect(JSON.stringify(res.getBody())).to.not.include("scratch-test-key-0001");
+  });
+}

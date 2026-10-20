@@ -1,0 +1,30 @@
+meta {
+  name: Show the society: the agents, the bonds and the reputations
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/society
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.agents: isArray
+  res.body.bonds: isArray
+  res.body.computed_ms: isNumber
+}
+
+tests {
+  test("the rated agent is in the society under its name", function () {
+    const a = res.getBody().agents.find((x) => x.cid === 43001);
+    expect(a).to.not.be.undefined;
+    expect(a.name).to.equal("Nia");
+    expect(a.reputation).to.be.a("number");
+    expect(a.confidence).to.be.a("number");
+    expect(a.wallet).to.equal(0);
+  });
+}

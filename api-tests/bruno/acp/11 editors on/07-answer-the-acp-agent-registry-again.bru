@@ -1,0 +1,27 @@
+meta {
+  name: Answer the ACP agent registry again with a fresh fetch
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/v1/acp/registry?refresh=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a fresh fetch answers its agents, or says it could not be read", function () {
+    if (res.status === 200) {
+      expect(res.getBody().agents).to.be.an("array");
+      expect(res.getBody().fetched_ms).to.be.a("number");
+    } else {
+      expect(res.status).to.equal(502);
+      expect(res.getBody().error).to.include("could not be read");
+    }
+  });
+}

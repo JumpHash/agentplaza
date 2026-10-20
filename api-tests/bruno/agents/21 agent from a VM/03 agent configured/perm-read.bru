@@ -1,0 +1,18 @@
+meta {
+  name: Read the permission mode back, now set for this agent
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/v1/agents/41001/permissions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body.mode: eq "ask"
+  res.body.source: eq "agent"
+}

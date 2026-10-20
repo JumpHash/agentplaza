@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a calls page whose limit is not a number
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{baseUrl}}/v1/usage/calls?limit=many
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the limit", function () {
+    expect(res.getBody().error).to.include("limit");
+  });
+}

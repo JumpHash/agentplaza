@@ -1,0 +1,43 @@
+meta {
+  name: Refuse an engine request that is not a known tool
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61007/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "e0",
+    "name": "engine.bogus",
+    "input": {
+      "engine": "auggie"
+    }
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+  res.body.reply.is_error: eq true
+}
+
+tests {
+  test("the decision is deny", function () {
+    expect(res.getBody().reply.decision).to.equal("deny");
+  });
+  test("the engine request is not a known tool", function () {
+    expect(res.getBody().reply.is_error).to.equal(true);
+  });
+}

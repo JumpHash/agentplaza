@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a mode change with no mode named
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/mode
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: contains "missing mode"
+  res.responseTime: lt 1000
+}

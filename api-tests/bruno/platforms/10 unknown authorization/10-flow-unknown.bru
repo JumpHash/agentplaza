@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for a flow that was never started
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/platforms/flows/0123456789abcdef0123456789abcdef
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+

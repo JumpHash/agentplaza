@@ -1,0 +1,16 @@
+meta {
+  name: Delete the first entry of the duplicate name
+  type: http
+  seq: 13
+}
+
+delete {
+  url: {{baseUrl}}/v1/vault/secrets/{{vault_dup_id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,27 @@
+meta {
+  name: List the workstations as an array of views
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/stations
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("each workstation view has an id, a name and a status", function () {
+    for (const w of res.getBody()) {
+      expect(w.id).to.be.a("string");
+      expect(w.name).to.be.a("string");
+      expect(["online", "offline", "draining", "revoked"]).to.include(w.status);
+    }
+  });
+}

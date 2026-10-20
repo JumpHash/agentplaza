@@ -1,0 +1,25 @@
+meta {
+  name: Refuse the anthropic socket with a wrong internal token
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/internal/v1/agents/61003/gateway/anthropic/v1/messages
+  body: none
+  auth: none
+}
+
+headers {
+  x-apz-internal: t-internal-wrong
+  Connection: Upgrade
+  Upgrade: websocket
+  Sec-WebSocket-Version: 13
+  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 403
+  res.body.error: eq "missing or wrong internal token"
+}

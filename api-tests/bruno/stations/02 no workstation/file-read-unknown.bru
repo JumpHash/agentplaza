@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 to reading a file of a workstation that does not exist
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{baseUrl}}/v1/stations/w-t-missing/files/notes/t-stations.txt
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error: isString
+}

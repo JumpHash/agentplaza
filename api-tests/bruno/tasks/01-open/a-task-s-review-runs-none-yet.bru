@@ -1,0 +1,23 @@
+meta {
+  name: A task's review runs: none yet
+  type: http
+  seq: 28
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/{{tsk_a}}/reviews
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.task: eq {{tsk_a}}
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("there are no review runs yet", function () {
+    expect(res.getBody().runs).to.deep.equal([]);
+  });
+}

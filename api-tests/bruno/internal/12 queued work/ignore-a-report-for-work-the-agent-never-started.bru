@@ -1,0 +1,35 @@
+meta {
+  name: Ignore a report for work the agent never started
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61011/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "work_done",
+    "work": 999,
+    "status": "done",
+    "summary": "not started"
+  }
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the guest gets no reply", function () {
+    expect(res.getBody().reply).to.be.null;
+  });
+}

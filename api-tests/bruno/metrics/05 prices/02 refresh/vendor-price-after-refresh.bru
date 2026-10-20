@@ -1,0 +1,22 @@
+meta {
+  name: Show the vendor price after a refresh
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/prices/meta%2Fmuse-wonder-1.0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the vendor price is still there", function () {
+    expect(res.getBody().price.source).to.equal("vendor");
+  });
+}

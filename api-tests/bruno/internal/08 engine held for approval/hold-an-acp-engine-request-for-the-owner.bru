@@ -1,0 +1,48 @@
+meta {
+  name: Hold an ACP engine request for the owner
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/internal/v1/agents/61007/message
+  body: json
+  auth: none
+}
+
+headers {
+  x-apz-internal: {{internalToken}}
+}
+
+body:json {
+  {
+    "type": "tool_request",
+    "work": 1,
+    "call": "e1",
+    "name": "engine.exec",
+    "input": {
+      "command": "make test"
+    }
+  }
+}
+
+script:post-response {
+  bru.setVar("int_appr_e", res.getBody().reply.approval);
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+  res.body.reply.type: eq "tool_decision"
+  res.body.reply.approval: isString
+}
+
+tests {
+  test("the decision is pending", function () {
+    expect(res.getBody().reply.decision).to.equal("pending");
+  });
+  test("the request is held, not refused", function () {
+    expect(res.getBody().reply.approval).to.be.a("string");
+    expect(res.getBody().reply.is_error).to.equal(false);
+  });
+}

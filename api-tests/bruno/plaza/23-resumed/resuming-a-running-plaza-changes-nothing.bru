@@ -1,0 +1,17 @@
+meta {
+  name: Resuming a running plaza changes nothing
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq false
+  res.responseTime: lt 1000
+}

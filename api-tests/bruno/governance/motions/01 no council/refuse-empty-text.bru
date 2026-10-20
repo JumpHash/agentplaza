@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a motion with blank text
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/motions
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "proposer_cid": 8603,
+    "kind": "priority",
+    "text": "   "
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt 1000
+}

@@ -1,0 +1,27 @@
+meta {
+  name: Publish the second skill's version 1
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/skills/{{arcSkillId}}/publish
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "version": 1
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.skill.active_version: eq 1
+  res.responseTime: lt 1000
+}

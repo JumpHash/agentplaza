@@ -1,0 +1,16 @@
+meta {
+  name: The link's blob is missing too
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh8_share}}/blobs/b0000000000000000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}

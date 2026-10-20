@@ -1,0 +1,26 @@
+meta {
+  name: Answer 502 for a run on the hub's machine while its noded is down
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n0/runs
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "prompt": "scratch"
+  }
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt 1000
+}

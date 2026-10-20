@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a CPU count of zero
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "e2b-cpu-tmpl",
+    "cpuCount": 0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error_code: eq "invalid_request"
+}

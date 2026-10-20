@@ -1,0 +1,40 @@
+meta {
+  name: a task posted while paused waits unclaimed
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/tasks
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "goal": "flows money task while paused",
+    "project": "{{flowMoneyPid}}",
+    "budget": 200
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt 1000
+}
+
+script:post-response {
+  bru.setVar("flowMoneyT3", res.getBody().id);
+}
+
+tests {
+  test("it is open and no agent holds it", function () {
+    const b = res.getBody();
+    expect(b.state).to.equal('open');
+    expect(b.agent_cid).to.equal(null);
+  });
+}

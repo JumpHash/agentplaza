@@ -1,0 +1,24 @@
+meta {
+  name: Start the unreachable server and report its error
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/mcp/servers/bru-fake-mcp/start
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the server reports an error status, not running", function () {
+    const status = res.getBody().status;
+    expect(status).to.not.equal("running");
+    expect(status).to.be.a("string");
+  });
+}

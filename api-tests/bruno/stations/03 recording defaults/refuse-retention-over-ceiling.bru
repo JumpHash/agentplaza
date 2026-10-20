@@ -1,0 +1,36 @@
+meta {
+  name: Refuse a retention beyond 3650 days
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/stations/recording-defaults
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "record": true,
+    "retention_days": 3651,
+    "record_fps": 3,
+    "record_takeovers": false
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("3650");
+  });
+}

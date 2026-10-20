@@ -1,0 +1,32 @@
+meta {
+  name: Register the same model directory again
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "path": "{{fmdl_dir}}/shadow-promote"
+  }
+}
+
+script:pre-request {
+  bru.setVar("fmdl_dir", bru.cwd() + "/foundry/fixtures");
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("a duplicate import is refused", function () {
+    expect(res.getBody().error).to.include("already registered");
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Seal the vault before the key file unseal
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/vault/seal
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}

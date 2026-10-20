@@ -1,0 +1,23 @@
+meta {
+  name: A picture shows inline through its link even with downloads off
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/artifact/{{sh_pic_share}}/file
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the picture, served as an image", function () {
+    expect(res.getHeader("content-type")).to.include("image/png");
+    expect(String(res.getBody())).to.equal("fake-png-bytes");
+  });
+}

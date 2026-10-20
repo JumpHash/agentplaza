@@ -1,0 +1,22 @@
+meta {
+  name: The status shows no token after removal
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/foundry/hf/status
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("no token", function () {
+    expect(res.getBody().hf_token_set).to.equal(false);
+  });
+}

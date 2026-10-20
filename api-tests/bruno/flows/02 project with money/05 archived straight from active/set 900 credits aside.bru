@@ -1,0 +1,33 @@
+meta {
+  name: set 900 credits aside
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowActivePid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "credits": 900
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("900 held", function () {
+    expect(res.getBody().balance).to.equal(900);
+    expect(res.getBody().plaza).to.equal(Number(bru.getVar('flowActivePlazaBefore')) - 900);
+  });
+}

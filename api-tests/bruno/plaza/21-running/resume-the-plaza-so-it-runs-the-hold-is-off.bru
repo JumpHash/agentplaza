@@ -1,0 +1,17 @@
+meta {
+  name: Resume the plaza so it runs: the hold is off
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/plaza/resume
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.paused: eq false
+  res.responseTime: lt 1000
+}

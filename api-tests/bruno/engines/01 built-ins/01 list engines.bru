@@ -1,0 +1,35 @@
+meta {
+  name: List the coding engines: the built-in ones
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/engines
+  body: none
+  auth: none
+}
+
+script:post-response {
+  const byId = Object.fromEntries(res.getBody().map((e) => [e.id, e.enabled]));
+  bru.setVar("engine_claude_before", String(byId["claude"]));
+  bru.setVar("engine_codex_before", String(byId["codex"]));
+  bru.setVar("engine_opencode_before", String(byId["opencode"]));
+  bru.setVar("engine_goose_before", String(byId["goose"]));
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+  res.body: isArray
+}
+
+tests {
+  test("the built-in engines are listed as built-in, with their pinned version", function () {
+    const claude = res.getBody().find((e) => e.id === "claude");
+    expect(claude.builtin).to.equal(true);
+    expect(claude.source).to.equal("npm");
+    expect(claude.pinned).to.equal("0.84.0");
+    expect(res.getBody().map((e) => e.id)).to.include.members(["codex", "opencode", "goose", "vibe"]);
+  });
+}

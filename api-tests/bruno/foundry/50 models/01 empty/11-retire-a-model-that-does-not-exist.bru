@@ -1,0 +1,22 @@
+meta {
+  name: Retire a model that does not exist
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/t-no-model/retire
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the error names the model", function () {
+    expect(res.getBody().error).to.equal("no model t-no-model");
+  });
+}

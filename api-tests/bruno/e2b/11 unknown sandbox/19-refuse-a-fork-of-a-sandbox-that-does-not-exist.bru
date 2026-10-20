@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a fork of a sandbox that does not exist
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/e2b/sandboxes/sbffffffffffffffff/fork
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "count": 2,
+    "timeout": 60
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt 1000
+  res.body.error_code: eq "sandbox_not_found"
+}

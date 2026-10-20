@@ -1,0 +1,25 @@
+meta {
+  name: The restored prompt keeps its live version and binding
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/prompts/{{lifePromptId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.prompt.active_version: eq 1
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("binding and versions are kept", function () {
+    const p = res.getBody().prompt;
+    expect(p.binding).to.equal("role:t-tester");
+    expect(res.getBody().versions).to.have.length(3);
+  });
+}

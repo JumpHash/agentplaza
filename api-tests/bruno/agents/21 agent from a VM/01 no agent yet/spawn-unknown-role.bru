@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a spawn of a role that does not exist
+  type: http
+  seq: 33
+}
+
+post {
+  url: {{baseUrl}}/v1/agents
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "role": "no-such-role",
+    "count": 1
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the problem", function () {
+    expect(res.getBody().error).to.include("unknown role no-such-role");
+  });
+}

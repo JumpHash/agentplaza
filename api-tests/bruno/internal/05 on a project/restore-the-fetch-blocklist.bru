@@ -1,0 +1,31 @@
+meta {
+  name: Restore the fetch blocklist
+  type: http
+  seq: 74
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+script:pre-request {
+  const s = JSON.parse(bru.getVar("int_settings_json"));
+  req.setBody(s);
+}
+
+assert {
+  res.responseTime: lt 1000
+  res.status: eq 200
+}
+
+tests {
+  test("the blocklist is as it was", function () {
+    expect(res.getBody().fetch_block).to.deep.equal(JSON.parse(bru.getVar("int_fetch_block_before")));
+  });
+}

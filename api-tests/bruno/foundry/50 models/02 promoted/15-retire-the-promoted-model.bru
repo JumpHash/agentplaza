@@ -1,0 +1,23 @@
+meta {
+  name: Retire the promoted model
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/foundry/models/{{fmdl_a}}/retire
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("retired, and the agent cid is kept for the record", function () {
+    expect(res.getBody().state).to.equal("retired");
+    expect(res.getBody().agent_cid).to.equal(bru.getVar("fmdl_agent"));
+  });
+}

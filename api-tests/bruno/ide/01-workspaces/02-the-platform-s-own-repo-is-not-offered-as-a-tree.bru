@@ -1,0 +1,16 @@
+meta {
+  name: The platform's own repo is not offered as a tree
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/ide/workspaces/repo:agentplaza@main/tree
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+  res.responseTime: lt 1000
+}

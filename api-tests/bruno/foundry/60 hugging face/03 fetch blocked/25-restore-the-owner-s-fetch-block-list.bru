@@ -1,0 +1,28 @@
+meta {
+  name: Restore the owner's fetch block list
+  type: http
+  seq: 25
+}
+
+put {
+  url: {{baseUrl}}/v1/settings
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "fetch_block": {{fdy_prev_block}}
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the block list is what it was", function () {
+    expect(JSON.stringify(res.getBody().fetch_block)).to.equal(bru.getVar("fdy_prev_block"));
+  });
+}

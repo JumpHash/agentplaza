@@ -1,0 +1,33 @@
+meta {
+  name: Refuse a template named base
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/e2b/v3/templates
+  body: json
+  auth: none
+}
+
+headers {
+  X-API-Key: {{e2bLiveKey}}
+}
+
+body:json {
+  {
+    "name": "base"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt 1000
+  res.body.error_code: eq "invalid_request"
+}
+
+tests {
+  test("base names the base image", function () {
+    expect(res.getBody().message).to.include("base names the plaza");
+  });
+}

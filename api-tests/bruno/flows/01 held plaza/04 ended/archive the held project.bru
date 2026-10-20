@@ -1,0 +1,24 @@
+meta {
+  name: archive the held project
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{flowHeldPid}}/archive
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt 1000
+}
+
+tests {
+  test("the project is archived and out of maintenance pause", function () {
+    const b = res.getBody();
+    expect(b.archived).to.equal(true);
+    expect(b.paused).to.equal(false);
+  });
+}
