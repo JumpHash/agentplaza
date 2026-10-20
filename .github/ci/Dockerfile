@@ -4,9 +4,9 @@
 # (glibc 2.35, so the packages run on every distribution as new or newer) with everything a job
 # needs already installed: the build tools, the desktop app's headers, the guest kernel's
 # toolchain, the arm64 cross toolchain (gcc, libc, Rust target, an arm64 busybox for its guest,
-# qemu to run its tests), the packagers (fpm for deb/rpm/pacman), Rust (with clippy and rustfmt),
-# cargo-nextest, cargo-deny, the gh CLI, Node.js, and the API tests' Bruno and Schemathesis — so a
-# job spends its time compiling, not installing.
+# qemu to run its tests), the packagers (fpm for deb/rpm/pacman), Rust (with clippy, rustfmt and the
+# LLVM tools), cargo-nextest, cargo-deny, cargo-llvm-cov and c8 (the coverage job), the gh CLI, Node.js,
+# and the API tests' Bruno and Schemathesis — so a job spends its time compiling, not installing.
 #
 # It builds for the runner's own architecture. On the x86_64 runners it carries the arm64 cross
 # toolchain, qemu as cargo's runner for --target aarch64 and the AppImage tooling (the packages,
@@ -77,7 +77,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 # line does. cargo-deny checks advisories, licences and sources (deny.toml).
 ENV RUST_VERSION=1.99.0 CARGO_DENY_VERSION=0.20.2
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION" --component clippy,rustfmt --no-modify-path \
+      | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION" --component clippy,rustfmt,llvm-tools-preview --no-modify-path \
  && arch="$(uname -m)" \
  && curl -LsSf "https://get.nexte.st/latest/linux$( [ "$arch" = aarch64 ] && echo -arm )" | tar zxf - -C "$CARGO_HOME/bin" \
  && rustup target add aarch64-unknown-linux-gnu wasm32-unknown-unknown \
@@ -90,12 +90,22 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
  && cargo deny --version \
  && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME"
 
+# cargo-llvm-cov, for the coverage job (coverage.sh): pinned, and built from crates.io, which checks each crate
+# against the lock file. The LLVM tools it reads come from llvm-tools-preview above.
+ENV CARGO_LLVM_COV_VERSION=0.9.1
+RUN cargo install --locked --version "$CARGO_LLVM_COV_VERSION" cargo-llvm-cov \
+ && cargo llvm-cov --version
+
 # Node.js: the web console's build, and JavaScript actions under a local runner (Forgejo / act).
 ENV NODE_VERSION=24.21.0
 RUN arch="$(uname -m)"; [ "$arch" = x86_64 ] && narch=x64 || narch=arm64; \
     curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$narch.tar.xz" \
       | tar -xJ -C /usr/local --strip-components=1 \
  && node --version
+
+# c8, the web console's coverage (coverage.sh): turns the tests' V8 coverage into lcov, pinned.
+ENV C8_VERSION=10.1.3
+RUN npm install -g "c8@$C8_VERSION" && c8 --version
 
 # The API tests (api-tests/run.sh): Bruno's CLI, and Schemathesis with its own Python (it needs 3.11
 # or newer; Ubuntu 22.04 has 3.10), installed through uv.

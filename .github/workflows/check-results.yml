@@ -3,6 +3,7 @@
 #   Tests         every platform's tests: passed, failed and time, and each failure's output
 #   Lint          rustfmt, clippy, cargo deny, and the migrations check
 #   Web console   type-check, build with the wasm engine, tests
+#   Coverage      the code coverage of every test type: by test type, service and app, and crate
 #
 # The hub API's comment comes with its report (api-report.yml). Each comment is updated in place
 # when the pull request runs again, and a past run's can be posted again by hand (run-id).
