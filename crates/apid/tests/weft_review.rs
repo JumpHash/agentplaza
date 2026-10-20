@@ -188,24 +188,62 @@ fn pass() -> Answer {
     }
 }
 
-/// Plays the reviewers: every review step sent to `cids` is answered by `answer(run, node, tree)`, until `done`.
+/// What the reviewers of task `tid` were sent and what the hub holds for it: printed when a review stalls.
+fn review_state(
+    hub: &Hub,
+    gateway: &FakeDaemon,
+    cids: &[u64],
+    tid: &str,
+    answered: &HashSet<u64>,
+) -> String {
+    let mut out = String::new();
+    for &cid in cids {
+        let sent: Vec<String> = works(gateway, cid)
+            .iter()
+            .map(|w| {
+                let id = w["work"].as_u64().unwrap_or(0);
+                let mark = if answered.contains(&id) {
+                    "answered"
+                } else {
+                    "open"
+                };
+                format!("{id} {} {} ({mark})", text(&w["kind"]), text(&w["thread"]))
+            })
+            .collect();
+        let agent = hub.call("GET", &format!("/v1/agents/{cid}"), None).1;
+        out += &format!("agent {cid} sent {sent:?}\n  {agent}\n");
+    }
+    let task = hub.call("GET", &format!("/v1/tasks/{tid}"), None).1;
+    let runs = hub.call("GET", &format!("/v1/tasks/{tid}/reviews"), None).1;
+    out += &format!("task {tid}: {}\nreviews: {runs}\n", text(&task["state"]));
+    out
+}
+
+/// Plays the reviewers of task `tid`: every review step sent to `cids` is answered by `answer(run, node, tree)`,
+/// until `done`.
+#[allow(clippy::too_many_arguments)]
 fn review(
     hub: &Hub,
     gateway: &FakeDaemon,
     cids: &[u64],
+    tid: &str,
     token: &Path,
     home: &Path,
     answered: &Arc<Mutex<HashSet<u64>>>,
     answer: &dyn Fn(&str, &str, &Value) -> Answer,
     done: &dyn Fn() -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(90);
     while !done() {
-        assert!(
-            Instant::now() < deadline,
-            "the review did not finish\n{}",
-            hub.log()
-        );
+        if Instant::now() >= deadline {
+            let held = answered.lock().unwrap().clone();
+            panic!(
+                "the review of {tid} did not finish\n{}\n{}",
+                review_state(hub, gateway, cids, tid, &held),
+                hub.log()
+            );
+        }
         for &cid in cids {
             answer_chats(hub, gateway, cid);
             for w in works(gateway, cid) {
@@ -255,6 +293,7 @@ fn review(
         }
         std::thread::sleep(Duration::from_millis(150));
     }
+    println!("review of {tid}: {:.1} s", started.elapsed().as_secs_f64());
 }
 
 fn first_symbol(tree: &Value, ends: &str) -> String {
@@ -435,6 +474,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &reviewers,
+        &tid,
         &token,
         &home,
         &answered,
@@ -505,6 +545,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &reviewers,
+        &tid,
         &token,
         &home,
         &answered,
@@ -647,6 +688,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &[303],
+        &tid,
         &token,
         &home,
         &answered,
@@ -740,6 +782,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &rreview,
+        &rtid,
         &token,
         &home,
         &answered,
@@ -779,6 +822,7 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         &hub,
         &gateway,
         &rreview,
+        &rtid,
         &token,
         &home,
         &answered,
