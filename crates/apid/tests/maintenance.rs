@@ -158,6 +158,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         "builder": role("builder", "Builder"),
     } });
     let scratch = Scratch::new("maintenance");
+    scratch.name_agents(&[(ORCHESTRATOR, "Ada"), (PLANNER, "Mira"), (BUILDER, "Kofi")]);
     let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
     for (cid, role) in [
         (ORCHESTRATOR, "orchestrator"),
