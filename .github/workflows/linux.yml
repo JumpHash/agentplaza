@@ -99,6 +99,16 @@ jobs:
         with: { persist-credentials: false }
       - name: CI image
         run: .github/ci/image.sh
+      # Arm64 code run on this x86_64 runner (the qemu test run, the packages' install checks) needs the kernel to hand
+      # an arm64 binary to qemu, also for the binaries the tests start themselves (weft, apid). This registers qemu's
+      # binfmt handler on the runner, from a privileged container; it lasts until the runner reboots.
+      - name: qemu for arm64
+        if: matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full')
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          cache-image: false
       # A pull request from a fork builds in its own cache directory, never in the one releases use.
       - name: Untrusted build cache
         if: ${{ !inputs.trusted }}
