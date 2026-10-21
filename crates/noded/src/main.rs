@@ -97,8 +97,26 @@ and they stay up until the run is killed or `beats` churns the guest.
 
 Serves the /v1 VM API (machine, runs, events); the plaza is apid's.";
 
+/// The start-up refusal: a node with no token would serve an open API, so it refuses to start
+/// unless `--insecure-no-token` says it may. `None` when it may start; a command line that
+/// `parse_args` rejects is left to `run` to report.
+fn token_refusal(args: &[String]) -> Option<&'static str> {
+    match parse_args(args.to_vec()) {
+        Ok(config) if !config.internal_token.enabled() => Some(
+            "refusing to start without --internal-token-file (pass --insecure-no-token to run without one)",
+        ),
+        _ => None,
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--insecure-no-token` is read here and removed, so `parse_args` never sees it.
+    let insecure = args.iter().any(|arg| arg == "--insecure-no-token");
+    let args: Vec<String> = args
+        .into_iter()
+        .filter(|arg| arg != "--insecure-no-token")
+        .collect();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("noded {}", apz_os::version());
         return ExitCode::SUCCESS;
@@ -113,6 +131,14 @@ fn main() -> ExitCode {
             .filter(|arg| arg != "--check-scale")
             .collect();
         return check_scale(rest);
+    }
+    if insecure {
+        eprintln!(
+            "noded: WARNING: --insecure-no-token: the HTTP API takes no token; any local caller can drive this node"
+        );
+    } else if let Some(message) = token_refusal(&args) {
+        eprintln!("noded: {message}");
+        return ExitCode::from(2);
     }
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
@@ -466,6 +492,16 @@ fn parse_run_cids(text: &str) -> Result<std::ops::RangeInclusive<u64>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_daemon_refuses_to_start_without_a_token_file() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(
+            token_refusal(&args(&[])).is_some(),
+            "no token file and no opt-out: refused"
+        );
+        assert!(token_refusal(&args(&["--internal-token-file", "/tmp/token"])).is_none());
+    }
 
     #[test]
     fn cli_arguments_parse_into_the_config() {

@@ -199,9 +199,28 @@ fn main() -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// The start-up refusal: a daemon with no token would serve an open HTTP API, so it refuses to start
+/// unless `--insecure-no-token` says it may. `None` when it may start; a command line that
+/// `parse_args` rejects is left to `run` to report.
+#[cfg(any(target_os = "linux", windows))]
+fn token_refusal(args: &[String]) -> Option<&'static str> {
+    match parse_args(args.to_vec()) {
+        Ok(config) if config.internal_token_file.is_none() => Some(
+            "refusing to start without --internal-token-file (pass --insecure-no-token to run without one)",
+        ),
+        _ => None,
+    }
+}
+
 #[cfg(any(target_os = "linux", windows))]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `--insecure-no-token` is read here and removed, so `parse_args` never sees it.
+    let insecure = args.iter().any(|arg| arg == "--insecure-no-token");
+    let args: Vec<String> = args
+        .into_iter()
+        .filter(|arg| arg != "--insecure-no-token")
+        .collect();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("vsockd {}", apz_os::version());
         return ExitCode::SUCCESS;
@@ -209,6 +228,14 @@ fn main() -> ExitCode {
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
+    }
+    if insecure {
+        eprintln!(
+            "vsockd: WARNING: --insecure-no-token: the HTTP API takes no token; any local caller can drive this daemon"
+        );
+    } else if let Some(message) = token_refusal(&args) {
+        eprintln!("vsockd: {message}");
+        return ExitCode::from(2);
     }
     match parse_args(args).and_then(run) {
         Ok(()) => ExitCode::SUCCESS,
@@ -895,6 +922,16 @@ pub(crate) fn read_until_closed(stream: &UnixStream, deadline: Duration) -> Vec<
 #[cfg(all(any(target_os = "linux", windows), test))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_daemon_refuses_to_start_without_a_token_file() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(
+            token_refusal(&args(&[])).is_some(),
+            "no token file and no opt-out: refused"
+        );
+        assert!(token_refusal(&args(&["--internal-token-file", "/tmp/token"])).is_none());
+    }
 
     fn args(args: &[&str]) -> Result<Config, String> {
         parse_args(args.iter().map(|arg| arg.to_string()).collect())

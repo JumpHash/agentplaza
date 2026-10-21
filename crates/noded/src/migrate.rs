@@ -14,12 +14,17 @@
 //! export is being read still yields the bytes the export hashed. A workspace image the VM wrote
 //! after a wake would not match the hash, and the target refuses the import rather than keep a
 //! torn image.
+//!
+//! An import declares each file's length before anything is staged: a declaration over the maximum
+//! for its file is refused, and at most [`MAX_IMPORTS`] imports are in flight on a node at once; the
+//! rest are answered 503 until one finishes, aborts or expires.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -45,6 +50,17 @@ const FILES: [&str; 3] = [MEMORY_FILE, STATE_FILE, WORKSPACE_FILE];
 const SLEEP_FILES: [&str; 2] = [MEMORY_FILE, STATE_FILE];
 /// The most bytes one read of a file hashes at a time.
 const HASH_BUF: usize = 1 << 20;
+/// The most imports that may be in flight on this node at once. An import holds its staging files
+/// until it finishes, aborts or expires; one more is answered 503.
+pub const MAX_IMPORTS: usize = 4;
+/// The most bytes a state file may declare: a VM's registers, its devices' transports and a serial
+/// buffer.
+const MAX_STATE_FILE: u64 = 16 << 20;
+/// How far past the VM's configured memory a memory file may declare.
+const MEMORY_SLACK: u64 = 1 << 20;
+/// The most bytes a workspace image may declare. An import does not know its volume's configured
+/// size, so this bounds every image.
+const MAX_WORKSPACE_FILE: u64 = 1 << 40;
 
 /// The shape of the VM a transfer carries: what the target needs to make it asleep there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +141,8 @@ pub enum MigrateError {
     Mismatch(String),
     /// The node could not do its part (a file could not be read or written).
     Failed(String),
+    /// The node is at its limit (too many imports in flight); retry once one has finished.
+    Busy(String),
 }
 
 impl MigrateError {
@@ -136,6 +154,7 @@ impl MigrateError {
             MigrateError::Invalid(_) => 400,
             MigrateError::Mismatch(_) => 422,
             MigrateError::Failed(_) => 500,
+            MigrateError::Busy(_) => 503,
         }
     }
 }
@@ -147,6 +166,7 @@ impl fmt::Display for MigrateError {
             MigrateError::Unknown(reason)
             | MigrateError::Invalid(reason)
             | MigrateError::Mismatch(reason)
+            | MigrateError::Busy(reason)
             | MigrateError::Failed(reason) => write!(formatter, "{reason}"),
         }
     }
@@ -162,6 +182,8 @@ impl From<VmOpError> for MigrateError {
 #[derive(Default)]
 pub struct Migrations {
     state: Mutex<State>,
+    /// How many imports hold an [`ImportPermit`] from this count.
+    in_flight: Arc<AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -190,6 +212,30 @@ struct Import {
     meta: VmMeta,
     files: Vec<FileEntry>,
     staging: PathBuf,
+    /// The import's place in [`Migrations`]' count, given back when the import is dropped.
+    _permit: ImportPermit,
+}
+
+/// A place for one import on this node. The import holds it until it leaves its [`Migrations`]
+/// (finished, aborted or expired), and dropping it gives the place back.
+struct ImportPermit(Arc<AtomicUsize>);
+
+impl ImportPermit {
+    /// A place for one more import, or `None` when [`MAX_IMPORTS`] are taken.
+    fn take(in_flight: &Arc<AtomicUsize>) -> Option<Self> {
+        in_flight
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+                (taken < MAX_IMPORTS).then_some(taken + 1)
+            })
+            .ok()
+            .map(|_| Self(Arc::clone(in_flight)))
+    }
+}
+
+impl Drop for ImportPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Migrations {
@@ -367,7 +413,8 @@ pub fn delete_export(migrations: &Migrations, export: &str) -> Result<(), Migrat
 }
 
 /// `POST /v1/imports`: starts an import of the VM `meta` describes, whose files are `files` (the
-/// export's). Refuses a CID a run of this node holds. Returns the import's id.
+/// export's). Refuses a CID a run of this node holds, a file over its maximum (see `allowed`), and
+/// an import while [`MAX_IMPORTS`] are in flight (503). Returns the import's id.
 pub fn create_import(
     migrations: &Migrations,
     registry: &Registry,
@@ -377,6 +424,10 @@ pub fn create_import(
         .map_err(|err| MigrateError::Invalid(format!("invalid import request: {err}")))?;
     let ImportRequest { meta, mut files } = request;
     check_files(&files)?;
+    // Every declared length is checked before anything is staged or written.
+    for file in &files {
+        allowed(&file.name, file.len, meta.memory_mib).map_err(MigrateError::Invalid)?;
+    }
     for file in &mut files {
         file.sha256.make_ascii_lowercase();
     }
@@ -384,6 +435,12 @@ pub fn create_import(
     if registry.cid_in_use(meta.cid) {
         return Err(VmOpError::CidInUse(meta.cid).into());
     }
+    // The import's place is held until it finishes, aborts or expires; a node at its limit says so.
+    let permit = ImportPermit::take(&migrations.in_flight).ok_or_else(|| {
+        MigrateError::Busy(format!(
+            "the node already has {MAX_IMPORTS} imports in flight"
+        ))
+    })?;
     let imports = registry.snapshot_root()?.join("imports");
     snapshots::private_dir(&imports).map_err(|err| {
         MigrateError::Failed(format!("cannot create {}: {err}", imports.display()))
@@ -409,6 +466,7 @@ pub fn create_import(
             meta,
             files,
             staging,
+            _permit: permit,
         },
     );
     Ok(id)
@@ -442,9 +500,31 @@ fn check_files(files: &[FileEntry]) -> Result<(), MigrateError> {
     Ok(())
 }
 
+/// Whether an import may declare a file `kind` (its name) of `declared` bytes, for a VM of
+/// `vm_memory_mib` MiB: a memory file at most the VM's memory plus [`MEMORY_SLACK`], a state file at
+/// most [`MAX_STATE_FILE`], and a workspace image at most [`MAX_WORKSPACE_FILE`].
+fn allowed(kind: &str, declared: u64, vm_memory_mib: u32) -> Result<(), String> {
+    let (max, what) = match kind {
+        MEMORY_FILE => (
+            (u64::from(vm_memory_mib) << 20) + MEMORY_SLACK,
+            "the VM's memory",
+        ),
+        STATE_FILE => (MAX_STATE_FILE, "a state file"),
+        WORKSPACE_FILE => (MAX_WORKSPACE_FILE, "a workspace image"),
+        other => return Err(format!("{other} is not a file an import carries")),
+    };
+    if declared > max {
+        return Err(format!(
+            "{kind} declares {declared} bytes, over the {max} allowed for {what}"
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /v1/imports/{import}/{name}`, body `{"offset": O, "data": <base64>}`: writes the chunk into
 /// the staged file `name` at `offset`. A chunk is at most [`MAX_WRITE`] bytes and stays inside the
-/// file's declared length.
+/// file's declared length, so a stream longer than its declared size is refused at the first byte
+/// past it.
 pub fn write_import(
     migrations: &Migrations,
     import: &str,
@@ -1082,5 +1162,58 @@ mod tests {
         .expect_err("a file list that is not the VM's three files is refused");
         assert_eq!(err.status(), 400);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_declared_size_over_its_maximum_is_refused() {
+        let mib = 1u64 << 20;
+        assert!(allowed(STATE_FILE, 16 * mib, 256).is_ok());
+        assert!(allowed(STATE_FILE, 16 * mib + 1, 256).is_err());
+        assert!(allowed(MEMORY_FILE, 256 * mib + mib, 256).is_ok());
+        assert!(allowed(MEMORY_FILE, 256 * mib + mib + 1, 256).is_err());
+        assert!(allowed(WORKSPACE_FILE, MAX_WORKSPACE_FILE, 256).is_ok());
+        assert!(allowed(WORKSPACE_FILE, MAX_WORKSPACE_FILE + 1, 256).is_err());
+        assert!(allowed("other.bin", 0, 256).is_err(), "an unknown file");
+    }
+
+    #[test]
+    fn an_import_declaring_an_oversized_file_is_refused_before_anything_is_staged() {
+        let (src_root, dst_root) = (scratch("cap-src"), scratch("cap-dst"));
+        let source = asleep_node(&src_root, 45, 4096, 4096);
+        let export = export_vm(&Migrations::new(), &source, "r1", 0).expect("an export");
+        let target = node_at(&dst_root);
+        let migrations = Migrations::new();
+        let mut oversized = export.clone();
+        oversized
+            .files
+            .iter_mut()
+            .find(|file| file.name == MEMORY_FILE)
+            .expect("the memory file")
+            .len = (256 << 20) + (2 << 20);
+        let err = create_import(&migrations, &target, &import_body(&oversized))
+            .expect_err("a memory file over the VM's memory is refused");
+        assert_eq!(err.status(), 400);
+        assert!(err.to_string().contains(MEMORY_FILE));
+        let _ = fs::remove_dir_all(&src_root);
+        let _ = fs::remove_dir_all(&dst_root);
+    }
+
+    #[test]
+    fn at_most_four_imports_are_in_flight_and_an_aborted_one_frees_its_place() {
+        let (src_root, dst_root) = (scratch("slots-src"), scratch("slots-dst"));
+        let source = asleep_node(&src_root, 46, 4096, 4096);
+        let export = export_vm(&Migrations::new(), &source, "r1", 0).expect("an export");
+        let target = node_at(&dst_root);
+        let migrations = Migrations::new();
+        let ids: Vec<String> = (0..MAX_IMPORTS)
+            .map(|_| start_import(&migrations, &target, &export))
+            .collect();
+        let full = create_import(&migrations, &target, &import_body(&export))
+            .expect_err("a fifth import is refused while four are in flight");
+        assert_eq!(full.status(), 503);
+        abort_import(&migrations, &ids[0]).expect("an import is aborted");
+        let _ = start_import(&migrations, &target, &export);
+        let _ = fs::remove_dir_all(&src_root);
+        let _ = fs::remove_dir_all(&dst_root);
     }
 }

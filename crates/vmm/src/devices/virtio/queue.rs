@@ -468,6 +468,28 @@ impl Queue {
         Ok(())
     }
 
+    /// Checks that the three rings of a queue of `size` entries, at these guest addresses, all lie
+    /// inside `mem`: the bounds `initialize` enforces, for a queue restored from a snapshot before it
+    /// is used. On failure, names the first ring that does not fit, with its address.
+    pub(crate) fn rings_in_memory<M: GuestMemoryBackend>(
+        mem: &M,
+        size: u16,
+        desc: u64,
+        avail: u64,
+        used: u64,
+    ) -> Result<(), (&'static str, u64)> {
+        let layout = Queue::new(size);
+        let rings = [
+            ("descriptor table", desc, layout.desc_table_size()),
+            ("available ring", avail, layout.avail_ring_size()),
+            ("used ring", used, layout.used_ring_size()),
+        ];
+        for (name, address, len) in rings {
+            GuestMemorySlice::new(mem, GuestAddress(address), len).map_err(|_| (name, address))?;
+        }
+        Ok(())
+    }
+
     // The transports prevent active queue reconfiguration. An out-of-range access indicates
     // invalid device state, so abort as for `InvalidAvailIdx`.
 

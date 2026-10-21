@@ -5,7 +5,8 @@ After=network-online.target
 [Service]
 EnvironmentFile=-/etc/default/agentplaza-node
 EnvironmentFile=-%h/.config/agentplaza/node.env
-ExecStart=/usr/bin/noded $APZ_NODE_ARGS
+# The node's API takes the internal token the hub on this machine writes (apid's default state directory).
+ExecStart=/usr/bin/noded --internal-token-file %S/agentplaza/internal.token $APZ_NODE_ARGS
 Restart=on-failure
 NoNewPrivileges=yes
 LockPersonality=yes

@@ -213,9 +213,21 @@ where
                 return Ok(());
             }
 
-            // The maximum amount of data we can read in is limited by both the RX buffer size and
-            // the peer available buffer space.
-            let max_len = std::cmp::min(pkt.buf_size(), self.peer_avail_credit());
+            // The maximum amount of data we can read in is limited by the RX buffer size, the
+            // peer available buffer space, and the largest packet we are able to commit.
+            let max_len = std::cmp::min(
+                std::cmp::min(pkt.buf_size(), self.peer_avail_credit()),
+                super::super::defs::MAX_PKT_BUF_SIZE,
+            );
+            if max_len == 0 {
+                // A header-only RX buffer has no room for data. A read into it would be 0 bytes,
+                // which looks like host EOF, so nothing is read. `Rw` stays pending and the data
+                // waits in the host stream for the next buffer. A credit update fits in a header.
+                self.pending_rx.insert(PendingRx::Rw);
+                pkt.hdr.set_op(uapi::VSOCK_OP_CREDIT_UPDATE);
+                self.last_fwd_cnt_to_peer = self.fwd_cnt;
+                return Ok(());
+            }
 
             // Read data from the stream straight to the RX buffer, for maximum throughput.
             match pkt.read_at_offset_from(&mut self.stream, 0, max_len) {
@@ -691,6 +703,7 @@ mod tests {
     use super::*;
     use crate::devices::virtio::queue::{VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
     use crate::devices::virtio::test_utils::{VirtQueue, default_mem};
+    use crate::devices::virtio::vsock::defs::MAX_PKT_BUF_SIZE;
     use crate::devices::virtio::vsock::packet::{VSOCK_PKT_HDR_SIZE, VsockPacketRx, VsockPacketTx};
     use crate::vstate::memory::GuestAddress;
 
@@ -857,8 +870,16 @@ mod tests {
         }
 
         fn new(conn_state: ConnState) -> Self {
-            let mem = default_mem();
-            let (rx_pkt, tx_pkt) = parse_packets(&mem);
+            Self::new_in(conn_state, default_mem(), PKT_BUF_SIZE)
+        }
+
+        /// `new`, over the guest memory `mem`, with RX and TX data buffers of `data_len` bytes.
+        fn new_in(
+            conn_state: ConnState,
+            mem: crate::vstate::memory::GuestMemoryMmap,
+            data_len: u32,
+        ) -> Self {
+            let (rx_pkt, tx_pkt) = parse_packets(&mem, data_len);
 
             let stream = TestStream::new();
             let conn = match conn_state {
@@ -954,6 +975,7 @@ mod tests {
     /// packet view over each.
     fn parse_packets(
         mem: &crate::vstate::memory::GuestMemoryMmap,
+        data_len: u32,
     ) -> (VsockPacketRx, VsockPacketTx) {
         let rxq = VirtQueue::new(GuestAddress(0), mem, 16);
         rxq.set_desc(
@@ -963,14 +985,14 @@ mod tests {
             VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT,
             1,
         );
-        rxq.set_desc(1, DATA_ADDR, PKT_BUF_SIZE, VIRTQ_DESC_F_WRITE, 0);
+        rxq.set_desc(1, DATA_ADDR, data_len, VIRTQ_DESC_F_WRITE, 0);
         rxq.publish(0);
         let mut rx_queue = rxq.create_queue();
         let rx_head = rx_queue.pop().unwrap().unwrap();
 
         let txq = VirtQueue::new(GuestAddress(0x1000), mem, 16);
         txq.set_desc(0, HDR_ADDR, VSOCK_PKT_HDR_SIZE, VIRTQ_DESC_F_NEXT, 1);
-        txq.set_desc(1, DATA_ADDR, PKT_BUF_SIZE, 0, 0);
+        txq.set_desc(1, DATA_ADDR, data_len, 0, 0);
         txq.publish(0);
         let mut tx_queue = txq.create_queue();
         let tx_head = tx_queue.pop().unwrap().unwrap();
@@ -1129,6 +1151,64 @@ mod tests {
         ctx.conn.recv_pkt(&mut ctx.rx_pkt).unwrap_err();
         assert!(!ctx.conn.has_pending_rx());
         assert!(ctx.conn.get_polled_evset().contains(EventSet::IN));
+    }
+
+    /// An established connection whose RX and TX buffers hold `data_len` bytes of data.
+    fn established_with_data_len(data_len: u32) -> CsmTestContext {
+        CsmTestContext::new_in(
+            ConnState::Established,
+            crate::vstate::memory::tests::single_region_mem(0x30000),
+            data_len,
+        )
+    }
+
+    #[test]
+    fn test_rx_large_chain_is_capped_without_losing_data() {
+        // A 128 KiB RX chain, with peer credit above the packet limit. A packet carries at most
+        // MAX_PKT_BUF_SIZE bytes, and the rest waits in the host stream instead of being lost.
+        let mut ctx = established_with_data_len(128 * 1024);
+        ctx.conn.peer_buf_alloc = 256 * 1024;
+        let data: Vec<u8> = (0..MAX_PKT_BUF_SIZE as usize + 1000)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        ctx.set_stream(TestStream::new_with_read_buf(&data));
+        ctx.notify_epollin();
+
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RW);
+        assert_eq!(ctx.rx_pkt.hdr.len(), MAX_PKT_BUF_SIZE);
+        assert_eq!(
+            read_packet_data(&ctx.tx_pkt, MAX_PKT_BUF_SIZE),
+            &data[..MAX_PKT_BUF_SIZE as usize]
+        );
+
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_RW);
+        assert_eq!(ctx.rx_pkt.hdr.len(), 1000);
+        assert_eq!(
+            read_packet_data(&ctx.tx_pkt, 1000),
+            &data[MAX_PKT_BUF_SIZE as usize..]
+        );
+        assert!(ctx.conn.stream.read_buf.is_empty());
+    }
+
+    #[test]
+    fn test_rx_header_only_buffer_keeps_data_and_connection() {
+        // A header-only RX buffer has no room for data. A read into it would be a 0-length
+        // read, which looks like host EOF, so nothing is read: the data waits in the stream, the
+        // connection stays open, and the buffer carries a credit update instead.
+        let mut ctx = established_with_data_len(0);
+        let data = &[1, 2, 3, 4];
+        ctx.set_stream(TestStream::new_with_read_buf(data));
+        ctx.notify_epollin();
+
+        ctx.recv();
+        assert_eq!(ctx.rx_pkt.hdr.op(), uapi::VSOCK_OP_CREDIT_UPDATE);
+        assert_eq!(ctx.conn.state, ConnState::Established);
+        assert_eq!(ctx.conn.stream.read_buf, data.to_vec());
+        // `Rw` stays pending, so the connection must not ask for EPOLLIN while it is.
+        assert!(ctx.conn.has_pending_rx());
+        assert!(!ctx.conn.get_polled_evset().contains(EventSet::IN));
     }
 
     #[test]

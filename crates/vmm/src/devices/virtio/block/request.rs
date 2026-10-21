@@ -248,9 +248,12 @@ impl PendingRequest {
             (Ok(_), RequestType::Flush) => Status::Ok {
                 num_bytes_to_mem: 0,
             },
-            (Ok(transferred_data_len), RequestType::GetDeviceID) => {
-                Status::from_data(self.data_len, transferred_data_len, true)
-            }
+            // The id is `VIRTIO_BLK_ID_BYTES` long and is written into the first
+            // bytes of the buffer; a longer buffer is still answered OK, with the
+            // rest of it left untouched. (A shorter one is refused at parse time.)
+            (Ok(transferred_data_len), RequestType::GetDeviceID) => Status::Ok {
+                num_bytes_to_mem: transferred_data_len,
+            },
             (Err(IoErr::UnsupportedRequest(op)), _) | (_, RequestType::Unsupported(op)) => {
                 Status::Unsupported { op }
             }
@@ -536,10 +539,11 @@ impl Request {
         mem: &GuestMemoryMmap,
     ) -> FinishedRequest {
         let pending = self.to_pending_request(desc_idx);
-        // A read-only volume refuses every write-type request before the file
-        // is touched. The status is written directly, so a write the device
-        // does not serve (`WRITE_ZEROES`) is an I/O error, not "unsupported".
-        if disk.is_read_only() && self.is_write_type() {
+        // A read-only volume refuses every write-type request, and every flush,
+        // before the file is touched. The status is written directly, so a write
+        // the device does not serve (`WRITE_ZEROES`) is an I/O error, not
+        // "unsupported".
+        if disk.is_read_only() && (self.is_write_type() || self.r#type == RequestType::Flush) {
             let status = Status::IoErr {
                 num_bytes_to_mem: 0,
                 err: IoErr::ReadOnly,

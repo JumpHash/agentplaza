@@ -29,6 +29,7 @@ CPython's standard library.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -480,6 +481,31 @@ def _free_port() -> int:
         return probe.getsockname()[1]
 
 
+def _ws_frame(buffer: bytes) -> tuple[int, bytes, bytes] | None:
+    """The first whole WebSocket frame in ``buffer`` as (opcode, payload, the rest), or ``None`` until
+    one has fully arrived. A server's frames are unmasked; a masked one is unmasked all the same."""
+    if len(buffer) < 2:
+        return None
+    opcode, length, offset = buffer[0] & 0x0F, buffer[1] & 0x7F, 2
+    if length == 126:
+        if len(buffer) < 4:
+            return None
+        length, offset = int.from_bytes(buffer[2:4], "big"), 4
+    elif length == 127:
+        if len(buffer) < 10:
+            return None
+        length, offset = int.from_bytes(buffer[2:10], "big"), 10
+    mask = b""
+    if buffer[1] & 0x80:
+        mask, offset = buffer[offset : offset + 4], offset + 4
+    if len(buffer) < offset + length:
+        return None
+    payload = buffer[offset : offset + length]
+    if mask:
+        payload = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+    return opcode, payload, buffer[offset + length :]
+
+
 class LabError(RuntimeError):
     """A lab could not be brought up or driven."""
 
@@ -665,6 +691,7 @@ class Lab:
             str(self.ctx.kernel),
             "--initrd",
             str(self.ctx.initrd),
+            "--insecure-no-token",  # the lab's daemons are its own, on ephemeral ports
         ]
         if self.workspace is not None:
             # The daemon gives every VM of every run its own copy of this base
@@ -692,6 +719,7 @@ class Lab:
                 str(self.http_port),
                 "--apid",
                 f"http://127.0.0.1:{_free_port()}",
+                "--insecure-no-token",
             ]
             if self.roles is not None:
                 # The codex's per-role tool grants, enforced on every
@@ -718,6 +746,11 @@ class Lab:
                 # index when the manifest has no slots), so the caller knows which
                 # CID a role's guest connects as.
                 argv_noded += ["--agents-cid-base", str(self.agents_cid_base)]
+        # The node's persistent state (keepalive agents' workspace images, snapshots, shared volumes) defaults to
+        # the user's data directory, which the owner's own plaza uses: a lab keeps its own, beside its UDS root,
+        # unless the case names one or runs without a workspace.
+        if not {"--persist-dir", "--no-workspace"} & set(self.noded_args):
+            argv_noded += ["--persist-dir", str(self.uds_dir.parent / f"{self.uds_dir.name}-persist")]
         argv_noded += self.noded_args
         self.noded = self._spawn("noded", argv_noded, self.noded_log)
         line = self._await_line(self.noded_log, "listening on")
@@ -876,39 +909,59 @@ class Lab:
         except (OSError, ValueError):
             return False
     def stream_events(self, seconds: float, sink: list[str] | None = None) -> list[str]:
-        """Consume ``GET /api/v0/events`` for ``seconds`` and return its lines.
+        """Read the node's event stream (``GET /v1/ws``, a WebSocket) for ``seconds`` and return its messages.
 
-        ``sink``, when given, receives every line **as it arrives**: the return
-        value is only complete once the read ends, so a caller that must inspect
-        the stream while it is still open — a session-long frame capture — polls
-        the sink instead.
+        Each message is one JSON event, e.g. ``{"event":"run","data":{"id":"r1","state":"running"}}``;
+        noded sends each as one unfragmented text frame. The request offers the socket's subprotocol
+        (``apz.noded.v1``) and carries no ``Origin``: the socket refuses any. ``sink``, when given, receives every message **as it arrives**: the return value is
+        only complete once the read ends, so a caller that must inspect the stream while it is still
+        open polls the sink instead.
         """
         connection = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        key = base64.b64encode(os.urandom(16)).decode()
         connection.sendall(
-            b"GET /api/v0/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n"
+            (
+                "GET /v1/ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+                "Sec-WebSocket-Protocol: apz.noded.v1\r\n\r\n"
+            ).encode()
         )
         connection.settimeout(0.25)
         deadline = now() + seconds
-        lines: list[str] = []
+        messages: list[str] = []
         buffer = b""
-        while now() < deadline:
-            try:
-                chunk = connection.recv(1 << 16)
-            except TimeoutError:
-                continue
-            except OSError:
-                break
-            if not chunk:
-                break
-            buffer += chunk
-            while b"\n" in buffer:
-                raw, buffer = buffer.split(b"\n", 1)
-                line = raw.decode(errors="replace")
-                lines.append(line)
-                if sink is not None:
-                    sink.append(line)
-        connection.close()
-        return lines
+        upgraded = False
+        try:
+            while now() < deadline:
+                try:
+                    chunk = connection.recv(1 << 16)
+                except TimeoutError:
+                    continue
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buffer += chunk
+                if not upgraded:
+                    if b"\r\n\r\n" not in buffer:
+                        continue
+                    head, buffer = buffer.split(b"\r\n\r\n", 1)
+                    status = head.split(b"\r\n", 1)[0].decode(errors="replace")
+                    if not status.startswith("HTTP/1.1 101"):
+                        raise LabError(f"GET /v1/ws refused: {status}")
+                    upgraded = True
+                while (frame := _ws_frame(buffer)) is not None:
+                    opcode, payload, buffer = frame
+                    if opcode == 0x8:  # close
+                        return messages
+                    if opcode == 0x1:  # text
+                        text = payload.decode(errors="replace")
+                        messages.append(text)
+                        if sink is not None:
+                            sink.append(text)
+        finally:
+            connection.close()
+        return messages
     def list_runs(self) -> list[dict]:
         return self._request("GET", "/v1/runs").json["runs"]
     def create(self, **spec) -> tuple[Result, dict]:
@@ -979,7 +1032,11 @@ class Lab:
         return own[-1] if own else candidates[-1]
 
     def workspace_copies(self, run_id: str) -> list[Path]:
-        """A run's workspace copies, in VM order (``workspace-{i}.ext4``)."""
+        """A run's workspace copies, in VM order (``workspace-{i}.ext4``), in its run directory.
+
+        Those are the copies of a non-keepalive or sandbox run. A keepalive VM's image is persistent
+        (see ``persistent_workspaces``), not a copy in its run directory.
+        """
         directory = self.run_dir(run_id)
         if not directory.is_dir():
             return []
@@ -987,6 +1044,25 @@ class Lab:
             (entry for entry in directory.iterdir() if entry.name.startswith("workspace-")),
             key=lambda path: path.name,
         )
+
+    @property
+    def persist_dir(self) -> Path:
+        """Where ``noded`` keeps its persistent state (``--persist-dir``).
+
+        A keepalive VM's workspace image is ``workspaces/cid-{cid}.ext4`` under it. It is the lab's
+        own sibling of its UDS directory unless the case names one, so a lab never touches the
+        user's data dir.
+        """
+        if "--persist-dir" in self.noded_args:
+            return Path(self.noded_args[self.noded_args.index("--persist-dir") + 1])
+        return self.uds_dir.parent / f"{self.uds_dir.name}-persist"
+
+    def persistent_workspaces(self) -> list[Path]:
+        """Every persistent workspace image under the persist dir, by name."""
+        directory = self.persist_dir / "workspaces"
+        if not directory.is_dir():
+            return []
+        return sorted(directory.glob("cid-*.ext4"))
 
     def rss(self) -> int:
         """``noded``'s resident set size, in bytes (its VMs are threads of it)."""

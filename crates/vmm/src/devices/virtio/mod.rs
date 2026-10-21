@@ -120,6 +120,16 @@ pub enum VirtioError {
         /// The number of queues recorded in the snapshot.
         found: usize,
     },
+    /// A snapshot field no sequence of driver writes could have left: refused, not clamped
+    #[error("the snapshot of virtio device type {device_type} has an invalid {field}: {value:#x}")]
+    SnapshotField {
+        /// The virtio device type the snapshot is of.
+        device_type: u32,
+        /// The register, and the queue it is for, that the snapshot recorded.
+        field: String,
+        /// The value the snapshot recorded.
+        value: u64,
+    },
     /// The vhost backend: {0}
     #[error("vhost: {0}")]
     #[cfg(target_os = "linux")]

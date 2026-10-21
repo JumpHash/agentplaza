@@ -776,12 +776,17 @@ impl VsockMuxer {
             EpollListener::HostSock => EventSet::IN,
         };
         let is_local = matches!(listener, EpollListener::LocalStream(_));
+        #[allow(
+            clippy::useless_conversion,
+            reason = "RawFd is u64 on Windows, i32 on unix"
+        )]
+        let epoll_data = u64::try_from(fd).unwrap();
 
         self.epoll
             .ctl(
                 ControlOperation::Add,
                 fd,
-                EpollEvent::new(evset, u64::try_from(fd).unwrap()),
+                EpollEvent::new(evset, epoll_data),
             )
             .map(|_| {
                 self.listener_map.insert(fd, listener);
@@ -962,11 +967,16 @@ impl VsockMuxer {
                     // we need to update its epoll listener.
 
                     *evset = new_evset;
+                    #[allow(
+                        clippy::useless_conversion,
+                        reason = "RawFd is u64 on Windows, i32 on unix"
+                    )]
+                    let epoll_data = u64::try_from(fd).unwrap();
                     self.epoll
                         .ctl(
                             ControlOperation::Modify,
                             fd,
-                            EpollEvent::new(new_evset, u64::try_from(fd).unwrap()),
+                            EpollEvent::new(new_evset, epoll_data),
                         )
                         .unwrap_or_else(|err| {
                             // This really shouldn't happen, like, ever. However, "famous last
@@ -1189,7 +1199,7 @@ mod tests {
     /// answered with an RST, and — once the queue has drained — a second
     /// `REQUEST` must be accepted normally, proving the RST was the full queue
     /// and not a broken helper. The muxer allows 1023 connections while
-    /// `UnixListener`'s default backlog is 128, so the pre-fix code (a
+    /// the test listener queues 128, so the pre-fix code (a
     /// blocking `UnixStream::connect`) parked this thread inside `connect(2)`
     /// for as long as the listener did not accept: no vsock RX/TX for the VM,
     /// and `VmHandle::kill` timing out while the VM kept running. This test
@@ -1205,9 +1215,13 @@ mod tests {
         // A listener at `{uds_path}_{port}` is the host service the guest's
         // `connect(CID 2, LOCAL_PORT)` is translated into; it never accepts.
         let listener = UnixListener::bind(&listener_path).expect("test listener binds");
+        // A queue of 128: std listens with the system's largest backlog (somaxconn, 4096 on a current
+        // Linux), which a default limit of 1024 descriptors cannot fill.
+        #[cfg(target_os = "linux")]
+        crate::sys::set_listen_backlog(&listener, 128).expect("the test listener's backlog");
         let mut muxer = VsockMuxer::new(3, path.clone()).expect("muxer binds its host socket");
 
-        // Fill the accept queue (std's default backlog of 128) with connects
+        // Fill the accept queue (128 on Linux, set above) with connects
         // nobody accepts. The next connect must report `WouldBlock`: it is the
         // muxer's own helper, i.e. exactly what a guest `REQUEST` calls.
         let mut pending = Vec::new();

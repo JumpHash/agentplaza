@@ -11,7 +11,13 @@ note() {
     echo "agentplaza: $*"
 }
 
-arch="$(uname -m 2>/dev/null || echo unknown)"
+# The package is built for one Debian architecture (arm64 or armhf). uname -m
+# reports the kernel's, which is aarch64 on a 64-bit kernel even with a 32-bit
+# userland, so ask dpkg first and fall back to uname -m when dpkg is missing.
+arch="$(dpkg --print-architecture 2>/dev/null || true)"
+if [ -z "$arch" ]; then
+    arch="$(uname -m 2>/dev/null || echo unknown)"
+fi
 case "$arch" in
     aarch64|arm64)
         ;;

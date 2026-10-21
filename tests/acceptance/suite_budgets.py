@@ -12,8 +12,8 @@ Measured on this host and recorded per machine class in
   criterion (port record, slice 16) and its steady-state CPU against 5 % of one
   core, with the margin the validated numbers (5.57 GiB, 0.03 %) leave.
 
-* **Restore** — the plaza has no VM snapshot support, so restore is the
-  daemon restart plus FE reconciliation the SSE data layer defines: kill the
+* **Restore** — here restore is the daemon restart plus the reconciliation
+  the node's event stream (``/v1/ws``) defines: kill the
   daemon mid-run, restart it, and check the register reconciles (the new
   ``r1`` carries a new ``created_at`` — a different run) and a fresh run
   completes cleanly on the restarted daemon.
@@ -390,7 +390,7 @@ def _budget_case_footprint(suite: Suite, ctx) -> None:
 def _budget_case_restore(suite: Suite, ctx) -> None:
     case = suite.case(
         "restore = daemon restart + register reconcile",
-        vector="SIGTERM mid-run, restart on the same uds dir: fresh ids, new created_at, SSE identity, fresh run green",
+        vector="SIGTERM mid-run, restart on the same uds dir: fresh ids, new created_at, event-stream identity, fresh run green",
     )
     killed_cids = list(range(40, 44))
     fresh_cid = 42
@@ -429,15 +429,15 @@ def _budget_case_restore(suite: Suite, ctx) -> None:
             f"id={fresh['id']} created_at={fresh['created_at']} vs {first_created_at}",
         )
         case.invariant(
-            "the SSE stream carries the new run's identity",
-            any(f'"id":"{fresh["id"]}"' in line for line in frames),
-            f"frames={[line for line in frames if line.startswith('data:')][:3]}",
+            "the event stream carries the new run's identity",
+            any(f'"id":"{fresh["id"]}"' in message for message in frames),
+            f"events={frames[:3]}",
         )
         final, _ = second.await_state(fresh["id"], {"done", "failed", "killed"}, now() + 120)
         case.invariant("a fresh run completes cleanly on the restarted daemon", final["state"] == "done", final["state"])
         case.note(
-            "restore scope: there is no VM snapshot support in this MVP, so restore is the daemon "
-            "restart plus this reconciliation, exactly as the SSE identity contract defines it"
+            "restore scope: this case is the daemon restart plus this reconciliation, as the event "
+            "stream's identity contract defines it (VM snapshots and their restores are tested elsewhere)"
         )
     finally:
         second.stop()
@@ -680,7 +680,10 @@ def _budget_case_workspace_boot(
             first_fault = ""
             last_observation = ""
             for iteration in range(count):
-                reply, view = lab.create(n=size, vcpus=1, memory_mib=128, beats=BOOT_GUEST_BEATS)
+                # A non-keepalive run: one copy per VM in its run directory (a keepalive VM's image is persistent).
+                reply, view = lab.create(
+                    n=size, vcpus=1, memory_mib=128, beats=BOOT_GUEST_BEATS, keepalive=False
+                )
                 samples.append(reply.elapsed)
                 observed, last_observation = _boot_observation(view, size)
                 if not observed:
@@ -775,7 +778,8 @@ def _budget_case_workspace_lifecycle(suite: Suite, ctx, image: Path) -> None:
             retained = True
             for _ in range(count):
                 started = now()
-                _, view = lab.create(n=size, vcpus=1, memory_mib=128, beats=2)
+                # A non-keepalive run: its per-run copies stay after it ends.
+                _, view = lab.create(n=size, vcpus=1, memory_mib=128, beats=2, keepalive=False)
                 final, _ = lab.await_state(view["id"], {"done", "failed", "killed"}, started + FLEET_DEADLINE_S)
                 samples.append(now() - started)
                 all_done = all_done and final["state"] == "done" and all(
@@ -828,7 +832,8 @@ def _budget_case_workspace_footprint(suite: Suite, ctx, image: Path) -> None:
     cpu_peak = 0.0
     with Lab(ctx, [], "budgets-workspace-footprint", workspace=image) as lab:
         baseline = lab.rss()
-        reply, view = lab.create(n=FLEET_N, vcpus=1, memory_mib=128, beats=FLEET_BEATS)
+        # A non-keepalive run: one per-run copy per VM, not the CIDs' persistent images.
+        reply, view = lab.create(n=FLEET_N, vcpus=1, memory_mib=128, beats=FLEET_BEATS, keepalive=False)
         case.invariant(
             f"the {FLEET_N}-VM --workspace fleet came up",
             view["state"] == "running" and len(view["vms"]) == FLEET_N,
@@ -957,7 +962,18 @@ def _budget_case_workspace_persistence(suite: Suite, ctx, image: Path) -> None:
     case = _workspace_case(suite, "persistence")
     token = _workspace_token(ctx)
     transcript_dir = ctx.new_dir("budgets-workspace-persistence")
-    first = Lab(ctx, [], "budgets-workspace-persist-a", workspace=image)
+    # The run is a keepalive agent (the node allocates its CID), and noded recovers such a VM when it stops by
+    # itself. This case powers the guest off on purpose and checks that the run ends, so its node runs without
+    # recovery.
+    # Both boots are cold (no warm templates, so `--no-snapshots`): the case reads the guest's own mount
+    # line, and a VM restored from a template prints none.
+    first = Lab(
+        ctx,
+        [],
+        "budgets-workspace-persist-a",
+        workspace=image,
+        noded_args=["--no-recover", "--no-snapshots"],
+    )
     first.start()
     copy_path: Path | None = None
     copy_sha: str | None = None
@@ -997,16 +1013,17 @@ def _budget_case_workspace_persistence(suite: Suite, ctx, image: Path) -> None:
         write_transcript.write_text(transcript)
         ctx.register_artifact(write_transcript)
 
-        # The run's own directory: private, one copy per VM, the base image's size.
-        run_dir = first.run_dir(run_id)
-        copies = first.workspace_copies(run_id)
-        mode = run_dir.stat().st_mode & 0o777 if run_dir.is_dir() else 0
+        # The VM's persistent workspace image: one per keepalive CID, under the lab's persist dir. Its directory
+        # is private (0700), and the image is the base image's size.
+        copies = first.persistent_workspaces()
+        workspaces = first.persist_dir / "workspaces"
+        mode = workspaces.stat().st_mode & 0o777 if workspaces.is_dir() else 0
         case.invariant(
-            "the run's workspace directory is private (0700) and holds one copy per VM",
+            "the persistent workspace directory is private (0700) and holds one image for the VM",
             mode == 0o700
             and len(copies) == 1
             and copies[0].stat().st_size == image.stat().st_size,
-            f"mode={mode:o} copies={[path.name for path in copies]} at {run_dir}",
+            f"mode={mode:o} images={[path.name for path in copies]} at {workspaces}",
         )
         copy_path = copies[0] if copies else None
         host_read = "no copy"
@@ -1014,14 +1031,15 @@ def _budget_case_workspace_persistence(suite: Suite, ctx, image: Path) -> None:
             copy_sha = sha256_file(copy_path)
             found, host_read = _copy_carries_token(copy_path, token)
             case.invariant(
-                "the token is in the run's own image copy on the host while the guest still runs",
+                "the token is in the VM's persistent image on the host while the guest still runs",
                 found,
                 host_read,
             )
 
-        # A second run of the same daemon gets its own copies, never this one's.
+        # A second run, on another CID, gets another image; the first run's image is left alone.
+        before = set(first.persistent_workspaces())
         _, other = first.create(n=1, vcpus=1, memory_mib=128, beats=None)
-        fresh = first.workspace_copies(other["id"])
+        fresh = [path for path in first.persistent_workspaces() if path not in before]
         leaked = _copy_carries_token(fresh[0], token)[0] if fresh else True
         case.invariant(
             "a new run gets fresh copies, never the old run's",
@@ -1032,10 +1050,11 @@ def _budget_case_workspace_persistence(suite: Suite, ctx, image: Path) -> None:
             f"new={[str(path) for path in fresh]} leaked={leaked}",
         )
         still_there, _ = _copy_carries_token(copy_path, token) if copy_path is not None else (False, "")
+        unchanged = copy_path is not None and copy_sha == sha256_file(copy_path)
         case.invariant(
             "the new run left the earlier run's copy and its data alone",
-            still_there,
-            f"copy={copy_path}",
+            still_there and unchanged,
+            f"copy={copy_path} sha_unchanged={unchanged}",
         )
         first.delete(other["id"])
 
@@ -1049,11 +1068,10 @@ def _budget_case_workspace_persistence(suite: Suite, ctx, image: Path) -> None:
             f"state={final['state']} vms={[vm['state'] for vm in final['vms']]}",
         )
         case.note(f"poweroff -> done in {now() - started:.2f}s")
-        after_run = first.workspace_copies(run_id)
         case.invariant(
-            "the finished run's workspace copy is still there after the run ended",
-            copy_path is not None and copy_path.is_file() and len(after_run) == 1,
-            f"copies={[str(path) for path in after_run]}",
+            "the finished run's workspace image is still there after the run ended",
+            copy_path is not None and copy_path.is_file(),
+            f"image={copy_path}",
         )
 
         # ...and it survives the daemon dying, because nothing reaps it.
@@ -1078,11 +1096,17 @@ def _budget_case_workspace_persistence(suite: Suite, ctx, image: Path) -> None:
         )
         return
 
-    # The second boot: a fresh daemon whose base image IS the retained copy, so
-    # the guest reads the previous boot's write back out of the same bytes. The
-    # copy path is deterministic (`{uds_dir}/run-{run_id}/workspace-0.ext4`),
-    # which is how an operator addresses a finished run's volume.
-    second = Lab(ctx, [], "budgets-workspace-persist-b", workspace=copy_path)
+    # The second boot: a fresh daemon on the same uds dir, so the same persist dir. Its keepalive VM gets the
+    # same CID back, and noded returns that CID's persistent image as it is (it never copies the base over it),
+    # so the guest reads the previous boot's write back out of the same bytes.
+    second = Lab(
+        ctx,
+        [],
+        "budgets-workspace-persist-b",
+        uds_dir=first.uds_dir,
+        workspace=image,
+        noded_args=["--no-recover", "--no-snapshots"],
+    )
     second.start()
     try:
         _, reboot = second.create(n=1, vcpus=1, memory_mib=128, beats=None)
@@ -1091,7 +1115,7 @@ def _budget_case_workspace_persistence(suite: Suite, ctx, image: Path) -> None:
             second, rid, 0, "plaza guest: /workspace mounted (ext4", CONSOLE_DEADLINE_S
         )
         case.invariant(
-            "a second boot built from the retained copy mounted its filesystem", remounted, remount_detail
+            "a second boot on the retained image mounted its filesystem", remounted, remount_detail
         )
         before = reconstruct_console((second.get(rid).get("vms") or [{}])[0].get("serial", ""))
         case.invariant(
@@ -1109,30 +1133,28 @@ def _budget_case_workspace_persistence(suite: Suite, ctx, image: Path) -> None:
             read_back,
             f"token={'present' if read_back else 'absent'} in {len(transcript)} bytes; {transcript[-200:]}",
         )
-        second_copies = second.workspace_copies(rid)
         derived = (
-            len(second_copies) == 1
-            and sha256_file(second_copies[0]) != sha256_file(image)
-            and _copy_carries_token(second_copies[0], token)[0]
+            copy_path.is_file()
+            and sha256_file(copy_path) != sha256_file(image)
+            and _copy_carries_token(copy_path, token)[0]
         )
         case.invariant(
-            "the second boot's image is derived from the retained copy, not the pristine base image",
+            "the second boot runs on the retained image, not the pristine base image",
             derived,
-            f"copy={[str(path) for path in second_copies]} base_sha={sha256_file(image)[:12]}",
+            f"copy={copy_path} base_sha={sha256_file(image)[:12]}",
         )
         case.note(
-            "the second boot's base image is the retained copy at "
-            f"{copy_path} (deterministic: {{uds_dir}}/run-{run_id}/workspace-0.ext4, sha256 "
-            f"{str(copy_sha)[:12]}); noded copies it for the new run, so the guest mounts those bytes, "
-            "not the base image's"
+            "the second boot's keepalive VM mounted the persistent image at "
+            f"{copy_path} (sha256 {str(copy_sha)[:12]}): noded returns that image as it is, so the guest "
+            "reads those bytes, not the base image's"
         )
         suite.data.setdefault("workspace", {})["persistence"] = {
             "token": token,
             "first_run": {"run": run_id, "copy": str(copy_path), "sha256": copy_sha},
             "second_run": {
                 "run": rid,
-                "copy": str(second_copies[0]) if second_copies else None,
-                "sha256": sha256_file(second_copies[0]) if second_copies else None,
+                "copy": str(copy_path),
+                "sha256": sha256_file(copy_path),
             },
             "base_image_sha256": sha256_file(image),
         }
@@ -1150,7 +1172,7 @@ def _budget_case_workspace_restore(suite: Suite, ctx, image: Path) -> None:
     copy_path: Path | None = None
     copy_sha: str | None = None
     try:
-        _, view = first.create(n=1, vcpus=1, memory_mib=128, beats=40)
+        _, view = first.create(n=1, vcpus=1, memory_mib=128, beats=40, keepalive=False)
         run_id = view["id"]
         mounted, mount_detail = _await_console(
             first, run_id, 0, "plaza guest: /workspace mounted (ext4", CONSOLE_DEADLINE_S
@@ -1201,7 +1223,7 @@ def _budget_case_workspace_restore(suite: Suite, ctx, image: Path) -> None:
             f"{survived_detail} copy={copy_path}",
         )
 
-        _, fresh = second.create(n=1, vcpus=1, memory_mib=128, beats=None)
+        _, fresh = second.create(n=1, vcpus=1, memory_mib=128, beats=None, keepalive=False)
         case.invariant(
             "a fresh run is running on the restarted daemon",
             fresh["state"] == "running",
@@ -1219,52 +1241,6 @@ def _budget_case_workspace_restore(suite: Suite, ctx, image: Path) -> None:
             f"{fresh['id']} in {second.run_dir(fresh['id'])}; the killed daemon's copies were at "
             f"{first.run_dir(str(run_id))}"
         )
-        if copy_path is not None and fresh_copies and fresh_copies[0] == copy_path:
-            # The id sequence restarts with the daemon, so the fresh run's own
-            # directory is the one the killed daemon's run used: the copy step
-            # writes the base image over the retained copy in place.
-            replaced_sha = sha256_file(copy_path)
-            suite.finding(
-                "a restarted daemon reuses run-r1 and overwrites the previous instance's workspace copy",
-                classification="product-defect",
-                severity="medium",
-                affected_cell="budgets: restore with --workspace (run-directory retention)",
-                detail=(
-                    "noded's run ids restart with the daemon (`Registry::new` sets `next_seq = 0`), so "
-                    "the first run after a restart is `r1` again and its workspace directory is "
-                    f"{second.run_dir(fresh['id'])} — the very directory the killed daemon's run "
-                    f"{run_id} was using. `materialize_workspaces` copies the base image onto that path "
-                    "with `std::fs::copy`, which truncates the existing copy in place, so the previous "
-                    f"instance's retained volume (sha256 {copy_sha}) is replaced (sha256 {replaced_sha}) "
-                    "and its /workspace/notes.txt marker is gone. The block slice's contract that a "
-                    "run's copies stay after the run (they hold the agent's work) therefore holds only "
-                    "within one daemon lifetime: restarting on the same --uds-dir destroys the retained "
-                    "volumes of the runs whose ids the new daemon re-issues. Both behaviours are "
-                    "deliberate on their own (run ids are per-daemon; copies are kept), which is the "
-                    "conflict this cell records."
-                ),
-                observed=f"run {fresh['id']} at {second.run_dir(fresh['id'])} overwrote {copy_path}",
-                expected=(
-                    "the retained copy of a finished/killed run keeps its bytes across a daemon restart "
-                    "(or the new run is given a path that cannot collide with one)"
-                ),
-                reproducer=(
-                    f"noded --workspace IMG --uds-dir D; POST {{n:1,beats:40}}; console `wspace TOKEN`; "
-                    f"`sync`; SIGTERM noded; noded --workspace IMG --uds-dir D; POST {{n:1}} -> the new "
-                    f"run is r1 and D/run-r1/workspace-0.ext4 no longer contains TOKEN"
-                ),
-                suspected_component=(
-                    "crates/noded/src/registry.rs (reserve_run_id / boot_run run-dir path) + "
-                    "crates/vmm/src/spawner.rs (materialize_workspaces copies in place)"
-                ),
-                artifacts={
-                    "uds_dir": str(restart_uds),
-                    "copy": str(copy_path),
-                    "before_sha256": copy_sha,
-                    "after_sha256": replaced_sha,
-                    "noded_log": str(second.noded_log),
-                },
-            )
     finally:
         second.stop()
 

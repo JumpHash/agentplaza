@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 use std::sync::Barrier;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::pal::eventfd::EventFd;
 
@@ -40,6 +40,35 @@ use crate::devices::virtio::VirtioError;
 use crate::devices::virtio::device_status;
 use crate::vstate::bus::BusDevice;
 use crate::vstate::memory::GuestMemoryMmap;
+
+/// Logs at most once a second per call site: a guest drives these paths and must not flood the host's log.
+fn log_throttled(last: &AtomicU64, line: impl FnOnce() -> String) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    log_throttled_at(last, now, line);
+}
+
+/// [`log_throttled`] for an explicit whole second, so the throttle can be tested without the clock.
+fn log_throttled_at(last: &AtomicU64, now: u64, line: impl FnOnce() -> String) {
+    let previous = last.load(Ordering::Relaxed);
+    if previous < now
+        && last
+            .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        eprintln!("{}", line());
+    }
+}
+
+/// A guest-driven warning, throttled by its own call site: the static is declared inside the
+/// expansion, so every site keeps its own last-logged second.
+macro_rules! log_guest {
+    ($($arg:tt)*) => {{
+        static LAST: AtomicU64 = AtomicU64::new(0);
+        log_throttled(&LAST, || format!($($arg)*));
+    }};
+}
 
 /// Interrupt status bit: the device has used-ring entries for the driver
 /// (virtio-mmio `VIRTIO_MMIO_INT_VRING`).
@@ -341,6 +370,23 @@ impl VirtioMmioTransport {
             });
         }
 
+        // A state file is not a sequence of driver writes, so every restored value is checked
+        // against the limits those writes hold it to, before anything is taken from the state.
+        check_restored_status(device_type, saved.device_status)?;
+        // A device whose activation failed never uses its queues again before a reset, so their
+        // rings are not checked; their sizes still are.
+        let failed = saved.device_status & device_status::FAILED != 0;
+        for (index, (queue, saved_queue)) in device.queues().iter().zip(&saved.queues).enumerate() {
+            check_restored_queue(
+                device_type,
+                index,
+                queue.max_size,
+                saved_queue,
+                &mem,
+                failed,
+            )?;
+        }
+
         let mut transport = Self::new(device, mem, irq);
         transport.features_select = saved.features_select;
         transport.acked_features_select = saved.acked_features_select;
@@ -351,8 +397,9 @@ impl VirtioMmioTransport {
             .interrupt_status
             .store(saved.interrupt_status, Ordering::SeqCst);
         for (queue, saved_queue) in transport.device.queues_mut().iter_mut().zip(&saved.queues) {
+            // The device's own limit stays: a state saved by a build with another limit still restores.
             *queue = QueueConfig {
-                max_size: saved_queue.max_size,
+                max_size: queue.max_size,
                 size: saved_queue.size,
                 ready: saved_queue.ready,
                 desc: saved_queue.desc,
@@ -411,7 +458,7 @@ impl VirtioMmioTransport {
             0 => self.device.features() as u32,
             1 => (self.device.features() >> 32) as u32,
             _ => {
-                eprintln!("warning: virtio-mmio: features for invalid page {page} read as 0");
+                log_guest!("warning: virtio-mmio: features for invalid page {page} read as 0");
                 0
             }
         }
@@ -442,7 +489,7 @@ impl VirtioMmioTransport {
             device_status::FEATURES_OK,
             device_status::DRIVER_OK | device_status::FAILED,
         ) {
-            eprintln!(
+            log_guest!(
                 "warning: virtio-mmio: queue register written in invalid device state {:#x}",
                 self.device_status
             );
@@ -455,7 +502,7 @@ impl VirtioMmioTransport {
         match self.device.queues_mut().get_mut(select) {
             Some(queue) => f(queue),
             None => {
-                eprintln!(
+                log_guest!(
                     "warning: virtio-mmio: queue register written for invalid queue {selected}"
                 );
             }
@@ -477,7 +524,7 @@ impl VirtioMmioTransport {
             device_status::FEATURES_OK,
             device_status::DRIVER_OK | device_status::FAILED,
         ) {
-            eprintln!(
+            log_guest!(
                 "warning: virtio-mmio: queue register written in invalid device state {:#x}",
                 self.device_status
             );
@@ -487,15 +534,28 @@ impl VirtioMmioTransport {
             return;
         };
         let Some(queue) = self.device.queues_mut().get_mut(select) else {
-            eprintln!(
+            log_guest!(
                 "warning: virtio-mmio: queue register written for invalid queue {}",
                 self.queue_select
             );
             return;
         };
-        let size = value & 0xffff;
+        // The upper half of QueueNum is reserved. A write that sets any of those
+        // bits is ignored like the other invalid queue writes above: the size
+        // stays as it was, and the device is not failed for it.
+        if value & 0xffff_0000 != 0 {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "warning: virtio-mmio: QueueNum {value:#x} sets reserved bits; the write is ignored"
+                );
+            }
+            return;
+        }
+        let size = value;
         if size == 0 || size > queue.max_size || !size.is_power_of_two() {
-            eprintln!(
+            log_guest!(
                 "warning: virtio-mmio: QueueNum {size:#x} is invalid: it must be a non-zero \
                  power of two no larger than {} (QueueNumMax)",
                 queue.max_size
@@ -586,16 +646,82 @@ impl VirtioMmioTransport {
             if status == (ACKNOWLEDGE | DRIVER | FEATURES_OK | DRIVER_OK)
                 && let Err(err) = self.device.activate(&self.mem, &self.irq)
             {
-                eprintln!("warning: virtio-mmio: failed to activate the device: {err}");
+                log_guest!("warning: virtio-mmio: failed to activate the device: {err}");
                 self.device_status |= FAILED;
             }
         } else {
-            eprintln!(
+            log_guest!(
                 "warning: virtio-mmio: invalid driver status transition {:#x} -> {:#x}",
-                self.device_status, status
+                self.device_status,
+                status
             );
         }
     }
+}
+
+/// The `device_status` values the state machine can leave set. The driver reaches each by a write
+/// `set_device_status` accepts, and `FAILED` may be set on top of any of them.
+const REACHABLE_DEVICE_STATUS: [u32; 5] = [
+    device_status::INIT,
+    device_status::ACKNOWLEDGE,
+    device_status::ACKNOWLEDGE | device_status::DRIVER,
+    device_status::ACKNOWLEDGE | device_status::DRIVER | device_status::FEATURES_OK,
+    device_status::ACKNOWLEDGE
+        | device_status::DRIVER
+        | device_status::FEATURES_OK
+        | device_status::DRIVER_OK,
+];
+
+/// Refuses a restored `device_status` no sequence of driver writes reaches: an unknown bit, or a
+/// combination the state machine skips over. `DEVICE_NEEDS_RESET` is never set by this transport.
+fn check_restored_status(device_type: u32, status: u32) -> Result<(), VirtioError> {
+    if REACHABLE_DEVICE_STATUS.contains(&(status & !device_status::FAILED)) {
+        return Ok(());
+    }
+    Err(VirtioError::SnapshotField {
+        device_type,
+        field: "device_status".to_owned(),
+        value: u64::from(status),
+    })
+}
+
+/// Refuses a restored queue the driver could not have left, under the limits the register writes
+/// hold it to. The device's own `max_size` is the limit; the file's is ignored, so a state saved
+/// by a build with another limit restores as long as its size fits this one. A size of zero is a
+/// queue the driver never sized, valid only until the queue is ready. A ready queue's rings must
+/// lie inside guest memory, unless the device failed (`failed`: it uses no queue before a reset).
+/// Nothing is clamped.
+fn check_restored_queue(
+    device_type: u32,
+    index: usize,
+    max_size: u32,
+    saved: &QueueConfigState,
+    mem: &GuestMemoryMmap,
+    failed: bool,
+) -> Result<(), VirtioError> {
+    let refuse = |field: &str, value: u64| VirtioError::SnapshotField {
+        device_type,
+        field: format!("queue {index} {field}"),
+        value,
+    };
+    if saved.size > max_size || (saved.size != 0 && !saved.size.is_power_of_two()) {
+        return Err(refuse("QueueNum", u64::from(saved.size)));
+    }
+    if !saved.ready || failed {
+        return Ok(());
+    }
+    let size = match u16::try_from(saved.size) {
+        Ok(size) if size != 0 => size,
+        _ => return Err(refuse("QueueNum", u64::from(saved.size))),
+    };
+    crate::devices::virtio::queue::Queue::rings_in_memory(
+        mem,
+        size,
+        saved.desc,
+        saved.avail,
+        saved.used,
+    )
+    .map_err(|(ring, address)| refuse(ring, address))
 }
 
 /// Reads a 4-byte little-endian register value, or `None` when the access is
@@ -611,7 +737,7 @@ impl BusDevice for VirtioMmioTransport {
         match offset {
             0x00..=0xff => {
                 if read_le_u32(data).is_none() {
-                    eprintln!(
+                    log_guest!(
                         "warning: invalid virtio mmio read: {base:#x}:{offset:#x}:{}",
                         data.len()
                     );
@@ -629,7 +755,7 @@ impl BusDevice for VirtioMmioTransport {
                     0x70 => self.device_status,
                     0xfc => self.config_generation,
                     _ => {
-                        eprintln!("warning: unknown virtio mmio register read: {offset:#x}");
+                        log_guest!("warning: unknown virtio mmio register read: {offset:#x}");
                         return;
                     }
                 };
@@ -637,7 +763,7 @@ impl BusDevice for VirtioMmioTransport {
             }
             0x100..=0xfff => self.device.read_config(offset - 0x100, data),
             _ => {
-                eprintln!(
+                log_guest!(
                     "warning: invalid virtio mmio read: {base:#x}:{offset:#x}:{}",
                     data.len()
                 );
@@ -649,7 +775,7 @@ impl BusDevice for VirtioMmioTransport {
         match offset {
             0x00..=0xff => {
                 let Some(value) = read_le_u32(data) else {
-                    eprintln!(
+                    log_guest!(
                         "warning: invalid virtio mmio write: {base:#x}:{offset:#x}:{}",
                         data.len()
                     );
@@ -666,14 +792,14 @@ impl BusDevice for VirtioMmioTransport {
                         ) {
                             let page = self.acked_features_select;
                             if let Err(err) = self.device.ack_features_by_page(page, value) {
-                                eprintln!(
+                                log_guest!(
                                     "warning: virtio-mmio: failed to acknowledge feature page \
                                      {page} ({value:#x}): {err}"
                                 );
                                 self.device_status |= device_status::FAILED;
                             }
                         } else {
-                            eprintln!(
+                            log_guest!(
                                 "warning: virtio-mmio: features acknowledged in invalid device \
                                  state {:#x}",
                                 self.device_status
@@ -686,7 +812,7 @@ impl BusDevice for VirtioMmioTransport {
                     0x44 => self.update_queue_field(|queue| queue.ready = value == 1),
                     0x50 => {
                         if let Err(err) = self.device.notify_queue(value) {
-                            eprintln!(
+                            log_guest!(
                                 "warning: virtio-mmio: queue {value} notification failed: {err}"
                             );
                         }
@@ -712,14 +838,14 @@ impl BusDevice for VirtioMmioTransport {
                     0xa4 => self
                         .update_queue_field(|queue| Self::set_address_high(&mut queue.used, value)),
                     _ => {
-                        eprintln!("warning: unknown virtio mmio register write: {offset:#x}");
+                        log_guest!("warning: unknown virtio mmio register write: {offset:#x}");
                     }
                 }
             }
             // The device configuration space, forwarded to the device.
             0x100..=0xfff => self.device.write_config(offset - 0x100, data),
             _ => {
-                eprintln!(
+                log_guest!(
                     "warning: invalid virtio mmio write: {base:#x}:{offset:#x}:{}",
                     data.len()
                 );
@@ -1150,11 +1276,12 @@ mod tests {
         negotiate(&mut transport);
         write_u32(&mut transport, 0x30, 1);
         write_u32(&mut transport, 0x38, 128);
-        write_u32(&mut transport, 0x80, 0x1234_5000);
-        write_u32(&mut transport, 0x84, 0x1);
-        write_u32(&mut transport, 0x90, 0x2000);
+        // The rings lie inside the 4 KiB of guest memory the restore is given.
+        write_u32(&mut transport, 0x80, 0);
+        write_u32(&mut transport, 0x84, 0);
+        write_u32(&mut transport, 0x90, 0x800);
         write_u32(&mut transport, 0x94, 0);
-        write_u32(&mut transport, 0xa0, 0x3000);
+        write_u32(&mut transport, 0xa0, 0x980);
         write_u32(&mut transport, 0xa4, 0);
         write_u32(&mut transport, 0x44, 1);
         write_u32(&mut transport, 0x30, 2);
@@ -1270,6 +1397,100 @@ mod tests {
         ));
     }
 
+    /// Restores `state` into a fresh mock device of `queues` queues, as a snapshot is restored.
+    fn restore_into_mock(
+        state: &MmioDeviceState,
+        queues: usize,
+    ) -> Result<VirtioMmioTransport, VirtioError> {
+        VirtioMmioTransport::restore(
+            mock_device(1 << 32, queues, &Arc::new(Mutex::new(MockState::default()))),
+            single_region_mem(0x1000),
+            EventFd::new(crate::pal::eventfd::EFD_NONBLOCK).expect("event fd"),
+            state,
+        )
+    }
+
+    /// A snapshot's queue is held to the limits the guest's own `QueueNum` writes are: a size over
+    /// the device's maximum is refused, also when the state names a larger maximum (the device's own
+    /// counts). A state from a build with another maximum restores when its size fits this one.
+    #[test]
+    fn a_snapshot_with_a_queue_size_over_the_maximum_is_refused() {
+        let (mut transport, _state) = mock_transport(1 << 32, 2);
+        negotiate(&mut transport);
+        let saved = transport.save_state();
+
+        let mut oversized = saved.clone();
+        oversized.transport.queues[1].size = 512;
+        let Err(err) = restore_into_mock(&oversized, 2) else {
+            panic!("a queue size over QueueNumMax was restored");
+        };
+        assert!(err.to_string().contains("queue 1 QueueNum"), "{err}");
+
+        let mut raised_maximum = saved.clone();
+        raised_maximum.transport.queues[0].max_size = 512;
+        raised_maximum.transport.queues[0].size = 512;
+        let Err(err) = restore_into_mock(&raised_maximum, 2) else {
+            panic!("a state that raised QueueNumMax was restored");
+        };
+        assert!(err.to_string().contains("queue 0 QueueNum"), "{err}");
+
+        let mut other_maximum = saved;
+        let device_maximum = other_maximum.transport.queues[0].max_size;
+        other_maximum.transport.queues[0].max_size = device_maximum * 2;
+        let restored = restore_into_mock(&other_maximum, 2).expect("a size that fits restores");
+        assert_eq!(
+            restored.with_queue(0, |queue| queue.max_size),
+            device_maximum
+        );
+    }
+
+    /// A ready queue's rings must lie inside guest memory: a used ring past its end is refused.
+    /// The same address on a queue the driver never readied is not used, so it is restored.
+    #[test]
+    fn a_snapshot_with_a_ring_outside_guest_memory_is_refused() {
+        let (mut transport, _state) = mock_transport(1 << 32, 2);
+        negotiate(&mut transport);
+        write_u32(&mut transport, 0x30, 0);
+        write_u32(&mut transport, 0x38, 64);
+        write_u32(&mut transport, 0x44, 1);
+        let saved = transport.save_state();
+
+        let mut past_the_end = saved;
+        past_the_end.transport.queues[0].used = 0x1000;
+        let Err(err) = restore_into_mock(&past_the_end, 2) else {
+            panic!("a used ring past the end of guest memory was restored");
+        };
+        assert!(err.to_string().contains("queue 0 used ring"), "{err}");
+
+        let mut unready = past_the_end;
+        unready.transport.queues[0].ready = false;
+        assert!(restore_into_mock(&unready, 2).is_ok());
+    }
+
+    /// A device status no sequence of driver writes reaches is refused: an unknown bit, a
+    /// combination the state machine skips over, or `DEVICE_NEEDS_RESET`, which this transport
+    /// never sets. `FAILED` on a status it does reach is still restored.
+    #[test]
+    fn a_snapshot_with_an_unreachable_device_status_is_refused() {
+        use device_status::*;
+        let (mut transport, _state) = mock_transport(1 << 32, 1);
+        negotiate(&mut transport);
+        let saved = transport.save_state();
+
+        for status in [0x100, ACKNOWLEDGE | FEATURES_OK, DEVICE_NEEDS_RESET] {
+            let mut bad = saved.clone();
+            bad.transport.device_status = status;
+            let Err(err) = restore_into_mock(&bad, 1) else {
+                panic!("device status {status:#x} was restored");
+            };
+            assert!(err.to_string().contains("device_status"), "{err}");
+        }
+
+        let mut failed = saved;
+        failed.transport.device_status |= FAILED;
+        assert!(restore_into_mock(&failed, 1).is_ok());
+    }
+
     #[test]
     fn a_reset_returns_the_device_and_the_registers_to_init() {
         let (mut transport, state) = mock_transport(1 << 32, 3);
@@ -1319,6 +1540,17 @@ mod tests {
                 transport.write(0, offset, &write);
             }
         }
+        // Feature acks are only processed once the driver has set DRIVER. The
+        // sweep above can leave the device FAILED, so reset it first, then walk
+        // it to ACKNOWLEDGE | DRIVER so the feature-select and feature-ack
+        // registers reach `ack_features_by_page` below.
+        write_u32(&mut transport, 0x70, 0);
+        write_u32(&mut transport, 0x70, device_status::ACKNOWLEDGE);
+        write_u32(
+            &mut transport,
+            0x70,
+            device_status::ACKNOWLEDGE | device_status::DRIVER,
+        );
         // And every register offset with a range of 32-bit values, including
         // the ones that drive the state machine.
         for offset in (0..0x100u64).step_by(4) {
@@ -1328,5 +1560,22 @@ mod tests {
                 transport.write(0, offset, &value.to_le_bytes());
             }
         }
+    }
+
+    /// The guest-driven log throttle builds one line per second per call site: a second call in the
+    /// same second does not build its line, and a call in the next second does.
+    #[test]
+    fn guest_driven_logs_are_built_once_per_second() {
+        static LAST: AtomicU64 = AtomicU64::new(0);
+        let built = std::cell::Cell::new(0);
+        let line = || {
+            built.set(built.get() + 1);
+            String::from("throttled")
+        };
+        log_throttled_at(&LAST, 100, line);
+        log_throttled_at(&LAST, 100, line);
+        assert_eq!(built.get(), 1);
+        log_throttled_at(&LAST, 101, line);
+        assert_eq!(built.get(), 2);
     }
 }
