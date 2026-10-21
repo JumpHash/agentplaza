@@ -30,6 +30,14 @@ jobs:
         with: { path: stage-out, key: "stage-linux-aarch64-${{ github.run_id }}", fail-on-cache-miss: true }
       - name: CI image
         run: .github/ci/image.sh
+      # The install check runs the Pi packages' arm64 binaries on this x86_64 runner: the kernel hands them to qemu.
+      # This registers qemu's binfmt handler on the runner, from a privileged container; it lasts until it reboots.
+      - name: qemu for arm64
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          cache-image: false
       - name: Package
         run: |
           tar -xzf stage-out/stage-linux-aarch64.tgz

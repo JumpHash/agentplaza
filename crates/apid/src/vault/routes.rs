@@ -102,22 +102,9 @@ fn now() -> u64 {
     apz_plaza::now_ms()
 }
 
-/// The status of a route's error, with the text that may be shown: never a value.
+/// The status of a route's error (`VaultError::status`), with the text that may be shown: never a value.
 fn fail(err: VaultError) -> Response {
-    let code = match &err {
-        // A sealed vault and one never set up are states the owner changes, not server faults.
-        VaultError::Sealed => 423,
-        VaultError::Uninitialized => 409,
-        VaultError::Tampered(_) => 503,
-        VaultError::BadSecret => 401,
-        VaultError::Locked { .. } => 429,
-        VaultError::Conflict(_) | VaultError::LastSlot => 409,
-        VaultError::NotFound => 404,
-        VaultError::OutOfScope => 403,
-        VaultError::Invalid(_) => 400,
-        VaultError::KeyFile(_) | VaultError::Storage(_) | VaultError::Corrupt(_) => 500,
-    };
-    Response::error(code, &err.message())
+    Response::error(err.status(), &err.message())
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(req: &Request) -> Result<T, Response> {
