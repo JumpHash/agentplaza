@@ -6,7 +6,7 @@
 //!
 //! The model is `docs/treasury-draft/schema.sql` (`treasury.*`) restricted to
 //! what noded v0 needs, and the moves it implements are the ones that schema
-//! and `docs/formal/Economy.tla` already describe: a task budget is minted into
+//! and `crates/jhrl/specs/machines/economy.jhrl` already describe: a task budget is minted into
 //! the task's escrow, and a task that ends refunds what its escrow still holds.
 //! Nothing here invents a transition those two do not have.
 //!

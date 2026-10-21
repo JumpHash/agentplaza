@@ -1,7 +1,7 @@
 -- Orchestrator core data model, draft (0121 pattern: runs on PostgreSQL 16, tested in tests/).
 -- Decisions: 0019 machines, 0044-0047 identity, 0084 transcript, 0091 snapshots, 0093 events,
 -- 0094 approvals, 0102 fencing, 0116 idempotency and nonces, 0123 this model and the task lifecycle.
--- Rule of thumb: an invariant the TLA+ models check (formal/) is also enforced here, so a bug in
+-- Rule of thumb: an invariant the jhrl machines check (crates/jhrl/specs/machines/) is also enforced here, so a bug in
 -- orchestrator code fails a transaction instead of corrupting state.
 
 CREATE SCHEMA core;
@@ -307,7 +307,7 @@ CREATE TABLE core.sessions (                        -- per-boot session token (0
   fenced_at   timestamptz,
   UNIQUE (run_id, epoch)
 );
--- At most one live session per run: the database form of AtMostOneAccepted (formal/AgentSession.tla).
+-- At most one live session per run: the database form of "At most one copy of the agent is accepted" (crates/jhrl/specs/machines/agent_session.jhrl).
 CREATE UNIQUE INDEX sessions_one_live ON core.sessions (run_id) WHERE fenced_at IS NULL;
 
 CREATE FUNCTION core.check_session() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -365,7 +365,7 @@ BEGIN
   IF NEW.prev_hash <> coalesce((SELECT entry_hash FROM core.transcript WHERE run_id = NEW.run_id AND seq = last), '\x00'::bytea) THEN
     RAISE EXCEPTION 'transcript of run % breaks the seal chain at seq %', NEW.run_id, NEW.seq;
   END IF;
-  -- Only the run's live session writes (OnlyCurrentSessionWrites, formal/AgentSession.tla).
+  -- Only the run's live session writes ("Only the current session writes the transcript", crates/jhrl/specs/machines/agent_session.jhrl).
   IF NEW.session_id IS NOT NULL AND NOT EXISTS
      (SELECT 1 FROM core.sessions WHERE id = NEW.session_id AND run_id = NEW.run_id AND fenced_at IS NULL) THEN
     RAISE EXCEPTION 'session % is not the live session of run %', NEW.session_id, NEW.run_id;
@@ -452,7 +452,7 @@ CREATE TABLE core.approvals (
   decided_as    text,                               -- the authority, e.g. 'owner', 'council', 'mayor:shop'
   decided_by    text,                               -- the principal: device id or agent id
   decided_at    timestamptz,
-  CONSTRAINT c004_owner_only CHECK (NOT c004 OR chain = ARRAY['owner']),       -- C004OnlyOwner (formal/Approval.tla)
+  CONSTRAINT c004_owner_only CHECK (NOT c004 OR chain = ARRAY['owner']),       -- "C-004 is approved only by the owner" (crates/jhrl/specs/machines/approval.jhrl)
   CHECK (position BETWEEN 1 AND cardinality(chain)),
   CHECK ((status IN ('approved', 'denied')) = (decided_as IS NOT NULL AND decided_by IS NOT NULL)),
   CONSTRAINT decided_by_chain CHECK (decided_as IS NULL OR decided_as = chain[position])   -- DecidedByChain

@@ -78,23 +78,24 @@ def eval_ids():
     return ids
 
 
-def tla_names():
-    """Invariants/properties actually checked in a .cfg, plus mutant and witness names."""
+def jhrl_names():
+    """Machine-qualified invariants, transitions, mutants and witnesses in crates/jhrl/specs/machines."""
     names = set()
-    for p in glob.glob(os.path.join(DOCS, "formal", "*.cfg")):
-        section = None
+    specs = os.path.join(os.path.dirname(DOCS), "crates", "jhrl", "specs", "machines")
+    for p in glob.glob(os.path.join(specs, "*.jhrl")):
+        machine = None
         for line in open(p, encoding="utf-8"):
-            word = line.strip()
-            if word in ("INVARIANTS", "PROPERTIES", "INVARIANT", "PROPERTY"):
-                section = "inv"
+            m = re.match(r"^\s*machine\s+(\w+)", line)
+            if m:
+                machine = m.group(1)
                 continue
-            if word.isupper() and word:
-                section = None
+            m = re.match(r'^\s*(?:invariant|transition)\s+"([^"]+)"', line)
+            if m and machine:
+                names.add(f"{machine}: {m.group(1)}")
                 continue
-            if section == "inv" and word:
-                names.update(word.split())
-    for p in glob.glob(os.path.join(DOCS, "formal", "mutants", "*.cfg")):
-        names.add(os.path.basename(p)[:-4])
+            m = re.match(r'^\s*(?:mutant|witness)\s+"([^"]+)"\s+of\s+(\w+)', line)
+            if m:
+                names.add(f"{m.group(2)}: {m.group(1)}")
     return names
 
 
@@ -124,7 +125,7 @@ LAWS = law_index()
 TRIPWIRES = tripwire_names()
 CEDAR = cedar_labels()
 EVALS = eval_ids()
-TLA = tla_names()
+JHRL = jhrl_names()
 PROTO = protocol_labels()
 LEDGER = ledger_labels()
 
@@ -137,7 +138,7 @@ SEVERITIES = ["critical", "high", "medium", "low"]
 MILESTONES = ["MVP", "M2", "M3", "Later"]
 STATUSES = ["covered", "planned-only", "gap"]
 DEF_KINDS = ["decision", "law", "design", "tripwire"]
-TEST_KINDS = ["cedar", "eval", "tla", "protocol", "ledger", "planned"]
+TEST_KINDS = ["cedar", "eval", "jhrl", "protocol", "ledger", "planned"]
 REQUIRED = ["id", "title", "attacker", "boundary", "technique", "impact", "severity", "milestone",
             "defences", "tests", "status", "tags"]
 STRONG = {"decision", "law", "tripwire"}
@@ -225,9 +226,9 @@ for a in attacks:
         elif kind == "eval":
             if ref not in EVALS:
                 bad(f"{aid}: eval {ref} not found in codex-draft/roles/*/evals.yaml")
-        elif kind == "tla":
-            if ref not in TLA:
-                bad(f"{aid}: tla '{ref}' is not a checked invariant/property in formal/*.cfg or a mutant/witness")
+        elif kind == "jhrl":
+            if ref not in JHRL:
+                bad(f"{aid}: jhrl '{ref}' is not an invariant, mutant or witness of a machine in crates/jhrl/specs/machines")
         elif kind == "protocol":
             hits = unique_substring(ref, PROTO)
             if len(hits) != 1:

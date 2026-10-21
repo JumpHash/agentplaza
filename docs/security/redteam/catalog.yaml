@@ -3,7 +3,7 @@
 # Validated by check_catalog.py. Do not weaken the validator to pass; fix entries instead.
 # Refs resolve against the planning repo: decisions (docs/decisions/NNNN-*.md),
 # laws (@law/@clause in codex-draft), cedar (check.sh labels), eval (<role>/<id>),
-# tla (formal/*.cfg invariants + mutants/witnesses), protocol (test_protocol.py check labels),
+# jhrl (Machine: name of an invariant, mutant or witness in crates/jhrl/specs/machines), protocol (test_protocol.py check labels),
 # ledger (ledger.test.mjs test names), planned (a slug + a test to write when code exists).
 
 attackers:
@@ -343,9 +343,9 @@ attacks:
       - {kind: decision, ref: "0102", how: "Fencing: a moved agent gets a new session; the old token is refused and the old VM told to discard."}
       - {kind: decision, ref: "0044", how: "Per-boot token invalidated on restore; bound to VM and boot."}
     tests:
-      - {kind: tla, ref: "AtMostOneAccepted", how: "Never two copies of the agent the orchestrator would accept."}
-      - {kind: tla, ref: "NoStaleEffect", how: "No external effect from a stale session or a closed call."}
-      - {kind: tla, ref: "AgentSession_MoveKeepsOldSession", how: "The mutant that reuses the old token on move is caught."}
+      - {kind: jhrl, ref: "AgentSession: At most one copy of the agent is accepted", how: "Never two copies of the agent the orchestrator would accept."}
+      - {kind: jhrl, ref: "AgentSession: No external effect from a stale session", how: "No external effect from a stale session or a closed call."}
+      - {kind: jhrl, ref: "AgentSession: A move reuses the old session token", how: "The mutant that reuses the old token on move is caught."}
       - {kind: protocol, ref: "returning machine is told to discard a moved VM", how: "NodeHelloAck carries discard_vm_ids for the moved VM."}
     status: covered
     tags: [session-replay, snapshot-tamper]
@@ -424,7 +424,7 @@ attacks:
       - {kind: law, ref: "C-004a", how: "No irreversible action without a recorded owner approval."}
     tests:
       - {kind: protocol, ref: "approval decisions echo a one-time nonce", how: "Approval decisions echo a one-time nonce and carry an expiry."}
-      - {kind: tla, ref: "ExpiredIsNotApproved", how: "Silence or expiry never counts as approval."}
+      - {kind: jhrl, ref: "Approval: Expiry is not approval", how: "Silence or expiry never counts as approval."}
       - {kind: cedar, ref: "C-004a irreversible", how: "An irreversible tool call with no owner approval is denied."}
     status: covered
     tags: [approval-replay]
@@ -444,8 +444,8 @@ attacks:
       - {kind: decision, ref: "0094", how: "C-004 items have an owner-only chain; a Mayor or council can never approve them."}
       - {kind: law, ref: "C-004a", how: "Owner approval is required for irreversible actions."}
     tests:
-      - {kind: tla, ref: "C004OnlyOwner", how: "C-004 requests are only ever approved by the owner."}
-      - {kind: tla, ref: "DecidedByChain", how: "Only the authority at the current step can decide."}
+      - {kind: jhrl, ref: "Approval: C-004 is approved only by the owner", how: "C-004 requests are only ever approved by the owner."}
+      - {kind: jhrl, ref: "Approval: Decided by the chain", how: "Only the authority at the current step can decide."}
       - {kind: eval, ref: "council-seat/c004", how: "A council seat rejects a motion to pre-approve a live Stripe charge."}
     status: covered
     tags: [approval-replay, insider-abuse]
@@ -617,8 +617,8 @@ attacks:
     defences:
       - {kind: decision, ref: "0121", how: "Ledger model and schema enforce once-only payment."}
     tests:
-      - {kind: tla, ref: "NoDoublePayment", how: "Each task is paid at most once."}
-      - {kind: tla, ref: "Economy_DoublePay", how: "The mutant removing the once-only guard is caught."}
+      - {kind: jhrl, ref: "Economy: No task is paid twice", how: "Each task is paid at most once."}
+      - {kind: jhrl, ref: "Economy: No once-only guard on payment", how: "The mutant removing the once-only guard is caught."}
     status: covered
     tags: [ledger-manip]
 
@@ -637,8 +637,8 @@ attacks:
       - {kind: decision, ref: "0111", how: "Chain margin capped at 20% of real spend; subcontract transfers aren't real cost."}
     tests:
       - {kind: ledger, ref: "subcontract transfers do not count as real cost", how: "A second hop can't stack margin once the chain's 20% is taken."}
-      - {kind: tla, ref: "MarginCap", how: "Total chain margin <= 20% of money that really left."}
-      - {kind: tla, ref: "ExternalIsMeteredSpend", how: "Real money leaves only as metered spend from escrow."}
+      - {kind: jhrl, ref: "Economy: The chain's margin stays within the cap", how: "Total chain margin <= 20% of money that really left."}
+      - {kind: jhrl, ref: "Economy: External spend is metered cost", how: "Real money leaves only as metered spend from escrow."}
     status: covered
     tags: [ledger-manip]
 
@@ -656,7 +656,7 @@ attacks:
       - {kind: decision, ref: "0050", how: "Fines go to the Treasury and are paid from earnings; enforcement is code, never an agent."}
     tests:
       - {kind: ledger, ref: "fines come from earnings only", how: "A fine entry may not debit a task_escrow account."}
-      - {kind: tla, ref: "EarningsFromWorkOnly", how: "Earnings = margins paid - fines; nothing else creates them."}
+      - {kind: jhrl, ref: "Economy: Earnings come from work only", how: "Earnings = margins paid - fines; nothing else creates them."}
     status: covered
     tags: [ledger-manip]
 
@@ -673,8 +673,8 @@ attacks:
     defences:
       - {kind: decision, ref: "0039", how: "Only governance mints (task budgets); every entry is balanced and checked at commit."}
     tests:
-      - {kind: tla, ref: "OnlyGovernanceMints", how: "Only the root budget is ever minted."}
-      - {kind: tla, ref: "Conserved", how: "All accounts always sum to zero."}
+      - {kind: jhrl, ref: "Economy: Only governance mints", how: "Only the root budget is ever minted."}
+      - {kind: jhrl, ref: "Economy: Credits are conserved", how: "All accounts always sum to zero."}
       - {kind: ledger, ref: "an unbalanced entry is rejected at commit", how: "An unbalanced entry is rejected."}
     status: covered
     tags: [ledger-manip]
@@ -695,7 +695,7 @@ attacks:
       - {kind: design, ref: "design/treasury-agora.md#without-demurrage-0110", how: "Finance monitors concentration and reports circular patterns to the council."}
     tests:
       - {kind: eval, ref: "finance/circular", how: "Finance detects agents A and B hiring each other repeatedly."}
-      - {kind: tla, ref: "MarginCap", how: "The chain margin cap bounds extraction regardless of hop structure."}
+      - {kind: jhrl, ref: "Economy: The chain's margin stays within the cap", how: "The chain margin cap bounds extraction regardless of hop structure."}
     status: covered
     tags: [agora-collusion, ledger-manip]
 
@@ -832,7 +832,7 @@ attacks:
       - {kind: decision, ref: "0047", how: "Law ratification, device enrollment and irreversible approvals require a passkey step-up."}
       - {kind: law, ref: "C-004a", how: "Irreversible actions still require a recorded owner approval."}
     tests:
-      - {kind: tla, ref: "C004OnlyOwner", how: "C-004 approvals are owner-only; the chain can't be shortened."}
+      - {kind: jhrl, ref: "Approval: C-004 is approved only by the owner", how: "C-004 approvals are owner-only; the chain can't be shortened."}
       - {kind: planned, ref: "passkey-stepup-required", how: "Assert ratification/enrollment/irreversible-approval endpoints reject a device-key session without a passkey assertion."}
     status: covered
     tags: [stolen-device, approval-replay]

@@ -1,6 +1,6 @@
 //! `jhrl check <files…>` parses and checks every file, model-checks every model, and runs every
 //! mutant and witness. `jhrl test <files…>` runs the scenarios. One `ok`, `FAIL` or `skip` line
-//! per item, like drafts/formal/check.sh; the exit code is 1 on any failure.
+//! per item; the exit code is 1 on any failure.
 //!
 //! Options: `-v` prints traces for caught mutants and reached witnesses; `--tier pack=tier`
 //! sets a pack's trust tier (default: system).

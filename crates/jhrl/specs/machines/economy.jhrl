@@ -1,5 +1,5 @@
 // Task escrow, subcontracts, payments, refunds, clawbacks and fines in one task chain
-// (AP-056, AP-057, AP-058, AP-059; ledger in drafts/treasury/schema.sql).
+// (AP-056, AP-057, AP-058, AP-059; ledger in docs/treasury-draft/schema.sql).
 //
 // The owner mints a budget into the root task's escrow. A task's agent spends real cost from its
 // escrow, or subcontracts: the price moves from the parent's escrow into the child's. A verified

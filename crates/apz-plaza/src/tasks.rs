@@ -7,7 +7,7 @@
 //! The ledger is `core.tasks` (`docs/orchestrator-draft/schema.sql`) restricted
 //! to what noded v0 implements, and it moves a task only along the pairs
 //! `core.task_transitions` lists — the same lifecycle
-//! `docs/formal/TaskLifecycle.tla` models. v0's four moves (`open` → `claimed`,
+//! `crates/jhrl/specs/machines/task_lifecycle.jhrl` models. v0's four moves (`open` → `claimed`,
 //! and then `done`, `failed` or `withdrawn`) are a subset of the schema's
 //! thirteen-state machine, named for what they mean here:
 //!
@@ -36,7 +36,7 @@
 //!   so `verifier_id` is always null.
 //! * **Links, but no tree.** A task may run after other tasks (`after`, the
 //!   schema's `task_deps`): it is *ready*, and only then claimable, once every
-//!   one of them is `done` — `TaskLifecycle.tla`'s `DepsAcceptedBeforeWork`.
+//!   one of them is `done` — the TaskLifecycle machine's "Dependencies are accepted before work".
 //!   Links stay inside a project (the schema keeps them inside a task tree),
 //!   number at most [`MAX_AFTER`] per task, and never close a cycle. A link that
 //!   fails or is withdrawn does not cascade: the task stays `open`, names the
@@ -76,8 +76,8 @@
 //! leaves the task exactly as it was, in the state it had). This adds an
 //! effect to four existing transitions but changes no state machine: the
 //! states and the allowed pairs are exactly as they were, and the refund a
-//! terminal task performs is `docs/formal/Economy.tla`'s `Close` and
-//! `TaskLifecycle.tla`'s release, not a transition either model lacks.
+//! terminal task performs is `crates/jhrl/specs/machines/economy.jhrl`'s `Close` and
+//! `crates/jhrl/specs/machines/task_lifecycle.jhrl`'s release, not a transition either model lacks.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
@@ -243,7 +243,7 @@ pub enum ClaimError {
     Refused(RefusedTransition),
     /// The task is open but not ready: it runs after tasks that are not done.
     /// No task is worked on before everything it runs after is accepted
-    /// (`TaskLifecycle.tla`'s `DepsAcceptedBeforeWork`).
+    /// (the TaskLifecycle machine's "Dependencies are accepted before work").
     Waiting {
         /// The task's id.
         task: String,
