@@ -24,8 +24,9 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/cache/restore@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with: { persist-credentials: false }
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with: { path: stage-out, key: "stage-linux-aarch64-${{ github.run_id }}", fail-on-cache-miss: true }
       - name: CI image
         run: .github/ci/image.sh
@@ -34,16 +35,20 @@ jobs:
           tar -xzf stage-out/stage-linux-aarch64.tgz
           printf '%s\n' "$VERSION" > stage/share/agentplaza/VERSION
           .github/ci/in-image.sh 'packaging/raspberry-pi/build.sh stage "$VERSION" out-raspberrypi'
-      - name: Install and run on a fresh Raspberry Pi OS (bookworm arm64)
+      # Raspberry Pi OS is Debian: the current release (trixie) and the one before it (bookworm), both arm64.
+      - name: Install and run on a fresh Raspberry Pi OS (bookworm and trixie, arm64)
         run: |
           if [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
-            echo "::notice::the install check is skipped: the runner has no qemu-aarch64 binfmt handler"; exit 0
+            echo "::error::the install check requires the qemu-aarch64 binfmt handler"; exit 1
           fi
-          docker run --rm --platform linux/arm64 -v "$PWD/out-raspberrypi:/pkgs:ro" debian:bookworm sh -c '
-            apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_arm64-raspberrypi.deb &&
-            for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done &&
-            test -f /etc/default/agentplaza-node &&
-            test -f /usr/share/agentplaza/console/index.html &&
-            test -s /usr/share/agentplaza/guest/aarch64/vmlinux'
-      - uses: actions/cache/save@v4
+          for release in bookworm trixie; do
+            echo "== debian:$release"
+            docker run --rm --platform linux/arm64 -v "$PWD/out-raspberrypi:/pkgs:ro" "debian:$release" sh -c '
+              apt-get update -qq && apt-get install -y -qq /pkgs/agentplaza_*_arm64-raspberrypi.deb &&
+              for b in apid apz-link agentplaza noded vsockd agentplaza-desktop; do "$b" --version; done &&
+              test -f /etc/default/agentplaza-node &&
+              test -f /usr/share/agentplaza/console/index.html &&
+              test -s /usr/share/agentplaza/guest/aarch64/vmlinux'
+          done
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with: { path: out-raspberrypi, key: "pkg-raspberrypi-${{ github.run_id }}" }

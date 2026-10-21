@@ -1,0 +1,13 @@
+# The workflows' actions are pinned to commit SHAs (the tag they came from in a comment). Dependabot moves
+# the SHA and the comment together, once a week, in one pull request for all of them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "CI: actions"

@@ -63,7 +63,8 @@ allow = ["MPL-2.0"]
 ignore = true
 
 [bans]
-multiple-versions = "allow"
+# Duplicate versions of a crate warn: this keeps growth visible; duplicates do not fail the check.
+multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 
