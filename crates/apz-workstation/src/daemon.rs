@@ -8,15 +8,17 @@
 //!   slow operation never holds up the others.
 //!
 //! STOP ALL is handled on the link thread the moment its request arrives: it sets [`Shared::frozen`], which
-//! every later request is refused under, and tells both lanes to stop.
+//! every later request is refused under, and tells the desktop lane to stop. The runs and terminals are stopped
+//! by [`stop_within`], on a thread of its own, so they do not wait behind the jobs already queued.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex, RwLock};
-use std::thread::JoinHandle;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use apz_desktop::Desktop;
 use apz_ops::{Env, Root, Runs, Terminals};
@@ -30,6 +32,9 @@ use crate::uplink::Uplink;
 /// The worker threads.
 pub const WORKERS: usize = 6;
 
+/// How long STOP ALL waits for its runs and terminals to stop before it answers anyway.
+pub const STOP_WAIT: Duration = Duration::from_secs(5);
+
 /// The facts the host reports for a given count of applications. The link calls it for each hello.
 pub type Gather = Arc<dyn Fn(u32) -> Facts + Send + Sync>;
 
@@ -42,6 +47,8 @@ pub struct Job {
     pub generation: u64,
     pub id: u64,
     pub op: Op,
+    /// [`Shared::freezes`] when the job was admitted: a STOP ALL since then refuses it, lifted or not.
+    pub epoch: u64,
 }
 
 /// What the desktop lane is sent.
@@ -52,19 +59,20 @@ pub enum DeskMsg {
     StopAll,
 }
 
-/// What the worker pool is sent.
+/// What the worker pool is sent. STOP ALL does not come through here: the link runs it (see [`stop_within`]).
 #[derive(Debug)]
 pub enum WorkMsg {
     Job(Job),
-    /// STOP ALL: stop the runs and close the terminals.
-    StopAll,
 }
 
 /// State every thread shares.
 pub struct Shared {
     /// STOP ALL is on.
     pub frozen: AtomicBool,
-    root: RwLock<Root>,
+    /// How many times STOP ALL has come on. A job admitted before the latest one never runs, even when
+    /// STOP ALL is lifted before a worker takes it.
+    pub freezes: AtomicU64,
+    pub(crate) root: RwLock<Root>,
     pub env: Env,
     pub state_dir: PathBuf,
     pub runs: Runs,
@@ -118,6 +126,7 @@ impl Daemon {
         fs::create_dir_all(&root).map_err(|e| format!("cannot create the work folder: {e}"))?;
         let shared = Arc::new(Shared {
             frozen: AtomicBool::new(false),
+            freezes: AtomicU64::new(0),
             root: RwLock::new(Root::new(root)),
             env: config.env,
             state_dir: config.state_dir,
@@ -165,14 +174,19 @@ impl Daemon {
             Op::Freeze { on } => {
                 self.shared.frozen.store(on, Ordering::SeqCst);
                 if on {
+                    self.shared.freezes.fetch_add(1, Ordering::SeqCst);
                     let _ = self.desk.send(DeskMsg::StopAll);
-                    let _ = self.work.send(WorkMsg::StopAll);
-                }
-                self.shared.log.warn(if on {
-                    "STOP ALL: input stopped, pixel sessions and runs ended"
+                    self.shared
+                        .log
+                        .warn("STOP ALL: input stopped, pixel sessions and runs ended");
+                    if !stop_within(&self.shared, STOP_WAIT) {
+                        self.shared
+                            .log
+                            .warn("STOP ALL: the runs and terminals are still stopping");
+                    }
                 } else {
-                    "STOP ALL lifted"
-                });
+                    self.shared.log.warn("STOP ALL lifted");
+                }
                 self.shared.uplink.respond(generation, id, Ok(None));
             }
             op @ (Op::Facts
@@ -182,10 +196,23 @@ impl Daemon {
             | Op::Script { .. }
             | Op::Settings(_)
             | Op::Sync(_)) => {
-                let _ = self.work.send(WorkMsg::Job(Job { generation, id, op }));
+                let epoch = self.shared.freezes.load(Ordering::SeqCst);
+                let job = Job {
+                    generation,
+                    id,
+                    op,
+                    epoch,
+                };
+                let _ = self.work.send(WorkMsg::Job(job));
             }
             op => {
-                let _ = self.desk.send(DeskMsg::Job(Job { generation, id, op }));
+                let epoch = self.shared.freezes.load(Ordering::SeqCst);
+                let _ = self.desk.send(DeskMsg::Job(Job {
+                    generation,
+                    id,
+                    op,
+                    epoch,
+                }));
             }
         }
     }
@@ -194,6 +221,23 @@ impl Daemon {
     pub fn facts_now(&self) -> Facts {
         (self.shared.gather)(self.shared.apps.load(Ordering::SeqCst))
     }
+}
+
+/// Whether a job admitted at `epoch` may run now: STOP ALL is off and has not come on since.
+pub fn may_run(shared: &Shared, epoch: u64) -> bool {
+    !shared.frozen.load(Ordering::SeqCst) && shared.freezes.load(Ordering::SeqCst) == epoch
+}
+
+/// Runs STOP ALL on a thread of its own and waits at most `wait` for it. Returns whether it finished in time.
+/// A stop still going keeps going on its thread; the answer does not wait for it.
+fn stop_within(shared: &Arc<Shared>, wait: Duration) -> bool {
+    let (done, finished) = channel();
+    let shared = shared.clone();
+    thread::spawn(move || {
+        crate::work::stop_all(&shared);
+        let _ = done.send(());
+    });
+    finished.recv_timeout(wait).is_ok()
 }
 
 /// The work folder a settings value names: `~/...` is under the home, a relative path is under the home too,

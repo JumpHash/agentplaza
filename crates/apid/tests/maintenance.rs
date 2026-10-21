@@ -570,20 +570,29 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     );
     assert_eq!(status, 201, "{file}");
     let fid = text(&file["id"]);
-    let chats_before = pushed(&gateway, BUILDER).len();
     let (status, chat) = hub.call(
         "POST",
         &format!("/v1/agents/{BUILDER}/chat"),
         Some(json!({ "text": "Here is what support saw", "attachments": [fid] })),
     );
     assert_eq!(status, 200, "{chat}\n{}", hub.log());
-    // Up to 45 s: a busy runner took longer than 15 to deliver it. A push the gateway did not take stays queued
-    // until the hub's next sweep (every 30 s) sends it.
+    // The chat goes out on the builder's own thread. The scheduler may have handed the builder the picked task
+    // first (on its own pass, so on a slow runner it can come before the chat), and an agent works one item at a
+    // time: the test then ends the task's turn, as the builder would, and the chat goes out next.
+    let chat_thread = format!("op-{BUILDER}");
+    let mut ended = Vec::new();
+    // Up to 45 s: a busy runner took longer than 15 to deliver it.
     let (_, _, prompt) = (0..450)
         .find_map(|_| {
             let list = pushed(&gateway, BUILDER);
-            if list.len() > chats_before {
-                return list.last().cloned();
+            if let Some(chat) = list.iter().find(|(_, thread, _)| *thread == chat_thread) {
+                return Some(chat.clone());
+            }
+            for (work, thread, _) in &list {
+                if thread.starts_with("task-") && !ended.contains(work) {
+                    hub.work_done(BUILDER, *work, "done", "Fixed the Safari checkout.");
+                    ended.push(*work);
+                }
             }
             std::thread::sleep(Duration::from_millis(100));
             None

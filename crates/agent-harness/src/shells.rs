@@ -10,6 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read};
 use std::os::unix::process::ExitStatusExt;
+use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -41,6 +42,8 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 struct Job {
     /// The job's number; the lowest is the oldest.
     seq: u64,
+    /// The workspace it was started in: a stop ends the jobs of its own agent only.
+    dir: PathBuf,
     child: Mutex<Child>,
     output: Arc<Mutex<Output>>,
 }
@@ -112,6 +115,7 @@ pub fn start(workspace: &Workspace, input: &Value) -> Result<String, String> {
         id.clone(),
         Arc::new(Job {
             seq,
+            dir: workspace.dir().to_path_buf(),
             child: Mutex::new(child),
             output: buffer,
         }),
@@ -179,6 +183,40 @@ pub fn kill(_workspace: &Workspace, input: &Value) -> Result<String, String> {
     } else {
         format!("job {id} had already exited")
     })
+}
+
+/// How long a stopped job's process group gets after SIGTERM before SIGKILL.
+const STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Stops every background command started in `workspace`: its agent is stopping. Each job's
+/// process group gets SIGTERM, then SIGKILL once [`STOP_GRACE`] has passed or the groups are
+/// gone. The jobs leave the registry and their shells are reaped.
+pub fn stop_all(workspace: &Workspace) {
+    let stopped: Vec<Arc<Job>> = {
+        let mut registry = locked(jobs());
+        let ids: Vec<String> = registry
+            .iter()
+            .filter(|(_, job)| job.dir == workspace.dir())
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.iter().filter_map(|id| registry.remove(id)).collect()
+    };
+    for job in &stopped {
+        bash::signal_group(&locked(&job.child), "-TERM");
+    }
+    let until = Instant::now() + STOP_GRACE;
+    while Instant::now() < until
+        && stopped
+            .iter()
+            .any(|job| bash::group_alive(&mut locked(&job.child)))
+    {
+        thread::sleep(POLL);
+    }
+    for job in &stopped {
+        let mut child = locked(&job.child);
+        bash::signal_group(&child, "-KILL");
+        let _ = child.wait();
+    }
 }
 
 fn jobs() -> &'static Mutex<HashMap<String, Arc<Job>>> {
@@ -385,5 +423,41 @@ mod tests {
         for id in ids.iter().skip(1).chain(std::iter::once(&next)) {
             kill(&ws, &json!({ "id": id.as_str() })).expect("the job is killed");
         }
+    }
+
+    #[test]
+    fn stop_all_ends_every_background_job_of_its_workspace() {
+        let _turn = turn();
+        let ws = workspace("stop-all");
+        let other = workspace("stop-all-other");
+        let kept = spawn(&other, "sleep 30");
+        let ids: Vec<String> = (0..2).map(|_| spawn(&ws, "sleep 30")).collect();
+        let pids: Vec<u32> = ids
+            .iter()
+            .map(|id| locked(&find(id).expect("a live job").child).id())
+            .collect();
+        let started = Instant::now();
+        stop_all(&ws);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        for pid in pids {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            assert!(!alive, "job process {pid} still runs after stop_all");
+        }
+        for id in &ids {
+            let err = output(&ws, &json!({ "id": id })).expect_err("the job is gone");
+            assert!(err.starts_with("unknown job"), "{err}");
+        }
+        // Another agent's job (another workspace) is not touched.
+        assert!(output(&other, &json!({ "id": kept.as_str() })).is_ok());
+        kill(&other, &json!({ "id": kept.as_str() })).expect("the job is killed");
     }
 }

@@ -446,7 +446,12 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
     /// Acts on one host message the loop owns; anything else is returned for a waiting caller.
     fn take(&mut self, message: HostMessage) -> Result<Incoming, SessionError> {
         Ok(match message {
-            HostMessage::Stop { reason } => Incoming::Stop(reason),
+            HostMessage::Stop { reason } => {
+                // A stop ends the agent's background shells too; a cancel of one work item
+                // leaves them running.
+                crate::shells::stop_all(self.workspace);
+                Incoming::Stop(reason)
+            }
             HostMessage::Work {
                 work,
                 kind,

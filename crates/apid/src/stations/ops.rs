@@ -609,19 +609,22 @@ impl Hooks for Live<'_> {
             old.kill(1000, "replaced by a newer link");
         }
         announce(app, id, "online");
-        // Settings, a freeze if STOP ALL holds the plaza, and the queue: all of them need this link's answers.
+        // A freeze if STOP ALL holds the plaza (first, so a station that restarted unfrozen is frozen before
+        // anything else reaches it), its settings, and the queue: all of them need this link's answers.
         let weak = app.handle();
         let link = Arc::clone(link);
         let id = id.to_string();
         std::thread::spawn(move || {
             let Some(app) = weak.upgrade() else { return };
+            if app.control.paused()
+                && let Err(reason) = link.request(Op::Freeze { on: true }, RPC_TIMEOUT)
+            {
+                eprintln!("apid: workstation {id}: STOP ALL was not replayed on link: {reason}");
+            }
             if let Err(reason) = link.request(Op::Settings(station.settings.clone()), RPC_TIMEOUT) {
                 eprintln!(
                     "apid: workstation {id}: its settings were not applied on link: {reason}"
                 );
-            }
-            if app.control.paused() {
-                let _ = link.request(Op::Freeze { on: true }, RPC_TIMEOUT);
             }
             grant_next(&app, &id);
             // The work folder: a station that was away may have changed files, and the hub may have written some.

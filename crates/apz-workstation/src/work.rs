@@ -1,8 +1,8 @@
 //! The worker pool: files, terminals, runs, scripts, settings and facts.
 //!
 //! The workers share one queue, so a slow job (a script waiting on its command, a facts query) holds one worker
-//! and the rest keep serving. Files, terminals and runs work inside the work folder through `apz_ops`, which
-//! refuses any path that leaves it.
+//! and the rest keep serving. A job a worker takes while STOP ALL is on is refused and never runs. Files,
+//! terminals and runs work inside the work folder through `apz_ops`, which refuses any path that leaves it.
 
 use std::fs;
 use std::sync::atomic::Ordering;
@@ -16,7 +16,7 @@ use apz_station::{FilesOp, Op, RunOp, StationSettings, TermOp};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::daemon::{Job, Shared, WorkMsg, work_folder};
+use crate::daemon::{FROZEN, Job, Shared, WorkMsg, may_run, work_folder};
 use crate::{script, state};
 
 /// Starts `count` workers that read from `rx`.
@@ -40,7 +40,6 @@ fn worker(rx: &Mutex<Receiver<WorkMsg>>, shared: &Shared) {
         };
         match msg {
             Ok(WorkMsg::Job(job)) => serve(shared, job),
-            Ok(WorkMsg::StopAll) => stop_all(shared),
             Err(_) => return,
         }
     }
@@ -48,11 +47,20 @@ fn worker(rx: &Mutex<Receiver<WorkMsg>>, shared: &Shared) {
 
 fn serve(shared: &Shared, job: Job) {
     let kind = kind_of(&job.op);
-    let outcome = handle(shared, job.op);
+    let outcome = answer(shared, job.epoch, job.op);
     if let Err(err) = &outcome {
         shared.log.info(format!("{kind} refused: {err}"));
     }
     shared.uplink.respond(job.generation, job.id, outcome);
+}
+
+/// The answer to a job a worker has taken. While STOP ALL is on, or when it came on after the job was admitted
+/// (`epoch`), the job is refused the way admission refuses a request, so it does not run.
+fn answer(shared: &Shared, epoch: u64, op: Op) -> Result<Option<Value>, String> {
+    if !may_run(shared, epoch) {
+        return Err(FROZEN.to_string());
+    }
+    handle(shared, op)
 }
 
 fn handle(shared: &Shared, op: Op) -> Result<Option<Value>, String> {
@@ -165,8 +173,9 @@ fn apply_settings(shared: &Shared, settings: StationSettings) -> Result<(), Stri
     Ok(())
 }
 
-/// STOP ALL: every run this daemon started is stopped, and every terminal is closed.
-fn stop_all(shared: &Shared) {
+/// STOP ALL: every run this daemon started is stopped, and every terminal is closed. The link runs it on a
+/// thread of its own, with a cap on how long the answer waits for it (see `daemon::stop_within`).
+pub fn stop_all(shared: &Shared) {
     let runs: Vec<String> = shared
         .run_ids
         .lock()
@@ -206,5 +215,90 @@ fn kind_of(op: &Op) -> &'static str {
         Op::Facts => "facts",
         Op::Sync(_) => "sync",
         _ => "operation",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use std::sync::RwLock;
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+
+    use apz_ops::{Env, Runs, Terminals};
+    use apz_station::Facts;
+
+    use super::*;
+    use crate::backend::Backend;
+    use crate::log::Log;
+    use crate::uplink::Uplink;
+
+    /// A station whose work folder is a fresh scratch folder, with the fake backend and no facts to report.
+    fn station(name: &str) -> (PathBuf, Shared) {
+        let dir = std::env::temp_dir().join(format!(
+            "apz-workstation-work-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("a scratch folder");
+        let shared = Shared {
+            frozen: AtomicBool::new(false),
+            freezes: AtomicU64::new(0),
+            root: RwLock::new(Root::new(&dir)),
+            env: Env::new(dir.clone(), "/usr/bin:/bin".to_string()),
+            state_dir: dir.clone(),
+            runs: Runs::new(),
+            run_ids: Mutex::new(BTreeSet::new()),
+            terminals: Terminals::new(),
+            uplink: Uplink::new(),
+            log: Log::open(&dir),
+            apps: AtomicU32::new(0),
+            gather: Arc::new(|_: u32| -> Facts { unreachable!("the test asks for no facts") }),
+            backend: Backend::Fake,
+            sync: crate::sync::Mirror::default(),
+        };
+        (dir, shared)
+    }
+
+    #[test]
+    fn a_job_taken_during_stop_all_is_refused_and_does_not_run() {
+        let (dir, shared) = station("frozen");
+        let write = |path: &str| {
+            Op::Files(FilesOp::Write {
+                path: path.to_string(),
+                text: "x\n".to_string(),
+                expected_hash: None,
+            })
+        };
+        // Before STOP ALL, a write runs.
+        assert!(answer(&shared, 0, write("live.txt")).is_ok());
+        assert!(dir.join("live.txt").exists());
+        // A job queued before STOP ALL and taken after it is refused, and its write never happens.
+        shared.frozen.store(true, Ordering::SeqCst);
+        shared.freezes.store(1, Ordering::SeqCst);
+        assert_eq!(
+            answer(&shared, 0, write("queued.txt")),
+            Err(FROZEN.to_string())
+        );
+        serve(
+            &shared,
+            Job {
+                generation: 1,
+                id: 2,
+                op: write("served.txt"),
+                epoch: 0,
+            },
+        );
+        assert!(!dir.join("queued.txt").exists() && !dir.join("served.txt").exists());
+        // Lifted before the worker takes it, a job admitted before the STOP ALL still does not run; one admitted
+        // after the lift does.
+        shared.frozen.store(false, Ordering::SeqCst);
+        assert_eq!(
+            answer(&shared, 0, write("stale.txt")),
+            Err(FROZEN.to_string())
+        );
+        assert!(!dir.join("stale.txt").exists());
+        assert!(answer(&shared, 1, write("fresh.txt")).is_ok());
+        assert!(dir.join("fresh.txt").exists());
     }
 }

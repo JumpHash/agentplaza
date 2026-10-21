@@ -126,7 +126,12 @@ impl Lane {
     }
 
     fn job(&mut self, job: Job) {
-        let outcome = self.handle(job.op);
+        // Admitted before a STOP ALL that has come on since (lifted or not): it does not run.
+        let outcome = if crate::daemon::may_run(&self.shared, job.epoch) {
+            self.handle(job.op)
+        } else {
+            Err(FROZEN.to_string())
+        };
         self.shared.uplink.respond(job.generation, job.id, outcome);
     }
 
