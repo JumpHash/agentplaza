@@ -221,7 +221,14 @@ jobs:
           run fedora:42 "dnf install -y -q /pkgs/agentplaza-*.$ARCH.rpm" fedora & c=$!
           # The AppImage on the oldest glibc it supports, without FUSE (unpacked to run): the desktop
           # app by default, the command line tool through a link named agentplaza.
-          run ubuntu:22.04 "cd /tmp && cp /pkgs/AgentPlaza-*-linux-$ARCH.AppImage app.AppImage && ln -s app.AppImage agentplaza && export APPIMAGE_EXTRACT_AND_RUN=1 && ./app.AppImage --version && ./agentplaza --version && ./app.AppImage --cli --version" appimage none & d=$!
+          # On arm64 the kernel hands a binary to qemu only when its ELF header matches the arm64 pattern
+          # exactly, and an AppImage carries its own mark ("AI", 2) in header bytes 8 to 10: the copy
+          # under test has those three bytes cleared (the runtime finds its image from the ELF headers).
+          unmark=""
+          if [ "$ARCH" = aarch64 ]; then
+            unmark="printf '\\0\\0\\0' | dd of=app.AppImage bs=1 seek=8 count=3 conv=notrunc 2>/dev/null && "
+          fi
+          run ubuntu:22.04 "cd /tmp && cp /pkgs/AgentPlaza-*-linux-$ARCH.AppImage app.AppImage && ${unmark}ln -s app.AppImage agentplaza && export APPIMAGE_EXTRACT_AND_RUN=1 && ./app.AppImage --version && ./agentplaza --version && ./app.AppImage --cli --version" appimage none & d=$!
           pids="$a $b $c $d"
           if [ "$ARCH" = x86_64 ]; then
             run archlinux:latest "pacman -Sy --noconfirm >/dev/null && pacman -U --noconfirm /pkgs/agentplaza-*-x86_64.pkg.tar.zst" arch & pids="$pids $!"
