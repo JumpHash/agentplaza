@@ -880,8 +880,9 @@ pub(crate) fn tls_session(pin: Option<[u8; 32]>, host: &str) -> io::Result<Clien
 }
 
 /// The CA-verified configuration for public hosts, built once: the Mozilla root store, ring, the
-/// default protocol versions, no client certificate.
-fn public_client_config() -> Arc<ClientConfig> {
+/// default protocol versions, no client certificate. Other TLS clients of the plaza (the relay's
+/// WebSocket) use it too, so every public connection trusts the same roots.
+pub fn public_client_config() -> Arc<ClientConfig> {
     static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
