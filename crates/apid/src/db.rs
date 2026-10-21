@@ -208,10 +208,11 @@ fn tls_refusal(url: &str) -> Option<String> {
             ));
         }
     };
-    let remote =
-        config.get_hosts().iter().any(
-            |host| matches!(host, postgres::config::Host::Tcp(name) if !is_loopback_host(name)),
-        ) || config.get_hostaddrs().iter().any(|ip| !ip.is_loopback());
+    // A host that starts with `/` is a Unix-socket directory, on this machine. Off Unix the driver parses it as a
+    // TCP name (it has no Unix sockets there), so it is recognised here by the slash.
+    let remote = config.get_hosts().iter().any(|host| {
+        matches!(host, postgres::config::Host::Tcp(name) if !is_loopback_host(name) && !name.starts_with('/'))
+    }) || config.get_hostaddrs().iter().any(|ip| !ip.is_loopback());
     match config.get_ssl_mode() {
         postgres::config::SslMode::Disable => {
             if remote {
@@ -1538,7 +1539,12 @@ pub fn test_database(label: &str) -> Option<String> {
         "test database label {label:?}: want lowercase letters, digits and underscores"
     );
     let name = format!("apz_test_{label}_{}", std::process::id());
-    let (server, _) = base
+    // The URL's query (sslmode, say) goes with every test database.
+    let (path, query) = match base.split_once('?') {
+        Some((path, query)) => (path, format!("?{query}")),
+        None => (base.as_str(), String::new()),
+    };
+    let (server, _) = path
         .rsplit_once('/')
         .expect("APZ_TEST_DATABASE_URL names a database");
     let mut admin = match postgres::Client::connect(&base, postgres::NoTls) {
@@ -1551,7 +1557,7 @@ pub fn test_database(label: &str) -> Option<String> {
     admin
         .batch_execute(&DATABASE_CREATE.replace("{name}", &name))
         .expect("create the test database");
-    Some(format!("{server}/{name}"))
+    Some(format!("{server}/{name}{query}"))
 }
 
 #[cfg(test)]
@@ -1609,9 +1615,6 @@ mod tests {
         assert!(COMPONENTS.contains(&"models"));
     }
 
-    /// A database that never answers is retried for the budget, then given up on with the last error: port 9 on
-    /// loopback refuses at once, so the call returns within about the budget (here 300 ms), not after the 30 s
-    /// `connect` allows.
     #[test]
     fn tls_loopback_and_unix_socket_are_allowed() {
         for url in [
@@ -1643,12 +1646,17 @@ mod tests {
         );
     }
 
+    /// A database that never answers is retried for the budget, then given up on with the last error: port 9 on
+    /// loopback refuses at once, so the call returns within about the budget (here 300 ms), not after the 30 s
+    /// `connect` allows. Windows retries a refused loopback connect for about 2 s before it reports it, so there one
+    /// attempt alone takes that long.
     #[test]
     fn connect_with_retry_gives_up_within_the_budget() {
         let started = Instant::now();
         let result = connect_with_retry("postgres://x:y@127.0.0.1:9/x", Duration::from_millis(300));
         assert!(result.is_err());
-        assert!(started.elapsed() < Duration::from_secs(1));
+        let limit = Duration::from_secs(if cfg!(windows) { 6 } else { 1 });
+        assert!(started.elapsed() < limit, "{:?}", started.elapsed());
     }
 
     /// The unfurl cache on Postgres: a miss, a store, a read back, and an upsert that replaces the row. A database

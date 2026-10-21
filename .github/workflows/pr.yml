@@ -290,7 +290,9 @@ jobs:
             -e POSTGRES_USER=apz -e POSTGRES_PASSWORD=apz -e POSTGRES_DB=apz_test postgres:17
           for _ in $(seq 60); do docker exec "$NET-pg" pg_isready -U apz -q && break; sleep 1; done
           echo "APZ_CI_NETWORK=$NET" >> "$GITHUB_ENV"
-          echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@$NET-pg:5432/apz_test" >> "$GITHUB_ENV"
+          # The tests' Postgres is a container on this job's own network: sslmode=disable says the unencrypted
+          # connection is meant (the hub refuses one to a host off its machine otherwise).
+          echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@$NET-pg:5432/apz_test?sslmode=disable" >> "$GITHUB_ENV"
       # Its output is kept (tee, with pipefail from `shell: bash`) for the Coverage comment.
       - name: Coverage of every test type
         id: measure
