@@ -260,6 +260,62 @@ struct Seen {
     at_ms: u64,
 }
 
+/// Reads a state file (`violations.json`, `rules.json`, `permissions.json`). A missing file is
+/// `Ok(None)`. A file that exists but does not parse is copied to `<name>.corrupt-<unix-ms>`, never
+/// over an existing copy, and left where it is: it is read again at every start, so the damage is
+/// reported until the owner restores or removes it. The error names both paths. Any other read
+/// failure is reported and the file is left where it is.
+pub(crate) fn read_state<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            let message = format!("could not read {}: {e}", path.display());
+            eprintln!("laws: {message}");
+            return Err(message);
+        }
+    };
+    match serde_json::from_str(&text) {
+        Ok(value) => Ok(Some(value)),
+        Err(e) => {
+            let aside = corrupt_copy_path(path);
+            let message = match std::fs::copy(path, &aside) {
+                Ok(_) => format!(
+                    "{} does not parse ({e}); a copy is kept at {}, and the damaged file is left in place: it is read again at every start until it is restored or removed",
+                    path.display(),
+                    aside.display()
+                ),
+                Err(copied) => format!(
+                    "{} does not parse ({e}) and could not be copied to {}: {copied}; the damaged file is left in place",
+                    path.display(),
+                    aside.display()
+                ),
+            };
+            eprintln!("laws: {message}");
+            Err(message)
+        }
+    }
+}
+
+/// `<name>.corrupt-<unix-ms>` beside `path`, its millisecond moved on past any copy already there.
+fn corrupt_copy_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    loop {
+        let candidate = path.with_file_name(format!("{name}.corrupt-{ms}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        ms += 1;
+    }
+}
+
 pub struct Laws {
     /// The built-in law sources: `LAW_FILES`, or the sources given to `from_files`.
     base: Vec<(String, String)>,
@@ -275,6 +331,12 @@ pub struct Laws {
     permitted: Mutex<HashMap<(String, String), bool>>,
     /// Whether an operation with permit laws must be allowed by one of them (`settings.laws`).
     strict: AtomicBool,
+    /// Set when the owner's rules could not be read at attach: only the built-in laws apply, and
+    /// `rules.json` is not written until the owner's rules are restored and the hub restarts.
+    rules_unreadable: AtomicBool,
+    /// Set when violations.json could not be read at attach: the violations are kept in memory only, and
+    /// the file is not written over until it is restored or removed and the hub restarts.
+    violations_unreadable: AtomicBool,
     /// The most recent tool calls checked, for the dry run.
     seen: Mutex<VecDeque<Seen>>,
 }
@@ -306,6 +368,8 @@ impl Laws {
             sink: Mutex::new(None),
             permitted: Mutex::new(HashMap::new()),
             strict: AtomicBool::new(false),
+            rules_unreadable: AtomicBool::new(false),
+            violations_unreadable: AtomicBool::new(false),
             seen: Mutex::new(VecDeque::new()),
         };
         laws.attach(state_dir);
@@ -314,10 +378,36 @@ impl Laws {
 
     /// Makes `state_dir` the home of this law set: the violations and the owner's rules are read from
     /// it, and written back to it on every change. A rules file that no longer compiles is not applied.
+    /// One that cannot be read (or does not parse: a copy is kept and the file is left in place) leaves
+    /// the built-in laws only, and is not written over until it is restored or removed and the hub restarts.
     pub fn attach(&self, state_dir: &Path) {
         *lock(&self.dir) = state_dir.to_path_buf();
-        *lock(&self.violations) = read_json(&state_dir.join("violations.json")).unwrap_or_default();
-        let rules: RuleSet = read_json(&state_dir.join("rules.json")).unwrap_or_default();
+        // `read_state` has already reported a damaged file and kept a copy. The violations are then kept
+        // in memory only, and the file is not written over until it is restored or removed.
+        let (violations, violations_damaged): (BTreeMap<String, Vec<Violation>>, bool) =
+            match read_state(&state_dir.join("violations.json")) {
+                Ok(found) => (found.unwrap_or_default(), false),
+                Err(_) => (BTreeMap::new(), true),
+            };
+        *lock(&self.violations) = violations;
+        self.violations_unreadable
+            .store(violations_damaged, Ordering::Relaxed);
+        if violations_damaged {
+            eprintln!(
+                "laws: {}/violations.json is damaged (see above): violations are kept in memory and not saved until the file is restored or removed and the hub restarts",
+                state_dir.display()
+            );
+        }
+        let (rules, unreadable) = match read_state::<RuleSet>(&state_dir.join("rules.json")) {
+            Ok(found) => (found.unwrap_or_default(), false),
+            Err(_) => (RuleSet::default(), true),
+        };
+        self.rules_unreadable.store(unreadable, Ordering::Relaxed);
+        if unreadable {
+            eprintln!(
+                "laws: the owner's rules are not applied (rules.json could not be read, see above), so only the built-in laws apply; rules.json is not written until it is restored or removed and the hub restarts"
+            );
+        }
         let mut slot = lock(&self.rules);
         match compile(&self.base, &rules) {
             Ok(compiled) => {
@@ -898,10 +988,24 @@ impl Laws {
         Ok(edited)
     }
 
+    /// Whether the owner's rules are written to rules.json: false while the file is damaged (see `attach`),
+    /// when a change applies in memory only.
+    pub fn rules_saved(&self) -> bool {
+        !self.rules_unreadable.load(Ordering::Relaxed)
+    }
+
     /// Stores `next` as the owner's rules, swaps in its compiled set and writes the rules to disk.
     fn commit(&self, slot: &mut MutexGuard<'_, RuleSet>, next: RuleSet, compiled: Compiled) {
         **slot = next;
         self.swap(compiled);
+        if self.rules_unreadable.load(Ordering::Relaxed) {
+            // The damaged file was copied to `.corrupt-<ms>` and left in place: nothing is written over
+            // rules.json until it is restored or removed.
+            eprintln!(
+                "laws: rules.json not written: the owner's rules could not be read at startup"
+            );
+            return;
+        }
         let path = lock(&self.dir).join("rules.json");
         if let Err(e) = write_json(&path, &**slot) {
             eprintln!("laws: could not save rules: {e}");
@@ -960,8 +1064,10 @@ impl Laws {
             list.extend(recorded.iter().cloned());
             let excess = list.len().saturating_sub(KEEP);
             list.drain(..excess);
-            if let Err(e) = save(&self.violations_path(), &all) {
-                eprintln!("laws: could not save violations: {e}");
+            // While violations.json is damaged, the log is kept in memory only (see `attach`).
+            if !self.violations_unreadable.load(Ordering::Relaxed) {
+                save(&self.violations_path(), &all)
+                    .unwrap_or_else(|e| eprintln!("laws: could not save violations: {e}"));
             }
         }
         // The sink runs outside the violations lock: it writes to Postgres.
@@ -1120,18 +1226,21 @@ fn diagnostic(sources: &SourceMap, diag: &Diag) -> Diagnostic {
     }
 }
 
-/// Reads a JSON file; `None` when it is missing or does not parse.
-fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-}
-
-/// Writes a value as JSON atomically: a temporary file, then a rename over the old one.
+/// Writes a value as JSON atomically, see [`write_synced`].
 fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
+    write_synced(path, text.as_bytes())
+}
+
+/// Writes `bytes` to a temporary file beside `path`, syncs it to disk, then renames it over `path`:
+/// a crash leaves the old file or the new one, never a partly written mix.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text)?;
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
     std::fs::rename(&tmp, path)
 }
 
@@ -1180,12 +1289,9 @@ fn member_attrs(role: &str) -> BTreeMap<String, Value> {
     ])
 }
 
-/// Writes the violations atomically: a temporary file, then a rename over the old one.
+/// Writes the violations atomically and synced to disk, see [`write_synced`].
 fn save(path: &Path, all: &BTreeMap<String, Vec<Violation>>) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(all).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+    write_json(path, all)
 }
 
 /// Reads `law "<id>" "<title>" {` headers from a law source.
@@ -1570,7 +1676,10 @@ impl Laws {
             .violations
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        save(&self.violations_path(), &violations).map_err(|e| e.to_string())?;
+        // While violations.json is damaged, the restored log is kept in memory only (see `attach`).
+        if !self.violations_unreadable.load(Ordering::Relaxed) {
+            save(&self.violations_path(), &violations).map_err(|e| e.to_string())?;
+        }
         *all = violations;
         Ok(())
     }
@@ -1957,6 +2066,26 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_violations_file_is_kept_and_not_overwritten() {
+        let dir = scratch("damaged-violations");
+        let damaged: &[u8] = b"{ \"7\": [";
+        std::fs::write(dir.join("violations.json"), damaged).unwrap();
+        let laws = Laws::load(&dir);
+        // No rules.json here, so the owner's rules are saved.
+        assert!(laws.rules_saved());
+        // The violation is held in memory, and the damaged file keeps its bytes.
+        laws.record(7, &["C-002b".to_string()], "bash", apz_plaza::now_ms());
+        assert_eq!(std::fs::read(dir.join("violations.json")).unwrap(), damaged);
+        let kept = laws.all_violations();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].0, 7);
+        // A damaged rules.json makes the owner's rules unsaved.
+        let rules_dir = scratch("damaged-rules-flag");
+        std::fs::write(rules_dir.join("rules.json"), damaged).unwrap();
+        assert!(!Laws::load(&rules_dir).rules_saved());
+    }
+
+    #[test]
     fn violations_persist_through_the_state_file() {
         let dir = scratch("persist");
         let _ = std::fs::remove_file(dir.join("violations.json"));
@@ -2305,6 +2434,41 @@ mod owner_rules_tests {
     fn gate(laws: &Laws, tool: &str, input: &Json) -> Result<Runs, String> {
         let granted = crate::tools::offered_names("builder");
         crate::internal::gate_call(laws, 7, "builder", &granted, tool, input)
+    }
+
+    #[test]
+    fn a_damaged_rules_file_is_left_in_place_with_a_copy_and_an_owner_change_does_not_overwrite_it()
+    {
+        let dir = scratch("damaged-rules");
+        let damaged: &[u8] = b"law \"O-901\" {";
+        std::fs::write(dir.join("rules.json"), damaged).unwrap();
+        let corrupt_copies = |root: &std::path::Path| -> Vec<String> {
+            std::fs::read_dir(root)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("rules.json.corrupt-"))
+                .collect()
+        };
+        let laws = Laws::load(&dir);
+        assert!(laws.rules().rules.is_empty(), "no owner rules survive");
+        // The damaged file stays where it is, and its copy is kept beside it.
+        assert_eq!(std::fs::read(dir.join("rules.json")).unwrap(), damaged);
+        let kept = corrupt_copies(dir.as_path());
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        // An owner change applies in memory but is not written: rules.json keeps its damaged bytes.
+        let rule = "law \"O-901\" \"Sensors\" {\n  tier statute\n  permit device.read\n  principal is Agent\n  when principal.role == \"sensor\"\n}\n";
+        let _ = laws.add_rule("", rule, true, now());
+        assert_eq!(std::fs::read(dir.join("rules.json")).unwrap(), damaged);
+        assert_eq!(corrupt_copies(dir.as_path()), kept);
+        // A second start still finds no owner rules, and the damaged file is still there.
+        let again = Laws::load(&dir);
+        assert!(
+            again.rules().rules.is_empty(),
+            "no owner rules survive a restart"
+        );
+        assert_eq!(std::fs::read(dir.join("rules.json")).unwrap(), damaged);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -45,6 +45,28 @@ struct Live {
     _inproc: Option<(Arc<weft::server::Hub>, apz_http::Handle)>,
 }
 
+impl Drop for Live {
+    /// The `weft serve` child goes with its owner: killed and reaped here, not left running after apid.
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Stops Weft for shutdown: takes the `weft serve` child out of the hub and drops it, which kills and reaps it
+/// (`Live::drop`). The process exits with `std::process::exit`, which would not run that drop on its own.
+pub fn stop(app: &App) {
+    let live = app
+        .weft
+        .live
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take();
+    drop(live);
+}
+
 /// The vault binding Weft's keys are read through.
 const BINDING: &str = "hub:weft";
 
@@ -245,6 +267,8 @@ fn weft_binary() -> Option<PathBuf> {
     Some(exe.parent()?.join(name)).filter(|p| p.exists())
 }
 
+// The one unsafe call in apid's Weft code: the child's parent-death signal (see the SAFETY note in the body).
+#[allow(unsafe_code)]
 fn spawn_process(
     bin: &std::path::Path,
     dir: &std::path::Path,
@@ -256,7 +280,8 @@ fn spawn_process(
     use std::io::Write;
     let port_file = app.config.state_dir.join("weft.port");
     let _ = std::fs::remove_file(&port_file);
-    let mut child = std::process::Command::new(bin)
+    let mut command = std::process::Command::new(bin);
+    command
         .args(["serve", "--state"])
         .arg(dir)
         .args([
@@ -271,7 +296,23 @@ fn spawn_process(
         .arg("--port-file")
         .arg(&port_file)
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null());
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `pre_exec` runs the closure in the forked child before exec, where only async-signal-safe calls
+        // are allowed. `prctl` is async-signal-safe and touches no memory of the parent: it only sets the child's
+        // parent-death signal. The signal is sent when the thread that spawned the child exits (this is the weft
+        // thread, which lives for the whole run), so the child cannot outlive apid even when apid exits without
+        // running Drop.
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| format!("{}: {e}", bin.display()))?;
     // The keys go over stdin, never on the command line or in a file.

@@ -88,10 +88,12 @@ use crate::events::{Event, EventBus};
 use crate::treasury::{PLAZA_OWNER, PostError, Treasury};
 use crate::{ConnectedAgent, now_ms};
 
-/// The most tasks the ledger holds. v0 never removes a task (a task ends
-/// `done`, `failed` or `withdrawn` and stays readable), so the cap is
-/// absolute: past it the ledger refuses with an honest error rather than
-/// dropping the oldest task.
+/// The most tasks the ledger holds. A finished task (`done`, `failed` or
+/// `withdrawn`) stays readable until the ledger needs its place: then the
+/// oldest finished ones with nothing left in their escrow and no kept task
+/// linked to them move out to the daemon's archive ([`TaskLedger::take_archived`]).
+/// Past that, when every task still lives or is linked, the ledger refuses
+/// with an honest error.
 pub const MAX_TASKS: usize = 1024;
 
 /// The most one task text field (the goal, the acceptance criteria, a finish
@@ -1149,6 +1151,9 @@ pub struct TaskLedger {
 struct LedgerInner {
     next_seq: u64,
     tasks: Vec<Arc<Task>>,
+    /// Finished tasks moved out of the ledger that the daemon has not archived yet, one JSON line each:
+    /// the task's record, its money, and when it moved out. Not state.
+    archive: Vec<String>,
 }
 
 impl TaskLedger {
@@ -1168,6 +1173,7 @@ impl TaskLedger {
             inner: Mutex::new(LedgerInner {
                 next_seq: 0,
                 tasks: Vec::new(),
+                archive: Vec::new(),
             }),
         }
     }
@@ -1176,6 +1182,66 @@ impl TaskLedger {
     /// view and journal read it).
     pub fn treasury(&self) -> &Arc<Treasury> {
         &self.treasury
+    }
+
+    /// The finished tasks moved out of the ledger since the last call, oldest first, one JSON line each
+    /// (`{"task": <record>, "money": {...}, "archived_at": <ms>}`): the daemon appends them to its archive.
+    pub fn take_archived(&self) -> Vec<String> {
+        std::mem::take(&mut self.lock().archive)
+    }
+
+    /// Makes room for `needed` more tasks when the ledger would pass [`MAX_TASKS`]: the oldest finished
+    /// tasks with nothing left in their escrow, and that no kept task runs after, move out to the archive
+    /// queue. Their escrow accounts close in the treasury ([`Treasury::forget_task`]). Fewer may move out
+    /// than asked (every other task lives, or is linked); the caller then refuses.
+    fn make_room(&self, inner: &mut LedgerInner, needed: usize) {
+        let over = (inner.tasks.len() + needed).saturating_sub(MAX_TASKS);
+        if over == 0 {
+            return;
+        }
+        // A link holds the task it names, so a linked task stays while a task runs after it.
+        let linked: HashSet<String> = inner
+            .tasks
+            .iter()
+            .flat_map(|task| {
+                task.lock()
+                    .after
+                    .iter()
+                    .map(|Link(upstream)| upstream.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let movable: Vec<usize> = inner
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| {
+                task.lock().state.is_finished()
+                    && !linked.contains(&task.id)
+                    && self.treasury.escrow_balance(&task.id) == 0
+            })
+            .map(|(index, _)| index)
+            .take(over)
+            .collect();
+        let now = now_ms();
+        // Removed from the back, so the indices before each one still hold; queued oldest first.
+        let mut lines = Vec::with_capacity(movable.len());
+        for index in movable.into_iter().rev() {
+            let task = inner.tasks.remove(index);
+            let money = self.treasury.forget_task(&task.id);
+            let line = serde_json::json!({
+                "task": task.record(),
+                "money": {
+                    "minted": money.minted,
+                    "spent": money.spent,
+                    "paid": money.paid,
+                    "refunded": money.refunded,
+                },
+                "archived_at": now,
+            });
+            lines.push(line.to_string());
+        }
+        inner.archive.extend(lines.into_iter().rev());
     }
 
     /// Creates the next task in `open`, where a v0 task begins.
@@ -1194,6 +1260,7 @@ impl TaskLedger {
         let after = resolve(&inner.tasks, &checked.after, checked.project.as_deref())
             .map_err(CreateError::Invalid)?;
         let upstreams: Vec<Arc<Task>> = after.iter().map(|Link(task)| Arc::clone(task)).collect();
+        self.make_room(&mut inner, 1);
         if inner.tasks.len() >= MAX_TASKS {
             return Err(CreateError::Full { max: MAX_TASKS });
         }
@@ -1283,6 +1350,7 @@ impl TaskLedger {
                 })?,
             );
         }
+        self.make_room(&mut inner, batch.len());
         if inner.tasks.len() + batch.len() > MAX_TASKS {
             return Err(CreateError::Full { max: MAX_TASKS });
         }
@@ -2174,13 +2242,40 @@ mod tests {
             "a refused create adds nothing"
         );
 
-        // v0 never removes a task, so withdrawing one does not free a slot -
-        // but a fresh create still gets an id no other task has.
+        // A finished task gives up its place: withdrawing one lets the next create in, the finished task moves
+        // out to the archive queue, and the new task still gets an id no other task has had.
         ledger
             .find("t1")
             .expect("the first task")
             .withdraw()
             .expect("open -> withdrawn");
+        let next = ledger
+            .create(&CreateTask {
+                goal: "in the freed place".to_string(),
+                acceptance: None,
+                budget: None,
+                role: None,
+                after: Vec::new(),
+                project: None,
+            })
+            .expect("a finished task's place is taken");
+        assert_eq!(next.id(), format!("t{}", MAX_TASKS + 1));
+        assert!(ledger.find("t1").is_none(), "the finished task moved out");
+        assert_eq!(ledger.list().len(), MAX_TASKS);
+        let archived = ledger.take_archived();
+        assert_eq!(archived.len(), 1);
+        let line: serde_json::Value = serde_json::from_str(&archived[0]).expect("a JSON line");
+        assert_eq!(line["task"]["id"], "t1");
+        assert_eq!(line["task"]["state"], "Withdrawn");
+        assert!(ledger.take_archived().is_empty(), "taken once");
+
+        // A finished task another task runs after keeps its place, so every link resolves: with only such a
+        // task finished, the ledger is still full.
+        let upstream = ledger.find("t2").expect("t2");
+        ledger
+            .relink("t3", &["t2".to_string()])
+            .expect("t3 runs after t2");
+        upstream.withdraw().expect("open -> withdrawn");
         let refused_again = ledger
             .create(&CreateTask {
                 goal: "still too many".to_string(),
@@ -2190,8 +2285,9 @@ mod tests {
                 after: Vec::new(),
                 project: None,
             })
-            .expect_err("the withdrawn task still counts");
+            .expect_err("the linked task keeps its place");
         assert_eq!(refused_again, CreateError::Full { max: MAX_TASKS });
+        assert!(ledger.find("t2").is_some());
     }
 
     #[test]

@@ -64,7 +64,7 @@ tokenizers = { version = "0.21", default-features = false, features = ["fancy-re
 # Free disk space on every platform the hub runs on (already in the lock at this version).
 sysinfo = "0.33"
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 # prctl(PR_SET_DUMPABLE) so a crash leaves no core with the vault's keys in it (vault/process.rs).
 libc.workspace = true
 

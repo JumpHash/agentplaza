@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::upstream::Upstream;
 use crate::{agents, api, events, plaza, providers, scheduler, settings, spawned, transcript};
@@ -435,6 +436,20 @@ impl App {
         crate::db::spawn_writer(Arc::clone(&app));
         spawn_treasury_saver(Arc::clone(&app));
         spawn_component_savers(Arc::clone(&app));
+        // A stop signal (SIGTERM, Ctrl-C) writes the state once more, in order, then exits (shutdown.rs).
+        let stopping = app.handle();
+        crate::shutdown::on_stop(move || {
+            let Some(app) = stopping.upgrade() else {
+                return;
+            };
+            eprintln!("apid: stopping: writing state");
+            // The archives first: a snapshot that no longer holds what moved out is saved after its lines are.
+            save_archives(&app);
+            save_treasury(&app);
+            save_components(&app);
+            crate::db::write_pass(&app);
+            crate::weft_hub::stop(&app);
+        });
         crate::provider_health::spawn(Arc::clone(&app));
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
@@ -543,25 +558,65 @@ fn spawn_component_savers(app: Arc<App>) {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3));
             crate::mcp::tick(&app);
-            if !app.db.is_held("foundry")
-                && let Err(err) = app.foundry.save()
-            {
-                eprintln!("apid: cannot save the foundry: {err}");
-            }
-            if !app.db.is_held("looks")
-                && let Err(err) = app.looks.save()
-            {
-                eprintln!("apid: cannot save the looks: {err}");
-            }
+            save_archives(&app);
+            save_components(&app);
         }
     });
+}
+
+/// Appends what the full task ledger and the full journal moved out ([`apz_plaza::tasks::TaskLedger::take_archived`],
+/// [`apz_plaza::treasury::Treasury::take_archived`]) to `<state-dir>/tasks-archive.jsonl` and
+/// `<state-dir>/treasury-archive.jsonl`, one JSON line each. Their sums stay in the treasury, so a line that cannot be
+/// written is logged and lost from the archive only.
+fn save_archives(app: &App) {
+    for (name, lines) in [
+        ("tasks-archive.jsonl", app.plaza.tasks.take_archived()),
+        ("treasury-archive.jsonl", app.plaza.treasury.take_archived()),
+    ] {
+        if lines.is_empty() {
+            continue;
+        }
+        let path = app.config.state_dir.join(name);
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| {
+                use std::io::Write;
+                let mut text = lines.join("\n");
+                text.push('\n');
+                file.write_all(text.as_bytes())?;
+                file.sync_data()
+            });
+        if let Err(err) = appended {
+            eprintln!(
+                "apid: cannot append {} archived lines to {}: {err}",
+                lines.len(),
+                path.display()
+            );
+        }
+    }
+}
+
+/// One pass of the component saves, run by the loop and by the stop: a component Postgres holds is skipped (its
+/// load failed); a failed save is logged each time.
+fn save_components(app: &App) {
+    if !app.db.is_held("foundry")
+        && let Err(err) = app.foundry.save()
+    {
+        eprintln!("apid: cannot save the foundry: {err}");
+    }
+    if !app.db.is_held("looks")
+        && let Err(err) = app.looks.save()
+    {
+        eprintln!("apid: cannot save the looks: {err}");
+    }
 }
 
 /// Saves the treasury to `<state-dir>/treasury.json` every three seconds whenever
 /// its version has moved; the first tick always writes.
 fn spawn_treasury_saver(app: Arc<App>) {
     std::thread::spawn(move || {
-        let path = app.config.state_dir.join("treasury.json");
         let mut saved = None;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3));
@@ -569,18 +624,40 @@ fn spawn_treasury_saver(app: Arc<App>) {
             if saved == Some(version) {
                 continue;
             }
-            match write_atomic(&path, &app.plaza.treasury.snapshot()) {
-                Ok(()) => saved = Some(version),
-                Err(err) => eprintln!("apid: cannot save {}: {err}", path.display()),
+            if save_treasury(&app) {
+                saved = Some(version);
             }
         }
     });
 }
 
+/// One pass of the treasury save, run by the loop and by the stop. Returns whether the write landed; a failure is
+/// logged.
+fn save_treasury(app: &App) -> bool {
+    let path = app.config.state_dir.join("treasury.json");
+    match write_atomic(&path, &app.plaza.treasury.snapshot()) {
+        Ok(()) => true,
+        Err(err) => {
+            eprintln!("apid: cannot save {}: {err}", path.display());
+            false
+        }
+    }
+}
+
+/// Counts the temporary files this process has started, so no two writes share a temporary name.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Writes `text` to `path` through a temporary file and a rename, so a crash
-/// mid-write leaves the previous snapshot whole.
+/// mid-write leaves the previous snapshot whole. The temporary name carries the process id and
+/// a counter, so the stop pass and a saver loop never write the same temporary file.
 pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
+    let count = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut tmp_name = path
+        .file_name()
+        .unwrap_or(std::ffi::OsStr::new("snapshot"))
+        .to_os_string();
+    tmp_name.push(format!(".{}.{count}.tmp", std::process::id()));
+    let tmp = path.with_file_name(tmp_name);
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
 }

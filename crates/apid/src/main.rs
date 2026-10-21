@@ -87,6 +87,7 @@ mod sanctions;
 mod scheduler;
 mod settings;
 mod shares;
+mod shutdown;
 mod skills;
 mod sleep;
 mod society;
@@ -146,6 +147,8 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
   --dev-models       relax the model policy (mock and local models; tests only)";
 
 fn main() -> ExitCode {
+    // First, before any thread starts: the signal mask set here is inherited by every thread after it.
+    shutdown::install();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("apid {}", apz_os::version());

@@ -68,6 +68,22 @@ fn rules_list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
     )
 }
 
+/// A rule change's answer with `saved` added: false while rules.json is damaged, when the change
+/// applies in memory only, and a note says so.
+fn with_saved(laws: &crate::laws::Laws, mut body: Value) -> Value {
+    let saved = laws.rules_saved();
+    if let Some(map) = body.as_object_mut() {
+        map.insert("saved".into(), json!(saved));
+        if !saved {
+            map.insert(
+                "note".into(),
+                json!("rules.json is damaged; the change applies until the hub restarts"),
+            );
+        }
+    }
+    body
+}
+
 /// `POST /v1/laws/rules` with `{title, source, enabled}`: a new rule set, applied only if it compiles.
 fn rule_create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     let body = match body_of(req) {
@@ -81,7 +97,7 @@ fn rule_create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         enabled,
         apz_plaza::now_ms(),
     ) {
-        Ok(rule) => Response::json(201, &rule),
+        Ok(rule) => Response::json(201, &with_saved(app.laws, json!(rule))),
         Err(failure) => failure_response(failure),
     }
 }
@@ -99,7 +115,7 @@ fn rule_update_route(app: &App, req: &Request, params: &Params<'_>) -> Response 
         source,
         apz_plaza::now_ms(),
     ) {
-        Ok(rule) => Response::json(200, &rule),
+        Ok(rule) => Response::json(200, &with_saved(app.laws, json!(rule))),
         Err(failure) => failure_response(failure),
     }
 }
@@ -114,14 +130,17 @@ fn rule_disable_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
 
 fn set_enabled(app: &App, id: &str, enabled: bool) -> Response {
     match app.laws.set_rule_enabled(id, enabled, apz_plaza::now_ms()) {
-        Ok(rule) => Response::json(200, &rule),
+        Ok(rule) => Response::json(200, &with_saved(app.laws, json!(rule))),
         Err(failure) => failure_response(failure),
     }
 }
 
 fn rule_delete_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
     match app.laws.delete_rule(params.get("id")) {
-        Ok(()) => Response::json(200, &json!({ "deleted": params.get("id") })),
+        Ok(()) => Response::json(
+            200,
+            &with_saved(app.laws, json!({ "deleted": params.get("id") })),
+        ),
         Err(failure) => failure_response(failure),
     }
 }
@@ -189,7 +208,10 @@ fn set_override_answer(
         Ok(made) => {
             let made: Option<Override> = made;
             announce_constitutional(laws, bus, law, now_ms);
-            Response::json(200, &json!({ "law": law, "override": made }))
+            Response::json(
+                200,
+                &with_saved(laws, json!({ "law": law, "override": made })),
+            )
         }
         Err(failure) => failure_response(failure),
     }

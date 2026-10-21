@@ -88,11 +88,13 @@
 //!   views are the derivations [`Treasury::view`] and [`Treasury::post`]'s
 //!   margin check perform.
 //!
-//! The caps v0 chooses, and refuses past: [`MAX_ENTRIES`] and [`MAX_ACCOUNTS`]
-//! (the journal and the accounts table are bounded, like the task ledger), and
+//! The bounds: [`MAX_ENTRIES`] (a full journal moves its older half out to the
+//! daemon's archive, and what those entries add up to is carried, so every
+//! balance and total reads the same), [`MAX_ACCOUNTS`] (refused past; an
+//! archived task's escrow closes, so it counts the tasks the ledger holds), and
 //! [`JOURNAL_LIMIT`] for the journal endpoint's response.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -126,12 +128,12 @@ pub const POSTED_BY: &str = "treasury-service";
 /// schema's `treasury.margin_cap_pct()` returns this value.
 pub const MARGIN_CAP_PCT: i64 = 20;
 
-/// The most entries the journal holds. v0 never removes an entry (the journal
-/// is append-only), so the cap is absolute: past it [`Treasury::post`] refuses
-/// with an honest error rather than dropping the oldest entry. The task
-/// lifecycle posts at most two entries per task (a mint and a refund) and the
-/// ledger holds at most [`crate::tasks::MAX_TASKS`] tasks, so the lifecycle
-/// alone can never fill it.
+/// The most entries the journal holds. Entries are only ever appended; when the
+/// journal reaches this many, its older half moves out to the daemon's archive
+/// ([`Treasury::take_archived`]) and what they add up to is carried: balances,
+/// totals, chain margins, the money of each task and the funding of each escrow
+/// read the same as before. Every model call posts an entry, so a plaza fills it
+/// in its first few thousand calls; posting never stops on it.
 pub const MAX_ENTRIES: usize = 4096;
 
 /// The most accounts the treasury holds. Each task opens at most one escrow
@@ -509,7 +511,8 @@ pub enum PostError {
         /// The chain's real cost (metered spend).
         real_cost: i128,
     },
-    /// The journal is full ([`MAX_ENTRIES`]).
+    /// The journal is full ([`MAX_ENTRIES`]). Not posted any more (a full journal moves its older half
+    /// out); kept so a caller's match on it still compiles.
     JournalFull {
         /// The cap.
         max: usize,
@@ -704,11 +707,65 @@ struct Entry {
     postings: Vec<Posting>,
 }
 
+/// What the entries moved out of the journal leave behind (see [`Inner::compact`]): every figure the
+/// treasury derives from its journal, summed over those entries, so that a balance, a total, a chain's margin
+/// or a task's money reads the same after a compaction as before it. A journal that never compacted carries
+/// nothing.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+struct Carried {
+    /// How many entries were moved out.
+    entries: u64,
+    /// Per account: what its moved-out postings add up to.
+    accounts: BTreeMap<u64, CarriedAccount>,
+    /// The positive `mint` postings moved out ([`Treasury::minted_total`]).
+    minted: i128,
+    /// All credits, all debits and the real spend moved out ([`Treasury::view`]'s totals).
+    credits: i128,
+    debits: i128,
+    spent: i128,
+    /// Per chain root: (real cost, paid to agents), for the margin cap.
+    margins: BTreeMap<String, (i128, i128)>,
+    /// Per task: its money from moved-out entries ([`Treasury::task_money`]).
+    tasks: BTreeMap<String, CarriedTask>,
+    /// Per escrow account: the town budget whose `subcontract` funded it last, from moved-out entries.
+    funding: BTreeMap<u64, String>,
+    /// Tasks the ledger archived whose escrow is not closed yet: a kept entry still posts to it.
+    archived_tasks: BTreeSet<String>,
+}
+
+/// One account's moved-out postings: their sum, the `payment` credits among them and every debit.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct CarriedAccount {
+    balance: i128,
+    earned: i128,
+    debited: i128,
+}
+
+/// One task's money from moved-out entries, the fields of [`TaskMoney`] the journal gives.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+struct CarriedTask {
+    minted: i128,
+    spent: i128,
+    refunded: i128,
+    paid: Vec<(u64, i128)>,
+}
+
+/// The most moved-out entries kept for the daemon to archive ([`Treasury::take_archived`]) when it has not
+/// taken them yet; past it the oldest are dropped from the queue (their sums stay carried).
+const MAX_ARCHIVE_QUEUE: usize = 2 * MAX_ENTRIES;
+
 /// The accounts and the journal, behind one lock.
 #[derive(Debug, Serialize, Deserialize)]
 struct Inner {
     accounts: Vec<Account>,
     entries: Vec<Entry>,
+    /// What the entries moved out of `entries` leave behind.
+    #[serde(default)]
+    carried: Carried,
+    /// Moved-out entries the daemon has not archived yet, each a JSON line ([`EntryView`]). Not state:
+    /// the sums are in `carried`.
+    #[serde(skip)]
+    archive: VecDeque<String>,
     next_account: u64,
     next_entry: u64,
     /// What each agent has transferred on each UTC day, keyed by (cid, day).
@@ -754,7 +811,153 @@ impl Inner {
                         .then(|| account.owner_ref.clone())
                 })
             })
+            .or_else(|| escrow.and_then(|id| self.carried.funding.get(&id).cloned()))
             .unwrap_or_else(|| PLAZA_OWNER.to_string())
+    }
+
+    /// Moves every entry but the newest `keep` out of the journal into [`Carried`] sums and the archive
+    /// queue. Every figure derived from the journal (balances, totals, chain margins, task money, the
+    /// funding of an escrow) reads the same after it; the journal's views show only the entries kept.
+    fn compact(&mut self, keep: usize) {
+        let moved = self.entries.len().saturating_sub(keep);
+        if moved == 0 {
+            return;
+        }
+        // Rendered now, while every account they post to is open, so a line names its accounts.
+        let lines: Vec<String> = self.entries[..moved]
+            .iter()
+            .map(|entry| serde_json::to_string(&entry_view(self, entry)).unwrap_or_default())
+            .collect();
+        let out: Vec<Entry> = self.entries.drain(..moved).collect();
+        for entry in &out {
+            self.carry(entry);
+        }
+        self.carried.entries += moved as u64;
+        self.archive.extend(lines);
+        let over = self.archive.len().saturating_sub(MAX_ARCHIVE_QUEUE);
+        self.archive.drain(..over);
+        self.close_settled();
+    }
+
+    /// Closes the escrow of every task the ledger archived ([`Treasury::forget_task`]) once no kept entry
+    /// posts to it and nothing is left in it, and drops the sums only such a task needed (its money, its
+    /// chain's margin when no kept entry is on that chain).
+    fn close_settled(&mut self) {
+        let pending: Vec<String> = self.carried.archived_tasks.iter().cloned().collect();
+        for task in pending {
+            let escrow = self
+                .find_account(AccountKind::TaskEscrow, &task)
+                .map(|account| account.id);
+            let posted = |id: u64| {
+                self.entries.iter().any(|entry| {
+                    entry
+                        .postings
+                        .iter()
+                        .any(|posting| posting.account_id == id)
+                })
+            };
+            let open = escrow.is_some_and(|id| posted(id) || self.balance(id) != 0);
+            if open {
+                continue;
+            }
+            if let Some(id) = escrow {
+                self.accounts.retain(|account| account.id != id);
+                self.carried.accounts.remove(&id);
+                self.carried.funding.remove(&id);
+            }
+            if !self
+                .entries
+                .iter()
+                .any(|entry| entry.root_task.as_deref() == Some(task.as_str()))
+            {
+                self.carried.margins.remove(&task);
+            }
+            self.carried.tasks.remove(&task);
+            self.carried.archived_tasks.remove(&task);
+        }
+    }
+
+    /// Adds one entry's postings to the carried sums, by the same rules the readers apply to a live entry.
+    fn carry(&mut self, entry: &Entry) {
+        let kinds: Vec<Option<(AccountKind, String)>> = entry
+            .postings
+            .iter()
+            .map(|posting| {
+                self.accounts
+                    .iter()
+                    .find(|account| account.id == posting.account_id)
+                    .map(|account| (account.kind, account.owner_ref.clone()))
+            })
+            .collect();
+        let carried = &mut self.carried;
+        let mut funded_escrow = None;
+        let mut funding_owner = None;
+        for (posting, kind) in entry.postings.iter().zip(&kinds) {
+            let amount = i128::from(posting.amount);
+            let account = carried.accounts.entry(posting.account_id).or_default();
+            account.balance += amount;
+            if entry.kind == EntryKind::Payment && amount > 0 {
+                account.earned += amount;
+            }
+            if amount > 0 {
+                carried.credits += amount;
+            } else {
+                account.debited -= amount;
+                carried.debits -= amount;
+            }
+            if entry.kind == EntryKind::Mint && amount > 0 {
+                carried.minted += amount;
+            }
+            let Some((kind, owner)) = kind else { continue };
+            if entry.kind.is_real_cost() && *kind == AccountKind::ExternalSpend && amount > 0 {
+                carried.spent += amount;
+            }
+            if let Some(root) = entry.root_task.as_deref() {
+                let (cost, paid) = carried.margins.entry(root.to_string()).or_insert((0, 0));
+                if entry.kind.is_real_cost() && *kind == AccountKind::ExternalSpend && amount > 0 {
+                    *cost += amount;
+                }
+                if matches!(entry.kind, EntryKind::Payment | EntryKind::Clawback)
+                    && *kind == AccountKind::AgentEarnings
+                {
+                    *paid += amount;
+                }
+            }
+            if entry.kind == EntryKind::Subcontract {
+                if *kind == AccountKind::TaskEscrow && amount > 0 {
+                    funded_escrow = Some(posting.account_id);
+                }
+                if *kind == AccountKind::TownBudget && amount < 0 {
+                    funding_owner = Some(owner.clone());
+                }
+            }
+            if let Some(task) = entry.task_id.as_deref() {
+                let money = carried.tasks.entry(task.to_string()).or_default();
+                match (entry.kind, *kind, amount > 0) {
+                    (EntryKind::Mint | EntryKind::Subcontract, AccountKind::TaskEscrow, true) => {
+                        money.minted += amount
+                    }
+                    (kind, AccountKind::TaskEscrow, false) if kind.is_real_cost() => {
+                        money.spent -= amount
+                    }
+                    (EntryKind::Refund, AccountKind::TownBudget, true) => money.refunded += amount,
+                    (EntryKind::Payment, AccountKind::AgentEarnings, true) => {
+                        let cid = owner
+                            .strip_prefix("cid:")
+                            .and_then(|cid| cid.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        match money.paid.iter_mut().find(|(paid_cid, _)| *paid_cid == cid) {
+                            Some((_, total)) => *total += amount,
+                            None => money.paid.push((cid, amount)),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let (Some(escrow), Some(owner)) = (funded_escrow, funding_owner) {
+            carried.funding.insert(escrow, owner);
+        }
     }
 
     /// The kind of the account with that id, if it exists.
@@ -768,12 +971,19 @@ impl Inner {
     /// An account's balance: the sum of its postings. Derived every time, never
     /// stored (the schema's `treasury.balances`).
     fn balance(&self, account_id: u64) -> i128 {
-        self.entries
-            .iter()
-            .flat_map(|entry| &entry.postings)
-            .filter(|posting| posting.account_id == account_id)
-            .map(|posting| i128::from(posting.amount))
-            .sum()
+        let carried = self
+            .carried
+            .accounts
+            .get(&account_id)
+            .map_or(0, |carried| carried.balance);
+        carried
+            + self
+                .entries
+                .iter()
+                .flat_map(|entry| &entry.postings)
+                .filter(|posting| posting.account_id == account_id)
+                .map(|posting| i128::from(posting.amount))
+                .sum::<i128>()
     }
 
     /// The schema's `treasury.chain_margin` for `root`, with `spec`'s postings
@@ -782,8 +992,8 @@ impl Inner {
     /// real cost (positive `spend` credits to `external_spend`) and what it has
     /// paid agents (`payment` and `clawback` postings on `agent_earnings`).
     fn chain_margin(&self, root: &str, spec: &EntrySpec) -> (i128, i128) {
-        let mut real_cost = 0i128;
-        let mut paid_to_agents = 0i128;
+        let (mut real_cost, mut paid_to_agents) =
+            self.carried.margins.get(root).copied().unwrap_or((0, 0));
         for entry in &self.entries {
             if entry.root_task.as_deref() != Some(root) {
                 continue;
@@ -886,19 +1096,35 @@ fn check_snapshot(inner: &Inner) -> Result<(), String> {
             ));
         }
     }
-    if inner.next_entry != u64::try_from(inner.entries.len()).unwrap_or(u64::MAX) {
+    if inner.next_entry
+        != inner.carried.entries + u64::try_from(inner.entries.len()).unwrap_or(u64::MAX)
+    {
         return Err(format!(
-            "the next entry id ({}) does not follow the journal's length ({})",
+            "the next entry id ({}) does not follow the journal's length ({} kept, {} moved out)",
             inner.next_entry,
-            inner.entries.len()
+            inner.entries.len(),
+            inner.carried.entries
         ));
     }
-    // The balances and the chain margins, replayed in journal order: each entry is
-    // checked against the state the entries before it leave behind.
-    let mut balances: BTreeMap<u64, i128> = BTreeMap::new();
-    let mut margins: BTreeMap<String, (i128, i128)> = BTreeMap::new();
+    if let Some(id) = inner
+        .carried
+        .accounts
+        .keys()
+        .find(|id| !inner.accounts.iter().any(|account| account.id == **id))
+    {
+        return Err(format!("the carried sums name unknown account {id}"));
+    }
+    // The balances and the chain margins, replayed in journal order from what the moved-out entries
+    // left: each entry is checked against the state the entries before it leave behind.
+    let mut balances: BTreeMap<u64, i128> = inner
+        .carried
+        .accounts
+        .iter()
+        .map(|(id, carried)| (*id, carried.balance))
+        .collect();
+    let mut margins: BTreeMap<String, (i128, i128)> = inner.carried.margins.clone();
     for (index, entry) in inner.entries.iter().enumerate() {
-        let expected = u64::try_from(index).unwrap_or(u64::MAX) + 1;
+        let expected = inner.carried.entries + u64::try_from(index).unwrap_or(u64::MAX) + 1;
         if entry.id != expected {
             return Err(format!(
                 "entry {} is at position {index}, expected id {expected}",
@@ -1023,6 +1249,8 @@ impl Treasury {
                     created_at: now,
                 }],
                 entries: Vec::new(),
+                carried: Carried::default(),
+                archive: VecDeque::new(),
                 next_account: 1,
                 next_entry: 0,
                 transferred: BTreeMap::new(),
@@ -1047,7 +1275,8 @@ impl Treasury {
     /// The checks, in the schema's `treasury.check_entry` order (see the module
     /// note for the mapping):
     ///
-    /// * the journal is not full ([`MAX_ENTRIES`]);
+    /// * the journal has room (it always does: a full one moves its older half
+    ///   out after the entry is appended, see [`MAX_ENTRIES`]);
     /// * the entry has postings, none of them zero, one per account;
     /// * the entry names a chain when its kind must ([`EntryKind::names_a_chain`]);
     /// * every posting is allowed by [`POSTING_RULES`] — **this is the rule a
@@ -1473,14 +1702,18 @@ impl Treasury {
         let wallet = inner.find_account(AccountKind::AgentEarnings, &agent_owner(cid));
         let wallet_id = wallet.map(|account| account.id);
         let balance = wallet.map_or(0, |account| inner.balance(account.id));
-        let earned = inner
-            .entries
-            .iter()
-            .filter(|entry| entry.kind == EntryKind::Payment)
-            .flat_map(|entry| &entry.postings)
-            .filter(|posting| Some(posting.account_id) == wallet_id && posting.amount > 0)
-            .map(|posting| i128::from(posting.amount))
-            .sum();
+        let carried = wallet_id
+            .and_then(|id| inner.carried.accounts.get(&id))
+            .map_or(0, |carried| carried.earned);
+        let earned = carried
+            + inner
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == EntryKind::Payment)
+                .flat_map(|entry| &entry.postings)
+                .filter(|posting| Some(posting.account_id) == wallet_id && posting.amount > 0)
+                .map(|posting| i128::from(posting.amount))
+                .sum::<i128>();
         WalletMoney {
             balance,
             sent_today: inner.transferred.get(&(cid, day)).copied().unwrap_or(0),
@@ -1493,14 +1726,20 @@ impl Treasury {
     /// paid each agent, and what went back to the plaza's budget.
     pub fn task_money(&self, task_id: &str) -> TaskMoney {
         let inner = self.lock();
+        let carried = inner
+            .carried
+            .tasks
+            .get(task_id)
+            .cloned()
+            .unwrap_or_default();
         let mut money = TaskMoney {
-            minted: 0,
+            minted: carried.minted,
             escrow: inner
                 .find_account(AccountKind::TaskEscrow, task_id)
                 .map_or(0, |account| inner.balance(account.id)),
-            spent: 0,
-            paid: Vec::new(),
-            refunded: 0,
+            spent: carried.spent,
+            paid: carried.paid,
+            refunded: carried.refunded,
         };
         for entry in inner
             .entries
@@ -1563,14 +1802,15 @@ impl Treasury {
     /// journal's `credits` total, refunds and all, is not the right source).
     pub fn minted_total(&self) -> i128 {
         let inner = self.lock();
-        inner
-            .entries
-            .iter()
-            .filter(|entry| entry.kind == EntryKind::Mint)
-            .flat_map(|entry| &entry.postings)
-            .filter(|posting| posting.amount > 0)
-            .map(|posting| i128::from(posting.amount))
-            .sum()
+        inner.carried.minted
+            + inner
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == EntryKind::Mint)
+                .flat_map(|entry| &entry.postings)
+                .filter(|posting| posting.amount > 0)
+                .map(|posting| i128::from(posting.amount))
+                .sum::<i128>()
     }
 
     /// The treasury as the API reports it: the accounts with their balances,
@@ -1578,9 +1818,9 @@ impl Treasury {
     pub fn view(&self) -> TreasuryView {
         let inner = self.lock();
         let accounts = account_views(&inner);
-        let mut credits = 0i128;
-        let mut debits = 0i128;
-        let mut spent = 0i128;
+        let mut credits = inner.carried.credits;
+        let mut debits = inner.carried.debits;
+        let mut spent = inner.carried.spent;
         for entry in &inner.entries {
             for posting in &entry.postings {
                 if posting.amount > 0 {
@@ -1601,6 +1841,7 @@ impl Treasury {
             totals: TotalsView {
                 accounts: inner.accounts.len(),
                 entries: inner.entries.len(),
+                archived: inner.carried.entries,
                 credits,
                 debits,
                 balance: credits - debits,
@@ -1754,7 +1995,20 @@ impl Treasury {
         // What each bucket moves in the three balances, in the order
         // [plaza budget, circulating, treasury], and what was there before `from_ms`.
         let mut moves = vec![[0i128; 3]; count];
+        // Moved-out entries are all older than the live ones, so their sums open the series.
         let mut opening = [0i128; 3];
+        for (id, carried) in &inner.carried.accounts {
+            match accounts.get(id) {
+                Some((AccountKind::TownBudget, owner)) if *owner == PLAZA_OWNER => {
+                    opening[0] += carried.balance
+                }
+                Some((AccountKind::TaskEscrow | AccountKind::AgentEarnings, _)) => {
+                    opening[1] += carried.balance
+                }
+                Some((AccountKind::Treasury, _)) => opening[2] += carried.balance,
+                _ => {}
+            }
+        }
         for entry in &inner.entries {
             let mut moved = [0i128; 3];
             let mut size = 0i128;
@@ -1825,7 +2079,12 @@ impl Treasury {
     /// journal's life.
     pub fn top_wallets(&self, n: usize) -> Vec<WalletRank> {
         let inner = self.lock();
-        let mut flows: BTreeMap<u64, (i128, i128)> = BTreeMap::new();
+        let mut flows: BTreeMap<u64, (i128, i128)> = inner
+            .carried
+            .accounts
+            .iter()
+            .map(|(id, carried)| (*id, (carried.earned, carried.debited)))
+            .collect();
         for entry in &inner.entries {
             for posting in &entry.postings {
                 let amount = i128::from(posting.amount);
@@ -1869,7 +2128,7 @@ impl Treasury {
     pub fn verify_journal(&self) -> Result<(), String> {
         let inner = self.lock();
         for (index, entry) in inner.entries.iter().enumerate() {
-            let expected = u64::try_from(index).unwrap_or(u64::MAX) + 1;
+            let expected = inner.carried.entries + u64::try_from(index).unwrap_or(u64::MAX) + 1;
             if entry.id != expected {
                 return Err(format!(
                     "entry {} is at position {}, expected id {}",
@@ -1885,11 +2144,14 @@ impl Treasury {
                 }
             }
         }
-        if inner.next_entry != u64::try_from(inner.entries.len()).unwrap_or(u64::MAX) {
+        if inner.next_entry
+            != inner.carried.entries + u64::try_from(inner.entries.len()).unwrap_or(u64::MAX)
+        {
             return Err(format!(
-                "the next entry id ({}) does not follow the journal's length ({})",
+                "the next entry id ({}) does not follow the journal's length ({} kept, {} moved out)",
                 inner.next_entry,
-                inner.entries.len()
+                inner.entries.len(),
+                inner.carried.entries
             ));
         }
         Ok(())
@@ -2023,6 +2285,10 @@ impl Treasury {
             created_at: now,
             postings,
         });
+        // A full journal moves its older half out (their sums stay carried), so posting never stops.
+        if inner.entries.len() >= MAX_ENTRIES {
+            inner.compact(MAX_ENTRIES / 2);
+        }
         self.version.fetch_add(1, Ordering::SeqCst);
         self.events.publish(Event::Treasury {
             entry: id,
@@ -2044,6 +2310,25 @@ impl Treasury {
     /// opened, a restore). A saver compares it to know when there is to save.
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::SeqCst)
+    }
+
+    /// The entries moved out of the journal since the last call, oldest first, one JSON line each
+    /// ([`EntryView`]): the daemon appends them to its archive. A full journal moves its older half out
+    /// (see [`MAX_ENTRIES`]); what they add up to stays in every balance and total.
+    pub fn take_archived(&self) -> Vec<String> {
+        self.lock().archive.drain(..).collect()
+    }
+
+    /// Settles a task the ledger archives: returns its money (for the archive's record) and closes its
+    /// escrow once nothing is left in it and no kept entry posts to it (at once, or at a later
+    /// compaction), so the accounts cap ([`MAX_ACCOUNTS`]) counts only the tasks the ledger still holds.
+    pub fn forget_task(&self, task_id: &str) -> TaskMoney {
+        let money = self.task_money(task_id);
+        let mut inner = self.lock();
+        inner.carried.archived_tasks.insert(task_id.to_string());
+        inner.close_settled();
+        self.version.fetch_add(1, Ordering::SeqCst);
+        money
     }
 
     /// Replaces the whole state with `json`, a [`Treasury::snapshot`]. The
@@ -2192,6 +2477,9 @@ pub struct TotalsView {
     pub accounts: usize,
     /// How many entries the journal holds.
     pub entries: usize,
+    /// How many older entries were moved out of the journal to the archive; their sums are still counted
+    /// in every balance and total here.
+    pub archived: u64,
     /// The total credited across the journal.
     pub credits: i128,
     /// The total debited across the journal.
@@ -3172,27 +3460,9 @@ mod tests {
             assert!(!kinds(&treasury).contains(&kind), "{kind} appeared");
         }
     }
-    #[test]
-    fn the_caps_refuse_honestly() {
-        let treasury = new_treasury();
-        // The journal's cap: fill it with mint entries to a town budget, which
-        // the rules allow and which touches no limited account.
-        for _ in 0..MAX_ENTRIES - 1 {
-            treasury
-                .post(
-                    &spec(
-                        EntryKind::Mint,
-                        &[
-                            (AccountKind::Mint, MINT_OWNER, -1),
-                            (AccountKind::TownBudget, "shop", 1),
-                        ],
-                    )
-                    .root("shop-oct"),
-                )
-                .expect("a mint under the cap");
-        }
-        assert_eq!(treasury.view().totals.entries, MAX_ENTRIES);
-        let refused = treasury
+    /// A mint of one credit to the `shop` town budget: an entry the rules allow that touches no limited account.
+    fn mint_one(treasury: &Treasury) -> u64 {
+        treasury
             .post(
                 &spec(
                     EntryKind::Mint,
@@ -3203,15 +3473,94 @@ mod tests {
                 )
                 .root("shop-oct"),
             )
-            .expect_err("the journal is full");
-        assert_eq!(refused, PostError::JournalFull { max: MAX_ENTRIES });
-        assert_eq!(refused.status(), 409);
-        assert_eq!(
-            refused.to_string(),
-            format!("the treasury journal is full ({MAX_ENTRIES} entries)")
-        );
-        assert_eq!(treasury.view().totals.entries, MAX_ENTRIES);
+            .expect("a mint")
+    }
 
+    #[test]
+    fn a_full_journal_moves_its_older_half_out_and_every_figure_reads_the_same() {
+        let treasury = new_treasury();
+        treasury.fund_task("t1", 100).expect("a task funded");
+        treasury
+            .charge_model(7, Some("t1"), 30, "model m")
+            .expect("a model call charged to the task");
+        let money_before = treasury.task_money("t1");
+        let funded = treasury.escrow_balance("t1");
+        // The journal fills (one plaza mint, the fund, the charge, then the mints), and its older half moves out
+        // instead of the next post being refused.
+        let posted = MAX_ENTRIES - 3;
+        for _ in 0..posted {
+            mint_one(&treasury);
+        }
+        let view = treasury.view();
+        assert_eq!(view.totals.entries, MAX_ENTRIES / 2);
+        assert_eq!(view.totals.archived, (MAX_ENTRIES / 2) as u64);
+        assert_eq!(view.totals.balance, 0, "the journal still balances");
+        assert_eq!(view.totals.credits, view.totals.debits);
+        assert_eq!(treasury.town_budget_balance("shop"), posted as i128);
+        assert_eq!(
+            treasury.minted_total(),
+            i128::from(PLAZA_BUDGET) + posted as i128
+        );
+        assert_eq!(treasury.escrow_balance("t1"), funded);
+        assert_eq!(treasury.task_money("t1"), money_before);
+        treasury
+            .verify_journal()
+            .expect("the kept ids follow the moved-out ones");
+        // The moved-out entries wait for the daemon to archive them, oldest first, each a JSON line.
+        let archived = treasury.take_archived();
+        assert_eq!(archived.len(), MAX_ENTRIES / 2);
+        let first: serde_json::Value = serde_json::from_str(&archived[0]).expect("a JSON line");
+        assert_eq!(first["id"], 1);
+        assert!(treasury.take_archived().is_empty(), "taken once");
+        // Posting goes on, with the next id, and a restore of the snapshot reads the same.
+        let next = mint_one(&treasury);
+        assert_eq!(next, MAX_ENTRIES as u64 + 1);
+        let restored = Treasury::empty(EventBus::new());
+        restored
+            .restore(&treasury.snapshot())
+            .expect("a compacted snapshot restores");
+        assert_eq!(
+            serde_json::to_value(restored.view()).expect("json"),
+            serde_json::to_value(treasury.view()).expect("json")
+        );
+        assert_eq!(restored.task_money("t1"), money_before);
+        assert_eq!(restored.minted_total(), treasury.minted_total());
+    }
+
+    #[test]
+    fn an_archived_tasks_escrow_closes_once_nothing_kept_posts_to_it() {
+        let treasury = new_treasury();
+        treasury.fund_task("t1", 100).expect("a task funded");
+        treasury
+            .refund_task_to_budget("t1")
+            .expect("the budget refunded");
+        let accounts = treasury.accounts().len();
+        let money = treasury.forget_task("t1");
+        assert_eq!((money.minted, money.refunded, money.escrow), (100, 100, 0));
+        // Its fund and refund entries are still in the journal, so the escrow stays open for now.
+        assert_eq!(treasury.accounts().len(), accounts);
+        while treasury.view().totals.archived == 0 {
+            mint_one(&treasury);
+        }
+        // Once they moved out, the empty escrow is closed (the shop budget the mints opened is one more account).
+        assert!(
+            !treasury
+                .accounts()
+                .iter()
+                .any(|account| account.kind == "task_escrow" && account.owner_ref == "t1")
+        );
+        assert_eq!(treasury.accounts().len(), accounts);
+        treasury
+            .verify_journal()
+            .expect("no kept entry names a closed account");
+        let restored = Treasury::empty(EventBus::new());
+        restored
+            .restore(&treasury.snapshot())
+            .expect("restores without the closed account");
+    }
+
+    #[test]
+    fn the_accounts_cap_refuses_honestly() {
         // The accounts cap: opening one past the cap is refused, and so is an
         // entry that would open one.
         let fresh = new_treasury();

@@ -141,20 +141,31 @@ struct Inner {
 /// Modes (persisted) and the approvals queue (in memory).
 pub struct Store {
     path: PathBuf,
+    /// The mode of an agent the owner set none for. `autonomous`, or `ask` when `permissions.json`
+    /// was damaged at load: the owner's modes are then unknown, so nothing runs unasked.
+    fallback: Mode,
+    /// Set when `permissions.json` was damaged at load. The damaged file is then left as it is, and
+    /// nothing is written over it until the owner restores or removes it and the hub restarts.
+    damaged: bool,
     inner: Mutex<Inner>,
 }
 
 impl Store {
-    /// Loads the saved modes from `dir`. A missing or unreadable file means
-    /// every agent starts in `autonomous`.
+    /// Loads the saved modes from `dir`. A missing file means every agent starts in `autonomous`. A
+    /// damaged file is copied to `permissions.json.corrupt-<ms>` and left in place (see
+    /// `laws::read_state`): every agent without a saved mode starts in `ask`, on every start, until
+    /// the owner restores or removes it.
     pub fn load(dir: &Path) -> Store {
         let path = dir.join("permissions.json");
-        let modes = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BTreeMap<u64, Mode>>(&bytes).ok())
-            .unwrap_or_default();
+        let found = crate::laws::read_state::<BTreeMap<u64, Mode>>(&path);
+        let (modes, fallback, damaged) = match found {
+            Ok(found) => (found.unwrap_or_default(), Mode::default(), false),
+            Err(_) => (BTreeMap::new(), Mode::Ask, true),
+        };
         Store {
             path,
+            fallback,
+            damaged,
             inner: Mutex::new(Inner {
                 modes,
                 queue: Vec::new(),
@@ -168,13 +179,25 @@ impl Store {
     }
 
     pub fn mode(&self, cid: u64) -> Mode {
-        self.lock().modes.get(&cid).copied().unwrap_or_default()
+        self.lock()
+            .modes
+            .get(&cid)
+            .copied()
+            .unwrap_or(self.fallback)
     }
 
     /// Saves the mode for `cid` and writes the whole map to disk. On a failed
-    /// write the in-memory mode is put back.
+    /// write the in-memory mode is put back. While the file is damaged the mode
+    /// applies in memory only: nothing is written over the damaged file.
     pub fn set_mode(&self, cid: u64, mode: Mode) -> io::Result<()> {
         let mut inner = self.lock();
+        if self.damaged {
+            inner.modes.insert(cid, mode);
+            eprintln!(
+                "approvals: agent {cid} is set to {mode:?} for this run only, not saved: permissions.json could not be read at startup and is not written until the owner restores or removes it and the hub restarts"
+            );
+            return Ok(());
+        }
         let previous = inner.modes.insert(cid, mode);
         let saved = serde_json::to_vec_pretty(&inner.modes)
             .map_err(io::Error::other)
@@ -205,6 +228,20 @@ impl Store {
         self.lock().modes.get(&cid).copied()
     }
 
+    /// The mode the gate enforces for agent `cid` whose project's mode is `project` (None when the
+    /// project sets none), and where it comes from: the owner's (`agent`), the project's (`project`),
+    /// the default (`default`), or `damaged-file-fallback` when a damaged `permissions.json` makes it `ask`.
+    pub fn effective(&self, cid: u64, project: Option<Mode>) -> (Mode, &'static str) {
+        if let Some(mode) = self.explicit(cid) {
+            return (mode, "agent");
+        }
+        match (self.damaged, project) {
+            (true, None | Some(Mode::Autonomous)) => (Mode::Ask, "damaged-file-fallback"),
+            (_, Some(mode)) => (mode, "project"),
+            (_, None) => (Mode::default(), "default"),
+        }
+    }
+
     /// [`Store::gate`], with `fallback` the mode of an agent the owner set none for (its project's).
     pub fn gate_with(
         &self,
@@ -219,7 +256,13 @@ impl Store {
             return Gate::Run;
         }
         let mut inner = self.lock();
-        match inner.modes.get(&cid).copied().unwrap_or(fallback) {
+        // A damaged permissions file makes `ask` the default of an agent with no saved mode, even when
+        // its project's mode is the default `autonomous`.
+        let default = match (self.damaged, fallback) {
+            (true, Mode::Autonomous) => Mode::Ask,
+            (_, own) => own,
+        };
+        match inner.modes.get(&cid).copied().unwrap_or(default) {
             Mode::Autonomous => Gate::Run,
             Mode::ReadOnly => {
                 Gate::Refused(format!("this agent is read-only: {tool} is not allowed"))
@@ -594,14 +637,9 @@ fn get_mode(app: &App, _req: &Request, p: &Params<'_>) -> Response {
     let Some(cid) = cid_param(p) else {
         return Response::error(400, "cid must be a number");
     };
-    // The mode in force, and whether the owner set it for this agent or it is its project's (or the default).
-    let (mode, source) = match app.approvals.explicit(cid) {
-        Some(mode) => (mode, "agent"),
-        None => match crate::project_settings::of_agent(app, cid).and_then(|s| s.permission_mode) {
-            Some(mode) => (mode, "project"),
-            None => (Mode::default(), "default"),
-        },
-    };
+    // The mode the gate enforces, and where it comes from (see `Store::effective`).
+    let project = crate::project_settings::of_agent(app, cid).and_then(|s| s.permission_mode);
+    let (mode, source) = app.approvals.effective(cid, project);
     Response::json(200, &json!({ "mode": mode, "source": source }))
 }
 
@@ -625,7 +663,21 @@ fn put_mode(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if let Err(e) = app.approvals.set_mode(cid, body.mode) {
         return Response::error(500, &format!("could not save the permission mode: {e}"));
     }
-    Response::json(200, &json!({ "mode": body.mode }))
+    Response::json(200, &mode_change_body(&app.approvals, body.mode))
+}
+
+/// The answer to a mode change: the mode, and whether it was written to disk. While `permissions.json`
+/// is damaged the change applies in memory only, and the answer says so with a note.
+fn mode_change_body(store: &Store, mode: Mode) -> serde_json::Value {
+    if store.damaged {
+        json!({
+            "mode": mode,
+            "saved": false,
+            "note": "permissions.json is damaged; the change applies until the hub restarts",
+        })
+    } else {
+        json!({ "mode": mode, "saved": true })
+    }
 }
 
 /// The snapshot's shape: the modes, the queue (`pending`, every item whatever its state) and the next id.
@@ -661,7 +713,15 @@ impl Store {
         let excess = pending.len().saturating_sub(QUEUE_CAP);
         pending.drain(..excess);
         let mut inner = self.lock();
-        write_atomic(&self.path, &bytes, 0o600).map_err(|e| format!("write permissions: {e}"))?;
+        if self.damaged {
+            // Nothing is written over the damaged file (see `Store::load`): the restored modes apply in memory.
+            eprintln!(
+                "approvals: permissions.json is not written: it could not be read at startup, so the restored modes apply for this run only"
+            );
+        } else {
+            write_atomic(&self.path, &bytes, 0o600)
+                .map_err(|e| format!("write permissions: {e}"))?;
+        }
         inner.modes = snap.modes;
         inner.queue = pending;
         inner.next = snap.seq.max(1);
@@ -696,6 +756,87 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("apid-approvals-{tag}-{}", now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_damaged_permissions_file_is_left_in_place_with_a_copy_and_unknown_agents_ask_on_every_start()
+     {
+        let dir = scratch("damaged");
+        let damaged: &[u8] = b"{ damaged";
+        std::fs::write(dir.join("permissions.json"), damaged).unwrap();
+        let copies = |root: &Path| -> Vec<String> {
+            std::fs::read_dir(root)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("permissions.json.corrupt-"))
+                .collect()
+        };
+        let store = Store::load(&dir);
+        assert_eq!(store.mode(7), Mode::Ask);
+        assert_eq!(
+            store.effective(7, None),
+            (Mode::Ask, "damaged-file-fallback")
+        );
+        // The damaged file stays where it is, and a copy of it is kept beside it.
+        assert_eq!(
+            std::fs::read(dir.join("permissions.json")).unwrap(),
+            damaged
+        );
+        let kept = copies(dir.as_path());
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        // The gate, too: an agent with no saved mode and an autonomous project is held, not run.
+        assert!(matches!(
+            store.gate_with(
+                7,
+                "write_thing",
+                "write",
+                &json!({}),
+                &Held::default(),
+                Mode::Autonomous
+            ),
+            Gate::Held { .. }
+        ));
+        // A second start falls back the same way, and the damaged file is still there.
+        let again = Store::load(&dir);
+        assert_eq!(again.mode(7), Mode::Ask);
+        assert!(matches!(
+            again.gate_with(
+                7,
+                "write_thing",
+                "write",
+                &json!({}),
+                &Held::default(),
+                Mode::Autonomous
+            ),
+            Gate::Held { .. }
+        ));
+        assert_eq!(
+            std::fs::read(dir.join("permissions.json")).unwrap(),
+            damaged
+        );
+        // A mode change applies in memory, and the damaged file is not written over.
+        again.set_mode(7, Mode::ReadOnly).unwrap();
+        assert_eq!(again.mode(7), Mode::ReadOnly);
+        // The answer to that change says it was not saved, and a healthy store says it was.
+        assert_eq!(mode_change_body(&again, Mode::ReadOnly)["saved"], false);
+        assert_eq!(
+            mode_change_body(&again, Mode::ReadOnly)["mode"],
+            "read_only"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("permissions.json")).unwrap(),
+            damaged
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let missing = scratch("missing");
+        assert_eq!(Store::load(&missing).mode(7), Mode::Autonomous);
+        assert_eq!(
+            Store::load(&missing).effective(7, None),
+            (Mode::Autonomous, "default")
+        );
+        let _ = std::fs::remove_dir_all(&missing);
     }
 
     #[test]
