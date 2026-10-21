@@ -1277,11 +1277,12 @@ mod tests {
         assert_ne!(ctx.rx_pkt.hdr.flags() & uapi::VSOCK_FLAGS_SHUTDOWN_SEND, 0);
         assert_ne!(ctx.rx_pkt.hdr.flags() & uapi::VSOCK_FLAGS_SHUTDOWN_RCV, 0);
 
-        // The kill timer should now be armed.
+        // The kill timer should now be armed. `<=`: on a coarse clock (Windows) the timer's `now` and this one can be
+        // the same instant.
         assert!(ctx.conn.will_expire());
         assert!(
             ctx.conn.expiry().unwrap()
-                < Instant::now() + Duration::from_millis(defs::CONN_SHUTDOWN_TIMEOUT_MS)
+                <= Instant::now() + Duration::from_millis(defs::CONN_SHUTDOWN_TIMEOUT_MS)
         );
     }
 

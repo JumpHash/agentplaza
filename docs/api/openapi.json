@@ -17486,16 +17486,6 @@
                 }
               }
             }
-          },
-          "501": {
-            "description": "An error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
           }
         }
       }
@@ -17624,16 +17614,6 @@
                 }
               }
             }
-          },
-          "501": {
-            "description": "An error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
           }
         }
       }
@@ -17694,16 +17674,6 @@
                 }
               }
             }
-          },
-          "501": {
-            "description": "An error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
           }
         }
       }
@@ -17757,16 +17727,6 @@
           },
           "401": {
             "description": "No owner token or session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "An error",
             "content": {
               "application/json": {
                 "schema": {
@@ -17842,16 +17802,6 @@
                 }
               }
             }
-          },
-          "501": {
-            "description": "An error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
           }
         }
       }
@@ -17913,16 +17863,6 @@
           },
           "401": {
             "description": "No owner token or session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "An error",
             "content": {
               "application/json": {
                 "schema": {

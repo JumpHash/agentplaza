@@ -1167,7 +1167,7 @@ pub(super) fn load_missing(st: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub(super) fn changes_task(st: &mut State, ctx: &Ctx) -> Task<Msg> {
-    // A workstation has no diff: the hub answers its changes with 501, so they are not asked for.
+    // A workstation has no diff: the hub answers its changes with 400, so they are not asked for.
     let Some(ws) = st.ide.workspace.clone().filter(|ws| has_diff(Some(ws))) else {
         return Task::none();
     };

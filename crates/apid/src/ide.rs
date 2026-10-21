@@ -25,11 +25,11 @@
 //! | `GET /v1/ide/workspaces/{id}/tree?path=&cursor=` | `ide_list` | main's files, 500 per page | `files list` |
 //! | `GET /v1/ide/workspaces/{id}/file?path=` | `ide_read` (chunks) | main's file, text only, 1 MiB | `files read` (chunks) |
 //! | `PUT /v1/ide/workspaces/{id}/file` `{path, text, expected_hash}` | `ide_write` | an owner edit that lands at once | `files write`, audited in both logs |
-//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | main against the landing before it (or `base`, a revision or change): Weft's diff | 501 (no checkpoints) |
+//! | `GET /v1/ide/workspaces/{id}/changes?base=` | `ide_changes` (chunks) | main against the landing before it (or `base`, a revision or change): Weft's diff | 400 (no checkpoints) |
 //! | `GET /v1/ide/workspaces/{id}/checkpoints` | `ide_checkpoints` | what landed, newest first | `{checkpoints: [], reason}` |
-//! | `POST /v1/ide/workspaces/{id}/checkpoints/{n}/restore` | `ide_restore` | 501 (revert the change in History) | 501 |
-//! | `GET /v1/ide/workspaces/{id}/search?q=&glob=&max=` | `ide_search` | 501 | `files search` |
-//! | `POST /v1/ide/workspaces/{id}/runs`, `GET .../runs/{run}`, `POST .../runs/{run}/stop` | `ide_run_*` | 501 | `run start/poll/stop` |
+//! | `POST /v1/ide/workspaces/{id}/checkpoints/{n}/restore` | `ide_restore` | 400 (revert the change in History) | 400 |
+//! | `GET /v1/ide/workspaces/{id}/search?q=&glob=&max=` | `ide_search` | 400 | `files search` |
+//! | `POST /v1/ide/workspaces/{id}/runs`, `GET .../runs/{run}`, `POST .../runs/{run}/stop` | `ide_run_*` | 400 | `run start/poll/stop` |
 //! | `POST /v1/ide/workspaces/{id}/pulls` `{title, body?, base?}` | 400 | 410 (gone with the git host) | 400 |
 //! | `POST /v1/ide/workspaces/{id}/branch` `{name}` | 400 | 410 | 400 |
 //! | `GET /v1/ide/audit?workspace=&limit=` | (audit log) | (audit log) | (audit log) |
@@ -626,9 +626,10 @@ fn with_workspace(
     }
 }
 
-/// A route of the agent kind that the repo kind does not have yet.
+/// A route of the agent kind that the repo kind does not have yet: a request this workspace cannot take (400), as
+/// `repo_only` answers the other way round.
 fn not_for_repos(message: &str) -> Reply {
-    Err(Response::error(501, message))
+    Err(Response::error(400, message))
 }
 
 /// A route only the repo kind has.
@@ -902,9 +903,9 @@ fn station_ws(id: &str) -> String {
     WorkspaceId::Station(id.to_string()).to_string()
 }
 
-/// A route of the station kind that is not served: the workstation has no checkpoints.
+/// A route of the station kind that is not served: the workstation has no checkpoints (400, as `not_for_repos`).
 fn not_for_stations(message: &str) -> Reply {
-    Err(Response::error(501, message))
+    Err(Response::error(400, message))
 }
 
 /// The response for a station that gave no answer or refused: STOP ALL, a station that is not linked or is
@@ -1625,7 +1626,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |_, _| not_for_stations(NO_CHECKPOINTS),
             ))
         })
-        .doc(RouteDoc::new("List the files changed since a base").errors(&[501]))
+        .doc(RouteDoc::new("List the files changed since a base").errors(&[400]))
         .get("/v1/ide/workspaces/{id}/checkpoints", |app, _, p| {
             respond(with_workspace(
                 app,
@@ -1654,7 +1655,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 }))
             },
         )
-        .doc(RouteDoc::new("Restore a workspace checkpoint").errors(&[501]))
+        .doc(RouteDoc::new("Restore a workspace checkpoint").errors(&[400]))
         .get("/v1/ide/workspaces/{id}/search", |app, req, p| {
             let (q, glob, max) = (query(req, "q"), query(req, "glob"), query(req, "max"));
             respond(with_workspace(
@@ -1665,7 +1666,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |host, id| station_search(host, id, q.as_deref(), glob.as_deref(), max.as_deref()),
             ))
         })
-        .doc(RouteDoc::new("Search a workspace's files").errors(&[501]))
+        .doc(RouteDoc::new("Search a workspace's files").errors(&[400]))
         .post("/v1/ide/workspaces/{id}/runs", |app, req, p| {
             respond(body(req).and_then(|body| {
                 with_workspace(
@@ -1677,7 +1678,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 )
             }))
         })
-        .doc(RouteDoc::new("Start a run in a workspace").errors(&[400, 501]))
+        .doc(RouteDoc::new("Start a run in a workspace").errors(&[400]))
         .get("/v1/ide/workspaces/{id}/runs/{run}", |app, req, p| {
             let offset = query(req, "offset");
             respond(with_workspace(
@@ -1688,7 +1689,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |host, id| station_run_poll(host, id, p.get("run"), offset.as_deref()),
             ))
         })
-        .doc(RouteDoc::new("Read a run's output").errors(&[501]))
+        .doc(RouteDoc::new("Read a run's output").errors(&[400]))
         .post("/v1/ide/workspaces/{id}/runs/{run}/stop", |app, _, p| {
             respond(with_workspace(
                 app,
@@ -1698,7 +1699,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 |host, id| station_run_stop(host, id, p.get("run")),
             ))
         })
-        .doc(RouteDoc::new("Stop a run").errors(&[501]))
+        .doc(RouteDoc::new("Stop a run").errors(&[400]))
         .post("/v1/ide/workspaces/{id}/pulls", |app, req, p| {
             created(body(req).and_then(|body| {
                 with_workspace(
@@ -2860,7 +2861,7 @@ index 0000000..3333333
         );
         assert_eq!(
             status_of(not_for_stations(NO_CHECKPOINTS)),
-            501,
+            400,
             "changes and restore are not served"
         );
     }
