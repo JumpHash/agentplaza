@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use super::hf::{self, Fail, Search, TreeFile};
 use super::registry::{self, ModelRecord, Source, State};
 use crate::state::App;
-use crate::vault::{Consumer, OnBehalf, Store as Vault};
+use crate::vault::{Consumer, OnBehalf, Store as Vault, VaultError};
 use secrecy::{ExposeSecret, SecretString};
 
 /// The vault entry of the owner's Hugging Face token, and the consumer that reads it.
@@ -204,7 +204,7 @@ impl Imports {
     }
 
     /// Stores the token as the plaza entry `HF_TOKEN` (a new version of it when there is one). One line, no spaces.
-    pub fn set_token(&self, vault: &Vault, value: &str) -> Result<(), String> {
+    pub fn set_token(&self, vault: &Vault, value: &str) -> Result<(), VaultError> {
         let value = value.trim();
         if value.is_empty()
             || value.len() > 512
@@ -212,7 +212,9 @@ impl Imports {
                 .bytes()
                 .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
         {
-            return Err("the token must be one line with no spaces".into());
+            return Err(VaultError::Invalid(
+                "the token must be one line with no spaces".into(),
+            ));
         }
         vault
             .put_plaza(
@@ -224,21 +226,18 @@ impl Imports {
                 apz_plaza::now_ms(),
             )
             .map(|_| ())
-            .map_err(|e| e.message())
     }
 
     /// Removes the token: the entry goes when `hf` was its only reader, else only the binding.
-    pub fn clear_token(&self, vault: &Vault) -> Result<(), String> {
+    pub fn clear_token(&self, vault: &Vault) -> Result<(), VaultError> {
         let now = apz_plaza::now_ms();
-        let named = vault.entries_named(HF_NAME).map_err(|e| e.message())?;
+        let named = vault.entries_named(HF_NAME)?;
         for entry in named
             .iter()
             .filter(|e| e.bindings.iter().any(|b| b == HF_BINDING))
         {
             if entry.bindings.len() == 1 {
-                vault
-                    .delete(&entry.id, "owner", now)
-                    .map_err(|e| e.message())?;
+                vault.delete(&entry.id, "owner", now)?;
             } else {
                 let rest: Vec<String> = entry
                     .bindings
@@ -246,9 +245,7 @@ impl Imports {
                     .filter(|b| *b != HF_BINDING)
                     .cloned()
                     .collect();
-                vault
-                    .patch(&entry.id, None, None, Some(rest), "owner", now)
-                    .map_err(|e| e.message())?;
+                vault.patch(&entry.id, None, None, Some(rest), "owner", now)?;
             }
         }
         Ok(())
@@ -984,9 +981,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/foundry/hf/status", status)
         .doc(RouteDoc::new("Show the Hugging Face status"))
         .route("PUT", "/v1/foundry/hf/token", put_token)
-        .doc(RouteDoc::new("Save the Hugging Face token").errors(&[400]))
+        .doc(RouteDoc::new("Save the Hugging Face token").errors(&[400, 409, 423, 503]))
         .delete("/v1/foundry/hf/token", delete_token)
-        .doc(RouteDoc::new("Remove the Hugging Face token").errors(&[500]))
+        .doc(RouteDoc::new("Remove the Hugging Face token").errors(&[409, 423, 503]))
         .get("/v1/foundry/hf/models", search_route)
         .doc(
             RouteDoc::new("Search Hugging Face models")
@@ -1041,16 +1038,17 @@ fn put_token(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(response) => return response,
     };
+    // A malformed token is a 400; a vault that is sealed or never set up answers as the vault's own routes do.
     match app.hf.set_token(&app.vault, &body.value) {
         Ok(()) => Response::json(200, &json!({ "hf_token_set": true })),
-        Err(message) => Response::error(400, &message),
+        Err(err) => Response::error(err.status(), &err.message()),
     }
 }
 
 fn delete_token(app: &App, _req: &Request, _p: &Params<'_>) -> Response {
     match app.hf.clear_token(&app.vault) {
         Ok(()) => Response::json(200, &json!({ "hf_token_set": false })),
-        Err(message) => Response::error(500, &message),
+        Err(err) => Response::error(err.status(), &err.message()),
     }
 }
 
@@ -1491,6 +1489,28 @@ mod tests {
         imports.clear_token(&vault).unwrap();
         assert!(imports.token(&vault).is_none());
         assert_eq!(vault.presence("HF_TOKEN", "hf"), "missing");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A sealed vault refuses the token both ways with its own status (423, as the vault's routes answer), not a
+    /// server error; a malformed token is still a bad request.
+    #[test]
+    fn a_sealed_vault_refuses_the_token_with_its_own_status() {
+        let dir = scratch("token-sealed");
+        let vault = vault_in(&dir);
+        let imports = Imports::open(&dir);
+        vault.seal("owner", apz_plaza::now_ms()).expect("seal");
+        let put = imports.set_token(&vault, "SENTINEL-HF-2290").unwrap_err();
+        assert_eq!(
+            (put.status(), put.message().as_str()),
+            (423, "vault sealed")
+        );
+        let clear = imports.clear_token(&vault).unwrap_err();
+        assert_eq!(clear.status(), 423);
+        assert_eq!(
+            imports.set_token(&vault, "two words").unwrap_err().status(),
+            400
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -78,6 +78,23 @@ pub enum VaultError {
 }
 
 impl VaultError {
+    /// The status a route answers this error with. A sealed vault and one never set up are states the owner changes,
+    /// not server faults.
+    pub fn status(&self) -> u16 {
+        match self {
+            VaultError::Sealed => 423,
+            VaultError::Uninitialized => 409,
+            VaultError::Tampered(_) => 503,
+            VaultError::BadSecret => 401,
+            VaultError::Locked { .. } => 429,
+            VaultError::Conflict(_) | VaultError::LastSlot => 409,
+            VaultError::NotFound => 404,
+            VaultError::OutOfScope => 403,
+            VaultError::Invalid(_) => 400,
+            VaultError::KeyFile(_) | VaultError::Storage(_) | VaultError::Corrupt(_) => 500,
+        }
+    }
+
     /// The text a response or a log line carries. Never a value.
     pub fn message(&self) -> String {
         match self {
