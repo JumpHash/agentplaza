@@ -60,7 +60,7 @@ export async function loadChangedDirs(c: IdeCtx): Promise<void> {
 }
 
 export async function refreshChanges(c: IdeCtx): Promise<void> {
-  // A workstation has no diff: the hub answers its changes with 501, so they are not asked for.
+  // A workstation has no diff: the hub answers its changes with 400, so they are not asked for.
   if (!c.ws || !c.ide || !hasDiff(c.ws.kind)) return;
   const id = c.ws.id;
   const base = baseValue(c);

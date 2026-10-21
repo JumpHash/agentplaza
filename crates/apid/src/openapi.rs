@@ -15,6 +15,11 @@ use serde_json::{Map, Value, json};
 
 use crate::hub_auth;
 
+/// Path parameters the handlers read as a whole number (`parse::<u64>`), by the name the routes give
+/// them; the spec types these `integer`. `{id}` is not listed: on node routes it is an `n<k>` id, on
+/// others a number, so a name-only rule would mistype one of them.
+const INTEGER_PARAMS: &[&str] = &["cid"];
+
 /// The spec of everything `router` serves.
 pub fn spec<S>(router: &Router<S>) -> Value {
     let mut generator = SchemaSettings::draft2020_12()
@@ -46,12 +51,12 @@ pub fn spec<S>(router: &Router<S>) -> Value {
         "openapi": "3.1.0",
         "info": {
             "title": "AgentPlaza hub API",
-            "description": "The hub's HTTP API (apid). Generated from its router by `apid openapi`: do not edit by hand.",
+            "description": "The hub's HTTP API (apid). Generated from its router by `apid openapi`: do not edit by hand. A request from the hub's own machine (a loopback peer whose Host names this machine, and not a cross-origin browser request) is the owner's without a token: an operation's security lists the empty requirement `{}` for that.",
             "version": env!("CARGO_PKG_VERSION"),
             "license": { "name": "Apache-2.0", "identifier": "Apache-2.0" },
         },
         "servers": [{ "url": "http://127.0.0.1:7777", "description": "A hub on this machine" }],
-        "security": [{ "owner": [] }],
+        "security": [{ "owner": [] }, {}],
         "paths": paths,
         "components": {
             "securitySchemes": {
@@ -95,6 +100,10 @@ fn operation(route: &RouteInfo<'_>, generator: &mut schemars::SchemaGenerator) -
                 "name": rest, "in": "path", "required": true, "schema": { "type": "string" },
                 "description": "The rest of the path: it may contain slashes.",
             }),
+            None if INTEGER_PARAMS.contains(&name) => json!({
+                "name": name, "in": "path", "required": true,
+                "schema": { "type": "integer", "format": "int64", "minimum": 0 },
+            }),
             None => json!({ "name": name, "in": "path", "required": true, "schema": { "type": "string" } }),
         })
         .collect();
@@ -107,10 +116,15 @@ fn operation(route: &RouteInfo<'_>, generator: &mut schemars::SchemaGenerator) -
             json!({ "required": true, "content": { "application/json": { "schema": request(generator) } } }),
         );
     }
+    // A public route takes no token. Any other takes the owner's bearer token, or none from this machine:
+    // the empty requirement `{}` next to it says so to a tool.
     let public = hub_auth::is_public(route.method, &sample_path(route.pattern));
-    if public {
-        op.insert("security".into(), json!([]));
-    }
+    let security = if public {
+        json!([])
+    } else {
+        json!([{ "owner": [] }, {}])
+    };
+    op.insert("security".into(), security);
 
     let mut responses = Map::new();
     let status = doc.status.unwrap_or(200);
@@ -129,6 +143,10 @@ fn operation(route: &RouteInfo<'_>, generator: &mut schemars::SchemaGenerator) -
     };
     if route.params().next().is_some() {
         responses.insert("400".into(), error("A path parameter is not valid UTF-8"));
+        // An id the route does not know answers 404.
+        responses
+            .entry("404")
+            .or_insert_with(|| error(error_text(404)));
     }
     if !public {
         responses.insert("401".into(), error("No owner token or session"));

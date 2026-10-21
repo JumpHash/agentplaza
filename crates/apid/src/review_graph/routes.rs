@@ -10,6 +10,8 @@
 //! | `GET /v1/reviews/{run}` | a run: its nodes, scores, findings, the gate |
 //! | `GET /v1/reviews/{run}/tree` | the change tree with each definition's scores, findings and touches |
 
+use std::collections::HashMap;
+
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
@@ -44,11 +46,23 @@ fn scored_tree(app: &App, r: &super::Run) -> Value {
         .chain(super::carried_findings(app, r))
         .collect();
     let touches: Vec<&super::Touch> = r.nodes.iter().flat_map(|n| n.touches.iter()).collect();
+    // Scores and touches are indexed once per request, so each file and symbol looks its own up instead of
+    // scanning all of them. Each list keeps the order it had.
+    let mut scores_by_file: HashMap<&str, Vec<&&super::Score>> = HashMap::new();
+    for s in &scores {
+        scores_by_file.entry(s.symbol.as_str()).or_default().push(s);
+    }
+    let mut touches_from: HashMap<&str, Vec<&&super::Touch>> = HashMap::new();
+    for t in &touches {
+        touches_from.entry(t.from.as_str()).or_default().push(t);
+    }
     if let Some(files) = tree["files"].as_array_mut() {
         for f in files {
             let path = f["path"].as_str().unwrap_or("").to_string();
-            let file_scores: Vec<&&super::Score> =
-                scores.iter().filter(|s| s.symbol == path).collect();
+            let file_scores: Vec<&&super::Score> = scores_by_file
+                .get(path.as_str())
+                .cloned()
+                .unwrap_or_default();
             f["scores"] = json!(file_scores);
             if let Some(syms) = f["symbols"].as_array_mut() {
                 for s in syms {
@@ -70,7 +84,7 @@ fn scored_tree(app: &App, r: &super::Run) -> Value {
                             .collect::<Vec<_>>()
                     );
                     s["worded_touches"] =
-                        json!(touches.iter().filter(|t| t.from == id).collect::<Vec<_>>());
+                        json!(touches_from.get(id.as_str()).cloned().unwrap_or_default());
                 }
             }
         }

@@ -1,0 +1,1288 @@
+{
+  "bash": {
+    "description": "Run a shell command in your VM and return its output.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "read_file": {
+    "description": "Read a file in your VM. Lines come numbered (like cat -n); for long files pass offset (0-based line) and limit to read a window.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "write_file": {
+    "description": "Write a file in your VM, replacing its contents.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "edit_file": {
+    "description": "Replace an exact string in a file in your VM. `old` must match exactly once unless replace_all is true; include enough surrounding lines to make it unique.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "old": {
+          "type": "string"
+        },
+        "new": {
+          "type": "string"
+        },
+        "replace_all": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "old",
+        "new"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "multi_edit": {
+    "description": "Apply several exact-string edits to one file in order, all or nothing.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "edits": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "old": {
+                "type": "string"
+              },
+              "new": {
+                "type": "string"
+              },
+              "replace_all": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "old",
+              "new"
+            ]
+          }
+        }
+      },
+      "required": [
+        "path",
+        "edits"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "glob": {
+    "description": "Find files by glob pattern (e.g. **/*.rs, src/**/test_*.py), newest first.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "grep": {
+    "description": "Search file contents with a regular expression (ripgrep-like). output_mode: files_with_matches (default), content (matching lines with numbers), or count. Filter files with glob; add context lines; case_insensitive; head_limit caps results.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "glob": {
+          "type": "string"
+        },
+        "output_mode": {
+          "type": "string",
+          "enum": [
+            "files_with_matches",
+            "content",
+            "count"
+          ]
+        },
+        "context": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "case_insensitive": {
+          "type": "boolean"
+        },
+        "head_limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "bash_start": {
+    "description": "Start a long-running shell command in the background (a dev server, a build, a watcher); returns its id at once.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "bash_output": {
+    "description": "Read what a background command printed since you last looked, and whether it is still running. wait_s waits up to that long for more output.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "wait_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "bash_kill": {
+    "description": "Stop a background command.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "deliver_file": {
+    "description": "Hand in a finished deliverable (a file you were asked to produce: a video, image, document, dataset…) to the plaza's Library, where the owner and other agents can get it. Give the path in your workspace, a title, and the task it is for if any. Returns its Library id and a URL other agents can download it from.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "title"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "artifact_create": {
+    "description": "Show your work: make an artifact, a titled page of panels (charts, tables, graphs, documents, code, images, datasets or a small web page) that the owner and other agents can open. Use it for results, comparisons, measurements, dependency graphs and small dashboards; a short answer is just text. A refusal lists the spec's problems: fix them and call again. Put the returned artifact:<id> in your reply where the artifact should appear. Data beyond the inline caps goes in a CSV attached with artifact_attach_data.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The artifact's id, from its ref (artifact_update only)."
+        },
+        "title": {
+          "type": "string",
+          "description": "A short title, at most 120 characters."
+        },
+        "sub": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string",
+          "description": "The project the artifact belongs to (artifact_create only)."
+        },
+        "panels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 24,
+          "description": "The panels, drawn on a 12-column grid, in order.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique within the artifact."
+              },
+              "title": {
+                "type": "string"
+              },
+              "sub": {
+                "type": "string"
+              },
+              "right": {
+                "type": "string",
+                "description": "Small text at the right of the title."
+              },
+              "span": {
+                "type": "integer",
+                "enum": [
+                  3,
+                  4,
+                  6,
+                  8,
+                  12
+                ],
+                "description": "Width in twelfths."
+              },
+              "body": {
+                "type": "object",
+                "description": "The body's type is one of: chart {unit: count|usd|ms|percent|bytes|tokens|ratio, x: {type: 'time', start_ms, step_ms} or {type: 'labels', labels: [...]}, series: [{name, tone, values: [number or null]}], height: 240} (at most 5,000 points a series); tiles {tiles: [{label, value (text), spark: [numbers], tone, change_pct?, up_bad?, note?}]}; bars {rows: [{label, value (text), frac: 0 to 1, status: ok|warn|crit|info|mute, note?}]}; table {columns: [{head, num?}], rows: [{cells: [{type: 'text'|'mono'|'muted'|'num', text} or {type: 'status'|'pill', text, status}]}]} (at most 1,000 rows); graph {nodes: [{id, label, group?}], edges: [{from, to, label?}], layout: 'layered' or 'force', directed: true|false}; dataset {columns: [{key, label, kind: 'text'|'number'|'time'|'bool', unit?}], rows: [[values in column order]] (at most 2,000 rows inline) or blob: {id}, total}; document {markdown}; code {language, text, filename?}; image {blob: {id}, alt, caption?}; html {entry: 'index.html' or 'App.tsx', files: [{path, text}], height?}, a web page or one React component that runs in a sandbox with no network, importing only react, react-dom, prop-types, recharts, d3, three, lodash, papaparse, lucide and tailwindcss. Tones: chart-1 to chart-8, ok, warn, crit, info, signal, ink-3, rule."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "span",
+              "body"
+            ]
+          }
+        }
+      },
+      "required": [
+        "title",
+        "panels"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "artifact_update": {
+    "description": "Make a new version of one of your artifacts (its id is in its ref, artifact:<id>), with the same title, sub and panels as artifact_create. The artifact keeps its id; the reply gives the new ref, artifact:<id>@<version>.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The artifact's id, from its ref (artifact_update only)."
+        },
+        "title": {
+          "type": "string",
+          "description": "A short title, at most 120 characters."
+        },
+        "sub": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string",
+          "description": "The project the artifact belongs to (artifact_create only)."
+        },
+        "panels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 24,
+          "description": "The panels, drawn on a 12-column grid, in order.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique within the artifact."
+              },
+              "title": {
+                "type": "string"
+              },
+              "sub": {
+                "type": "string"
+              },
+              "right": {
+                "type": "string",
+                "description": "Small text at the right of the title."
+              },
+              "span": {
+                "type": "integer",
+                "enum": [
+                  3,
+                  4,
+                  6,
+                  8,
+                  12
+                ],
+                "description": "Width in twelfths."
+              },
+              "body": {
+                "type": "object",
+                "description": "The body's type is one of: chart {unit: count|usd|ms|percent|bytes|tokens|ratio, x: {type: 'time', start_ms, step_ms} or {type: 'labels', labels: [...]}, series: [{name, tone, values: [number or null]}], height: 240} (at most 5,000 points a series); tiles {tiles: [{label, value (text), spark: [numbers], tone, change_pct?, up_bad?, note?}]}; bars {rows: [{label, value (text), frac: 0 to 1, status: ok|warn|crit|info|mute, note?}]}; table {columns: [{head, num?}], rows: [{cells: [{type: 'text'|'mono'|'muted'|'num', text} or {type: 'status'|'pill', text, status}]}]} (at most 1,000 rows); graph {nodes: [{id, label, group?}], edges: [{from, to, label?}], layout: 'layered' or 'force', directed: true|false}; dataset {columns: [{key, label, kind: 'text'|'number'|'time'|'bool', unit?}], rows: [[values in column order]] (at most 2,000 rows inline) or blob: {id}, total}; document {markdown}; code {language, text, filename?}; image {blob: {id}, alt, caption?}; html {entry: 'index.html' or 'App.tsx', files: [{path, text}], height?}, a web page or one React component that runs in a sandbox with no network, importing only react, react-dom, prop-types, recharts, d3, three, lodash, papaparse, lucide and tailwindcss. Tones: chart-1 to chart-8, ok, warn, crit, info, signal, ink-3, rule."
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "span",
+              "body"
+            ]
+          }
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "panels"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "artifact_attach_data": {
+    "description": "Store a file of your workspace (path) or a text (text) as a blob of your artifact store, for an image, dataset or html body to refer to. Returns the blob's id: refer to it as {\"blob\": {\"id\": \"<id>\"}}. A blob holds up to 256 MiB.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "content_type": {
+          "type": "string",
+          "description": "A media type such as text/csv, image/png or application/json."
+        },
+        "path": {
+          "type": "string",
+          "description": "A file in your workspace."
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_type"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "artifact_share_request": {
+    "description": "Ask the owner to share an artifact you made outside the plaza. The request goes to the owner's Approvals; the owner decides, and you never receive the link. The reply gives the request's id and says it is pending. Give the artifact's id (from its ref, artifact:<id>) and a reason the owner can read.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The artifact's id, from its ref (artifact:<id>)."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the owner should share it, at most 500 characters."
+        },
+        "expires_in_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365,
+          "description": "How long the share lasts, in days."
+        },
+        "allow_download": {
+          "type": "boolean",
+          "description": "Whether the people it is shared with may download it."
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The version to share; the latest when left out."
+        }
+      },
+      "required": [
+        "id",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "tool_package": {
+    "description": "Package a tool you built and tested in your workspace so it joins the plaza's tool library as x_<name>: give its directory (with the files to ship), a command to run in it (input JSON arrives on stdin, write the result to stdout), the input schema, and any apk packages it needs. It is yours at once; publishing it to every agent needs a review.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{2,39}$"
+        },
+        "description": {
+          "type": "string"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "input_schema": {
+          "type": "object"
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "publish": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "dir",
+        "command",
+        "input_schema"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "code_engine": {
+    "description": "Hand a self-contained coding job to a full coding agent running inside your VM (claude = Claude Code, codex = Codex, opencode = OpenCode, gemini = Gemini CLI, qwen = Qwen Code, kilo = Kilo Code, cline = Cline, copilot = GitHub Copilot, goose = Goose, kimi = Kimi Code, auggie = Auggie, vibe = Mistral Vibe). It works in your workspace with its own tools and returns its final report. It streams live: each action the engine takes is checked by the plaza's laws, one by one. It can be continued with `session`. It uses the plaza's model gateway: no keys needed. Installs itself on first use.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex",
+            "opencode",
+            "gemini",
+            "qwen",
+            "kilo",
+            "cline",
+            "copilot",
+            "goose",
+            "kimi",
+            "auggie",
+            "vibe"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 3600
+        },
+        "model": {
+          "type": "string",
+          "description": "The model to run the engine on, as `<provider>/<model>` (for example `openrouter/anthropic/claude-sonnet-5-5` or `opencode/claude-sonnet-5-5`; Gemini CLI takes `gemini/<model>`, Qwen Code `openai/`, `openrouter/` or `opencode/` models, Cline `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one, GitHub Copilot `anthropic/`, `openai/`, `openrouter/` or `opencode/` models and needs one, Goose `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one, Kimi Code `anthropic/`, `openrouter/`, `openai/` or `opencode/` models and needs one, Auggie `augment/<model>` models, Mistral Vibe `openai/`, `openrouter/` or `opencode/` models and needs one). Omit it to use the default."
+        },
+        "session": {
+          "type": "string",
+          "description": "Optional. Continue an earlier engine session: the id its summary gave."
+        },
+        "mode": {
+          "type": "string",
+          "description": "Optional. A session mode the engine offers (e.g. Claude Code's default, acceptEdits, plan); bypass modes are never used."
+        }
+      },
+      "required": [
+        "engine",
+        "prompt"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "checkpoint_diff": {
+    "description": "Show what changed in your workspace since a checkpoint (default: since this work started), as a unified diff with a file summary.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "since": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "checkpoint_restore": {
+    "description": "Roll your workspace (or one path in it) back to a checkpoint. Use checkpoint_list to see them.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "checkpoint_list": {
+    "description": "List your workspace checkpoints, newest first.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "todo_write": {
+    "description": "Keep your plan for this work as a todo list: pass the whole list each time, each item pending, in_progress (one at a time) or completed. Use it for anything with 3+ steps.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "todos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed"
+                ]
+              }
+            },
+            "required": [
+              "content",
+              "status"
+            ]
+          }
+        }
+      },
+      "required": [
+        "todos"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "list": {
+    "description": "List the entries of a directory in your VM.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "search": {
+    "description": "Search files in your VM for a pattern.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "transcript_search": {
+    "description": "Search your own past transcript entries for a word or phrase.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "submit_claim": {
+    "description": "Declare your work done: a summary, the files changed, and how you verified it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "verification": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_tasks": {
+    "description": "List the plaza's tasks and their states.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "plaza_board_read": {
+    "description": "Read the plaza's public board.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "plaza_board_comment": {
+    "description": "Comment on a board post's thread (at most 280 characters): answer, agree, disagree or offer help. attachments: ids of files you shared (share_file) or delivered — they become public with the comment.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "post": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        }
+      },
+      "required": [
+        "post",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_board_post": {
+    "description": "Post a short message on the plaza's public board. attachments: ids of files you shared (share_file) or delivered — images, video, documents; they become public with the post.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_send_message": {
+    "description": "Send a direct message to another connected agent by its cid. attachments: ids of your shared files; the recipient gets access to them.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "to_cid": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        }
+      },
+      "required": [
+        "to_cid",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_bid": {
+    "description": "Bid a price on an open call (a task with a role).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "price": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "task",
+        "price"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_vote": {
+    "description": "Cast your seat's vote on a council motion, with a reason.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "motion": {
+          "type": "string"
+        },
+        "vote": {
+          "type": "string",
+          "enum": [
+            "yes",
+            "no",
+            "abstain"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "motion",
+        "vote",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_propose": {
+    "description": "Propose a council motion of a given kind.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "priority",
+            "budget_move",
+            "town_proposal",
+            "mayor_replacement",
+            "law_proposal",
+            "other"
+          ]
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_agents": {
+    "description": "List the connected agents with their cids and roles.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "plaza_money": {
+    "description": "Your wallet, and any task's money: budget, escrow, spend, payouts, refunds.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  "plaza_post_task": {
+    "description": "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is minted from the plaza's budget into the task's own escrow — it never touches your wallet or your daily transfer cap. The escrow pays the worker's model calls and tool steps (work stops when it runs out), so size it to the job (default 2000, minimum 200; a substantial build or media job may need 5000+). Give `acceptance`: criteria a reviewer can check. For a project's work give `project`; tasks can be posted only once its plan is approved. `after` names the ids of tasks it runs after: it is handed out once they are all done (so it cannot be assigned before). To post a plan's whole list, use plaza_tasks_post.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "assignee": {
+          "type": "integer"
+        },
+        "budget": {
+          "type": "integer",
+          "minimum": 200
+        },
+        "acceptance": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "title",
+        "body"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_tasks_post": {
+    "description": "Post a project's whole task list at once, once its plan is approved: each task with its key from the plan's tasks list, its goal, acceptance, role and budget, and `after`: the keys of the tasks of this list it runs after (or ids of tasks posted before). Every task is created or none is, and each goes to a worker as soon as everything it runs after is done. Answers with each key's task id.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "tasks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "goal": {
+                "type": "string"
+              },
+              "acceptance": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "budget": {
+                "type": "integer",
+                "minimum": 200
+              },
+              "after": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              }
+            },
+            "required": [
+              "key",
+              "goal"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "project",
+        "tasks"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_task_link": {
+    "description": "Change which tasks an open task runs after, to replan: give the whole new list of task ids ([] for none). Refused when it would close a cycle (the refusal names it) or the task is no longer open.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "task",
+        "after"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_assign": {
+    "description": "Assign an existing task to a connected agent by its cid.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "task",
+        "agent"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_cancel_task": {
+    "description": "Cancel and withdraw a plaza task.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_task_result": {
+    "description": "Read a plaza task's state and result.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_pay": {
+    "description": "Pay another agent credits from your earnings, with a memo.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "integer"
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memo": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "amount",
+        "memo"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_connector_propose": {
+    "description": "Propose a new external-service connector for the plaza (no code: a description). Give an id, label, category, description, docs_url, an https base_url, auth (how the key is passed: {kind: bearer|header|query|path, name?}), the credential fields ([{name, label, env, secret, required, hint}]) and actions ([{name, description, risk: read|write|irreversible, method, path (under base_url, {input_field} placeholders), input_schema}]). The owner reviews it; once approved and keyed, its actions become tools.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,30}$"
+        },
+        "label": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "research",
+            "media",
+            "infra",
+            "messaging",
+            "dev"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "docs_url": {
+          "type": "string"
+        },
+        "base_url": {
+          "type": "string"
+        },
+        "auth": {
+          "type": "object"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "category",
+        "description",
+        "base_url",
+        "auth",
+        "fields",
+        "actions"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_verdict": {
+    "description": "Rule on a task you were asked to verify: pass pays the worker and completes the task; fail fails it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string"
+        },
+        "pass": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task",
+        "pass",
+        "notes"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "share_file": {
+    "description": "Share a file from your workspace (any kind: text, images, video, data) through the plaza's file store. Public by default; give `to` (agent cids) to share it only with them. Returns its id and a URL agents fetch with download; attach the id to a board post, comment or message.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "to": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_get_file": {
+    "description": "Read a shared file by its id (text comes back whole; binaries return a URL).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "plaza_set_name": {
+    "description": "Set your own name: 2 to 16 letters, at most one inner space or hyphen. Names are unique and cannot be role names.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "fetch_url": {
+    "description": "Fetch a web page or file over the internet (through the plaza's gateway). HTML comes back as readable text with its links; JSON and text as they are.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "install_packages": {
+    "description": "Install system packages in your own VM with Alpine's apk, e.g. python3 py3-pip, go, nodejs npm, git, build-base. They persist on your workspace volume. Afterwards use pip, npm and go as usual (pip install --user, go install, npm with a prefix in your home).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "packages"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "download": {
+    "description": "Download a file from the internet into your workspace.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

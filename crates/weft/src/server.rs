@@ -386,8 +386,20 @@ pub fn percent_encode(s: &str) -> String {
     out
 }
 
+/// Every route under `/v1`. The groups are chained in this order, and each group keeps its routes in their original order.
 pub fn router() -> Router<H> {
-    Router::new()
+    let router = misc_routes(Router::new());
+    let router = repo_routes(router);
+    let router = record_and_change_routes(router);
+    let router = revision_routes(router);
+    let router = pack_routes(router);
+    let router = artifact_routes(router);
+    wire_routes(router)
+}
+
+/// The plaza's own routes: health, state, the op log, keys, verification, events, GitHub and signing keys, the hub, the console, lanes and STOP ALL.
+fn misc_routes(router: Router<H>) -> Router<H> {
+    router
         .get("/v1/health", |h: &H, _, _| {
             let st = h.store.state();
             ok(json!({ "ok": true, "plaza": st.plaza, "records": st.ops.len(), "stopped": h.stopped(), "packs_loaded": h.derived.runtime.loaded() }))
@@ -401,6 +413,150 @@ pub fn router() -> Router<H> {
                 "log_bytes": h.store.log_size(), "stopped": h.stopped(), "hub_key": h.store.hub_public().map(|k| k.id()),
             }))
         })
+        .get("/v1/ops", |h: &H, req, _| {
+            let st = h.store.state();
+            let since: u64 = q(req, "since").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let limit: usize = q(req, "limit").and_then(|s| s.parse().ok()).unwrap_or(200);
+            let ops: Vec<&crate::state::OpInfo> = st.ops.iter().filter(|o| o.seq > since).collect();
+            let skip = ops.len().saturating_sub(limit);
+            ok(json!({ "ops": ops[skip..] }))
+        })
+        .get("/v1/keys", |h: &H, _, _| {
+            let st = h.store.state();
+            let mut keys: Vec<&crate::state::KeyInfo> = st.keys.values().collect();
+            keys.sort_by_key(|k| k.issued_seq);
+            ok(json!({ "owner": st.owner.as_ref().map(|k| k.id()), "keys": keys }))
+        })
+        .get("/v1/verify", |h: &H, req, _| {
+            let deep = q(req, "deep").is_some_and(|d| d == "1" || d == "true");
+            match q(req, "subject") {
+                Some(s) => match crate::verify::verify_subject(&h.store, &s) {
+                    Ok(r) => ok(json!(r)),
+                    Err(e) => fail(409, e),
+                },
+                None if deep => match h.store.verify_deep() {
+                    Ok(r) => ok(json!({ "ok": true, "deep": r })),
+                    Err(e) => fail(409, e),
+                },
+                None => match crate::verify::verify_chain(&h.store) {
+                    Ok(r) => ok(json!(r)),
+                    Err(e) => fail(409, e),
+                },
+            }
+        })
+        .get("/v1/events", |h: &H, _, _| {
+            let rx = h.store.subscribe();
+            Response::sse(move |sse| {
+                loop {
+                    match rx.recv_timeout(Duration::from_secs(15)) {
+                        Ok(ev) => sse.event(&format!("weft_{}", ev.kind.replace('.', "_")), &json!({ "seq": ev.seq, "kind": ev.kind, "summary": ev.summary, "body": ev.body }).to_string())?,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => sse.heartbeat()?,
+                        Err(_) => return Ok(()),
+                    }
+                }
+            })
+        })
+        .post("/v1/github/account", |_: &H, req, _| {
+            if let Err(r) = hub_only(req) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(token) = v["token"].as_str() else { return fail(400, "a token is required") };
+            match crate::connect::github_account(&crate::connect::github_api(), token, v["noreply"].as_bool().unwrap_or(false)) {
+                Ok(a) => ok(json!(a)),
+                Err(e) => fail(502, e),
+            }
+        })
+        .post("/v1/github/signing-key", |h: &H, req, _| {
+            if let Err(r) = hub_only(req) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let (Some(token), Some(key)) = (v["token"].as_str(), h.signing.as_ref()) else { return fail(400, "a token and the hub's signing key are needed") };
+            let line = crate::sshsig::public_line(key, "weft@agentplaza");
+            match crate::connect::register_signing_key(&crate::connect::github_api(), token, v["title"].as_str().unwrap_or("AgentPlaza (Weft export)"), &line) {
+                Ok(s) => ok(json!({ "result": s, "key": line })),
+                Err(e) => fail(502, e),
+            }
+        })
+        .get("/v1/signing-key", |h: &H, _, _| match h.signing.as_ref() {
+            Some(k) => ok(json!({ "key": crate::sshsig::public_line(k, "weft@agentplaza") })),
+            None => fail(404, "weft serve holds no signing key"),
+        })
+        .post("/v1/hub", |h: &H, req, _| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = match req.json() {
+                Ok(v) => v,
+                Err(e) => return fail(400, format!("not JSON: {e}")),
+            };
+            let Some(kind) = v["kind"].as_str() else { return fail(400, "kind is required") };
+            match h.store.hub_append(kind, v["body"].clone()) {
+                Ok((rec, summary)) => ok(json!({ "seq": rec.seq, "summary": summary })),
+                Err(e) => refused(e),
+            }
+        })
+        .post("/v1/console", |h: &H, req, _| {
+            if let Err(r) = writes_allowed(h) {
+                return r;
+            }
+            if !matches!(caller(req), Ok(Actor::Owner)) {
+                return fail(403, "only the owner's console signs as the owner");
+            }
+            let v: Value = match req.json() {
+                Ok(v) => v,
+                Err(e) => return fail(400, format!("not JSON: {e}")),
+            };
+            let Some(kind) = v["kind"].as_str() else { return fail(400, "kind is required") };
+            match h.store.console_owner_append(kind, v["body"].clone()) {
+                Ok((rec, summary)) => ok(json!({ "seq": rec.seq, "summary": summary })),
+                Err(e) => refused(e),
+            }
+        })
+        .post("/v1/lanes", |h: &H, req, _| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = match req.json() {
+                Ok(v) => v,
+                Err(e) => return fail(400, format!("not JSON: {e}")),
+            };
+            let author = match serde_json::from_value::<Actor>(v["author"].clone()).or_else(|_| Actor::parse(v["author"].as_str().unwrap_or(""))) {
+                Ok(a) => a,
+                Err(e) => return fail(400, format!("author: {e}")),
+            };
+            let s = |k: &str| v[k].as_str().map(str::to_string);
+            match h.store.open_lane(
+                &s("repo").unwrap_or_default(),
+                &s("ref").unwrap_or_else(|| "main".into()),
+                s("task").as_deref(),
+                &s("title").unwrap_or_default(),
+                author,
+                s("stacked_on").as_deref(),
+                &s("kind").unwrap_or_else(|| "normal".into()),
+            ) {
+                Ok(change) => {
+                    let st = h.store.state();
+                    let c = st.change(&change).map(|c| change_view(&st, c)).unwrap_or(Value::Null);
+                    ok(json!({ "change": change, "detail": c }))
+                }
+                Err(e) => refused(e),
+            }
+        })
+        .post("/v1/stop", |h: &H, req, _| {
+            if let Err(r) = hub_only(req) {
+                return r;
+            }
+            let on = req.json::<Value>().ok().and_then(|v| v["on"].as_bool()).unwrap_or(true);
+            h.set_stopped(on);
+            ok(json!({ "stopped": on }))
+        })
+}
+
+/// The repo routes: repos, their log, queue, blame, symbols, map, edits, queue steps, export, import, adopt, targets and releases.
+fn repo_routes(router: Router<H>) -> Router<H> {
+    router
         .get("/v1/repos", |h: &H, req, _| {
             let who = match caller(req) {
                 Ok(c) => c,
@@ -466,210 +622,6 @@ pub fn router() -> Router<H> {
                 Err(e) => fail(404, e),
             }
         })
-        .get("/v1/changes/{change}", |h: &H, req, p| {
-            let who = match caller(req) {
-                Ok(c) => c,
-                Err(r) => return r,
-            };
-            let st = h.store.state();
-            match st.change(p.get("change")) {
-                Ok(c) if h.may_read(&st, &who, &c.repo, "") => ok(change_view(&st, c)),
-                Ok(_) => fail(404, "no such change"),
-                Err(e) => fail(404, e),
-            }
-        })
-        .get("/v1/revisions/{rev}", |h: &H, _, p| {
-            let st = h.store.state();
-            match st.revisions.get(p.get("rev")) {
-                Some(r) => ok(json!(r)),
-                None => fail(404, format!("no revision {}", p.get("rev"))),
-            }
-        })
-        .get("/v1/revisions/{rev}/files", |h: &H, req, p| {
-            let who = match caller(req) {
-                Ok(c) => c,
-                Err(r) => return r,
-            };
-            let repo = match rev_repo(h, p.get("rev")) {
-                Ok(r) => r,
-                Err(e) => return e,
-            };
-            match h.store.tree(p.get("rev")) {
-                Ok(tree) => {
-                    let st = h.store.state();
-                    let files: Vec<Value> = tree
-                        .iter()
-                        .filter(|(path, _)| h.may_read(&st, &who, &repo, path))
-                        .map(|(path, e)| json!({ "path": path, "hash": e.hash, "mode": e.mode, "size": h.store.blobs.size(&e.hash) }))
-                        .collect();
-                    ok(json!({ "revision": p.get("rev"), "repo": repo, "files": files }))
-                }
-                Err(e) => fail(404, e),
-            }
-        })
-        .get("/v1/revisions/{rev}/file", |h: &H, req, p| {
-            let who = match caller(req) {
-                Ok(c) => c,
-                Err(r) => return r,
-            };
-            let Some(path) = q(req, "path") else { return fail(400, "file needs ?path=") };
-            let repo = match rev_repo(h, p.get("rev")) {
-                Ok(r) => r,
-                Err(e) => return e,
-            };
-            if !h.may_read(&h.store.state(), &who, &repo, &path) {
-                return fail(404, "no such file");
-            }
-            match h.store.read(p.get("rev"), &path) {
-                Ok(Some(b)) => Response::new(200, "application/octet-stream", b),
-                Ok(None) => fail(404, "no such file"),
-                Err(e) => fail(404, e),
-            }
-        })
-        .get("/v1/revisions/{rev}/tree", |h: &H, req, p| {
-            let who = match caller(req) {
-                Ok(c) => c,
-                Err(r) => return r,
-            };
-            let repo = match rev_repo(h, p.get("rev")) {
-                Ok(r) => r,
-                Err(e) => return e,
-            };
-            match h.derived.change_tree(&h.store, p.get("rev")) {
-                Ok(mut t) => {
-                    let st = h.store.state();
-                    t.files.retain(|f| h.may_read(&st, &who, &repo, &f.path));
-                    ok(json!(t))
-                }
-                Err(e) => fail(404, e),
-            }
-        })
-        .get("/v1/revisions/{rev}/diff", |h: &H, req, p| diff_route(h, req, p))
-        .get("/v1/ops", |h: &H, req, _| {
-            let st = h.store.state();
-            let since: u64 = q(req, "since").and_then(|s| s.parse().ok()).unwrap_or(0);
-            let limit: usize = q(req, "limit").and_then(|s| s.parse().ok()).unwrap_or(200);
-            let ops: Vec<&crate::state::OpInfo> = st.ops.iter().filter(|o| o.seq > since).collect();
-            let skip = ops.len().saturating_sub(limit);
-            ok(json!({ "ops": ops[skip..] }))
-        })
-        .get("/v1/packs", |h: &H, _, _| {
-            let st = h.store.state();
-            ok(json!({ "packs": st.packs.values().collect::<Vec<_>>(), "loaded": h.derived.runtime.loaded(), "loads": h.derived.runtime.loads() }))
-        })
-        .get("/v1/packs/available", |h: &H, _, _| {
-            let st = h.store.state();
-            let list: Vec<Value> = crate::packsrc::bundled_names()
-                .into_iter()
-                .filter_map(|n| crate::packsrc::bundled_manifest(n).map(|m| json!({ "name": n, "language": m.language, "extensions": m.extensions, "added": st.packs.contains_key(n) })))
-                .collect();
-            ok(json!({ "packs": list }))
-        })
-        .get("/v1/packs/missing", |h: &H, req, _| {
-            // The languages a repo's files are in that have no pack yet, and the pack that would read them.
-            let Some(repo) = q(req, "repo") else { return fail(400, "missing needs ?repo=") };
-            let head = match h.store.state().repo(&repo) {
-                Ok(r) => r.head("main"),
-                Err(e) => return fail(404, e),
-            };
-            let tree = match h.store.tree(&head) {
-                Ok(t) => t,
-                Err(e) => return fail(404, e),
-            };
-            let st = h.store.state();
-            let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-            for path in tree.keys() {
-                if crate::lang::pack_for(&st.packs, path, "").is_none()
-                    && let Some(n) = crate::packsrc::bundled_for(path)
-                {
-                    *counts.entry(n).or_default() += 1;
-                }
-            }
-            ok(json!({ "repo": repo, "missing": counts.into_iter().map(|(n, c)| json!({ "pack": n, "files": c })).collect::<Vec<_>>() }))
-        })
-        .post("/v1/packs/install", |h: &H, req, _| {
-            if !matches!(caller(req), Ok(Actor::Owner)) {
-                return fail(403, "only the owner adds a pack");
-            }
-            if let Err(r) = writes_allowed(h) {
-                return r;
-            }
-            let Some(name) = req.json::<Value>().ok().and_then(|v| v["name"].as_str().map(str::to_string)) else { return fail(400, "install needs a name") };
-            let cache = h.store.dir.join("pack-cache");
-            let prepared = match crate::packsrc::prepare_bundled(&name, Some(&cache)) {
-                Ok(p) => p,
-                Err(e) => return fail(502, e),
-            };
-            for b in [&prepared.wasm, &prepared.query] {
-                if let Err(e) = h.store.blobs.put(b) {
-                    return fail(500, e);
-                }
-            }
-            match h.store.console_owner_append("pack.add", json!(prepared.pack)) {
-                Ok((rec, summary)) => ok(json!({ "seq": rec.seq, "summary": summary, "pack": prepared.pack })),
-                Err(e) => refused(e),
-            }
-        })
-        .get("/v1/keys", |h: &H, _, _| {
-            let st = h.store.state();
-            let mut keys: Vec<&crate::state::KeyInfo> = st.keys.values().collect();
-            keys.sort_by_key(|k| k.issued_seq);
-            ok(json!({ "owner": st.owner.as_ref().map(|k| k.id()), "keys": keys }))
-        })
-        .get("/v1/records", |h: &H, req, _| {
-            let Some(subject) = q(req, "subject") else { return fail(400, "records needs ?subject=") };
-            match crate::verify::records_of(&h.store, &subject) {
-                Ok(recs) => ok(json!({ "subject": subject, "records": recs })),
-                Err(e) => fail(404, e),
-            }
-        })
-        .get("/v1/verify", |h: &H, req, _| {
-            let deep = q(req, "deep").is_some_and(|d| d == "1" || d == "true");
-            match q(req, "subject") {
-                Some(s) => match crate::verify::verify_subject(&h.store, &s) {
-                    Ok(r) => ok(json!(r)),
-                    Err(e) => fail(409, e),
-                },
-                None if deep => match h.store.verify_deep() {
-                    Ok(r) => ok(json!({ "ok": true, "deep": r })),
-                    Err(e) => fail(409, e),
-                },
-                None => match crate::verify::verify_chain(&h.store) {
-                    Ok(r) => ok(json!(r)),
-                    Err(e) => fail(409, e),
-                },
-            }
-        })
-        .get("/v1/events", |h: &H, _, _| {
-            let rx = h.store.subscribe();
-            Response::sse(move |sse| {
-                loop {
-                    match rx.recv_timeout(Duration::from_secs(15)) {
-                        Ok(ev) => sse.event(&format!("weft_{}", ev.kind.replace('.', "_")), &json!({ "seq": ev.seq, "kind": ev.kind, "summary": ev.summary, "body": ev.body }).to_string())?,
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => sse.heartbeat()?,
-                        Err(_) => return Ok(()),
-                    }
-                }
-            })
-        })
-        .post("/v1/records", |h: &H, req, _| {
-            if let Err(r) = writes_allowed(h) {
-                return r;
-            }
-            let v: Value = match req.json() {
-                Ok(v) => v,
-                Err(e) => return fail(400, format!("not JSON: {e}")),
-            };
-            let signed = match Signed::from_json(&v) {
-                Ok(s) => s,
-                Err(e) => return fail(400, e),
-            };
-            match h.store.append(signed) {
-                Ok((rec, summary)) => ok(json!({ "seq": rec.seq, "summary": summary })),
-                Err(e) => refused(e),
-            }
-        })
-        .post("/v1/records/unsigned", |_: &H, _, _| fail(403, "weft serve takes signed statements only; an agent's go through apid, which signs with the agent's key"))
         .get("/v1/repos/{repo}/map", |h: &H, _, p| {
             let repo = p.get("repo");
             let st_repo = match h.store.state().repo(repo) {
@@ -754,20 +706,6 @@ pub fn router() -> Router<H> {
             Ok(c) => ok(json!({ "repo": p.get("repo"), "ref": p.get("ref"), "revisions": c })),
             Err(e) => fail(404, e),
         })
-        .post("/v1/changes/{change}/revert", |h: &H, req, p| {
-            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
-                return r;
-            }
-            let v: Value = req.json().unwrap_or(Value::Null);
-            let author = match caller(req) {
-                Ok(a) => a,
-                Err(r) => return r,
-            };
-            match crate::landing::revert(&h.store, &h.derived, p.get("change"), author, v["reason"].as_str().unwrap_or("")) {
-                Ok(name) => ok(json!({ "change": name, "reverts": p.get("change") })),
-                Err(e) => refused(e),
-            }
-        })
         .post("/v1/repos/{repo}/export", |h: &H, req, p| {
             if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
                 return r;
@@ -807,33 +745,6 @@ pub fn router() -> Router<H> {
                 Ok(r) => ok(json!(r)),
                 Err(e) => refused(e),
             }
-        })
-        .post("/v1/github/account", |_: &H, req, _| {
-            if let Err(r) = hub_only(req) {
-                return r;
-            }
-            let v: Value = req.json().unwrap_or(Value::Null);
-            let Some(token) = v["token"].as_str() else { return fail(400, "a token is required") };
-            match crate::connect::github_account(&crate::connect::github_api(), token, v["noreply"].as_bool().unwrap_or(false)) {
-                Ok(a) => ok(json!(a)),
-                Err(e) => fail(502, e),
-            }
-        })
-        .post("/v1/github/signing-key", |h: &H, req, _| {
-            if let Err(r) = hub_only(req) {
-                return r;
-            }
-            let v: Value = req.json().unwrap_or(Value::Null);
-            let (Some(token), Some(key)) = (v["token"].as_str(), h.signing.as_ref()) else { return fail(400, "a token and the hub's signing key are needed") };
-            let line = crate::sshsig::public_line(key, "weft@agentplaza");
-            match crate::connect::register_signing_key(&crate::connect::github_api(), token, v["title"].as_str().unwrap_or("AgentPlaza (Weft export)"), &line) {
-                Ok(s) => ok(json!({ "result": s, "key": line })),
-                Err(e) => fail(502, e),
-            }
-        })
-        .get("/v1/signing-key", |h: &H, _, _| match h.signing.as_ref() {
-            Some(k) => ok(json!({ "key": crate::sshsig::public_line(k, "weft@agentplaza") })),
-            None => fail(404, "weft serve holds no signing key"),
         })
         .get("/v1/repos/{repo}/targets", |h: &H, req, p| {
             let rev = q(req, "rev").unwrap_or_else(|| h.store.state().repos.get(p.get("repo")).map(|r| r.head("main")).unwrap_or_else(|| "root".into()));
@@ -901,18 +812,229 @@ pub fn router() -> Router<H> {
                 Err(e) => fail(502, e),
             }
         })
+}
+
+/// The change and record routes: a change with its revert and trace, and the signed records.
+fn record_and_change_routes(router: Router<H>) -> Router<H> {
+    router
+        .get("/v1/changes/{change}", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let st = h.store.state();
+            match st.change(p.get("change")) {
+                Ok(c) if h.may_read(&st, &who, &c.repo, "") => ok(change_view(&st, c)),
+                Ok(_) => fail(404, "no such change"),
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/records", |h: &H, req, _| {
+            let Some(subject) = q(req, "subject") else { return fail(400, "records needs ?subject=") };
+            match crate::verify::records_of(&h.store, &subject) {
+                Ok(recs) => ok(json!({ "subject": subject, "records": recs })),
+                Err(e) => fail(404, e),
+            }
+        })
+        .post("/v1/records", |h: &H, req, _| {
+            if let Err(r) = writes_allowed(h) {
+                return r;
+            }
+            let v: Value = match req.json() {
+                Ok(v) => v,
+                Err(e) => return fail(400, format!("not JSON: {e}")),
+            };
+            let signed = match Signed::from_json(&v) {
+                Ok(s) => s,
+                Err(e) => return fail(400, e),
+            };
+            match h.store.append(signed) {
+                Ok((rec, summary)) => ok(json!({ "seq": rec.seq, "summary": summary })),
+                Err(e) => refused(e),
+            }
+        })
+        .post("/v1/records/unsigned", |_: &H, _, _| fail(403, "weft serve takes signed statements only; an agent's go through apid, which signs with the agent's key"))
+        .post("/v1/changes/{change}/revert", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let author = match caller(req) {
+                Ok(a) => a,
+                Err(r) => return r,
+            };
+            match crate::landing::revert(&h.store, &h.derived, p.get("change"), author, v["reason"].as_str().unwrap_or("")) {
+                Ok(name) => ok(json!({ "change": name, "reverts": p.get("change") })),
+                Err(e) => refused(e),
+            }
+        })
+        .get("/v1/changes/{change}/trace", |h: &H, _, p| match crate::trace::trace(&h.store, &h.derived, p.get("change")) {
+            Ok(t) => ok(t),
+            Err(e) => fail(404, e),
+        })
+}
+
+/// The revision routes: a revision, its files and one file, its change tree and its diff.
+fn revision_routes(router: Router<H>) -> Router<H> {
+    router
+        .get("/v1/revisions/{rev}", |h: &H, _, p| {
+            let st = h.store.state();
+            match st.revisions.get(p.get("rev")) {
+                Some(r) => ok(json!(r)),
+                None => fail(404, format!("no revision {}", p.get("rev"))),
+            }
+        })
+        .get("/v1/revisions/{rev}/files", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let repo = match rev_repo(h, p.get("rev")) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            match h.store.tree(p.get("rev")) {
+                Ok(tree) => {
+                    let st = h.store.state();
+                    let files: Vec<Value> = tree
+                        .iter()
+                        .filter(|(path, _)| h.may_read(&st, &who, &repo, path))
+                        .map(|(path, e)| json!({ "path": path, "hash": e.hash, "mode": e.mode, "size": h.store.blobs.size(&e.hash) }))
+                        .collect();
+                    ok(json!({ "revision": p.get("rev"), "repo": repo, "files": files }))
+                }
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/revisions/{rev}/file", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let Some(path) = q(req, "path") else { return fail(400, "file needs ?path=") };
+            let repo = match rev_repo(h, p.get("rev")) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            if !h.may_read(&h.store.state(), &who, &repo, &path) {
+                return fail(404, "no such file");
+            }
+            match h.store.read(p.get("rev"), &path) {
+                Ok(Some(b)) => Response::new(200, "application/octet-stream", b),
+                Ok(None) => fail(404, "no such file"),
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/revisions/{rev}/tree", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let repo = match rev_repo(h, p.get("rev")) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            match h.derived.change_tree(&h.store, p.get("rev")) {
+                Ok(mut t) => {
+                    let st = h.store.state();
+                    t.files.retain(|f| h.may_read(&st, &who, &repo, &f.path));
+                    ok(json!(t))
+                }
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/revisions/{rev}/diff", |h: &H, req, p| diff_route(h, req, p))
+}
+
+/// The pack routes: the loaded packs, the bundled ones, the ones a repo is missing, and installing one.
+fn pack_routes(router: Router<H>) -> Router<H> {
+    router
+        .get("/v1/packs", |h: &H, _, _| {
+            let st = h.store.state();
+            ok(json!({ "packs": st.packs.values().collect::<Vec<_>>(), "loaded": h.derived.runtime.loaded(), "loads": h.derived.runtime.loads() }))
+        })
+        .get("/v1/packs/available", |h: &H, _, _| {
+            let st = h.store.state();
+            let list: Vec<Value> = crate::packsrc::bundled_names()
+                .into_iter()
+                .filter_map(|n| crate::packsrc::bundled_manifest(n).map(|m| json!({ "name": n, "language": m.language, "extensions": m.extensions, "added": st.packs.contains_key(n) })))
+                .collect();
+            ok(json!({ "packs": list }))
+        })
+        .get("/v1/packs/missing", |h: &H, req, _| {
+            // The languages a repo's files are in that have no pack yet, and the pack that would read them.
+            let Some(repo) = q(req, "repo") else { return fail(400, "missing needs ?repo=") };
+            let head = match h.store.state().repo(&repo) {
+                Ok(r) => r.head("main"),
+                Err(e) => return fail(404, e),
+            };
+            let tree = match h.store.tree(&head) {
+                Ok(t) => t,
+                Err(e) => return fail(404, e),
+            };
+            let st = h.store.state();
+            let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+            for path in tree.keys() {
+                if crate::lang::pack_for(&st.packs, path, "").is_none()
+                    && let Some(n) = crate::packsrc::bundled_for(path)
+                {
+                    *counts.entry(n).or_default() += 1;
+                }
+            }
+            ok(json!({ "repo": repo, "missing": counts.into_iter().map(|(n, c)| json!({ "pack": n, "files": c })).collect::<Vec<_>>() }))
+        })
+        .post("/v1/packs/install", |h: &H, req, _| {
+            if !matches!(caller(req), Ok(Actor::Owner)) {
+                return fail(403, "only the owner adds a pack");
+            }
+            if let Err(r) = writes_allowed(h) {
+                return r;
+            }
+            let Some(name) = req.json::<Value>().ok().and_then(|v| v["name"].as_str().map(str::to_string)) else { return fail(400, "install needs a name") };
+            let cache = h.store.dir.join("pack-cache");
+            let prepared = match crate::packsrc::prepare_bundled(&name, Some(&cache)) {
+                Ok(p) => p,
+                Err(e) => return fail(502, e),
+            };
+            for b in [&prepared.wasm, &prepared.query] {
+                if let Err(e) = h.store.blobs.put(b) {
+                    return fail(500, e);
+                }
+            }
+            match h.store.console_owner_append("pack.add", json!(prepared.pack)) {
+                Ok((rec, summary)) => ok(json!({ "seq": rec.seq, "summary": summary, "pack": prepared.pack })),
+                Err(e) => refused(e),
+            }
+        })
+}
+
+/// The artifact routes: uploading an artifact, listing and reading them, and their content and provenance.
+fn artifact_routes(router: Router<H>) -> Router<H> {
+    router
         .post("/v1/artifacts", |h: &H, req, _| {
             if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
                 return r;
             }
             let v: Value = req.json().unwrap_or(Value::Null);
-            let Ok(blob) = serde_json::from_value::<Hash>(v["blob"].clone()) else { return fail(400, "an artifact names its uploaded blob") };
+            let Ok(blob) = serde_json::from_value::<Hash>(v["blob"].clone()) else {
+                return fail(400, "an artifact names its uploaded blob");
+            };
             let bytes = match h.store.blobs.get(&blob) {
                 Ok(b) => b,
                 Err(e) => return fail(412, e),
             };
             let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
-            let mut body = match crate::release::artifact_body(&h.store, &s("repo"), &s("name"), v["version"].as_str(), &s("target"), &bytes, &s("built_from"), &s("builder"), &s("command")) {
+            let mut body = match crate::release::artifact_body(
+                &h.store,
+                &s("repo"),
+                &s("name"),
+                v["version"].as_str(),
+                &s("target"),
+                &bytes,
+                &s("built_from"),
+                &s("builder"),
+                &s("command"),
+            ) {
                 Ok(b) => b,
                 Err(e) => return refused(e),
             };
@@ -934,19 +1056,30 @@ pub fn router() -> Router<H> {
             let in_release: Option<Vec<String>> = release.as_ref().and_then(|r| {
                 let (repo, version) = r.split_once('@')?;
                 let rel = st.repos.get(repo)?.releases.get(version)?;
-                Some(rel.signed.as_ref().map(|s| s.0.artifacts.clone()).unwrap_or_default())
+                Some(
+                    rel.signed
+                        .as_ref()
+                        .map(|s| s.0.artifacts.clone())
+                        .unwrap_or_default(),
+                )
             });
             let list: Vec<&crate::state::ArtifactInfo> = st
                 .artifacts
                 .values()
                 .filter(|a| rev.as_ref().is_none_or(|r| a.artifact.built_from == *r))
-                .filter(|a| in_release.as_ref().is_none_or(|ids| ids.contains(&a.artifact.id)))
+                .filter(|a| {
+                    in_release
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&a.artifact.id))
+                })
                 .collect();
             ok(json!({ "artifacts": list }))
         })
-        .get("/v1/artifacts/{id}", |h: &H, _, p| match h.store.state().artifacts.get(p.get("id")) {
-            Some(a) => ok(json!(a)),
-            None => fail(404, "no such artifact"),
+        .get("/v1/artifacts/{id}", |h: &H, _, p| {
+            match h.store.state().artifacts.get(p.get("id")) {
+                Some(a) => ok(json!(a)),
+                None => fail(404, "no such artifact"),
+            }
         })
         .get("/v1/artifacts/{id}/content", |h: &H, _, p| {
             let digest = match h.store.state().artifacts.get(p.get("id")) {
@@ -968,80 +1101,11 @@ pub fn router() -> Router<H> {
                 None => ok(prov),
             }
         })
-        .get("/v1/changes/{change}/trace", |h: &H, _, p| match crate::trace::trace(&h.store, &h.derived, p.get("change")) {
-            Ok(t) => ok(t),
-            Err(e) => fail(404, e),
-        })
-        .post("/v1/hub", |h: &H, req, _| {
-            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
-                return r;
-            }
-            let v: Value = match req.json() {
-                Ok(v) => v,
-                Err(e) => return fail(400, format!("not JSON: {e}")),
-            };
-            let Some(kind) = v["kind"].as_str() else { return fail(400, "kind is required") };
-            match h.store.hub_append(kind, v["body"].clone()) {
-                Ok((rec, summary)) => ok(json!({ "seq": rec.seq, "summary": summary })),
-                Err(e) => refused(e),
-            }
-        })
-        .post("/v1/console", |h: &H, req, _| {
-            if let Err(r) = writes_allowed(h) {
-                return r;
-            }
-            if !matches!(caller(req), Ok(Actor::Owner)) {
-                return fail(403, "only the owner's console signs as the owner");
-            }
-            let v: Value = match req.json() {
-                Ok(v) => v,
-                Err(e) => return fail(400, format!("not JSON: {e}")),
-            };
-            let Some(kind) = v["kind"].as_str() else { return fail(400, "kind is required") };
-            match h.store.console_owner_append(kind, v["body"].clone()) {
-                Ok((rec, summary)) => ok(json!({ "seq": rec.seq, "summary": summary })),
-                Err(e) => refused(e),
-            }
-        })
-        .post("/v1/lanes", |h: &H, req, _| {
-            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
-                return r;
-            }
-            let v: Value = match req.json() {
-                Ok(v) => v,
-                Err(e) => return fail(400, format!("not JSON: {e}")),
-            };
-            let author = match serde_json::from_value::<Actor>(v["author"].clone()).or_else(|_| Actor::parse(v["author"].as_str().unwrap_or(""))) {
-                Ok(a) => a,
-                Err(e) => return fail(400, format!("author: {e}")),
-            };
-            let s = |k: &str| v[k].as_str().map(str::to_string);
-            match h.store.open_lane(
-                &s("repo").unwrap_or_default(),
-                &s("ref").unwrap_or_else(|| "main".into()),
-                s("task").as_deref(),
-                &s("title").unwrap_or_default(),
-                author,
-                s("stacked_on").as_deref(),
-                &s("kind").unwrap_or_else(|| "normal".into()),
-            ) {
-                Ok(change) => {
-                    let st = h.store.state();
-                    let c = st.change(&change).map(|c| change_view(&st, c)).unwrap_or(Value::Null);
-                    ok(json!({ "change": change, "detail": c }))
-                }
-                Err(e) => refused(e),
-            }
-        })
-        .post("/v1/stop", |h: &H, req, _| {
-            if let Err(r) = hub_only(req) {
-                return r;
-            }
-            let on = req.json::<Value>().ok().and_then(|v| v["on"].as_bool()).unwrap_or(true);
-            h.set_stopped(on);
-            ok(json!({ "stopped": on }))
-        })
-        // The wire.
+}
+
+/// The wire: objects in and out, by hash, chunk, bundle, manifest and want.
+fn wire_routes(router: Router<H>) -> Router<H> {
+    router
         .post("/v1/wire/missing", |h: &H, req, _| {
             let v: Value = match req.json() {
                 Ok(v) => v,

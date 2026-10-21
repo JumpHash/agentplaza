@@ -11,8 +11,7 @@ apz-prompt = { path = "../../crates/apz-prompt" }
 apz-skill = { path = "../../crates/apz-skill" }
 # The IDE's shared model (workspaces, entries, buffers, the diff parser, path rules, the state reducer); the web runs it too.
 apz-ide = { path = "../../crates/apz-ide" }
-# The Metrics view model (the panels the hub composes) and the metrics core types, shared with the hub.
-apz-metrics.workspace = true
+# The Metrics view model (the panels the hub composes), shared with the hub.
 apz-metrics-view = { path = "../../crates/apz-metrics-view" }
 apz-view = { path = "../../crates/apz-view" }
 # The wgpu renderer is the WebGPU-compatible backend; tiny-skia is the software
@@ -42,9 +41,7 @@ iced = { version = "0.14", default-features = false, features = [
 # The Floor's 3D world, drawn with our own wgpu pipelines inside iced's shader widget
 # (`console/floor3d`): matrices, vertex data, and its painted textures and plaques.
 glam = { version = "0.30", features = ["bytemuck"] }
-bytemuck = { version = "1", features = ["derive"] }
 tiny-skia = "0.11"
-ab_glyph = "0.2"
 # The hub client: plain HTTP on loopback, pinned TLS to a remote hub.
 apz-engine = { path = "../../crates/apz-engine" }
 apz-theme = { path = "../../crates/apz-theme" }

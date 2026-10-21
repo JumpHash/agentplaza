@@ -71,8 +71,8 @@ jobs:
       # The merge queue tests the commit that will land, because main may have moved since the pull
       # request's last run, or other entries may be ahead of it. When that commit has exactly the files
       # of the pull request's last commit, and this gate passed there, nothing in it is untested: the
-      # full suite passed on main in main's own queue run, and the pull request's run tested every
-      # package it changes and what depends on them. Then nothing builds here, and the run passes.
+      # full suite passed on main in main's own queue run, and the pull request's run tested the
+      # packages the change selector picked (`.github/ci/changes.sh`). Then nothing builds here, and the run passes.
       - name: Already tested?
         id: tested
         if: github.event_name == 'merge_group'
