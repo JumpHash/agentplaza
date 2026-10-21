@@ -191,7 +191,7 @@ function pngHref(a: Artifact, panel: string): string {
 
 async function exportFile(a: Artifact, format: 'csv' | 'json', panel: string): Promise<void> {
   const stem = a.title.replace(/[^\w.-]+/g, '-') || a.id;
-  await attempt(() => downloadExport(a.id, format, panel, `${stem}-v${a.version}-${panel}.${format}`), 'Export ready');
+  await attempt(() => downloadExport(a.id, format, panel, `${stem}-v${a.version}-${panel}.${format}`, a.version), 'Export ready');
 }
 
 /** Asks in the sheet before deleting. A deleted artifact leaves the screen for the Library. */

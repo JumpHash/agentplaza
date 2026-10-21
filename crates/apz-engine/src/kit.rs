@@ -1,6 +1,10 @@
 //! The machine model kit (`assets/hardware/kit`, written by `tools/apz-kit`): the ten machines as glTF, parsed once
-//! from the embedded files and turned into scene nodes in a [`Palette`]'s materials. The kit's contract (the node and
+//! from the kit's files and turned into scene nodes in a [`Palette`]'s materials. The kit's contract (the node and
 //! material names this reads) is documented in `tools/apz-kit/src/lib.rs`.
+//!
+//! Where the files come from: the native builds (the desktop, the tests) embed the kit (the `embedded-kit` feature,
+//! on by default), so `KIT_FILES` holds it. The web build leaves it out: the page fetches the files and hands them
+//! over with [`provide`] before the first frame.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -12,8 +16,44 @@ use crate::ktx::texture_from_ktx2;
 use crate::scene::{Geo, Geometry, MachineLed, Mat, NodeAnim, Obj, Side, Tex};
 use crate::style::Palette;
 
-// `KIT_FILES`: every `.glb` and `.ktx2` of the kit, by file name (build.rs).
+// `KIT_FILES`: every `.glb` and `.ktx2` of the kit, by file name (build.rs). Empty without the `embedded-kit` feature.
 include!(concat!(env!("OUT_DIR"), "/kit_files.rs"));
+
+/// The kit's files as [`provide`] was given them, by file name. Set once.
+static PROVIDED: OnceLock<Vec<(String, Vec<u8>)>> = OnceLock::new();
+
+/// The parsed kit, set by the first [`models`] call.
+static KIT: OnceLock<Vec<KitModel>> = OnceLock::new();
+
+/// Gives the kit's files to the engine: each `.glb` and `.ktx2` by file name. The web build calls this before its
+/// first frame, since its wasm carries no embedded kit; the native builds, which embed the kit, need no call.
+/// Errors when the files were provided already, or after [`models`] has parsed the kit (a parsed kit does not change).
+pub fn provide(files: Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    if KIT.get().is_some() {
+        return Err(
+            "the kit is parsed already: provide its files before the first frame".to_string(),
+        );
+    }
+    PROVIDED
+        .set(files)
+        .map_err(|_| "the kit's files are provided already".to_string())
+}
+
+/// The kit's files: the ones [`provide`] was given, else the embedded `KIT_FILES`.
+fn kit_files() -> Vec<(&'static str, &'static [u8])> {
+    select_files(PROVIDED.get().map(Vec::as_slice))
+}
+
+/// The file list [`kit_files`] picks from: `provided` when there is one, else the embedded `KIT_FILES`.
+fn select_files(provided: Option<&[(String, Vec<u8>)]>) -> Vec<(&str, &[u8])> {
+    match provided {
+        Some(files) => files
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect(),
+        None => KIT_FILES.to_vec(),
+    }
+}
 
 /// The feature edges' crease angle, degrees.
 pub const EDGE_ANGLE: f32 = 30.0;
@@ -49,14 +89,15 @@ pub struct KitMesh {
     pub texture: Option<String>,
 }
 
-/// The parsed kit, in the files' name order. Parsed on first use; a file that fails to parse panics with its name
-/// (the kit is built and checked by `tools/apz-kit`, so that is a build error).
+/// The parsed kit, in the files' name order. Parsed on first use from the kit's files (the embedded ones, or the ones
+/// [`provide`] was given). A file that fails to parse panics with its name (the kit is built and checked by
+/// `tools/apz-kit`, so that is a build error). On the web, [`provide`] must come before the first call: a kit parsed
+/// with no files stays empty.
 pub fn models() -> &'static [KitModel] {
-    static KIT: OnceLock<Vec<KitModel>> = OnceLock::new();
     KIT.get_or_init(|| {
-        KIT_FILES
-            .iter()
-            .filter_map(|&(name, bytes)| {
+        kit_files()
+            .into_iter()
+            .filter_map(|(name, bytes)| {
                 let id = name.strip_suffix(".glb")?;
                 Some(parse_glb(id, bytes).unwrap_or_else(|e| panic!("kit file {name}: {e}")))
             })
@@ -204,7 +245,7 @@ pub fn texture(name: &str) -> Option<Tex> {
     if let Some(tex) = cache.get(name) {
         return Some(Arc::clone(tex));
     }
-    let entry = KIT_FILES.iter().find(|e| e.0 == name)?;
+    let entry = kit_files().into_iter().find(|e| e.0 == name)?;
     let mut tex = texture_from_ktx2(entry.1).ok()?;
     tex.wrap = true;
     let tex: Tex = Arc::new(tex);
@@ -402,22 +443,52 @@ pub fn set_machine(root: &Obj, machine: usize) {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "embedded-kit")]
     const MANIFEST: &str = include_str!("../../../assets/hardware/kit/manifest.json");
 
+    #[cfg(feature = "embedded-kit")]
     fn has_node(nodes: &[KitNode], name: &str) -> bool {
         nodes
             .iter()
             .any(|n| n.name == name || has_node(&n.children, name))
     }
 
+    /// The ids of a file list's `.glb` models, in the list's order.
+    #[cfg(feature = "embedded-kit")]
+    fn model_ids(files: &[(&str, &[u8])]) -> Vec<String> {
+        files
+            .iter()
+            .filter_map(|&(name, _)| name.strip_suffix(".glb"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Files handed over at runtime (the web's `provide`) are the embedded kit's: the same names and bytes, so the
+    /// same model ids.
     #[test]
+    #[cfg(feature = "embedded-kit")]
+    fn provided_files_are_the_embedded_kit() {
+        let owned: Vec<(String, Vec<u8>)> = KIT_FILES
+            .iter()
+            .map(|&(name, bytes)| (name.to_string(), bytes.to_vec()))
+            .collect();
+        let provided = select_files(Some(owned.as_slice()));
+        let embedded = select_files(None);
+        assert_eq!(provided, embedded);
+        let ids = model_ids(&provided);
+        assert!(!ids.is_empty(), "the embedded kit has models");
+        assert_eq!(ids, model_ids(&embedded));
+    }
+
+    #[test]
+    #[cfg(feature = "embedded-kit")]
     fn every_model_parses_to_its_manifest_size() {
         let manifest: serde_json::Value = serde_json::from_str(MANIFEST).expect("the manifest");
         let entries = manifest["models"]
             .as_array()
             .expect("the manifest's models");
         let mut parsed = 0;
-        for &(name, bytes) in KIT_FILES.iter().filter(|e| e.0.ends_with(".glb")) {
+        for (name, bytes) in kit_files().into_iter().filter(|e| e.0.ends_with(".glb")) {
             let id = name.trim_end_matches(".glb");
             let model = parse_glb(id, bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(model.id, id);

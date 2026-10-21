@@ -116,6 +116,8 @@ struct Hooks {
     visibility_observer: IntersectionObserver,
     visibility: Closure<dyn FnMut(Array, IntersectionObserver)>,
     tick: Closure<dyn FnMut(f64)>,
+    /// The page's visibilitychange listener: starts the loop again when the page shows after it was hidden.
+    page_visible: Closure<dyn FnMut(DomEvent)>,
 }
 
 /// One engine on one canvas, held by the page. `destroy` (or dropping it) stops the loop, disconnects the
@@ -124,6 +126,26 @@ struct Hooks {
 pub struct WebEngine {
     shared: Rc<RefCell<Inner>>,
     hooks: RefCell<Option<Hooks>>,
+}
+
+thread_local! {
+    /// The kit's files as the page hands them over (`kit_file`), until `kit_ready` gives them to the engine.
+    static KIT: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Adds one file of the kit: `name` as the kit names it (`hub.glb`, `grille.ktx2`), and its bytes. The page calls it
+/// for every file, then `kit_ready`, before the first frame.
+#[wasm_bindgen]
+pub fn kit_file(name: String, bytes: Vec<u8>) {
+    KIT.with(|kit| kit.borrow_mut().push((name, bytes)));
+}
+
+/// Gives the engine the files `kit_file` added (`apz_engine::kit::provide`). Throws when the kit was provided already,
+/// or when the engine parsed the kit before this call (the page calls it before `start`, `start_lab` or `lab_catalog`).
+#[wasm_bindgen]
+pub fn kit_ready() -> Result<(), JsValue> {
+    let files = KIT.with(|kit| std::mem::take(&mut *kit.borrow_mut()));
+    apz_engine::kit::provide(files).map_err(|e| JsValue::from_str(&e))
 }
 
 /// The labs' option lists as JSON, from what the engine embeds (`apz_engine::lab_catalog`): the robot species, clips,
@@ -523,6 +545,7 @@ impl WebEngine {
             resize: _resize,
             visibility_observer,
             visibility: _visibility,
+            page_visible,
             tick: _tick,
         } = hooks;
         let _ = canvas.remove_event_listener_with_callback(
@@ -548,6 +571,12 @@ impl WebEngine {
         }
         resize_observer.disconnect();
         visibility_observer.disconnect();
+        if let Some(document) = window.document() {
+            let _ = document.remove_event_listener_with_callback(
+                "visibilitychange",
+                page_visible.as_ref().unchecked_ref(),
+            );
+        }
     }
 }
 
@@ -952,6 +981,25 @@ fn install(
         s.raf = window.request_animation_frame(&tick_fn).ok();
     }
 
+    // The page shows again: the loop that stopped while it was hidden starts once more (a no-op while a tick is queued).
+    let page_visible = {
+        let shared = shared.clone();
+        Closure::<dyn FnMut(DomEvent)>::new(move |_ev: DomEvent| {
+            let mut guard = shared.borrow_mut();
+            let s = &mut *guard;
+            if !s.stopped && !s.document.hidden() {
+                request_tick(s);
+            }
+        })
+    };
+    let document = window
+        .document()
+        .ok_or_else(|| JsValue::from_str("the window has no document"))?;
+    document.add_event_listener_with_callback(
+        "visibilitychange",
+        page_visible.as_ref().unchecked_ref(),
+    )?;
+
     Ok(Hooks {
         pointerdown,
         pointermove,
@@ -964,21 +1012,34 @@ fn install(
         resize,
         visibility_observer,
         visibility,
+        page_visible,
         tick,
     })
 }
 
-/// One requestAnimationFrame tick: asks for the next tick first, then draws when the canvas is on screen, the
-/// page is visible and the engine is busy, and the tier of the last frame allows it. The first tick always draws.
-fn frame_tick(shared: &Rc<RefCell<Inner>>) {
-    let mut guard = shared.borrow_mut();
-    let s = &mut *guard;
-    if s.stopped {
+/// Queues the next requestAnimationFrame tick unless one is queued already. `raf` is the pending flag: Some while a
+/// tick is queued and cleared when it runs, so there is never more than one loop.
+fn request_tick(s: &mut Inner) {
+    if s.raf.is_some() {
         return;
     }
     if let Some(tick_fn) = &s.tick_fn {
         s.raf = s.window.request_animation_frame(tick_fn).ok();
     }
+}
+
+/// One requestAnimationFrame tick: asks for the next tick first, then draws when the canvas is on screen, the
+/// page is visible and the engine is busy, and the tier of the last frame allows it. The first tick always draws.
+/// A hidden page queues nothing: the loop stops here, and the visibilitychange listener starts it again.
+fn frame_tick(shared: &Rc<RefCell<Inner>>) {
+    let mut guard = shared.borrow_mut();
+    let s = &mut *guard;
+    // This tick has run, so none is queued now.
+    s.raf = None;
+    if s.stopped || s.document.hidden() {
+        return;
+    }
+    request_tick(s);
 
     let now = Instant::now();
     let first = std::mem::replace(&mut s.first_tick, false);

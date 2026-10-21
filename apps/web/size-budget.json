@@ -1,0 +1,7 @@
+{
+  "_comment": "Size budgets for the console's engine bundle, checked by apps/web/scripts/size-budget.mjs in CI after the build. Each budget caps the gzip (level 9) size of the matching file in dist, in decimal MB (1 MB = 1,000,000 bytes). Raise a budget only together with the reason, in the same commit: what grew and why it is needed. The engine wasm's budget was cut from 2.1 to 1.5 MB because the model kit (about 2.4 MB raw, dist/_kit) left the wasm: this is an estimate, not a measurement, and the first CI build confirms or corrects it.",
+  "budgets": [
+    { "pattern": "apz_engine_web-*_bg.wasm", "max_gzip_mb": 1.5, "measured": "1.84 MB gzip, 6.82 MB raw with the kit inside (mutwt build, before the kit left the wasm)" },
+    { "pattern": "apz_engine_web-*.js", "max_gzip_mb": 0.1, "measured": "22.5 KB gzip, 148 KB raw (mutwt build)" }
+  ]
+}

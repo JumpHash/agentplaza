@@ -127,9 +127,14 @@ export interface LabCatalog {
   lods: number;
 }
 
-/** The glue module: its default export loads the .wasm; `start` builds the engine on a canvas. */
+/** The glue module: its default export loads the .wasm; `kit_file` and `kit_ready` give the engine its model kit (once,
+ *  before any start); `start` builds the engine on a canvas. */
 interface EngineGlue {
   default: () => Promise<unknown>;
+  /** One model kit file, by its name (as kit.json names it) and its bytes. */
+  kit_file: (name: string, bytes: Uint8Array) => void;
+  /** The kit is complete: call once, after every kit_file, before any start. */
+  kit_ready: () => void;
   lab_catalog: () => string;
   start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_lab: (canvas: HTMLCanvasElement, opts: LabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
@@ -157,14 +162,51 @@ export function engineWanted(): boolean {
   return glueName() !== '';
 }
 
-/** The glue, loaded and initialised. Throws without a glue (this build has no engine). */
-async function loadGlue(): Promise<EngineGlue> {
+/** The glue's one load per page, shared by every view that starts the engine: the module, its wasm, and the model kit
+ *  handed to the engine. A failed load is retried by the next caller. */
+let gluePromise: Promise<EngineGlue> | null = null;
+
+/** The glue, loaded, initialised and given its model kit. Throws without a glue (this build has no engine). */
+function loadGlue(): Promise<EngineGlue> {
+  if (!gluePromise) {
+    gluePromise = loadGlueOnce();
+    gluePromise.catch(() => {
+      gluePromise = null;
+    });
+  }
+  return gluePromise;
+}
+
+async function loadGlueOnce(): Promise<EngineGlue> {
   const name = glueName();
   if (name === '') throw new Error('this build has no engine');
   const glueUrl = new URL('./' + name, document.baseURI).href;
   const glue = (await import(/* @vite-ignore */ glueUrl)) as EngineGlue;
   await glue.default();
+  await provideKit(glue);
   return glue;
+}
+
+/**
+ * Hands the engine its model kit: each file that `assets/kit.json` names, then kit_ready. A build without that file (an older
+ * dist) is logged and skipped: the engine draws without models. A listed file that does not load fails the start.
+ */
+async function provideKit(glue: EngineGlue): Promise<void> {
+  const manifest = await fetch(new URL('./assets/kit.json', document.baseURI).href);
+  if (!manifest.ok) {
+    console.warn('this build has no model kit (assets/kit.json): the 3D engine draws without models');
+    return;
+  }
+  const files = Object.entries((await manifest.json()) as Record<string, string>);
+  const buffers = await Promise.all(
+    files.map(async ([name, path]) => {
+      const res = await fetch(new URL('./' + path, document.baseURI).href);
+      if (!res.ok) throw new Error(`the model kit file ${name} did not load (${res.status})`);
+      return res.arrayBuffer();
+    }),
+  );
+  files.forEach(([name], i) => glue.kit_file(name, new Uint8Array(buffers[i]!)));
+  glue.kit_ready();
 }
 
 let catalog: Promise<LabCatalog> | null = null;

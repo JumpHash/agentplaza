@@ -118,10 +118,62 @@ function admit(card: Card): void {
   }
 }
 
+/** A frame message whose JSON is larger than this is dropped (256 KiB). */
+export const MAX_MESSAGE_BYTES = 256 * 1024;
+/** More messages than this from one frame in one second are dropped for the rest of that second. */
+export const MAX_MESSAGES_PER_SECOND = 50;
+
+/** The count of one source window's messages in one second. */
+export interface RateEntry {
+  second: number;
+  count: number;
+}
+export type RateTable = WeakMap<object, RateEntry>;
+
+const rateTable: RateTable = new WeakMap();
+let oversizeLogged = false;
+
+/**
+ * Whether a frame message may be handled: it comes from a source window, its JSON is under the size limit, and its
+ * source has not passed the rate limit this second. `now` is in milliseconds. Counts are kept per source window in
+ * `rates`, so one frame's messages count against that frame alone.
+ */
+export function messageAllowed(data: unknown, source: object | null, now: number, rates: RateTable = rateTable): boolean {
+  if (source === null) return false;
+  const second = Math.floor(now / 1000);
+  const entry = rates.get(source);
+  if (entry === undefined || entry.second !== second) {
+    rates.set(source, { second, count: 1 });
+  } else {
+    entry.count++;
+    if (entry.count > MAX_MESSAGES_PER_SECOND) return false;
+  }
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(data);
+  } catch {
+    return false;
+  }
+  if (new TextEncoder().encode(text ?? '').byteLength > MAX_MESSAGE_BYTES) {
+    if (!oversizeLogged) {
+      oversizeLogged = true;
+      console.warn(`apz: a frame message over ${MAX_MESSAGE_BYTES} bytes was dropped`);
+    }
+    return false;
+  }
+  return true;
+}
+
 /** One message from a frame. Only a live frame's own window is heard. */
 function onMessage(event: MessageEvent): void {
   const data: unknown = event.data;
   if (!isRecord(data) || data.apz !== 1) return;
+  if (!messageAllowed(data, event.source, Date.now())) return;
+  // A card whose element has left the page gives up its live slot.
+  for (let i = live.length - 1; i >= 0; i--) {
+    const owner = live[i];
+    if (owner !== undefined && !owner.el.isConnected) live.splice(i, 1);
+  }
   const card = live.find((c) => c.iframe !== null && c.iframe.contentWindow === event.source);
   if (card === undefined) return;
   if (data.type === 'ready') {

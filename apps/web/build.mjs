@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync, mkdirSync, readdirSync, copyFileSync, renameSync, existsSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
@@ -81,6 +81,28 @@ if (existsSync(join(repoRoot, 'crates/apz-engine-web/Cargo.toml'))) {
 if (process.env.APZ_REQUIRE_ENGINE === '1' && !(engineJsName && engineWasmName)) {
   throw new Error('build: APZ_REQUIRE_ENGINE=1 but the wasm engine is not in dist (crates/apz-engine-web missing or not built)');
 }
+
+// The model kit (assets/hardware/kit): the .glb and .ktx2 models the engine draws with. The wasm no longer embeds them, so
+// they are copied to dist/assets/ (the hub serves `/assets/{file}`) as `kit-<name>-<8 hex of sha256>.<ext>`, a name the hub
+// caches as immutable, and assets/kit.json maps every file's own name to its dist path. The page reads that map and hands
+// the files to the engine before it starts (src/views/engine-mount.ts, loadGlue). Only when the engine was built.
+function copyKit() {
+  const kitDir = join(repoRoot, 'assets/hardware/kit');
+  if (!existsSync(kitDir)) throw new Error(`build: the engine's model kit is missing (${kitDir})`);
+  const kitOut = join(dist, 'assets');
+  mkdirSync(kitOut, { recursive: true });
+  const map = {};
+  for (const file of readdirSync(kitDir).filter((f) => /\.(glb|ktx2)$/.test(f)).sort()) {
+    const src = join(kitDir, file);
+    const ext = extname(file);
+    const hash = createHash('sha256').update(readFileSync(src)).digest('hex').slice(0, 8);
+    const hashed = `kit-${basename(file, ext)}-${hash}${ext}`;
+    copyFileSync(src, join(kitOut, hashed));
+    map[file] = `assets/${hashed}`;
+  }
+  writeFileSync(join(kitOut, 'kit.json'), JSON.stringify(map, null, 2) + '\n');
+}
+if (engineJsName) copyKit();
 
 // The IDE model's bindings (crates/apz-ide-web), packed the same way and kept beside the engine in dist. Nothing loads
 // them with the console: the loader (src/ide/wasm.ts) imports the glue on first use, so only its name is defined here.

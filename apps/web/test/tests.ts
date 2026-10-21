@@ -63,6 +63,8 @@ import { bandPath, bucketStarts, stackedPaths, thin, xLabelIndexes } from '../sr
 import { appendPage, wrapsAtSpaces } from '../src/metrics/bodies';
 import { DEFAULT_STATE, LeaseKeeper, narrowTileColumns, parseHash, queryOf, toHash, togglePin, togglePinnedScope, visit, type MetricsState } from '../src/metrics/state';
 import type { LiveLease, Saved } from '../src/metrics/model';
+import { cacheKeysForTest, rememberForTest } from '../src/api-artifacts';
+import { MAX_MESSAGE_BYTES, MAX_MESSAGES_PER_SECOND, messageAllowed } from '../src/view/frame';
 
 let failures = 0;
 // Each section checks its own failures and reports them, then the run goes on to the next section (so one failing
@@ -376,6 +378,27 @@ eq(gibText(null), '—', 'machines text: unknown memory is a dash');
 
 sectionEnd('web tests: ok');
 
+// The artifact frames' message guard (view/frame.ts): a message over 256 KiB is dropped, and more than 50 a second
+// from one frame are dropped for the rest of that second.
+{
+  const rates = new WeakMap<object, { second: number; count: number }>();
+  const frame = {};
+  const other = {};
+  const small = { apz: 1, type: 'height', height: 300 };
+  eq(messageAllowed(small, frame, 5_000, rates), true, 'frame guard: a small message is let through');
+  eq(messageAllowed(small, null, 5_000, rates), false, 'frame guard: a message with no source is dropped');
+  eq(messageAllowed({ apz: 1, type: 'x', data: 'x'.repeat(MAX_MESSAGE_BYTES) }, frame, 5_000, rates), false, 'frame guard: a message over 256 KiB is dropped');
+  eq(messageAllowed({ apz: 1, type: 'x', data: 'x'.repeat(MAX_MESSAGE_BYTES - 100) }, frame, 5_000, rates), true, 'frame guard: a message just under 256 KiB is let through');
+  eq(messageAllowed({ apz: 1, type: 'x', data: 'é'.repeat(MAX_MESSAGE_BYTES) }, other, 5_000, rates), false, 'frame guard: the size counts UTF-8 bytes');
+  const burst = Array.from({ length: MAX_MESSAGES_PER_SECOND }, () => messageAllowed(small, frame, 9_000, rates));
+  eq(burst.every(Boolean), true, 'frame guard: the first 50 messages in a second are let through');
+  eq(messageAllowed(small, frame, 9_500, rates), false, 'frame guard: the 51st in the same second is dropped');
+  eq(messageAllowed(small, frame, 9_999, rates), false, 'frame guard: the rest of that second too');
+  eq(messageAllowed(small, frame, 10_000, rates), true, 'frame guard: the next second starts again');
+  eq(messageAllowed(small, other, 9_500, rates), true, 'frame guard: each frame has its own count');
+}
+sectionEnd('frame message guard tests: ok');
+
 // The page's Content-Security-Policy: the engine's WebAssembly compiles under 'wasm-unsafe-eval' only, never under
 // 'unsafe-eval'. The hub serves no CSP header of its own (noded and apid set none), so the page's meta tag is the policy.
 {
@@ -475,6 +498,19 @@ sectionEnd('hub mcp tests: ok');
 }
 sectionEnd('mcp wizard helper tests: ok');
 
+// The artifact cache (api-artifacts.ts): at most 200 entries and the oldest go first; an expired entry leaves on the
+// next insert, a live one stays.
+{
+  const pending = new Promise<never>(() => undefined);
+  for (let i = 0; i < 250; i++) rememberForTest(`a${i}@latest`, pending, 0);
+  eq(cacheKeysForTest().length <= 200, true, 'artifact cache: 250 distinct keys leave at most 200');
+  eq(cacheKeysForTest()[0], 'a50@latest', 'artifact cache: the oldest go first');
+  rememberForTest('fresh@latest', pending, 30_000);
+  rememberForTest('later@latest', pending, 60_000);
+  eq(cacheKeysForTest(), ['fresh@latest', 'later@latest'], 'artifact cache: the expired entries leave, the live one stays');
+}
+sectionEnd('artifact cache tests: ok');
+
 
 // The first-run wizard and the tour: steps, copy filling, flags that survive a refused store.
 eq(moveStep(0, -1, 4), 0, 'wizard: Back stops at the first step');
@@ -546,6 +582,38 @@ sectionEnd('onboarding tests: ok');
   eq(ide.children([{ path: 'a', kind: 'file', size: 1, hash: 'h', binary: false }], '')[0]?.path, 'a', 'ide: children parses the entries');
 }
 sectionEnd('ide wrapper tests: ok');
+
+// innerHTML: the console sets text with textContent. Six sites set markup, each a fixed template or values passed through
+// esc(). A site is named by its file and a snippet of its line (not its line number), so edits nearby do not break this.
+// A new assignment fails it, and so does a listed site that no longer exists.
+{
+  function filesUnder(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? filesUnder(join(dir, d.name)) : [join(dir, d.name)]));
+  }
+  const srcDir = join(process.cwd(), 'src');
+  const allowed: [string, string][] = [
+    ['views/agent-profile.ts', 'frame.innerHTML = robotSvg(a, size);'],
+    ['views/engine-mount.ts', "root.innerHTML = '';"],
+    ['views/nodes.ts', 't.innerHTML = markup;'],
+    ['views/treasury.ts', 't.innerHTML = markup;'],
+    ['ui/shell.ts', 'svg.innerHTML ='],
+    ['ui/shell.ts', 'amb!.innerHTML ='],
+  ];
+  const used = allowed.map(() => false);
+  const unlisted: string[] = [];
+  for (const file of filesUnder(srcDir)) {
+    const rel = file.slice(srcDir.length + 1).replaceAll('\\', '/');
+    readFileSync(file, 'utf8').split('\n').forEach((line) => {
+      if (!/\.innerHTML\s*\+?=(?!=)/.test(line)) return;
+      const hit = allowed.findIndex(([f, snippet]) => f === rel && line.includes(snippet));
+      if (hit < 0) unlisted.push(`${rel}: ${line.trim()}`);
+      else used[hit] = true;
+    });
+  }
+  eq(unlisted, [], 'innerHTML: every assignment is one of the six fixed sites');
+  eq(allowed.filter((_, i) => !used[i]).map(([f, s]) => `${f}: ${s}`), [], 'innerHTML: every listed site still exists');
+}
+sectionEnd('innerHTML tests: ok');
 
 // The IDE view's pure helpers (ide/model.ts): the language by extension, the buffer and conflict transitions, the
 // workspace's state badge, the viewed marks' storage, the diff marks, quick open's ranking and the tree's paths.

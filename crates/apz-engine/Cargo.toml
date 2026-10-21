@@ -42,5 +42,11 @@ apz-os = { path = "../apz-os" }
 
 
 
+[features]
+# The machine model kit (kit.rs's KIT_FILES) is compiled into the crate. The web build turns this off and hands the
+# files over at runtime (kit::provide), so its wasm carries none of them.
+default = ["embedded-kit"]
+embedded-kit = []
+
 [lints]
 workspace = true
