@@ -6,7 +6,5 @@
   "checksPassed": 9005,
   "operations": 575,
   "tested": 563,
-  "findings": {
-    "Server error": 2
-  }
+  "findings": {}
 }
