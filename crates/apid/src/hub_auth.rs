@@ -195,6 +195,34 @@ pub fn gate(app: &App, req: &Request) -> Option<Response> {
     )
 }
 
+/// The most body bytes a request that passed [`gate`] may send, decided from its line and headers before
+/// the body is read: the owner and the plaza's own daemons (`x-apz-internal`) keep the server's limit;
+/// a node's report (signed, checked by its route) up to [`NODE_BODY`]; any other caller of a public
+/// route up to [`PUBLIC_BODY`].
+pub fn body_allowance(app: &App, req: &Request) -> usize {
+    allowance(req, &app.token, || is_owner(app, req))
+}
+
+fn allowance(req: &Request, internal_token: &str, owner: impl FnOnce() -> bool) -> usize {
+    let internal = req.path.starts_with("/internal/")
+        && req
+            .header("x-apz-internal")
+            .is_some_and(|token| apz_trust::ct_eq(token.as_bytes(), internal_token.as_bytes()));
+    if internal || owner() {
+        return usize::MAX;
+    }
+    if req.path.starts_with("/v1/nodes/n") {
+        return NODE_BODY;
+    }
+    PUBLIC_BODY
+}
+
+/// The most a node's report (results, commands, heartbeats) may carry.
+pub const NODE_BODY: usize = 64 << 20;
+
+/// The most any other caller of a public route may send: joins, ingest, callbacks, sessions.
+pub const PUBLIC_BODY: usize = 256 << 10;
+
 /// Whether a request is the owner's: the machine's own (a loopback or unknown peer under a local `Host`), the owner
 /// token as a bearer, or a live console session. Owner routes and the editors' socket both ask this first.
 pub fn is_owner(app: &App, req: &Request) -> bool {
@@ -203,8 +231,11 @@ pub fn is_owner(app: &App, req: &Request) -> bool {
 
 fn is_owner_of(hub: &Hub, req: &Request, now_ms: u64) -> bool {
     // A request whose peer is unknown or loopback is the machine's own (console, local gateway), when its
-    // `Host` says so too: a DNS-rebinding page reaches loopback with its own name in `Host`.
-    if req.peer.is_none_or(|peer| peer.is_loopback()) {
+    // `Host` says so too: a DNS-rebinding page reaches loopback with its own name in `Host`. A browser
+    // request from a page of another origin (another site, or a sandboxed frame's opaque origin) also
+    // reaches loopback with a local `Host`, so it gets no loopback trust either. A WebSocket handshake keeps it:
+    // the socket's own Origin policy (`apz_http::ws::Origins`) refuses a foreign page with its 403.
+    if req.peer.is_none_or(|peer| peer.is_loopback()) && (websocket(req) || !cross_origin(req)) {
         let public_host = host_of(&hub.lock().public_url);
         if trusted_host(req.header("host"), Some(&public_host)) {
             return true;
@@ -222,6 +253,34 @@ fn is_owner_of(hub: &Hub, req: &Request, now_ms: u64) -> bool {
     session_of(req).is_some_and(|id| hub.session_ok(id, now_ms))
 }
 
+/// Whether a browser sent `req` from a page of another origin than the one it reached: `Sec-Fetch-Site` says
+/// so, or `Origin` names another scheme, host or port than `Host` (an opaque origin sends `null`). The
+/// console's own requests are same-origin; the CLI, the desktop app and the daemons send neither header.
+fn cross_origin(req: &Request) -> bool {
+    if req
+        .header("sec-fetch-site")
+        .is_some_and(|site| !matches!(site, "same-origin" | "none"))
+    {
+        return true;
+    }
+    let Some(origin) = req.header("origin") else {
+        return false;
+    };
+    let authority = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"));
+    match (authority, req.header("host")) {
+        (Some(authority), Some(host)) => !authority.eq_ignore_ascii_case(host),
+        _ => true,
+    }
+}
+
+/// Whether `req` asks to become a WebSocket (`Upgrade: websocket`).
+fn websocket(req: &Request) -> bool {
+    req.header("upgrade")
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
 /// Whether a `Host` header names this machine, so a loopback peer may act as the owner. Only `localhost`,
 /// the loopback addresses, `*.localhost` and the hub's own public host pass. A missing header (an HTTP/1.0
 /// client sends none) keeps the loopback trust.
@@ -229,14 +288,9 @@ fn trusted_host(host: Option<&str>, public_host: Option<&str>) -> bool {
     let Some(host) = host else {
         return true;
     };
-    let name = host_name(host).to_ascii_lowercase();
-    let local = matches!(name.as_str(), "localhost" | "127.0.0.1" | "::1")
-        || name
-            .strip_suffix(".localhost")
-            .is_some_and(|label| !label.is_empty());
-    let public =
-        public_host.is_some_and(|public| !public.is_empty() && name == public.to_ascii_lowercase());
-    local || public
+    let public = public_host
+        .is_some_and(|public| !public.is_empty() && host_name(host).eq_ignore_ascii_case(public));
+    apz_http::host_is_loopback(host) || public
 }
 
 /// The name in a `Host` value: the port dropped and IPv6 unbracketed (`[::1]:7700` is `::1`). A bare
@@ -458,6 +512,50 @@ mod tests {
     }
 
     #[test]
+    fn body_allowance_follows_the_caller_before_the_body_is_read() {
+        let req = |path: &str, internal: Option<&str>| Request {
+            method: "POST".into(),
+            path: path.into(),
+            headers: internal
+                .map(|token| vec![("x-apz-internal".to_string(), token.to_string())])
+                .unwrap_or_default(),
+            ..Request::default()
+        };
+        let not_owner = || false;
+        // The owner and the plaza's own daemons keep the server's limit.
+        assert_eq!(
+            allowance(&req("/v1/projects", None), "t0k", || true),
+            usize::MAX
+        );
+        assert_eq!(
+            allowance(&req("/internal/agent", Some("t0k")), "t0k", not_owner),
+            usize::MAX
+        );
+        // The internal header counts only on /internal/ routes, and only with the right token.
+        assert_eq!(
+            allowance(&req("/internal/agent", Some("wrong")), "t0k", not_owner),
+            PUBLIC_BODY
+        );
+        assert_eq!(
+            allowance(&req("/v1/ingest/abc", Some("t0k")), "t0k", not_owner),
+            PUBLIC_BODY
+        );
+        // A node's report may be large; every other public caller is small.
+        assert_eq!(
+            allowance(&req("/v1/nodes/n1/results", None), "t0k", not_owner),
+            NODE_BODY
+        );
+        assert_eq!(
+            allowance(&req("/v1/nodes/join", None), "t0k", not_owner),
+            PUBLIC_BODY
+        );
+        assert_eq!(
+            allowance(&req("/v1/ingest/abc", None), "t0k", not_owner),
+            PUBLIC_BODY
+        );
+    }
+
+    #[test]
     fn session_cookie_is_read_among_others_and_sign_in_is_public() {
         let req = |cookie: &str| Request {
             method: "GET".into(),
@@ -477,6 +575,64 @@ mod tests {
         assert!(is_public("DELETE", "/v1/auth/session"));
         assert!(!is_public("GET", "/v1/auth/check"));
         assert!(!is_public("GET", "/v1/nodes/n1/runs"));
+    }
+
+    #[test]
+    fn a_browser_request_from_another_origin_gets_no_loopback_trust() {
+        let dir = scratch("cross-origin");
+        let hub = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let now = 1_000_000;
+        let local = Some(IpAddr::from(Ipv4Addr::LOCALHOST));
+        let post = |headers: &[(&str, &str)]| Request {
+            method: "POST".into(),
+            path: "/v1/settings".into(),
+            headers: std::iter::once(("host", "127.0.0.1:7700"))
+                .chain(headers.iter().copied())
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            peer: local,
+            ..Request::default()
+        };
+        // The console's own page, and callers that are not browsers, keep the machine's trust.
+        assert!(is_owner_of(&hub, &post(&[]), now));
+        assert!(is_owner_of(
+            &hub,
+            &post(&[
+                ("origin", "http://127.0.0.1:7700"),
+                ("sec-fetch-site", "same-origin")
+            ]),
+            now
+        ));
+        // Another site, another port of this machine, and a sandboxed frame's opaque origin do not.
+        assert!(!is_owner_of(
+            &hub,
+            &post(&[("origin", "https://site.example")]),
+            now
+        ));
+        assert!(!is_owner_of(
+            &hub,
+            &post(&[("origin", "http://127.0.0.1:7701")]),
+            now
+        ));
+        assert!(!is_owner_of(&hub, &post(&[("origin", "null")]), now));
+        assert!(!is_owner_of(
+            &hub,
+            &post(&[("sec-fetch-site", "cross-site")]),
+            now
+        ));
+        // A WebSocket handshake passes the gate; the socket's Origin policy answers a foreign page with 403.
+        assert!(is_owner_of(
+            &hub,
+            &post(&[("origin", "https://site.example"), ("upgrade", "websocket")]),
+            now
+        ));
+        // The owner token still admits a caller wherever it comes from.
+        let token = format!("Bearer {}", token_of(&dir));
+        assert!(is_owner_of(
+            &hub,
+            &post(&[("origin", "null"), ("authorization", token.as_str())]),
+            now
+        ));
     }
 
     #[test]

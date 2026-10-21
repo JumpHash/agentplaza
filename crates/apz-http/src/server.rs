@@ -38,11 +38,27 @@ const CLOSE_WAIT: Duration = Duration::from_secs(2);
 /// The most a waiting server reads (and discards) before it closes anyway.
 const CLOSE_DRAIN: usize = 64 << 10;
 
+/// How long a connection has, from its accept, to send its relay preface, finish the TLS handshake and
+/// send the request line and headers. Each read still has [`TIMEOUT`]; this bounds them together.
+const HEAD_DEADLINE: Duration = Duration::from_secs(20);
+
+/// How long a request body may take: this much, plus [`BODY_MIN_RATE`]'s time for its length.
+const BODY_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The slowest body transfer the deadline allows for: bytes per second.
+const BODY_MIN_RATE: u64 = 256 << 10;
+
+/// Decides, from a request's line and headers alone, whether its body is read at all: `Err` is the
+/// answer sent without reading it, `Ok` the most body bytes this caller may send (never more than the
+/// server's [`Limits::max_body`]).
+pub type Admit = Arc<dyn Fn(&Request) -> Result<usize, Response> + Send + Sync>;
+
 /// A bound, not yet serving, listener.
 pub struct Server {
     listener: TcpListener,
     limits: Limits,
     tls: Option<Arc<ServerConfig>>,
+    admit: Option<Admit>,
 }
 
 impl Server {
@@ -58,11 +74,21 @@ impl Server {
             listener: TcpListener::bind(addr)?,
             limits: Limits::default(),
             tls: None,
+            admit: None,
         })
     }
 
     pub fn limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// Asks `admit` about every request once its headers are read, before its body is ([`Admit`]).
+    pub fn admit(
+        mut self,
+        admit: impl Fn(&Request) -> Result<usize, Response> + Send + Sync + 'static,
+    ) -> Self {
+        self.admit = Some(Arc::new(admit));
         self
     }
 
@@ -115,9 +141,18 @@ impl Server {
                 continue;
             }
             let (handler, active) = (Arc::clone(&handler), Arc::clone(&active));
-            let (limits, tls) = (self.limits, self.tls.clone());
+            let (limits, tls, admit) = (self.limits, self.tls.clone(), self.admit.clone());
+            let accepted = Instant::now();
             thread::spawn(move || {
-                serve_accepted(stream, tls, &*handler, limits);
+                let head_deadline = accepted + HEAD_DEADLINE;
+                serve_accepted(
+                    stream,
+                    tls,
+                    &*handler,
+                    limits,
+                    admit.as_ref(),
+                    head_deadline,
+                );
                 active.fetch_sub(1, Ordering::SeqCst);
             });
         }
@@ -125,8 +160,14 @@ impl Server {
 }
 
 /// Serves one accepted connection, as plain HTTP or over TLS when `tls` is set.
-fn serve_accepted<H>(stream: TcpStream, tls: Option<Arc<ServerConfig>>, handler: &H, limits: Limits)
-where
+fn serve_accepted<H>(
+    stream: TcpStream,
+    tls: Option<Arc<ServerConfig>>,
+    handler: &H,
+    limits: Limits,
+    admit: Option<&Admit>,
+    head_deadline: Instant,
+) where
     H: Fn(&Request) -> Response,
 {
     let _ = stream.set_nodelay(true);
@@ -137,7 +178,7 @@ where
         peer = Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     }
     let Some(config) = tls else {
-        return serve_connection(stream, peer, handler, limits);
+        return serve_connection(stream, peer, handler, limits, admit, head_deadline);
     };
     let Ok(connection) = ServerConnection::new(config) else {
         return;
@@ -145,11 +186,16 @@ where
     let mut tls = StreamOwned::new(connection, stream);
     // A client that fails the handshake has no request to answer: close quietly.
     while tls.conn.is_handshaking() {
+        let Some(left) = head_deadline.checked_duration_since(Instant::now()) else {
+            return;
+        };
+        let _ = tls.sock.set_read_timeout(Some(left.min(TIMEOUT)));
         if tls.conn.complete_io(&mut tls.sock).is_err() {
             return;
         }
     }
-    serve_connection(tls, peer, handler, limits);
+    let _ = tls.sock.set_read_timeout(Some(TIMEOUT));
+    serve_connection(tls, peer, handler, limits, admit, head_deadline);
 }
 
 /// Whether a loopback connection opens with [`RELAY_PREFACE`]; the preface is consumed when it does.
@@ -170,7 +216,7 @@ fn relayed(stream: &TcpStream) -> bool {
         if Instant::now() >= deadline {
             return false;
         }
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -178,25 +224,26 @@ fn relayed(stream: &TcpStream) -> bool {
 /// first ([`CLOSE_WAIT`]). `peer` is the connection's remote address. An upgrade keeps the connection: its
 /// closure gets the connection with whatever the request reading had already buffered still to be
 /// read.
-fn serve_connection<S, H>(stream: S, peer: Option<IpAddr>, handler: &H, limits: Limits)
-where
+fn serve_connection<S, H>(
+    stream: S,
+    peer: Option<IpAddr>,
+    handler: &H,
+    limits: Limits,
+    admit: Option<&Admit>,
+    head_deadline: Instant,
+) where
     S: ws::Duplex + 'static,
     H: Fn(&Request) -> Response,
 {
-    let mut reader = BufReader::new(stream);
-    let (response, pooled) = match Request::read(&mut reader, limits) {
-        Err(message) => (Response::error(400, message), false),
-        Ok(mut request) => {
-            request.peer = peer;
+    let mut reader = BufReader::new(Deadlined {
+        inner: stream,
+        deadline: Some(head_deadline),
+    });
+    let (response, pooled) = match read_admitted(&mut reader, peer, limits, admit) {
+        Err(refused) => (refused, false),
+        Ok(request) => {
             let pooled = keeps_alive(&request);
-            if host_allowed(request.header("host"), peer) {
-                (handler(&request), pooled)
-            } else {
-                (
-                    Response::error(403, "the Host header must name loopback"),
-                    pooled,
-                )
-            }
+            (handler(&request), pooled)
         }
     };
     // A client reading to the close (no length) needs the server to close first.
@@ -207,6 +254,79 @@ where
         Ok(Some(run)) => run(Box::new(connection)),
         Ok(None) if wait => await_close(&mut connection),
         _ => {}
+    }
+}
+
+/// Reads one request: its head within the head deadline, then, if `admit` lets it in, a body no larger
+/// than it allows, within a deadline for that body's length. `Err` is the answer to send instead (a
+/// refusal is sent without reading the body). The deadline is lifted before the handler runs, so an
+/// upgraded connection keeps only the per-read timeouts.
+fn read_admitted<S: ws::Duplex>(
+    reader: &mut BufReader<Deadlined<S>>,
+    peer: Option<IpAddr>,
+    limits: Limits,
+    admit: Option<&Admit>,
+) -> Result<Request, Response> {
+    let (mut request, length) =
+        Request::read_head(reader, limits).map_err(|message| Response::error(400, message))?;
+    request.peer = peer;
+    if !host_allowed(request.header("host"), peer) {
+        return Err(Response::error(403, "the Host header must name loopback"));
+    }
+    let allowed = match admit {
+        Some(admit) => admit(&request)?.min(limits.max_body),
+        None => limits.max_body,
+    };
+    if length.is_some_and(|length| length > allowed) {
+        return Err(Response::error(413, "the request body is too large"));
+    }
+    if let Some(length) = length {
+        let budget = BODY_DEADLINE + Duration::from_secs(length as u64 / BODY_MIN_RATE);
+        reader.get_mut().deadline = Some(Instant::now() + budget);
+    }
+    request
+        .read_body(reader, length)
+        .map_err(|message| Response::error(400, message))?;
+    reader.get_mut().deadline = None;
+    Ok(request)
+}
+
+/// A connection whose reads, while `deadline` is set, end with `TimedOut` once it passes: each read
+/// waits at most the time left (and at most [`TIMEOUT`]). A slow sender cannot hold a connection past
+/// it by sending a byte now and then.
+struct Deadlined<S> {
+    inner: S,
+    deadline: Option<Instant>,
+}
+
+impl<S: ws::Duplex> Read for Deadlined<S> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Some(deadline) = self.deadline {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the request took too long to arrive",
+                ));
+            };
+            self.inner.set_read_timeout(Some(left.min(TIMEOUT)))?;
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl<S: ws::Duplex> Write for Deadlined<S> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<S: ws::Duplex> ws::Duplex for Deadlined<S> {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.inner.set_read_timeout(timeout)
     }
 }
 
@@ -488,5 +608,138 @@ mod tests {
         let reply = String::from_utf8_lossy(&reply);
         assert!(reply.starts_with("HTTP/1.1 200 OK\r\n"), "{reply}");
         assert!(reply.ends_with("secure"), "{reply}");
+    }
+
+    /// Sends `parts` one after another on a fresh connection and returns the whole reply.
+    fn send_parts(port: u16, parts: &[&[u8]]) -> String {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        for part in parts {
+            stream.write_all(part).expect("send");
+        }
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).expect("read");
+        reply
+    }
+
+    #[test]
+    fn a_refused_request_is_answered_without_reading_its_body() {
+        // The default limits refuse a body this long in the head, before `admit` is asked: raise them so
+        // the hook decides.
+        let handle = Server::bind(0)
+            .expect("bind")
+            .limits(Limits {
+                max_body: 16 << 20,
+                ..Limits::default()
+            })
+            .admit(|_request: &Request| Err(Response::error(401, "no")))
+            .spawn(|_request: &Request| Response::text(200, "handled"))
+            .expect("spawn");
+        let mut stream = TcpStream::connect(("127.0.0.1", handle.port())).expect("connect");
+        // The head announces ten MiB and no body bytes ever follow it.
+        stream
+            .write_all(b"POST /x HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10485760\r\n\r\n")
+            .expect("send");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        let started = Instant::now();
+        let mut reply = String::new();
+        stream
+            .read_to_string(&mut reply)
+            .expect("the refusal arrives while the body is still unsent");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
+    }
+
+    #[test]
+    fn a_body_over_the_admitted_allowance_is_refused_and_one_within_it_reaches_the_handler() {
+        let handle = Server::bind(0)
+            .expect("bind")
+            .admit(|_request: &Request| Ok(16))
+            .spawn(|request: &Request| Response::text(200, &request.body.len().to_string()))
+            .expect("spawn");
+        // Only the head is sent: the 413 comes before any body would be read.
+        let over = send_parts(
+            handle.port(),
+            &[b"POST /x HTTP/1.1\r\nHost: localhost\r\nContent-Length: 17\r\n\r\n".as_slice()],
+        );
+        assert!(over.starts_with("HTTP/1.1 413"), "{over}");
+        let within = send_parts(
+            handle.port(),
+            &[
+                b"POST /x HTTP/1.1\r\nHost: localhost\r\nContent-Length: 16\r\n\r\n".as_slice(),
+                b"0123456789abcdef".as_slice(),
+            ],
+        );
+        assert!(within.starts_with("HTTP/1.1 200"), "{within}");
+        assert!(within.ends_with("16"), "{within}");
+    }
+
+    /// The socket pair's end is a [`ws::Duplex`] too, so [`Deadlined`] can wrap it.
+    #[cfg(unix)]
+    impl ws::Duplex for std::os::unix::net::UnixStream {
+        fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+            std::os::unix::net::UnixStream::set_read_timeout(self, timeout)
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_deadline_ends_a_read_that_waits_past_it() {
+        use std::os::unix::net::UnixStream;
+        let mut buf = [0u8; 8];
+
+        // A deadline already passed: the read fails at once, as TimedOut.
+        let (near, _far) = UnixStream::pair().expect("a socket pair");
+        let past = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("an instant 1 ms back");
+        let mut stream = Deadlined {
+            inner: near,
+            deadline: Some(past),
+        };
+        let err = stream.read(&mut buf).expect_err("the deadline has passed");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+
+        // A deadline 100 ms ahead and nothing written: the wait ends within a second. The socket's
+        // own timeout ends the wait itself, which on Unix surfaces as WouldBlock, not TimedOut.
+        let (near, _far) = UnixStream::pair().expect("a socket pair");
+        let mut stream = Deadlined {
+            inner: near,
+            deadline: Some(Instant::now() + Duration::from_millis(100)),
+        };
+        let started = Instant::now();
+        let err = stream.read(&mut buf).expect_err("nothing was written");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(
+                err.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ),
+            "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_a_deadline_a_read_waits_for_the_peer() {
+        use std::os::unix::net::UnixStream;
+        let (near, mut far) = UnixStream::pair().expect("a socket pair");
+        far.write_all(b"x").expect("send");
+        let mut stream = Deadlined {
+            inner: near,
+            deadline: None,
+        };
+        let mut buf = [0u8; 8];
+        assert_eq!(stream.read(&mut buf).expect("the byte the peer wrote"), 1);
+        assert_eq!(buf[0], b'x');
     }
 }

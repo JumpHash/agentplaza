@@ -1,5 +1,5 @@
 meta {
-  name: Answer 502 for a revoked node's live stats
+  name: Answer 409 for a revoked node's live stats
   type: http
   seq: 8
 }
@@ -11,6 +11,6 @@ get {
 }
 
 assert {
-  res.status: eq 502
+  res.status: eq 409
   res.responseTime: lt {{budgetMs}}
 }

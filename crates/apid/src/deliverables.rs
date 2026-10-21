@@ -603,7 +603,9 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
 /// same-origin, no forms, no top navigation), so its script cannot reach the console's storage or the hub as the owner.
 /// Its styles (inline `<style>` included) and images (data:, blob: and https:) load, so a report renders as its author
 /// made it; nothing in the policy reaches the console's origin.
-const HTML_CSP: &str = "sandbox allow-scripts; default-src 'self' data: blob: https:; script-src 'unsafe-inline' 'self' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:";
+/// No `connect-src`, `form-action` or `base-uri` but `'none'`: the page is served from the hub's own origin, so a
+/// request it made would reach the hub's API; it may show itself, not call anything.
+const HTML_CSP: &str = "sandbox allow-scripts; default-src 'self' data: blob: https:; script-src 'unsafe-inline' 'self' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; connect-src 'none'; form-action 'none'; base-uri 'none'";
 
 /// A file is HTML when its content type says so or its name ends `.html` or `.htm`.
 fn is_html(content_type: &str, name: &str) -> bool {
@@ -965,6 +967,15 @@ mod tests {
             assert_eq!(
                 directive("script-src").as_deref(),
                 Some("script-src 'unsafe-inline' 'self' https:")
+            );
+            // The page reaches nothing: it is served from the hub's origin, whose API it must not call.
+            assert_eq!(
+                directive("connect-src").as_deref(),
+                Some("connect-src 'none'")
+            );
+            assert_eq!(
+                directive("form-action").as_deref(),
+                Some("form-action 'none'")
             );
             // The policy is served with HTML, inline, with nosniff and no download header; nothing else gets it.
             let (kind, headers) = served("text/html; charset=utf-8", "report.html", false);

@@ -1,5 +1,5 @@
 meta {
-  name: Refuse a run on a revoked node (502)
+  name: Refuse a run on a revoked node (409)
   type: http
   seq: 10
 }
@@ -19,6 +19,6 @@ body:json {
 }
 
 assert {
-  res.status: eq 502
+  res.status: eq 409
   res.responseTime: lt {{budgetMs}}
 }

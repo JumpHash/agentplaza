@@ -53,6 +53,38 @@ pub fn unb64(text: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    /// The primitives every secret rests on: fresh randomness, a hash that depends on its input, a check that
+    /// admits only the token it was made from, and an equality that sees a one-bit difference in any byte. A
+    /// constant RNG or an always-true check would make every token, session and nonce predictable or void.
+    #[test]
+    fn secrets_are_random_hashed_and_checked_bit_by_bit() {
+        let (a, b) = (random::<32>(), random::<32>());
+        assert_ne!(a, b, "two draws of 256 bits are equal");
+        assert!(
+            a.iter().any(|byte| *byte != a[0]),
+            "a draw is one repeated byte"
+        );
+        let (first, second) = (owner::new_token(), owner::new_token());
+        assert_ne!(first, second);
+        assert!(first.starts_with(owner::PREFIX) && first.len() > owner::PREFIX.len() + 40);
+        assert_ne!(owner::hash(&first), owner::hash(&second));
+        assert!(owner::check(&first, &owner::hash(&first)));
+        assert!(!owner::check(&second, &owner::hash(&first)));
+        assert!(!owner::check("", &owner::hash(&first)));
+        for i in 0..a.len() {
+            for bit in 0..8 {
+                let mut changed = a;
+                changed[i] ^= 1 << bit;
+                assert!(!ct_eq(&a, &changed), "byte {i} bit {bit}");
+            }
+        }
+        // Two bytes that differ in the same bit must not cancel out.
+        let mut twice = a;
+        twice[0] ^= 1;
+        twice[1] ^= 1;
+        assert!(!ct_eq(&a, &twice));
+    }
+
     #[test]
     fn ct_eq_compares_whole_strings() {
         assert!(ct_eq(b"abc", b"abc"));

@@ -73,6 +73,18 @@ impl Request {
     /// Reads one request. The error is the 400's message: anything malformed
     /// or over `limits` is refused, never a panic.
     pub fn read(reader: &mut impl BufRead, limits: Limits) -> Result<Self, &'static str> {
+        let (mut request, length) = Self::read_head(reader, limits)?;
+        request.read_body(reader, length)?;
+        Ok(request)
+    }
+
+    /// Reads the request line and headers only, and returns the request (its body still empty) with
+    /// the body's `Content-Length`. A server can decide whether, and how much, body to take before
+    /// reading it ([`Request::read_body`]).
+    pub fn read_head(
+        reader: &mut impl BufRead,
+        limits: Limits,
+    ) -> Result<(Self, Option<usize>), &'static str> {
         let mut line = Vec::new();
         read_line(reader, limits.max_head, &mut line)?;
         let request_line =
@@ -140,16 +152,25 @@ impl Request {
             request.headers.push((name, value.to_string()));
         }
 
-        if let Some(length) = content_length {
+        Ok((request, content_length))
+    }
+
+    /// Reads the body [`Request::read_head`] announced (`length` bytes, or none).
+    pub fn read_body(
+        &mut self,
+        reader: &mut impl BufRead,
+        length: Option<usize>,
+    ) -> Result<(), &'static str> {
+        if let Some(length) = length {
             reader
                 .take(length as u64)
-                .read_to_end(&mut request.body)
+                .read_to_end(&mut self.body)
                 .map_err(|_| "the request body could not be read")?;
-            if request.body.len() != length {
+            if self.body.len() != length {
                 return Err("the request body is shorter than Content-Length");
             }
         }
-        Ok(request)
+        Ok(())
     }
 }
 
@@ -164,11 +185,12 @@ fn read_line(
         .take(limit as u64 + 1)
         .read_until(b'\n', line)
         .map_err(|_| "the request could not be read")?;
-    if read == 0 || line.last() != Some(&b'\n') {
-        return Err("the request ended before it was complete");
-    }
+    // The length first: a line past the limit is cut at `limit + 1` bytes, before its newline.
     if line.len() > limit {
         return Err("a request line or header is too long");
+    }
+    if read == 0 || line.last() != Some(&b'\n') {
+        return Err("the request ended before it was complete");
     }
     line.pop();
     if line.last() == Some(&b'\r') {
@@ -182,11 +204,27 @@ fn is_token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
 }
 
-/// Whether a `Host` header names loopback: `127.0.0.1` or `localhost`
-/// (case-insensitive), with an optional `:port`.
+/// Whether a `Host` header names this machine: `localhost`, `127.0.0.1`, `::1` or `*.localhost` with a
+/// non-empty label (case-insensitive), with an optional `:port`. An IPv6 address is bracketed when a port
+/// follows it (`[::1]:7700`). This is the one definition of the local part; the hub's owner trust uses it.
 pub fn host_is_loopback(host: &str) -> bool {
-    let name = host.split(':').next().unwrap_or(host);
-    name.eq_ignore_ascii_case("127.0.0.1") || name.eq_ignore_ascii_case("localhost")
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        // Bracketed IPv6: the port, if any, follows the closing bracket and nothing else may.
+        match rest.split_once(']') {
+            Some((name, after)) if after.is_empty() || after.starts_with(':') => name,
+            _ => return false,
+        }
+    } else if host.matches(':').count() > 1 {
+        // A bare IPv6 address has no port to drop.
+        host
+    } else {
+        host.split(':').next().unwrap_or_default()
+    };
+    let name = name.to_ascii_lowercase();
+    matches!(name.as_str(), "localhost" | "127.0.0.1" | "::1")
+        || name
+            .strip_suffix(".localhost")
+            .is_some_and(|label| !label.is_empty())
 }
 
 /// Writes a streamed body to the connection.
@@ -316,19 +354,24 @@ impl Response {
 }
 
 fn reason(status: u16) -> &'static str {
-    const REASONS: [(u16, &str); 16] = [
+    const REASONS: [(u16, &str); 21] = [
         (101, "Switching Protocols"),
         (200, "OK"),
         (201, "Created"),
         (202, "Accepted"),
+        (204, "No Content"),
         (400, "Bad Request"),
+        (401, "Unauthorized"),
         (403, "Forbidden"),
         (404, "Not Found"),
         (405, "Method Not Allowed"),
+        (408, "Request Timeout"),
         (409, "Conflict"),
         (413, "Content Too Large"),
         (422, "Unprocessable Content"),
+        (423, "Locked"),
         (426, "Upgrade Required"),
+        (429, "Too Many Requests"),
         (500, "Internal Server Error"),
         (502, "Bad Gateway"),
         (503, "Service Unavailable"),
@@ -425,6 +468,53 @@ mod tests {
         assert!(read(b"GET /x HTTP/1.1\r\nX: \xff\r\n\r\n").is_err());
     }
 
+    /// Each limit refuses with its own reason, so a limit that stops working cannot hide behind another check
+    /// (an oversized body is also too short when it is not sent: the reason says which check refused it).
+    #[test]
+    fn each_limit_refuses_with_its_own_reason() {
+        let limits = Limits {
+            max_head: 64,
+            max_body: 8,
+        };
+        let read_with = |raw: &[u8]| Request::read(&mut Cursor::new(raw), limits);
+        // At the limits: served.
+        let at_limit = read_with(b"POST /x HTTP/1.1\r\nContent-Length: 8\r\n\r\n12345678")
+            .expect("8 bytes is the cap");
+        assert_eq!(at_limit.body, b"12345678");
+        // The request line (15 + CRLF), one header (3 + 40 + CRLF) and the blank line: exactly max_head bytes.
+        let head_at_limit = format!("GET /x HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(40));
+        assert_eq!(head_at_limit.len(), 64);
+        assert!(
+            read_with(head_at_limit.as_bytes()).is_ok(),
+            "a head of exactly max_head bytes is served"
+        );
+        // One past each limit: refused, for that reason.
+        for (raw, reason) in [
+            (
+                "POST /x HTTP/1.1\r\nContent-Length: 9\r\n\r\n123456789".to_string(),
+                "the request body is too large",
+            ),
+            (
+                format!("GET /x HTTP/1.1\r\nX: {}\r\n\r\n", "a".repeat(64)),
+                "a request line or header is too long",
+            ),
+            (
+                format!("GET /x HTTP/1.1\r\n{}\r\n", "X: 12345678\r\n".repeat(4)),
+                "the request headers are too large",
+            ),
+            (
+                "G@T /x HTTP/1.1\r\n\r\n".to_string(),
+                "the method is not a token",
+            ),
+            (
+                " /x HTTP/1.1\r\n\r\n".to_string(),
+                "the method is not a token",
+            ),
+        ] {
+            assert_eq!(read_with(raw.as_bytes()), Err(reason), "{raw:.60?}");
+        }
+    }
+
     #[test]
     fn only_loopback_hosts_pass_the_guard() {
         for host in [
@@ -432,6 +522,11 @@ mod tests {
             "127.0.0.1:8899",
             "localhost",
             "LOCALHOST:19080",
+            "::1",
+            "[::1]",
+            "[::1]:8899",
+            "app.localhost:7700",
+            "x.localhost",
         ] {
             assert!(host_is_loopback(host), "{host}");
         }
@@ -439,8 +534,13 @@ mod tests {
             "evil.example",
             "127.0.0.1.evil.example",
             "10.0.0.1:8899",
-            "[::1]:8899",
             "",
+            ".localhost",
+            "localhost.evil.example",
+            "[::1].evil.example",
+            "[::1",
+            "::1:8899",
+            "[::2]:8899",
         ] {
             assert!(!host_is_loopback(host), "{host}");
         }
