@@ -81,7 +81,7 @@ jobs:
       previous: ${{ steps.next.outputs.previous }}
       source: ${{ steps.next.outputs.source }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
       # A hand run always releases.
       - id: changes
@@ -161,24 +161,24 @@ jobs:
       SOURCE: ${{ needs.version.outputs.source }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
       # First, so the closing clean-up has it even when a restore below fails.
       - name: CI image
         run: .github/ci/image.sh
       # The platform jobs leave their packages in the cache under this run's id (no artifact storage).
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: { path: out-linux-x86_64, key: "pkg-linux-x86_64-${{ github.run_id }}", fail-on-cache-miss: true }
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: { path: out-linux-aarch64, key: "pkg-linux-aarch64-${{ github.run_id }}", fail-on-cache-miss: true }
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: { path: out-raspberrypi, key: "pkg-raspberrypi-${{ github.run_id }}", fail-on-cache-miss: true }
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: needs.macos.result == 'success'
         with: { path: out-macos, key: "pkg-macos-${{ github.run_id }}", fail-on-cache-miss: true }
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: { path: out-windows-x64, key: "pkg-windows-x64-${{ github.run_id }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: vars.APZ_WINDOWS_ARM64 == 'on'
         with: { path: out-windows-arm64, key: "pkg-windows-arm64-${{ github.run_id }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
       # The SBOM (CycloneDX: every crate the workspace builds, with versions and licences) ships with the packages.
