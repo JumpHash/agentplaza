@@ -1,12 +1,10 @@
 {
-  "requests": 148,
-  "passed": 148,
+  "requests": 2917,
+  "passed": 2917,
   "failed": 0,
-  "checks": 541,
-  "checksPassed": 541,
-  "operations": 465,
-  "tested": 101,
-  "findings": {
-    "Server error": 24
-  }
+  "checks": 9005,
+  "checksPassed": 9005,
+  "operations": 575,
+  "tested": 563,
+  "findings": {}
 }
