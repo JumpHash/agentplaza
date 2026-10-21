@@ -312,6 +312,9 @@ impl Session<'_> {
             Some(role) => {
                 let (token, steering, waker) = hub.connect(cid, role, last_heartbeat)?;
                 let (profile, next_hello) = self.ask_apid(&apid, role, caps, clock);
+                if let Some(found) = &profile {
+                    hub.set_role(cid, token, &found.role);
+                }
                 (
                     token,
                     steering,
@@ -331,7 +334,8 @@ impl Session<'_> {
                         ));
                     }
                 };
-                let (token, steering, waker) = hub.connect(cid, &role, last_heartbeat)?;
+                let (token, steering, waker) = hub.connect(cid, "", last_heartbeat)?;
+                hub.set_role(cid, token, &role);
                 (token, steering, waker, role, profile, None)
             }
         };
@@ -376,8 +380,9 @@ impl Session<'_> {
             while let Ok(done) = bridge.settled.try_recv() {
                 self.log.line(&format!("vsockd: agent {cid} {}", done.note));
                 if let Some(line) = done.line {
-                    if matches!(line, HostMessage::Profile { .. }) {
+                    if let HostMessage::Profile { profile: found } = &line {
                         next_hello = None;
+                        hub.set_role(cid, token, &found.role);
                     }
                     self.send(lines, &line)?;
                 }

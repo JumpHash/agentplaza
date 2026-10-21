@@ -506,6 +506,7 @@ pub fn agent(cid: u64, role: &str) -> Agent {
     Agent {
         cid,
         role: role.to_string(),
+        claimed_role: role.to_string(),
         connected_at_ms: 1,
         last_heartbeat_ms: 2,
         calls: 0,

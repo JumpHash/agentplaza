@@ -220,13 +220,29 @@ fn v4_refusal(ip: Ipv4Addr) -> Option<&'static str> {
         Some("broadcast")
     } else if ip.is_multicast() {
         Some("multicast")
+    } else if special_v4(ip) {
+        Some("reserved")
     } else {
         None
     }
 }
 
+/// The IANA special-purpose IPv4 ranges with no stable `Ipv4Addr` predicate: "this network" (0/8), the
+/// shared address space (100.64/10: carrier-grade NAT, and Tailscale's tailnet addresses, which reach the
+/// owner's own machines), IETF protocol assignments (192.0.0/24), benchmarking (198.18/15) and the
+/// reserved 240/4.
+fn special_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    a == 0
+        || (a == 100 && b & 0xc0 == 64)
+        || (a == 192 && b == 0 && c == 0)
+        || (a == 198 && b & 0xfe == 18)
+        || a >= 240
+}
+
 fn v6_refusal(ip: Ipv6Addr) -> Option<&'static str> {
-    let first = ip.segments()[0];
+    let segments = ip.segments();
+    let first = segments[0];
     if ip.is_unspecified() {
         Some("unspecified")
     } else if ip.is_loopback() {
@@ -235,8 +251,30 @@ fn v6_refusal(ip: Ipv6Addr) -> Option<&'static str> {
         Some("multicast")
     } else if first & 0xffc0 == 0xfe80 {
         Some("link-local")
+    } else if first & 0xffc0 == 0xfec0 {
+        Some("site-local")
     } else if first & 0xfe00 == 0xfc00 {
         Some("unique-local")
+    } else if let Some(v4) = embedded_v4(ip) {
+        // NAT64 and 6to4 carry an IPv4 address, which is held to the IPv4 rules.
+        v4_refusal(v4)
+    } else if segments[..3] == [0x64, 0xff9b, 0x1] {
+        Some("local NAT64")
+    } else if segments[..2] == [0x2001, 0] || segments[..2] == [0x2001, 0xdb8] {
+        Some("reserved")
+    } else {
+        None
+    }
+}
+
+/// The IPv4 address inside a NAT64 address (64:ff9b::/96, RFC 6052) or a 6to4 one (2002::/16, RFC 3056).
+fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = ip.segments();
+    let o = ip.octets();
+    if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        Some(Ipv4Addr::new(o[12], o[13], o[14], o[15]))
+    } else if segments[0] == 0x2002 {
+        Some(Ipv4Addr::new(o[2], o[3], o[4], o[5]))
     } else {
         None
     }
@@ -1115,6 +1153,46 @@ mod tests {
         }
         assert!(policy.port_allowed(80) && policy.port_allowed(443) && policy.port_allowed(8080));
         assert!(!policy.port_allowed(22) && !policy.port_allowed(25));
+    }
+
+    #[test]
+    fn special_purpose_ranges_and_embedded_ipv4_are_refused() {
+        let policy = Policy::new(Vec::new());
+        for ip in [
+            "0.1.2.3",
+            "100.64.0.1",
+            "100.100.100.100",
+            "100.127.255.254",
+            "192.0.0.8",
+            "198.18.0.1",
+            "198.19.255.254",
+            "240.0.0.1",
+            "fec0::1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a00:5",
+            "64:ff9b:1::5",
+            "2002:7f00:1::",
+            "2002:c0a8:101::1",
+            "2001::1",
+            "2001:db8::1",
+        ] {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert!(policy.refusal(ip).is_some(), "{ip} must be refused");
+        }
+        // The neighbours stay public, and so do NAT64 and 6to4 addresses that carry a public IPv4 address.
+        for ip in [
+            "100.63.255.255",
+            "100.128.0.1",
+            "192.0.1.1",
+            "192.1.0.1",
+            "198.17.0.1",
+            "198.20.0.1",
+            "64:ff9b::808:808",
+            "2002:808:808::1",
+        ] {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert_eq!(policy.refusal(ip), None, "{ip} is public and allowed");
+        }
     }
 
     #[test]

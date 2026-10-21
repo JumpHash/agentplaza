@@ -11,8 +11,10 @@
 //! 3. Each request head the guest sends is read (16 KiB cap), parsed in origin form, and asked of
 //!    apid (`egress_inject`). The answer's header replaces the guest's own copy of that header, and
 //!    the head goes upstream with its body by its framing (`Content-Length`, or `chunked` relayed
-//!    chunk by chunk through the trailers). An `Upgrade` request ends the parsing: the guest's
-//!    bytes are copied upstream raw from then on.
+//!    chunk by chunk through the trailers). A head that two parsers could frame differently is
+//!    refused (see `parse_request`). An `Upgrade` request is relayed like any other: the guest's
+//!    bytes are copied upstream raw from then on only once the upstream answers
+//!    `101 Switching Protocols`.
 //! 4. The upstream's bytes are relayed to the guest raw, as they arrive.
 //!
 //! ALPN is `http/1.1` on both sides. A request this module cannot frame, or whose injection apid
@@ -30,9 +32,10 @@
 //!
 //! No thread waits on a cycle. Every wait is a socket read with a poll timeout, a mutex held for
 //! CPU work, or a queue push that never blocks, except two deliberate waits: the guest reader
-//! pauses while more than [`WINDOW`] bytes wait for the upstream (backpressure to the guest), and
-//! the caller waits on apid. The upstream reader never waits on anything but its socket, so the
-//! upstream always drains, which is what lets the guest reader's pause end. The other direction is
+//! pauses while more than [`WINDOW`] bytes wait for the upstream or its bounded plaintext queue
+//! is full (backpressure to the guest), and the caller waits on apid. The upstream reader only
+//! waits on its socket. The caller drops the plaintext receiver before joining that reader, so
+//! shutdown releases a blocked plaintext sender too. The other direction is
 //! bounded differently: a guest that stops reading its responses ends the connection past
 //! [`QUEUE_LIMIT`] queued bytes, rather than stalling the upstream reader.
 //!
@@ -46,7 +49,7 @@ use std::fmt::Display;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -66,6 +69,8 @@ use crate::apid::{Apid, Injection};
 const ALPN: &[u8] = b"http/1.1";
 /// Plaintext the guest may have sent ahead of the upstream: the guest reader pauses past this.
 const WINDOW: usize = 1024 * 1024;
+/// Plaintext queued while the caller awaits the hub: each item is at most COPY_BUF bytes.
+const PLAINTEXT_CHUNKS: usize = WINDOW / COPY_BUF;
 /// Bytes queued for the guest that it has not read: past this the connection is ended.
 const QUEUE_LIMIT: usize = 256 * 1024 * 1024;
 /// A request head, a chunk-size line, and a trailer line are each capped at this many bytes.
@@ -150,13 +155,15 @@ fn intercept_with(
     let (guest_side, guest_queue) = Side::new(guest_tls);
     let (up_side, up_queue) = Side::new(upstream_tls);
     let (guest_side, up_side) = (Arc::new(guest_side), Arc::new(up_side));
-    let (to_caller, from_guest) = mpsc::channel();
+    let (to_caller, from_guest) = mpsc::sync_channel(PLAINTEXT_CHUNKS);
     // A handshake can leave decrypted bytes buffered inside rustls, and the readers only drain on
     // a read, so the buffered bytes are drained here before any reader starts.
-    let (early, _) = guest_side.receive(&[])?;
-    if !early.is_empty() {
-        let _ = to_caller.send(early);
+    let (guest_early, _) = guest_side.receive(&[])?;
+    if guest_early.len() > WINDOW {
+        return Err("the guest sent too much plaintext with its handshake".into());
     }
+    // Keep early plaintext directly in Inbound: a bounded send here would wait for a
+    // receiver that cannot start until this setup finishes.
     let (early, _) = up_side.receive(&[])?;
     if !early.is_empty() {
         guest_side.send(&early)?;
@@ -179,24 +186,42 @@ fn intercept_with(
             write_loop(&link.upstream, up_queue, &side, &link, "upstream");
         });
     }
+    // The upstream reader reads the status line of each Upgrade request's answer for `peek`.
+    let (answers, answer_rx) = mpsc::channel();
+    let peek = Arc::new(Peek {
+        state: Mutex::new(None),
+        answers,
+    });
     let up_reader = {
-        let (up, guest_side, link) = (
+        let (up, guest_side, link, peek) = (
             Arc::clone(&up_side),
             Arc::clone(&guest_side),
             Arc::clone(&link),
+            Arc::clone(&peek),
         );
-        thread::spawn(move || upstream_read_loop(&link.upstream, &up, &guest_side, &link))
+        thread::spawn(move || upstream_read_loop(&link.upstream, &up, &guest_side, &link, &peek))
     };
 
     let mut inbound = Inbound {
         rx: from_guest,
-        buf: Vec::new(),
+        buf: guest_early,
         pos: 0,
         link: Arc::clone(&link),
         last: Instant::now(),
     };
-    let result = relay(&mut inbound, target, apid, &up_side, tally);
+    let result = relay(
+        &mut inbound,
+        target,
+        apid,
+        &up_side,
+        tally,
+        &peek,
+        &answer_rx,
+    );
     link.hang_up();
+    // A bounded plaintext sender may be blocked. Dropping the sole receiver releases
+    // it before any worker join; socket shutdown alone does not wake channel sends.
+    drop(inbound);
     tally.down = up_reader.join().unwrap_or(0);
     // A reason recorded by any thread is the one reported: it is the failure, and the caller's own
     // error is only its echo.
@@ -414,14 +439,15 @@ fn write_loop(mut socket: impl Write, queue: Receiver<Out>, side: &Side, link: &
 }
 
 /// Reads the guest's socket, decrypts it, and hands the plaintext to the caller. Pauses while the
-/// upstream is more than [`WINDOW`] bytes behind. Ends when the guest closes, the caller stops
-/// listening (dropping `to_caller` tells it so), or the link ends.
+/// upstream is more than [`WINDOW`] bytes behind or the bounded plaintext queue is full.
+/// Ends when the guest closes, the caller stops
+/// listening (dropping the receiver tells it so), or the link ends.
 fn guest_read_loop(
     mut raw: UnixStream,
     side: &Side,
     up: &Side,
     link: &Link,
-    to_caller: Sender<Vec<u8>>,
+    to_caller: SyncSender<Vec<u8>>,
 ) {
     let mut buf = vec![0u8; COPY_BUF];
     let mut last = Instant::now();
@@ -441,8 +467,12 @@ fn guest_read_loop(
                 last = Instant::now();
                 match side.receive(&buf[..n]) {
                     Ok((plain, closed)) => {
-                        if !plain.is_empty() && to_caller.send(plain).is_err() {
-                            return;
+                        // A slow hub decision must backpressure the guest too: at this point
+                        // the encrypted upstream queue may still be completely empty.
+                        for chunk in plain.chunks(COPY_BUF) {
+                            if link.is_done() || to_caller.send(chunk.to_vec()).is_err() {
+                                return;
+                            }
                         }
                         if closed {
                             side.peer_closed.store(true, Ordering::SeqCst);
@@ -479,9 +509,15 @@ fn guest_read_loop(
 }
 
 /// Reads the upstream's socket, decrypts it, and queues the plaintext for the guest, raw. It never
-/// waits on the guest: a guest that stops reading ends the connection past [`QUEUE_LIMIT`]. Returns
-/// the bytes relayed.
-fn upstream_read_loop(mut raw: &TcpStream, up: &Side, guest: &Side, link: &Link) -> u64 {
+/// waits on the guest: a guest that stops reading ends the connection past [`QUEUE_LIMIT`]. `peek`
+/// reads the status line of an Upgrade request's answer on the way. Returns the bytes relayed.
+fn upstream_read_loop(
+    mut raw: &TcpStream,
+    up: &Side,
+    guest: &Side,
+    link: &Link,
+    peek: &Peek,
+) -> u64 {
     let mut buf = vec![0u8; COPY_BUF];
     let mut total = 0u64;
     let mut last = Instant::now();
@@ -501,6 +537,7 @@ fn upstream_read_loop(mut raw: &TcpStream, up: &Side, guest: &Side, link: &Link)
                         return total;
                     }
                 };
+                peek.feed(&plain);
                 if guest.waiting.load(Ordering::SeqCst) > QUEUE_LIMIT {
                     link.fail("the guest stopped reading its responses");
                     return total;
@@ -530,6 +567,140 @@ fn upstream_read_loop(mut raw: &TcpStream, up: &Side, guest: &Side, link: &Link)
             Err(err) => {
                 link.fail(format!("the upstream socket read failed: {err}"));
                 return total;
+            }
+        }
+    }
+}
+
+/// A header name is a token (RFC 9110): letters, digits and the tchar punctuation, and nothing else.
+/// Whitespace before a colon is not one.
+fn is_token(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+/// Reads the status line of the upstream's answer to an Upgrade request. It is armed before that
+/// request is sent. The upstream reader feeds it the upstream's bytes while armed, and it sends the
+/// answer's status code once: `None` when a line is not part of a response head or runs past
+/// [`MAX_HEAD`]. Interim responses other than `101 Switching Protocols` (such as `100 Continue`) are
+/// skipped with their headers, at most [`MAX_INTERIM`] of them.
+struct Peek {
+    /// The reading state while armed; `None` while no answer is awaited.
+    state: Mutex<Option<PeekState>>,
+    answers: Sender<Option<u16>>,
+}
+
+/// Where the peek is in the upstream's response heads.
+#[derive(Default)]
+struct PeekState {
+    /// The line read so far, through its LF.
+    line: Vec<u8>,
+    /// Whether the status line of an interim response was read, and its headers are being skipped.
+    in_interim: bool,
+    /// The bytes of the interim head being skipped.
+    head: usize,
+    /// The interim responses skipped so far.
+    interim: usize,
+}
+
+/// The most interim responses (other than `101`) that an upgrade's answer may follow.
+const MAX_INTERIM: usize = 5;
+
+impl PeekState {
+    /// Reads `bytes` as the rest of the upstream's response heads. `Some` is the answer, once known.
+    fn advance(&mut self, bytes: &[u8]) -> Option<Option<u16>> {
+        for &byte in bytes {
+            self.line.push(byte);
+            if self.line.len() > MAX_HEAD {
+                return Some(None);
+            }
+            if byte == b'\n' {
+                let line = std::mem::take(&mut self.line);
+                if let Some(answer) = self.settle(&line) {
+                    return Some(answer);
+                }
+            }
+        }
+        None
+    }
+
+    /// Takes one complete line of the upstream's heads. `Some` settles the answer.
+    fn settle(&mut self, line: &[u8]) -> Option<Option<u16>> {
+        if self.in_interim {
+            self.head += line.len();
+            if self.head > MAX_HEAD {
+                return Some(None);
+            }
+            if line == b"\r\n" || line == b"\n" {
+                self.in_interim = false;
+                self.head = 0;
+            }
+            return None;
+        }
+        match status_code(line) {
+            Some(code) if (100..200).contains(&code) && code != 101 => {
+                self.interim += 1;
+                if self.interim > MAX_INTERIM {
+                    return Some(None);
+                }
+                self.in_interim = true;
+                self.head = line.len();
+                None
+            }
+            answer => Some(answer),
+        }
+    }
+}
+
+impl Peek {
+    fn arm(&self) {
+        *locked(&self.state) = Some(PeekState::default());
+    }
+
+    /// Feeds the upstream's plaintext to the peek. Only the bytes after [`Peek::arm`] are read, up to
+    /// the answer.
+    fn feed(&self, bytes: &[u8]) {
+        let mut armed = locked(&self.state);
+        let Some(state) = armed.as_mut() else {
+            return;
+        };
+        let Some(answer) = state.advance(bytes) else {
+            return;
+        };
+        *armed = None;
+        let _ = self.answers.send(answer);
+    }
+}
+
+/// The code of a status line (`HTTP/1.x NNN ...`), or `None` when the line is not one.
+fn status_code(line: &[u8]) -> Option<u16> {
+    let text = std::str::from_utf8(line).ok()?;
+    let mut words = text.split_ascii_whitespace();
+    let version = words.next()?;
+    let code = words.next()?;
+    if !version.starts_with("HTTP/1.")
+        || code.len() != 3
+        || !code.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    code.parse().ok()
+}
+
+/// Waits for the upstream reader's answer to the Upgrade request just sent. A connection that ends
+/// first is an error, and the link's reason is the one reported.
+fn answered(answers: &Receiver<Option<u16>>, link: &Link) -> Result<Option<u16>, String> {
+    loop {
+        match answers.recv_timeout(PUMP_POLL) {
+            Ok(status) => return Ok(status),
+            Err(RecvTimeoutError::Timeout) if link.is_done() => {
+                return Err("the connection ended before the upstream answered".to_string());
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err("the upstream reader ended before it answered".to_string());
             }
         }
     }
@@ -595,7 +766,8 @@ impl Inbound {
         }
     }
 
-    /// The next line, through its LF (a chunk-size line or a trailer line).
+    /// The next line, through its CRLF (a chunk-size line, a chunk's CRLF, or a trailer line). A bare
+    /// LF, or a CR that is not followed by the LF, is refused.
     fn line(&mut self) -> Result<Vec<u8>, String> {
         let mut line = Vec::new();
         loop {
@@ -606,6 +778,10 @@ impl Inbound {
                 line.push(self.buf[self.pos]);
                 self.pos += 1;
                 if line.ends_with(b"\n") {
+                    if !line.ends_with(b"\r\n") || line[..line.len() - 2].contains(&b'\r') {
+                        return Err("a line in a chunked body ends in a bare CR or LF, not CRLF"
+                            .to_string());
+                    }
                     return Ok(line);
                 }
                 if line.len() > MAX_HEAD {
@@ -668,15 +844,22 @@ impl Request {
     }
 }
 
-/// Parses a request head (through its blank line). Only origin-form targets are injected, and a
-/// head whose body framing is ambiguous is refused, so the body is relayed exactly as the guest
-/// meant it.
+/// Parses a request head (through its blank line). Only origin-form targets are injected. A head
+/// whose body framing two parsers could read differently is refused, so the body is relayed exactly
+/// as the guest meant it: a line ended by a bare CR or LF, an obs-fold continuation, a header name
+/// with whitespace before its colon, a Content-Length that is not digits or differs from another,
+/// a Transfer-Encoding other than one `chunked`, and both framings at once.
 fn parse_request(head: &str) -> Result<Request, String> {
     let head = head
         .strip_suffix("\r\n\r\n")
         .ok_or("the request head is not complete")?;
-    let mut lines = head.split("\r\n");
-    let line = lines.next().unwrap_or("");
+    let lines: Vec<&str> = head.split("\r\n").collect();
+    if lines.iter().any(|line| line.contains(['\r', '\n'])) {
+        return Err("a line ends in a bare CR or LF, not CRLF".to_string());
+    }
+    let Some((line, headers)) = lines.split_first() else {
+        return Err("the request head is empty".to_string());
+    };
     let parts: Vec<&str> = line.split(' ').collect();
     let &[method, target, version] = parts.as_slice() else {
         return Err("the request line is not METHOD TARGET VERSION".to_string());
@@ -693,13 +876,15 @@ fn parse_request(head: &str) -> Result<Request, String> {
     let mut length = None;
     let mut chunked = false;
     let mut upgrade = false;
-    for line in lines {
-        let (name, value) = line.split_once(':').ok_or("a header line has no colon")?;
-        let (name, value) = (name.trim(), value.trim());
+    for line in headers {
+        let (name, value) = header_line(line)?;
         if name.eq_ignore_ascii_case("content-length") {
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("Content-Length is not a number".to_string());
+            }
             let parsed: u64 = value
                 .parse()
-                .map_err(|_| "Content-Length is not a number".to_string())?;
+                .map_err(|_| "Content-Length is out of range".to_string())?;
             if length
                 .replace(parsed)
                 .is_some_and(|before| before != parsed)
@@ -707,6 +892,9 @@ fn parse_request(head: &str) -> Result<Request, String> {
                 return Err("two different Content-Length headers".to_string());
             }
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            if chunked {
+                return Err("more than one Transfer-Encoding header".to_string());
+            }
             if !value.eq_ignore_ascii_case("chunked") {
                 return Err("only chunked Transfer-Encoding is relayed".to_string());
             }
@@ -729,6 +917,33 @@ fn parse_request(head: &str) -> Result<Request, String> {
         framing,
         upgrade,
     })
+}
+
+/// Binds the HTTP authority to the CONNECT destination whose credential rule was checked.
+/// TLS authenticates the CONNECT name; the upstream may route HTTP by Host independently.
+fn check_request_host(head: &str, target: &Target<'_>) -> Result<(), String> {
+    let mut hosts = head
+        .split("\r\n")
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.trim().eq_ignore_ascii_case("host"))
+        .map(|(_, value)| value.trim());
+    let value = hosts
+        .next()
+        .ok_or("an intercepted request needs a Host header")?;
+    if hosts.next().is_some() {
+        return Err("an intercepted request has more than one Host header".into());
+    }
+    let (host, port) =
+        super::authority(value, Some(443)).ok_or("the intercepted request's Host is malformed")?;
+    if !host
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case(target.host.trim_end_matches('.'))
+        || port != target.port
+    {
+        return Err("the intercepted request's Host differs from its CONNECT destination".into());
+    }
+    Ok(())
 }
 
 /// The request head with `injection` added and the guest's own copies of its header removed. The
@@ -758,34 +973,71 @@ fn rewrite_head(head: &str, injection: Option<&Injection>) -> String {
     out
 }
 
-/// Copies a chunked body to `sink` byte for byte, through its last chunk and trailers. The next
-/// request's bytes are left unread.
+/// A header line (without its CRLF), read by the framing rules: no obs-fold continuation, a colon, and
+/// a token name with nothing before the colon. Returns the name and the value without the HTTP
+/// whitespace around it; a Unicode space is part of the value.
+fn header_line(line: &str) -> Result<(&str, &str), String> {
+    if line.starts_with([' ', '\t']) {
+        return Err("a header line is folded (obs-fold)".to_string());
+    }
+    let (name, value) = line.split_once(':').ok_or("a header line has no colon")?;
+    if !is_token(name) {
+        return Err("a header name is not a token (whitespace before the colon?)".to_string());
+    }
+    Ok((name, value.trim_matches([' ', '\t'])))
+}
+
+/// The size of a chunk, from its size line: one to sixteen hex digits, then optionally `;` and an
+/// extension. A sign, whitespace before the digits, or more digits is refused.
+fn chunk_size(line: &[u8]) -> Result<u64, String> {
+    let text =
+        std::str::from_utf8(line).map_err(|_| "a chunk size line is not text".to_string())?;
+    let text = text
+        .strip_suffix("\r\n")
+        .ok_or("a chunk size line does not end in CRLF")?;
+    let digits = text.split(';').next().unwrap_or("");
+    if digits.is_empty()
+        || digits.len() > 16
+        || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("a chunk size is not 1 to 16 hex digits".to_string());
+    }
+    u64::from_str_radix(digits, 16).map_err(|_| "a chunk size is out of range".to_string())
+}
+
+/// Copies a chunked body to `sink` byte for byte, through its last chunk and trailers. Each chunk is
+/// checked as it is read: its size line, its data and the CRLF after the data. Each trailer is a
+/// header line. The next request's bytes are left unread.
 fn relay_chunked(
     input: &mut Inbound,
     sink: &mut impl FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
     loop {
         let size_line = input.line()?;
+        let size = chunk_size(&size_line)?;
         sink(&size_line)?;
-        let text = std::str::from_utf8(&size_line).map_err(|_| "a chunk size is not text")?;
-        let digits = text
-            .trim_end_matches(['\r', '\n'])
-            .split(';')
-            .next()
-            .unwrap_or("");
-        let size = u64::from_str_radix(digits.trim(), 16)
-            .map_err(|_| "a chunk size is not hex".to_string())?;
         if size == 0 {
             loop {
                 let trailer = input.line()?;
-                sink(&trailer)?;
-                if trailer == b"\r\n" || trailer == b"\n" {
+                if trailer == b"\r\n" {
+                    sink(&trailer)?;
                     return Ok(());
                 }
+                let text = std::str::from_utf8(&trailer)
+                    .map_err(|_| "a trailer line is not text".to_string())?;
+                let text = text
+                    .strip_suffix("\r\n")
+                    .ok_or("a trailer line does not end in CRLF")?;
+                header_line(text)?;
+                sink(&trailer)?;
             }
         }
-        let framed = size.checked_add(2).ok_or("a chunk size overflows")?;
-        input.forward(framed, sink)?;
+        input.forward(size, sink)?;
+        let crlf = input.line()?;
+        if crlf != b"\r\n" {
+            return Err("a chunk's data is not followed by CRLF".to_string());
+        }
+        sink(&crlf)?;
     }
 }
 
@@ -796,16 +1048,21 @@ fn send_up(up: &Side, sent: &mut u64, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Relays the guest's requests upstream, one at a time, each with apid's injection. Returns when
-/// the guest is done, or after an upgrade's bytes have been copied.
+/// the guest is done, or after an upgrade's bytes have been copied. An Upgrade request is relayed
+/// like any other; the status line of its answer decides whether the guest's bytes after it are
+/// copied raw, and any answer but `101 Switching Protocols` keeps the requests parsed.
 fn relay(
     inbound: &mut Inbound,
     target: &Target,
     apid: &Apid,
     up: &Side,
     tally: &mut Tally,
+    peek: &Peek,
+    answers: &Receiver<Option<u16>>,
 ) -> Result<(), String> {
     while let Some(head) = inbound.head()? {
         let request = parse_request(&head)?;
+        check_request_host(&head, target)?;
         // Fail closed: a request whose injection cannot be decided is not sent.
         let injection = apid
             .egress_inject(
@@ -820,6 +1077,10 @@ fn relay(
             tally.injected += 1;
         }
         let out = rewrite_head(&head, injection.as_ref());
+        if request.upgrade {
+            // Armed before the head is sent, so the answer cannot pass unread.
+            peek.arm();
+        }
         send_up(up, &mut tally.up, out.as_bytes())?;
         match request.framing {
             Framing::None => {}
@@ -832,7 +1093,7 @@ fn relay(
                 })?;
             }
         }
-        if request.upgrade {
+        if request.upgrade && answered(answers, &inbound.link)? == Some(101) {
             return inbound.drain(&mut |bytes: &[u8]| send_up(up, &mut tally.up, bytes));
         }
     }
@@ -1234,16 +1495,295 @@ mod tests {
                 .unwrap()
                 .upgrade
         );
-        for bad in [
+        assert!(parse_request("GET http://upstream.test/a HTTP/1.1\r\n\r\n").is_err());
+        assert!(parse_request("GET /a HTTP/1.1\r\nBroken header\r\n\r\n").is_err());
+        assert!(parse_request("GET /a\r\n\r\n").is_err());
+    }
+
+    /// Asserts that `head` is refused, for a reason that contains `reason`.
+    fn assert_refused(head: &str, reason: &str) {
+        let error = parse_request(head).expect_err("the head must be refused");
+        assert!(error.contains(reason), "{head:?} refused as: {error}");
+    }
+
+    #[test]
+    fn a_head_with_both_framings_is_refused() {
+        assert_refused(
             "POST /a HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "both set",
+        );
+        assert_refused(
+            "POST /a HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n",
+            "both set",
+        );
+    }
+
+    #[test]
+    fn content_lengths_that_differ_are_refused_and_equal_ones_are_not() {
+        assert_refused(
             "POST /a HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n",
+            "two different",
+        );
+        assert_refused(
+            "POST /a HTTP/1.1\r\nContent-Length: 5, 5\r\n\r\n",
+            "not a number",
+        );
+        let same =
+            parse_request("POST /a HTTP/1.1\r\nContent-Length: 5\r\ncontent-length: 5\r\n\r\n")
+                .unwrap();
+        assert_eq!(same.framing, Framing::Length(5));
+    }
+
+    #[test]
+    fn a_transfer_encoding_other_than_chunked_is_refused() {
+        assert_refused(
             "POST /a HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
-            "GET http://upstream.test/a HTTP/1.1\r\n\r\n",
-            "GET /a HTTP/1.1\r\nBroken header\r\n\r\n",
-            "GET /a\r\n\r\n",
+            "only chunked",
+        );
+        assert_refused(
+            "POST /a HTTP/1.1\r\nTransfer-Encoding: identity\r\n\r\n",
+            "only chunked",
+        );
+    }
+
+    #[test]
+    fn a_second_transfer_encoding_header_is_refused() {
+        assert_refused(
+            "POST /a HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "more than one",
+        );
+    }
+
+    #[test]
+    fn an_obs_fold_continuation_line_is_refused() {
+        assert_refused("GET /a HTTP/1.1\r\nX-A: b\r\n c\r\n\r\n", "obs-fold");
+        assert_refused("GET /a HTTP/1.1\r\nX-A: b\r\n\td\r\n\r\n", "obs-fold");
+    }
+
+    #[test]
+    fn a_space_before_a_header_colon_is_refused() {
+        assert_refused(
+            "POST /a HTTP/1.1\r\nContent-Length : 5\r\n\r\n",
+            "not a token",
+        );
+        assert_refused(
+            "POST /a HTTP/1.1\r\nTransfer-Encoding : chunked\r\n\r\n",
+            "not a token",
+        );
+    }
+
+    #[test]
+    fn a_bare_lf_in_a_head_is_refused() {
+        assert_refused(
+            "GET /a HTTP/1.1\r\nHost: a\nX-B: c\r\n\r\n",
+            "bare CR or LF",
+        );
+        assert_refused("GET /a HTTP/1.1\nHost: a\r\n\r\n", "bare CR or LF");
+    }
+
+    #[test]
+    fn a_content_length_that_is_not_digits_is_refused() {
+        assert_refused(
+            "POST /a HTTP/1.1\r\nContent-Length: +5\r\n\r\n",
+            "not a number",
+        );
+        assert_refused(
+            "POST /a HTTP/1.1\r\nContent-Length: \r\n\r\n",
+            "not a number",
+        );
+    }
+
+    #[test]
+    fn interim_responses_other_than_101_are_skipped_up_to_a_bound() {
+        let (answers, replies) = mpsc::channel();
+        let peek = Peek {
+            state: Mutex::new(None),
+            answers,
+        };
+        peek.arm();
+        peek.feed(
+            b"HTTP/1.1 100 Continue\r\nX-Hint: 1\r\n\r\nHTTP/1.1 101 Switching Protocols\r\n\r\n",
+        );
+        assert_eq!(replies.try_recv(), Ok(Some(101)));
+        // The same answer, with the reads split inside its lines.
+        peek.arm();
+        for piece in [
+            "HTTP/1.1 100 Con",
+            "tinue\r\nX-Hint: 1\r",
+            "\n\r\nHTTP/1.1 101 Switch",
+            "ing Protocols\r\n\r\n",
         ] {
-            assert!(parse_request(bad).is_err(), "{bad:?} must be refused");
+            peek.feed(piece.as_bytes());
         }
+        assert_eq!(replies.try_recv(), Ok(Some(101)));
+        // A 100 followed by a 200 answers 200, which does not switch protocols.
+        peek.arm();
+        peek.feed(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n\r\n");
+        assert_eq!(replies.try_recv(), Ok(Some(200)));
+        // Up to MAX_INTERIM interim responses are skipped; one more ends the peek.
+        peek.arm();
+        for _ in 0..MAX_INTERIM {
+            peek.feed(b"HTTP/1.1 100 Continue\r\n\r\n");
+        }
+        peek.feed(b"HTTP/1.1 101 Switching Protocols\r\n\r\n");
+        assert_eq!(replies.try_recv(), Ok(Some(101)));
+        peek.arm();
+        for _ in 0..=MAX_INTERIM {
+            peek.feed(b"HTTP/1.1 100 Continue\r\n\r\n");
+        }
+        assert_eq!(replies.try_recv(), Ok(None));
+        // An interim head is bounded too, however many short header lines it has.
+        peek.arm();
+        peek.feed(b"HTTP/1.1 100 Continue\r\n");
+        let header = format!("X-Pad: {}\r\n", "a".repeat(1000));
+        for _ in 0..=MAX_HEAD / 1000 {
+            peek.feed(header.as_bytes());
+        }
+        assert_eq!(replies.try_recv(), Ok(None));
+    }
+
+    #[test]
+    fn the_upgrade_answer_is_the_first_status_line_after_arming() {
+        let (answers, replies) = mpsc::channel();
+        let peek = Peek {
+            state: Mutex::new(None),
+            answers,
+        };
+        peek.feed(b"HTTP/1.1 101 Switching Protocols\r\n");
+        assert!(replies.try_recv().is_err(), "nothing is read while unarmed");
+        peek.arm();
+        peek.feed(b"HTTP/1.1 10");
+        peek.feed(b"1 Switching Protocols\r\nUpgrade: websocket\r\n\r\n");
+        assert_eq!(replies.try_recv(), Ok(Some(101)));
+        peek.arm();
+        peek.feed(b"HTTP/1.1 200 OK\r\n\r\n");
+        assert_eq!(replies.try_recv(), Ok(Some(200)));
+        peek.arm();
+        peek.feed(&[b'x'; MAX_HEAD + 1]);
+        assert_eq!(replies.try_recv(), Ok(None));
+    }
+
+    #[test]
+    fn an_upgrade_the_upstream_answers_with_200_keeps_the_requests_parsed() {
+        let (upstream_leaf, upstream_key, upstream_ca) = issued("upstream.test");
+        let (egress_leaf, egress_key, egress_ca) = issued("upstream.test");
+        let (port, seen) = upstream_server(&upstream_leaf, &upstream_key, 2);
+        let (apid, injections, token) = fake_apid("upgrade-200", &egress_leaf, &egress_key, true);
+        let config = client_config(roots_of(&upstream_ca)).unwrap();
+
+        let (mut guest, mut proxy_side) = UnixStream::pair().unwrap();
+        guest
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        let addrs = [SocketAddr::from(([127, 0, 0, 1], port))];
+        let (finished, ended) = mpsc::channel();
+        thread::spawn(move || {
+            let target = Target {
+                cid: 12,
+                host: "upstream.test",
+                port: 443,
+                addrs: &addrs,
+            };
+            let mut tally = Tally::default();
+            let result = intercept_with(&mut proxy_side, &target, &apid, &mut tally, config);
+            let _ = finished.send((result, tally));
+        });
+
+        let mut client_config = ClientConfig::builder_with_provider(Arc::new(default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots_of(&egress_ca))
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![ALPN.to_vec()];
+        let mut client_tls = ClientConnection::new(
+            Arc::new(client_config),
+            ServerName::try_from("upstream.test").unwrap(),
+        )
+        .unwrap();
+        client_tls
+            .complete_io(&mut guest)
+            .expect("the guest's handshake");
+        let mut client = StreamOwned::new(client_tls, guest);
+
+        client
+            .write_all(
+                b"GET /v1/socket HTTP/1.1\r\nHost: upstream.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+            )
+            .unwrap();
+        client.flush().unwrap();
+        let (head, _) = read_message(&mut client).expect("the upgrade's answer");
+        assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+
+        // The upstream did not switch protocols, so this request is still parsed and injected.
+        client
+            .write_all(
+                b"POST /v1/x HTTP/1.1\r\nHost: upstream.test\r\nX-Api-Key: guest-own\r\nContent-Length: 5\r\n\r\nhello",
+            )
+            .unwrap();
+        client.flush().unwrap();
+        let (_, body) = read_message(&mut client).expect("the next answer");
+        assert_eq!(body, b"ok:hello");
+        drop(client);
+
+        let (upgrade_head, _) = seen.recv_timeout(Duration::from_secs(20)).unwrap();
+        assert!(
+            upgrade_head.starts_with("GET /v1/socket "),
+            "{upgrade_head}"
+        );
+        let (head, body) = seen.recv_timeout(Duration::from_secs(20)).unwrap();
+        assert!(head.contains("x-api-key: sk-injected"), "{head}");
+        assert!(!head.contains("guest-own"), "{head}");
+        assert_eq!(body, b"hello");
+
+        let (result, tally) = ended
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the connection ends once the guest is done");
+        let _ = std::fs::remove_file(&token);
+        result.expect("the connection ends cleanly");
+        assert_eq!(injections.load(Ordering::SeqCst), 2);
+        assert_eq!(tally.injected, 2);
+    }
+
+    #[test]
+    fn an_intercepted_request_cannot_change_its_credential_authority() {
+        let target = Target {
+            cid: 3,
+            host: "api.example.test",
+            port: 443,
+            addrs: &[],
+        };
+        for head in [
+            "GET /v1 HTTP/1.1\r\nHost: api.example.test\r\n\r\n",
+            "GET /v1 HTTP/1.1\r\nHost: API.EXAMPLE.TEST:443\r\n\r\n",
+        ] {
+            assert!(check_request_host(head, &target).is_ok());
+        }
+        for head in [
+            "GET /v1 HTTP/1.1\r\nHost: another.example.test\r\n\r\n",
+            "GET /v1 HTTP/1.1\r\nHost: api.example.test:8443\r\n\r\n",
+            "GET /v1 HTTP/1.1\r\n\r\n",
+            "GET /v1 HTTP/1.1\r\nHost: api.example.test\r\nHost: another.example.test\r\n\r\n",
+        ] {
+            assert!(check_request_host(head, &target).is_err());
+        }
+        let alternate = Target {
+            port: 8443,
+            ..target
+        };
+        assert!(
+            check_request_host(
+                "GET /v1 HTTP/1.1\r\nHost: api.example.test:8443\r\n\r\n",
+                &alternate,
+            )
+            .is_ok()
+        );
+        assert!(
+            check_request_host(
+                "GET /v1 HTTP/1.1\r\nHost: api.example.test\r\n\r\n",
+                &alternate,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1292,6 +1832,58 @@ mod tests {
             inbound.head().unwrap().as_deref(),
             Some("GET /next HTTP/1.1\r\n\r\n")
         );
+    }
+
+    /// Relays the chunked body that `pieces` make up, each piece as one read, and returns why it is
+    /// refused.
+    fn chunked_refusal(pieces: &[&str]) -> String {
+        let (feed, from_guest) = mpsc::channel();
+        let mut inbound = Inbound {
+            rx: from_guest,
+            buf: Vec::new(),
+            pos: 0,
+            link: test_link(),
+            last: Instant::now(),
+        };
+        for piece in pieces {
+            feed.send(piece.as_bytes().to_vec()).unwrap();
+        }
+        relay_chunked(&mut inbound, &mut |_: &[u8]| Ok(())).expect_err("the body must be refused")
+    }
+
+    #[test]
+    fn a_chunk_size_line_ended_by_a_bare_lf_is_refused() {
+        let reason = chunked_refusal(&["5\nworld\r\n0\r\n\r\n"]);
+        assert!(reason.contains("bare CR or LF"), "{reason}");
+    }
+
+    #[test]
+    fn a_chunk_size_with_a_sign_is_refused() {
+        let reason = chunked_refusal(&["+5\r\nworld\r\n0\r\n\r\n"]);
+        assert!(reason.contains("hex digits"), "{reason}");
+    }
+
+    #[test]
+    fn chunk_data_without_its_crlf_is_refused() {
+        let reason = chunked_refusal(&["5\r\nworldX\r\n0\r\n\r\n"]);
+        assert!(reason.contains("not followed by CRLF"), "{reason}");
+    }
+
+    #[test]
+    fn a_chunk_size_of_17_digits_is_refused() {
+        let body = format!("{}5\r\nworld\r\n0\r\n\r\n", "0".repeat(16));
+        let reason = chunked_refusal(&[body.as_str()]);
+        assert!(reason.contains("hex digits"), "{reason}");
+    }
+
+    #[test]
+    fn a_trailer_must_be_a_header_line() {
+        let reason = chunked_refusal(&["0\r\nX-T : 1\r\n\r\n"]);
+        assert!(reason.contains("not a token"), "{reason}");
+        let reason = chunked_refusal(&["0\r\nX-T: 1\r\n folded\r\n\r\n"]);
+        assert!(reason.contains("obs-fold"), "{reason}");
+        let reason = chunked_refusal(&["0\r\nX-T: 1\n\r\n"]);
+        assert!(reason.contains("bare CR or LF"), "{reason}");
     }
 
     #[test]

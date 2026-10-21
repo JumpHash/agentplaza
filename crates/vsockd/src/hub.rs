@@ -28,8 +28,11 @@ pub const HEARTBEAT_LOG_EVERY: u64 = 12;
 #[derive(Debug, Clone)]
 pub struct Agent {
     pub cid: u32,
-    /// The role accepted at the handshake: the agent's identity.
+    /// The role the hub named for the agent (apid's profile). Empty until the hub has named it;
+    /// the hub grants tools from this role only.
     pub role: String,
+    /// The role the guest claimed in its hello. A claim, never an identity or a grant.
+    pub claimed_role: String,
     pub connected_at: Instant,
     pub last_heartbeat: Instant,
     /// What the last heartbeat said about a work item in progress.
@@ -50,6 +53,7 @@ struct Registry {
 pub struct Row {
     pub cid: u32,
     pub role: String,
+    pub claimed_role: String,
     pub connected_at_ms: u64,
     pub last_heartbeat_ms: u64,
     pub busy: bool,
@@ -239,7 +243,7 @@ impl Hub {
     pub fn connect(
         &self,
         cid: u32,
-        role: &str,
+        claimed_role: &str,
         now: Instant,
     ) -> std::io::Result<(u64, Receiver<Command>, Arc<Waker>)> {
         let token = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
@@ -257,9 +261,11 @@ impl Hub {
                 quiet: false,
             },
         );
+        // The agent's role is empty until the hub names it through `set_role`; the claim is kept apart.
         let agent = Agent {
             cid,
-            role: role.to_string(),
+            role: String::new(),
+            claimed_role: claimed_role.to_string(),
             connected_at: now,
             last_heartbeat: now,
             busy: false,
@@ -270,17 +276,37 @@ impl Hub {
             registry.beats.remove(&cid);
             registry.agents.insert(cid, agent)
         };
-        self.log
-            .line(&format!("vsockd: agent {cid} role {role} connected"));
+        self.log.line(&format!(
+            "vsockd: agent {cid} claimed role {claimed_role} connected"
+        ));
         if let Some(previous) = previous {
             self.log.line(&format!(
-                "vsockd: agent {cid} re-adopted (previous session role {}, connected {}s ago)",
-                previous.role,
+                "vsockd: agent {cid} re-adopted (previous session claimed role {}, connected {}s ago)",
+                previous.claimed_role,
                 now.saturating_duration_since(previous.connected_at)
                     .as_secs()
             ));
         }
         Ok((token, receiver, waker))
+    }
+
+    /// Records the role the hub names for the session `token` on `cid`: apid's profile
+    /// carries it. Only the session that owns `cid` may set it, so a predecessor cannot
+    /// write its role onto a successor. Returns whether it did.
+    pub fn set_role(&self, cid: u32, token: u64, role: &str) -> bool {
+        // The steering lock is held across the write, so the owner cannot be replaced between
+        // the check and the update. Lock order is steering, then registry, everywhere.
+        let steering = self.steering();
+        if !steering.get(&cid).is_some_and(|live| live.token == token) {
+            return false;
+        }
+        match self.registry().agents.get_mut(&cid) {
+            Some(agent) => {
+                agent.role = role.to_string();
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn heartbeat(&self, cid: u32, seq: u64, busy: bool, now: Instant) {
@@ -466,6 +492,7 @@ impl Hub {
             .map(|agent| Row {
                 cid: agent.cid,
                 role: agent.role.clone(),
+                claimed_role: agent.claimed_role.clone(),
                 connected_at_ms: self.epoch_ms(agent.connected_at),
                 last_heartbeat_ms: self.epoch_ms(agent.last_heartbeat),
                 busy: agent.busy,
@@ -642,8 +669,11 @@ pub(crate) mod tests {
         );
         hub.connect(11, "builder", anchor + Duration::from_millis(250))
             .unwrap();
-        hub.connect(10, "reviewer", anchor + Duration::from_millis(500))
+        // A hello that claims "admin"; the hub names this agent "reviewer", so that is its role.
+        let (token, _, _) = hub
+            .connect(10, "admin", anchor + Duration::from_millis(500))
             .unwrap();
+        assert!(hub.set_role(10, token, "reviewer"));
         hub.note_calls(10, 4);
         hub.heartbeat(10, 7, true, anchor + Duration::from_millis(5_500));
         let snapshot = hub.snapshot();
@@ -654,6 +684,7 @@ pub(crate) mod tests {
                 Row {
                     cid: 10,
                     role: "reviewer".into(),
+                    claimed_role: "admin".into(),
                     connected_at_ms: 1_700_000_000_500,
                     last_heartbeat_ms: 1_700_000_005_500,
                     busy: true,
@@ -661,7 +692,8 @@ pub(crate) mod tests {
                 },
                 Row {
                     cid: 11,
-                    role: "builder".into(),
+                    role: String::new(),
+                    claimed_role: "builder".into(),
                     connected_at_ms: 1_700_000_000_250,
                     last_heartbeat_ms: 1_700_000_000_250,
                     busy: false,
