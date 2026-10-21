@@ -10,7 +10,7 @@
 
 use crate::ast::*;
 use crate::machine::MachineCtx;
-use crate::num::{Dim, Num};
+use crate::num::{Dim, Num, DIM_RANGE};
 use crate::program::{DeclRef, NameKind, Program};
 use crate::resolve::{self, Bound, Candidate, Explanation, Q};
 use crate::span::{Diag, Span};
@@ -22,11 +22,14 @@ pub type R = Result<Value, Diag>;
 
 const MAX_DEPTH: u32 = 64;
 
+/// Quantifier and comprehension iterations plus function calls one evaluation may perform.
+const MAX_STEPS: u64 = 10_000_000;
+
 /// The dimension a numeric type stands for (`Credits/Duration` → credits·time⁻¹).
 pub fn type_dim(t: &TypeExpr) -> Option<Dim> {
     match t {
         TypeExpr::Named(n, args, _) if args.is_empty() => Dim::of_type_name(n),
-        TypeExpr::Div(a, b) => Some(type_dim(a)?.div(type_dim(b)?)),
+        TypeExpr::Div(a, b) => type_dim(a)?.div(type_dim(b)?),
         _ => None,
     }
 }
@@ -39,6 +42,9 @@ pub struct Env<'a> {
     pub cur: Option<&'a [Value]>,
     pub next: Option<&'a [Option<Value>]>,
     pub depth: u32,
+    /// Work done so far, counted against `MAX_STEPS`. A sub-environment starts from its parent's
+    /// count and hands it back (see `eval_in`), so nested calls share one budget.
+    pub steps: u64,
 }
 
 fn err<T>(span: Span, msg: impl Into<String>) -> Result<T, Diag> {
@@ -80,14 +86,37 @@ fn elements(v: &Value, tuple: bool, span: Span) -> Result<Vec<Value>, Diag> {
     })
 }
 
+/// Whether `s` matches the pattern `p` (`*` any run, `?` any one character). Iterative, with one backtrack point:
+/// the subject is often agent text, so neither its length nor the pattern's stars may cost stack or exponential time.
 fn glob(p: &[char], s: &[char]) -> bool {
-    match (p.first(), s.first()) {
-        (None, None) => true,
-        (Some('*'), _) => glob(&p[1..], s) || (!s.is_empty() && glob(p, &s[1..])),
-        (Some('?'), Some(_)) => glob(&p[1..], &s[1..]),
-        (Some(a), Some(b)) if a == b => glob(&p[1..], &s[1..]),
-        _ => false,
+    let (mut pi, mut si) = (0, 0);
+    // The last `*` seen: the pattern position after it, and how much of the subject it has taken.
+    let mut star: Option<(usize, usize)> = None;
+    while si < s.len() {
+        match p.get(pi) {
+            Some('*') => {
+                star = Some((pi + 1, si));
+                pi += 1;
+            }
+            Some('?') => {
+                pi += 1;
+                si += 1;
+            }
+            Some(c) if *c == s[si] => {
+                pi += 1;
+                si += 1;
+            }
+            _ => match star {
+                Some((after, taken)) => {
+                    star = Some((after, taken + 1));
+                    pi = after;
+                    si = taken + 1;
+                }
+                None => return false,
+            },
+        }
     }
+    p[pi..].iter().all(|c| *c == '*')
 }
 
 impl<'a> Env<'a> {
@@ -100,6 +129,7 @@ impl<'a> Env<'a> {
             cur: None,
             next: None,
             depth: 0,
+            steps: 0,
         }
     }
 
@@ -112,11 +142,21 @@ impl<'a> Env<'a> {
             cur,
             next: None,
             depth: 0,
+            steps: 0,
         }
     }
 
     fn snippet(&self, span: Span) -> String {
         self.prog.sources.snippet(span).to_string()
+    }
+
+    /// Counts one unit of work against `MAX_STEPS`.
+    fn tick(&mut self, span: Span) -> Result<(), Diag> {
+        self.steps += 1;
+        if self.steps > MAX_STEPS {
+            return err(span, "evaluation exceeded its step budget");
+        }
+        Ok(())
     }
 
     pub fn eval(&mut self, e: &Expr) -> R {
@@ -353,6 +393,7 @@ impl<'a> Env<'a> {
                 if !params.is_empty() {
                     return err(span, format!("`{n}` takes {} argument(s)", params.len()));
                 }
+                self.tick(span)?;
                 return self.def(m, body, vec![], span);
             }
             if let Some(v) = m.model_values.get(n) {
@@ -384,11 +425,12 @@ impl<'a> Env<'a> {
     }
 
     fn decl_value(&mut self, r: DeclRef, n: &str, span: Span) -> R {
-        let pack = self.prog.pack_of(r.file);
-        match self.prog.item(r) {
-            Item::Let(_, e, _) => self.sub(pack).eval(e),
+        let prog = self.prog;
+        let pack = prog.pack_of(r.file);
+        match prog.item(r) {
+            Item::Let(_, e, _) => self.eval_in(pack, e),
             Item::Param(p, _) => match &p.default {
-                Some(e) => self.sub(pack).eval(e),
+                Some(e) => self.eval_in(pack, e),
                 None => Ok(Value::Unknown(format!("param `{n}` (not set)"))),
             },
             Item::Enum(d) => Ok(Value::set(d.members.iter().map(|m| Value::str(&m.0)))),
@@ -403,7 +445,13 @@ impl<'a> Env<'a> {
     }
 
     /// Evaluates a machine-level definition in the current state (its own locals only).
-    fn def(&self, m: &'a MachineCtx, body: &Expr, locals: Vec<(String, Value)>, span: Span) -> R {
+    fn def(
+        &mut self,
+        m: &'a MachineCtx,
+        body: &Expr,
+        locals: Vec<(String, Value)>,
+        span: Span,
+    ) -> R {
         if self.depth > MAX_DEPTH {
             return err(
                 span,
@@ -418,8 +466,11 @@ impl<'a> Env<'a> {
             cur: self.cur,
             next: self.next,
             depth: self.depth + 1,
+            steps: self.steps,
         };
-        env.eval(body)
+        let r = env.eval(body);
+        self.steps = env.steps;
+        r
     }
 
     /// A fresh environment for evaluating a declaration from another pack.
@@ -432,7 +483,16 @@ impl<'a> Env<'a> {
             cur: None,
             next: None,
             depth: self.depth + 1,
+            steps: self.steps,
         }
+    }
+
+    /// Evaluates `e` in a fresh environment for `pack`, then carries the step count back.
+    fn eval_in(&mut self, pack: usize, e: &Expr) -> R {
+        let mut env = self.sub(pack);
+        let r = env.eval(e);
+        self.steps = env.steps;
+        r
     }
 
     fn primed(&mut self, n: &str, span: Span) -> R {
@@ -497,13 +557,16 @@ impl<'a> Env<'a> {
     fn list_index(&self, k: &Value, len: usize, span: Span) -> Result<usize, Diag> {
         match k {
             Value::Num(n, d) if d.is_none() => match n.as_int() {
-                Some(i) if i >= 0 && (i as usize) < len => Ok(i as usize),
-                Some(i) => err(
-                    span,
-                    format!(
-                        "index {i} is out of range for a list of length {len} (indexes start at 0)"
+                // A value that doesn't fit a usize is out of range, not a wrapped index.
+                Some(i) => match usize::try_from(i) {
+                    Ok(idx) if idx < len => Ok(idx),
+                    _ => err(
+                        span,
+                        format!(
+                            "index {i} is out of range for a list of length {len} (indexes start at 0)"
+                        ),
                     ),
-                ),
+                },
                 None => err(span, format!("index {n} is not an integer")),
             },
             _ => err(span, format!("a list index must be an Int, found {k}")),
@@ -539,7 +602,6 @@ impl<'a> Env<'a> {
         }
     }
 
-    /// Runs `body` once per binding of the generators. Returns the reason if a source was unknown.
     /// Runs `body` once per binding of the generators, until it returns `false`. Returns the
     /// reason if a source was unknown.
     fn each(
@@ -569,6 +631,7 @@ impl<'a> Env<'a> {
         }
         let mut unknown = None;
         for x in elements(&src, g.tuple, g.src.span)? {
+            self.tick(g.src.span)?;
             let n0 = self.locals.len();
             if g.tuple {
                 let parts = match &x {
@@ -666,6 +729,7 @@ impl<'a> Env<'a> {
 
     // ------------------------------------------------------------------ calls
     fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> R {
+        self.tick(span)?;
         let name = match &callee.kind {
             ExprKind::Name(n) => n.clone(),
             ExprKind::Field(obj, method) => {
@@ -794,7 +858,7 @@ impl<'a> Env<'a> {
             let v = match s {
                 Some(v) => v,
                 None => match &p.default {
-                    Some(d) => self.sub(pack).eval(d)?,
+                    Some(d) => self.eval_in(pack, d)?,
                     None => {
                         return err(span, format!("`{fname}` is missing argument `{}`", p.name))
                     }
@@ -822,7 +886,9 @@ impl<'a> Env<'a> {
         let locals = self.bind_params(&d.params, pack, args, &d.name, span)?;
         let mut env = self.sub(pack);
         env.locals = locals;
-        let v = env.eval(&d.body)?;
+        let v = env.eval(&d.body);
+        self.steps = env.steps;
+        let v = v?;
         if let (Some(rd), Value::Num(_, vd)) = (type_dim(&d.ret), &v) {
             if rd != *vd {
                 return err(
@@ -849,16 +915,15 @@ impl<'a> Env<'a> {
             return Ok(u);
         }
         for (keys, out) in &d.rows {
-            let mut env = self.sub(pack);
             let mut all = keys.len() == vals.len();
             for (k, v) in keys.iter().zip(&vals) {
-                if env.eval(k)? != *v {
+                if self.eval_in(pack, k)? != *v {
                     all = false;
                     break;
                 }
             }
             if all {
-                return env.eval(out);
+                return self.eval_in(pack, out);
             }
         }
         let shown: Vec<String> = vals.iter().map(|v| v.to_string()).collect();
@@ -1012,8 +1077,10 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
     }
     match op {
         Eq | Ne => {
-            if let (Value::Num(_, da), Value::Num(_, db)) = (&a, &b) {
+            if let (Value::Num(x, da), Value::Num(y, db)) = (&a, &b) {
                 same_dim(op, *da, *db, span)?;
+                // A NaN is neither equal nor unequal to anything: comparing it is an error.
+                x.try_cmp(*y).map_err(|e| Diag::error(span, e))?;
             }
             let eq = a == b;
             Ok(Value::Bool(if op == Eq { eq } else { !eq }))
@@ -1022,7 +1089,7 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
             let ord = match (&a, &b) {
                 (Value::Num(x, da), Value::Num(y, db)) => {
                     same_dim(op, *da, *db, span)?;
-                    x.cmp_num(*y)
+                    x.try_cmp(*y).map_err(|e| Diag::error(span, e))?
                 }
                 (Value::Str(x), Value::Str(y)) => x.cmp(y),
                 _ => {
@@ -1073,7 +1140,7 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
                         format!("a range needs whole base units, found {a} .. {b}"),
                     );
                 };
-                if hi - lo > 1_000_000 {
+                if hi.checked_sub(lo).is_none_or(|w| w > 1_000_000) {
                     return err(span, "a range of more than a million values");
                 }
                 Ok(Value::set((lo..=hi).map(|i| Value::Num(Num::int(i), *da))))
@@ -1125,10 +1192,14 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
         },
         Mul | Div => match (a, b) {
             (Value::Num(x, da), Value::Num(y, db)) => {
-                if op == Mul {
-                    Ok(Value::Num(num_op(span, x.mul(y))?, da.mul(db)))
+                let (n, d) = if op == Mul {
+                    (x.mul(y), da.mul(db))
                 } else {
-                    Ok(Value::Num(num_op(span, x.div(y))?, da.div(db)))
+                    (x.div(y), da.div(db))
+                };
+                match d {
+                    Some(d) => Ok(Value::Num(num_op(span, n)?, d)),
+                    None => err(span, DIM_RANGE),
                 }
             }
             (a, b) => err(
@@ -1148,7 +1219,10 @@ pub fn binop(op: BinOp, a: Value, b: Value, span: Span) -> R {
                     );
                 }
                 match y.as_int() {
-                    Some(k) => Ok(Value::Num(num_op(span, x.pow(y))?, da.pow(k))),
+                    Some(k) => match da.pow(k) {
+                        Some(d) => Ok(Value::Num(num_op(span, x.pow(y))?, d)),
+                        None => err(span, DIM_RANGE),
+                    },
                     None if da.is_none() => Ok(Value::Num(num_op(span, x.pow(y))?, Dim::NONE)),
                     None => err(
                         span,
@@ -1310,14 +1384,19 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
             if n.to_f64() <= 0.0 {
                 return err(span, format!("ln({n}) is undefined"));
             }
-            Ok(Value::Num(Num::real(n.to_f64().ln()), Dim::NONE))
+            Ok(Value::Num(
+                num_op(span, Num::finite(n.to_f64().ln()))?,
+                Dim::NONE,
+            ))
         }
         "round_to" => {
             arity(f, &vals, 2, span)?;
             let (x, d) = want_num(&vals[0], f, span)?;
             let (s, ds) = want_num(&vals[1], f, span)?;
             same_dim(BinOp::Div, d, ds, span)?;
-            if s.cmp_num(Num::int(0)) != std::cmp::Ordering::Greater {
+            if s.try_cmp(Num::int(0)).map_err(|e| Diag::error(span, e))?
+                != std::cmp::Ordering::Greater
+            {
                 return err(span, "round_to needs a positive step");
             }
             let k = num_op(span, x.div(s).and_then(|q| q.round()))?;
@@ -1403,7 +1482,10 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
             arity(f, &vals, 2, span)?;
             let n = match &vals[1] {
                 Value::Num(n, d) if d.is_none() && n.as_int().is_some_and(|i| i >= 0) => {
-                    n.as_int().unwrap() as usize
+                    match n.as_int().map(usize::try_from) {
+                        Some(Ok(k)) => k,
+                        _ => return err(span, format!("`take` count {n} is out of range")),
+                    }
                 }
                 v => return err(span, format!("`take(xs, n)` needs a count, found {v}")),
             };
@@ -1424,6 +1506,36 @@ fn builtin(f: &str, vals: Vec<Value>, span: Span, _env: &mut Env) -> R {
 mod tests {
     use super::*;
     use crate::parser::parse_expr_at;
+
+    #[test]
+    fn glob_matches_like_before_and_a_long_text_needs_no_stack() {
+        let g = |p: &str, s: &str| {
+            glob(
+                &p.chars().collect::<Vec<_>>(),
+                &s.chars().collect::<Vec<_>>(),
+            )
+        };
+        for (p, s, want) in [
+            ("", "", true),
+            ("", "a", false),
+            ("*", "", true),
+            ("a*", "a", true),
+            ("a?c", "abc", true),
+            ("a?c", "ac", false),
+            ("*.rs", "src/main.rs", true),
+            ("*.rs", "src/main.rsx", false),
+            ("a*b*c", "axxbyyc", true),
+            ("a*b*c", "axxbyy", false),
+            ("**x", "abx", true),
+        ] {
+            assert_eq!(g(p, s), want, "{p:?} on {s:?}");
+        }
+        // A megabyte of agent text: the recursive matcher overflowed a thread's stack here.
+        let long = format!("{}b", "a".repeat(1 << 20));
+        assert!(g("*a*b", &long));
+        assert!(!g("*c", &long));
+        assert!(g("a?a*", &long));
+    }
 
     fn prog(src: &str) -> Program {
         let (p, d) = Program::load(vec![("t.jhrl".into(), src.into())]);
@@ -1457,7 +1569,7 @@ mod tests {
             );
             assert_eq!(
                 ok(&p, "(3 s) ^ 2"),
-                Value::Num(Num::int(9), Dim::TIME.pow(2))
+                Value::Num(Num::int(9), Dim::TIME.pow(2).unwrap())
             );
             assert!(ev(&p, "1 cr + 1 s")
                 .unwrap_err()
@@ -1545,6 +1657,33 @@ mod tests {
             );
             assert!(matches!(ok(&p, "now - 1 s"), Value::Unknown(_)));
         }
+    }
+
+    #[test]
+    fn arithmetic_indexes_nan_and_the_step_budget_have_limits() {
+        let p = prog("");
+        let big = Value::int(i128::MAX);
+        // i128::MAX + 1 is an error, not a wrap.
+        assert!(binop(BinOp::Add, big.clone(), Value::int(1), Span::default()).is_err());
+        // A huge value is not a list index.
+        assert!(Env::new(&p, 0)
+            .list_index(&big, 3, Span::default())
+            .is_err());
+        // A NaN has no order, so comparing it is an error.
+        let nan = Value::Num(Num::Real(f64::NAN), Dim::NONE);
+        assert!(binop(BinOp::Lt, nan.clone(), Value::int(1), Span::default()).is_err());
+        assert!(binop(BinOp::Eq, nan, Value::int(1), Span::default()).is_err());
+        // Two nested quantifiers over 0..100000 stop at the step budget instead of running on.
+        let msg = ev(&p, "all x in 0..100000: all y in 0..100000: true")
+            .unwrap_err()
+            .msg;
+        assert!(msg.contains("step budget"), "{msg}");
+        // A unit raised past the range of its exponent is an error, not a wrapped dimension.
+        let secs = Value::Num(Num::int(2), Dim::TIME);
+        let msg = binop(BinOp::Pow, secs, Value::int(200), Span::default())
+            .unwrap_err()
+            .msg;
+        assert!(msg.contains("out of range"), "{msg}");
     }
 
     #[test]

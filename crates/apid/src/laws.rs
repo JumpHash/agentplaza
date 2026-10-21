@@ -664,10 +664,24 @@ impl Laws {
             updated_ms: now_ms,
             author: OWNER.to_string(),
         };
+        Self::check_source_size(&rule.id, source)?;
         next.rules.push(rule.clone());
         let compiled = compile(&self.base, &next)?;
         self.commit(&mut slot, next, compiled);
         Ok(rule)
+    }
+
+    /// Refuses a rule source over 64 KiB before it is parsed, as a compile error of that rule.
+    fn check_source_size(id: &str, source: &str) -> Result<(), Failure> {
+        if source.len() > 64 * 1024 {
+            return Err(Failure::Diagnostics(vec![Diagnostic {
+                file: rule_file(id),
+                line: 1,
+                column: 1,
+                message: "a rule's source is limited to 64 KiB".to_string(),
+            }]));
+        }
+        Ok(())
     }
 
     /// Changes a rule's title (when `title` is not blank) and/or its source, and applies the result.
@@ -678,6 +692,9 @@ impl Laws {
         source: Option<&str>,
         now_ms: u64,
     ) -> Result<OwnerRule, Failure> {
+        if let Some(source) = source {
+            Self::check_source_size(id, source)?;
+        }
         self.edit_rule(id, now_ms, |rule| {
             if !title.trim().is_empty() {
                 rule.title = title.trim().to_string();
@@ -786,6 +803,7 @@ impl Laws {
     /// replays the recent calls its laws would refuse. `replaces` names the rule being edited: its
     /// source is what is compiled in its place, so its own laws are not declared twice.
     pub fn dry_run(&self, source: &str, replaces: Option<&str>) -> Result<DryRun, Failure> {
+        Self::check_source_size(replaces.unwrap_or(DRY_RUN_ID), source)?;
         let mut next = lock(&self.rules).clone();
         let id = match next
             .rules
@@ -2241,6 +2259,46 @@ mod owner_rules_tests {
 
     fn now() -> u64 {
         apz_plaza::now_ms()
+    }
+
+    #[test]
+    fn a_rule_nested_past_the_parser_budget_is_refused() {
+        let laws = Laws::load(&scratch("nesting-budget"));
+        let source = format!(
+            "law \"O-900\" \"Deep nesting\" {{
+  tier statute
+  enforcement preventive
+  severity info
+  statement \"Test rule: deeply nested.\"
+  forbid tool.call
+  principal is Agent
+  resource is Tool
+  when {open}true{close}
+}}
+",
+            open = "(".repeat(20_000),
+            close = ")".repeat(20_000)
+        );
+        let err = laws
+            .add_rule("Deep nesting", &source, true, now())
+            .expect_err("a rule nested past the parser budget is refused");
+        assert!(
+            matches!(&err, Failure::Diagnostics(d) if d.iter().any(|x| x.message.contains("nested deeper than 32 levels"))),
+            "the refusal names the nesting limit"
+        );
+    }
+
+    #[test]
+    fn a_rule_source_over_64_kib_is_refused() {
+        let laws = Laws::load(&scratch("size-limit"));
+        let source = "x".repeat(64 * 1024 + 1);
+        let err = laws
+            .add_rule("Too large", &source, true, now())
+            .expect_err("a source over 64 KiB is refused");
+        assert!(
+            matches!(&err, Failure::Diagnostics(d) if d.iter().any(|x| x.message == "a rule's source is limited to 64 KiB")),
+            "the refusal names the size limit"
+        );
     }
 
     /// The gate every tool call passes: `Ok` with where it runs, or the refusal.

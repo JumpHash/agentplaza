@@ -8,7 +8,7 @@
 
 use crate::ast::*;
 use crate::eval::BUILTINS;
-use crate::num::Dim;
+use crate::num::{Dim, DIM_RANGE};
 use crate::program::{DeclRef, NameKind, Program};
 use crate::span::{Diag, Span};
 use std::collections::{HashMap, HashSet};
@@ -121,7 +121,13 @@ impl<'a> Checker<'a> {
     fn ty_of(&mut self, t: &TypeExpr) -> Ty {
         match t {
             TypeExpr::Div(a, b) => match (self.ty_of(a), self.ty_of(b)) {
-                (Ty::Num(x), Ty::Num(y)) => Ty::Num(x.div(y)),
+                (Ty::Num(x), Ty::Num(y)) => match x.div(y) {
+                    Some(d) => Ty::Num(d),
+                    None => {
+                        self.err(t.span(), DIM_RANGE);
+                        Ty::Any
+                    }
+                },
                 (Ty::Any, _) | (_, Ty::Any) => Ty::Any,
                 _ => {
                     self.err(t.span(), format!("`{t}`: only numeric types divide"));
@@ -657,7 +663,13 @@ impl<'a> Checker<'a> {
             },
             Union | Minus | Inter => ta,
             Mul | Div => match (&ta, &tb) {
-                (Ty::Num(x), Ty::Num(y)) => Ty::Num(if op == Mul { x.mul(*y) } else { x.div(*y) }),
+                (Ty::Num(x), Ty::Num(y)) => match if op == Mul { x.mul(*y) } else { x.div(*y) } {
+                    Some(d) => Ty::Num(d),
+                    None => {
+                        self.err(span, DIM_RANGE);
+                        Ty::Any
+                    }
+                },
                 (Ty::Any, _) | (_, Ty::Any) => Ty::Any,
                 (x, y) => {
                     self.err(
@@ -683,13 +695,19 @@ impl<'a> Checker<'a> {
                     let k = match &b.kind {
                         ExprKind::Num(n, _) => n.as_int(),
                         ExprKind::Unary(UnOp::Neg, inner) => match &inner.kind {
-                            ExprKind::Num(n, _) => n.as_int().map(|i| -i),
+                            ExprKind::Num(n, _) => n.as_int().and_then(i128::checked_neg),
                             _ => None,
                         },
                         _ => None,
                     };
                     match k {
-                        Some(k) => Ty::Num(x.pow(k)),
+                        Some(k) => match x.pow(k) {
+                            Some(d) => Ty::Num(d),
+                            None => {
+                                self.err(span, DIM_RANGE);
+                                Ty::Any
+                            }
+                        },
                         None if x.is_none() => Ty::Num(Dim::NONE),
                         None => {
                             self.err(
