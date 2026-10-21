@@ -18,7 +18,7 @@ on:
     # the full rule and also catches what this filter can't express. A change that sets VERSION
     # along with code still releases.
     # (docs/agents and docs/api are code: the hub compiles them in or tests against them.)
-    paths: ["**", "!docs/**", "docs/agents/**", "docs/api/**", "!**/*.md", "!VERSION", "!**/.gitignore", "!.github/CODEOWNERS"]
+    paths: ["**", "!docs/**", "docs/agents/**", "docs/api/**", "!**/*.md", "docs/agents/**", "docs/codex-draft/roles/**", "crates/apz-prompt/src/templates/**", "crates/apz-skill/src/templates/**", "crates/apid/src/skills/builtin/**", "!VERSION", "!**/.gitignore", "!.github/CODEOWNERS"]
   workflow_dispatch:
     inputs:
       version:

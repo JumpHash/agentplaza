@@ -16,7 +16,9 @@ use common::{FakeDaemon, Hub, Scratch, text};
 /// The orchestrator's guest CID: slot 9 over the fleet's CID base.
 const ORCHESTRATOR: u64 = 109;
 
-/// The work items the hub pushed to the orchestrator through the gateway, as (work, thread, prompt).
+/// The work items the hub pushed to the orchestrator for the conversations, through the gateway, as (work, thread,
+/// prompt). The hub also sends the orchestrator work of its own on start, on threads that are not conversations; those
+/// are not this test's.
 fn pushed(gateway: &FakeDaemon) -> Vec<(u64, String, String)> {
     gateway
         .seen()
@@ -35,7 +37,21 @@ fn pushed(gateway: &FakeDaemon) -> Vec<(u64, String, String)> {
                 )
             })
         })
+        .filter(|(_, thread, _)| thread.starts_with("conv-"))
         .collect()
+}
+
+/// The conversations' pushes once there are at least `count` of them, or the last look after 20 s. The pushes come
+/// through the gateway asynchronously, so a read straight after the hub answers can miss one.
+fn wait_for_pushes(gateway: &FakeDaemon, count: usize) -> Vec<(u64, String, String)> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let sent = pushed(gateway);
+        if sent.len() >= count || Instant::now() >= deadline {
+            return sent;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Waits on the hub's event socket for an `owner_conversation` event that `wanted` takes; its data, if one comes in time.
@@ -143,7 +159,7 @@ fn two_conversations_are_two_threads_and_each_gets_its_own_answers() {
     assert_eq!(first["pending"], json!([first_work]));
 
     // The first one is pushed at once; the second waits behind it on the orchestrator's lane.
-    let sent = pushed(&gateway);
+    let sent = wait_for_pushes(&gateway, 1);
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert_eq!((sent[0].0, sent[0].1.as_str()), (first_work, "conv-1"));
 
@@ -172,7 +188,7 @@ fn two_conversations_are_two_threads_and_each_gets_its_own_answers() {
     })
     .expect("the answer arrives as an owner_conversation event");
     assert_eq!(messages(&event).len(), 2, "{event}");
-    let sent = pushed(&gateway);
+    let sent = wait_for_pushes(&gateway, 2);
     assert_eq!(sent.len(), 2, "{sent:?}");
     assert_eq!((sent[1].0, sent[1].1.as_str()), (second_work, "conv-2"));
     hub.work_done(
@@ -220,7 +236,7 @@ fn two_conversations_are_two_threads_and_each_gets_its_own_answers() {
     );
     assert_eq!(status, 200, "{first}");
     let third_work = first["works"][1].as_u64().expect("the reply's work item");
-    let sent = pushed(&gateway);
+    let sent = wait_for_pushes(&gateway, 3);
     assert_eq!((sent[2].0, sent[2].1.as_str()), (third_work, "conv-1"));
     assert_eq!(sent[2].2, "agentplaza; yes, the double-charge too.");
     // A failed turn says why in the conversation, as the orchestrator's message.

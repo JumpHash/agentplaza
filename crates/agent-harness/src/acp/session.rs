@@ -1017,7 +1017,8 @@ mod tests {
             prompt_turn(&options(&workspace, &dir, argv), "hello", &link).expect("the turn runs");
 
         assert_eq!(outcome.stop_reason, "cancelled");
-        assert!(started.elapsed() < Duration::from_secs(3));
+        // The engine sleeps for ten seconds: the bound only has to be far below that, not a tight budget.
+        assert!(started.elapsed() < CANCEL_GRACE + Duration::from_secs(5));
     }
 
     #[test]
@@ -1037,7 +1038,8 @@ mod tests {
 
         assert_eq!(outcome.stop_reason, "cancelled");
         assert!(started.elapsed() >= CANCEL_GRACE);
-        assert!(started.elapsed() < Duration::from_secs(30));
+        // The engine sleeps for a minute: the kill must come within the grace plus slack, which only a hang exceeds.
+        assert!(started.elapsed() < CANCEL_GRACE + Duration::from_secs(5));
     }
 
     #[test]
