@@ -70,7 +70,7 @@ jobs:
           [[ "$WR_CONCLUSION" =~ ^[a-z_]*$ ]] || bad conclusion
           printf 'RUN_ID=%s\nRUN_URL=%s\nEVENT=%s\nHEAD_SHA=%s\nCONCLUSION=%s\n' "$WR_ID" "$WR_URL" "$WR_EVENT" "$WR_SHA" "$WR_CONCLUSION" >> "$GITHUB_ENV"
       # Main's code: the report builder, the console's tokens and faces.
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { ref: "${{ github.event.repository.default_branch }}", path: trusted, persist-credentials: false }
       # A run whose API tests did not run (nothing they test changed, or it stopped before them) has no results,
       # and an expired one has none left: nothing to publish, and no download error.
@@ -89,7 +89,7 @@ jobs:
         id: data
         if: steps.has.outputs.found == 'true'
         continue-on-error: true
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: { name: api-results, run-id: "${{ env.RUN_ID }}", github-token: "${{ github.token }}", path: data }
       - name: Where it goes
         id: where
@@ -107,7 +107,7 @@ jobs:
               echo "dir=api/main" >> "$GITHUB_OUTPUT" ;;
             *) echo "a $EVENT run: nothing to publish" ;;
           esac
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.where.outputs.dir != ''
         with: { ref: gh-pages, path: pages }
         continue-on-error: true

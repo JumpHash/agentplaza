@@ -22,17 +22,17 @@ jobs:
       x86_64: ${{ steps.x86_64.outputs.cache-hit }}
       aarch64: ${{ steps.aarch64.outputs.cache-hit }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - id: x86_64
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/guest/x86_64
           key: "guest-x86_64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/**','Cargo.toml','Cargo.lock','.cargo/**','.github/ci/Dockerfile') }}"
           enableCrossOsArchive: true
           lookup-only: true
       - id: aarch64
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/guest/aarch64
           key: "guest-aarch64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/**','Cargo.toml','Cargo.lock','.cargo/**','.github/ci/Dockerfile') }}"
@@ -52,7 +52,7 @@ jobs:
       # mk-initrd.sh builds the harness into the workspace's target/.
       APZ_CI_TARGET: workspace
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
         if: needs.check.outputs[matrix.arch] != 'true'
       - name: CI image
@@ -61,7 +61,7 @@ jobs:
       - name: Build
         if: needs.check.outputs[matrix.arch] != 'true'
         run: .github/ci/in-image.sh 'APZ_BUSYBOX=$( [ ${{ matrix.arch }} = aarch64 ] && echo $APZ_BUSYBOX_AARCH64 ) scripts/mk-guest.sh ${{ matrix.arch }}'
-      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: needs.check.outputs[matrix.arch] != 'true'
         with:
           path: target/guest/${{ matrix.arch }}

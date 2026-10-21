@@ -24,9 +24,9 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: { path: stage-out, key: "stage-linux-aarch64-${{ github.run_id }}", fail-on-cache-miss: true }
       - name: CI image
         run: .github/ci/image.sh
@@ -58,5 +58,5 @@ jobs:
               test -f /usr/share/agentplaza/console/index.html &&
               test -s /usr/share/agentplaza/guest/aarch64/vmlinux'
           done
-      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with: { path: out-raspberrypi, key: "pkg-raspberrypi-${{ github.run_id }}" }

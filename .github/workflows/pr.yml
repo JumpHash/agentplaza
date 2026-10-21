@@ -63,7 +63,7 @@ jobs:
       only: ${{ github.event_name == 'pull_request' && steps.diff.outputs.tests != 'all' && steps.diff.outputs.tests || '' }}
       trusted: ${{ steps.diff.outputs.trusted }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
       - id: diff
         env:
@@ -80,7 +80,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - name: CI image
         run: .github/ci/image.sh
@@ -110,7 +110,7 @@ jobs:
           --part "rustfmt=${{ steps.fmt.outcome }}:lint-rustfmt.log"
           --part "clippy (warnings fail)=${{ steps.clippy.outcome }}:lint-clippy.log"
           --part "cargo deny (advisories, licences, sources)=${{ steps.deny.outcome }}:lint-deny.log"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with: { name: results-lint, path: results, retention-days: 7 }
 
@@ -122,7 +122,7 @@ jobs:
     runs-on: [self-hosted, light]
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
       - name: applied migrations are immutable, new ones numbered in order
         id: check
@@ -136,7 +136,7 @@ jobs:
         run: >-
           python3 .github/ci/results.py results lint Migrations
           --part "migrations (applied ones unchanged, new ones in order)=${{ steps.check.outcome }}:migrations.log"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with: { name: results-migrations, path: results, retention-days: 7 }
 
@@ -192,7 +192,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, hetzner]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - name: CI image
         run: .github/ci/image.sh
@@ -216,7 +216,7 @@ jobs:
           cp api-out/bruno.json api-out/bench.json api-results/ 2>/dev/null || true
           cp api-out/schemathesis/*.xml api-results/schemathesis/ 2>/dev/null || true
           cp docs/api/openapi.json api-results/openapi.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with: { name: api-results, path: api-results, retention-days: 7, if-no-files-found: warn }
       - name: The API tests passed
@@ -244,7 +244,7 @@ jobs:
     env:
       NET: apz-cov-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - name: CI image
         run: .github/ci/image.sh
@@ -279,7 +279,7 @@ jobs:
           python3 .github/ci/results.py results coverage "Coverage"
           --part "measured (every test type)=${{ steps.measure.outcome }}:coverage.log"
           --data coverage.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with: { name: results-coverage, path: results, retention-days: 7 }
       - name: Clean up
