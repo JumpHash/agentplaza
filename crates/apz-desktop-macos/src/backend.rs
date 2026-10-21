@@ -248,6 +248,9 @@ fn capture_main_display() -> Result<Frame> {
     let image = CGDisplay::main().image().ok_or_else(|| {
         DesktopError::Platform("the main display gave no image; is Screen Recording on?".into())
     })?;
+    // SAFETY: `image` is the CGImage that CGDisplayCreateImage returned under the create rule, and the local `image` owns
+    // it until this function returns. The call only reads that image's bitmap info through the pointer, which stays
+    // valid for the call.
     let bitmap_info = unsafe { sys::CGImageGetBitmapInfo(image.as_ptr().cast::<c_void>()) };
     let data = image.data();
     pixels::repack(

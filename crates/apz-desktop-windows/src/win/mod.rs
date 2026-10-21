@@ -1,6 +1,6 @@
-//! The Windows backend. COM is initialised in the multithreaded apartment, where the interfaces used here are
-//! free-threaded, so the daemon may build the backend on one thread and run its request loop on another. The
-//! thread that calls into the backend must have initialised COM itself, which the daemon's loop thread does.
+//! The Windows backend. COM is kept alive in the multithreaded apartment, where the interfaces used here are
+//! free-threaded, so the daemon may build the backend on one thread and run its request loop on another. A thread
+//! that never initialised COM runs its calls in the implicit multithreaded apartment.
 
 mod apps;
 mod capture;
@@ -16,7 +16,8 @@ use apz_desktop::{AppInfo, Desktop, DesktopError, Frame, Result, SessionSpec, Ui
 use apz_station::{InputAction, Selector, SessionId, SessionKind, UiAction};
 use windows::Win32::Foundation::E_ACCESSDENIED;
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+    CLSCTX_INPROC_SERVER, CO_MTA_USAGE_COOKIE, CoCreateInstance, CoDecrementMTAUsage,
+    CoIncrementMTAUsage,
 };
 use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
 use windows::Win32::System::SystemInformation::GetTickCount;
@@ -50,30 +51,36 @@ struct Session {
     capture: capture::Capturer,
 }
 
-/// This thread's COM apartment. It is uninitialised on drop when this value initialised it.
-struct ComApartment(bool);
+/// A hold on the process's multithreaded apartment, kept for as long as the backend lives. The hold is a usage
+/// cookie that any thread may release, so the value may be dropped on a different thread from the one that made it.
+struct ComApartment(Option<CO_MTA_USAGE_COOKIE>);
+
+// SAFETY: the cookie is an opaque token that CoDecrementMTAUsage accepts from any thread, and `drop` releases it
+// exactly once, so the value may move to another thread.
+unsafe impl Send for ComApartment {}
 
 impl ComApartment {
     fn enter() -> Self {
-        // SAFETY: no reserved pointer is passed.
-        let status = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        // A success status (including "already initialised") owns one reference; a failure owns none.
-        Self(status.is_ok())
+        // SAFETY: the call takes no pointer we own. The cookie it returns is kept in the value and released once in
+        // `drop`; a failure owns nothing.
+        Self(unsafe { CoIncrementMTAUsage() }.ok())
     }
 }
 
 impl Drop for ComApartment {
     fn drop(&mut self) {
-        if self.0 {
-            // SAFETY: balances the CoInitializeEx that succeeded in `enter`.
-            unsafe { CoUninitialize() };
+        if let Some(cookie) = self.0.take() {
+            // SAFETY: `cookie` is the one CoIncrementMTAUsage returned, and `take` releases it exactly once. There
+            // is nothing to recover from a failure here, so it is ignored.
+            let _ = unsafe { CoDecrementMTAUsage(cookie) };
         }
     }
 }
 
 // SAFETY: the interfaces this value holds (the UI Automation client, the Direct3D device and its duplication, the
-// staging textures) are free-threaded, since COM was initialised in the multithreaded apartment. The daemon's one
-// request loop calls the backend from one thread at a time, so no two threads use a context at once.
+// staging textures) are free-threaded. COM is kept alive for the process by the MTA usage cookie in `_com`, which
+// any thread may release, so creating, using and dropping the backend on different threads is sound. The daemon's
+// one request loop still calls the backend from one thread at a time, so no two threads use a context at once.
 unsafe impl Send for WindowsDesktop {}
 
 impl WindowsDesktop {
@@ -260,5 +267,20 @@ pub(crate) fn platform_error(error: windows::core::Error) -> DesktopError {
         DesktopError::NotPermitted(error.to_string())
     } else {
         DesktopError::Platform(error.to_string())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::ComApartment;
+
+    #[test]
+    fn apartment_hold_can_be_dropped_on_another_thread() {
+        let apartment = ComApartment::enter();
+        std::thread::spawn(move || drop(apartment))
+            .join()
+            .expect("dropping the apartment on another thread panicked");
+        // The process still has a multithreaded apartment, so a second hold on this thread works too.
+        let _second = ComApartment::enter();
     }
 }

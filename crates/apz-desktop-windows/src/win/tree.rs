@@ -222,10 +222,16 @@ pub fn act(element: &IUIAutomationElement, action: &UiAction) -> Result<()> {
 
 /// What one control reports, read once.
 fn describe(element: &IUIAutomationElement) -> Result<Facts> {
-    // SAFETY: each property read takes no pointers beyond its out value.
+    // SAFETY: `element` is borrowed for the whole call, so the UIA interface stays alive. The getter writes
+    // its result into an out value the windows wrapper owns; a failed read is returned as an error HRESULT.
     let control = unsafe { element.CurrentControlType() }.map_err(platform_error)?;
+    // SAFETY: `element` is borrowed for the whole call. RECT is written to a wrapper-owned out value, and a
+    // failed read (for example a provider that has gone away) is mapped to an error below.
     let rect = unsafe { element.CurrentBoundingRectangle() }.map_err(platform_error)?;
+    // SAFETY: `element` is borrowed for the whole call. BOOL is written to a wrapper-owned out value, and a
+    // failed read becomes `false` through `is_ok_and`.
     let focusable = unsafe { element.CurrentIsKeyboardFocusable() }.is_ok_and(|b| b.as_bool());
+    // SAFETY: as for the focus flag above. A failed read leaves the control not treated as a password field.
     let password = unsafe { element.CurrentIsPassword() }.is_ok_and(|b| b.as_bool());
     let value_pattern = pattern::<IUIAutomationValuePattern>(element, UIA_ValuePatternId);
     let toggle_pattern = pattern::<IUIAutomationTogglePattern>(element, UIA_TogglePatternId);
