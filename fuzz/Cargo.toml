@@ -1,6 +1,6 @@
 [package]
 name = "agentplaza-fuzz"
-description = "Fuzz targets for the guest-controlled vsock and virtio-block parsers (vmm crate)"
+description = "Fuzz targets for the guest-controlled vsock and virtio-block parsers (vmm crate) and weft's git object readers"
 version = "0.0.0"
 edition = "2024"
 license = "Apache-2.0"
@@ -16,6 +16,7 @@ members = ["."]
 
 [dependencies]
 vmm = { path = "../crates/vmm" }
+weft = { path = "../crates/weft" }
 vm-memory = { version = "0.18", features = ["backend-mmap"] }
 vmm-sys-util = "0.15"
 
@@ -53,6 +54,13 @@ bench = false
 [[bin]]
 name = "block_request"
 path = "fuzz_targets/block_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "weft_git"
+path = "fuzz_targets/weft_git.rs"
 test = false
 doc = false
 bench = false
