@@ -187,12 +187,18 @@ jobs:
       - name: Build the binaries
         if: inputs.package
         run: cargo build --release --locked --target ${{ env.TRIPLE }} ${{ env.BINS }}
+      # The key guest.yml saved it under (.github/ci/guest-key.sh): git's content ids, which the build before this
+      # step does not change (a hash of the work tree would see the files the build leaves under crates/).
+      - name: The guest's cache key
+        if: inputs.package && env.GARCH != ''
+        id: guest-key
+        run: echo "key=$(sh .github/ci/guest-key.sh "$GARCH")" >> "$GITHUB_OUTPUT"
       - name: The guest (cached by guest.yml; built on Linux)
         if: inputs.package && env.GARCH != ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/guest/${{ env.GARCH }}
-          key: "guest-${{ env.GARCH }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/**','Cargo.toml','Cargo.lock','.cargo/**','.github/ci/Dockerfile') }}"
+          key: ${{ steps.guest-key.outputs.key }}
           enableCrossOsArchive: true
       - name: The relay binaries (both architectures, from the relay job)
         if: inputs.package

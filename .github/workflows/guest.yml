@@ -24,18 +24,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
+      # The keys come from git's content ids of the guest's inputs (.github/ci/guest-key.sh): the same on every OS.
+      - name: The guests' cache keys
+        id: keys
+        run: |
+          echo "x86_64=$(sh .github/ci/guest-key.sh x86_64)" >> "$GITHUB_OUTPUT"
+          echo "aarch64=$(sh .github/ci/guest-key.sh aarch64)" >> "$GITHUB_OUTPUT"
       - id: x86_64
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/guest/x86_64
-          key: "guest-x86_64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/**','Cargo.toml','Cargo.lock','.cargo/**','.github/ci/Dockerfile') }}"
+          key: ${{ steps.keys.outputs.x86_64 }}
           enableCrossOsArchive: true
           lookup-only: true
       - id: aarch64
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/guest/aarch64
-          key: "guest-aarch64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/**','Cargo.toml','Cargo.lock','.cargo/**','.github/ci/Dockerfile') }}"
+          key: ${{ steps.keys.outputs.aarch64 }}
           enableCrossOsArchive: true
           lookup-only: true
 
@@ -61,9 +67,14 @@ jobs:
       - name: Build
         if: needs.check.outputs[matrix.arch] != 'true'
         run: .github/ci/in-image.sh 'APZ_BUSYBOX=$( [ ${{ matrix.arch }} = aarch64 ] && echo $APZ_BUSYBOX_AARCH64 ) scripts/mk-guest.sh ${{ matrix.arch }}'
+      - name: The guest's cache key
+        id: guest-key
+        if: needs.check.outputs[matrix.arch] != 'true'
+        env: { ARCH: "${{ matrix.arch }}" }
+        run: echo "key=$(sh .github/ci/guest-key.sh "$ARCH")" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: needs.check.outputs[matrix.arch] != 'true'
         with:
           path: target/guest/${{ matrix.arch }}
-          key: "guest-${{ matrix.arch }}-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/**','Cargo.toml','Cargo.lock','.cargo/**','.github/ci/Dockerfile') }}"
+          key: ${{ steps.guest-key.outputs.key }}
           enableCrossOsArchive: true

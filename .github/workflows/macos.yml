@@ -174,12 +174,17 @@ jobs:
         run: |
           cargo build --release --locked --target x86_64-apple-darwin $X86_BINS
           cargo build --release --locked --target aarch64-apple-darwin $ARM_BINS
+      # The key guest.yml saved it under (.github/ci/guest-key.sh): git's content ids, which a build does not change.
+      - name: The aarch64 guest's cache key
+        if: inputs.package
+        id: guest-key
+        run: echo "key=$(sh .github/ci/guest-key.sh aarch64)" >> "$GITHUB_OUTPUT"
       - name: The aarch64 guest (cached by guest.yml; built on Linux)
         if: inputs.package
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/guest/aarch64
-          key: "guest-aarch64-${{ hashFiles('scripts/mk-guest.sh','scripts/mk-guest-kernel.sh','scripts/mk-initrd.sh','scripts/guest/**','crates/**','Cargo.toml','Cargo.lock','.cargo/**','.github/ci/Dockerfile') }}"
+          key: ${{ steps.guest-key.outputs.key }}
           enableCrossOsArchive: true
       - name: The relay binaries (both architectures, from the relay job)
         if: inputs.package
