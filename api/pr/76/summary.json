@@ -1,9 +1,9 @@
 {
   "requests": 2917,
-  "passed": 2916,
-  "failed": 1,
+  "passed": 2917,
+  "failed": 0,
   "checks": 9005,
-  "checksPassed": 9004,
+  "checksPassed": 9005,
   "operations": 575,
   "tested": 563,
   "findings": {}
