@@ -541,7 +541,7 @@ impl Store {
     }
 
     /// The agent's entries on `thread` with `seq > after`, oldest first, at most `limit`: those of the work items
-    /// whose `work_start` names the thread (a conversation's or an editor session's turns, without the others').
+    /// whose `work_start` names the thread (a chat's or an editor session's turns, without the others').
     pub fn on_thread(&self, cid: u64, thread: &str, after: u64, limit: usize) -> Vec<StoredEntry> {
         let windows = self.windows();
         let Some(log) = windows.get(&cid) else {

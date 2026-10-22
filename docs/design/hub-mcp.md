@@ -124,7 +124,7 @@ namespace them.
 | `restart_agent` | `cid` | Restarts one agent's VM. |
 | `propose_agent` | `role`, `model?`, `node?`, `why` | Files an agent proposal. Spawning costs money, so the owner approves it in the console. |
 | `prompt_propose` | `id`, `body`, `note?`, `base_version` | Adds a version to a prompt, authored over MCP. It never publishes; returns the version, whether it was created, its score and error count. |
-| `skill_propose` | `id`, `skill_md`, `files`, `base_version`, `note?` | Adds a version to a skill, authored over MCP (`files`: `{path, content_b64 \| sha256, executable}`). It never publishes; returns the version, its score and error count. |
+| `skill_propose` | `id`, `skill_md`, `files`, `base_version`, `note?` | Adds a version to a skill, authored over MCP (`files`: `{path, content_b64 \| hash, executable}`). It never publishes; returns the version, its score and error count. |
 
 ### `govern`: files an approval, never acts directly
 

@@ -1,58 +1,23 @@
-//! `agentplaza agents`: Agents: list (all, or a project's), inspect, create, talk to,
-//! stop, restart, set models; cancel their work, retire or wipe them, put them to sleep or wake
-//! them, checkpoint, roll back and fork their VMs, drive their harness and loops, set permissions,
-//! and decide the proposals they make. The submodules hold the larger areas: `lifecycle`,
-//! `harness`, `oversight` and `records`.
+//! `agentplaza agents`: the agents are the VMs the work engine's sessions run on (`sessions` lists
+//! them with their cids): talk to one, stop, restart, set its model; cancel its work, retire or wipe it,
+//! put it to sleep or wake it, checkpoint, roll back and fork its VM, drive its harness and loops, set
+//! permissions, and decide the proposals the agents make. The submodules hold the larger areas:
+//! `lifecycle`, `harness`, `oversight` and `records`.
 
 pub mod harness;
 pub mod lifecycle;
 pub mod oversight;
 pub mod records;
 
-use std::thread;
-use std::time::Duration;
-
-use apz_rich::Ctx as RichCtx;
 use clap::Subcommand;
 use serde_json::{Value, json};
 
 use crate::ctx::{self, Ctx, confirm, text_arg};
-use crate::rich;
 
 use self::lifecycle::WipeWhat;
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// The agents, with their role, project, status, model and queue, and why they wait when they do.
-    List {
-        /// Only agents of this role (its id, such as "orchestrator").
-        #[arg(long)]
-        role: Option<String>,
-        /// Only agents in this status: working, idle, offline or asleep.
-        #[arg(long)]
-        status: Option<String>,
-        /// Only the agents whose live session is on this project (its id, such as `pr3`).
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// One agent: its model, queue, current work and record.
-    Show {
-        /// The agent's cid (see `agents list`).
-        cid: u64,
-    },
-    /// Create agents of a role (the wizard's spawn). An agent works on a project only through a live session, so a new
-    /// one has none until a task's session takes it on.
-    Create {
-        /// The role id.
-        #[arg(long)]
-        role: String,
-        /// How many to create.
-        #[arg(long, default_value_t = 1)]
-        count: u32,
-        /// The model to run them on, provider/model (default: the role's, else the plaza's).
-        #[arg(long)]
-        model: Option<String>,
-    },
     /// Send an agent a message (its chat).
     Tell {
         /// The agent's cid.
@@ -91,14 +56,6 @@ pub enum Cmd {
         cid: u64,
         /// provider/model, or "default".
         model: String,
-    },
-    /// An agent's transcript: what it did and said, oldest first.
-    Logs {
-        /// The agent's cid.
-        cid: u64,
-        /// Keep printing new entries as they come.
-        #[arg(long)]
-        follow: bool,
     },
     /// Stop the agent's running work. The agent stays on the roster.
     Cancel {
@@ -260,18 +217,6 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Loops { cid, action } => harness::loops(ctx, cid, action),
         Cmd::Permissions { cid, action } => oversight::permissions(ctx, cid, action),
         Cmd::Proposals { action } => records::proposals(ctx, action),
-        Cmd::List {
-            role,
-            status,
-            project,
-        } => list(
-            ctx,
-            role.as_deref(),
-            status.as_deref(),
-            &list_path(project.as_deref()),
-        ),
-        Cmd::Show { cid } => show(ctx, cid),
-        Cmd::Create { role, count, model } => create(ctx, &role, count, model.as_deref()),
         Cmd::Tell { cid, text } => tell(ctx, cid, &text),
         Cmd::Stop { cid, yes } => {
             if !confirm(yes, &format!("Stop agent {cid}?"))? {
@@ -319,11 +264,10 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             });
             Ok(())
         }
-        Cmd::Logs { cid, follow } => logs(ctx, cid, follow),
     }
 }
 
-fn cancelled() -> Result<(), String> {
+pub(crate) fn cancelled() -> Result<(), String> {
     println!("cancelled");
     Ok(())
 }
@@ -354,142 +298,6 @@ pub(crate) fn label_of(a: &Value) -> String {
     }
 }
 
-fn work_of(a: &Value) -> String {
-    a.get("work")
-        .filter(|w| !w.is_null())
-        .map(|w| ctx::text(w, "prompt"))
-        .unwrap_or_else(|| "-".to_string())
-}
-
-/// Where an agent works: the project of its live session; `all` for the orchestrator, which works on every project;
-/// `none` for one with no live session, which has no project; `-` for a model agent, which takes no work.
-pub(crate) fn place_of(a: &Value) -> String {
-    match a.get("project").and_then(Value::as_str) {
-        Some(project) => project.to_string(),
-        None if ctx::s(a, "role") == "orchestrator" || ctx::s(a, "tier") == "orchestrator" => {
-            "all".to_string()
-        }
-        None if ctx::s(a, "kind") == "model" => "-".to_string(),
-        None => "none".to_string(),
-    }
-}
-
-/// Why an agent waits (its project is paused or over), or "-" when it may work.
-pub(crate) fn held_of(a: &Value) -> String {
-    match ctx::s(a, "held") {
-        "" => "-".to_string(),
-        why => why.to_string(),
-    }
-}
-
-/// The roster's path: every agent, or a project's (`?project=<id>`): the agents whose live session is on it.
-fn list_path(project: Option<&str>) -> String {
-    match project {
-        Some(id) => format!("/v1/agents?project={}", ctx::seg(id)),
-        None => "/v1/agents".to_string(),
-    }
-}
-
-fn list(ctx: &Ctx, role: Option<&str>, status: Option<&str>, path: &str) -> Result<(), String> {
-    let all = ctx.client.get(path)?;
-    let agents: Vec<Value> = all
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| role.is_none_or(|r| ctx::s(a, "role") == r))
-        .filter(|a| status.is_none_or(|s| ctx::s(a, "status") == s))
-        .collect();
-    ctx.out(&Value::Array(agents.clone()), |_| {
-        let rows: Vec<Vec<String>> = agents
-            .iter()
-            .map(|a| {
-                vec![
-                    ctx::text(a, "cid"),
-                    label_of(a),
-                    ctx::s(a, "role").to_string(),
-                    place_of(a),
-                    ctx::s(a, "status").to_string(),
-                    ctx::s(a, "model").to_string(),
-                    ctx::text(a, "queue"),
-                    work_of(a),
-                    held_of(a),
-                ]
-            })
-            .collect();
-        ctx::table(
-            &[
-                "cid", "agent", "role", "project", "status", "model", "queue", "work", "held",
-            ],
-            &rows,
-        );
-    });
-    Ok(())
-}
-
-fn show(ctx: &Ctx, cid: u64) -> Result<(), String> {
-    let agent = ctx.client.get(&format!("/v1/agents/{cid}"))?;
-    ctx.out(&agent, |a| {
-        ctx::fields(&[
-            ("agent", label_of(a)),
-            (
-                "role",
-                format!("{} ({})", ctx::s(a, "role_label"), ctx::s(a, "role")),
-            ),
-            (
-                "status",
-                format!("{} · {}", ctx::s(a, "status"), ctx::s(a, "tier")),
-            ),
-            ("project", project_of(a)),
-            ("held", held_of(a)),
-            (
-                "model",
-                format!(
-                    "{} (from {})",
-                    ctx::s(a, "model"),
-                    ctx::s(a, "model_source")
-                ),
-            ),
-            ("queue", ctx::text(a, "queue")),
-            ("work", work_of(a)),
-        ]);
-    });
-    Ok(())
-}
-
-/// Where an agent works, as `agents show` says it: its project, every project for the orchestrator, or none when it has
-/// no live session.
-fn project_of(a: &Value) -> String {
-    match place_of(a).as_str() {
-        "all" => "every project (the orchestrator works on all of them)".to_string(),
-        "none" => "none: no live session".to_string(),
-        project => project.to_string(),
-    }
-}
-
-/// The `POST /v1/agents` body: the role and count, and the model only when it is given.
-fn create_body(role: &str, count: u32, model: Option<&str>) -> Value {
-    let mut body = json!({ "role": role, "count": count });
-    if let Some(m) = model {
-        body["model"] = json!(m);
-    }
-    body
-}
-
-fn create(ctx: &Ctx, role: &str, count: u32, model: Option<&str>) -> Result<(), String> {
-    if count == 0 {
-        return Err("--count is at least 1".into());
-    }
-    let v = ctx
-        .client
-        .post("/v1/agents", &create_body(role, count, model))?;
-    ctx.out(&v, |_| {
-        let plural = if count == 1 { "" } else { "s" };
-        println!("created {count} {role} agent{plural}");
-    });
-    Ok(())
-}
-
 fn tell(ctx: &Ctx, cid: u64, text: &str) -> Result<(), String> {
     let text = text_arg(text)?;
     let v = ctx
@@ -499,219 +307,4 @@ fn tell(ctx: &Ctx, cid: u64, text: &str) -> Result<(), String> {
         println!("sent to agent {cid} (work {})", ctx::text(v, "work"))
     });
     Ok(())
-}
-
-fn logs(ctx: &Ctx, cid: u64, follow: bool) -> Result<(), String> {
-    const PAGE: usize = 1000;
-    let mut after = 0u64;
-    let rich_ctx = rich::context_for(ctx);
-    loop {
-        let page = ctx.client.get(&format!(
-            "/v1/agents/{cid}/transcript?after={after}&limit={PAGE}"
-        ))?;
-        let entries = page.as_array().cloned().unwrap_or_default();
-        for e in &entries {
-            if let Some(seq) = e.get("seq").and_then(Value::as_u64) {
-                after = after.max(seq);
-            }
-            print_entry(ctx, &rich_ctx, e);
-        }
-        if entries.len() >= PAGE {
-            continue;
-        }
-        if !follow {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_secs(2));
-    }
-}
-
-fn print_entry(ctx: &Ctx, rich_ctx: &RichCtx, e: &Value) {
-    if ctx.json {
-        println!("{e}");
-        return;
-    }
-    if let Some(lines) = engine_lines(e) {
-        for line in lines {
-            println!("{line}");
-        }
-        return;
-    }
-    let data: String = e
-        .get("data")
-        .map(|d| d.to_string())
-        .unwrap_or_default()
-        .chars()
-        .take(160)
-        .collect();
-    let data = rich::render(&data, rich_ctx, &ctx.rich);
-    println!(
-        "#{} work {} {:<14} {}",
-        ctx::text(e, "seq"),
-        ctx::text(e, "work"),
-        ctx::s(e, "kind"),
-        data
-    );
-}
-
-/// How many lines of an agent message the transcript prints before it cuts to `│ …`.
-const MESSAGE_LINES: usize = 12;
-
-/// The lines one coding-engine entry prints, or `None` for an entry that prints as a plain line.
-/// The entries are the ones a `code_engine` call produced: an `engine_update` from its ACP stream,
-/// and the approvals of the tools the engine itself asked for (their call ids carry `.e`). They
-/// are indented so they read as part of that call. An `allow` decision prints nothing.
-fn engine_lines(e: &Value) -> Option<Vec<String>> {
-    let kind = e.get("kind").and_then(Value::as_str)?;
-    let data = e.get("data")?;
-    let nested = data
-        .get("call")
-        .and_then(Value::as_str)
-        .is_some_and(|call| call.contains(".e"));
-    match kind {
-        "engine_update" => engine_update_lines(data),
-        "tool_request" if nested => {
-            let name = data.get("name").and_then(Value::as_str)?;
-            if !name.starts_with("engine.") {
-                return None;
-            }
-            Some(vec![
-                match data.pointer("/input/title").and_then(Value::as_str) {
-                    Some(title) => format!("    ? {name} {title}"),
-                    None => format!("    ? {name}"),
-                },
-            ])
-        }
-        "tool_decision" if nested => {
-            let output = data.get("output").and_then(Value::as_str).unwrap_or("");
-            match data.get("decision").and_then(Value::as_str)? {
-                // The output already reads "waiting for the owner's approval (<id>)".
-                "pending" => Some(vec![format!("    ⏸ {output}")]),
-                "deny" => Some(vec![format!("    ✗ denied: {output}")]),
-                _ => Some(Vec::new()),
-            }
-        }
-        _ => None,
-    }
-}
-
-/// The lines of one ACP session update the engine's stream forwarded, by its `item`.
-fn engine_update_lines(data: &Value) -> Option<Vec<String>> {
-    let update = data.get("update");
-    let field = |key: &str| {
-        update
-            .and_then(|u| u.get(key))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-    };
-    let lines = match data.get("item").and_then(Value::as_str)? {
-        "tool_call" => {
-            let (title, kind) = (field("title"), field("kind"));
-            vec![if kind.is_empty() {
-                format!("    ⋯ {title}")
-            } else {
-                format!("    ⋯ {title} [{kind}]")
-            }]
-        }
-        "tool_status" => {
-            let glyph = match field("status") {
-                "completed" => "✓",
-                "failed" => "✗",
-                "in_progress" => "▸",
-                _ => "⋯",
-            };
-            let label = [field("title"), field("toolCallId")]
-                .into_iter()
-                .find(|s| !s.is_empty())
-                .unwrap_or("");
-            vec![format!("    {glyph} {label}")]
-        }
-        "message" => {
-            let text = data.get("text").and_then(Value::as_str).unwrap_or("");
-            let body: Vec<&str> = text.lines().collect();
-            let mut out: Vec<String> = body
-                .iter()
-                .take(MESSAGE_LINES)
-                .map(|line| format!("    │ {line}"))
-                .collect();
-            if body.len() > MESSAGE_LINES {
-                out.push("    │ …".to_string());
-            }
-            out
-        }
-        "plan" => {
-            let mut out = vec!["    plan:".to_string()];
-            let entries = update
-                .and_then(|u| u.get("entries"))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten();
-            for entry in entries {
-                let done = entry.get("status").and_then(Value::as_str) == Some("completed");
-                let content = entry.get("content").and_then(Value::as_str).unwrap_or("");
-                out.push(format!(
-                    "      [{}] {content}",
-                    if done { "x" } else { " " }
-                ));
-            }
-            out
-        }
-        "usage" => vec![format!("    usage: {}", update.unwrap_or(&Value::Null))],
-        "mode" => vec![format!("    mode: {}", field("currentModeId"))],
-        "truncated" => {
-            let after = data
-                .get("after")
-                .map_or_else(|| "?".to_string(), Value::to_string);
-            vec![format!(
-                "    … (engine stream truncated after {after} entries)"
-            )]
-        }
-        _ => return None,
-    };
-    Some(lines)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_agent_works_on_the_project_of_its_live_session_or_on_none() {
-        let on = json!({ "cid": 7, "role": "builder", "tier": "worker", "kind": "llm", "project": "pr3" });
-        assert_eq!(place_of(&on), "pr3");
-        let lead =
-            json!({ "cid": 3, "role": "orchestrator", "tier": "orchestrator", "project": null });
-        assert_eq!(place_of(&lead), "all");
-        let model = json!({ "cid": 12, "role": "builder", "kind": "model", "project": null });
-        assert_eq!(place_of(&model), "-");
-        let idle = json!({ "cid": 8, "role": "qa", "kind": "llm", "project": null, "held": null });
-        assert_eq!(place_of(&idle), "none", "no live session, so no project");
-        assert_eq!(held_of(&idle), "-");
-        assert_eq!(project_of(&idle), "none: no live session");
-        let paused = json!({ "cid": 9, "role": "qa", "kind": "llm", "project": "pr3",
-            "held": "project pr3 is paused: its agents wait until the owner resumes it" });
-        assert_eq!(
-            held_of(&paused),
-            "project pr3 is paused: its agents wait until the owner resumes it"
-        );
-        assert_eq!(held_of(&on), "-");
-        assert_eq!(project_of(&on), "pr3");
-    }
-
-    #[test]
-    fn the_list_asks_for_a_project_or_everyone() {
-        assert_eq!(list_path(None), "/v1/agents");
-        assert_eq!(list_path(Some("pr3")), "/v1/agents?project=pr3");
-    }
-
-    #[test]
-    fn create_sends_the_role_and_count_and_a_model_only_when_given() {
-        let bare = create_body("builder", 2, None);
-        assert_eq!(bare, json!({ "role": "builder", "count": 2 }));
-        let modeled = create_body("builder", 1, Some("openai/gpt-6"));
-        assert_eq!(
-            modeled,
-            json!({ "role": "builder", "count": 1, "model": "openai/gpt-6" })
-        );
-    }
 }

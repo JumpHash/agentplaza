@@ -577,7 +577,7 @@ fn ruling_sentence(task: &str, decision: &str) -> String {
 }
 
 /// What `tasks create` says without `--project`: a task belongs to a project, and how to find or open one.
-const NO_PROJECT: &str = "a task belongs to a project: name it with --project <id> (`agentplaza projects list` shows them; `agentplaza projects create` or `agentplaza chat` opens one)";
+const NO_PROJECT: &str = "a task belongs to a project: name it with --project <id> (`agentplaza projects list` shows them; `agentplaza projects create` opens one)";
 
 /// The `POST /v1/tasks` body with only the fields the user gave.
 fn create_body(

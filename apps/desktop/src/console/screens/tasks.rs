@@ -21,8 +21,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::work_model as model;
-use super::{Id, ide};
+use super::{Id, budget, ide, task_seats};
 use crate::console::ui::{self, Tone};
+use crate::console::work_api::OwnerKind;
 use crate::console::{Ctx, client, events, rich, roles, scope};
 use crate::theme::{self};
 
@@ -201,6 +202,9 @@ impl Draft {
 
 #[derive(Debug, Default)]
 pub struct State {
+    /// The open task's seats, and its budget (both empty while no task is open).
+    seats: task_seats::Panel,
+    budget: budget::Panel,
     pub error: Option<String>,
     selected: Option<String>,
     tasks: Vec<TaskRecord>,
@@ -274,6 +278,8 @@ pub enum Msg {
     Step(bool),
     /// A hub event: a task, work or transcript frame.
     Event(events::Event),
+    Seats(task_seats::Msg),
+    Budget(budget::Msg),
     /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
     Rich(rich::Ev),
     /// "Ready only": the board shows only the tasks that can be claimed now.
@@ -284,6 +290,8 @@ pub enum Msg {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        Msg::Seats(m) => task_seats::go(m),
+        Msg::Budget(m) => budget::go(m),
         Msg::OpenIde(target) => Some(Id::Ide(Some(target.clone()))),
         Msg::Rich(rich::Ev::Action(action)) => action.route(),
         _ => None,
@@ -316,6 +324,8 @@ fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 /// load that follows reads that task and its timeline.
 pub fn opened(id: String) -> State {
     State {
+        seats: task_seats::Panel::new(&id),
+        budget: budget::Panel::new(OwnerKind::Task, &id),
         selected: Some(id),
         ..Default::default()
     }
@@ -323,7 +333,18 @@ pub fn opened(id: String) -> State {
 
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    fetch(ctx, state.selected.clone())
+    Task::batch([fetch(ctx, state.selected.clone()), panels(state, ctx)])
+}
+
+/// The open task's seats and budget, read with the page (none while no task is open).
+fn panels(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    if state.selected.is_none() {
+        return Task::none();
+    }
+    Task::batch([
+        task_seats::load(&mut state.seats, ctx).map(Msg::Seats),
+        budget::load(&mut state.budget, ctx).map(Msg::Budget),
+    ])
 }
 
 /// The idle workers on `project`: a project's task goes only to its agents.
@@ -368,35 +389,45 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.kbd = clamp(state.kbd, visible(state).count());
             Task::none()
         }
-        Msg::Event(event) => match event.kind.as_str() {
-            "task" | "work" => reload(state, ctx),
-            "transcript" => {
-                let cid = event.data.get("cid").and_then(Value::as_u64);
-                if state.selected.is_some() {
-                    // On a task page the timeline is rebuilt from the assignee's transcript.
-                    let assignee = state
-                        .detail
-                        .as_ref()
-                        .and_then(|d| d.task.as_ref())
-                        .and_then(|t| t.agent_cid);
-                    if cid.is_some() && cid == assignee {
-                        reload(state, ctx)
+        Msg::Event(event) => {
+            // The seats and the budget follow their own frames (a task's, its sessions', its budget's and its cards').
+            let panels = Task::batch([
+                task_seats::update(&mut state.seats, task_seats::Msg::Event(event.clone()), ctx)
+                    .map(Msg::Seats),
+                budget::update(&mut state.budget, budget::Msg::Event(event.clone()), ctx)
+                    .map(Msg::Budget),
+            ]);
+            let own = match event.kind.as_str() {
+                "task" | "work" => reload(state, ctx),
+                "transcript" => {
+                    let cid = event.data.get("cid").and_then(Value::as_u64);
+                    if state.selected.is_some() {
+                        // On a task page the timeline is rebuilt from the assignee's transcript.
+                        let assignee = state
+                            .detail
+                            .as_ref()
+                            .and_then(|d| d.task.as_ref())
+                            .and_then(|t| t.agent_cid);
+                        if cid.is_some() && cid == assignee {
+                            reload(state, ctx)
+                        } else {
+                            Task::none()
+                        }
                     } else {
+                        // On the board the frame's one activity line replaces the card's.
+                        let line = serde_json::from_value::<EntryRecord>(event.data.clone())
+                            .ok()
+                            .and_then(|e| activity_of(&e));
+                        if let (Some(cid), Some(line)) = (cid, line) {
+                            state.activity.insert(cid, line);
+                        }
                         Task::none()
                     }
-                } else {
-                    // On the board the frame's one activity line replaces the card's.
-                    let line = serde_json::from_value::<EntryRecord>(event.data.clone())
-                        .ok()
-                        .and_then(|e| activity_of(&e));
-                    if let (Some(cid), Some(line)) = (cid, line) {
-                        state.activity.insert(cid, line);
-                    }
-                    Task::none()
                 }
-            }
-            _ => Task::none(),
-        },
+                _ => Task::none(),
+            };
+            Task::batch([panels, own])
+        }
         Msg::Loaded(Ok(snap)) => {
             state.error = None;
             if snap.detail.is_none() {
@@ -423,12 +454,18 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Open(id) => {
             state.selected = Some(id.clone());
+            state.seats = task_seats::Panel::new(&id);
+            state.budget = budget::Panel::new(OwnerKind::Task, &id);
             state.detail = None;
             state.note = None;
-            fetch(ctx, Some(id))
+            Task::batch([fetch(ctx, Some(id)), panels(state, ctx)])
         }
+        Msg::Seats(m) => task_seats::update(&mut state.seats, m, ctx).map(Msg::Seats),
+        Msg::Budget(m) => budget::update(&mut state.budget, m, ctx).map(Msg::Budget),
         Msg::Back => {
             state.selected = None;
+            state.seats = task_seats::Panel::default();
+            state.budget = budget::Panel::default();
             state.detail = None;
             state.note = None;
             fetch(ctx, None)
@@ -1647,6 +1684,8 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
             rich::view(o, &rctx, &state.cards, &on_rich),
         ));
     }
+    main_parts.push(task_seats::view(&state.seats).map(Msg::Seats));
+    main_parts.push(budget::view(&state.budget).map(Msg::Budget));
 
     // The head: the id over the title, the review at the right (the web's `.view-head`).
     let title_line = column![

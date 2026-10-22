@@ -8,8 +8,8 @@
 //! GET   /v1/tasks/{id}/seats                                → [Seat]
 //! GET   /v1/tasks/{id}/threads                              → [Thread]
 //! GET   /v1/threads/{id}                                    → Thread
-//! GET   /v1/projects/{id}/budget                            → BudgetView, with `tasks`: its tasks' budgets
-//! PUT   /v1/projects/{id}/budget {unit, cap?, warn_at_pct?, monthly_cap?} → BudgetView
+//! GET   /v1/projects/{id}/budget                            → BudgetView, with `tasks`: its tasks' budgets, `disk`: {used_bytes, quota_bytes}
+//! PUT   /v1/projects/{id}/budget {unit, cap?, warn_at_pct?, monthly_cap?, disk_quota_bytes?} → BudgetView
 //! GET   /v1/projects/{id}/budget/ledger[?limit=]            → [Entry], newest first
 //! GET   /v1/tasks/{id}/budget                               → BudgetView
 //! PUT   /v1/tasks/{id}/budget {unit, cap?}                  → BudgetView
@@ -21,17 +21,19 @@
 //! POST  /v1/chats {project, title?}                         → 201 Chat (a new chat with the project's planner)
 //! GET   /v1/chats/{id}[?limit=]                             → Chat with its last messages (`main`: the orchestrator's)
 //! GET   /v1/chats/{id}/messages?after=&limit=               → [Message]
-//! POST  /v1/chats/{id}/messages {text}                      → 201 Message (the owner's; delivered to the chat's session)
-//! PATCH /v1/chats/{id} {title?, archived?}                  → Chat
+//! POST  /v1/chats/{id}/messages {text, attachments?}        → 201 Message (the owner's; delivered to the chat's session)
+//! GET   /v1/chats/{id}/transcript[?after=&limit=]           → [Entry]: the turns the session the chat is with took on it
+//! PATCH /v1/chats/{id} {title?, archived?, model?}          → Chat (`model`: the chat's turns run on it; null goes back)
+//! The owner's project drafts are the project chats' (`drafts.rs`).
 //!
-//! Amounts are micro-dollars for a `usd` budget and tokens for a `tokens` one.
+//! Amounts are micro-dollars for a `usd` budget and tokens for a `tokens` one; a disk quota is bytes.
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::budgets::{Budget, OwnerKind, Unit};
-use crate::chats::{Author, MessageKind, Post};
+use crate::chats::{Author, Message, MessageKind, Post};
 use crate::sessions::{Filter, State};
 use crate::state::App;
 
@@ -147,9 +149,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Read a chat's messages after one").errors(&[404]))
         .post("/v1/chats/{id}/messages", post_message)
-        .doc(RouteDoc::new("Say something in a chat").errors(&[400, 404]))
+        .doc(RouteDoc::new("Say something in a chat").errors(&[400, 404, 409]))
+        .get("/v1/chats/{id}/transcript", chat_transcript)
+        .doc(RouteDoc::new("Read the turns a chat's session took on its thread").errors(&[404]))
         .route("PATCH", "/v1/chats/{id}", edit_chat)
-        .doc(RouteDoc::new("Rename or archive a chat").errors(&[400, 404]))
+        .doc(RouteDoc::new("Rename, archive or set the model of a chat").errors(&[400, 404, 409]))
 }
 
 fn list_sessions(app: &App, req: &Request, _: &Params<'_>) -> Response {
@@ -232,9 +236,11 @@ fn budget_view(app: &App, kind: OwnerKind, id: &str) -> Response {
     }
 }
 
-/// A project's budget, with its tasks' budgets.
+/// A project's budget, with its tasks' budgets and its disk.
 fn project_budget_view(app: &App, id: &str) -> Response {
-    let mut view = match app.budgets.get(OwnerKind::Project, id) {
+    let budget = app.budgets.get(OwnerKind::Project, id);
+    let quota = budget.as_ref().and_then(|b| b.disk_quota_bytes);
+    let mut view = match budget {
         Some(b) => budget_json(&b),
         None => json!({ "owner": id, "cap": null, "spent": 0, "unit": null }),
     };
@@ -245,6 +251,7 @@ fn project_budget_view(app: &App, id: &str) -> Response {
         .filter(|b| b.owner_kind == OwnerKind::Task)
         .map(budget_json)
         .collect();
+    view["disk"] = crate::disk::view(app, id, quota);
     Response::json(200, &view)
 }
 
@@ -276,26 +283,51 @@ struct BudgetBody {
     warn_at_pct: Option<u8>,
     #[serde(default)]
     monthly_cap: Option<u64>,
+    /// A project's disk quota in bytes (`disk.rs`); a task has none.
+    #[serde(default)]
+    disk_quota_bytes: Option<u64>,
+}
+
+/// What a budget body may not say: a disk quota of zero bytes (null is no quota), and a disk quota on a task (its
+/// project has the quota).
+fn budget_refusal(body: &BudgetBody, task: bool) -> Option<&'static str> {
+    match body.disk_quota_bytes {
+        Some(0) => Some("a disk quota is more than zero bytes: send null for none"),
+        Some(_) if task => Some("a task has no disk quota: its project does"),
+        _ => None,
+    }
 }
 
 fn put_project_budget(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let id = p.get("id");
-    if app.projects.get(id).is_none() {
+    // The plaza's own budget (`plaza`): what the main orchestrator and VMs that run no session spend from.
+    if id != crate::work_loop::PLAZA && app.projects.get(id).is_none() {
         return Response::error(404, &format!("no project {id}"));
     }
     let body: BudgetBody = match req.json() {
         Ok(b) => b,
         Err(e) => return Response::error(400, &format!("bad budget: {e}")),
     };
+    if let Some(refusal) = budget_refusal(&body, false) {
+        return Response::error(400, refusal);
+    }
+    let quota_before = app
+        .budgets
+        .get(OwnerKind::Project, id)
+        .and_then(|b| b.disk_quota_bytes);
     match app.budgets.set_project(
         id,
         body.unit,
         body.cap,
         body.warn_at_pct.unwrap_or(80),
         body.monthly_cap,
+        body.disk_quota_bytes,
         now(),
     ) {
         Ok(b) => {
+            if b.disk_quota_bytes != quota_before {
+                crate::disk::quota_changed(app, id, now());
+            }
             crate::work_loop::resume_budget(app, OwnerKind::Project, id);
             app.bus.publish("budget", &budget_json(&b));
             Response::json(200, &budget_json(&b))
@@ -316,6 +348,9 @@ fn put_task_budget(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(b) => b,
         Err(e) => return Response::error(400, &format!("bad budget: {e}")),
     };
+    if let Some(refusal) = budget_refusal(&body, true) {
+        return Response::error(400, refusal);
+    }
     match app
         .budgets
         .set_task(id, &project, body.unit, body.cap, now())
@@ -402,42 +437,120 @@ fn read_chat(app: &App, req: &Request, p: &Params<'_>) -> Response {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Say {
+    #[serde(default)]
     text: String,
+    /// The owner's files (ids from `PUT /v1/files`) that go with the message.
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 fn post_message(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    let id = p.get("id");
     let body: Say = match req.json() {
         Ok(b) => b,
         Err(e) => return Response::error(400, &format!("bad message: {e}")),
     };
-    let text = body.text.trim();
-    if text.is_empty() {
-        return Response::error(400, "say something");
+    match say(app, p.get("id"), &body.text, &body.attachments) {
+        Ok(message) => Response::json(201, &message),
+        Err((code, e)) => Response::error(code, &e),
     }
+}
+
+/// The owner says `text` in chat `id`, with the files `attachments` (ids): the message is kept, and it is delivered to
+/// the session the chat is with. A message with no words but files says so. Its prompt names the files, and starts
+/// with the note of the draft's edits the orchestrator has not read (`drafts::edit_note`).
+pub fn say(
+    app: &App,
+    id: &str,
+    text: &str,
+    attachments: &[String],
+) -> Result<Message, (u16, String)> {
+    let text = text.trim();
+    if text.is_empty() && attachments.is_empty() {
+        return Err((400, "say something".into()));
+    }
+    let text = if text.is_empty() {
+        "(files attached)"
+    } else {
+        text
+    };
+    crate::agents::check_chat_text(text).map_err(|e| (400, e))?;
     if id == crate::chats::MAIN {
         app.chats.main(now());
     }
-    let Some(message) = app.chats.post(
-        id,
-        Post {
-            author: Author::Owner,
-            session: None,
-            seat: None,
-            kind: MessageKind::Message,
-            text: text.to_string(),
-            card: None,
-        },
-        now(),
-    ) else {
-        return Response::error(404, &format!("no chat {id}"));
+    let chat = app
+        .chats
+        .get(id)
+        .ok_or_else(|| (404, format!("no chat {id}")))?;
+    if chat.archived {
+        return Err((409, format!("chat {id} is archived: unarchive it to go on")));
+    }
+    let files = if attachments.is_empty() {
+        String::new()
+    } else {
+        let cid = crate::work_loop::chat_cid(app, &chat).ok_or_else(|| {
+            (
+                409,
+                "no session reads this chat now: its files wait for one".to_string(),
+            )
+        })?;
+        crate::deliverables::attach(app, attachments, cid).map_err(|e| (400, e))?
     };
+    let note = crate::drafts::edit_note(&app.chats, id);
+    let message = app
+        .chats
+        .post(
+            id,
+            Post {
+                author: Author::Owner,
+                session: None,
+                seat: None,
+                kind: MessageKind::Message,
+                text: text.to_string(),
+                card: None,
+                attachments: crate::deliverables::attachment_views(app, attachments),
+            },
+            now(),
+        )
+        .ok_or_else(|| (404, format!("no chat {id}")))?;
     // The owner's words are written at once, not on the saver's next pass.
     crate::store::saver::save_now(app, "chats");
-    crate::work_loop::deliver_owner_message(app, id, text);
+    let said = match note {
+        Some(note) => format!("{note}\n\n{text}"),
+        None => text.to_string(),
+    };
+    let prompt = if files.is_empty() {
+        said
+    } else {
+        format!("{said}\n\n{files}")
+    };
+    crate::work_loop::deliver_owner_message(app, id, &prompt);
     app.bus
         .publish("chat", &json!({ "chat": id, "message": message }));
-    Response::json(201, &message)
+    Ok(message)
+}
+
+/// `?after=<seq>&limit=<n>` (at most 1000, default 200): the turns the session of the chat took on its thread.
+fn chat_transcript(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let id = p.get("id");
+    let Some(chat) = app.chats.get(id) else {
+        return Response::error(404, &format!("no chat {id}"));
+    };
+    let after = req
+        .query_param("after")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let limit = req
+        .query_param("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200)
+        .min(1000);
+    let entries = match crate::work_loop::chat_cid(app, &chat) {
+        Some(cid) => app
+            .transcripts
+            .on_thread(cid, &format!("chat:{id}"), after, limit),
+        None => Vec::new(),
+    };
+    Response::json(200, &entries)
 }
 
 #[derive(Deserialize)]
@@ -447,28 +560,89 @@ struct EditChat {
     title: Option<String>,
     #[serde(default)]
     archived: Option<bool>,
+    /// `Some(None)` (JSON null) goes back to the agent's model.
+    #[serde(default, deserialize_with = "some_or_null")]
+    model: Option<Option<String>>,
 }
 
+/// A present field as `Some`, JSON null included (as `Some(None)`); an absent one stays `None`.
+fn some_or_null<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Ok(Some(Option::<String>::deserialize(d)?))
+}
+
+/// Body: `{title?, archived?, model?}`.
 fn edit_chat(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let id = p.get("id");
     let body: EditChat = match req.json() {
         Ok(b) => b,
         Err(e) => return Response::error(400, &format!("bad edit: {e}")),
     };
-    let mut chat = app.chats.get(id).map(|c| c.summary());
-    if let Some(title) = body
+    let title = body
         .title
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    // A chat's model is held to the orchestrator's policy, as the gateway holds every call.
+    if let Some(Some(model)) = &body.model
+        && let Err(e) = app
+            .settings
+            .allowed(crate::settings::Tier::Orchestrator, model)
     {
-        chat = app.chats.rename(id, title);
+        return Response::error(400, &e);
     }
-    if let Some(archived) = body.archived {
-        chat = app.chats.set_archived(id, archived);
+    if id == crate::chats::MAIN {
+        app.chats.main(now());
     }
-    match chat {
-        Some(chat) => Response::json(200, &chat),
-        None => Response::error(404, &format!("no chat {id}")),
+    let changed = app.chats.update(id, |c| {
+        if let Some(title) = title {
+            c.title = title;
+        }
+        if let Some(model) = body.model.clone() {
+            c.model = model.filter(|m| !m.trim().is_empty());
+        }
+        // The main chat cannot be archived.
+        if let Some(archived) = body.archived
+            && c.kind != crate::chats::Kind::Main
+        {
+            c.archived = archived;
+        }
+        c.updated_ms = now();
+        Ok(())
+    });
+    match changed {
+        Ok(chat) => {
+            crate::store::saver::save_now(app, "chats");
+            app.bus
+                .publish("chat", &json!({ "chat": id, "updated": true }));
+            Response::json(200, &chat.summary())
+        }
+        Err((code, e)) => Response::error(code, &e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(disk_quota_bytes: Option<u64>) -> BudgetBody {
+        BudgetBody {
+            unit: Unit::Usd,
+            cap: None,
+            warn_at_pct: None,
+            monthly_cap: None,
+            disk_quota_bytes,
+        }
+    }
+
+    #[test]
+    fn a_disk_quota_is_more_than_zero_bytes_and_a_task_has_none() {
+        assert!(budget_refusal(&body(Some(0)), false).is_some());
+        assert_eq!(budget_refusal(&body(Some(1 << 30)), false), None);
+        assert_eq!(budget_refusal(&body(None), false), None);
+        assert!(budget_refusal(&body(Some(1 << 30)), true).is_some());
+        assert_eq!(budget_refusal(&body(None), true), None);
     }
 }

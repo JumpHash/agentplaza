@@ -9,9 +9,11 @@ publish = false
 [dependencies]
 # The hub's store (SQLite, typed tables) and its caches (PLAN 30.3, 30.4).
 apz-store = { path = "../apz-store", features = ["json"] }
+# The object store (apz-blobs, storage.rs): the bytes of the Library, the artifacts, the skills and the stations.
+apz-blobs = { path = "../apz-blobs" }
 apz-cache = { path = "../apz-cache" }
-apz-prompt = { path = "../apz-prompt" }
-apz-skill = { path = "../apz-skill" }
+apz-prompt = { path = "../apz-prompt", features = ["store"] }
+apz-skill = { path = "../apz-skill", features = ["store"] }
 jhrl = { path = "../jhrl" }
 apz-acp = { path = "../apz-acp" }
 apz-proto = { workspace = true, features = ["store"] }

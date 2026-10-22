@@ -192,6 +192,12 @@ const sleep = (ms: number): Promise<void> => new Promise((done) => realSetTimeou
     'the deny list names the vault, the sign-in, the hub tokens and a provider key',
   );
   eq([isSecretRoute('/v1/vaultx'), isSecretRoute('/v1/providers/p1'), isSecretRoute('/v1/hub-mcp/status')], [false, false, false], 'and no other route');
+  // A chat's transcript holds what its session wrote: kept in memory only. Its messages and draft are plain.
+  eq(
+    [isSecretRoute('/v1/chats/main/transcript?after=0&limit=200'), isSecretRoute('/v1/chats/ch3/transcript'), isSecretRoute('/v1/chats/main/messages'), isSecretRoute('/v1/chats/ch3/draft')],
+    [true, true, false, false],
+    'a chat transcript is a secret route; its messages and draft are not',
+  );
 }
 
 // ---- The persisted copies stay within 2 MB, the most recently used first ------------------------------------------

@@ -74,7 +74,7 @@ function agentList(f: FleetMachine, byCid: Map<number, Agent>): Node[] {
   if (!lines.length) return [faint('No agents on this machine.')];
   return [
     faint(`${f.working} working`),
-    ...lines.map((a) => h('div.mt-vrow', null, h('a.mt-grow', { href: href('agents', a.cid) }, a.name), badge(a.status, a.status === 'working' ? 'ok' : 'muted'))),
+    ...lines.map((a) => h('div.mt-vrow', null, h('a.mt-grow', { href: href('sessions', a.cid) }, a.name), badge(a.status, a.status === 'working' ? 'ok' : 'muted'))),
   ];
 }
 

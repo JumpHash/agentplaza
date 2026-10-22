@@ -371,7 +371,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       n ? `Refused ${plural(n, 'time', 'times')}` : 'Not refused yet',
       l.last_at_ms ? ` · last ${ago(l.last_at_ms)}` : '',
       l.agents.length ? ' · by ' : '',
-      l.agents.flatMap((a, i) => [i ? ', ' : '', h('a', { href: href('agents', a.cid) }, agentLabelIn(agents.get(), a.cid)), ` (${a.count})`]),
+      l.agents.flatMap((a, i) => [i ? ', ' : '', h('a', { href: href('sessions', a.cid) }, agentLabelIn(agents.get(), a.cid)), ` (${a.count})`]),
     );
   }
 
@@ -687,7 +687,7 @@ function diagnosticList(diags: Diagnostic[], pick: (d: Diagnostic) => void): HTM
 
 const REFUSAL_COLUMNS: Column<WouldRefuse>[] = [
   { label: 'When', cell: (w) => ago(w.at_ms) },
-  { label: 'Agent', cell: (w) => h('a', { href: href('agents', w.cid) }, agentName({ cid: w.cid, role: w.role })) },
+  { label: 'Agent', cell: (w) => h('a', { href: href('sessions', w.cid) }, agentName({ cid: w.cid, role: w.role })) },
   { label: 'Role', cell: (w) => w.role },
   { label: 'Tool', cell: (w) => h('code', null, w.tool) },
   { label: 'Laws', cell: (w) => w.laws.join(', ') },

@@ -152,7 +152,7 @@ fn read(
         .iter()
         .find(|file| &file.path == path)
         .ok_or_else(|| format!("{name} has no file {path}"))?;
-    let bytes = skills.blobs().get(&file.sha256)?;
+    let bytes = skills.blobs().get(&file.hash)?;
     Ok(match String::from_utf8(bytes) {
         Ok(text) => cap(text),
         Err(err) => {
@@ -190,7 +190,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::skills::store_mem::MemorySkills;
+    use crate::skills::store_db::DbSkills;
     use crate::skills::tests::MemBlobs;
     use crate::skills::{FileBody, FileIn, NewSkill, Source};
 
@@ -198,7 +198,7 @@ mod tests {
 
     fn library() -> Skills {
         Skills::new(
-            Arc::new(MemorySkills::in_memory()),
+            Arc::new(DbSkills::for_tests()),
             Arc::new(MemBlobs::default()),
         )
     }

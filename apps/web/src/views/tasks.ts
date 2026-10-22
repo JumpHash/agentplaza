@@ -19,6 +19,8 @@ import type { Cleanup } from './index';
 import { agoLabel, shortSpan, waitsByRole } from './work-model';
 import { checkBox, emptyBox } from './work';
 import { reviewPanel } from './review-graph';
+import { budgetCard, type LiveCard } from './budget';
+import { seatsCard } from './task-seats';
 
 const LANES = ['Open', 'In progress', 'Done', 'Failed or withdrawn'];
 const MARK: Record<string, string> = { Open: '○', 'In progress': '●', Done: '✓', 'Failed or withdrawn': '×' };
@@ -237,7 +239,25 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let suppressClick = false;
   let pending = false;
 
+  // The seats and budget cards of the task on screen, built once per task: a redraw reuses them, so an agent's frame does
+  // not fetch them again. A card is disposed when the task changes and when the page goes.
+  let taskCards: { id: string; seats: LiveCard; budget: LiveCard } | null = null;
+  const dropCards = (): void => {
+    taskCards?.seats.dispose();
+    taskCards?.budget.dispose();
+    taskCards = null;
+  };
+  const cardsOf = (taskId: string): { id: string; seats: LiveCard; budget: LiveCard } => {
+    if (taskCards?.id === taskId) return taskCards;
+    dropCards();
+    taskCards = { id: taskId, seats: seatsCard(taskId), budget: budgetCard({ kind: 'task', id: taskId }) };
+    return taskCards;
+  };
+  // Set when the page is left: a load or move still in flight then renders nothing, so no card is built after the cleanup.
+  let gone = false;
+
   const render = (): void => {
+    if (gone) return;
     if (drag?.on) {
       pending = true;
       return;
@@ -449,7 +469,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   /** A link to an agent; inside a clickable card, the name opens the agent, not the task. */
   function assigneeLink(cid: number): HTMLElement {
-    const link = h('a', { href: href('agents', cid) }, cidName(cid));
+    const link = h('a', { href: href('sessions', cid) }, cidName(cid));
     link.addEventListener('click', (e) => e.stopPropagation());
     return link;
   }
@@ -675,6 +695,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const reviewBtn = a
       ? button('Review changes', () => openIde(`agent:${a.cid}`, { review: true }), { icon: 'square-code', title: "Review the assignee's changes since the work began" })
       : null;
+    const cards = cardsOf(t.id);
     return [
       back,
       h('div.view-head', null, h('div', null, h('span.task-id', null, t.id), h('h1', null, titleOf(t.goal))), reviewBtn),
@@ -691,6 +712,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
             facts.map(([k, v]) => h('div.tk-fact', null, h('span.tk-label', null, k), h('div.tk-fv', null, v))),
             controls,
           ),
+          h('div.stack', null, cards.seats.el, cards.budget.el),
           h('section.tk-block', null, h('div.tk-label', null, 'Timeline'), steps),
         ),
       ),
@@ -1001,6 +1023,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   void load();
 
   return () => {
+    gone = true;
     clearTimeout(timer);
     clearInterval(clockTimer);
     offs.forEach((off) => off());
@@ -1017,5 +1040,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     drag = null;
     ticking = [];
     dismiss?.();
+    dropCards();
   };
 }

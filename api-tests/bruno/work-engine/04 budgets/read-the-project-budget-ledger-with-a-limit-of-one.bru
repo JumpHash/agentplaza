@@ -1,0 +1,22 @@
+meta {
+  name: Read the project budget's ledger with a limit of one entry
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{we_pid}}/budget/ledger?limit=1
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("one entry comes back", function () {
+    expect(res.getBody().length).to.equal(1);
+  });
+}

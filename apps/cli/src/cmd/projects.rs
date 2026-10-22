@@ -39,7 +39,7 @@ pub enum Cmd {
         id: String,
     },
     /// Open a project as the owner: its plan is yours, so it is at implementation at once and takes tasks.
-    /// `agentplaza chat` drafts and starts one with the orchestrator.
+    /// `agentplaza chats` talks a project into being with its planner: the draft's start card in the inbox starts it.
     Create {
         /// The project's title.
         title: String,

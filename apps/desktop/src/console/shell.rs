@@ -16,6 +16,7 @@ use iced::{
 
 use super::events;
 use super::screens::{Id, NAV, appearance, projects::Tab};
+use super::work_api::{self, Chat};
 use super::{Ctx, new_project, roles, scope, toast, ui};
 use crate::theme::SANS;
 use apz_theme::appearance::ModeChoice;
@@ -110,11 +111,11 @@ pub struct State {
     pub new_project: Option<new_project::Form>,
     /// More is open in the sidebar (the screens past the first six).
     pub more: bool,
-    /// The sidebar's lists: approvals waiting, tasks, the owner's conversations, and the agents (for their labels and the
-    /// live line), from `/v1/approvals`, `/v1/tasks`, `/v1/owner/conversations` and `/v1/agents`.
+    /// The sidebar's lists: approvals waiting, tasks, the owner's chats, and the agents (for their labels and the
+    /// live line), from `/v1/approvals`, `/v1/tasks`, `/v1/chats` and `/v1/agents`.
     pub approvals: Vec<serde_json::Value>,
     pub tasks: Vec<serde_json::Value>,
-    pub conversations: Vec<serde_json::Value>,
+    pub conversations: Vec<Chat>,
     pub agents: Vec<serde_json::Value>,
     /// The projects whose rows are folded in the sidebar.
     pub folded: std::collections::BTreeSet<String>,
@@ -277,6 +278,8 @@ pub enum Msg {
     CancelConfirm,
     /// `GET /v1/overview` + `GET /v1/plaza/state` answered.
     Loaded(Result<serde_json::Value, String>),
+    /// `GET /v1/chats` answered: the sidebar's chats.
+    ChatsListed(Result<Vec<Chat>, String>),
     /// `POST /v1/plaza/stop` or `/v1/plaza/resume` answered.
     Done(Result<serde_json::Value, String>),
     /// A hub frame from the top bar's stream.
@@ -320,7 +323,7 @@ pub enum Msg {
 /// The shell's own data: the plaza's held state, the sidebar counts and the projects the switcher offers.
 pub fn load(ctx: &Ctx) -> Task<Msg> {
     let client = ctx.client.clone();
-    super::client::task(
+    let loaded = super::client::task(
         move || {
             let overview: serde_json::Value = client.get("/v1/overview")?;
             let control: serde_json::Value = client.get("/v1/plaza/state")?;
@@ -335,19 +338,25 @@ pub fn load(ctx: &Ctx) -> Task<Msg> {
             let tasks = client
                 .get::<serde_json::Value>("/v1/tasks")
                 .unwrap_or_default();
-            let conversations = client
-                .get::<serde_json::Value>("/v1/owner/conversations")
-                .unwrap_or_default();
             let agents = client
                 .get::<serde_json::Value>("/v1/agents")
                 .unwrap_or_default();
             Ok(serde_json::json!({
                 "overview": overview, "control": control, "projects": projects, "approvals": approvals,
-                "tasks": tasks, "conversations": conversations, "agents": agents,
+                "tasks": tasks, "agents": agents,
             }))
         },
         Msg::Loaded,
-    )
+    );
+    // The owner's chats, typed: a hub that cannot list them leaves the last list as it was.
+    let chats = ctx.client.clone();
+    Task::batch([
+        loaded,
+        super::client::task(
+            move || work_api::chats(&chats, None, false),
+            Msg::ChatsListed,
+        ),
+    ])
 }
 
 fn post(ctx: &Ctx, path: &'static str, body: serde_json::Value) -> Task<Msg> {
@@ -453,10 +462,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
                     state.new_project = None;
                     (Task::none(), None)
                 }
-                // The conversation opens in the IDE, where the orchestrator drafts the project beside it.
+                // The main chat opens: the orchestrator drafts the project there, and the owner starts it from its card.
                 new_project::Effect::Conversation(id) => {
                     state.new_project = None;
-                    let id = Id::Ide(Some(id));
+                    let id = Id::Chat(id);
                     state.current = id.clone();
                     (Task::none(), Some(id))
                 }
@@ -608,9 +617,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
             if let Some(list) = v["tasks"]["tasks"].as_array().or(v["tasks"].as_array()) {
                 state.tasks = list.clone();
             }
-            if let Some(list) = v["conversations"].as_array() {
-                state.conversations = list.clone();
-            }
             if let Some(list) = v["agents"].as_array() {
                 state.agents = list.clone();
             }
@@ -629,6 +635,11 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
             }
             (again, None)
         }
+        Msg::ChatsListed(Ok(list)) => {
+            state.conversations = list;
+            (Task::none(), None)
+        }
+        Msg::ChatsListed(Err(_)) => (Task::none(), None),
         Msg::Loaded(Err(_)) => {
             state.hub_ok = false;
             state.node_ok = false;
@@ -784,6 +795,9 @@ fn shows(entry: &Id, current: &Id) -> bool {
         || matches!(
             (entry, current),
             (Id::Tasks, Id::Task(_))
+                | (Id::Sessions, Id::Session(_))
+                | (Id::Sessions, Id::Agent(_))
+                | (Id::Chats, Id::Chat(_))
                 | (Id::Projects, Id::Project(_))
                 | (Id::Projects, Id::ProjectTab(..))
                 | (Id::Work, Id::WorkOn(_))
@@ -800,7 +814,6 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
         Id::Overview
             | Id::Metrics
             | Id::Approvals
-            | Id::Agents
             | Id::Projects
             | Id::Project(_)
             | Id::ProjectTab(..)
@@ -812,7 +825,6 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Rules
             | Id::Tools
             | Id::Mcp
-            | Id::Agent(_)
             | Id::HardwareLab
     )
 }
@@ -951,13 +963,15 @@ fn confirm_view<'a, M: Clone + 'a>(which: &'a Confirm, wrap: fn(Msg) -> M) -> El
     ui::modal(title, body, vec![cancel(), go], close, 440.0)
 }
 
-/// The sidebar's screens (the web's `NAV` in `ui/shell.ts`): the first six, then More.
+/// The sidebar's screens (the web's `NAV` in `ui/shell.ts`): the first eight, then More.
 const MAIN: &[(Id, &str, &str)] = &[
     (Id::Overview, "Overview", "house"),
+    (Id::Inbox, "Inbox", "inbox"),
     (Id::Approvals, "Approvals", "shield-check"),
+    (Id::Chats, "Chats", "conversations"),
     (Id::Work, "Work", "workflow"),
     (Id::History, "Weft", "git-branch"),
-    (Id::Agents, "Agents", "bot"),
+    (Id::Sessions, "Sessions", "bot"),
     (Id::Machines, "Machines", "server"),
 ];
 const MORE: &[(Id, &str, &str)] = &[
@@ -1371,53 +1385,35 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
         left: 8.0,
     });
 
-    // What is moving: the drafts being talked through, then each live project with its lines.
+    // What is moving: the talks not yet about a project (the main chat, until the owner starts one), then each live
+    // project with its lines.
     let mut tree = column![].spacing(0);
-    let drafting: Vec<&serde_json::Value> = state
+    let talking: Vec<&Chat> = state
         .conversations
         .iter()
-        .filter(|c| c["project"].is_null() && !c["archived"].as_bool().unwrap_or(false))
+        .filter(|c| c.project.is_none() && !c.archived)
         .collect();
-    if !drafting.is_empty() {
+    if !talking.is_empty() {
         tree = tree.push(sec("Talking it through", None));
-        for c in drafting {
-            let id = c["id"].as_str().unwrap_or("").to_string();
-            let rev = c["draft"]["revision"].as_u64();
-            let sub = match rev {
-                Some(r) => format!("Draft · revision {r}"),
-                None => "Talking it through".to_string(),
+        for c in talking {
+            let title = if c.title.is_empty() {
+                "The orchestrator".to_string()
+            } else {
+                c.title.clone()
             };
-            let pending = c["pending"].as_u64().unwrap_or(0) > 0;
             tree = tree.push(
                 button(
-                    column![
-                        row![
-                            ui::icon("file-pen-line", 14.0, p.ink_3),
-                            text(ui::ellipsize(c["title"].as_str().unwrap_or(""), 26))
-                                .font(SANS)
-                                .size(13.0)
-                                .color(p.ink),
-                            Space::new().width(Length::Fill),
-                            ui::mono(
-                                short_ago(c["updated_ms"].as_u64().unwrap_or(0)),
-                                11.0,
-                                p.ink_3
-                            ),
-                        ]
-                        .spacing(8)
-                        .align_y(Alignment::Center),
-                        {
-                            let mut t2 = row![
-                                ui::sans(sub, 12.0, p.ink_3),
-                                Space::new().width(Length::Fill)
-                            ];
-                            if pending {
-                                t2 = t2.push(ui::badge("Answering", ui::Tone::Info));
-                            }
-                            t2
-                        },
+                    row![
+                        ui::icon("file-pen-line", 14.0, p.ink_3),
+                        text(ui::ellipsize(&title, 26))
+                            .font(SANS)
+                            .size(13.0)
+                            .color(p.ink),
+                        Space::new().width(Length::Fill),
+                        ui::mono(short_ago(c.updated_ms), 11.0, p.ink_3),
                     ]
-                    .spacing(4),
+                    .spacing(8)
+                    .align_y(Alignment::Center),
                 )
                 .width(Length::Fill)
                 .padding(Padding {
@@ -1427,7 +1423,7 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
                     left: 12.0,
                 })
                 .style(row_press)
-                .on_press(wrap(Msg::Go(Id::Ide(Some(id))))),
+                .on_press(wrap(Msg::Go(Id::Chat(c.id.clone())))),
             );
         }
     }
@@ -1527,23 +1523,16 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
             container(row![tw, head].spacing(2).align_y(Alignment::Center)).padding([0, 8])
         ];
         if !folded {
-            if let Some(conv) = state
-                .conversations
-                .iter()
-                .find(|c| c["project"] == id.as_str() && !c["archived"].as_bool().unwrap_or(false))
-            {
-                let cid = conv["id"].as_str().unwrap_or("").to_string();
+            // The project's chat is its line to the planner.
+            if let Some(chat) = state.conversations.iter().find(|c| {
+                c.kind == "project" && c.project.as_deref() == Some(id.as_str()) && !c.archived
+            }) {
                 block = block.push(
                     container(thread_line(
                         "messages-square",
-                        "With the orchestrator",
-                        ui::mono(
-                            short_ago(conv["updated_ms"].as_u64().unwrap_or(0)),
-                            11.0,
-                            p.ink_3,
-                        )
-                        .into(),
-                        wrap(Msg::Go(Id::Ide(Some(cid)))),
+                        "With the planner",
+                        ui::mono(short_ago(chat.updated_ms), 11.0, p.ink_3).into(),
+                        wrap(Msg::Go(Id::Chat(chat.id.clone()))),
                     ))
                     .padding([0, 8]),
                 );
@@ -1924,8 +1913,10 @@ fn crumbs(state: &State) -> Vec<String> {
                 .iter()
                 .find(|a| a["cid"].as_u64() == Some(*cid))
                 .map_or_else(|| roles::agent_label("", *cid), roles::agent_label_of);
-            vec!["Agents".into(), label]
+            vec!["Sessions".into(), label]
         }
+        Id::Session(reference) => vec!["Sessions".into(), reference.clone()],
+        Id::Chat(_) => vec!["Chats".into()],
         Id::Task(id) => vec!["Tasks".into(), id.clone()],
         other => vec![top_bar_title(other).to_string()],
     }
@@ -2228,7 +2219,7 @@ pub fn palette_items(
     for a in agents {
         if let Some(cid) = a["cid"].as_u64() {
             all.push(PaletteItem {
-                group: "Agents",
+                group: "Sessions",
                 icon: "bot",
                 label: roles::agent_label_of(a),
                 hint: a["role"].as_str().unwrap_or("").to_string(),
@@ -2818,7 +2809,7 @@ mod tests {
             ],
             "a scope on a project that is over still shows"
         );
-        assert!(plaza_settings(&Id::Models) && !plaza_settings(&Id::Agents));
+        assert!(plaza_settings(&Id::Models) && !plaza_settings(&Id::Sessions));
     }
 
     #[test]

@@ -21,9 +21,9 @@ apz-os = { path = "../apz-os" }
 apz-station = { path = "../apz-station" }
 apz-trust = { path = "../apz-trust" }
 base64.workspace = true
+blake3 = "1.8"
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 
 # The platform desktop backends are always built for their own platform: Linux has the X11, Wayland and AT-SPI
 # backends, macOS its backend, Windows its backend. Which one serves a run is chosen at run time (`backend`).

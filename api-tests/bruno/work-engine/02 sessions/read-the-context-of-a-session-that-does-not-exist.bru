@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 to the context of a session that does not exist
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/sessions/s999999/context
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,16 +1,16 @@
 // The chats' model chip and context bar. The chip shows the model a chat runs on (the brand, the model id in mono, the
 // effort) and opens the model picker with an effort row under it; choosing saves at once. The bar is a thin line of
 // the context window's parts, with the count and the share at its right; clicking it opens the breakdown. Both are
-// mounted in the four chats: the IDE agent chat, the owner conversation, the Overview orchestrator composer and the
+// mounted in the four chats: the IDE agent chat, the IDE talk (a plaza chat), the Overview orchestrator composer and the
 // agent page composer. Pure helpers (number text, part order and colours, tone) are exported for the tests.
 
 import '../styles/proto/chat-tools.css';
 import { api, type Tier } from '../api';
 import { contextApi, CONTEXT_PARTS, type ContextPart, type ContextView } from '../api-context';
 import { providersApi } from '../api-providers';
-import { tierChoices } from '../views/agent-detail';
 import { agents, on } from '../store';
 import { brandLogo, button, toast } from './components';
+import { tierChoices } from './tier-choices';
 import { h, lu, replace } from './dom';
 import { modelPicker, type ModelChoice, type ModelPicker } from './model-picker';
 
@@ -336,7 +336,7 @@ const POLL_MS = 10_000;
 export interface ContextBarOpts {
   /** The chat's agent. A `context` event for this cid refetches the bar; 0 means not known yet. */
   cid: () => number;
-  /** Fetches the chat's context: an agent's (given its cid), or an owner conversation's. */
+  /** Fetches the chat's context: an agent's (given its cid), or a plaza chat's. */
   source: (cid: number) => Promise<ContextView>;
 }
 

@@ -47,6 +47,9 @@ const MOVED: Record<string, (route: Route, hash: string) => string> = {
   // The Floor and the Setup list are one Machines screen: `#/machine/<id>` opens that machine's row.
   floor: () => href('machines'),
   machine: (route) => (route.params[0] ? href('machines', route.params[0]) : '#/machines?view=list'),
+  // The agent screens are the session screens (Engine 0.6): an agent's CID opens the session on its VM, which the
+  // sessions screen finds from the CID. The project of the route is kept.
+  agents: (route, hash) => hrefIn(route.project, 'sessions', ...route.params) + queryOf(hash),
 };
 
 // The setup screens live in Settings (`#/settings/<group>/<screen>/…`); their old hashes, and the links the screens

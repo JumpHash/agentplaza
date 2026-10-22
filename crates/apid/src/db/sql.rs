@@ -9,10 +9,6 @@ pub const STATE_UPSERT: &str = include_str!("../../sql/queries/state_upsert.sql"
 #[cfg(test)]
 pub const STATE_DELETE: &str = include_str!("../../sql/queries/state_delete.sql");
 
-// The unfurl cache (`unfurl_cache`, migration 0009; unfurl/mod.rs).
-pub const UNFURL_GET: &str = include_str!("../../sql/queries/unfurl_get.sql");
-pub const UNFURL_PUT: &str = include_str!("../../sql/queries/unfurl_put.sql");
-
 // The migration runner's bookkeeping (`schema_migrations`, the advisory lock).
 pub const MIGRATION_TABLE_ENSURE: &str =
     include_str!("../../sql/queries/migration_table_ensure.sql");
@@ -20,75 +16,6 @@ pub const MIGRATION_APPLIED: &str = include_str!("../../sql/queries/migration_ap
 pub const MIGRATION_RECORD: &str = include_str!("../../sql/queries/migration_record.sql");
 pub const MIGRATION_LOCK: &str = include_str!("../../sql/queries/migration_lock.sql");
 pub const MIGRATION_UNLOCK: &str = include_str!("../../sql/queries/migration_unlock.sql");
-
-// The data migration (`data_migrations`, docs/design/database.md section 4).
-pub const AGENTS_SOURCE: &str = include_str!("../../sql/queries/agents_source.sql");
-pub const AGENTS_DELETE: &str = include_str!("../../sql/queries/agents_delete.sql");
-pub const AGENTS_INSERT: &str = include_str!("../../sql/queries/agents_insert.sql");
-pub const AGENTS_COUNT: &str = include_str!("../../sql/queries/agents_count.sql");
-
-// The roster's write-through to the agents table (db/roster.rs).
-pub const AGENTS_UPSERT: &str = include_str!("../../sql/queries/agents_upsert.sql");
-pub const AGENTS_RETIRE: &str = include_str!("../../sql/queries/agents_retire.sql");
-pub const AGENTS_ACTIVE: &str = include_str!("../../sql/queries/agents_active.sql");
-pub const DATA_MIGRATION_STATUS: &str = include_str!("../../sql/queries/data_migration_status.sql");
-pub const DATA_MIGRATION_RECORD: &str = include_str!("../../sql/queries/data_migration_record.sql");
-pub const DATA_MIGRATION_FAIL: &str = include_str!("../../sql/queries/data_migration_fail.sql");
-
-// The hub's MCP server (hub_mcp_*: the tokens, the audit log and the settings row; docs/design/hub-mcp.md).
-pub const HUB_MCP_SETTINGS_GET: &str = include_str!("../../sql/queries/hub_mcp_settings_get.sql");
-pub const HUB_MCP_SETTINGS_PUT: &str = include_str!("../../sql/queries/hub_mcp_settings_put.sql");
-pub const HUB_MCP_TOKEN_INSERT: &str = include_str!("../../sql/queries/hub_mcp_token_insert.sql");
-pub const HUB_MCP_TOKEN_BY_DIGEST: &str =
-    include_str!("../../sql/queries/hub_mcp_token_by_digest.sql");
-pub const HUB_MCP_TOKEN_LIST: &str = include_str!("../../sql/queries/hub_mcp_token_list.sql");
-pub const HUB_MCP_TOKEN_USE: &str = include_str!("../../sql/queries/hub_mcp_token_use.sql");
-pub const HUB_MCP_TOKEN_REVOKE: &str = include_str!("../../sql/queries/hub_mcp_token_revoke.sql");
-pub const HUB_MCP_CALL_INSERT: &str = include_str!("../../sql/queries/hub_mcp_call_insert.sql");
-pub const HUB_MCP_CALL_PAGE: &str = include_str!("../../sql/queries/hub_mcp_call_page.sql");
-
-// The prompt library (prompt_*: migration 0006, docs/design/prompt-library.md; prompts/store_db.rs).
-pub const PROMPT_GET: &str = include_str!("../../sql/queries/prompt_get.sql");
-pub const PROMPT_LOCK: &str = include_str!("../../sql/queries/prompt_lock.sql");
-pub const PROMPT_LIST: &str = include_str!("../../sql/queries/prompt_list.sql");
-pub const PROMPT_VERSIONS: &str = include_str!("../../sql/queries/prompt_versions.sql");
-pub const PROMPT_VERSION_GET: &str = include_str!("../../sql/queries/prompt_version_get.sql");
-pub const PROMPT_FINDINGS: &str = include_str!("../../sql/queries/prompt_findings.sql");
-pub const PROMPT_EVENTS: &str = include_str!("../../sql/queries/prompt_events.sql");
-pub const PROMPT_BOUND: &str = include_str!("../../sql/queries/prompt_bound.sql");
-pub const PROMPT_BINDING_HOLDER: &str = include_str!("../../sql/queries/prompt_binding_holder.sql");
-pub const PROMPT_INSERT: &str = include_str!("../../sql/queries/prompt_insert.sql");
-pub const PROMPT_VERSION_INSERT: &str = include_str!("../../sql/queries/prompt_version_insert.sql");
-pub const PROMPT_FINDING_INSERT: &str = include_str!("../../sql/queries/prompt_finding_insert.sql");
-pub const PROMPT_EVENT_INSERT: &str = include_str!("../../sql/queries/prompt_event_insert.sql");
-pub const PROMPT_SET_LATEST: &str = include_str!("../../sql/queries/prompt_set_latest.sql");
-pub const PROMPT_SET_META: &str = include_str!("../../sql/queries/prompt_set_meta.sql");
-pub const PROMPT_SET_ACTIVE: &str = include_str!("../../sql/queries/prompt_set_active.sql");
-pub const PROMPT_SET_ARCHIVED: &str = include_str!("../../sql/queries/prompt_set_archived.sql");
-
-// The skill library (`skills`, migration 0007, docs/design/skill-library.md).
-pub const SKILL_LIST: &str = include_str!("../../sql/queries/skill_list.sql");
-pub const SKILL_GET: &str = include_str!("../../sql/queries/skill_get.sql");
-pub const SKILL_LOCK: &str = include_str!("../../sql/queries/skill_lock.sql");
-pub const SKILL_NAME_HOLDER: &str = include_str!("../../sql/queries/skill_name_holder.sql");
-pub const SKILL_VERSIONS: &str = include_str!("../../sql/queries/skill_versions.sql");
-pub const SKILL_VERSION_GET: &str = include_str!("../../sql/queries/skill_version_get.sql");
-pub const SKILL_FILES: &str = include_str!("../../sql/queries/skill_files.sql");
-pub const SKILL_FINDINGS: &str = include_str!("../../sql/queries/skill_findings.sql");
-pub const SKILL_EVENTS: &str = include_str!("../../sql/queries/skill_events.sql");
-pub const SKILL_BOUND: &str = include_str!("../../sql/queries/skill_bound.sql");
-pub const SKILL_INSERT: &str = include_str!("../../sql/queries/skill_insert.sql");
-pub const SKILL_VERSION_INSERT: &str = include_str!("../../sql/queries/skill_version_insert.sql");
-pub const SKILL_FILE_INSERT: &str = include_str!("../../sql/queries/skill_file_insert.sql");
-pub const SKILL_FINDING_INSERT: &str = include_str!("../../sql/queries/skill_finding_insert.sql");
-pub const SKILL_EVENT_INSERT: &str = include_str!("../../sql/queries/skill_event_insert.sql");
-pub const SKILL_SET_LATEST: &str = include_str!("../../sql/queries/skill_set_latest.sql");
-pub const SKILL_SET_META: &str = include_str!("../../sql/queries/skill_set_meta.sql");
-pub const SKILL_TOUCH: &str = include_str!("../../sql/queries/skill_touch.sql");
-pub const SKILL_SET_ACTIVE: &str = include_str!("../../sql/queries/skill_set_active.sql");
-pub const SKILL_SET_ARCHIVED: &str = include_str!("../../sql/queries/skill_set_archived.sql");
-pub const SKILL_BINDINGS_DELETE: &str = include_str!("../../sql/queries/skill_bindings_delete.sql");
-pub const SKILL_BINDINGS_INSERT: &str = include_str!("../../sql/queries/skill_bindings_insert.sql");
 
 #[cfg(test)]
 mod tests {

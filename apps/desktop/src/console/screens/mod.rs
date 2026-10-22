@@ -2,13 +2,14 @@
 //! `Go(Id)` variant for navigation), `go(&Msg)`, `load`, `update`, `view`. This registry is the only
 //! place that knows them all; a screen module touches nothing outside itself.
 
-pub mod agent;
-pub mod agent_side;
-pub mod agents;
 pub mod appearance;
 pub mod approvals;
 pub mod artifact;
 pub mod board;
+pub mod budget;
+pub mod budget_model;
+pub mod chat_model;
+pub mod chats;
 pub mod e2b;
 pub mod egress;
 pub mod floor;
@@ -19,7 +20,6 @@ mod history_ops;
 pub mod ide;
 pub mod ide_chat;
 pub mod ide_chrome;
-pub mod ide_conversation;
 pub mod ide_diff;
 pub mod ide_editor;
 pub mod ide_files;
@@ -30,6 +30,7 @@ pub mod ide_right;
 pub mod ide_sidebar;
 pub mod ide_terminal;
 pub mod ide_tree;
+pub mod inbox;
 pub mod lab;
 pub mod lab_breeders;
 pub mod lab_common;
@@ -59,9 +60,13 @@ pub mod prompts;
 pub mod provider_wizard;
 pub mod providers_api;
 pub mod rules;
+pub mod session;
+pub mod session_model;
+pub mod sessions;
 pub mod setup;
 pub mod skill_editor;
 pub mod skills;
+pub mod task_seats;
 pub mod tasks;
 pub mod theme_editor;
 pub mod tools;
@@ -70,6 +75,7 @@ pub mod volumes;
 pub mod wizard;
 pub mod work;
 pub mod work_model;
+pub mod work_ui;
 pub mod workstations;
 pub mod workstations_files;
 pub mod workstations_live;
@@ -84,7 +90,6 @@ use super::Ctx;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Id {
     Overview,
-    Agents,
     Projects,
     /// A project as one flow: its plan, its tasks in the order their links let them run, and delivery.
     Work,
@@ -128,8 +133,16 @@ pub enum Id {
     ProjectTab(String, projects::Tab),
     /// One tab of the Work screen: a project's id, or the tasks outside projects (`work::LOOSE`).
     WorkOn(String),
-    /// One agent's page.
+    /// The session on one VM (an agent is a VM now): the page of the newest session there.
     Agent(u64),
+    /// The Sessions list, and one session's page by its id (`s12`).
+    Sessions,
+    Session(String),
+    /// The Inbox: the cards waiting for the owner.
+    Inbox,
+    /// The Chats list, and one chat's page by its id (`main` for the orchestrator's).
+    Chats,
+    Chat(String),
     /// The Lab: its overview (the section strip's first tab).
     Lab,
     /// The hardware lab: the machine model kit on the engine's stage (`APZ_SCREEN=HardwareLab` opens it).
@@ -150,7 +163,9 @@ pub enum Id {
 /// The sidebar's entries: (screen, label, section, icon), in order.
 pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Overview, "Overview", "Plaza", "overview"),
-    (Id::Agents, "Agents", "Plaza", "agents"),
+    (Id::Inbox, "Inbox", "Plaza", "inbox"),
+    (Id::Chats, "Chats", "Plaza", "conversations"),
+    (Id::Sessions, "Sessions", "Plaza", "agents"),
     (Id::Prompts, "Prompts", "Plaza", "edit"),
     (Id::Skills, "Skills", "Plaza", "wrench"),
     (Id::Projects, "Projects", "Plaza", "projects"),
@@ -182,7 +197,10 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
 #[derive(Debug, Default)]
 pub struct Screens {
     pub overview: overview::State,
-    pub agents: agents::State,
+    pub sessions: sessions::State,
+    pub session: session::State,
+    pub inbox: inbox::State,
+    pub chats: chats::State,
     pub projects: projects::State,
     pub work: work::State,
     pub prompts: prompts::State,
@@ -209,7 +227,6 @@ pub struct Screens {
     pub appearance: appearance::State,
     pub theme_editor: theme_editor::State,
     pub artifact: artifact::State,
-    pub agent: agent::State,
     pub lab: lab::State,
     pub lab_jobs: lab_jobs::State,
     pub lab_job_detail: lab_job_detail::State,
@@ -225,7 +242,10 @@ pub struct Screens {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Overview(overview::Msg),
-    Agents(agents::Msg),
+    Sessions(sessions::Msg),
+    Session(session::Msg),
+    Inbox(inbox::Msg),
+    Chats(chats::Msg),
     Projects(projects::Msg),
     Work(work::Msg),
     Prompts(prompts::Msg),
@@ -252,7 +272,6 @@ pub enum Msg {
     Appearance(appearance::Msg),
     ThemeEditor(theme_editor::Msg),
     Artifact(artifact::Msg),
-    Agent(agent::Msg),
     Lab(lab::Msg),
     LabJobs(lab_jobs::Msg),
     LabJobDetail(lab_job_detail::Msg),
@@ -269,7 +288,10 @@ pub enum Msg {
 pub fn navigation(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Overview(m) => overview::go(m),
-        Msg::Agents(m) => agents::go(m),
+        Msg::Sessions(m) => sessions::go(m),
+        Msg::Session(m) => session::go(m),
+        Msg::Inbox(m) => inbox::go(m),
+        Msg::Chats(m) => chats::go(m),
         Msg::Projects(m) => projects::go(m),
         Msg::Work(m) => work::go(m),
         Msg::Prompts(m) => prompts::go(m),
@@ -296,7 +318,6 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Appearance(m) => appearance::go(m),
         Msg::ThemeEditor(m) => theme_editor::go(m),
         Msg::Artifact(m) => artifact::go(m),
-        Msg::Agent(m) => agent::go(m),
         Msg::Lab(m) => lab::go(m),
         Msg::LabJobs(m) => lab_jobs::go(m),
         Msg::LabJobDetail(m) => lab_job_detail::go(m),
@@ -314,7 +335,8 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
 /// a repo, a Lab job) its list, since the item belonged to the old scope. The IDE opens on its picker.
 pub fn scope_home(id: &Id) -> Id {
     match id {
-        Id::Agent(_) => Id::Agents,
+        Id::Agent(_) | Id::Session(_) => Id::Sessions,
+        Id::Chat(_) => Id::Chats,
         Id::Task(_) => Id::Tasks,
         Id::Artifact(_) => Id::Library,
         Id::Project(_) | Id::ProjectTab(..) => Id::Projects,
@@ -345,11 +367,12 @@ pub fn open(screens: &mut Screens, id: Id, ctx: &Ctx) -> Task<Msg> {
     volumes::leave(&mut screens.volumes);
     // The client secret and the token typed here do not outlive the tab.
     platforms::leave(&mut screens.platforms);
-    if let Id::Agent(cid) = id {
-        screens.agent = agent::State {
-            cid,
-            ..Default::default()
-        };
+    match &id {
+        Id::Agent(cid) => screens.session = session::opened(cid.to_string()),
+        Id::Session(reference) => screens.session = session::opened(reference.clone()),
+        Id::Chats => screens.chats = chats::opened(None),
+        Id::Chat(chat) => screens.chats = chats::opened(Some(chat.clone())),
+        _ => {}
     }
     // A takeover ends when the owner leaves the Workstations screen: its socket closes, and the hub gives the screen back.
     if !matches!(id, Id::Workstations) {
@@ -403,7 +426,10 @@ pub fn changed(screens: &mut Screens, from: &Id, to: &Id, ctx: &Ctx) -> Task<Msg
 pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
     match id {
         Id::Overview => overview::load(&mut screens.overview, ctx).map(Msg::Overview),
-        Id::Agents => agents::load(&mut screens.agents, ctx).map(Msg::Agents),
+        Id::Sessions => sessions::load(&mut screens.sessions, ctx).map(Msg::Sessions),
+        Id::Session(_) | Id::Agent(_) => session::load(&mut screens.session, ctx).map(Msg::Session),
+        Id::Inbox => inbox::load(&mut screens.inbox, ctx).map(Msg::Inbox),
+        Id::Chats | Id::Chat(_) => chats::load(&mut screens.chats, ctx).map(Msg::Chats),
         Id::Projects | Id::Project(_) | Id::ProjectTab(..) => {
             projects::load(&mut screens.projects, ctx).map(Msg::Projects)
         }
@@ -439,7 +465,6 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
             theme_editor::load(&mut screens.theme_editor, target, ctx).map(Msg::ThemeEditor)
         }
         Id::Artifact(_) => artifact::load(&mut screens.artifact, ctx).map(Msg::Artifact),
-        Id::Agent(_) => agent::load(&mut screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::load(&mut screens.lab, ctx).map(Msg::Lab),
         Id::LabJobs => lab_jobs::load(&mut screens.lab_jobs, ctx).map(Msg::LabJobs),
         Id::LabJobDetail(_) => {
@@ -460,7 +485,10 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
 pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Overview(m) => overview::update(&mut screens.overview, m, ctx).map(Msg::Overview),
-        Msg::Agents(m) => agents::update(&mut screens.agents, m, ctx).map(Msg::Agents),
+        Msg::Sessions(m) => sessions::update(&mut screens.sessions, m, ctx).map(Msg::Sessions),
+        Msg::Session(m) => session::update(&mut screens.session, m, ctx).map(Msg::Session),
+        Msg::Inbox(m) => inbox::update(&mut screens.inbox, m, ctx).map(Msg::Inbox),
+        Msg::Chats(m) => chats::update(&mut screens.chats, m, ctx).map(Msg::Chats),
         Msg::Projects(m) => projects::update(&mut screens.projects, m, ctx).map(Msg::Projects),
         Msg::Work(m) => work::update(&mut screens.work, m, ctx).map(Msg::Work),
         Msg::Prompts(m) => prompts::update(&mut screens.prompts, m, ctx).map(Msg::Prompts),
@@ -493,7 +521,6 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             theme_editor::update(&mut screens.theme_editor, m, ctx).map(Msg::ThemeEditor)
         }
         Msg::Artifact(m) => artifact::update(&mut screens.artifact, m, ctx).map(Msg::Artifact),
-        Msg::Agent(m) => agent::update(&mut screens.agent, m, ctx).map(Msg::Agent),
         Msg::Lab(m) => lab::update(&mut screens.lab, m, ctx).map(Msg::Lab),
         Msg::LabJobs(m) => lab_jobs::update(&mut screens.lab_jobs, m, ctx).map(Msg::LabJobs),
         Msg::LabJobDetail(m) => {
@@ -530,7 +557,10 @@ pub fn scrolls_itself(screens: &Screens, id: &Id) -> bool {
 pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription<Msg> {
     match id {
         Id::Overview => overview::subscription(ctx).map(Msg::Overview),
-        Id::Agents => agents::subscription(ctx).map(Msg::Agents),
+        Id::Sessions => sessions::subscription(ctx).map(Msg::Sessions),
+        Id::Session(_) | Id::Agent(_) => session::subscription(ctx).map(Msg::Session),
+        Id::Inbox => inbox::subscription(ctx).map(Msg::Inbox),
+        Id::Chats | Id::Chat(_) => chats::subscription(ctx).map(Msg::Chats),
         Id::Prompts => prompts::subscription(ctx).map(Msg::Prompts),
         Id::Models => models::subscription(ctx).map(Msg::Models),
         Id::Skills => skills::subscription(ctx).map(Msg::Skills),
@@ -544,7 +574,6 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::E2b => e2b::subscription().map(Msg::E2b),
         Id::Appearance => appearance::subscription(ctx).map(Msg::Appearance),
         Id::Artifact(_) => artifact::subscription(&screens.artifact).map(Msg::Artifact),
-        Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
         Id::LabJobs => lab_jobs::subscription(&screens.lab_jobs, ctx).map(Msg::LabJobs),
         Id::Lab => lab::subscription(&screens.lab, ctx).map(Msg::Lab),
         Id::LabModels => lab_models::subscription(ctx).map(Msg::LabModels),
@@ -577,7 +606,10 @@ pub fn view<'a>(
 ) -> Element<'a, Msg> {
     match id {
         Id::Overview => overview::view(&screens.overview, ctx).map(Msg::Overview),
-        Id::Agents => agents::view(&screens.agents, ctx).map(Msg::Agents),
+        Id::Sessions => sessions::view(&screens.sessions, ctx).map(Msg::Sessions),
+        Id::Session(_) | Id::Agent(_) => session::view(&screens.session).map(Msg::Session),
+        Id::Inbox => inbox::view(&screens.inbox).map(Msg::Inbox),
+        Id::Chats | Id::Chat(_) => chats::view(&screens.chats, ctx).map(Msg::Chats),
         Id::Projects | Id::Project(_) | Id::ProjectTab(..) => {
             projects::view(&screens.projects).map(Msg::Projects)
         }
@@ -606,7 +638,6 @@ pub fn view<'a>(
         Id::Appearance => appearance::view(&screens.appearance).map(Msg::Appearance),
         Id::ThemeEditor(_) => theme_editor::view(&screens.theme_editor).map(Msg::ThemeEditor),
         Id::Artifact(_) => artifact::view(&screens.artifact, ctx).map(Msg::Artifact),
-        Id::Agent(_) => agent::view(&screens.agent, ctx).map(Msg::Agent),
         Id::Lab => lab::view(&screens.lab, ctx).map(Msg::Lab),
         Id::LabJobs => lab_jobs::view(&screens.lab_jobs, ctx).map(Msg::LabJobs),
         Id::LabJobDetail(_) => {
@@ -630,7 +661,9 @@ mod tests {
 
     #[test]
     fn a_scope_switch_opens_an_items_list() {
-        assert_eq!(scope_home(&Id::Agent(300)), Id::Agents);
+        assert_eq!(scope_home(&Id::Agent(300)), Id::Sessions);
+        assert_eq!(scope_home(&Id::Session("s12".into())), Id::Sessions);
+        assert_eq!(scope_home(&Id::Chat("main".into())), Id::Chats);
         assert_eq!(scope_home(&Id::Task("t3".into())), Id::Tasks);
         assert_eq!(
             scope_home(&Id::ProjectTab("pr2".into(), projects::Tab::Settings)),

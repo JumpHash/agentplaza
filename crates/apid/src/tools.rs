@@ -900,15 +900,17 @@ fn host_call(
 /// it; the orchestrator, which works on every project, names one.
 fn own_project(app: &App, agent: &Agent, named: Option<String>) -> Result<String, String> {
     if crate::settings::plaza_wide(&agent.role) {
-        // In the conversation a project was started from, the task is that project's unless another is named.
-        let from_conversation = || {
+        // In the project chat a task's work is in, the task is that project's unless another is named (the main chat
+        // is no project's).
+        let from_chat = || {
             app.work
                 .current(agent.cid)
-                .and_then(|item| item.origin.conversation)
-                .and_then(|id| app.conversations.get(&id))
+                .and_then(|item| item.thread.strip_prefix("chat:").map(str::to_string))
+                .and_then(|id| app.chats.get(&id))
+                .filter(|c| c.kind == crate::chats::Kind::Project)
                 .and_then(|c| c.project)
         };
-        return named.or_else(from_conversation).ok_or_else(|| {
+        return named.or_else(from_chat).ok_or_else(|| {
             "a task belongs to a project: name it with `project` (plaza_projects lists them)"
                 .to_string()
         });

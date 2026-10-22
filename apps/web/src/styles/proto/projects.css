@@ -80,7 +80,7 @@
 .pj-dlg { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .sheet-b .faint { font-size: var(--fs-sm); }
 .pj-dlg .hint { margin: 0; }
-/* The IDE's new-task dialog (ide-conversation.ts) uses these; they keep the look it had. */
+/* The IDE's new-task dialog (ide-talk.ts) uses these; they keep the look it had. */
 .pj-form { display: flex; flex-direction: column; gap: var(--s3); min-width: min(520px, 80vw); }
 .pj-form .actions, .pj-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 900px) {

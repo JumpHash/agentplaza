@@ -1,22 +1,19 @@
 //! The skill library (docs/design/skill-library.md): SKILL.md folders with their files, immutable versions checked by
 //! `apz_skill`, bindings to roles or the whole plaza, a live version, sources (built here, uploaded, or from GitHub),
-//! and an append-only history. `SkillStore` keeps the rows (Postgres: `store_db`, migration 0007; or `store_mem`,
-//! `<state_dir>/skills.json`); `Blobs` keeps the file bytes by sha256 (Garage through the Library's store, or
-//! `<state_dir>/skills/blobs`). `Skills` is what the rest of apid uses: the routes, the import and export paths, the
-//! agents' tools and the hub's MCP tools.
+//! and an append-only history. `SkillStore` keeps the rows (`store_db`: typed tables in `plaza.db`); `Blobs` keeps the
+//! file bytes by their BLAKE3 hash (`blobs`: the hub's object store, in `<state_dir>/blobs`). `Skills` is what the rest
+//! of apid uses: the routes, the import and export paths, the agents' tools and the hub's MCP tools.
 
 pub mod agent_tools;
 pub mod blobs;
 pub mod import;
 pub mod routes;
 pub mod store_db;
-pub mod store_mem;
 
 use std::sync::Arc;
 
 use apz_skill::{FileInfo, Finding, Report};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 pub const MAX_TITLE: usize = 120;
 pub const MAX_NOTE: usize = 500;
@@ -28,8 +25,8 @@ pub const MAX_FILES: usize = 200;
 pub const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 20 * 1024 * 1024;
 
-/// Where a skill came from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Where a skill came from (flattened into the skill's row: `source_kind` and the GitHub columns).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, apz_store::Table)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Source {
     Built,
@@ -42,43 +39,38 @@ pub enum Source {
     },
 }
 
-impl Source {
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Source::Built => "built",
-            Source::Upload => "upload",
-            Source::Github { .. } => "github",
-        }
-    }
-}
-
-/// One skill (without its versions' contents).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One skill (without its versions' contents), as its row of `skill`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, apz_store::Table)]
+#[table(name = "skill")]
 pub struct Skill {
     /// A slug: `^[a-z0-9][a-z0-9-]{0,62}$`.
+    #[table(key)]
     pub id: String,
     /// The frontmatter name of the latest version (agents call the skill by it; unique among live skills).
     pub name: String,
     pub title: String,
     /// The frontmatter description of the latest version.
     pub description: String,
+    #[table(list)]
     pub tags: Vec<String>,
     /// `role:<role>` and/or `plaza`, sorted.
+    #[table(list)]
     pub bindings: Vec<String>,
     pub active_version: Option<u32>,
     pub latest_version: u32,
+    #[table(flatten)]
     pub source: Source,
     pub created_ms: u64,
     pub updated_ms: u64,
     pub archived_ms: Option<u64>,
 }
 
-/// One file of a version (its bytes are in `Blobs` under `sha256`).
+/// One file of a version (its bytes are in `Blobs` under `hash`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SkillFile {
     pub path: String,
-    /// Lower-case hex.
-    pub sha256: String,
+    /// BLAKE3, lower-case hex.
+    pub hash: String,
     pub size: u64,
     pub executable: bool,
 }
@@ -95,8 +87,8 @@ pub struct VersionMeta {
     pub warnings: u32,
     pub infos: u32,
     pub rules_version: u32,
-    /// sha256 of SKILL.md, lower-case hex.
-    pub sha256: String,
+    /// BLAKE3 of SKILL.md, lower-case hex.
+    pub hash: String,
     pub file_count: u32,
     pub total_bytes: u64,
     /// For a GitHub skill, the commit this version was taken from.
@@ -113,7 +105,7 @@ pub struct Version {
     pub findings: Vec<Finding>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     Create,
@@ -126,38 +118,11 @@ pub enum Action {
     Restore,
 }
 
-impl Action {
-    pub const ALL: [Action; 8] = [
-        Action::Create,
-        Action::Version,
-        Action::Publish,
-        Action::Unpublish,
-        Action::Edit,
-        Action::Bind,
-        Action::Archive,
-        Action::Restore,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Action::Create => "create",
-            Action::Version => "version",
-            Action::Publish => "publish",
-            Action::Unpublish => "unpublish",
-            Action::Edit => "edit",
-            Action::Bind => "bind",
-            Action::Archive => "archive",
-            Action::Restore => "restore",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Action> {
-        Action::ALL.into_iter().find(|a| a.as_str() == s)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One history row of `skill_event`: appended, never changed. `id` is the history's place (one stream for all skills).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, apz_store::Table)]
+#[table(name = "skill_event")]
 pub struct Event {
+    #[table(key)]
     pub id: u64,
     pub skill_id: String,
     pub action: Action,
@@ -180,7 +145,7 @@ pub struct NewSkill {
 #[derive(Debug, Clone)]
 pub struct NewVersion {
     pub skill_md: String,
-    pub sha256: String,
+    pub hash: String,
     pub files: Vec<SkillFile>,
     pub note: String,
     pub report: Report,
@@ -268,13 +233,14 @@ pub trait SkillStore: Send + Sync {
     fn bound(&self, binding: &str) -> Result<Vec<(Skill, VersionMeta)>, String>;
 }
 
-/// File bytes by sha256 (lower-case hex). `put` returns the sha256 and is idempotent.
+/// File bytes by their BLAKE3 hash (lower-case hex). `put` returns the hash and is idempotent; `get` refuses bytes that
+/// do not hash to the one asked for.
 pub trait Blobs: Send + Sync {
     fn put(&self, bytes: &[u8]) -> Result<String, String>;
-    fn get(&self, sha256: &str) -> Result<Vec<u8>, String>;
+    fn get(&self, hash: &str) -> Result<Vec<u8>, String>;
 }
 
-/// A file as a client or an import hands it in: its bytes, or (for an unchanged file in a new version) the sha256 of
+/// A file as a client or an import hands it in: its bytes, or (for an unchanged file in a new version) the hash of
 /// bytes already in `Blobs`.
 #[derive(Debug, Clone)]
 pub enum FileBody {
@@ -388,10 +354,10 @@ impl Skills {
             }
             let bytes = match f.body {
                 FileBody::Bytes(b) => b,
-                FileBody::Known(sha) => self
+                FileBody::Known(hash) => self
                     .blobs
-                    .get(&sha)
-                    .map_err(|_| StoreError::Invalid(format!("{}: unknown file {sha}", f.path)))?,
+                    .get(&hash)
+                    .map_err(|_| StoreError::Invalid(format!("{}: unknown file {hash}", f.path)))?,
             };
             let size = bytes.len() as u64;
             if size > MAX_FILE_BYTES {
@@ -407,7 +373,7 @@ impl Skills {
             let text = (size <= 1024 * 1024)
                 .then(|| String::from_utf8(bytes.clone()).ok())
                 .flatten();
-            let sha256 = self.blobs.put(&bytes)?;
+            let hash = self.blobs.put(&bytes)?;
             infos.push(FileInfo {
                 path: f.path.clone(),
                 size,
@@ -416,17 +382,17 @@ impl Skills {
             });
             stored.push(SkillFile {
                 path: f.path,
-                sha256,
+                hash,
                 size,
                 executable: f.executable,
             });
         }
         stored.sort_by(|a, b| a.path.cmp(&b.path));
         let report = apz_skill::check(&skill_md, &infos);
-        let sha256 = sha256_hex(skill_md.as_bytes());
+        let hash = apz_blobs::Hash::of(skill_md.as_bytes()).to_string();
         Ok(NewVersion {
             skill_md,
-            sha256,
+            hash,
             files: stored,
             note,
             report,
@@ -464,7 +430,7 @@ impl Skills {
             .map(|f| {
                 let text = if f.size <= 1024 * 1024 {
                     self.blobs
-                        .get(&f.sha256)
+                        .get(&f.hash)
                         .ok()
                         .and_then(|b| String::from_utf8(b).ok())
                 } else {
@@ -479,13 +445,27 @@ impl Skills {
             })
             .collect()
     }
-}
 
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    /// Every file hash of every version of every skill, archived or not, each once: the sweep's roots for skill files.
+    /// A version that cannot be read is an error, so a sweep stops rather than free bytes a row still names.
+    pub fn hashes(&self) -> Result<Vec<apz_blobs::Hash>, String> {
+        let mut out = Vec::new();
+        // `list(true)` includes the archived skills, so one listing covers them all.
+        for skill in self.store().list(true)? {
+            for meta in self.store().versions(&skill.id)? {
+                let version = self
+                    .store()
+                    .version(&skill.id, meta.version)?
+                    .ok_or_else(|| format!("{} has no version {}", skill.id, meta.version))?;
+                for file in &version.files {
+                    out.push(file.hash.parse::<apz_blobs::Hash>()?);
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        Ok(out)
+    }
 }
 
 /// A relative `/`-separated path inside a skill: no `..`, no leading `/`, no `\`, not empty, not SKILL.md.

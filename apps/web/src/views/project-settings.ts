@@ -8,6 +8,7 @@ import { isLive } from '../scope';
 import { attempt, badge, button, card, field, input, modal, select, toast } from '../ui/components';
 import { h, lu, replace } from '../ui/dom';
 import type { LucideName } from '../ui/icons.gen';
+import { budgetCard, type LiveCard } from './budget';
 
 /** One setting: its label, what it does, and how it is entered. */
 interface SettingSpec {
@@ -25,7 +26,7 @@ const SPECS: SettingSpec[] = [
   { key: 'max_turns', label: 'Turns per task', hint: 'How many model turns a work item may take (1 to 500)', kind: 'number' },
   { key: 'compress_at', label: 'Compress at', hint: 'The conversation size, in bytes, at which it is compressed (0: never)', kind: 'number' },
   { key: 'keep_recent', label: 'Turns kept', hint: 'How many recent turns a compression keeps (1 to 50)', kind: 'number' },
-  { key: 'task_budget', label: 'Task budget', hint: 'What a task reserves when it names none, in the project budget’s unit', kind: 'number' },
+  { key: 'task_budget', label: 'Task budget', hint: "A task's budget when it names none, in the project's unit", kind: 'number' },
   { key: 'permission_mode', label: 'Permission mode', hint: 'For agents with no mode of their own', kind: 'choice', choices: ['autonomous', 'ask', 'read_only'] },
   { key: 'review_timeout_minutes', label: 'Review timeout', hint: 'Minutes a finished task waits for a reviewer before you are asked', kind: 'number' },
 ];
@@ -101,13 +102,32 @@ function openEdit(p: Project, spec: SettingSpec, current: unknown, done: () => v
   ]);
 }
 
+/** The budget card kept for one project: the Settings tab redraws reuse it while the project stays the same. */
+let budget: { id: string; card: LiveCard } | null = null;
+
+/**
+ * The budget card of project `id`. A redraw of the tab, or of the page, reuses the card kept for that id while it is still
+ * on the page. A card whose tab has gone stops itself (see refreshOn), so it is rebuilt on the next visit; an old card for
+ * another id is disposed here.
+ */
+function budgetCardOf(id: string): HTMLElement {
+  if (budget?.id === id && budget.card.el.isConnected) return budget.card.el;
+  budget?.card.dispose();
+  budget = { id, card: budgetCard({ kind: 'project', id }) };
+  return budget.card.el;
+}
+
 /** The Settings tab of project `p`. */
 export function settingsTab(p: Project): HTMLElement {
   const root = h('div.pj-tab');
+  // The budget card moves into this tab at once: the page then attaches it, and no event finds it detached while the tab loads.
+  const budgetEl = budgetCardOf(p.id);
+  root.append(budgetEl);
   const live = isLive(p);
   const draw = async (): Promise<void> => {
     const view: EffectiveSettings | undefined = await attempt(() => api.effectiveSettings(p.id));
-    if (!view) return;
+    // A tab that a newer redraw has replaced draws nothing: the budget card now belongs to that tab.
+    if (!view || !root.isConnected) return;
     const reset = (change: Record<string, unknown>, what: string): void =>
       void attempt(() => api.patchProjectSettings(p.id, change), `${what} is the plaza’s again`).then(() => void draw());
     const actions = (edit: () => void, undo: (() => void) | null): HTMLElement | null =>
@@ -157,6 +177,7 @@ export function settingsTab(p: Project): HTMLElement {
         roleRows.length ? table(null, roleRows) : h('p.muted', null, 'No role has a model of its own here or at the plaza: every role runs the model above.'),
         { actions: live ? [lbtn('Set a role’s model', newRole, { size: 'sm', icon: 'plus' })] : [] },
       ),
+      budgetEl,
       card(
         'Instructions and skills',
         h(

@@ -1,0 +1,27 @@
+meta {
+  name: Set the project's budget with a disk quota
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/projects/{{we_pid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"unit": "usd", "cap": 5000000, "disk_quota_bytes": 1073741824}
+}
+
+assert {
+  res.status: eq 200
+  res.body.unit: eq "usd"
+  res.body.cap: eq 5000000
+  res.body.disk_quota_bytes: eq 1073741824
+  res.responseTime: lt {{budgetMs}}
+}

@@ -1,7 +1,7 @@
 //! A finished project looked after, end to end on a scratch hub with Weft. The owner brings in a project that exists (a git
-//! repository on this machine) with its environments; it opens delivered and in maintenance. The work loop starts a
-//! project's planner (and a task's seats) only where its stage runs tasks, so the owner opens the project for build, its
-//! planner starts, and the owner puts it back in maintenance, where that planner sweeps first. The watchers' tools map it,
+//! repository on this machine) with its environments; it opens delivered and in maintenance. The work loop starts the
+//! project's planner, a long-lived session, as it does for a project being built, and the planner sweeps first. The
+//! watchers' tools map it,
 //! record what they read and propose work; the orchestrator cannot post a task there. The owner picks one proposal (a task
 //! of the project), declines another (the next sweep reads why), and makes an ingest address. The picked task's builder
 //! seat starts a session, which deploys to staging at once and to production only after the owner's approval, each
@@ -280,15 +280,8 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     assert_eq!(status, 201, "{signal}");
     let report = text(&signal["id"]);
 
-    // The planner is a project's long-lived session, started only where the stage runs tasks: the owner opens the shop
-    // for build, the planner starts on the next tick, and the owner puts the shop back in maintenance before the
-    // planner says hello (so no sweep starts before it can work).
-    let (status, built) = hub.call(
-        "POST",
-        &format!("/v1/projects/{pid}/mode"),
-        Some(json!({ "mode": "build" })),
-    );
-    assert_eq!(status, 200, "{built}");
+    // The planner is the project's long-lived session: in maintenance too it starts on the next tick (it is the one who
+    // sweeps).
     let planners = hub.wait_for(
         &format!("/v1/sessions?project={pid}"),
         Duration::from_secs(20),
@@ -306,13 +299,6 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         "a planner session: {planners}\n{}",
         hub.log()
     );
-    let (status, maintained) = hub.call(
-        "POST",
-        &format!("/v1/projects/{pid}/mode"),
-        Some(json!({ "mode": "maintenance" })),
-    );
-    assert_eq!(status, 200, "{maintained}");
-    assert_eq!(maintained["mode"], "maintenance", "{maintained}");
 
     // Its watchers get the maintenance tools; the planner sweeps first, and the sweep asks for the map.
     let (_, hello) = hub.guest(PLANNER, "hello", json!({ "role": "planner", "vm": 1 }));

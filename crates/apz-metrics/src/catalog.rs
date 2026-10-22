@@ -1222,9 +1222,9 @@ pub const CATALOG: &[MetricDef] = &[
         Standard,
         Service,
         [],
-        "hourly size reads of Garage, Weft and Postgres",
+        "hourly size reads of blobs, Weft and Postgres",
         "one size query per store per hour",
-        "Size of a plaza store: objects, git, database tables (the metrics tables listed apart)."
+        "Size of a plaza store: blobs, git, database tables (the metrics tables listed apart)."
     ),
     // The metrics system's own cost.
     m!(

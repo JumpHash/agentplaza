@@ -1,8 +1,8 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href, hrefIn, movedTo, setLinkScope } from '../src/router';
 import { inScope, isLive, liveProjects } from '../src/scope';
-import { afterText, isConversationId, settingsLine, startBlock, streamed } from '../src/ide/conversation-model';
-import type { ProjectDraft } from '../src/api';
+import { afterText, budgetText, chatOfWorkspace, draftBudgetOf, isTalkWorkspace, settingsLine, startBlock, streamed, talkWorkspace } from '../src/ide/talk-model';
+import type { ProjectDraft } from '../src/api-work';
 import { machinesRoute, viewHash } from '../src/views/machines';
 import { parseStyle, STYLES } from '../src/views/machine-style';
 import { finiteValues, gpuCardLine, latestValue, metricValues, parseGpuCards, vmRows } from '../src/views/machine-view-model';
@@ -41,11 +41,10 @@ import { lookOfSpec, sizeLine, specKey, VIEWS, type PictureSpec } from '../src/v
 import { VM_FORM_DEFAULTS, backendFor, backendHint, imageProblem, macosOn, nodeChoices, nodeFactsLine, nodeOptionLabel, nodeVmFacts, pciProblem, readVmForm, sortVms, vmBody, vmGpuText, vmNameProblem, vmOsText, vmProblem, vmStateChip, wholeIn, type NodeVmFacts, type VmForm } from '../src/views/workstations-vm-model';
 import type { NodeView, StationVm } from '../src/api';
 import { api, e2bApi, egressApi } from '../src/api';
-import { statusPill } from '../src/views/agent-list';
+import { statusPill } from '../src/views/agent-status';
 import { sleepRoles, wholeInRange } from '../src/views/models-policy';
 import { defaultRuleForm, listOf, methodsText, rolesText, ruleBody, ruleProblem, type RuleForm } from '../src/views/egress-credentials';
 import { e2bSetupText, latestBuild, memoryText, sandboxActions, sandboxTime, templateFailure, templateTags, type E2bBuild, type E2bTemplate } from '../src/views/e2b';
-import { movableNodes, moveText } from '../src/views/agent-detail';
 import { isStopped, nodeState, rebalanceText, waitingLines } from '../src/views/nodes';
 import { parseVolumeList, volumeNameOk } from '../src/views/volumes';
 import { checkpointsKey, treeKey, type TreeKeyInput } from '../src/views/ide-render';
@@ -94,6 +93,11 @@ eq(parse('#/agents/105'), { screen: 'agents', params: ['105'], project: null }, 
 eq(parse(''), { screen: 'overview', params: [], project: null }, 'empty route is the overview');
 // A project's route carries it first; the screen and its params follow as before.
 eq(parse('#/p/pr4/agents/105'), { screen: 'agents', params: ['105'], project: 'pr4' }, 'a scoped route names its project');
+// The agent screens are the session screens: an old agent route moves to the session of its VM, keeping the project.
+eq(movedTo('#/agents/105'), '#/sessions/105', 'an old agent route moves to the session of that CID');
+eq(movedTo('#/p/pr4/agents/105'), '#/p/pr4/sessions/105', 'a scoped agent route keeps its project');
+eq(movedTo('#/agents'), '#/sessions', 'the agent list moves to the sessions list');
+eq(movedTo('#/sessions/s12'), null, 'the sessions screen does not move');
 eq(parse('#/p/pr4'), { screen: 'overview', params: [], project: 'pr4' }, "a project's front door is its overview");
 eq(parse('#/p'), { screen: 'p', params: [], project: null }, 'a lone p is a screen name, not a scope');
 eq(hrefIn('pr4', 'tasks', 't 1'), '#/p/pr4/tasks/t%201', 'a scoped link');
@@ -172,18 +176,31 @@ eq([easeOut(0), easeOut(1)], [0, 1], 'ease out: the ends are fixed');
 eq(parse('#/hardware-lab?model=hub&lod=1'), { screen: 'hardware-lab', params: [], project: null }, 'a query is not part of the route');
 eq(parse('#/p/pr2/work?task=t3').project, 'pr2', 'a scoped route keeps its project before a query');
 
-// ---- The IDE's conversation view (ide/conversation-model.ts) ----
+// ---- The IDE's talk view (ide/talk-model.ts): a chat's workspace, its draft, its budget field ----
 {
-  eq(isConversationId('conv-12'), true, 'a conversation workspace id');
-  eq(isConversationId('agent:7'), false, 'an agent workspace is not one');
-  eq(isConversationId(null), false, 'nothing open is not one');
+  eq(talkWorkspace('main'), 'chat:main', 'a chat workspace id');
+  eq(chatOfWorkspace('chat:ch12'), 'ch12', 'a chat workspace opens its chat');
+  eq(isTalkWorkspace('chat:main'), true, 'the orchestrator chat is a workspace');
+  eq(isTalkWorkspace('chat:'), false, 'a chat workspace with no chat is not one');
+  eq(isTalkWorkspace('agent:7'), false, 'an agent workspace is not one');
+  eq(isTalkWorkspace(null), false, 'nothing open is not one');
   eq(afterText({ after: ['1', '2'] }), 'after 1, 2', 'a task that runs after others');
   eq(afterText({}), '', 'one that runs at once');
-  const draft = { problems: [] as string[] } as unknown as ProjectDraft;
-  eq(startBlock({ draft, project: undefined, archived: false }), null, 'a draft with no problems starts');
-  eq(startBlock({ draft: { ...draft, problems: ['the draft has no tasks yet'] }, project: undefined, archived: false }), 'Before it can start: the draft has no tasks yet.', 'its problems stop it');
-  eq(startBlock({ draft, project: 'pr2', archived: false }), 'The project is started.', 'a started one does not start again');
-  eq(startBlock({ draft: undefined, project: undefined, archived: false })?.startsWith('There is no draft yet'), true, 'no draft yet');
+  const draft = { problems: [] as string[], revision: 1, budget: { unit: 'usd', cap: 15_000_000 } } as unknown as ProjectDraft;
+  eq(startBlock({ archived: false }, draft), null, 'a draft with no problems starts');
+  eq(startBlock({ archived: false }, { ...draft, problems: ['the draft has no tasks yet'] }), 'Before it can start: the draft has no tasks yet.', 'its problems stop it');
+  eq(startBlock({ archived: false }, { ...draft, started_ms: 9 }), 'The project is started.', 'a started draft does not start again');
+  eq(startBlock({ archived: true }, draft), 'The chat is archived.', 'an archived chat does not start');
+  eq(startBlock({ archived: false }, null)?.startsWith('There is no draft yet'), true, 'no draft yet');
+  eq(budgetText({ unit: 'usd', cap: 15_000_000 }), '$15.00', 'a dollar budget');
+  eq(budgetText({ unit: 'tokens', cap: 500_000, monthly_cap: 100_000 }), '500,000 tokens · 100,000 tokens a month', 'a token budget with a monthly cap');
+  eq(budgetText(undefined), 'From the plaza’s budget', 'no budget of its own');
+  // The budget field is sent whole (the edit replaces it): dollars become micro-dollars, the monthly cap is kept.
+  eq(draftBudgetOf('usd', '2.5', 3_000_000), { ok: true, value: { unit: 'usd', cap: 2_500_000, monthly_cap: 3_000_000 } }, 'dollars typed, the monthly cap kept');
+  eq(draftBudgetOf('tokens', '500,000'), { ok: true, value: { unit: 'tokens', cap: 500_000 } }, 'tokens typed, grouped');
+  eq(draftBudgetOf('usd', '  '), { ok: true, value: undefined }, 'a blank field sends no budget');
+  eq(draftBudgetOf('usd', '0').ok, false, 'a budget of zero is refused');
+  eq(draftBudgetOf('tokens', 'lots').ok, false, 'a budget that is no number is refused');
   eq(
     settingsLine({ role_models: { builder: 'anthropic/claude-sonnet-5-5' }, effort: 'high', permission_mode: 'ask' }),
     'Builder model: anthropic/claude-sonnet-5-5 · effort high · permission: ask',
@@ -1596,13 +1613,6 @@ sectionEnd('sleep and checkpoint tests: ok');
   eq(templateFailure(tplSample), 'step 4 failed', 'e2b templates: a newest build that failed shows its reason');
   eq(templateFailure({ ...tplSample, builds: [buildSample({ status: 'error' })] }), 'The build failed.', 'e2b templates: a failed build without a reason still says it failed');
   eq([templateFailure({ ...tplSample, builds: [buildSample({ status: 'ready' })] }), latestBuild({ ...tplSample, builds: [] }), templateTags({ ...tplSample, builds: [] })], [null, null, []], 'e2b templates: a ready newest build has no failure, and no builds means no latest build and no tags');
-  // Move: the nodes an agent can move to, and the outcome line.
-  const nodes = [
-    { id: 'n1', name: 'alpha', draining: false, revoked: false },
-    { id: 'n2', name: 'beta', draining: true, revoked: false },
-    { id: 'n3', name: 'gamma', draining: false, revoked: true },
-  ] as unknown as NodeView[];
-  eq(movableNodes(nodes).map((n) => n.id), ['n1'], 'move: a stopped or revoked node is not offered');
   // Stop and resume: a node's state, why its agents wait, and what a rebalance did.
   const nodeAt = (over: Partial<NodeView>): NodeView =>
     ({ id: 'n1', name: 'alpha', draining: false, revoked: false, online: true, state: 'active', left: 0, waiting: [], ...over }) as NodeView;
@@ -1634,7 +1644,6 @@ sectionEnd('sleep and checkpoint tests: ok');
     ['The agents are already spread over the machines.', 'Moving 1 agent to spread the load.', 'Moving 2 agents to spread the load.'],
     'nodes: a rebalance says how many agents move, or that none needs to',
   );
-  eq(moveText({ from: 'n1', to: 'n2', bytes: 3 * 1048576, ms: 2500 }, (id) => id.toUpperCase()), 'Moved from N1 to N2: 3.0 MB in 2.5 s.', 'move: the outcome names both nodes, the MB moved and the seconds');
 }
 sectionEnd('egress credentials and e2b tests: ok');
 
@@ -1970,6 +1979,9 @@ import './environments-tests';
 import './maintenance-tests';
 import './chat-tools-tests';
 import './cache-tests';
+import './sessions-tests';
+import './inbox-chats-tests';
+import './budget-tests';
 
 // The web console's code highlighter (src/view/highlight.ts) against the golden vectors the Rust twin also checks.
 import { spans as highlightSpans } from '../src/view/highlight';

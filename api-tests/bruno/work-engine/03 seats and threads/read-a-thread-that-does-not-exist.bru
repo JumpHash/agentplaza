@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 to a thread that does not exist
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/threads/th999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

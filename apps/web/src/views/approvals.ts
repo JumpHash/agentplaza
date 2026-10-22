@@ -14,7 +14,6 @@ import { embedContextFromStore } from '../ui/embeds';
 import { h, lu, replace } from '../ui/dom';
 import type { LucideName } from '../ui/icons.gen';
 import { renderMarkdown } from '../ui/markdown';
-import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 import { reviewPanel } from './review-graph';
 import { readingTone } from './review-model';
@@ -108,7 +107,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const openReviews = new Set<string>();
 
   const nameOf = (cid: number): string => agentLabelIn(agents.get(), cid);
-  const agentLink = (cid: number): HTMLElement => h('a.ap-agent', { href: href('agents', cid) }, nameOf(cid));
+  const agentLink = (cid: number): HTMLElement => h('a.ap-agent', { href: href('sessions', cid) }, nameOf(cid));
 
   const shownHere = (a: Approval): boolean => {
     if (!inProject || a.cid === 0) return true;
@@ -291,7 +290,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       (x): x is HTMLElement => x !== null,
     );
     const reject = button('Reject', () => void rejectProposal(p), { kind: 'danger' });
-    const reviewIt = button('Review…', () => openAgentWizard({ proposal: p, prefill: p.role, onDone: () => void loadProposals() }), { kind: 'primary' });
+    const approve = button('Approve', () => approveProposal(p), { kind: 'primary' });
     return h(
       'article.card.ap-card.ibd',
       { 'data-key': `pp-${p.id}` },
@@ -304,7 +303,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         p.instruction ? h('blockquote.ap-quote', null, `“${p.instruction}”`) : null,
         h('p.ap-by', null, `Proposed by ${p.by}`),
       ),
-      h('footer.ibd-foot', null, h('div.ap-actions', null, reject, reviewIt)),
+      h('footer.ibd-foot', null, h('div.ap-actions', null, reject, approve)),
     );
   };
 
@@ -320,7 +319,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     );
   };
 
-  // A rejection needs a reason, as the wizard requires: a blank answer keeps the dialog open, and Cancel gives up.
+  /** Approves the orchestrator's proposal as it was written (the hub spawns the agents it asks for). */
+  const approveProposal = (p: AgentProposal): void => {
+    void attempt(() => api.approveAgentProposal(p.id), 'Approved').then(() => void loadProposals());
+  };
+
+  // A rejection needs a reason: a blank answer keeps the dialog open, and Cancel gives up.
   const rejectProposal = (p: AgentProposal): void => {
     const title = p.role.title || p.role.id;
     const ta = textarea({ rows: 3, 'aria-label': 'Reason' });

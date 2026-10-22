@@ -1,0 +1,26 @@
+meta {
+  name: Clear the disk quota: null means no quota
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/v1/projects/{{we_pid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"unit": "usd", "cap": 5000000, "disk_quota_bytes": null}
+}
+
+assert {
+  res.status: eq 200
+  res.body.disk_quota_bytes: isNull
+  res.body.cap: eq 5000000
+  res.responseTime: lt {{budgetMs}}
+}

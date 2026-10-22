@@ -517,7 +517,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       h('p.pj-intro', null, 'Agents work on one project at a time. Talk a new one through with the orchestrator, or open one yourself.'),
       ordered.length
         ? h('div.pj-list', null, ordered.map(projectRow))
-        : emptyState(icon('commit', '', 22), 'No projects yet.', 'Start one in a conversation with the orchestrator: it drafts the tasks and the budget, and you start it.', newBtn),
+        : emptyState(icon('commit', '', 22), 'No projects yet.', 'Start one in a chat with the orchestrator: it drafts the tasks and the budget, and you start it.', newBtn),
     ];
   };
 

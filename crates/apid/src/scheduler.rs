@@ -41,9 +41,6 @@ pub struct Origin {
     /// True when the owner's message came from an editor over ACP (`/v1/acp`).
     #[serde(default)]
     pub acp: bool,
-    /// The owner's conversation with the orchestrator this message is in (`conversations`): its answer goes there.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conversation: Option<String>,
     /// The task's lane in Weft, for a worker's task item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[table(flatten)]
@@ -319,7 +316,6 @@ impl Queues {
             "work",
             &json!({ "cid": cid, "work": work, "state": "ended", "status": state }),
         );
-        crate::conversations::work_ended(app, &item, state, summary);
         // A chat item (thread `chat:<id>`): its answer goes into the chat; a seat message it carried was read.
         crate::work_loop::on_chat_work_end(app, cid, &item.thread, summary);
         crate::work_loop::on_item_done(app, work);
@@ -427,7 +423,7 @@ impl Queues {
     }
 
     /// Tells a task's poster (the orchestrator) that it ended, continuing the
-    /// poster's conversation with the operator so it keeps its plan.
+    /// poster's chat with the operator so it keeps its plan.
     fn tell_poster(&self, app: &App, task: &str, worker: u64, state: &str, summary: &str) {
         let poster = self
             .posters
@@ -449,12 +445,13 @@ impl Queues {
             "[plaza] Task {task}, worked by {worker_name}, ended: {state}.\nSummary: {summary}\n\n\
              Review it (plaza_task_result), continue your plan, and tell the operator when the goal is complete."
         );
-        // A project started from a conversation hears of its tasks there.
-        if let Some(conversation) = project_conversation(app, task, poster) {
-            crate::conversations::notify(
+        // A project whose draft started hears of its tasks in its chat.
+        if let Some(chat) = project_chat(app, task, poster) {
+            crate::work_loop::tell_chat(
                 app,
-                &conversation,
-                crate::conversations::shown_line(&prompt),
+                &chat,
+                poster,
+                crate::work_loop::shown_line(&prompt),
                 &prompt,
             );
             return;
@@ -505,7 +502,6 @@ impl Queues {
             "work",
             &json!({ "cid": cid, "work": work, "state": "ended", "status": "stopped" }),
         );
-        crate::conversations::work_ended(app, &item, "stopped", reason);
         if let Some(task) = item.origin.task.as_deref() {
             settle_task(app, task, WorkStatus::Stopped, reason);
         }
@@ -552,7 +548,6 @@ impl Queues {
                 "work",
                 &json!({ "cid": cid, "work": item.id, "state": "ended", "status": "failed" }),
             );
-            crate::conversations::work_ended(app, &item, "failed", "agent went offline");
             if let Some(task) = item.origin.task.as_deref()
                 && !crate::work_loop::owns(app, task)
             {
@@ -620,7 +615,7 @@ impl Queues {
                     waited,
                 );
                 if let Some(item) = escalation {
-                    app.bus.publish("approval", &item);
+                    crate::approvals::announce(app, &item);
                 }
             }
         }
@@ -866,13 +861,13 @@ impl Queues {
     }
 }
 
-/// The conversation task `task`'s project was started from, when agent `cid` is the orchestrator it talks to: where
-/// that orchestrator hears of the project's tasks.
-pub(crate) fn project_conversation(app: &App, task: &str, cid: u64) -> Option<String> {
+/// The chat of task `task`'s project, when agent `cid` leads the project: where the lead hears of the project's tasks.
+pub(crate) fn project_chat(app: &App, task: &str, cid: u64) -> Option<String> {
     let pid = app.plaza.tasks.find(task)?.project()?.to_string();
-    crate::conversations::of_project(app, &pid)
-        .filter(|conversation| conversation.cid == cid)
-        .map(|conversation| conversation.id)
+    if app.projects.get(&pid)?.lead_cid != cid {
+        return None;
+    }
+    crate::drafts::chat_of(app, &pid).map(|chat| chat.id)
 }
 
 /// What `dispatch` does with an agent's waiting work, decided before anything moves.
@@ -1060,11 +1055,12 @@ fn withdraw_orphaned_reviews(
         .collect()
 }
 
-/// Publishes the approvals that were withdrawn, so the owner's view drops them.
+/// Publishes the approvals that were withdrawn, so the owner's view drops them, and withdraws their cards.
 fn publish_withdrawn(app: &App, withdrawn: &[Approval]) {
     for item in withdrawn {
         app.bus.publish("approval", item);
     }
+    crate::approvals::withdraw_cards(app, withdrawn);
 }
 
 /// Withdraws the pending review cards whose task no longer awaits review, whichever path ended it.
@@ -1628,7 +1624,6 @@ mod tests {
             owner: true,
             mcp: true,
             acp: false,
-            conversation: Some("conv-3".into()),
             lane: Some(apz_proto::wire::WorkLane {
                 change: "c-4".into(),
                 repo: "weft".into(),

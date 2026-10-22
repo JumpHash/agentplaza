@@ -28,7 +28,7 @@ const SECRET_ROUTES = [
   /^\/v1\/providers\/[^/?]+\/key(?=[/?]|$)/,
   // Transcripts hold what tools printed and models wrote (and they are large): kept in memory only.
   /^\/v1\/(agents|sessions)\/[^/?]+\/transcript(?=[/?]|$)/,
-  /^\/v1\/owner\/conversations\/[^/?]+\/transcript(?=[/?]|$)/,
+  /^\/v1\/chats\/[^/?]+\/transcript(?=[/?]|$)/,
 ];
 
 /** Whether a GET of `path` may hold a secret, so its copy is never persisted. */

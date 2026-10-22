@@ -1,11 +1,10 @@
-//! The terminal UI's project switcher: the Agents and Tasks tabs show every project's, or one project's. `p` and `P`
+//! The terminal UI's project switcher: the Sessions and Tasks tabs show every project's, or one project's. `p` and `P`
 //! step through All projects and each project still open (active or paused), in the hub's order; the header names the
 //! one shown. Pure: the projects come in as the hub's JSON (`GET /v1/projects`), so these rules are tested without a
 //! terminal.
 
 use serde_json::Value;
 
-use crate::cmd::agents::place_of;
 use crate::cmd::projects::state_of;
 
 /// The projects the switcher offers, in the hub's order: the ones still open (active or paused), by id.
@@ -36,12 +35,9 @@ pub fn project_of<'a>(scope: Option<&str>, projects: &'a [Value]) -> Option<&'a 
         .find(|p| p.get("id").and_then(Value::as_str) == Some(id))
 }
 
-/// Whether an agent shows in the scope: every agent in All, else the project's agents and the orchestrator, which works
-/// on every project.
-pub fn agent_in(agent: &Value, scope: Option<&str>) -> bool {
-    scope.is_none_or(|id| {
-        agent.get("project").and_then(Value::as_str) == Some(id) || place_of(agent) == "all"
-    })
+/// Whether a session shows in the scope: every session in All, else the project's.
+pub fn session_in(session: &Value, scope: Option<&str>) -> bool {
+    scope.is_none_or(|id| session.get("project").and_then(Value::as_str) == Some(id))
 }
 
 /// Whether a task shows in the scope: every task in All, else the tasks that name the project, or that the project
@@ -115,20 +111,14 @@ mod tests {
     }
 
     #[test]
-    fn a_scope_shows_its_projects_agents_and_tasks() {
-        let ada = json!({ "cid": 7, "project": "pr2" });
-        let ben = json!({ "cid": 8, "project": null });
-        assert!(agent_in(&ada, None) && agent_in(&ben, None));
-        assert!(agent_in(&ada, Some("pr2")));
+    fn a_scope_shows_its_projects_sessions_and_tasks() {
+        let ada = json!({ "id": "s7", "project": "pr2" });
+        let ben = json!({ "id": "s8", "project": null });
+        assert!(session_in(&ada, None) && session_in(&ben, None));
+        assert!(session_in(&ada, Some("pr2")));
         assert!(
-            !agent_in(&ben, Some("pr2")),
-            "an agent with no live session is in no project"
-        );
-        let atlas =
-            json!({ "cid": 3, "role": "orchestrator", "tier": "orchestrator", "project": null });
-        assert!(
-            agent_in(&atlas, Some("pr2")),
-            "the orchestrator works on every project"
+            !session_in(&ben, Some("pr2")),
+            "a session with no project is in no project's scope"
         );
         let projects = projects();
         let pr2 = project_of(Some("pr2"), &projects);

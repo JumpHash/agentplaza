@@ -12,8 +12,9 @@ use iced::{Alignment, Border, Color, Element, Font, Length, Subscription, Task, 
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Id, ide, project_environments, project_maintenance, project_settings};
+use super::{Id, budget, ide, project_environments, project_maintenance, project_settings};
 use crate::console::shell::pmono;
+use crate::console::work_api::OwnerKind;
 use crate::console::{Ctx, client, events, ui};
 
 /// The document types a system viewer shows as plain content; any other file is not opened.
@@ -127,6 +128,8 @@ pub enum Tab {
     Plan,
     Maintenance,
     Environments,
+    /// The project's budget: its cap, what is spent and left, its ledger, and its tasks' budgets.
+    Budget,
     Settings,
 }
 
@@ -137,6 +140,7 @@ impl Tab {
             "plan" => Some(Tab::Plan),
             "maintenance" => Some(Tab::Maintenance),
             "environments" => Some(Tab::Environments),
+            "budget" => Some(Tab::Budget),
             "settings" => Some(Tab::Settings),
             _ => None,
         }
@@ -178,6 +182,7 @@ pub struct State {
     pub settings: project_settings::State,
     pub maintenance: project_maintenance::State,
     pub environments: project_environments::State,
+    pub budget: budget::Panel,
     /// The mode chooser is open.
     pub choose_mode: bool,
     /// Files being added to the repository: the line saying how it went.
@@ -224,6 +229,7 @@ pub enum Msg {
     Settings(project_settings::Msg),
     Maintenance(project_maintenance::Msg),
     Environments(project_environments::Msg),
+    Budget(budget::Msg),
     /// The mode chooser: open it, pick a mode (`build` or `maintenance`), or close it.
     OpenMode,
     SetMode(&'static str),
@@ -241,6 +247,7 @@ pub fn go(msg: &Msg) -> Option<Id> {
         Msg::Settings(m) => project_settings::go(m),
         Msg::Maintenance(m) => project_maintenance::go(m),
         Msg::Environments(m) => project_environments::go(m),
+        Msg::Budget(m) => budget::go(m),
         _ => None,
     }
 }
@@ -269,12 +276,18 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// The open tab's own data (the plan is the project itself, so it has none).
-fn load_tab(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
+fn load_tab(state: &mut State, id: &str, ctx: &Ctx) -> Task<Msg> {
     match state.tab {
         Tab::Plan => Task::none(),
         Tab::Maintenance => project_maintenance::load(id, ctx).map(Msg::Maintenance),
         Tab::Environments => project_environments::load(id, ctx).map(Msg::Environments),
         Tab::Settings => project_settings::load(id, ctx).map(Msg::Settings),
+        Tab::Budget => {
+            if !state.budget.owned_by(OwnerKind::Project, id) {
+                state.budget = budget::Panel::new(OwnerKind::Project, id);
+            }
+            budget::load(&mut state.budget, ctx).map(Msg::Budget)
+        }
     }
 }
 
@@ -339,6 +352,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             project_environments::update(&mut state.environments, m, &id, ctx)
                 .map(Msg::Environments)
         }
+        Msg::Budget(m) => budget::update(&mut state.budget, m, ctx).map(Msg::Budget),
         Msg::OpenMode => {
             state.choose_mode = true;
             Task::none()
@@ -447,18 +461,21 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             landed(state, ctx)
         }
         Msg::Event(event) => {
+            // The budget panel follows its own frames (its budget, its sessions and its cards).
+            let panel = budget::update(&mut state.budget, budget::Msg::Event(event.clone()), ctx)
+                .map(Msg::Budget);
             if !matches!(
                 event.kind.as_str(),
                 "project" | "task" | "maintenance" | "environment"
             ) {
-                return Task::none();
+                return panel;
             }
             if state.loading {
                 state.again = true;
-                return Task::none();
+                return panel;
             }
             state.loading = true;
-            load(state, ctx)
+            Task::batch([panel, load(state, ctx)])
         }
         Msg::OpenFile(id) => {
             let client = ctx.client.clone();
@@ -1149,6 +1166,10 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             );
             return page(p, badges, body);
         }
+        Tab::Budget => {
+            body.push(budget::view(&state.budget).map(Msg::Budget));
+            return page(p, badges, body);
+        }
         Tab::Plan => {}
     }
 
@@ -1194,7 +1215,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
 /// The page's tabs (the web's `.pj-tabs`): the ones drawn here, and the console's own Work, Tasks and Weft screens for the
 /// project. Selected: ink with a signal rule under it; the rest faint.
 fn tab_bar<'a>(p: &'a Project, tab: Tab) -> Element<'a, Msg> {
-    let items: [(&str, Msg, bool); 7] = [
+    let items: [(&str, Msg, bool); 8] = [
         ("Plan", Msg::Tab(Tab::Plan), tab == Tab::Plan),
         ("Work", Msg::Go(Id::WorkOn(p.id.clone())), false),
         ("Tasks", Msg::Go(Id::Tasks), false),
@@ -1209,6 +1230,7 @@ fn tab_bar<'a>(p: &'a Project, tab: Tab) -> Element<'a, Msg> {
             Msg::Tab(Tab::Environments),
             tab == Tab::Environments,
         ),
+        ("Budget", Msg::Tab(Tab::Budget), tab == Tab::Budget),
         ("Settings", Msg::Tab(Tab::Settings), tab == Tab::Settings),
     ];
     let cells = items.into_iter().map(|(name, msg, on)| {

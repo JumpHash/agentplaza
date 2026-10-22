@@ -686,7 +686,7 @@ fn found_for(skills: &Skills, skill: &Skill, version: u32) -> Result<FoundSkill,
         .map(|f| -> Result<Entry, String> {
             Ok(Entry {
                 path: f.path.clone(),
-                bytes: skills.blobs().get(&f.sha256)?,
+                bytes: skills.blobs().get(&f.hash)?,
                 executable: f.executable,
             })
         })
@@ -846,11 +846,11 @@ fn short(sha: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::store_mem::MemorySkills;
-    use crate::skills::{Blobs, sha256_hex};
+    use crate::skills::Blobs;
+    use crate::skills::store_db::DbSkills;
     use std::sync::Arc;
 
-    /// File bytes in memory, by sha256.
+    /// File bytes in memory, by their BLAKE3 hash.
     #[derive(Default)]
     struct TestBlobs {
         map: Mutex<HashMap<String, Vec<u8>>>,
@@ -858,18 +858,21 @@ mod tests {
 
     impl Blobs for TestBlobs {
         fn put(&self, bytes: &[u8]) -> Result<String, String> {
-            let sha = sha256_hex(bytes);
-            self.map.lock().unwrap().insert(sha.clone(), bytes.to_vec());
-            Ok(sha)
-        }
-
-        fn get(&self, sha256: &str) -> Result<Vec<u8>, String> {
+            let hash = apz_blobs::Hash::of(bytes).to_string();
             self.map
                 .lock()
                 .unwrap()
-                .get(sha256)
+                .insert(hash.clone(), bytes.to_vec());
+            Ok(hash)
+        }
+
+        fn get(&self, hash: &str) -> Result<Vec<u8>, String> {
+            self.map
+                .lock()
+                .unwrap()
+                .get(hash)
                 .cloned()
-                .ok_or_else(|| format!("no blob {sha256}"))
+                .ok_or_else(|| format!("no blob {hash}"))
         }
     }
 
@@ -900,7 +903,7 @@ mod tests {
 
     fn library() -> Skills {
         Skills::new(
-            Arc::new(MemorySkills::in_memory()),
+            Arc::new(DbSkills::for_tests()),
             Arc::new(TestBlobs::default()),
         )
     }

@@ -3,26 +3,30 @@
 //! for it. Both are owner routes (hub_auth gates every `/v1` route that is not public).
 //!
 //! The hub fetches only from an allow-list: GitHub's API (with the owner's GitHub token when there is one, else
-//! anonymous), and its own agents, tasks, library tools and deliverables. Workspace files are not unfurled here: clients read them through the IDE routes. Remote answers are
-//! cached (open items 10 minutes, merged, closed and completed items and commits an hour, failures a minute; see
-//! `cards::ttl_ms`), in Postgres (`unfurl_cache`) or, without Postgres, in memory. Agents, tasks and the hub's records
-//! are live state and are read on every request.
+//! anonymous), and its own agents, tasks, library tools and deliverables. Workspace files are not unfurled here: clients
+//! read them through the IDE routes. Remote answers are cached (open items 10 minutes, merged, closed and completed
+//! items and commits an hour, failures a minute; see `cards::ttl_ms`) in `plaza.db` (`unfurl_cache`, one row per
+//! reference, keyed by its canonical text). Agents, tasks and the hub's records are live state and are read on every
+//! request.
 
 mod cards;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
 use std::io::Read;
-use std::sync::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 use apz_http::{Request, Response, RouteDoc, Router};
 use apz_rich::{Ctx, Ref, Span};
+use apz_store::rusqlite::Connection;
+use apz_store::table::{Changes, Loaded, Row, Value as SqlValue};
+use apz_store::{Db, RowSet, StoreError, Table, TableDef};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::state::App;
+use crate::store::sql;
 
 /// The most references one request may ask for.
 pub const MAX_REFS: usize = 50;
@@ -31,8 +35,6 @@ const CONCURRENCY: usize = 8;
 const GITHUB_API: &str = "https://api.github.com";
 /// The time limit of one GitHub read.
 const GITHUB_TIMEOUT: Duration = Duration::from_secs(15);
-/// The most answers the memory copy keeps.
-const MEMORY_LIMIT: usize = 4096;
 
 /// Where remote answers come from. The live hub reads GitHub; tests answer from fixtures.
 pub trait Source: Sync {
@@ -40,65 +42,66 @@ pub trait Source: Sync {
     fn github(&self, path: &str) -> Result<(u16, Value), &'static str>;
 }
 
-/// One stored answer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Row {
-    /// The answer as the route returns it: `{ok, card}` or `{ok, error}`.
-    pub data: Value,
+/// One cached answer: a row of `unfurl_cache`, keyed by the reference's canonical text (see [`cache_key`]). The card is
+/// what the provider answered, shown to people: content, never read back as state. How long the answer stays fresh is
+/// decided when it is fetched (`ttl_ms`, from its kind and state), so the cache never reads the card.
+#[derive(Debug, Clone, PartialEq, Table)]
+#[table(name = "unfurl_cache")]
+pub struct Answer {
+    #[table(key)]
+    pub key: String,
     pub ok: bool,
+    #[table(content)]
+    pub card: Option<Value>,
+    pub error: Option<String>,
     pub fetched_ms: u64,
+    pub ttl_ms: u64,
 }
 
-/// Where remote answers are kept between requests.
-pub trait Store: Sync {
-    fn get(&self, key: &str) -> Option<Row>;
-    fn put(&self, key: &str, row: Row);
+/// The table `unfurl_cache`: one row per reference, keyed by its canonical text.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Answer)
 }
 
-/// The memory copy of the cache, for a hub without Postgres. Bounded: a full map drops its stalest answer.
-#[derive(Default)]
+impl Answer {
+    /// The row for `key`, from the answer `item` the route returns for the fetch, made at `now`.
+    fn of(key: String, item: &Value, now: u64) -> Answer {
+        Answer {
+            key,
+            ok: item["ok"].as_bool() == Some(true),
+            card: item.get("card").cloned(),
+            error: item["error"].as_str().map(str::to_string),
+            fetched_ms: now,
+            ttl_ms: cards::ttl_ms(item),
+        }
+    }
+
+    /// The answer the route returns for this row: `{ok, card}`, or `{ok, error}`.
+    fn answer_json(&self) -> Value {
+        if self.ok {
+            json!({"ok": true, "card": self.card})
+        } else {
+            json!({"ok": false, "error": self.error})
+        }
+    }
+}
+
+/// The hub's cache of remote answers, in `plaza.db`: one row per reference. Each read and write goes to the database;
+/// there is no memory copy.
 pub struct Cache {
-    rows: Mutex<HashMap<String, Row>>,
+    db: Arc<Db>,
 }
 
-impl Store for Cache {
-    fn get(&self, key: &str) -> Option<Row> {
-        self.rows
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(key)
-            .cloned()
+impl Cache {
+    /// A cache over the hub's `plaza.db`.
+    pub fn new(db: Arc<Db>) -> Self {
+        Self { db }
     }
 
-    fn put(&self, key: &str, row: Row) {
-        let mut rows = self.rows.lock().unwrap_or_else(|e| e.into_inner());
-        if rows.len() >= MEMORY_LIMIT
-            && !rows.contains_key(key)
-            && let Some(stalest) = rows
-                .iter()
-                .min_by_key(|(_, r)| r.fetched_ms)
-                .map(|(k, _)| k.clone())
-        {
-            rows.remove(&stalest);
-        }
-        rows.insert(key.to_string(), row);
-    }
-}
-
-/// The hub's cache: Postgres when the hub has it, the memory copy otherwise.
-struct Backed<'a>(&'a App);
-
-impl Store for Backed<'_> {
-    fn get(&self, key: &str) -> Option<Row> {
-        if !self.0.db.enabled() {
-            return self.0.unfurl.get(key);
-        }
-        match self.0.db.unfurl_get(key) {
-            Ok(found) => found.map(|(data, ok, fetched_ms)| Row {
-                data,
-                ok,
-                fetched_ms,
-            }),
+    /// The row stored for `key`, if any. A failed read is logged and answers a miss.
+    fn get(&self, key: &str) -> Option<Answer> {
+        match self.db.read(|conn| find(conn, key)) {
+            Ok(found) => found,
             Err(e) => {
                 eprintln!("apid: unfurl cache read failed: {e}");
                 None
@@ -106,14 +109,49 @@ impl Store for Backed<'_> {
         }
     }
 
-    fn put(&self, key: &str, row: Row) {
-        if !self.0.db.enabled() {
-            return self.0.unfurl.put(key, row);
-        }
-        if let Err(e) = self.0.db.unfurl_put(key, &row.data, row.ok, row.fetched_ms) {
+    /// Stores `answer` as the row for its key, replacing the one stored, and waits for the commit. A failed write is
+    /// logged.
+    fn put(&self, answer: Answer) {
+        if let Err(e) = self.db.write(move |conn| save(conn, &answer)) {
             eprintln!("apid: unfurl cache write failed: {e}");
         }
     }
+}
+
+/// Reads the row stored for `key`.
+fn find(conn: &Connection, key: &str) -> Result<Option<Answer>, StoreError> {
+    let def = def();
+    let width = def.key.len() + def.columns.len();
+    let mut stmt = conn.prepare_cached(sql::UNFURL_GET)?;
+    let mut rows = stmt.query([key])?;
+    let Some(r) = rows.next()? else {
+        return Ok(None);
+    };
+    let mut values = Vec::with_capacity(width);
+    for i in 0..width {
+        values.push(r.get::<_, SqlValue>(i)?);
+    }
+    let columns = values.split_off(def.key.len());
+    let row = Row {
+        key: values,
+        columns,
+    };
+    Answer::take(def, &row, &Loaded::default()).map(Some)
+}
+
+/// Writes `answer` as the row for its key, inserted or replaced.
+fn save(conn: &Connection, answer: &Answer) -> Result<(), StoreError> {
+    let def = def();
+    let mut rows = RowSet::one(def, answer)?;
+    let mut changes = Changes::default();
+    changes.upserts = rows
+        .tables
+        .remove(&def.name)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| (def.name.clone(), row))
+        .collect();
+    apz_store::table::apply(conn, def, &changes)
 }
 
 /// The hub's provider: the GitHub API with the owner's token.
@@ -173,17 +211,17 @@ fn get_within(
 /// from the cache when it is fresh, else from their provider.
 pub fn unfurl(app: &App, refs: &[Ref], now: u64) -> Vec<Value> {
     let source = Live(app);
-    let store = Backed(app);
+    let cache = &app.unfurl;
     let mut out = Vec::with_capacity(refs.len());
     for chunk in refs.chunks(CONCURRENCY) {
         std::thread::scope(|scope| {
             let handles: Vec<_> = chunk
                 .iter()
                 .map(|r| {
-                    let (source, store) = (&source, &store);
+                    let (source, cache) = (&source, cache);
                     scope.spawn(move || match local(app, r) {
                         Some(answer) => answer,
-                        None => resolve_remote(source, store, r, now),
+                        None => resolve_remote(source, cache, r, now),
                     })
                 })
                 .collect();
@@ -199,28 +237,28 @@ pub fn unfurl(app: &App, refs: &[Ref], now: u64) -> Vec<Value> {
     out
 }
 
-/// The answer for a remote reference: from the store while it is fresh, else fetched and stored (failures too).
-fn resolve_remote(source: &dyn Source, store: &dyn Store, r: &Ref, now: u64) -> Value {
-    let key = serde_json::to_string(r).unwrap_or_default();
-    if let Some(row) = store.get(&key)
-        && now.saturating_sub(row.fetched_ms) < cards::ttl_ms(&row.data)
+/// The answer for a remote reference: from the cache while it is fresh, else fetched and cached (failures too). A
+/// reference no provider answers has no cache key: it is answered, not stored.
+fn resolve_remote(source: &dyn Source, cache: &Cache, r: &Ref, now: u64) -> Value {
+    let Some(key) = cache_key(r) else {
+        return answer_json(fetch(source, r));
+    };
+    if let Some(found) = cache.get(&key)
+        && now.saturating_sub(found.fetched_ms) < found.ttl_ms
     {
-        return row.data;
+        return found.answer_json();
     }
-    let item = match fetch(source, r) {
+    let item = answer_json(fetch(source, r));
+    cache.put(Answer::of(key, &item, now));
+    item
+}
+
+/// The route's answer for a fetch: `{ok, card}`, or `{ok, error}` with the reason the card is missing.
+fn answer_json(result: Result<Value, &'static str>) -> Value {
+    match result {
         Ok(card) => json!({"ok": true, "card": card}),
         Err(error) => json!({"ok": false, "error": error}),
-    };
-    let ok = item["ok"].as_bool() == Some(true);
-    store.put(
-        &key,
-        Row {
-            data: item.clone(),
-            ok,
-            fetched_ms: now,
-        },
-    );
-    item
+    }
 }
 
 /// Calls the provider for `r` and builds its card. The error is the reason the card is missing.
@@ -287,6 +325,49 @@ fn plan(r: &Ref) -> Option<String> {
         _ => return None,
     };
     Some(path)
+}
+
+/// The canonical text of a remote reference, the key its answer is cached under: one per answer, such as
+/// `github_pull:o/r#12`, `github_file:o/r@main:src/lib.rs#L4` or `gist:abc123`. Only references `plan` accepts have
+/// one (the names are checked, so none holds a separator); a path and a reference are percent-encoded, so no text in
+/// them can read as a separator. None for a reference no provider answers.
+pub fn cache_key(r: &Ref) -> Option<String> {
+    plan(r)?;
+    Some(match r {
+        Ref::GithubPull {
+            owner,
+            repo,
+            number,
+        } => format!("github_pull:{owner}/{repo}#{number}"),
+        Ref::GithubIssue {
+            owner,
+            repo,
+            number,
+        } => format!("github_issue:{owner}/{repo}#{number}"),
+        Ref::GithubCommit { owner, repo, sha } => format!("github_commit:{owner}/{repo}@{sha}"),
+        Ref::GithubRepo { owner, repo } => format!("github_repo:{owner}/{repo}"),
+        Ref::GithubFile {
+            owner,
+            repo,
+            reference,
+            path,
+            line,
+            dir,
+        } => {
+            // A folder and a file are two answers (the card links to each as its own page).
+            let kind = if *dir { "github_dir" } else { "github_file" };
+            let anchor = line.map(|n| format!("#L{n}")).unwrap_or_default();
+            format!(
+                "{kind}:{owner}/{repo}@{}:{}{anchor}",
+                seg(reference),
+                pct(path, true)
+            )
+        }
+        Ref::GithubRelease { owner, repo, tag } => format!("github_release:{owner}/{repo}@{tag}"),
+        Ref::GithubRun { owner, repo, id } => format!("github_run:{owner}/{repo}#{id}"),
+        Ref::Gist { id } => format!("gist:{id}"),
+        _ => return None,
+    })
 }
 
 fn repo_path(owner: &str, repo: &str) -> Option<String> {

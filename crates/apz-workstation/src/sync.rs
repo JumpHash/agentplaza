@@ -28,7 +28,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::daemon::Shared;
 
@@ -273,19 +272,15 @@ fn mtime_ms(meta: &Metadata) -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// The SHA-256 of a file's content, in lower-case hex, read in pieces.
+/// The BLAKE3 hash of a file's content, in lower-case hex, read in pieces.
 pub fn hash_file(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
+    let mut hasher = blake3::Hasher::new();
     io::copy(&mut file, &mut hasher)?;
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect())
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn is_sha256(text: &str) -> bool {
+fn is_blake3_hex(text: &str) -> bool {
     text.len() == 64
         && text
             .bytes()
@@ -500,8 +495,8 @@ fn push(
 ) -> Result<SyncPushed, String> {
     let rel = piece.path;
     let full = target(root, rel)?;
-    if !is_sha256(piece.hash) {
-        return Err(format!("{} is not a sha256", piece.hash));
+    if !is_blake3_hex(piece.hash) {
+        return Err(format!("{} is not a BLAKE3 hash", piece.hash));
     }
     let data = STANDARD
         .decode(data_b64)
@@ -637,11 +632,8 @@ mod tests {
         dir
     }
 
-    fn sha(bytes: &[u8]) -> String {
-        Sha256::digest(bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+    fn blake3_hex(bytes: &[u8]) -> String {
+        blake3::hash(bytes).to_hex().to_string()
     }
 
     fn write(root: &Path, rel: &str, bytes: &[u8]) {
@@ -685,7 +677,7 @@ mod tests {
         let names: Vec<&str> = first.files.keys().map(String::as_str).collect();
         assert_eq!(names, ["a.txt", "sub/b.md"]);
         assert_eq!(first.changed, ["a.txt", "sub/b.md"]);
-        assert_eq!(first.files["a.txt"].hash, sha(b"hello"));
+        assert_eq!(first.files["a.txt"].hash, blake3_hex(b"hello"));
 
         let again = walk(&root, &first.files, SYNC_FILE_CAP).unwrap();
         assert!(again.changed.is_empty(), "nothing changed");
@@ -694,7 +686,7 @@ mod tests {
         fs::remove_file(root.join("sub/b.md")).unwrap();
         let later = walk(&root, &again.files, SYNC_FILE_CAP).unwrap();
         assert_eq!(later.changed, ["a.txt", "sub/b.md"]);
-        assert_eq!(later.files["a.txt"].hash, sha(b"hello, longer"));
+        assert_eq!(later.files["a.txt"].hash, blake3_hex(b"hello, longer"));
         assert!(!later.files.contains_key("sub/b.md"));
         fs::remove_dir_all(root).unwrap();
     }
@@ -843,7 +835,7 @@ mod tests {
             manifest.entries,
             vec![SyncEntry {
                 path: "out/render.png".into(),
-                hash: sha(b"png-bytes"),
+                hash: blake3_hex(b"png-bytes"),
                 size: 9
             }]
         );
@@ -864,7 +856,7 @@ mod tests {
         write(&root, "big.bin", &bytes);
         let mirror = Mirror::default();
         handle(&mirror, &root, SyncOp::Manifest).unwrap();
-        let hash = sha(&bytes);
+        let hash = blake3_hex(&bytes);
         let first: SyncPull = serde_json::from_value(
             handle(
                 &mirror,
@@ -901,7 +893,7 @@ mod tests {
         let mut joined = STANDARD.decode(&first.data_b64).unwrap();
         joined.extend(STANDARD.decode(&second.data_b64).unwrap());
         assert_eq!(joined, bytes);
-        assert_eq!(sha(&joined), hash);
+        assert_eq!(blake3_hex(&joined), hash);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -916,7 +908,7 @@ mod tests {
             &root,
             SyncOp::Pull {
                 path: "a.txt".into(),
-                hash: sha(b"other"),
+                hash: blake3_hex(b"other"),
                 offset: None,
             },
         );
@@ -927,7 +919,7 @@ mod tests {
             &root,
             SyncOp::Pull {
                 path: "a.txt".into(),
-                hash: sha(b"first"),
+                hash: blake3_hex(b"first"),
                 offset: None,
             },
         );
@@ -940,7 +932,7 @@ mod tests {
         let root = scratch("push");
         let mirror = Mirror::default();
         let bytes: Vec<u8> = (0..SYNC_CHUNK + 3).map(|i| (i % 13) as u8).collect();
-        let hash = sha(&bytes);
+        let hash = blake3_hex(&bytes);
         let (head, tail) = bytes.split_at(SYNC_CHUNK);
         let total = bytes.len() as u64;
 
@@ -1001,9 +993,9 @@ mod tests {
             &mirror,
             &root,
             "notes.md",
-            &sha(hub),
+            &blake3_hex(hub),
             hub,
-            Some(&sha(b"the old version")),
+            Some(&blake3_hex(b"the old version")),
             (0, hub.len() as u64),
         );
         assert!(refused.unwrap_err().contains("conflict"));
@@ -1011,7 +1003,7 @@ mod tests {
             &mirror,
             &root,
             "notes.md",
-            &sha(hub),
+            &blake3_hex(hub),
             hub,
             None,
             (0, hub.len() as u64),
@@ -1025,12 +1017,12 @@ mod tests {
             b"the station's edit"
         );
 
-        let base = sha(b"the station's edit");
+        let base = blake3_hex(b"the station's edit");
         put(
             &mirror,
             &root,
             "notes.md",
-            &sha(hub),
+            &blake3_hex(hub),
             hub,
             Some(&base),
             (0, hub.len() as u64),
@@ -1048,7 +1040,7 @@ mod tests {
             &mirror,
             &root,
             "x.txt",
-            &sha(b"other"),
+            &blake3_hex(b"other"),
             b"data",
             None,
             (0, 4),
@@ -1059,7 +1051,7 @@ mod tests {
         assert!(
             !root
                 .join(
-                    part_path(&root.join("x.txt"), &sha(b"other"))
+                    part_path(&root.join("x.txt"), &blake3_hex(b"other"))
                         .file_name()
                         .unwrap()
                 )
@@ -1070,7 +1062,7 @@ mod tests {
             &mirror,
             &root,
             "y.txt",
-            &sha(b"abcdef"),
+            &blake3_hex(b"abcdef"),
             b"def",
             None,
             (3, 6),
@@ -1087,7 +1079,7 @@ mod tests {
         for bad in ["../outside.txt", "/abs.txt", "a/../../b", "~$word.docx"] {
             let op = SyncOp::Delete {
                 path: bad.into(),
-                base_hash: sha(b"x"),
+                base_hash: blake3_hex(b"x"),
             };
             assert!(handle(&mirror, &root, op).is_err(), "{bad}");
         }
@@ -1105,7 +1097,7 @@ mod tests {
             &mirror,
             &root,
             "linked/file.txt",
-            &sha(b"x"),
+            &blake3_hex(b"x"),
             b"x",
             None,
             (0, 1),
@@ -1128,7 +1120,7 @@ mod tests {
             &root,
             SyncOp::Delete {
                 path: "gone.txt".into(),
-                base_hash: sha(b"other"),
+                base_hash: blake3_hex(b"other"),
             },
         );
         assert!(mismatch.unwrap_err().contains("conflict"));
@@ -1138,7 +1130,7 @@ mod tests {
             &root,
             SyncOp::Delete {
                 path: "gone.txt".into(),
-                base_hash: sha(b"keep me"),
+                base_hash: blake3_hex(b"keep me"),
             },
         )
         .unwrap();
@@ -1149,7 +1141,7 @@ mod tests {
                 &root,
                 SyncOp::Delete {
                     path: "gone.txt".into(),
-                    base_hash: sha(b"keep me")
+                    base_hash: blake3_hex(b"keep me")
                 }
             )
             .is_ok(),

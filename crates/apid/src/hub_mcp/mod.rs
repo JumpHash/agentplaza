@@ -6,8 +6,8 @@
 //! the owner chose for open mode. Each call is rate limited (per token, or per client IP when anonymous) and written
 //! to the audit log.
 //!
-//! The owner API, the database tables and the console come next. Until they exist, the methods only they will
-//! call (minting, revoking, listing) are unused outside the tests, so dead code is allowed here.
+//! The owner API and the console come next. Until they exist, the methods only they will call (minting, revoking,
+//! listing) are unused outside the tests, so dead code is allowed here.
 
 #![allow(dead_code)]
 
@@ -26,14 +26,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use apz_http::{Request, Response, RouteDoc, Router};
+use apz_store::Db;
 use serde_json::{Value, json};
 
-use crate::db::Db;
 use crate::state::App;
-use audit::{Audit, CallRecord, MemoryAudit};
-use auth::{
-    AuthError, MemoryTokens, RateLimiter, Scope, TokenRecord, TokenStore, bearer, sha256_hex,
-};
+use audit::{Audit, CallRecord};
+use auth::{AuthError, RateLimiter, Scope, TokenRecord, TokenStore, bearer, sha256_hex};
 use session::Sessions;
 use tools::{Ctx, Plaza, Tool};
 
@@ -203,8 +201,9 @@ fn anonymous_record(id: String, scope: Scope, now: u64) -> TokenRecord {
     }
 }
 
-/// Where the server listens: on this machine only, or on the network over TLS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where the server listens: on this machine only, or on the network over TLS. Stored as its lowercase name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, apz_store::Column)]
+#[column(rename_all = "lowercase")]
 pub enum Bind {
     Local,
     Remote,
@@ -228,7 +227,9 @@ impl Bind {
 }
 
 /// Whether a request must carry a token (`secure`, the default) or may come without one (`open`, the owner's choice).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Stored as its lowercase name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, apz_store::Column)]
+#[column(rename_all = "lowercase")]
 pub enum AuthMode {
     Secure,
     Open,
@@ -251,12 +252,15 @@ impl AuthMode {
     }
 }
 
-/// The owner's settings for the server: the `hub_mcp_settings` row when there is a database.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The owner's settings for the server: the `hub_mcp_settings` row, a singleton (a root without a key, so its one row
+/// is at position 0), its origins a child list.
+#[derive(Debug, Clone, PartialEq, Eq, apz_store::Table)]
+#[table(name = "hub_mcp_settings")]
 pub struct Settings {
     pub enabled: bool,
     pub bind: Bind,
     /// The origins the owner added, on top of the hub's own.
+    #[table(list)]
     pub allowed_origins: Vec<String>,
     pub auth_mode: AuthMode,
     /// The scope an anonymous call gets in open mode.
@@ -309,29 +313,17 @@ fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 }
 
 impl HubMcp {
-    /// The server at start. With a database, its settings and its token and audit stores come from there; a settings
-    /// row that cannot be read leaves the server off. Without one, the server is off and its stores are in memory
-    /// (lost at restart). `defaults` are the hub's own origins; `tls` says whether the listener serves TLS.
-    pub fn open(defaults: Vec<String>, tls: bool, db: Option<Arc<Db>>) -> HubMcp {
+    /// The server at start, over the plaza database: its settings come from the settings row, and its tokens and
+    /// audit log are the database's tables. A settings row that cannot be read leaves the server off. `defaults` are
+    /// the hub's own origins; `tls` says whether the listener serves TLS.
+    pub fn open(defaults: Vec<String>, tls: bool, db: Arc<Db>) -> HubMcp {
         let clock: Clock = Box::new(apz_plaza::now_ms);
-        let (settings, tokens, audit): (Settings, Box<dyn TokenStore>, Box<dyn Audit>) = match db {
-            Some(db) => {
-                let settings = db.hub_mcp_settings().unwrap_or_else(|err| {
-                    eprintln!("hub-mcp: settings not read, the server stays off: {err}");
-                    Settings::off()
-                });
-                (
-                    settings,
-                    Box::new(store_db::DbTokens::new(Arc::clone(&db))),
-                    Box::new(store_db::DbAudit::new(db)),
-                )
-            }
-            None => (
-                Settings::off(),
-                Box::new(MemoryTokens::default()),
-                Box::new(MemoryAudit::default()),
-            ),
-        };
+        let settings = store_db::settings(&db).unwrap_or_else(|err| {
+            eprintln!("hub-mcp: settings not read, the server stays off: {err}");
+            Settings::off()
+        });
+        let tokens = Box::new(store_db::DbTokens::new(Arc::clone(&db)));
+        let audit = Box::new(store_db::DbAudit::new(db));
         let hub = HubMcp::new(false, Vec::new(), tokens, audit, clock).listening(tls, defaults);
         hub.apply(&settings);
         hub

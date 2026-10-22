@@ -77,6 +77,8 @@ pub struct Budget {
     pub warn_at_pct: u8,
     /// A project's cap per month for its long-lived sessions; none means no cap.
     pub monthly_cap: Option<u64>,
+    /// A project's disk quota in bytes (`disk.rs`); none means no quota.
+    pub disk_quota_bytes: Option<u64>,
     /// The month (`yyyymm`) `month_spent` counts.
     pub month: u32,
     pub month_spent: u64,
@@ -299,8 +301,8 @@ impl Budgets {
             .collect()
     }
 
-    /// Sets a project's budget (unit, cap, warning share, monthly cap). Its spending so far is kept; a unit change
-    /// starts its count again in the new unit.
+    /// Sets a project's budget (unit, cap, warning share, monthly cap, disk quota). Its spending so far is kept; a unit
+    /// change starts its count again in the new unit.
     pub fn set_project(
         &self,
         project: &str,
@@ -308,6 +310,7 @@ impl Budgets {
         cap: Option<u64>,
         warn_at_pct: u8,
         monthly_cap: Option<u64>,
+        disk_quota_bytes: Option<u64>,
         now_ms: u64,
     ) -> Result<Budget, String> {
         let budget = {
@@ -323,6 +326,7 @@ impl Budgets {
             b.cap = cap;
             b.warn_at_pct = warn_at_pct.clamp(1, 100);
             b.monthly_cap = monthly_cap;
+            b.disk_quota_bytes = disk_quota_bytes;
             b.warned = b.warn_due() && false;
             b.paused = b.left() == Some(0) && cap.is_some();
             b.updated_ms = now_ms;
@@ -382,14 +386,17 @@ impl Budgets {
 
     /// Reserves `reserve` (in the project's unit: the task's cap when the units agree, else the planner's estimate) from
     /// the task's project, as the task starts. Refused when the project cannot reserve it.
-    pub fn start_task(&self, task: &str, reserve: u64, now_ms: u64) -> Result<(), Short> {
+    pub fn start_task(
+        &self,
+        task: &str,
+        project: &str,
+        reserve: u64,
+        now_ms: u64,
+    ) -> Result<(), Short> {
         let (task_budget, project_budget) = {
             let mut budgets = self.lock();
-            let Some(t) = budgets.get(&(OwnerKind::Task, task.to_string())).cloned() else {
-                return Ok(());
-            };
-            let pkey = (OwnerKind::Project, t.project.clone());
-            let Some(p) = budgets.get_mut(&pkey) else {
+            // A project with no budget runs unmetered.
+            let Some(p) = budgets.get_mut(&(OwnerKind::Project, project.to_string())) else {
                 return Ok(());
             };
             if p.paused {
@@ -412,9 +419,11 @@ impl Budgets {
             p.reserved += reserve;
             p.updated_ms = now_ms;
             let p = p.clone();
+            // A task with no budget of its own gets one here, with no cap, in its project's unit: it reserves from the
+            // project all the same.
             let t = budgets
-                .get_mut(&(OwnerKind::Task, task.to_string()))
-                .expect("checked above");
+                .entry((OwnerKind::Task, task.to_string()))
+                .or_insert_with(|| empty(OwnerKind::Task, task, project, p.unit, now_ms));
             t.reserved = reserve;
             t.drawn = 0;
             t.updated_ms = now_ms;
@@ -799,6 +808,7 @@ fn empty(owner_kind: OwnerKind, owner: &str, project: &str, unit: Unit, now_ms: 
         cap: None,
         warn_at_pct: 80,
         monthly_cap: None,
+        disk_quota_bytes: None,
         month: month_of(now_ms),
         month_spent: 0,
         reserved: 0,
@@ -864,7 +874,7 @@ mod tests {
 
     fn budgets() -> Budgets {
         let b = Budgets::default();
-        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1)
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 1)
             .unwrap();
         b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1)
             .unwrap();
@@ -872,9 +882,36 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_task_reserves_from_its_project_and_gives_back_what_it_did_not_spend() {
+        let b = Budgets::default();
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 1)
+            .unwrap();
+        // No budget of its own: the task starts, and reserves from the project's budget.
+        b.start_task("plain", "pr1", usd(4.0), 2).unwrap();
+        assert_eq!(b.get(OwnerKind::Task, "plain").unwrap().reserved, usd(4.0));
+        assert_eq!(
+            b.get(OwnerKind::Project, "pr1").unwrap().left(),
+            Some(usd(6.0))
+        );
+        // The project's cap refuses a second plain task that does not fit.
+        assert!(matches!(
+            b.start_task("second", "pr1", usd(7.0), 2),
+            Err(Short::Cap {
+                owner_kind: OwnerKind::Project,
+                ..
+            })
+        ));
+        b.end_task("plain", 3);
+        assert_eq!(
+            b.get(OwnerKind::Project, "pr1").unwrap().left(),
+            Some(usd(10.0))
+        );
+    }
+
+    #[test]
     fn a_task_reserves_from_its_project_and_gives_back_what_it_did_not_spend() {
         let b = budgets();
-        b.start_task("t1", usd(4.0), 2).unwrap();
+        b.start_task("t1", "pr1", usd(4.0), 2).unwrap();
         assert_eq!(
             b.get(OwnerKind::Project, "pr1").unwrap().left(),
             Some(usd(6.0))
@@ -904,7 +941,7 @@ mod tests {
     fn a_project_that_cannot_reserve_refuses_the_task() {
         let b = budgets();
         assert!(matches!(
-            b.start_task("t1", usd(11.0), 2),
+            b.start_task("t1", "pr1", usd(11.0), 2),
             Err(Short::Cap {
                 owner_kind: OwnerKind::Project,
                 ..
@@ -915,7 +952,7 @@ mod tests {
     #[test]
     fn a_call_that_does_not_fit_is_refused_and_the_cap_pauses_the_task() {
         let b = budgets();
-        b.start_task("t1", usd(4.0), 2).unwrap();
+        b.start_task("t1", "pr1", usd(4.0), 2).unwrap();
         let worst = Amount::of(usd(3.0), 0);
         let hold = b.hold(Some("t1"), "pr1", worst, None, None, 3).unwrap();
         assert!(
@@ -941,7 +978,7 @@ mod tests {
     #[test]
     fn the_warning_comes_once_at_its_share() {
         let b = budgets();
-        b.start_task("t1", usd(4.0), 2).unwrap();
+        b.start_task("t1", "pr1", usd(4.0), 2).unwrap();
         let hold = b
             .hold(Some("t1"), "pr1", Amount::of(usd(3.3), 0), None, None, 3)
             .unwrap();
@@ -969,11 +1006,11 @@ mod tests {
     #[test]
     fn a_token_task_is_checked_in_tokens_and_charged_to_its_dollar_project_in_dollars() {
         let b = Budgets::default();
-        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1)
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 1)
             .unwrap();
         b.set_task("t1", "pr1", Unit::Tokens, Some(2_000_000), 1)
             .unwrap();
-        b.start_task("t1", usd(2.0), 2).unwrap();
+        b.start_task("t1", "pr1", usd(2.0), 2).unwrap();
         assert!(matches!(
             b.hold(
                 Some("t1"),
@@ -1006,7 +1043,7 @@ mod tests {
     #[test]
     fn a_long_lived_session_charges_its_project_under_the_monthly_cap() {
         let b = Budgets::default();
-        b.set_project("pr1", Unit::Usd, None, 80, Some(usd(1.0)), 1)
+        b.set_project("pr1", Unit::Usd, None, 80, Some(usd(1.0)), None, 1)
             .unwrap();
         let hold = b
             .hold(None, "pr1", Amount::of(usd(0.8), 0), None, None, 2)
@@ -1022,6 +1059,33 @@ mod tests {
             b.hold(None, "pr1", Amount::of(usd(0.5), 0), None, None, next_month)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn a_disk_quota_is_set_beside_the_spending_and_can_be_cleared() {
+        let b = budgets();
+        b.start_task("t1", "pr1", usd(4.0), 2).unwrap();
+        let hold = b
+            .hold(Some("t1"), "pr1", Amount::of(usd(1.0), 0), None, None, 3)
+            .unwrap();
+        b.settle(&hold, Amount::of(usd(1.0), 0), None, None, 4);
+        let set = b
+            .set_project(
+                "pr1",
+                Unit::Usd,
+                Some(usd(10.0)),
+                80,
+                None,
+                Some(5 << 30),
+                5,
+            )
+            .unwrap();
+        assert_eq!(set.disk_quota_bytes, Some(5 << 30));
+        assert_eq!(set.spent, usd(1.0), "a quota does not touch the spending");
+        let cleared = b
+            .set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 6)
+            .unwrap();
+        assert_eq!((cleared.disk_quota_bytes, cleared.spent), (None, usd(1.0)));
     }
 
     #[test]
@@ -1050,11 +1114,11 @@ mod tests {
         let db = Arc::clone(store.db("plaza"));
         let b = budgets();
         b.attach(Arc::clone(&db));
-        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1)
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 1)
             .unwrap();
         b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1)
             .unwrap();
-        b.start_task("t1", usd(4.0), 2).unwrap();
+        b.start_task("t1", "pr1", usd(4.0), 2).unwrap();
         let hold = b
             .hold(
                 Some("t1"),
