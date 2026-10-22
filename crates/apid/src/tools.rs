@@ -88,6 +88,10 @@ const ALWAYS: &[&str] = &[
     "plaza_maintenance_signal",
     "plaza_environments",
     "plaza_deploy",
+    "journal_note",
+    "journal_read",
+    "handover_write",
+    "brief",
 ];
 
 /// The guest tools that act only inside the agent's own VM, offered to every role.
@@ -196,6 +200,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::journal::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
@@ -963,6 +968,9 @@ fn host_call(
                 return Ok(reply);
             }
             app.work.verdict(app, task, work, pass, notes)
+        }
+        other if crate::journal::TOOLS.contains(&other) => {
+            crate::journal::run(app, agent, other, input)
         }
         other if crate::skills::agent_tools::TOOLS.contains(&other) => {
             crate::skills::agent_tools::run(app, agent, other, input)

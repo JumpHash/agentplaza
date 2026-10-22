@@ -56,6 +56,7 @@ mod ide;
 mod ide_term;
 mod inference;
 mod internal;
+mod journal;
 mod laws;
 mod library;
 mod lifecycle;

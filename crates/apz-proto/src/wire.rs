@@ -406,6 +406,10 @@ pub struct AgentProfile {
     /// the harness adds it to the guest's trust store. Every other host stays an opaque tunnel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_ca: Option<String>,
+    /// A step session: it writes its handover (`handover_write`) before it ends, and the harness asks for one when it
+    /// ends its turn without it (unless its output says the task is done).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub handover: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
