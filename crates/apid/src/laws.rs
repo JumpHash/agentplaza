@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
 use jhrl::Program;
-use jhrl::ast::{Effect, Item, Law, Scope, TypeExpr};
+use jhrl::ast::{Effect, Expr, ExprKind, Item, Law, PathSeg, Scope, TypeExpr};
 use jhrl::authz::{Decision, Entity, EntityStore, Request, authorize_except, check_authz};
 use jhrl::span::{Diag, SourceMap};
 use jhrl::value::Value;
@@ -345,13 +345,7 @@ impl Laws {
         // A message is a message.send to its recipient, and a board post one to the whole board
         // (no recipient). The recipient is checked even when its CID is missing or malformed: the
         // message laws then see an empty recipient instead of being skipped.
-        if matches!(
-            tool,
-            "plaza_send_message"
-                | "plaza_message_seat"
-                | "plaza_board_post"
-                | "plaza_board_comment"
-        ) {
+        if MESSAGE_TOOLS.contains(&tool) {
             // A seat message's recipient is its seat address (`T12/reviewer`, `planner`).
             let to = input
                 .get("to_cid")
@@ -369,14 +363,7 @@ impl Laws {
         // An artifact tool is an artifact operation: a file shared or delivered to the plaza is published, an
         // artifact the agent makes or changes is created (permitted to every agent), and asking the owner to share
         // one is a share request (the owner's approval is the gate).
-        let artifact_op = match tool {
-            "share_file" | "deliver_file" => Some("artifact.publish"),
-            "artifact_create" | "artifact_update" | "artifact_attach_data" => {
-                Some("artifact.create")
-            }
-            "artifact_share_request" => Some("artifact.share"),
-            _ => None,
-        };
+        let artifact_op = artifact_operation(tool);
         if let Some(operation) = artifact_op {
             let artifact = Entity {
                 ty: "Artifact".into(),
@@ -440,6 +427,45 @@ impl Laws {
             memo.insert(key, answer);
         }
         answer
+    }
+
+    /// Whether a call of `tool` by agent `cid` (of `role`) with no input at all would pass [`Laws::refusal`]: no law
+    /// forbids it, one permits it, and strict permits (if on) are met. The policy snapshot asks this per agent, so it
+    /// is not memoized (see [`Laws::permits`], which answers for a role alone).
+    pub fn permits_for(&self, cid: u64, role: &str, tool: &str) -> bool {
+        let verdict = self.check(
+            &cid.to_string(),
+            role,
+            tool,
+            &Json::Object(Default::default()),
+        );
+        verdict.forbid.is_empty() && !verdict.unpermitted && verdict.denied_ops.is_empty()
+    }
+
+    /// Whether a call of `tool` can be decided differently for different inputs: an enabled law that can decide it
+    /// reads the input (its flags, or a law that expires), or the tool's recipient is read from the input (a message).
+    /// Such a tool is not decided by its name alone.
+    pub fn tests_input(&self, tool: &str) -> bool {
+        if MESSAGE_TOOLS.contains(&tool) {
+            return true;
+        }
+        let live = self.live();
+        let ops = operations_of(tool);
+        live.program
+            .modules
+            .iter()
+            .flat_map(|module| module.items.iter())
+            .any(|item| match item {
+                Item::Law(law) => {
+                    !live.off.contains(&law.id)
+                        && law
+                            .ops
+                            .iter()
+                            .any(|op| op == "any" || ops.contains(&op.as_str()))
+                        && law_reads_input(law)
+                }
+                _ => false,
+            })
     }
 
     /// The refusal reason when a law forbids the call, or no law permits it (default deny); `None`
@@ -1188,6 +1214,103 @@ const GUEST_EXEC: &[&str] = &[
     "engine.fetch",
     "engine.other",
 ];
+
+/// The tools that send a message to a recipient (or the board): their laws read the recipient from the input.
+const MESSAGE_TOOLS: &[&str] = &[
+    "plaza_send_message",
+    "plaza_message_seat",
+    "plaza_board_post",
+    "plaza_board_comment",
+];
+
+/// The operation an artifact tool performs, if it is one (see `Laws::check`).
+fn artifact_operation(tool: &str) -> Option<&'static str> {
+    match tool {
+        "share_file" | "deliver_file" => Some("artifact.publish"),
+        "artifact_create" | "artifact_update" | "artifact_attach_data" => Some("artifact.create"),
+        "artifact_share_request" => Some("artifact.share"),
+        _ => None,
+    }
+}
+
+/// The operations a call of `tool` is checked as, `tool.call` first, as `Laws::check` requests them.
+fn operations_of(tool: &str) -> Vec<&'static str> {
+    let mut ops = vec!["tool.call"];
+    if GUEST_EXEC.contains(&tool) || tool.starts_with(crate::library::PREFIX) {
+        ops.push("tool.exec");
+    }
+    if MESSAGE_TOOLS.contains(&tool) {
+        ops.push("message.send");
+    }
+    ops.extend(artifact_operation(tool));
+    ops
+}
+
+/// Whether a law's conditions or scopes read the input of a call, or it expires. A tool's call carries its input's
+/// flags in the context (see [`reads_input`]); a law that expires changes with the time, not with a change the hub
+/// would push, so it counts too.
+fn law_reads_input(law: &Law) -> bool {
+    law.expires.is_some()
+        || law.when.iter().chain(&law.unless).any(reads_input)
+        || [&law.principal, &law.resource]
+            .into_iter()
+            .flatten()
+            .any(|scope| match scope {
+                Scope::Is(_) => false,
+                Scope::Eq(expr) | Scope::In(expr) => reads_input(expr),
+            })
+}
+
+/// Whether an expression reads a call's input through its context: the flags the input's text sets, or the whole
+/// context. Any other field of the context is absent from a tool's call, so it reads the same for every input.
+fn reads_input(expr: &Expr) -> bool {
+    let any = |exprs: &[Expr]| exprs.iter().any(reads_input);
+    match &expr.kind {
+        ExprKind::Name(name) | ExprKind::Primed(name) => name == "context",
+        ExprKind::Num(..) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::NoneLit => false,
+        ExprKind::Field(base, field) => match &base.kind {
+            ExprKind::Name(name) if name == "context" => field == "flags",
+            _ => reads_input(base),
+        },
+        ExprKind::Unary(_, inner) | ExprKind::Is(inner, _) => reads_input(inner),
+        ExprKind::Binary(_, left, right) | ExprKind::Index(left, right) => {
+            reads_input(left) || reads_input(right)
+        }
+        ExprKind::If(cond, then, otherwise) => {
+            reads_input(cond) || reads_input(then) || reads_input(otherwise)
+        }
+        ExprKind::Call(callee, args) => {
+            reads_input(callee) || args.iter().any(|arg| reads_input(&arg.value))
+        }
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Tuple(items) => any(items),
+        ExprKind::Map(pairs) => pairs
+            .iter()
+            .any(|(key, value)| reads_input(key) || reads_input(value)),
+        ExprKind::Record(fields) => fields.iter().any(|(_, value)| reads_input(value)),
+        ExprKind::Comp {
+            gens,
+            filter,
+            key,
+            val,
+            ..
+        } => {
+            gens.iter().any(|generator| reads_input(&generator.src))
+                || filter.as_deref().is_some_and(reads_input)
+                || reads_input(key)
+                || val.as_deref().is_some_and(reads_input)
+        }
+        ExprKind::Quant(_, gens, body) => {
+            gens.iter().any(|generator| reads_input(&generator.src)) || reads_input(body)
+        }
+        ExprKind::With(base, path, value) => {
+            reads_input(base)
+                || reads_input(value)
+                || path
+                    .iter()
+                    .any(|seg| matches!(seg, PathSeg::Index(index) if reads_input(index)))
+        }
+    }
+}
 
 /// The plaza, as the one `Town` entity the laws name for an operation on the plaza as a whole.
 const TOWN: &str = "plaza";

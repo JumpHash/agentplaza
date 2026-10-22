@@ -9,7 +9,10 @@ use apz_gateway::Caller;
 use apz_http::{Request, Response, RouteDoc, Router};
 use apz_metrics::{EntityKind, Event, SeriesKey};
 use apz_proto::chat::{Block, ChatRequest, Message, Role};
-use apz_proto::wire::{CAP_ACP, Decision, GuestMessage, HostMessage, WorkStatus, cap_output};
+use apz_proto::wire::{
+    BatchCall, BatchDecision, CAP_ACP, Decision, EngineSpec, GuestMessage, HostMessage, Program,
+    WorkStatus, cap_output,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -244,7 +247,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
                     .json()
                     .map_err(|e| Response::error(400, &e.to_string()))?;
                 let profile = crate::agents::hello(app, cid, &hello.role, hello.vm, &hello.caps);
-                Ok(Response::json(200, &json!({ "profile": profile })))
+                // The session's first policy: the VM sends it right after its welcome.
+                let policy = crate::policy::at_hello(app, cid);
+                Ok(Response::json(
+                    200,
+                    &json!({ "profile": profile, "policy": policy }),
+                ))
             })
         })
         .doc(RouteDoc::new("Register an agent's VM and get its profile").errors(&[400, 403]))
@@ -567,6 +575,21 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 engine: None,
                 approval: None,
             }),
+            GuestMessage::ToolBatch { work, calls } => Some(HostMessage::ToolBatchDecision {
+                work,
+                decisions: calls
+                    .into_iter()
+                    .map(|call| BatchDecision {
+                        call: call.call,
+                        decision: Decision::Deny,
+                        output: "unknown agent".to_string(),
+                        is_error: true,
+                        program: None,
+                        engine: None,
+                        approval: None,
+                    })
+                    .collect(),
+            }),
             _ => None,
         };
     };
@@ -584,16 +607,28 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             crate::steps::tool(app, cid, &name);
             Some(tool_request(app, cid, &agent, work, call, &name, &input))
         }
+        GuestMessage::ToolBatch { work, calls } => Some(tool_batch(app, cid, &agent, work, calls)),
         GuestMessage::ToolReport {
             work,
             call,
             ok,
             output,
+            policy,
+            name,
+            input,
         } => {
             // One credit per tool report; task work is cancelled if its escrow runs out.
             let _ = meter(app, cid, work, 1, "tool report");
+            // A call the guest decided itself names its tool and carries its record; any other was named at its request.
+            let tool = match name {
+                Some(name) => name,
+                None => take_tool(cid, &call),
+            };
+            if let Some(policy) = &policy {
+                let input = input.unwrap_or(Value::Null);
+                record_local(app, cid, work, &call, &tool, &input, policy);
+            }
             // A report carries no duration of its own, so the tool's time is recorded as 0.
-            let tool = take_tool(cid, &call);
             collect::tool_call(app, cid, &tool, 0.0, ok);
             let snap = app.context.on_tool(cid, work, &tool, ok, output.len());
             crate::context_track::publish(app, &snap);
@@ -986,6 +1021,16 @@ pub(crate) fn meter(
     }
 }
 
+/// What the hub decided for one call: the verdict and its output, and for an allowed call what it runs with.
+struct Decided {
+    decision: Decision,
+    output: String,
+    is_error: bool,
+    program: Option<Program>,
+    engine: Option<EngineSpec>,
+    approval: Option<String>,
+}
+
 /// Decides and, for host tools, runs one tool request from the model.
 fn tool_request(
     app: &App,
@@ -996,12 +1041,58 @@ fn tool_request(
     name: &str,
     input: &Value,
 ) -> HostMessage {
+    let decided = decide_call(app, cid, agent, work, &call, name, input);
+    HostMessage::ToolDecision {
+        call,
+        decision: decided.decision,
+        output: decided.output,
+        is_error: decided.is_error,
+        program: decided.program,
+        engine: decided.engine,
+        approval: decided.approval,
+    }
+}
+
+/// Decides the calls of one model turn that the policy does not allow, in order, each as [`tool_request`] decides
+/// one, and answers them all at once: a turn is one round trip to the hub.
+fn tool_batch(app: &App, cid: u64, agent: &Agent, work: u64, calls: Vec<BatchCall>) -> HostMessage {
+    let decisions = calls
+        .into_iter()
+        .map(|call| {
+            remember_tool(cid, &call.call, &call.name);
+            crate::steps::tool(app, cid, &call.name);
+            let decided = decide_call(app, cid, agent, work, &call.call, &call.name, &call.input);
+            BatchDecision {
+                call: call.call,
+                decision: decided.decision,
+                output: decided.output,
+                is_error: decided.is_error,
+                program: decided.program,
+                engine: decided.engine,
+                approval: decided.approval,
+            }
+        })
+        .collect();
+    HostMessage::ToolBatchDecision { work, decisions }
+}
+
+/// Decides one call from the model: the laws and the grant, the owner's permission mode, the VM checkpoint an
+/// irreversible call waits for, and an allowed host tool's run. The transcript records the request and the decision.
+fn decide_call(
+    app: &App,
+    cid: u64,
+    agent: &Agent,
+    work: u64,
+    call: &str,
+    name: &str,
+    input: &Value,
+) -> Decided {
     app.transcripts.record(
         &app.bus,
         cid,
         work,
         crate::transcript::Entry::ToolRequest {
-            call: call.clone(),
+            call: call.to_string(),
             name: name.to_string(),
             input: input.clone(),
         },
@@ -1035,7 +1126,7 @@ fn tool_request(
             .map(|item| item.thread),
         waiting: holds.then(|| approvals::Waiting {
             work,
-            call: call.clone(),
+            call: call.to_string(),
         }),
     };
     let gate = if verdict.is_ok() {
@@ -1070,7 +1161,7 @@ fn tool_request(
         }
         (approvals::Gate::Run, Ok(Runs::Guest)) => {
             if name == "tool_package" {
-                crate::library::remember_package_call(cid, &call);
+                crate::library::remember_package_call(cid, call);
             }
             // The engine's model is checked against the tier before the VM runs it: a bad one is a
             // tool error here, not a gateway refusal later.
@@ -1094,7 +1185,7 @@ fn tool_request(
         cid,
         work,
         crate::transcript::Entry::ToolDecision {
-            call: call.clone(),
+            call: call.to_string(),
             decision: decision.into(),
             output: cap_output(&output, DECISION_OUTPUT_BYTES),
         },
@@ -1104,14 +1195,68 @@ fn tool_request(
         .then(|| input.get("engine").and_then(Value::as_str))
         .flatten()
         .and_then(|id| app.engines.launch_spec(id));
-    HostMessage::ToolDecision {
-        call,
+    Decided {
         decision,
         output,
         is_error,
         program,
         engine,
         approval,
+    }
+}
+
+/// Records a call the guest decided itself under policy `policy` (see `crate::policy`): its request, and its decision,
+/// which names the policy. A call the policy does not allow is also a violation, recorded with the metric; the call
+/// itself stands.
+fn record_local(
+    app: &App,
+    cid: u64,
+    work: u64,
+    call: &str,
+    tool: &str,
+    input: &Value,
+    policy: &str,
+) {
+    app.transcripts.record(
+        &app.bus,
+        cid,
+        work,
+        crate::transcript::Entry::ToolRequest {
+            call: call.to_string(),
+            name: tool.to_string(),
+            input: input.clone(),
+        },
+    );
+    app.transcripts.record(
+        &app.bus,
+        cid,
+        work,
+        crate::transcript::Entry::ToolDecision {
+            call: call.to_string(),
+            decision: crate::transcript::Verdict::Allow,
+            output: cap_output(
+                &format!("allowed by policy {policy}"),
+                DECISION_OUTPUT_BYTES,
+            ),
+        },
+    );
+    if let Some(reason) = crate::policy::violation(cid, policy, tool) {
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            crate::transcript::Entry::Error {
+                message: format!("policy violation: {reason}"),
+            },
+        );
+        app.metrics
+            .registry
+            .counter(SeriesKey::new(
+                "policy.violation",
+                EntityKind::Agent,
+                &cid.to_string(),
+            ))
+            .inc();
     }
 }
 

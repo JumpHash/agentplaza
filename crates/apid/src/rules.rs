@@ -53,6 +53,8 @@ fn rules_list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
 /// A rule change's answer with `saved` added: the change applies at once, and is written to plaza.db before this
 /// answers (`saved` false when that write failed; the saver tries again within a second).
 fn with_saved(app: &App, mut body: Value) -> Value {
+    // A rule changed what the laws permit: every agent's policy follows (see `policy`).
+    crate::policy::push_all(app);
     let saved = crate::store::saver::save_now(app, "rules");
     if let Some(map) = body.as_object_mut() {
         map.insert("saved".into(), json!(saved));
@@ -157,7 +159,11 @@ fn override_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
         params.get("law"),
         &body,
         apz_plaza::now_ms(),
-        || crate::store::saver::save_now(app, "rules"),
+        || {
+            // An override changes what the laws permit: every agent's policy follows (see `policy`).
+            crate::policy::push_all(app);
+            crate::store::saver::save_now(app, "rules")
+        },
     )
 }
 

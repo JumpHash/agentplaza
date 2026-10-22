@@ -146,6 +146,7 @@ impl Hub for AppHub<'_> {
         let mode = parse_mode(mode)
             .ok_or_else(|| format!("no mode {mode}: use autonomous, ask or read_only"))?;
         self.app.approvals.set_mode(cid, mode);
+        crate::policy::push(self.app, cid);
         // The editor's change is written before the answer.
         crate::store::saver::save_now(self.app, "approvals");
         Ok(())

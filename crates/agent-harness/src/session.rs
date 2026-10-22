@@ -221,6 +221,8 @@ pub(crate) fn kind_of(message: &HostMessage) -> &'static str {
         HostMessage::ModelResult { .. } => "model_result",
         HostMessage::ToolDecision { .. } => "tool_decision",
         HostMessage::PermissionDecision { .. } => "permission_decision",
+        HostMessage::ToolBatchDecision { .. } => "tool_batch_decision",
+        HostMessage::Policy { .. } => "policy",
         HostMessage::Cancel { .. } => "cancel",
         HostMessage::Profile { .. } => "profile",
         HostMessage::Control { .. } => "control",

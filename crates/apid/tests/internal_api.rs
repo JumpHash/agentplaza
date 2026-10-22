@@ -204,3 +204,127 @@ fn the_egress_report_and_check_need_the_token() {
     let (status, body) = hub.guest(cid, "egress", report);
     assert_eq!(status, 200, "{body}");
 }
+
+#[test]
+fn a_turn_is_one_batch_decided_as_each_of_its_calls_would_be() {
+    let scratch = Scratch::new("internal-batch");
+    let hub = Hub::start(&scratch, None, None);
+    let cid = 440;
+    hello(&hub, cid);
+
+    // The five calls of one turn: decided one request at a time, then as one batch. The batch answers once, with the
+    // same decision for each call, in the calls' order.
+    let calls = [
+        ("toolu_b1", "bash", json!({"command": "ls"})),
+        ("toolu_b2", "read_file", json!({"path": "a.txt"})),
+        ("toolu_b3", "search", json!({"pattern": "x"})),
+        ("toolu_b4", "plaza_tasks", json!({})),
+        ("toolu_b5", "no_such_tool", json!({})),
+    ];
+    let one_by_one: Vec<Value> = calls
+        .iter()
+        .map(|(call, name, input)| {
+            let reply = message(
+                &hub,
+                cid,
+                json!({ "type": "tool_request", "work": 1, "call": call, "name": name, "input": input }),
+            );
+            reply["reply"].clone()
+        })
+        .collect();
+    let batch: Vec<Value> = calls
+        .iter()
+        .map(|(call, name, input)| json!({ "call": call, "name": name, "input": input }))
+        .collect();
+    let reply = message(
+        &hub,
+        cid,
+        json!({ "type": "tool_batch", "work": 1, "calls": batch }),
+    );
+    assert_eq!(reply["reply"]["type"], "tool_batch_decision", "{reply}");
+    assert_eq!(reply["reply"]["work"], 1, "{reply}");
+    let decisions = reply["reply"]["decisions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(decisions.len(), 5, "{reply}");
+    for (decision, single) in decisions.iter().zip(&one_by_one) {
+        assert_eq!(
+            (
+                decision["call"].clone(),
+                decision["decision"].clone(),
+                decision["output"].clone(),
+                decision["is_error"].clone()
+            ),
+            (
+                single["call"].clone(),
+                single["decision"].clone(),
+                single["output"].clone(),
+                single["is_error"].clone()
+            ),
+            "{decision} is not {single}"
+        );
+    }
+}
+
+#[test]
+fn a_session_starts_with_its_policy_and_a_report_outside_it_is_a_violation() {
+    let scratch = Scratch::new("internal-policy");
+    let hub = Hub::start(&scratch, None, None);
+    let cid = 450;
+
+    // The hello carries the session's policy. On the bench nothing runs in the VM on its own, and the snapshot is
+    // signed by the hub.
+    let (status, body) = hub.guest(cid, "hello", json!({ "role": "builder", "vm": 0 }));
+    assert_eq!(status, 200, "{body}");
+    let policy = body["policy"].clone();
+    assert_eq!(policy["allow"], json!([]), "{body}");
+    assert_eq!(text(&policy["id"]).len(), 64, "{body}");
+    assert!(!text(&policy["signature"]).is_empty(), "{body}");
+    let id = text(&policy["id"]);
+
+    // A call the VM reports under that policy, for a tool the policy does not allow, is recorded with the policy it
+    // was decided under and as a violation. The call stands: the report is answered with nothing.
+    let reply = message(
+        &hub,
+        cid,
+        json!({
+            "type": "tool_report", "work": 1, "call": "toolu_p1", "ok": true, "output": "ran",
+            "policy": id, "name": "bash", "input": {"command": "ls"},
+        }),
+    );
+    assert!(reply["reply"].is_null(), "{reply}");
+    let (status, transcript) = hub.call("GET", &format!("/v1/agents/{cid}/transcript"), None);
+    assert_eq!(status, 200, "{transcript}");
+    let mentions = |transcript: &Value, needle: &str| {
+        transcript
+            .as_array()
+            .is_some_and(|entries| entries.iter().any(|e| e.to_string().contains(needle)))
+    };
+    assert!(
+        mentions(&transcript, &format!("allowed by policy {id}")),
+        "{transcript}"
+    );
+    assert!(
+        mentions(&transcript, "policy violation: bash ran under policy"),
+        "{transcript}"
+    );
+
+    // A report under a policy the hub never issued to this agent is a violation as well.
+    message(
+        &hub,
+        cid,
+        json!({
+            "type": "tool_report", "work": 1, "call": "toolu_p2", "ok": true, "output": "ran",
+            "policy": "not-issued", "name": "glob", "input": {},
+        }),
+    );
+    let (_, transcript) = hub.call("GET", &format!("/v1/agents/{cid}/transcript"), None);
+    assert!(
+        mentions(
+            &transcript,
+            "glob was decided under policy not-issued, which the hub never issued"
+        ),
+        "{transcript}"
+    );
+}
