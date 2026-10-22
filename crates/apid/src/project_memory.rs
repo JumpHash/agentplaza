@@ -29,6 +29,7 @@ pub const TOOLS: &[&str] = &[
     "memory_get",
     "memory_propose",
     "memory_record_decision",
+    "memory_anchored",
 ];
 
 /// Where a project's entries live in its repo, and the index the hub renders there (never edited by hand).
@@ -57,6 +58,8 @@ const TEXT_MAX: usize = 2000;
 const WHY_MAX: usize = 500;
 const ANCHORS_MAX: usize = 20;
 const ANCHOR_MAX: usize = 300;
+/// How many paths or symbols one `memory_anchored` query names.
+const QUERY_MAX: usize = 100;
 
 /// One entry (9.3): its file's front matter and text, with the project it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
@@ -275,8 +278,9 @@ pub fn refresh(app: &App, project: &str) -> Result<usize, String> {
     Ok(count)
 }
 
-/// A change landed on `repo`: the projects on it read their entries again, so the index follows main.
-pub fn landed(app: &App, repo: &str) {
+/// A change landed on `repo`: the projects on it read their entries again, so the index follows main, and the entries
+/// the change touches are flagged (9.6).
+pub fn landed(app: &App, repo: &str, change: &str) {
     for project in app
         .projects
         .list()
@@ -285,8 +289,98 @@ pub fn landed(app: &App, repo: &str) {
     {
         if let Err(why) = refresh(app, &project.id) {
             eprintln!("apid: project memory of {}: {why}", project.id);
+            continue;
+        }
+        if let Err(why) = flag_touched(app, &project.id, change) {
+            eprintln!("apid: flagging the memory of {}: {why}", project.id);
         }
     }
+}
+
+/// Flags the active entries a landed change touches, as one change to main. The verifier answers them (see `verifier`).
+fn flag_touched(app: &App, project: &str, change: &str) -> Result<(), String> {
+    let (paths, symbols) = touched(app, change)?;
+    let flagged = to_flag(&entries(app, project), &paths, &symbols, change);
+    if flagged.is_empty() {
+        return Ok(());
+    }
+    let title = format!("Flag {} entries that {change} touches", flagged.len());
+    land(app, project, &title, flagged, &[]).map(|_| ())
+}
+
+/// What a landed change touched, as Weft's change tree names it: the files it changed, and the symbols it changed
+/// (`path::qualified`, the ids an entry's anchors name).
+fn touched(app: &App, change: &str) -> Result<(Vec<String>, Vec<String>), String> {
+    let rev = landed_revision(app, change)?;
+    let tree = app.weft.get(&format!("/revisions/{rev}/tree"))?;
+    let mut paths = Vec::new();
+    let mut symbols = Vec::new();
+    for file in tree["files"].as_array().into_iter().flatten() {
+        if let Some(path) = file["path"].as_str() {
+            paths.push(path.to_string());
+        }
+        for symbol in file["symbols"].as_array().into_iter().flatten() {
+            if let Some(id) = symbol["id"].as_str() {
+                symbols.push(id.to_string());
+            }
+        }
+    }
+    Ok((paths, symbols))
+}
+
+/// The revision a change landed with: its last one (drafts, rounds, then the landed).
+pub fn landed_revision(app: &App, change: &str) -> Result<String, String> {
+    let detail = app.weft.get(&format!("/changes/{change}"))?;
+    detail["revisions"]
+        .as_array()
+        .and_then(|revisions| revisions.last())
+        .and_then(|revision| revision["id"].as_str())
+        .map(str::to_string)
+        .ok_or_else(|| format!("{change} has no revision"))
+}
+
+/// The active entries anchored to what a change touched, as flagged copies (9.6): each one names the change that flagged
+/// it as its provenance, and is flagged until the verifier answers it.
+pub fn to_flag(
+    entries: &[Entry],
+    paths: &[String],
+    symbols: &[String],
+    change: &str,
+) -> Vec<Entry> {
+    anchored(entries, paths, symbols)
+        .into_iter()
+        .filter(|e| e.status == "active")
+        .map(|mut e| {
+            e.status = "flagged".into();
+            e.provenance_change = change.into();
+            e
+        })
+        .collect()
+}
+
+/// The live entries anchored to any of `paths` or `symbols` (9.5), by type then id. An anchor is a symbol id (`path::name`,
+/// as Weft names one) or a path; it is about a path when it is that path or lies under it.
+pub fn anchored(entries: &[Entry], paths: &[String], symbols: &[String]) -> Vec<Entry> {
+    let about_path = |anchor: &str| {
+        paths.iter().any(|path| {
+            anchor == path
+                || anchor
+                    .strip_prefix(path.as_str())
+                    .is_some_and(|rest| rest.starts_with("::"))
+        })
+    };
+    let mut hits: Vec<Entry> = entries
+        .iter()
+        .filter(|e| LIVE.contains(&e.status.as_str()))
+        .filter(|e| {
+            e.anchors
+                .iter()
+                .any(|anchor| symbols.contains(anchor) || about_path(anchor))
+        })
+        .cloned()
+        .collect();
+    hits.sort_by(|a, b| (rank(&a.kind), &a.id).cmp(&(rank(&b.kind), &b.id)));
+    hits
 }
 
 /// What a landing made: the change on main and the ids of the entries it writes, in the order they were given.
@@ -351,8 +445,11 @@ pub fn land(
         if entry.path.is_empty() {
             entry.path = format!("{DIR}{}/{}-{}.md", entry.kind, entry.id, slug(&entry.title));
         }
-        entry.verified_commit = head.clone();
-        entry.verified_date = day_of(now);
+        // An entry keeps the check it was given: a flagged one waits for the verifier, which clears it to confirm.
+        if entry.verified_date.is_empty() {
+            entry.verified_commit = head.clone();
+            entry.verified_date = day_of(now);
+        }
     }
     let mut expected = effective(app, project);
     expected.retain(|e| !delete.contains(&e.path) && !write.iter().any(|w| w.key == e.key));
@@ -952,6 +1049,21 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             ))
         }
         "memory_record_decision" => record_decision(app, agent, &project, input),
+        "memory_anchored" => {
+            let paths = strings(input, "paths");
+            let symbols = strings(input, "symbols");
+            if paths.is_empty() && symbols.is_empty() {
+                return Err("paths or symbols is required".into());
+            }
+            let hits: Vec<Value> = anchored(&entries(app, &project), &paths, &symbols)
+                .iter()
+                .take(HITS)
+                .map(|e| {
+                    json!({ "id": e.id, "kind": e.kind, "status": e.status, "title": e.title, "text": e.body })
+                })
+                .collect();
+            Ok(json!({ "entries": hits }).to_string())
+        }
         other => Err(format!("{other} is not a memory tool")),
     }
 }
@@ -998,6 +1110,21 @@ fn record_decision(
     Ok(format!(
         "Recorded decision {id}; it joins the project's memory when the change lands. End your turn now."
     ))
+}
+
+/// The non-empty strings of `input`'s array `key`, up to `QUERY_MAX` of them.
+fn strings(input: &Value, key: &str) -> Vec<String> {
+    input
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .take(QUERY_MAX)
+        .map(str::to_string)
+        .collect()
 }
 
 /// The text of an entry: not empty, within `TEXT_MAX`, and with no line that would end its front matter.
@@ -1455,5 +1582,54 @@ A move must release its claim before waking the agent on the target: `wake_with`
             .collect();
         assert_eq!(left, ["mp2"]);
         assert_eq!(store.proposals_of("pr-2").len(), 1);
+    }
+
+    #[test]
+    fn an_anchor_is_about_a_path_or_a_symbol_under_it_and_only_live_entries_answer() {
+        let mut on_path = entry("D-0001", "decision", "active", "A.");
+        on_path.anchors = vec!["crates/apid/src/a.rs::run".into()];
+        let mut on_file = entry("P-0002", "pitfall", "flagged", "B.");
+        on_file.anchors = vec!["crates/apid/src/a.rs".into()];
+        let mut retired = entry("P-0003", "pitfall", "retired", "C.");
+        retired.anchors = vec!["crates/apid/src/a.rs".into()];
+        let mut elsewhere = entry("P-0004", "pitfall", "active", "D.");
+        elsewhere.anchors = vec!["crates/apid/src/ab.rs".into()];
+        let mut by_symbol = entry("M-0005", "map", "active", "E.");
+        by_symbol.anchors = vec!["crates/x/src/q.rs::f".into()];
+        let all = [on_path, on_file, retired, elsewhere, by_symbol];
+        let ids = |hits: Vec<Entry>| hits.into_iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(anchored(&all, &["crates/apid/src/a.rs".into()], &[])),
+            ["D-0001", "P-0002"]
+        );
+        assert_eq!(
+            ids(anchored(&all, &[], &["crates/x/src/q.rs::f".into()])),
+            ["M-0005"]
+        );
+        assert!(anchored(&all, &["crates/apid/src/zzz.rs".into()], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_landing_flags_only_the_active_entries_its_paths_and_symbols_reach() {
+        let mut by_path = entry("P-0001", "pitfall", "active", "A.");
+        by_path.anchors = vec!["crates/apid/src/a.rs::run".into()];
+        let mut already = entry("P-0002", "pitfall", "flagged", "B.");
+        already.anchors = vec!["crates/apid/src/a.rs".into()];
+        let mut other = entry("P-0003", "pitfall", "active", "C.");
+        other.anchors = vec!["crates/apid/src/b.rs".into()];
+        let entries = [by_path, already, other];
+        let flagged = to_flag(&entries, &["crates/apid/src/a.rs".into()], &[], "c-7");
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(
+            (
+                flagged[0].id.as_str(),
+                flagged[0].status.as_str(),
+                flagged[0].provenance_change.as_str()
+            ),
+            ("P-0001", "flagged", "c-7")
+        );
+        let by_symbol = to_flag(&entries, &[], &["crates/apid/src/a.rs::run".into()], "c-8");
+        assert_eq!(by_symbol.len(), 1);
+        assert_eq!(by_symbol[0].provenance_change, "c-8");
     }
 }

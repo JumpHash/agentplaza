@@ -1351,6 +1351,25 @@
       "additionalProperties": false
     }
   },
+  "memory_anchored": {
+    "description": "The project memory entries anchored to the given paths or symbols: the harness asks for them when a session reads or edits a file, and shows them to the session. A path is about the entries whose anchors are that path or a symbol under it; a symbol is an anchor by its id.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"type": "string"}
+        },
+        "symbols": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": false
+    }
+  },
   "memory_search": {
     "description": "Search your project's memory: its entries (decisions with their reasons, conventions, pitfalls, how-tos, maps, the glossary, facts the code does not show). Give words (`text`), a `type`, or an `anchor` (a Weft symbol id such as sym:apid::placement::move_claimed, or a path) to find the entries about it. Hits come one line each; read one with memory_get.",
     "input_schema": {
@@ -1470,6 +1489,32 @@
         "text",
         "reason"
       ],
+      "additionalProperties": false
+    }
+  },
+  "memory_verify": {
+    "description": "Answer as the project's verifier, once: check each flagged memory entry against the code as it is now. confirm an entry that is still true; rewrite one that is not, with its replacement (one fact); retire one that is no longer true. The answer lands on the project's main as one change. An entry you do not name stays flagged.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "verdicts": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {"type": "string", "description": "the flagged entry's id, such as P-0017"},
+              "action": {"type": "string", "enum": ["confirm", "rewrite", "retire"]},
+              "text": {"type": "string", "description": "a rewrite's replacement entry: one fact, in a few sentences"},
+              "anchors": {"type": "array", "maxItems": 20, "items": {"type": "string"}, "description": "a rewrite's anchors; none keeps the old entry's"},
+              "why": {"type": "string"}
+            },
+            "required": ["id", "action"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["verdicts"],
       "additionalProperties": false
     }
   },

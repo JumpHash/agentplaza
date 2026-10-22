@@ -255,7 +255,7 @@ law "T-028" "Agents read and propose project memory" {
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["memory_search", "memory_get", "memory_propose"]
+  when resource.name in ["memory_search", "memory_get", "memory_propose", "memory_anchored"]
 }
 
 law "T-029" "The curator lands project memory" {
@@ -280,4 +280,16 @@ law "T-030" "The planner records decisions" {
   principal is Agent
   resource is Tool
   when resource.name == "memory_record_decision" and principal.role == "planner"
+}
+
+law "T-031" "The verifier answers flagged memory" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only a project's verifier may answer for flagged memory: each entry is confirmed, rewritten or retired, once per run, and the answer lands as one change on main."
+  rationale "A landing that touches an entry's code flags the entry, because the entry may no longer be true (PLAN 9.6). The verifier checks it against the code as it now is; no other session decides what the memory keeps from a flag."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "memory_verify" and principal.role == "verifier"
 }

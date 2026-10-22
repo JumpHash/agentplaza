@@ -1229,8 +1229,14 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                             continue;
                         };
                         let (name, input) = (whole.name.clone(), whole.input.clone());
+                        let (shared, call) = (self.shared, whole.id.clone());
                         let thread = scope.spawn(move || {
-                            Timed::run(|| run_guest_tool(workspace, work, &name, &input))
+                            Timed::run(|| {
+                                let outcome = run_guest_tool(workspace, work, &name, &input);
+                                crate::anchors::surface(
+                                    shared, workspace, work, &call, &name, &input, outcome,
+                                )
+                            })
                         });
                         running.push(Running {
                             id: whole.id,
@@ -1515,7 +1521,14 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                     crate::acp::run::run(workspace, &input, &link, protocol, engine.as_ref())
                 })
             }
-            None => Box::new(move || run_guest_tool(workspace, work, &name, &input)),
+            None => {
+                let shared = self.shared;
+                let call = run.id.clone();
+                Box::new(move || {
+                    let outcome = run_guest_tool(workspace, work, &name, &input);
+                    crate::anchors::surface(shared, workspace, work, &call, &name, &input, outcome)
+                })
+            }
         }
     }
 }
@@ -1968,6 +1981,28 @@ mod tests {
     fn expect_type(host: &mut Lines<UnixStream>, kind: &str) -> Value {
         let value = next_msg(host);
         assert_eq!(value["type"], kind, "{value}");
+        value
+    }
+
+    /// The next line that is not the hub's answer to a memory query: a read or an edit asks the hub which entries are
+    /// anchored to the paths it touched, after it ran. The query is answered with no entries, so the result stays as it was.
+    fn next_past_memory(host: &mut Lines<UnixStream>) -> Value {
+        loop {
+            let value = next_msg(host);
+            if value["type"] == "tool_request" && value["name"] == "memory_anchored" {
+                let call = value["call"].as_str().expect("a call id").to_string();
+                host.send(&json!({"type": "tool_decision", "call": call, "decision": "allow", "output": "{\"entries\":[]}"}).to_string())
+                    .unwrap();
+                continue;
+            }
+            return value;
+        }
+    }
+
+    /// Expects a read's or an edit's `tool_report`, past the memory queries it made.
+    fn expect_report(host: &mut Lines<UnixStream>) -> Value {
+        let value = next_past_memory(host);
+        assert_eq!(value["type"], "tool_report", "{value}");
         value
     }
 
@@ -3079,6 +3114,45 @@ mod tests {
     }
 
     #[test]
+    fn a_read_shows_the_entries_anchored_to_its_file_once_per_work_item() {
+        let workspace = scratch("anchored-read");
+        std::fs::write(
+            workspace.dir().join("placement.rs"),
+            "fn move_claimed() {}\n",
+        )
+        .unwrap();
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("reads", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "read the placement"))
+                .unwrap();
+            expect_type(host, "model_call");
+            let read =
+                |call: &str| tool_use(call, "read", json!({"files": [{"path": "placement.rs"}]}));
+            host.send(&answer(1, json!([read("r1")]), "tool_use"))
+                .unwrap();
+            // The first read asks the hub which entries are anchored to the file, and shows the one it answers with.
+            let asked = expect_type(host, "tool_request");
+            assert_eq!(asked["name"], "memory_anchored", "{asked}");
+            assert_eq!(asked["input"]["paths"], json!(["placement.rs"]));
+            let entry = json!({"id": "P-0017", "kind": "pitfall", "status": "active", "title": "A move releases its claim", "text": "Release it first."});
+            host.send(&json!({"type": "tool_decision", "call": asked["call"], "decision": "allow", "output": json!({"entries": [entry]}).to_string()}).to_string()).unwrap();
+            let report = expect_type(host, "tool_report");
+            let output: Value = serde_json::from_str(report["output"].as_str().unwrap()).unwrap();
+            assert_eq!(output["memory"][0]["id"], "P-0017", "{report}");
+            // A second read of the file in the same work item asks no more, and shows nothing new.
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([read("r2")]), "tool_use"))
+                .unwrap();
+            let again = expect_type(host, "tool_report");
+            let output: Value = serde_json::from_str(again["output"].as_str().unwrap()).unwrap();
+            assert!(output.get("memory").is_none(), "{again}");
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
     fn five_reads_of_different_files_finish_the_turn_in_about_one_read() {
         let workspace = scratch("five-reads");
         // Each file is a pipe that a writer fills 300 ms after a read opens it, so one read takes 300 ms.
@@ -3109,7 +3183,7 @@ mod tests {
             host.send(&answer(1, json!(calls), "tool_use")).unwrap();
             // The reports go out in the answer's order, once all five reads are done.
             for n in 0..5 {
-                let report = expect_type(host, "tool_report");
+                let report = expect_report(host);
                 assert_eq!(
                     (report["call"].clone(), report["ok"].clone()),
                     (json!(format!("r{n}")), json!(true)),
@@ -3158,7 +3232,7 @@ mod tests {
             ))
             .unwrap();
             for call in ["e1", "e2"] {
-                let report = expect_type(host, "tool_report");
+                let report = expect_report(host);
                 assert_eq!(
                     (report["call"].clone(), report["ok"].clone()),
                     (json!(call), json!(true)),
@@ -3225,7 +3299,7 @@ mod tests {
             .unwrap();
             // The writer writes only now, so the read's result can only be the one it started with.
             go.send(()).unwrap();
-            let report = expect_type(host, "tool_report");
+            let report = expect_report(host);
             assert_eq!(report["call"], "r1", "{report}");
             assert!(
                 report["output"]
@@ -3273,7 +3347,7 @@ mod tests {
                 "tool_use",
             ))
             .unwrap();
-            let report = expect_type(host, "tool_report");
+            let report = expect_report(host);
             assert_eq!(report["ok"], json!(true), "{report}");
             expect_type(host, "model_call");
             assert_eq!(std::fs::read_to_string(&file).unwrap(), "b");
@@ -3334,7 +3408,7 @@ mod tests {
             let batch = expect_type(host, "tool_batch");
             assert_eq!(batch["calls"][0]["call"], "h1", "{batch}");
             host.send(&decision("h1", "allow", "", false)).unwrap();
-            let report = expect_type(host, "tool_report");
+            let report = expect_report(host);
             assert!(report.get("policy").is_none(), "{report}");
             expect_type(host, "model_call");
             host.send(&answer(2, json!([text("done")]), "end_turn"))

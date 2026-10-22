@@ -57,6 +57,7 @@ pub fn tick(app: &App) {
     let now = now();
     ensure_planners(app, now);
     crate::curator::tick(app, now);
+    crate::verifier::tick(app, now);
     assign_tasks(app, now);
     for seat in app.seats.ready() {
         start_seat(app, &seat, now);
@@ -358,6 +359,10 @@ pub fn on_hello(app: &App, cid: u64) -> bool {
         crate::curator::start_work(app, &session, cid);
         return true;
     }
+    if session.seat.as_deref() == Some(crate::verifier::SEAT) && session.task.is_none() {
+        crate::verifier::start_work(app, &session, cid);
+        return true;
+    }
     // A long-lived session (a planner) waits for its chats' messages and the loop's reports.
     let Some(task_id) = session.task.clone() else {
         return true;
@@ -417,6 +422,11 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
     let now = now();
     if session.seat.as_deref() == Some(crate::curator::SEAT) && session.task.is_none() {
         // A curator's run ends with its answer (memory_land) or without one: its tasks wait for the next run.
+        end_session(app, &session, summary, status == WorkStatus::Failed, now);
+        return true;
+    }
+    if session.seat.as_deref() == Some(crate::verifier::SEAT) && session.task.is_none() {
+        // A verifier's run ends with its answer (memory_verify) or without one: the flagged entries wait for the next run.
         end_session(app, &session, summary, status == WorkStatus::Failed, now);
         return true;
     }
