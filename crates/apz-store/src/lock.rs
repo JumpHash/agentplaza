@@ -9,6 +9,10 @@ use crate::StoreError;
 /// The lock file's name in the folder.
 pub const LOCK_FILE: &str = "store.lock";
 
+/// How long a lock this process just released may still look held (see [`FolderLock::acquire`]): tries and their wait.
+const SAME_PROCESS_TRIES: u32 = 50;
+const SAME_PROCESS_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// An exclusive lock on a state folder. Released when dropped (or when the process ends, however it ends: the OS
 /// drops the lock with the file handle, so a crashed hub never leaves a stale lock).
 #[derive(Debug)]
@@ -29,23 +33,35 @@ impl FolderLock {
             .write(true)
             .truncate(false)
             .open(&path)?;
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => {
-                let mut holder = String::new();
-                // On Windows the locked range cannot be read by another process: the holder stays unknown.
-                let _ = file.read_to_string(&mut holder);
-                let holder = holder.trim();
-                return Err(StoreError::Locked {
-                    dir: dir.to_path_buf(),
-                    holder: if holder.is_empty() {
-                        "a process that holds its lock".to_string()
-                    } else {
-                        holder.to_string()
-                    },
-                });
+        let mut tries = 0;
+        loop {
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(TryLockError::WouldBlock) => {
+                    let mut holder = String::new();
+                    // On Windows the locked range cannot be read by another process: the holder stays unknown.
+                    let _ = file.seek(SeekFrom::Start(0));
+                    let _ = file.read_to_string(&mut holder);
+                    let holder = holder.trim().to_string();
+                    // This process held it a moment ago (a store just closed, then opened again): a child forked in
+                    // between holds a copy of the lock until it execs, so the release comes a moment later.
+                    if holder == format!("pid {}", std::process::id()) && tries < SAME_PROCESS_TRIES
+                    {
+                        tries += 1;
+                        std::thread::sleep(SAME_PROCESS_WAIT);
+                        continue;
+                    }
+                    return Err(StoreError::Locked {
+                        dir: dir.to_path_buf(),
+                        holder: if holder.is_empty() {
+                            "a process that holds its lock".to_string()
+                        } else {
+                            holder
+                        },
+                    });
+                }
+                Err(TryLockError::Error(e)) => return Err(e.into()),
             }
-            Err(TryLockError::Error(e)) => return Err(e.into()),
         }
         file.set_len(0)?;
         file.seek(SeekFrom::Start(0))?;
