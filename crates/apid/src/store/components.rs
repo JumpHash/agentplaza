@@ -260,5 +260,45 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
         ("usage calls", crate::usage::call_def),
         ("usage hours", crate::usage::hour_def),
         ("usage works", crate::usage::work_def),
+        ("ide audit", crate::ide::audit_def),
+        ("station audit", crate::stations::audit::def),
+        ("station recordings", crate::stations::recordings::def),
+        (
+            "station recording events",
+            crate::stations::recordings::event_def,
+        ),
+        (
+            "station recording frames",
+            crate::stations::recordings::frame_def,
+        ),
+        ("station sync files", crate::stations::sync::def),
     ]
+}
+
+/// Creates the written-through tables `conn` lacks, from their definitions (`IF NOT EXISTS`). A test's store is opened
+/// with these until the lead regenerates `sql/plaza/0001_init.sql` (`apid schema`) with the streams' tables; after
+/// that, every one of them exists and this changes nothing.
+#[cfg(test)]
+pub fn create_written_through(conn: &apz_store::rusqlite::Connection) -> Result<(), StoreError> {
+    for (_, def) in written_through() {
+        let ddl = def()
+            .ddl()
+            .replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ")
+            .replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ")
+            .replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS ");
+        conn.execute_batch(&ddl)?;
+    }
+    Ok(())
+}
+
+/// [`crate::store::open`] for a test, with the written-through tables the migration may lack (see
+/// [`create_written_through`]).
+#[cfg(test)]
+pub fn open_for_test(dir: &std::path::Path) -> apz_store::Store {
+    let store = crate::store::open(dir).expect("the store opens");
+    store
+        .db(crate::store::PLAZA)
+        .write(create_written_through)
+        .expect("the written-through tables are created");
+    store
 }

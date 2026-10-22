@@ -464,9 +464,9 @@ fn audit_route(app: &App, req: &Request) -> Response {
         .unwrap_or(100)
         .clamp(0, 1000);
     let station = req.query_param("station").filter(|s| !s.is_empty());
-    match app.db.station_audit(station, limit) {
+    match super::audit::page(app.store.db(crate::store::PLAZA), station, limit) {
         Ok(rows) => Response::json(200, &rows),
-        Err(reason) => Response::error(500, &reason),
+        Err(reason) => Response::error(500, &reason.to_string()),
     }
 }
 

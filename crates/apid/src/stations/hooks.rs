@@ -16,6 +16,7 @@ use apz_station::Op;
 use serde_json::{Value, json};
 
 use super::act;
+use super::audit::StationAudit;
 use super::leases::Lease;
 use super::ops::{self, Failure};
 use super::recordings;
@@ -88,23 +89,16 @@ pub fn lease_ended(app: &App, station: &str, lease: &Lease, now: u64) {
             "station",
         );
     }
-    let row = json!({
-        "lease": lease.id,
-        "task": task,
-        "rate_per_hour": rate,
-        "active_ms": now.saturating_sub(active_from),
-        "wanted": charge.wanted,
-        "charged": charge.charged,
-        "error": charge.error,
-    });
-    if let Err(reason) = ops::audit(
-        app,
-        Some(station),
-        Some(lease.agent),
-        "lease_charge",
-        "station",
-        row,
-    ) {
+    let event = StationAudit::LeaseCharge {
+        lease: lease.id.clone(),
+        task: task.to_string(),
+        rate_per_hour: rate,
+        active_ms: now.saturating_sub(active_from),
+        wanted: charge.wanted,
+        charged: charge.charged,
+        error: charge.error.clone(),
+    };
+    if let Err(reason) = ops::audit(app, Some(station), Some(lease.agent), "station", event) {
         eprintln!(
             "apid: workstation {station}: the charge of lease {} is not in the audit: {reason}",
             lease.id
@@ -163,7 +157,6 @@ mod tests {
     use apz_station::{Button, ImageFormat, InputAction, StationSettings};
 
     use super::*;
-    use crate::db::Db;
     use crate::stations::leases::{Kind, LeaseView, State};
     use crate::stations::recordings::Recordings;
 
@@ -259,7 +252,8 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        let db = Db::files_only(&dir);
+        let store = crate::store::components::open_for_test(&dir);
+        let db = store.db(crate::store::PLAZA);
         let recordings = Recordings::default();
         let lease = LeaseView {
             lease: Lease {
@@ -277,7 +271,7 @@ mod tests {
             position: None,
         };
         let id = recordings
-            .begin(&db, &StationSettings::default(), "w1", &lease, 1000)
+            .begin(db, &StationSettings::default(), "w1", &lease, 1000)
             .unwrap()
             .expect("the station records");
         let op = Op::Input {
@@ -291,10 +285,10 @@ mod tests {
         };
         assert!(
             recordings
-                .action(&db, "w1", "l1", &action_summary(&op), false, 1100)
+                .action(db, "w1", "l1", &action_summary(&op), false, 1100)
                 .unwrap()
         );
-        let events = db.recording_events(&id, 10).unwrap();
+        let events = crate::stations::recordings::events_of(db, &id, 10).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(
             (events[0].kind.as_str(), events[0].ok),

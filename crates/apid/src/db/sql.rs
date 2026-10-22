@@ -9,40 +9,6 @@ pub const STATE_UPSERT: &str = include_str!("../../sql/queries/state_upsert.sql"
 #[cfg(test)]
 pub const STATE_DELETE: &str = include_str!("../../sql/queries/state_delete.sql");
 
-// The IDE audit (`ide_audit`, migration 0008; ide.rs owner actions).
-pub const IDE_AUDIT_APPEND: &str = include_str!("../../sql/queries/ide_audit_append.sql");
-pub const IDE_AUDIT_PAGE: &str = include_str!("../../sql/queries/ide_audit_page.sql");
-pub const IDE_AUDIT_PAGE_BY_WORKSPACE: &str =
-    include_str!("../../sql/queries/ide_audit_page_by_workspace.sql");
-
-// The station audit (`station_audit`, migration 0010; stations/ owner actions and lease changes).
-pub const STATION_AUDIT_APPEND: &str = include_str!("../../sql/queries/station_audit_append.sql");
-pub const STATION_AUDIT_PAGE: &str = include_str!("../../sql/queries/station_audit_page.sql");
-pub const STATION_AUDIT_PAGE_BY_STATION: &str =
-    include_str!("../../sql/queries/station_audit_page_by_station.sql");
-
-// The workstation recordings (`station_recordings` and `station_recording_events`, migration 0011; stations/recordings.rs).
-pub const STATION_RECORDING_PUT: &str = include_str!("../../sql/queries/station_recording_put.sql");
-pub const STATION_RECORDING_GET: &str = include_str!("../../sql/queries/station_recording_get.sql");
-pub const STATION_RECORDING_PAGE: &str =
-    include_str!("../../sql/queries/station_recording_page.sql");
-pub const STATION_RECORDING_EXPIRED: &str =
-    include_str!("../../sql/queries/station_recording_expired.sql");
-pub const STATION_RECORDING_DELETE: &str =
-    include_str!("../../sql/queries/station_recording_delete.sql");
-pub const STATION_RECORDING_EVENT_APPEND: &str =
-    include_str!("../../sql/queries/station_recording_event_append.sql");
-pub const STATION_RECORDING_EVENTS_PAGE: &str =
-    include_str!("../../sql/queries/station_recording_events_page.sql");
-// The frames' capture times (`station_recording_frames`, migration 0013; stations/recordings.rs).
-pub const STATION_RECORDING_FRAME_PUT: &str =
-    include_str!("../../sql/queries/station_recording_frame_put.sql");
-pub const STATION_RECORDING_FRAMES_PAGE: &str =
-    include_str!("../../sql/queries/station_recording_frames_page.sql");
-
-// The work-folder sync's mirror (`station_sync_files`, migration 0012; stations/sync.rs).
-pub const STATION_SYNC_ROWS: &str = include_str!("../../sql/queries/station_sync_rows.sql");
-pub const STATION_SYNC_SAVE: &str = include_str!("../../sql/queries/station_sync_save.sql");
 // The unfurl cache (`unfurl_cache`, migration 0009; unfurl/mod.rs).
 pub const UNFURL_GET: &str = include_str!("../../sql/queries/unfurl_get.sql");
 pub const UNFURL_PUT: &str = include_str!("../../sql/queries/unfurl_put.sql");

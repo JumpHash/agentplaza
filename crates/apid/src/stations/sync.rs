@@ -1,7 +1,7 @@
 //! The work-folder sync, the hub's half (docs/design/workstations.md section 8).
 //!
 //! Each workstation's work folder is mirrored by its daemon (apz-workstation's `sync.rs`). The hub keeps its own mirror:
-//! one row per path in `station_sync_files` (db/sync.rs), and the content of every version under `sync/<sha256>` in the
+//! one row per path in `station_sync_file` (`plaza.db`, see [`def`]), and the content of every version under `sync/<sha256>` in the
 //! object store. A pass (`reconcile`) compares the station's manifest with those rows, path by path, and moves what
 //! changed on one side to the other. Each row keeps `base`, the content both sides last agreed on:
 //!
@@ -39,19 +39,28 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use apz_store::rusqlite::params;
+
+use super::audit::{StationAudit, read_rows, save};
 use super::link::StationLink;
 use super::ops::{self, Failure};
 use crate::deliverables::{Deliverable, Upload, clean_name, guess_type};
 use crate::skills::sha256_hex;
 use crate::state::App;
+use crate::store::sql;
 
 /// How long one request to a station may take: a chunk of a file, or its manifest.
 pub const TIMEOUT: Duration = Duration::from_secs(60);
 
-/// One path's row: the hub's copy (`hash`, None once deleted), what both sides last agreed (`base`), and where it came
-/// from when it is a conflict copy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One path's row of a station's work folder (a row of `station_sync_file`): the hub's copy (`hash`, None once
+/// deleted), what both sides last agreed (`base`), and where it came from when it is a conflict copy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "station_sync_file")]
 pub struct Row {
+    /// The workstation whose folder the path is in.
+    #[table(key)]
+    pub station: String,
+    #[table(key)]
     pub path: String,
     pub hash: Option<String>,
     pub size: u64,
@@ -209,6 +218,7 @@ pub fn reconcile(
     let mut names: BTreeSet<String> = theirs.keys().cloned().collect();
     names.extend(snapshot.keys().cloned());
     let mut pass = Pass {
+        station,
         station_name,
         remote,
         blobs,
@@ -240,6 +250,7 @@ pub fn reconcile(
 }
 
 struct Pass<'a> {
+    station: &'a str,
     station_name: &'a str,
     remote: &'a dyn Remote,
     blobs: &'a dyn Blobs,
@@ -325,6 +336,7 @@ impl Pass<'_> {
             None => (1, None),
         };
         self.put_row(Row {
+            station: self.station.to_string(),
             path: path.to_string(),
             hash: Some(entry.hash.clone()),
             size: bytes.len() as u64,
@@ -414,6 +426,7 @@ impl Pass<'_> {
         self.names.insert(copy.clone());
         self.out.bytes += bytes.len() as u64;
         self.put_row(Row {
+            station: self.station.to_string(),
             path: copy.clone(),
             hash: Some(entry.hash.clone()),
             size: bytes.len() as u64,
@@ -671,21 +684,57 @@ impl Blobs for Objects<'_> {
     }
 }
 
-/// The hub's database rows (`station_sync_files`, or the state folder without one).
-pub struct DbLedger<'a>(pub &'a crate::db::Db);
+/// The hub's mirror rows, in `plaza.db` (`station_sync_file`).
+pub struct DbLedger<'a>(pub &'a apz_store::Db);
 
 impl Ledger for DbLedger<'_> {
     fn rows(&self, station: &str) -> Result<Vec<Row>, String> {
-        self.0.station_sync_rows(station)
+        station_rows(self.0, station)
     }
 
     fn save(&self, station: &str, rows: &[Row]) -> Result<(), String> {
         if rows.is_empty() {
             Ok(())
         } else {
-            self.0.save_station_sync_rows(station, rows)
+            save_rows(self.0, station, rows)
         }
     }
+}
+
+/// The table `station_sync_file` (`plaza.db`): one row per path of each station's work folder, keyed by (station,
+/// path).
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Row)
+}
+
+/// Every sync row of one workstation, by path (deleted ones included).
+pub fn station_rows(db: &apz_store::Db, station: &str) -> Result<Vec<Row>, String> {
+    db.read(|conn| read_rows(conn, sql::STATION_SYNC_FILE_ROWS, def(), params![station]))
+        .map_err(|err| err.to_string())
+}
+
+/// Writes the given rows of one workstation, each replacing its path's row, in one transaction.
+pub fn save_rows(db: &apz_store::Db, station: &str, rows: &[Row]) -> Result<(), String> {
+    let rows: Vec<Row> = rows
+        .iter()
+        .map(|row| Row {
+            station: station.to_string(),
+            ..row.clone()
+        })
+        .collect();
+    db.write(move |conn| {
+        for row in &rows {
+            save(conn, def(), row, 0)?;
+        }
+        Ok(())
+    })
+    .map(|_| ())
+    .map_err(|err| err.to_string())
+}
+
+/// The plaza's store (`plaza.db`): where the sync's rows and its audit entries are written.
+fn plaza(app: &App) -> &apz_store::Db {
+    app.store.db(crate::store::PLAZA)
 }
 
 /// The passes in progress, by station: a station with a pass running has a flag saying another is wanted.
@@ -778,21 +827,18 @@ fn run(app: &App, station: &str) -> Result<Outcome, String> {
         &record.name,
         &LinkRemote(&link),
         &Objects(&app.deliverables),
-        &DbLedger(&app.db),
+        &DbLedger(plaza(app)),
         apz_plaza::now_ms(),
         Limits::default(),
         guard,
     )?;
     settle_pause(app, station, outcome.paused.take());
     for conflict in &outcome.conflicts {
-        let _ = ops::audit(
-            app,
-            Some(station),
-            None,
-            "sync_conflict",
-            "station",
-            json!({"path": conflict.path, "copy": conflict.copy}),
-        );
+        let event = StationAudit::SyncConflict {
+            path: conflict.path.clone(),
+            copy: conflict.copy.clone(),
+        };
+        let _ = ops::audit(app, Some(station), None, "station", event);
         app.bus.publish(
             "station_sync_conflict",
             &json!({"station": station, "path": conflict.path, "copy": conflict.copy}),
@@ -827,14 +873,11 @@ fn settle_pause(app: &App, station: &str, found: Option<SyncPause>) {
             let (reason, count) = (pause.reason.clone(), pause.deletions.len());
             app.stations.set_sync_pause(station, Some(pause));
             if began {
-                if let Err(e) = ops::audit(
-                    app,
-                    Some(station),
-                    None,
-                    "sync_paused",
-                    "station",
-                    json!({"reason": reason, "deletions": count}),
-                ) {
+                let event = StationAudit::SyncPaused {
+                    reason: reason.clone(),
+                    deletions: count,
+                };
+                if let Err(e) = ops::audit(app, Some(station), None, "station", event) {
                     eprintln!("apid: workstation {station}: sync pause not audited: {e}");
                 }
                 app.bus.publish(
@@ -845,14 +888,8 @@ fn settle_pause(app: &App, station: &str, found: Option<SyncPause>) {
         }
         None if before.is_some() => {
             app.stations.set_sync_pause(station, None);
-            if let Err(e) = ops::audit(
-                app,
-                Some(station),
-                None,
-                "sync_resumed",
-                "station",
-                json!({"by": "pass"}),
-            ) {
+            let event = StationAudit::SyncResumed { by: "pass".into() };
+            if let Err(e) = ops::audit(app, Some(station), None, "station", event) {
                 eprintln!("apid: workstation {station}: sync resume not audited: {e}");
             }
         }
@@ -879,15 +916,12 @@ pub fn resume(
             "this workstation is not linked; its sync resumes when it links".into(),
         ));
     }
-    ops::audit(
-        app,
-        Some(station),
-        None,
-        "sync_resume",
-        actor,
-        json!({"apply_deletions": apply_deletions, "reason": pause.reason, "deletions": pause.deletions.len()}),
-    )
-    .map_err(server_error)?;
+    let event = StationAudit::SyncResume {
+        apply_deletions,
+        reason: pause.reason.clone(),
+        deletions: pause.deletions.len(),
+    };
+    ops::audit(app, Some(station), None, actor, event).map_err(server_error)?;
     let guard = if apply_deletions {
         Guard::ApplyDeletions
     } else {
@@ -934,7 +968,7 @@ fn station_or_404(app: &App, station: &str) -> Result<(), Failure> {
 }
 
 fn rows_of(app: &App, station: &str) -> Result<Vec<Row>, Failure> {
-    app.db.station_sync_rows(station).map_err(server_error)
+    station_rows(plaza(app), station).map_err(server_error)
 }
 
 /// The sync's state for the Workstations page: the files, their bytes, the last sync, the conflict copies, and whether
@@ -1022,6 +1056,7 @@ pub fn put(
         .map_err(server_error)?;
     let previous = rows_of(app, station)?.into_iter().find(|r| r.path == path);
     let row = Row {
+        station: station.to_string(),
         path: path.to_string(),
         hash: Some(hash.clone()),
         size: bytes.len() as u64,
@@ -1031,18 +1066,13 @@ pub fn put(
         conflict_of: previous.as_ref().and_then(|r| r.conflict_of.clone()),
         synced_ms: previous.as_ref().map_or(0, |r| r.synced_ms),
     };
-    app.db
-        .save_station_sync_rows(station, std::slice::from_ref(&row))
-        .map_err(server_error)?;
-    ops::audit(
-        app,
-        Some(station),
-        None,
-        "sync_put",
-        actor,
-        json!({"path": path, "hash": hash, "size": bytes.len()}),
-    )
-    .map_err(server_error)?;
+    save_rows(plaza(app), station, std::slice::from_ref(&row)).map_err(server_error)?;
+    let event = StationAudit::SyncPut {
+        path: path.to_string(),
+        hash: hash.clone(),
+        size: bytes.len(),
+    };
+    ops::audit(app, Some(station), None, actor, event).map_err(server_error)?;
     kick(app, station);
     Ok(view(&row))
 }
@@ -1054,18 +1084,11 @@ pub fn remove(app: &App, station: &str, path: &str, actor: &str) -> Result<FileV
     row.hash = None;
     row.version += 1;
     row.mtime_ms = apz_plaza::now_ms();
-    app.db
-        .save_station_sync_rows(station, std::slice::from_ref(&row))
-        .map_err(server_error)?;
-    ops::audit(
-        app,
-        Some(station),
-        None,
-        "sync_delete",
-        actor,
-        json!({"path": path}),
-    )
-    .map_err(server_error)?;
+    save_rows(plaza(app), station, std::slice::from_ref(&row)).map_err(server_error)?;
+    let event = StationAudit::SyncDelete {
+        path: path.to_string(),
+    };
+    ops::audit(app, Some(station), None, actor, event).map_err(server_error)?;
     kick(app, station);
     Ok(view(&row))
 }
@@ -1103,15 +1126,11 @@ pub fn deliver(
     };
     let item = app.deliverables.add(upload, &bytes).map_err(server_error)?;
     app.bus.publish("file", &item);
-    ops::audit(
-        app,
-        Some(station),
-        None,
-        "sync_deliver",
-        actor,
-        json!({"path": path, "file": item.id}),
-    )
-    .map_err(server_error)?;
+    let event = StationAudit::SyncDeliver {
+        path: path.to_string(),
+        file: item.id.clone(),
+    };
+    ops::audit(app, Some(station), None, actor, event).map_err(server_error)?;
     Ok(item)
 }
 
@@ -1275,6 +1294,7 @@ mod tests {
         rows.insert(
             path.to_string(),
             Row {
+                station: "ws-7".into(),
                 path: path.to_string(),
                 hash: Some(hash),
                 size: bytes.len() as u64,
@@ -1728,6 +1748,7 @@ mod tests {
     #[test]
     fn the_sync_state_says_when_it_is_paused_and_what_it_holds() {
         let row = |path: &str| Row {
+            station: "ws-7".into(),
             path: path.into(),
             hash: Some(sha(path.as_bytes())),
             size: 1,
@@ -1998,5 +2019,73 @@ mod tests {
         link.kill(1000, "done");
         assert!(handle.join().unwrap().is_ok());
         served.join().unwrap();
+    }
+
+    /// The mirror's rows read and write by station and path: a save replaces its path's row and keeps the rest, a
+    /// deleted row keeps its place (it carries the deletion to the station), and another station's rows are apart.
+    #[test]
+    fn sync_rows_are_kept_by_station_and_path() {
+        let dir = tempfile::Builder::new()
+            .prefix("sync-rows")
+            .tempdir()
+            .unwrap();
+        let store = crate::store::components::open_for_test(dir.path());
+        let db = store.db(crate::store::PLAZA);
+        assert!(station_rows(db, "ws-1").unwrap().is_empty());
+        let row = |station: &str, path: &str, hash: Option<&str>, version: u64| Row {
+            station: station.into(),
+            path: path.into(),
+            hash: hash.map(str::to_string),
+            size: 12,
+            mtime_ms: 1_000,
+            version,
+            base: hash.map(str::to_string),
+            conflict_of: None,
+            synced_ms: 2_000,
+        };
+        let mut copy = row("ws-1", "plan (conflict desk).md", Some("bb"), 1);
+        copy.conflict_of = Some("plan.md".into());
+        save_rows(
+            db,
+            "ws-1",
+            &[
+                row("ws-1", "plan.md", Some("aa"), 1),
+                row("ws-1", "gone.txt", Some("cc"), 2),
+                copy.clone(),
+            ],
+        )
+        .unwrap();
+        save_rows(db, "ws-2", &[row("ws-2", "other.txt", Some("dd"), 1)]).unwrap();
+
+        let rows = station_rows(db, "ws-1").unwrap();
+        let paths: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["gone.txt", "plan (conflict desk).md", "plan.md"],
+            "by path"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r.path == copy.path),
+            Some(&copy),
+            "the conflict's origin round-trips"
+        );
+
+        let deleted = Row {
+            hash: None,
+            base: None,
+            version: 3,
+            ..row("ws-1", "gone.txt", Some("cc"), 2)
+        };
+        save_rows(db, "ws-1", std::slice::from_ref(&deleted)).unwrap();
+        let rows = station_rows(db, "ws-1").unwrap();
+        assert_eq!(rows.len(), 3, "a save replaces its path only");
+        assert_eq!(
+            rows.iter().find(|r| r.path == "gone.txt"),
+            Some(&deleted),
+            "the deletion is kept"
+        );
+        let theirs = station_rows(db, "ws-2").unwrap();
+        assert_eq!(theirs.len(), 1, "another workstation's rows are apart");
+        assert_eq!(theirs[0].path, "other.txt");
     }
 }

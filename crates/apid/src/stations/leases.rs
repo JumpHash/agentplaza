@@ -14,7 +14,7 @@ use apz_station::{Facts, Form};
 use serde::{Deserialize, Serialize};
 
 /// What a lease is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Shared,

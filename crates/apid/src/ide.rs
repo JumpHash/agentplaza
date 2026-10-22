@@ -11,9 +11,8 @@
 //!   operation on it.
 //!
 //! Every route checks its paths with `apz_ide::path` before anything is sent. This module logs each owner
-//! action (a write, a restore, a run and its stop) to the append-only audit (the
-//! `ide_audit` table in Postgres; `<state-dir>/ide-audit.jsonl` with no database, see `db`) and publishes an
-//! `ide` bus event. Owner actions do not pass the laws classifier. The owner is the principal, so no write
+//! action (a write, a restore, a run and its stop) to the append-only audit (the `ide_audit` table of `plaza.db`,
+//! typed by [`IdeAudit`]) and publishes an `ide` bus event. Owner actions do not pass the laws classifier. The owner is the principal, so no write
 //! needs an approval.
 //!
 //! Routes (owner-only: the hub's gate in `hub_auth` covers every `/v1` path). The agent kind answers through
@@ -43,19 +42,25 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+use std::sync::OnceLock;
+
 use apz_http::{Request, Response, RouteDoc, Router};
 use apz_ide::diff::{parse_unified, write_binary, write_unified};
 use apz_ide::path::{PathError, check_dir, check_read, check_write};
 use apz_ide::tree::PAGE_SIZE;
 use apz_ide::workspace::WorkspaceId;
 use apz_station::{FilesOp, Op, Os, RunOp};
+use apz_store::rusqlite::params;
+use apz_store::{Db, IndexDef, StoreError, Table, TableDef};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::agents::{Agent, Status};
-use crate::db::Db;
 use crate::plaza::percent_decode;
 use crate::state::App;
+use crate::stations::audit::{OwnerIdeAction, StationAudit, read_rows, save};
 use crate::stations::link::LINK_CLOSED;
+use crate::store::sql;
 
 /// How long a tell waits for the agent: the harness's own cap (vsockd's `MAX_TELL_TIMEOUT_MS`).
 pub const TELL_TIMEOUT_MS: u64 = 5_000;
@@ -93,8 +98,9 @@ type Reply = Result<Value, Response>;
 pub trait Host {
     /// One tool call on agent `cid`: the gateway's status and body (vsockd's `/tell` answer).
     fn tell(&self, cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String>;
-    /// The database: the IDE audit is its `ide_audit` table, or the state directory's file without one.
-    fn db(&self) -> &Db;
+    /// The hub's `plaza.db`: the IDE audit is its `ide_audit` table, and a workstation's action is also a row of its
+    /// `station_audit`.
+    fn store(&self) -> &Db;
     /// Publishes one `ide` bus event.
     fn publish(&self, data: &Value);
     /// Weft, as the owner (the repo workspaces): one call under `weft serve`'s `/v1`, its status and body.
@@ -129,8 +135,8 @@ impl Host for Live<'_> {
         )
     }
 
-    fn db(&self) -> &Db {
-        &self.0.db
+    fn store(&self) -> &Db {
+        self.0.store.db(crate::store::PLAZA)
     }
 
     fn publish(&self, data: &Value) {
@@ -430,19 +436,120 @@ fn check_branch(name: &str) -> Result<(), Response> {
         .map_err(|err| Response::error(400, &format!("not a branch name: {err}")))
 }
 
-/// The audit row for one owner action: when, who, where, what, plus the action's own fields.
-fn audit_row(workspace: &str, kind: &str, path: Option<&str>, detail: Value) -> Value {
-    let mut row = json!({
-        "at_ms": apz_plaza::now_ms(),
-        "actor": "owner",
-        "workspace": workspace,
-        "kind": kind,
-        "path": path,
-    });
-    if let (Some(map), Value::Object(detail)) = (row.as_object_mut(), detail) {
-        map.extend(detail);
-    }
-    row
+/// One owner action on an IDE workspace, by kind. Its fields are the action's own; what the agent's harness or a
+/// daemon replied (`hash_after`, `checkpoint`, `run`, `change`) is kept as it was, for display.
+#[derive(Debug, Clone, PartialEq, Serialize, apz_store::Table)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IdeAudit {
+    /// A file was written: its hash before (None for a file that had none) and after, the checkpoint it made, and
+    /// for a repo the change it landed.
+    Write {
+        hash_before: Option<String>,
+        #[table(content)]
+        hash_after: Value,
+        #[table(content)]
+        checkpoint: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[table(content)]
+        change: Option<Value>,
+    },
+    /// The agent's files were restored to checkpoint `n` (`restored`), after a checkpoint of their own.
+    Restore {
+        restored: u64,
+        #[table(content)]
+        checkpoint: Value,
+    },
+    /// A run was started: its command, and its timeout in seconds when one was asked for.
+    Run {
+        #[table(content)]
+        run: Value,
+        command: String,
+        timeout_s: Option<u64>,
+    },
+    RunStop {
+        run: String,
+    },
+    TermOpen {
+        term: String,
+        cols: u16,
+        rows: u16,
+        cwd: Option<String>,
+    },
+    TermKill {
+        term: String,
+    },
+}
+
+/// One row of the IDE audit (`ide_audit`): when, who, which workspace, which file (for a write), and the action. The
+/// audit route serves each row without its seq.
+#[derive(Debug, Clone, PartialEq, Serialize, apz_store::Table)]
+#[table(name = "ide_audit")]
+pub struct IdeAuditRow {
+    /// The entry's place in the log, assigned when it is written.
+    #[serde(skip)]
+    #[table(key)]
+    pub seq: u64,
+    pub at_ms: u64,
+    pub actor: String,
+    pub workspace: String,
+    pub path: Option<String>,
+    #[serde(flatten)]
+    #[table(flatten)]
+    pub action: IdeAudit,
+}
+
+/// The table `ide_audit` (`plaza.db`): keyed by seq, with an index on (workspace, at_ms) for one workspace's page.
+pub fn audit_def() -> &'static TableDef {
+    static DEF: OnceLock<TableDef> = OnceLock::new();
+    DEF.get_or_init(|| {
+        let mut def = IdeAuditRow::root();
+        def.indexes.push(IndexDef {
+            columns: vec!["workspace".to_string(), "at_ms".to_string()],
+            unique: false,
+        });
+        def
+    })
+}
+
+/// Writes one owner action on `workspace` (for `path`, when it is a file's) and waits for its commit: the entry takes
+/// the next seq of the log, and an entry that cannot be written is an error the route answers with.
+pub fn append(
+    db: &Db,
+    workspace: &str,
+    path: Option<&str>,
+    action: IdeAudit,
+) -> Result<IdeAuditRow, StoreError> {
+    let row = IdeAuditRow {
+        seq: 0,
+        at_ms: apz_plaza::now_ms(),
+        actor: "owner".to_string(),
+        workspace: workspace.to_string(),
+        path: path.map(str::to_string),
+        action,
+    };
+    db.write(move |conn| {
+        let mut row = row;
+        let last: i64 = conn
+            .prepare_cached(sql::IDE_AUDIT_LAST_SEQ)?
+            .query_row([], |r| r.get(0))?;
+        row.seq = u64::try_from(last).unwrap_or(0) + 1;
+        save(conn, audit_def(), &row, row.seq)?;
+        Ok(row)
+    })
+    .map(|written| written.value)
+}
+
+/// The newest `limit` owner actions, newest first: those of `workspace` alone when it is given.
+pub fn page(db: &Db, workspace: Option<&str>, limit: i64) -> Result<Vec<IdeAuditRow>, StoreError> {
+    db.read(|conn| match workspace {
+        Some(workspace) => read_rows(
+            conn,
+            sql::IDE_AUDIT_PAGE_BY_WORKSPACE,
+            audit_def(),
+            params![workspace, limit],
+        ),
+        None => read_rows(conn, sql::IDE_AUDIT_PAGE, audit_def(), params![limit]),
+    })
 }
 
 /// The bus event for one owner action.
@@ -450,10 +557,16 @@ fn event(workspace: &str, path: Option<&str>, kind: &str) -> Value {
     json!({ "workspace": workspace, "path": path, "kind": kind })
 }
 
-/// Writes the audit row, then publishes the event. A row that cannot be written is a 500: the action
-/// has happened, so the owner must hear that its record is missing.
-fn record(host: &dyn Host, row: Value, data: Value) -> Result<(), Response> {
-    host.db().append_ide_audit(&row).map_err(|err| {
+/// Writes the audit entry, then publishes the event. An entry that cannot be written is a 500: the action has
+/// happened, so the owner must hear that its record is missing.
+fn record(
+    host: &dyn Host,
+    workspace: &str,
+    path: Option<&str>,
+    action: IdeAudit,
+    data: Value,
+) -> Result<(), Response> {
+    append(host.store(), workspace, path, action).map_err(|err| {
         Response::error(
             500,
             &format!("the action happened but the audit log could not be written: {err}"),
@@ -752,13 +865,19 @@ pub fn write_file(host: &dyn Host, cid: u64, body: &Value) -> Reply {
     }
     let done = reply(answer)?;
     let ws = workspace_of(cid);
-    let row = audit_row(
+    let action = IdeAudit::Write {
+        hash_before: expected.as_str().map(str::to_string),
+        hash_after: done["hash"].clone(),
+        checkpoint: done["checkpoint"].clone(),
+        change: None,
+    };
+    record(
+        host,
         &ws,
-        "write",
         Some(path.as_str()),
-        json!({ "hash_before": expected, "hash_after": done["hash"], "checkpoint": done["checkpoint"] }),
-    );
-    record(host, row, event(&ws, Some(path.as_str()), "write"))?;
+        action,
+        event(&ws, Some(path.as_str()), "write"),
+    )?;
     Ok(done)
 }
 
@@ -814,13 +933,11 @@ pub fn checkpoints(host: &dyn Host, cid: u64) -> Reply {
 pub fn restore(host: &dyn Host, cid: u64, n: u64) -> Reply {
     let done = tool(host, cid, "ide_restore", &json!({ "n": n }))?;
     let ws = workspace_of(cid);
-    let row = audit_row(
-        &ws,
-        "restore",
-        None,
-        json!({ "restored": n, "checkpoint": done["checkpoint"] }),
-    );
-    record(host, row, event(&ws, None, "restore"))?;
+    let action = IdeAudit::Restore {
+        restored: n,
+        checkpoint: done["checkpoint"].clone(),
+    };
+    record(host, &ws, None, action, event(&ws, None, "restore"))?;
     Ok(done)
 }
 
@@ -863,13 +980,12 @@ pub fn run_start(host: &dyn Host, cid: u64, body: &Value) -> Reply {
     }
     let done = tool(host, cid, "ide_run_start", &args)?;
     let ws = workspace_of(cid);
-    let row = audit_row(
-        &ws,
-        "run",
-        None,
-        json!({ "run": done["run"], "command": command, "timeout_s": timeout }),
-    );
-    record(host, row, event(&ws, None, "run"))?;
+    let action = IdeAudit::Run {
+        run: done["run"].clone(),
+        command: command.to_string(),
+        timeout_s: timeout,
+    };
+    record(host, &ws, None, action, event(&ws, None, "run"))?;
     Ok(done)
 }
 
@@ -886,11 +1002,10 @@ pub fn run_poll(host: &dyn Host, cid: u64, run: &str, offset: Option<&str>) -> R
 pub fn run_stop(host: &dyn Host, cid: u64, run: &str) -> Reply {
     let done = tool(host, cid, "ide_run_stop", &json!({ "run": run }))?;
     let ws = workspace_of(cid);
-    record(
-        host,
-        audit_row(&ws, "run_stop", None, json!({ "run": run })),
-        event(&ws, None, "run"),
-    )?;
+    let action = IdeAudit::RunStop {
+        run: run.to_string(),
+    };
+    record(host, &ws, None, action, event(&ws, None, "run"))?;
     Ok(done)
 }
 
@@ -927,27 +1042,22 @@ fn station_call(host: &dyn Host, id: &str, op: Op) -> Reply {
     host.station_request(id, op).map_err(station_failure)
 }
 
-/// The station audit row for one owner action on a workstation: kind `owner_ide`, with the action and its fields.
-fn station_row(id: &str, action: &str, detail: Value) -> Value {
-    let mut data = json!({ "action": action });
-    if let (Some(map), Value::Object(detail)) = (data.as_object_mut(), detail) {
-        map.extend(detail);
-    }
-    crate::stations::audit_row(Some(id), None, "owner_ide", "owner", data)
-}
-
-/// Writes the station audit row. A row that cannot be written is a 500, as for the IDE audit in [`record`].
-fn record_station(host: &dyn Host, id: &str, action: &str, detail: Value) -> Result<(), Response> {
-    host.db()
-        .append_station_audit(&station_row(id, action, detail))
-        .map_err(|err| {
-            Response::error(
-                500,
-                &format!(
-                    "the action happened but the station audit log could not be written: {err}"
-                ),
-            )
-        })
+/// Writes the station audit entry of one owner action on workstation `id` (kind `owner_ide`). An entry that cannot be
+/// written is a 500, as for the IDE audit in [`record`].
+fn record_station(host: &dyn Host, id: &str, action: OwnerIdeAction) -> Result<(), Response> {
+    crate::stations::audit::write(
+        host.store(),
+        Some(id),
+        None,
+        "owner",
+        StationAudit::OwnerIde { action },
+    )
+    .map_err(|err| {
+        Response::error(
+            500,
+            &format!("the action happened but the station audit log could not be written: {err}"),
+        )
+    })
 }
 
 /// `GET .../tree` of a station: one page of a folder in its work folder. A missing `path` is the work folder.
@@ -1009,18 +1119,27 @@ pub fn station_write(host: &dyn Host, id: &str, body: &Value) -> Reply {
         }
     };
     let ws = station_ws(id);
-    let row = audit_row(
+    let action = IdeAudit::Write {
+        hash_before: expected.as_str().map(str::to_string),
+        hash_after: done["hash"].clone(),
+        checkpoint: Value::Null,
+        change: None,
+    };
+    record(
+        host,
         &ws,
-        "write",
         Some(path.as_str()),
-        json!({ "hash_before": expected, "hash_after": done["hash"], "checkpoint": null }),
-    );
-    record(host, row, event(&ws, Some(path.as_str()), "write"))?;
+        action,
+        event(&ws, Some(path.as_str()), "write"),
+    )?;
     record_station(
         host,
         id,
-        "write",
-        json!({ "path": path, "hash_before": expected, "hash_after": done["hash"] }),
+        OwnerIdeAction::Write {
+            path: path.clone(),
+            hash_before: expected.as_str().map(str::to_string),
+            hash_after: done["hash"].clone(),
+        },
     )?;
     Ok(done)
 }
@@ -1085,13 +1204,22 @@ pub fn station_run_start(host: &dyn Host, id: &str, body: &Value) -> Reply {
         }),
     )?;
     let ws = station_ws(id);
-    let detail = json!({ "run": done["run"], "command": command, "timeout_s": timeout });
-    record(
+    let timeout_s = timeout.map(u64::from);
+    let action = IdeAudit::Run {
+        run: done["run"].clone(),
+        command: command.to_string(),
+        timeout_s,
+    };
+    record(host, &ws, None, action, event(&ws, None, "run"))?;
+    record_station(
         host,
-        audit_row(&ws, "run", None, detail.clone()),
-        event(&ws, None, "run"),
+        id,
+        OwnerIdeAction::Run {
+            run: done["run"].clone(),
+            command: command.to_string(),
+            timeout_s,
+        },
     )?;
-    record_station(host, id, "run", detail)?;
     Ok(done)
 }
 
@@ -1118,12 +1246,17 @@ pub fn station_run_stop(host: &dyn Host, id: &str, run: &str) -> Reply {
         }),
     )?;
     let ws = station_ws(id);
-    record(
+    let action = IdeAudit::RunStop {
+        run: run.to_string(),
+    };
+    record(host, &ws, None, action, event(&ws, None, "run"))?;
+    record_station(
         host,
-        audit_row(&ws, "run_stop", None, json!({ "run": run })),
-        event(&ws, None, "run"),
+        id,
+        OwnerIdeAction::RunStop {
+            run: run.to_string(),
+        },
     )?;
-    record_station(host, id, "run_stop", json!({ "run": run }))?;
     Ok(done)
 }
 
@@ -1296,13 +1429,19 @@ pub fn repo_write(host: &dyn Host, ws: &RepoWs, body: &Value) -> Reply {
     let hash = weft_hash(text.as_bytes());
     let checkpoint = landed["landed"].clone();
     let id = ws.id();
-    let row = audit_row(
+    let action = IdeAudit::Write {
+        hash_before: expected.as_str().map(str::to_string),
+        hash_after: json!(hash),
+        checkpoint: checkpoint.clone(),
+        change: Some(landed["change"].clone()),
+    };
+    record(
+        host,
         &id,
-        "write",
         Some(path.as_str()),
-        json!({ "hash_before": expected, "hash_after": hash, "checkpoint": checkpoint, "change": landed["change"] }),
-    );
-    record(host, row, event(&id, Some(path.as_str()), "write"))?;
+        action,
+        event(&id, Some(path.as_str()), "write"),
+    )?;
     Ok(json!({ "path": path, "hash": hash, "checkpoint": checkpoint }))
 }
 
@@ -1550,11 +1689,13 @@ pub fn audit_rows(host: &dyn Host, workspace: Option<&str>, limit: Option<&str>)
             }
         },
     };
-    let rows = host
-        .db()
-        .ide_audit(workspace, limit as i64)
+    let rows = page(host.store(), workspace, limit as i64)
         .map_err(|err| Response::error(500, &format!("the audit log cannot be read: {err}")))?;
-    Ok(Value::Array(rows))
+    Ok(Value::Array(
+        rows.iter()
+            .map(|row| serde_json::to_value(row).unwrap_or(Value::Null))
+            .collect(),
+    ))
 }
 
 /// A query value, percent-decoded. An empty value is absent.
@@ -1773,9 +1914,8 @@ mod tests {
         links: Vec<(String, Arc<StationLink>)>,
         /// STOP ALL holds the plaza.
         stop_all: bool,
-        /// No database: the audit is the state directory's file (`dir`).
-        db: Db,
-        dir: std::path::PathBuf,
+        /// The hub's store, in a fresh folder: the audit's table is in its `plaza.db`.
+        plaza: apz_store::Store,
     }
 
     impl Fake {
@@ -1804,9 +1944,27 @@ mod tests {
                 stations: Vec::new(),
                 links: Vec::new(),
                 stop_all: false,
-                db: Db::files_only(&dir),
-                dir,
+                plaza: crate::store::components::open_for_test(&dir),
             }
+        }
+
+        /// The IDE audit's rows of `workspace` (all when None), newest first, as the audit route serves them.
+        fn ide_audit(&self, workspace: Option<&str>, limit: i64) -> Result<Vec<Value>, String> {
+            let rows = page(self.store(), workspace, limit).map_err(|err| err.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|row| serde_json::to_value(row).unwrap_or(Value::Null))
+                .collect())
+        }
+
+        /// The station audit's rows of `station` (all when None), newest first, as the audit route serves them.
+        fn station_audit(&self, station: Option<&str>, limit: i64) -> Result<Vec<Value>, String> {
+            let rows = crate::stations::audit::page(self.store(), station, limit)
+                .map_err(|err| err.to_string())?;
+            Ok(rows
+                .iter()
+                .map(|row| serde_json::to_value(row).unwrap_or(Value::Null))
+                .collect())
         }
 
         /// Weft answers with `answer`: (method, path, body).
@@ -1894,8 +2052,8 @@ mod tests {
             (self.answer)(name, args)
         }
 
-        fn db(&self) -> &Db {
-            &self.db
+        fn store(&self) -> &Db {
+            self.plaza.db(crate::store::PLAZA)
         }
 
         fn publish(&self, data: &Value) {
@@ -2376,7 +2534,7 @@ mod tests {
             let body = body_of(response);
             assert_eq!(body["error"], json!("conflict"));
             assert_eq!(body["current_hash"], json!("abc123"));
-            assert!(fake.db.ide_audit(None, 10).unwrap().is_empty());
+            assert!(fake.ide_audit(None, 10).unwrap().is_empty());
             assert!(fake.events.borrow().is_empty());
         }
         // A write to a file that is gone is a conflict with no current hash.
@@ -2400,7 +2558,7 @@ mod tests {
         assert_eq!(fake.calls(), 1, "the write goes through its tool");
         assert_eq!(fake.last_args()["expected_hash"], json!("old"));
 
-        let rows = fake.db.ide_audit(Some("agent:12"), 10).unwrap();
+        let rows = fake.ide_audit(Some("agent:12"), 10).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["kind"], json!("write"));
         assert_eq!(rows[0]["actor"], json!("owner"));
@@ -2414,9 +2572,7 @@ mod tests {
             json!({ "workspace": "agent:12", "path": "docs/a.txt", "kind": "write" })
         );
 
-        // The row is on disk: a fresh handle on the same file reads it back.
-        let reopened = Db::files_only(&fake.dir);
-        assert_eq!(reopened.ide_audit(None, 10).unwrap().len(), 1);
+        assert_eq!(fake.ide_audit(None, 10).unwrap().len(), 1);
     }
 
     /// A two-file unified diff: one change to `a.txt` and one new file `b.txt`.
@@ -2498,7 +2654,7 @@ index 0000000..3333333
         });
         let done = restore(&fake, 12, 3).unwrap();
         assert_eq!(done["checkpoint"], json!(9));
-        let rows = fake.db.ide_audit(Some("agent:12"), 10).unwrap();
+        let rows = fake.ide_audit(Some("agent:12"), 10).unwrap();
         assert_eq!(rows[0]["kind"], json!("restore"));
         assert_eq!(rows[0]["restored"], json!(3));
         assert_eq!(fake.events.borrow()[0]["kind"], json!("restore"));
@@ -2550,7 +2706,7 @@ index 0000000..3333333
         );
         assert_eq!(status_of(run_start(&fake, 12, &json!({}))), 400);
         assert_eq!(fake.calls(), 0);
-        assert!(fake.db.ide_audit(None, 10).unwrap().is_empty());
+        assert!(fake.ide_audit(None, 10).unwrap().is_empty());
     }
 
     #[test]
@@ -2629,32 +2785,143 @@ index 0000000..3333333
         }
     }
 
+    /// Every kind of the IDE audit round-trips through its table, and the audit route serves each row with the JSON it
+    /// always had (without `at_ms`, which the test drops: it is the clock's).
+    #[test]
+    fn every_ide_audit_kind_round_trips_with_the_route_json() {
+        let fake = Fake::new("audit-kinds", |_, _| ok(json!({})));
+        let file = |hash_before: Option<&str>,
+                    hash_after: Value,
+                    checkpoint: Value,
+                    change: Option<Value>| {
+            IdeAudit::Write {
+                hash_before: hash_before.map(str::to_string),
+                hash_after,
+                checkpoint,
+                change,
+            }
+        };
+        let kinds: Vec<(&str, Option<&str>, IdeAudit, Value)> = vec![
+            (
+                "agent:12",
+                Some("docs/a.txt"),
+                file(Some("old"), json!("new"), json!(7), None),
+                json!({"hash_before": "old", "hash_after": "new", "checkpoint": 7}),
+            ),
+            (
+                "station:w3",
+                Some("a.txt"),
+                file(None, json!("h2"), Value::Null, None),
+                json!({"hash_before": null, "hash_after": "h2", "checkpoint": null}),
+            ),
+            (
+                "repo:plaza-web@main",
+                Some("README.md"),
+                file(
+                    Some("h1"),
+                    json!("h2"),
+                    json!("landed-1"),
+                    Some(json!({"id": "c1"})),
+                ),
+                json!({"hash_before": "h1", "hash_after": "h2", "checkpoint": "landed-1", "change": {"id": "c1"}}),
+            ),
+            (
+                "agent:12",
+                None,
+                IdeAudit::Restore {
+                    restored: 3,
+                    checkpoint: json!(9),
+                },
+                json!({"restored": 3, "checkpoint": 9}),
+            ),
+            (
+                "agent:12",
+                None,
+                IdeAudit::Run {
+                    run: json!("run-1"),
+                    command: "ls -la".into(),
+                    timeout_s: Some(30),
+                },
+                json!({"run": "run-1", "command": "ls -la", "timeout_s": 30}),
+            ),
+            (
+                "station:w3",
+                None,
+                IdeAudit::Run {
+                    run: json!("run-2"),
+                    command: "make".into(),
+                    timeout_s: None,
+                },
+                json!({"run": "run-2", "command": "make", "timeout_s": null}),
+            ),
+            (
+                "agent:12",
+                None,
+                IdeAudit::RunStop {
+                    run: "run-1".into(),
+                },
+                json!({"run": "run-1"}),
+            ),
+            (
+                "station:w3",
+                None,
+                IdeAudit::TermOpen {
+                    term: "term-1".into(),
+                    cols: 80,
+                    rows: 24,
+                    cwd: None,
+                },
+                json!({"term": "term-1", "cols": 80, "rows": 24, "cwd": null}),
+            ),
+            (
+                "station:w3",
+                None,
+                IdeAudit::TermKill {
+                    term: "term-1".into(),
+                },
+                json!({"term": "term-1"}),
+            ),
+        ];
+        let mut want = Vec::new();
+        for (workspace, path, action, fields) in &kinds {
+            let kind = serde_json::to_value(action).unwrap()["kind"].clone();
+            append(fake.store(), workspace, *path, action.clone()).unwrap();
+            let mut row =
+                json!({"actor": "owner", "workspace": workspace, "kind": kind, "path": path});
+            row.as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            want.push(row);
+        }
+        want.reverse();
+        let got = fake.ide_audit(None, 100).unwrap();
+        assert_eq!(got.len(), kinds.len(), "one row per entry");
+        for (mut got, mut want) in got.into_iter().zip(want) {
+            got.as_object_mut().unwrap().remove("at_ms");
+            assert!(got.get("seq").is_none(), "the route serves no seq: {got}");
+            want.as_object_mut().unwrap().remove("at_ms");
+            assert_eq!(got, want);
+        }
+    }
+
     #[test]
     fn the_audit_log_filters_and_checks_its_limit() {
         let fake = Fake::new("auditq", |_, _| ok(json!({ "run": "run-1" })));
-        fake.db
-            .append_ide_audit(
-                &json!({ "at_ms": 1, "workspace": "agent:12", "kind": "write", "n": 1 }),
-            )
-            .unwrap();
-        fake.db
-            .append_ide_audit(
-                &json!({ "at_ms": 2, "workspace": "agent:40", "kind": "write", "n": 2 }),
-            )
-            .unwrap();
-        fake.db
-            .append_ide_audit(
-                &json!({ "at_ms": 3, "workspace": "agent:12", "kind": "restore", "n": 3 }),
-            )
-            .unwrap();
+        let restore = |n: u64| IdeAudit::Restore {
+            restored: n,
+            checkpoint: Value::Null,
+        };
+        append(fake.store(), "agent:12", None, restore(1)).unwrap();
+        append(fake.store(), "agent:40", None, restore(2)).unwrap();
+        append(fake.store(), "agent:12", None, restore(3)).unwrap();
 
         let mine = audit_rows(&fake, Some("agent:12"), None).unwrap();
         assert_eq!(mine.as_array().unwrap().len(), 2);
-        assert_eq!(mine[0]["n"], json!(3));
+        assert_eq!(mine[0]["restored"], json!(3));
 
         let newest = audit_rows(&fake, None, Some("1")).unwrap();
         assert_eq!(newest.as_array().unwrap().len(), 1);
-        assert_eq!(newest[0]["n"], json!(3));
+        assert_eq!(newest[0]["restored"], json!(3));
 
         assert_eq!(status_of(audit_rows(&fake, None, Some("0"))), 400);
         assert_eq!(status_of(audit_rows(&fake, None, Some("1001"))), 400);
@@ -2768,7 +3035,6 @@ index 0000000..3333333
             "both writes reached the daemon"
         );
         let rows = host
-            .db
             .ide_audit(Some("station:w3"), 10)
             .expect("the audit reads");
         assert_eq!(rows.len(), 1, "only the write that happened is audited");
@@ -2777,7 +3043,6 @@ index 0000000..3333333
         assert_eq!(rows[0]["hash_before"], "h1");
         assert_eq!(rows[0]["hash_after"], "h2");
         let station = host
-            .db
             .station_audit(Some("w3"), 10)
             .expect("the station audit reads");
         assert_eq!(station.len(), 1);
@@ -2827,7 +3092,6 @@ index 0000000..3333333
             ]
         );
         let rows = host
-            .db
             .ide_audit(Some("station:w3"), 10)
             .expect("the audit reads");
         let kinds: Vec<&str> = rows.iter().filter_map(|row| row["kind"].as_str()).collect();
@@ -2837,8 +3101,7 @@ index 0000000..3333333
             "newest first, and a poll is not audited"
         );
         assert_eq!(
-            host.db
-                .station_audit(Some("w3"), 10)
+            host.station_audit(Some("w3"), 10)
                 .expect("the station audit reads")
                 .len(),
             2
