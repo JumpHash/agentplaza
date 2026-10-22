@@ -134,6 +134,27 @@ pub enum Hypervisor {
     Whp,
 }
 
+impl Arch {
+    /// The name the declaration and a pool's key use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+        }
+    }
+}
+
+impl Hypervisor {
+    /// The name the declaration and a pool's key use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Hypervisor::Kvm => "kvm",
+            Hypervisor::Hvf => "hvf",
+            Hypervisor::Whp => "whp",
+        }
+    }
+}
+
 /// A target: a place a change is previewed or tried by hand, and the kind of base that serves it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -212,8 +233,6 @@ impl Stack {
 
 /// The declaration on `project`'s repo at main. `None` when the file is not there; an error when the project has no repo
 /// yet, or the file does not parse.
-// 3.3's landings read it to start the base (16.4).
-#[allow(dead_code)]
 pub fn read(app: &App, project: &str) -> Result<Option<Stack>, String> {
     let repo = app
         .projects

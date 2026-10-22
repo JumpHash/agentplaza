@@ -25,6 +25,7 @@ mod appearance;
 mod approvals;
 mod artifacts;
 mod autoscale;
+mod base_builds;
 mod base_recipe;
 mod budgets;
 mod cards;
