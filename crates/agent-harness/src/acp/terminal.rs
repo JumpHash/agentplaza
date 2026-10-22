@@ -459,6 +459,7 @@ fn limit_arg(params: &Value) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::layout;
 
     /// A fresh folder for one test, under the system temp dir, as a workspace.
     fn workspace(name: &str) -> (Workspace, PathBuf) {
@@ -563,6 +564,8 @@ mod tests {
         let (ws, dir) = workspace("cwd");
         let inside = dir.join("sub");
         std::fs::create_dir_all(&inside).unwrap();
+        // The engine runs in this folder, so under root it is given to the engine user (a no-op otherwise).
+        layout::give_to_engine(&dir, &inside).unwrap();
         let terms = Terminals::new(ws, std::env::temp_dir());
 
         assert!(
