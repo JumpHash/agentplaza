@@ -272,5 +272,6 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
             crate::stations::recordings::frame_def,
         ),
         ("station sync files", crate::stations::sync::def),
+        ("eval runs", crate::evals::def),
     ]
 }

@@ -310,6 +310,26 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         "{note}"
     );
 
+    // A tool the builder ran reports how long it took: the hub keeps each tool's latency.
+    let report = json!({
+        "type": "tool_report",
+        "work": work,
+        "call": "toolu_9",
+        "ok": true,
+        "output": "ok",
+        "name": "bash",
+        "input": { "command": "true" },
+        "duration_ms": 30,
+    });
+    let (status, body) = hub.guest(builder_cid, "message", report);
+    assert_eq!(status, 200, "{body}");
+    let (_, tools) = hub.call("GET", "/v1/evals/tools", None);
+    assert_eq!(
+        tools,
+        json!([{ "tool": "bash", "calls": 1, "errors": 0, "p50_ms": 30, "p95_ms": 30 }]),
+        "the hub keeps the tool's duration"
+    );
+
     // The builder finishes: the reviewer's session starts on the other model and reads the note first.
     hub.work_done(
         builder_cid,
@@ -391,6 +411,61 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
             .as_array()
             .is_some_and(|m| m.iter().any(|m| text(&m["text"]).contains("is done"))),
         "the task's chat says it is done: {messages}"
+    );
+    // Each step session left its eval record: the reviewer's with its verdict, the builder's on its model.
+    let runs = hub.wait_for(&format!("/v1/evals/runs?project={pid}"), WAIT, |r| {
+        r.as_array().is_some_and(|r| r.len() == 2)
+    });
+    let runs = runs.as_array().cloned().unwrap_or_default();
+    let run_of = |seat: &str| {
+        runs.iter()
+            .find(|r| r["seat"] == seat)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (builder_run, reviewer_run) = (run_of("builder"), run_of("reviewer"));
+    assert_eq!(
+        (builder_run["model"].as_str(), builder_run["ok"].as_bool()),
+        (Some("mock/agent"), Some(true)),
+        "{builder_run}"
+    );
+    assert!(
+        builder_run["tokens_in"].as_u64().unwrap_or(0) > 0,
+        "{builder_run}"
+    );
+    assert_eq!(
+        builder_run["tool_ms"], 30,
+        "the builder's tool time: {builder_run}"
+    );
+    assert_eq!(
+        (
+            reviewer_run["model"].as_str(),
+            reviewer_run["verdict"].as_bool(),
+            reviewer_run["ok"].as_bool()
+        ),
+        (Some("mock/echo"), Some(true), Some(true)),
+        "{reviewer_run}"
+    );
+    assert_eq!(
+        (
+            builder_run["recipe"].as_str(),
+            builder_run["engine"].as_str()
+        ),
+        (Some("change"), Some("harness")),
+        "{builder_run}"
+    );
+    let (_, scores) = hub.call("GET", "/v1/evals/scores", None);
+    let builder_score = scores
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["seat"] == "builder").cloned())
+        .unwrap_or_default();
+    assert_eq!(
+        (
+            builder_score["runs"].as_u64(),
+            builder_score["successes"].as_u64()
+        ),
+        (Some(1), Some(1)),
+        "{scores}"
     );
     every_save_succeeded(&hub);
 }

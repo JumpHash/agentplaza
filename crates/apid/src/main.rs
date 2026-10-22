@@ -45,6 +45,7 @@ mod egress_inject;
 mod engine_feed;
 mod engine_instances;
 mod environments;
+mod evals;
 mod events;
 mod fleet;
 mod foundry;

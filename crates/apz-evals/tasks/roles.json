@@ -1,0 +1,19 @@
+{
+  "roles": {
+    "builder": {
+      "tools": [
+        "bash",
+        "read_file",
+        "write_file",
+        "edit_file"
+      ]
+    },
+    "reviewer": {
+      "tools": [
+        "bash",
+        "read_file",
+        "plaza_verdict"
+      ]
+    }
+  }
+}

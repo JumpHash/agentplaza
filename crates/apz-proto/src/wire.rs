@@ -34,6 +34,7 @@
 //! v6  streamed answers (inside a v3 session): while a model call runs, host model_delta{req,delta} carries each
 //!     fragment of its answer as the provider streams it, before the model_result; a tool call's fragments
 //!     (tool_use, tool_input, block_end) let the guest start a read-only call before the answer ends
+//! v7  a tool_report{…,duration_ms} says how long the guest ran the call (an older harness's report has none)
 //! ```
 //!
 //! The guest's identity is never taken from a line: the hub binds every
@@ -119,6 +120,9 @@ pub enum GuestMessage {
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input: Option<Value>,
+        /// v7: how long the guest ran the call, in milliseconds. A harness from before v7 sends none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
     /// v5: the calls of one model turn the policy does not allow, decided by the hub in one answer
     /// ([`HostMessage::ToolBatchDecision`]), in the calls' order.
@@ -948,6 +952,7 @@ mod tests {
             policy: None,
             name: None,
             input: None,
+            duration_ms: None,
         };
         assert_eq!(
             plain.to_line().unwrap(),
@@ -961,13 +966,23 @@ mod tests {
             policy: Some("ab12".into()),
             name: Some("glob".into()),
             input: Some(json!({"pattern": "*.rs"})),
+            duration_ms: Some(12),
         };
         let line = local.to_line().unwrap();
         assert_eq!(
             line,
-            r#"{"type":"tool_report","work":1,"call":"toolu_2","ok":true,"output":"a.rs","policy":"ab12","name":"glob","input":{"pattern":"*.rs"}}"#
+            r#"{"type":"tool_report","work":1,"call":"toolu_2","ok":true,"output":"a.rs","policy":"ab12","name":"glob","input":{"pattern":"*.rs"},"duration_ms":12}"#
         );
         assert_eq!(GuestMessage::from_line(&line).unwrap(), local);
+        // A harness from before v7 sends no duration: its report parses with none.
+        let timed = r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x","duration_ms":5}"#;
+        assert!(matches!(
+            GuestMessage::from_line(timed).unwrap(),
+            GuestMessage::ToolReport {
+                duration_ms: Some(5),
+                ..
+            }
+        ));
         // A harness from before v5 sends no policy: its report parses with none.
         let old = r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x"}"#;
         assert_eq!(GuestMessage::from_line(old).unwrap(), plain);

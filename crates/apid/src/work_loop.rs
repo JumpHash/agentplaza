@@ -212,6 +212,8 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
     );
     app.seats
         .fill(&seat.task, &seat.name, &session.id, Some(&model), now);
+    app.evals
+        .begin(&session.id, &seat.recipe, &seat.step, seat.round);
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
     match crate::agents::spawn_agents(app, &seat.role, 1, Some(&model), None, Some(&project)) {
         Ok(started) => {
@@ -234,7 +236,7 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
 
 /// A session that could not start, or whose VM went away: it fails and its seat goes again (or fails for good).
 fn fail_session(app: &App, session: &Session, why: &str, now: u64) {
-    let _ = app.sessions.finish(&session.id, why, true, now);
+    finish_session(app, &session.id, why, true, now);
     if let Some(cid) = session.cid {
         retire(app, cid);
     }
@@ -547,6 +549,9 @@ pub fn landed(app: &App, task: &str, change: &str) {
         let _ = t.finish(FinishOutcome::Done, Some(format!("{change} landed")));
     }
     close_task(app, task, now);
+    if let Err(err) = app.evals.landed(task, true) {
+        eprintln!("apid: evals: the landing of {task} was not recorded: {err}");
+    }
     let project = app
         .plaza
         .tasks
@@ -631,8 +636,18 @@ fn end_session(app: &App, session: &Session, handover: &str, failed: bool, now: 
     } else {
         "the step ended"
     };
-    let _ = app.sessions.finish(&session.id, outcome, failed, now);
+    finish_session(app, &session.id, outcome, failed, now);
     app.bus.publish("session", &app.sessions.get(&session.id));
+}
+
+/// Finishes a session and writes its eval record, the first time it ends.
+fn finish_session(app: &App, id: &str, outcome: &str, failed: bool, now: u64) {
+    let was_final = app.sessions.get(id).is_none_or(|s| s.state.is_final());
+    if let Ok(ended) = app.sessions.finish(id, outcome, failed, now)
+        && !was_final
+    {
+        crate::evals::ended(app, &ended);
+    }
 }
 
 /// Stops a session by hand (the owner, `POST /v1/sessions/{id}/stop`): it ends and its seat goes again.

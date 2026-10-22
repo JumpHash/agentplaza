@@ -214,7 +214,10 @@ impl std::error::Error for HarnessError {}
 
 #[cfg(target_os = "linux")]
 fn run() -> Result<(), HarnessError> {
-    let cmdline = fs::read_to_string(CMDLINE_PATH).map_err(HarnessError::Cmdline)?;
+    let cmdline = match cmdline_flag() {
+        Some(flags) => flags,
+        None => fs::read_to_string(CMDLINE_PATH).map_err(HarnessError::Cmdline)?,
+    };
     let config = Config::parse(&cmdline).map_err(HarnessError::Flags)?;
 
     // Not the locked handle: the session's lanes write the transcript from other threads, and a
@@ -233,6 +236,16 @@ fn run() -> Result<(), HarnessError> {
     } else {
         one_shot(&config, &mut out)
     }
+}
+
+/// The command line a process was started with, when it names one (`--cmdline <flags>`): the eval suite starts its
+/// harnesses this way, where a VM reads `/proc/cmdline`.
+#[cfg(target_os = "linux")]
+fn cmdline_flag() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.windows(2)
+        .find(|pair| pair[0] == "--cmdline")
+        .map(|pair| pair[1].clone())
 }
 
 /// The sandbox's home, and the user its processes run as (E2B's default user).
@@ -282,7 +295,7 @@ fn one_shot(config: &Config, out: &mut impl Write) -> Result<(), HarnessError> {
     let (stream, attempts) = connect(config, out).map_err(HarnessError::Connect)?;
     let _ = writeln!(out, "agent-harness: connected after {attempts} attempt(s)");
 
-    let guest_cid = guest_cid(out)?;
+    let guest_cid = guest_cid(config, out)?;
     let identity = Identity {
         guest_cid,
         vm: config.vm,
@@ -382,8 +395,8 @@ fn keepalive_once(
     config: &Config,
     out: &mut (impl Write + Send),
 ) -> Result<u64, (bool, bool, String)> {
-    let guest_cid = guest_cid(out).map_err(|err| (false, false, err.to_string()))?;
-    let stream = VsockStream::connect(HOST_CID, config.port).map_err(|err| {
+    let guest_cid = guest_cid(config, out).map_err(|err| (false, false, err.to_string()))?;
+    let stream = open_stream(config).map_err(|err| {
         (
             false,
             false,
@@ -418,14 +431,32 @@ fn keepalive_once(
     })
 }
 
-/// Reads the guest CID the vsock device assigned this VM, logging it.
+/// Opens the session's stream: the Unix socket a `plaza.connect=uds:` line names, or the orchestrator over AF_VSOCK.
+#[cfg(target_os = "linux")]
+fn open_stream(config: &Config) -> io::Result<VsockStream> {
+    match &config.connect {
+        Some(path) => VsockStream::connect_unix(path),
+        None => VsockStream::connect(HOST_CID, config.port),
+    }
+}
+
+/// Reads the guest CID the vsock device assigned this VM, logging it. On the test transport the CID is the one
+/// the socket is named for (vsockd serves each CID on its own socket).
 ///
 /// The CID is the device's answer, never the command line's: one command line
 /// is shared by every VM of a spawn, while the device gives each VM its own CID
 /// and stamps that CID into every packet.
 #[cfg(target_os = "linux")]
-fn guest_cid(out: &mut impl Write) -> Result<u32, HarnessError> {
-    let guest_cid = device_guest_cid().map_err(HarnessError::GuestCid)?;
+fn guest_cid(config: &Config, out: &mut impl Write) -> Result<u32, HarnessError> {
+    let guest_cid = match &config.connect {
+        Some(path) => cmdline::socket_cid(path).ok_or_else(|| {
+            HarnessError::GuestCid(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{path} is not named vm<cid>_<port>"),
+            ))
+        })?,
+        None => device_guest_cid().map_err(HarnessError::GuestCid)?,
+    };
     if guest_cid == CID_ANY || cid_is_reserved(guest_cid) {
         return Err(HarnessError::UnassignedCid(guest_cid));
     }
@@ -468,7 +499,7 @@ fn jitter_nanos() -> u64 {
 fn connect(config: &Config, log: &mut impl Write) -> io::Result<(VsockStream, usize)> {
     let mut last_error: Option<io::Error> = None;
     for attempt in 1..=CONNECT_ATTEMPTS {
-        match VsockStream::connect(HOST_CID, config.port) {
+        match open_stream(config) {
             Ok(stream) => return Ok((stream, attempt)),
             Err(err) => {
                 let _ = writeln!(

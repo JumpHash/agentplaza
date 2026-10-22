@@ -13,6 +13,9 @@
 //!                     until its first welcome (optional, default off)
 //! plaza.sandbox=1     a sandbox: no hub session; serve the envd daemon on its vsock port
 //!                     (optional, default off)
+//! plaza.connect=uds:<path>  the test transport: the session connects to this Unix socket instead of
+//!                     AF_VSOCK. Its name is `vm<cid>_<port>` (vsockd serves each guest CID on one), and the
+//!                     guest CID is read from it (optional, default none: a VM never sets it)
 //! ```
 //!
 //! `plaza.harness=1` is consumed by the guest's `init`, not by the harness;
@@ -53,6 +56,8 @@ pub struct Config {
     /// Whether this guest is a sandbox (`plaza.sandbox=1`): it serves the E2B-compatible
     /// daemon (see [`crate::envd`]) instead of running a hub session.
     pub sandbox: bool,
+    /// The Unix socket the session connects to instead of AF_VSOCK (`plaza.connect=uds:<path>`), if any.
+    pub connect: Option<String>,
 }
 
 impl Default for Config {
@@ -64,6 +69,7 @@ impl Default for Config {
             keepalive: false,
             template: false,
             sandbox: false,
+            connect: None,
         }
     }
 }
@@ -83,6 +89,11 @@ pub enum ConfigError {
         /// Why the value cannot be a role name.
         reason: &'static str,
     },
+    /// `plaza.connect={value}` is not `uds:<path>`
+    Transport {
+        /// The value as it appeared.
+        value: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -90,6 +101,7 @@ impl fmt::Display for ConfigError {
         match self {
             Self::BadValue { flag, value } => write!(f, "{flag}={value} is not a number"),
             Self::BadRole { reason } => write!(f, "plaza.role= is not a role name: {reason}"),
+            Self::Transport { value } => write!(f, "plaza.connect={value} is not uds:<path>"),
         }
     }
 }
@@ -146,6 +158,10 @@ impl Config {
             Some(value) => Some(validate_role(value)?),
             None => None,
         };
+        let connect = match value_of("plaza.connect=") {
+            Some("") | None => None,
+            Some(value) => Some(validate_connect(value)?),
+        };
         Ok(Self {
             port,
             vm,
@@ -153,7 +169,26 @@ impl Config {
             keepalive,
             template,
             sandbox,
+            connect,
         })
+    }
+}
+
+/// The guest CID a test socket is named for: `vm<cid>_<port>` in its file name, the name vsockd serves each guest
+/// CID under. None when the name is not that.
+pub fn socket_cid(path: &str) -> Option<u32> {
+    let name = std::path::Path::new(path).file_name()?.to_str()?;
+    let (cid, _port) = name.strip_prefix("vm")?.split_once('_')?;
+    cid.parse().ok()
+}
+
+/// Checks that `value` is `uds:<path>` with a path, and returns the path.
+fn validate_connect(value: &str) -> Result<String, ConfigError> {
+    match value.strip_prefix("uds:") {
+        Some(path) if !path.is_empty() => Ok(path.to_string()),
+        _ => Err(ConfigError::Transport {
+            value: value.to_string(),
+        }),
     }
 }
 
@@ -179,6 +214,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_test_socket_names_the_guest_cid_it_serves() {
+        assert_eq!(socket_cid("/tmp/uds/vm500_5000"), Some(500));
+        assert_eq!(socket_cid("/tmp/uds/vm3_5000"), Some(3));
+        assert_eq!(socket_cid("/tmp/uds/500_5000"), None);
+        assert_eq!(socket_cid("/tmp/uds/vmx_5000"), None);
+        assert_eq!(socket_cid("/tmp/uds/"), None);
+    }
+
+    #[test]
     fn command_lines_parse_and_bad_values_are_refused() {
         // The v1 and fleet command lines parse.
         {
@@ -200,6 +244,7 @@ mod tests {
                     keepalive: true,
                     template: false,
                     sandbox: false,
+                    connect: None,
                 }
             );
             assert!(!Config::parse("plaza.keepalive=0").unwrap().keepalive);
@@ -210,6 +255,14 @@ mod tests {
             assert!(!Config::parse("plaza.sandbox=0").unwrap().sandbox);
             assert!(!Config::default().sandbox);
             assert_eq!(Config::parse("plaza.role=").unwrap().role, None);
+            assert_eq!(
+                Config::parse("plaza.connect=uds:/tmp/plaza/vm500_5000")
+                    .unwrap()
+                    .connect
+                    .as_deref(),
+                Some("/tmp/plaza/vm500_5000")
+            );
+            assert_eq!(Config::default().connect, None);
         }
         // Lookalike and repeated tokens do not confuse the parser: the last plaza.vm wins.
         {
@@ -231,6 +284,13 @@ mod tests {
             );
             assert!(Config::parse("plaza.port=x").is_err());
             assert!(Config::parse("plaza.template=yes").is_err());
+            assert_eq!(
+                Config::parse("plaza.connect=tcp:1.2.3.4:5"),
+                Err(ConfigError::Transport {
+                    value: "tcp:1.2.3.4:5".to_string()
+                })
+            );
+            assert!(Config::parse("plaza.connect=uds:").is_err());
             assert_eq!(
                 Config::parse("plaza.role=ok\u{1b}[2K"),
                 Err(ConfigError::BadRole {
