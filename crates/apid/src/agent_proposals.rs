@@ -203,7 +203,6 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
             collaboration: text(input, "collaboration"),
             boundaries: list(input, "boundaries"),
             tools: list(input, "tools"),
-            budget: input.get("budget").and_then(Value::as_u64).unwrap_or(0),
             created_by: agent.label(),
             created_ms: now_ms(),
             ..RoleDef::default()

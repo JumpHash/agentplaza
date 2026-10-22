@@ -20,13 +20,12 @@ body:json {
 
 assert {
   res.status: eq 201
-  res.body.budget: eq 400
   res.body.state: eq "open"
   res.responseTime: lt {{budgetMs}}
 }
 
 tests {
-  test("its escrow comes out of the project's budget", function () {
+  test("its reservation comes out of the project's budget", function () {
     expect(res.getBody().project).to.equal(bru.getVar("life_pid"));
   });
 }

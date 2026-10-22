@@ -253,9 +253,6 @@ pub trait Source {
     /// The owner's monthly budget for model spend, if set.
     fn monthly_budget(&self) -> Option<f64>;
 
-    /// Plaza credits left in the treasury, and what one credit is worth in USD.
-    fn treasury(&self) -> Option<(f64, f64)>;
-
     /// The latest node reports that are not series (`top_processes`, `gpus`, `volumes`), by node id.
     fn report(&self, node: &str) -> serde_json::Value;
 

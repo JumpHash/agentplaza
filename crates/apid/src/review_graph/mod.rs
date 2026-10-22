@@ -1462,7 +1462,7 @@ fn gate(app: &App, run_id: &str) {
     }
 }
 
-/// A pass: the revision joins its project's landing queue; the task is done (and the worker paid) when it lands.
+/// A pass: the revision joins its project's landing queue; the task is done when it lands.
 fn passed(app: &App, run: &Run, _notes: &str) {
     let detail = app.weft.get(&format!("/changes/{}", run.change)).ok();
     if let Some(d) = detail {
@@ -1873,7 +1873,6 @@ fn settle_check(app: &App, run: &Run, outcome: Outcome) {
             let created = app.plaza.tasks.create(&apz_plaza::tasks::CreateTask {
                 goal,
                 acceptance: Some("the post-land suite passes on main".into()),
-                budget: None,
                 role: app.agents.get(run.worker).map(|a| a.role),
                 after: vec![],
                 project: Some(run.project.clone()),

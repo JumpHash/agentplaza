@@ -26,7 +26,6 @@ import { mount as skills } from './skills';
 import { mount as rules } from './rules';
 import { mount as setup } from './setup';
 import { mount as tasks } from './tasks';
-import { mount as treasury } from './treasury';
 import { mount as tools } from './tools';
 import { mount as metrics } from './metrics';
 import { mount as vault } from './vault';
@@ -63,7 +62,6 @@ export const SCREENS: Screen[] = [
   { key: 'machines', label: 'Machines', icon: 'machine', section: 'Plaza', mount: machines },
   { key: 'metrics', label: 'Metrics', icon: 'zap', section: 'Plaza', mount: metrics },
   { key: 'board', label: 'Board', icon: 'boardpin', section: 'Social', mount: board },
-  { key: 'treasury', label: 'Treasury', icon: 'treasury', section: 'Social', mount: treasury },
   { key: 'rules', label: 'Rules', icon: 'rules', section: 'Social', mount: rules },
   { key: 'lab', label: 'Lab', icon: 'brain', section: 'Lab', mount: lab },
   { key: 'models', label: 'Models', icon: 'models', section: 'Setup', mount: models },

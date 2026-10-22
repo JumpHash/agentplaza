@@ -26,7 +26,7 @@ use crate::state::App;
 
 /// Every component still snapshotted into Postgres, by name, in restore order. The task ledger and the components of
 /// `plaza.db` are not here: `store` keeps them.
-pub const COMPONENTS: &[&str] = &["treasury"];
+pub const COMPONENTS: &[&str] = &[];
 
 pub mod data_migrate;
 pub mod hub_mcp;
@@ -36,20 +36,14 @@ pub mod sql;
 
 const MINUTE: Duration = Duration::from_secs(60);
 
-/// The component's snapshot ("" when it has nothing to save yet).
-pub fn snapshot_of(app: &App, component: &str) -> String {
-    match component {
-        "treasury" => app.plaza.treasury.snapshot(),
-        _ => String::new(),
-    }
+/// The component's snapshot ("" when it has nothing to save yet). No component is left in Postgres.
+pub fn snapshot_of(_app: &App, _component: &str) -> String {
+    String::new()
 }
 
-/// Restores one component from its stored snapshot.
-pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String> {
-    match component {
-        "treasury" => app.plaza.treasury.restore(json),
-        other => Err(format!("unknown component {other}")),
-    }
+/// Restores one component from its stored snapshot: there are none to restore.
+pub fn restore_into(_app: &App, component: &str, _json: &str) -> Result<(), String> {
+    Err(format!("unknown component {component}"))
 }
 
 /// FNV-1a, 64-bit, as i64: stable across runs (the std hasher is not).
@@ -381,49 +375,6 @@ fn restore_components(app: &App) {
             }
         }
     }
-    reconcile_escrows(app);
-}
-
-/// The finished tasks (done, failed, withdrawn) whose escrow still holds money, from `(id, state, escrow)` triples.
-fn stranded_escrows(tasks: &[(String, String, i128)]) -> Vec<&(String, String, i128)> {
-    tasks
-        .iter()
-        .filter(|(_, state, escrow)| {
-            matches!(state.as_str(), "done" | "failed" | "withdrawn") && *escrow > 0
-        })
-        .collect()
-}
-
-/// After a restore, refunds each finished task whose escrow still holds money: a stop between the treasury's store
-/// and the task ledger's can leave one (the task finished, its escrow not yet paid back). Returns how many it found.
-fn reconcile_escrows(app: &App) -> usize {
-    let tasks: Vec<(String, String, i128)> = app
-        .plaza
-        .tasks
-        .list()
-        .iter()
-        .map(|task| {
-            let view = task.view();
-            let escrow = app.plaza.treasury.escrow_balance(view.id);
-            (view.id.to_string(), view.state.to_string(), escrow)
-        })
-        .collect();
-    let stranded = stranded_escrows(&tasks);
-    for (id, state, escrow) in &stranded {
-        eprintln!(
-            "db: restore: task {id} is {state} but its escrow holds {escrow}; refunding it to the plaza's budget"
-        );
-        if let Err(e) = app.plaza.treasury.refund_task_to_budget(id) {
-            eprintln!("db: restore: refund of task {id} failed: {e}");
-        }
-    }
-    if !stranded.is_empty() {
-        eprintln!(
-            "db: restore: {} finished tasks had escrow to refund",
-            stranded.len()
-        );
-    }
-    stranded.len()
 }
 
 /// Loads the stored transcripts into the transcript store from the store's database, which then
@@ -441,9 +392,8 @@ fn restore_transcripts(app: &App) {
 fn write_pass_with(app: &App, mut on_error: impl FnMut(&str, &str)) {
     // A run without Postgres has no component stores to write.
     let components: &[&str] = if app.db.enabled() { COMPONENTS } else { &[] };
-    // The treasury is snapshotted before the other stores and stored alone in its transaction: the escrows of the
-    // tasks live in it, and the task ledger is in `plaza.db` now.
-    const LEDGERS: &[&str] = &["treasury"];
+    // Components stored together in one transaction: none now.
+    const LEDGERS: &[&str] = &[];
     let ledgers: Vec<(&str, String)> = components
         .iter()
         .copied()
@@ -544,9 +494,8 @@ pub fn test_database(label: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A finished task whose escrow still holds money is stranded; open or claimed tasks, and empty escrows, are not.
     #[test]
-    fn the_ledger_components_are_stored_together_and_read_back() {
+    fn components_stored_together_are_read_back() {
         let Some(url) = test_database("store_many") else {
             return;
         };
@@ -554,8 +503,8 @@ mod tests {
         let db = Db::connect(&env);
         assert!(db.enabled());
         let items = [
-            ("treasury", r#"{"entries":[1]}"#.to_string()),
-            ("tasks", r#"{"tasks":[]}"#.to_string()),
+            ("first", r#"{"items":[]}"#.to_string()),
+            ("second", r#"{"items":[1]}"#.to_string()),
         ];
         db.store_many(&items).expect("one transaction");
         for (name, json) in &items {
@@ -565,27 +514,13 @@ mod tests {
             assert_eq!(stored, wanted, "{name}");
         }
         // An unchanged item is skipped; a changed one is written again.
-        db.store_many(&[("tasks", r#"{"tasks":[1]}"#.to_string())])
+        db.store_many(&[("second", r#"{"items":[2]}"#.to_string())])
             .expect("a second pass");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&db.load("tasks").expect("stored"))
+            serde_json::from_str::<serde_json::Value>(&db.load("second").expect("stored"))
                 .expect("json"),
-            serde_json::json!({"tasks": [1]})
+            serde_json::json!({"items": [2]})
         );
-    }
-
-    #[test]
-    fn stranded_escrows_are_finished_tasks_with_money_in_escrow() {
-        let tasks = [
-            ("t1".to_string(), "done".to_string(), 5),
-            ("t2".to_string(), "withdrawn".to_string(), 0),
-            ("t3".to_string(), "open".to_string(), 9),
-            ("t4".to_string(), "failed".to_string(), 3),
-            ("t5".to_string(), "claimed".to_string(), 0),
-        ];
-        let stranded = stranded_escrows(&tasks);
-        let ids: Vec<&str> = stranded.iter().map(|(id, _, _)| id.as_str()).collect();
-        assert_eq!(ids, ["t1", "t4"]);
     }
 
     #[test]

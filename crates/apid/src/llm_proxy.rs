@@ -21,12 +21,12 @@ use serde_json::{Value, json};
 use crate::agents::Agent;
 use crate::internal::authorized;
 use crate::metrics::collect::{self, ModelCall};
-use crate::payments::{charge_model_call, paying_from};
-use crate::prices::{Tokens, USD_PER_CREDIT};
+use crate::prices::Tokens;
 use crate::settings::{ModelPolicy, Tier, tier_of};
 use crate::state::App;
 use crate::usage::Charge;
 use crate::vault::VaultError;
+use crate::work_loop::{self, CallHold};
 
 /// How long one wait on a socket blocks: a relay reads its two sockets in turns.
 const TICK: Duration = Duration::from_millis(20);
@@ -444,11 +444,11 @@ fn ratelimit_left(header: impl Fn(&str) -> Option<String>) -> (Option<f64>, Opti
     )
 }
 
-/// Usage read from streams and sockets, waiting to be recorded: the stream writer has no
-/// `App`, so the scheduler's loop drains this every couple of seconds ([`drain_usage`]). Each
-/// entry carries the charge the call started under (its task and work item), read when the call
-/// started: the usage is recorded only after the call ends, by which time the agent may have moved on.
-type PendingUsage = Vec<(u64, Charge, String, Metered, Option<CallTiming>)>;
+/// The end of calls that streams and sockets relayed, waiting to be recorded: the stream writer has no `App`, so the
+/// scheduler's loop drains this every couple of seconds ([`drain_usage`]). Each entry carries the call's admission (the
+/// charge it started under and its budget hold), read when the call started: it is ended only after the call ends, by
+/// which time the agent may have moved on. A call that ended without usage releases its hold.
+type PendingUsage = Vec<(u64, Admitted, String, Option<Metered>, Option<CallTiming>)>;
 
 fn pending_usage() -> &'static std::sync::Mutex<PendingUsage> {
     static PENDING: std::sync::OnceLock<std::sync::Mutex<PendingUsage>> =
@@ -456,19 +456,19 @@ fn pending_usage() -> &'static std::sync::Mutex<PendingUsage> {
     PENDING.get_or_init(Default::default)
 }
 
-/// Queues one call's usage for [`drain_usage`]. `timing` is `None` for a socket relay, which does not time
+/// Queues the end of one admitted call for [`drain_usage`]. `timing` is `None` for a socket relay, which does not time
 /// its calls: such a call's usage is metered, but it is not reported to the metrics.
-fn defer_usage(
+fn defer_end(
     cid: u64,
-    charge: Charge,
+    admitted: Admitted,
     model: String,
-    metered: Metered,
+    metered: Option<Metered>,
     timing: Option<CallTiming>,
 ) {
     pending_usage()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((cid, charge, model, metered, timing));
+        .push((cid, admitted, model, metered, timing));
 }
 
 /// The usage of one Gemini `usageMetadata` object. Gemini's prompt count includes the cached part
@@ -527,26 +527,27 @@ fn gemini_call(call: &str) -> Option<(&str, &'static str)> {
     plain.then_some((model, method))
 }
 
-/// Records the usage of streams that have ended.
+/// Ends the calls that streams and sockets have relayed since the last drain.
 pub fn drain_usage(app: &App) {
     let done: Vec<_> = std::mem::take(
         &mut *pending_usage()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
-    for (cid, charge, model, metered, timing) in done {
-        record_usage(app, cid, charge, &model, metered, timing);
+    for (cid, admitted, model, metered, timing) in done {
+        end_call(app, cid, admitted, &model, metered, timing);
     }
 }
 
-/// Adds one call's usage to the agent's usage, records it in the transcript and meters it into
-/// the usage ledger, charged to the task and work item the call started under (`charge`, read when
-/// it started). The transcript entry stays under no work: a work's transcript is the agent's own
-/// text, and the feed would show these calls as that. A timed call is also reported to the metrics.
+/// Adds one call's usage to the agent's usage, records it in the transcript, settles the call's budget hold with it, and
+/// meters it into the usage ledger, charged to the task and work item the call started under (`charge`, read when it
+/// started). The transcript entry stays under no work: a work's transcript is the agent's own text, and the feed would
+/// show these calls as that. A timed call is also reported to the metrics.
 fn record_usage(
     app: &App,
     cid: u64,
     charge: Charge,
+    hold: Option<CallHold>,
     model: &str,
     metered: Metered,
     timing: Option<CallTiming>,
@@ -578,7 +579,9 @@ fn record_usage(
             cost_usd: metered.cost_usd,
         },
     );
-    bill_call(app, cid, charge.task.as_deref(), model, t, metered.cost_usd);
+    if let Some(held) = hold {
+        work_loop::settle_call(app, cid, held, t, metered.cost_usd);
+    }
     crate::usage::meter_charged(app, cid, model, t, metered.cost_usd, charge, "gateway");
     if let Some(timing) = timing {
         report_model_call(app, cid, model, t, metered.cost_usd, &timing);
@@ -624,11 +627,6 @@ fn report_model_call(
     );
 }
 
-/// The task agent `cid` is working on, if any: the one its usage is charged to.
-fn current_task(app: &App, cid: u64) -> Option<String> {
-    app.work.current(cid).and_then(|item| item.origin.task)
-}
-
 /// The charge for a model call agent `cid` starts now: the task it works on and the work item it runs
 /// under (0 for none). Read when the call starts, since its usage is recorded only after the call ends.
 fn current_charge(app: &App, cid: u64) -> Charge {
@@ -641,86 +639,115 @@ fn current_charge(app: &App, cid: u64) -> Charge {
     }
 }
 
-/// The 402 message when agent `cid` cannot pay for a model call, or `None` when it can (or when
-/// charging is off).
-fn refusal(charging: bool, task: Option<&str>, escrow: i128, wallet: i128) -> Option<String> {
-    if !charging || paying_from(task, escrow, wallet).1 > 0 {
-        return None;
-    }
-    Some(match task {
-        Some(_) => format!(
-            "cannot pay for this model call: wallet balance {wallet} credits, the task's escrow has {escrow}; top up or finish the task"
-        ),
-        None => format!(
-            "cannot pay for this model call: wallet balance {wallet} credits; top up or finish the task"
-        ),
+/// A model call the proxy admitted: the charge its usage is metered under (the task and work item it started under),
+/// and the budget hold it was sent on (a session's calls only; `None` for the rest).
+struct Admitted {
+    charge: Charge,
+    hold: Option<CallHold>,
+}
+
+/// Holds a model call of agent `cid` on its budget before it is sent ([`work_loop::hold_call`]): the request's size and
+/// the answer cap it names are its worst case. A budget that cannot take the call refuses it with the paused message.
+fn admit_call(app: &App, cid: u64, model: &str, body: &Value) -> Result<Admitted, String> {
+    let hold = work_loop::hold_call(
+        app,
+        cid,
+        model,
+        body.to_string().len() as u64,
+        answer_cap(body),
+    )?;
+    Ok(Admitted {
+        charge: current_charge(app, cid),
+        hold,
     })
 }
 
-/// The pre-call check: the refusal for agent `cid`'s model call, read from the treasury now.
-fn payment_refusal(app: &App, cid: u64) -> Option<String> {
-    let charging = app.settings.get().payments.charge_models;
-    let task = current_task(app, cid);
-    let treasury = &app.plaza.treasury;
-    let escrow = task
-        .as_deref()
-        .map_or(0, |task| treasury.escrow_balance(task));
-    refusal(charging, task.as_deref(), escrow, treasury.wallet(cid))
+/// The answer cap a request names, in tokens, or 0 when it names none. Each provider spells it its own way.
+fn answer_cap(body: &Value) -> u32 {
+    let cap = ["max_tokens", "max_output_tokens", "max_completion_tokens"]
+        .iter()
+        .find_map(|key| body.get(*key).and_then(Value::as_u64))
+        .or_else(|| {
+            body.pointer("/generationConfig/maxOutputTokens")
+                .and_then(Value::as_u64)
+        })
+        .unwrap_or(0);
+    u32::try_from(cap).unwrap_or(u32::MAX)
 }
 
-/// The credits one call costs: its reported USD cost, else `estimate` (USD), over
-/// [`USD_PER_CREDIT`], rounded up to a whole credit. Zero when there is nothing to charge.
-fn credits_for(cost_usd: Option<f64>, estimate: impl FnOnce() -> f64) -> i64 {
-    let usd = cost_usd.unwrap_or_else(estimate);
-    if !usd.is_finite() || usd <= 0.0 {
-        return 0;
-    }
-    // The tolerance keeps float noise (50.00000000000001 credits) from rounding a whole credit up.
-    (usd / USD_PER_CREDIT - 1e-9).ceil() as i64
+/// The answer to a model call the budget did not take: HTTP 429 with `retry-after: 30`, so the engine backs off and asks
+/// again, in the provider's own error shape. The message starts with the paused marker, as the harness's does.
+fn paused_answer(provider: &str, message: &str) -> Response {
+    let body = match provider {
+        "anthropic" => json!({
+            "type": "error",
+            "error": { "type": "rate_limit_error", "message": message },
+        }),
+        "gemini" => json!({
+            "error": { "code": 429, "message": message, "status": "RESOURCE_EXHAUSTED" },
+        }),
+        _ => json!({ "error": { "message": message, "type": "rate_limit_error" } }),
+    };
+    Response::json(429, &body).with_header("retry-after", "30")
 }
 
-/// Bills agent `cid`'s model call after it ran, through the shared charge
-/// ([`charge_model_call`]). A shortfall is noted in the transcript.
-fn bill_call(
+/// Ends one admitted call. A call that returned usage is recorded ([`record_usage`]); one that returned none charges
+/// nothing, and its budget hold is released.
+fn end_call(
     app: &App,
     cid: u64,
-    task: Option<&str>,
+    admitted: Admitted,
     model: &str,
-    tokens: Tokens,
-    cost_usd: Option<f64>,
+    metered: Option<Metered>,
+    timing: Option<CallTiming>,
 ) {
-    let charging = app.settings.get().payments.charge_models;
-    let credits = credits_for(cost_usd, || {
-        let settings = app.settings.get();
-        app.prices
-            .lookup(model, &settings.prices)
-            .map_or(0.0, |p| crate::prices::estimate(&p.price, &tokens))
-    });
-    let spend = |task: &str, credits: i64| app.work.add_spend(task, credits);
-    let charge = charge_model_call(
-        &app.plaza.treasury,
-        charging,
-        spend,
-        cid,
-        task,
-        credits,
-        &format!("model {model}"),
-    );
-    if let Some(settled) = charge.filter(|settled| settled.charged < settled.wanted) {
-        let available = settled.available.clamp(0, i128::from(i64::MAX)) as i64;
-        app.transcripts.record(
-            &app.bus,
-            cid,
-            0,
-            crate::transcript::Entry::ModelChargeShortfall {
-                model: model.to_string(),
-                task: task.map(str::to_string),
-                wanted: settled.wanted,
-                charged: settled.charged,
-                available,
-                error: settled.error.clone(),
-            },
-        );
+    let Admitted { charge, hold } = admitted;
+    match metered {
+        Some(metered) => record_usage(app, cid, charge, hold, model, metered, timing),
+        None => {
+            if let Some(held) = hold {
+                work_loop::release_call(app, held);
+            }
+        }
+    }
+}
+
+/// The call a Responses socket has admitted and not yet ended. Its `response.completed` frame ends it with its usage; a
+/// failure or an error frame ends it without. A socket that closes first ends it without usage, so its hold is released.
+struct InFlight {
+    cid: u64,
+    call: Option<(Admitted, String)>,
+}
+
+impl InFlight {
+    /// The call a `response.create` admitted. A call still open before it ends without usage.
+    fn start(&mut self, admitted: Admitted, model: &str) {
+        if let Some((previous, model)) = self.call.replace((admitted, model.to_string())) {
+            defer_end(self.cid, previous, model, None, None);
+        }
+    }
+
+    /// Ends the open call on the frame that ends it.
+    fn frame(&mut self, frame: &str) {
+        let Ok(event) = serde_json::from_str::<Value>(frame) else {
+            return;
+        };
+        let usage = match event.get("type").and_then(Value::as_str) {
+            Some("response.completed") => tokens_in(&event),
+            Some("response.failed" | "response.incomplete" | "error") => None,
+            _ => return,
+        };
+        if let Some((admitted, model)) = self.call.take() {
+            defer_end(self.cid, admitted, model, usage, None);
+        }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Some((admitted, model)) = self.call.take() {
+            defer_end(self.cid, admitted, model, None, None);
+        }
     }
 }
 
@@ -904,7 +931,6 @@ fn relay(
     if let Some(why) = crate::projects::held(app, &agent) {
         return Err(Response::error(409, &why));
     }
-    let charge = current_charge(app, cid);
     let mut body: Value = req
         .json()
         .map_err(|e| Response::error(400, &e.to_string()))?;
@@ -930,24 +956,28 @@ fn relay(
     } else {
         model
     };
-    if let Some(message) = payment_refusal(app, cid) {
-        return Err(Response::json(402, &json!({ "error": message })));
-    }
     let (base, key) = provider_upstream(app, provider, cid)?;
+    // The call is held on its budget before it is sent; one that does not fit is not sent.
+    let admitted =
+        admit_call(app, cid, &model, &body).map_err(|message| paused_answer(provider, &message))?;
     let headers = upstream_headers(app, req, provider, path);
     let started = Instant::now();
-    let resp = upstream_post(provider, &base, &key, path, &headers, &body).map_err(|e| {
-        // No response came back: the call counts as a failed one, with no tokens.
-        let timing = CallTiming {
-            provider: provider.to_string(),
-            ttft_ms: None,
-            duration_ms: ms_between(started, Instant::now()),
-            status: 502,
-            ratelimit: (None, None),
-        };
-        report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
-        Response::error(502, &e)
-    })?;
+    let resp = match upstream_post(provider, &base, &key, path, &headers, &body) {
+        Ok(resp) => resp,
+        Err(e) => {
+            // No response came back: the call counts as a failed one, with no tokens, and charges nothing.
+            let timing = CallTiming {
+                provider: provider.to_string(),
+                ttft_ms: None,
+                duration_ms: ms_between(started, Instant::now()),
+                status: 502,
+                ratelimit: (None, None),
+            };
+            report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
+            end_call(app, cid, admitted, &model, None, None);
+            return Err(Response::error(502, &e));
+        }
+    };
 
     let status = resp.status().as_u16();
     let ok = (200..300).contains(&status);
@@ -959,30 +989,30 @@ fn relay(
     if streaming && ok {
         let provider = provider.to_string();
         return Ok(Response::sse(move |sse| {
-            // The stream's tail carries its usage; it is metered once the stream ends, with the time
-            // its first data line arrived.
+            // The stream's tail carries its usage; the call ends once the stream does, with the time its first data
+            // line arrived. A stream that breaks off ends without usage, and its hold is released.
             let mut first_data = None;
             let tail = read_sse(BufReader::new(reader), &mut first_data, |kind, data| {
                 sse.event(kind, data)
-            })?;
-            if let Some(tokens) = tokens_in_sse(&tail) {
-                let timing = CallTiming {
-                    provider,
-                    ttft_ms: first_data.map(|at| ms_between(started, at)),
-                    duration_ms: ms_between(started, Instant::now()),
-                    status,
-                    ratelimit,
-                };
-                defer_usage(cid, charge, model, tokens, Some(timing));
-            }
-            Ok(())
+            });
+            let timing = CallTiming {
+                provider,
+                ttft_ms: first_data.map(|at| ms_between(started, at)),
+                duration_ms: ms_between(started, Instant::now()),
+                status,
+                ratelimit,
+            };
+            let tokens = tail.as_ref().ok().and_then(|tail| tokens_in_sse(tail));
+            defer_end(cid, admitted, model, tokens, Some(timing));
+            tail.map(|_| ())
         }));
     }
 
     let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|e| Response::error(502, &format!("upstream: {e}")))?;
+    if let Err(e) = reader.read_to_end(&mut bytes) {
+        end_call(app, cid, admitted, &model, None, None);
+        return Err(Response::error(502, &format!("upstream: {e}")));
+    }
     let timing = CallTiming {
         provider: provider.to_string(),
         ttft_ms: Some(headers_ms),
@@ -993,11 +1023,15 @@ fn relay(
     if !ok {
         report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
     }
-    let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
-    if ok && let Some(tokens) = tokens_in(&value) {
-        record_usage(app, cid, charge, &model, tokens, Some(timing));
-    }
+    let value: Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            end_call(app, cid, admitted, &model, None, None);
+            return Err(Response::error(502, "the upstream body is not JSON"));
+        }
+    };
+    let metered = if ok { tokens_in(&value) } else { None };
+    end_call(app, cid, admitted, &model, metered, Some(timing));
     Ok(Response::json(status, &value))
 }
 
@@ -1042,7 +1076,6 @@ fn relay_gemini(
     if let Some(why) = crate::projects::held(app, &agent) {
         return Err(Response::error(409, &why));
     }
-    let charge = current_charge(app, cid);
     let body: Value = req
         .json()
         .map_err(|e| Response::error(400, &e.to_string()))?;
@@ -1062,10 +1095,9 @@ fn relay_gemini(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    if let Some(message) = payment_refusal(app, cid) {
-        return Err(Response::json(402, &json!({ "error": message })));
-    }
     let (base, key) = provider_upstream(app, "gemini", cid)?;
+    let admitted =
+        admit_call(app, cid, &model, &body).map_err(|message| paused_answer("gemini", &message))?;
     // Only `alt=sse` is forwarded: the query string is otherwise the client's to leave out.
     let event_stream = method == "streamGenerateContent" && req.query_param("alt") == Some("sse");
     let mut path = format!("/v1beta/models/{model}:{method}");
@@ -1073,18 +1105,22 @@ fn relay_gemini(
         path.push_str("?alt=sse");
     }
     let started = Instant::now();
-    let resp = upstream_post("gemini", &base, &key, &path, &[], &body).map_err(|e| {
-        // No response came back: the call counts as a failed one, with no tokens.
-        let timing = CallTiming {
-            provider: "gemini".to_string(),
-            ttft_ms: None,
-            duration_ms: ms_between(started, Instant::now()),
-            status: 502,
-            ratelimit: (None, None),
-        };
-        report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
-        Response::error(502, &e)
-    })?;
+    let resp = match upstream_post("gemini", &base, &key, &path, &[], &body) {
+        Ok(resp) => resp,
+        Err(e) => {
+            // No response came back: the call counts as a failed one, with no tokens, and charges nothing.
+            let timing = CallTiming {
+                provider: "gemini".to_string(),
+                ttft_ms: None,
+                duration_ms: ms_between(started, Instant::now()),
+                status: 502,
+                ratelimit: (None, None),
+            };
+            report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
+            end_call(app, cid, admitted, &model, None, None);
+            return Err(Response::error(502, &e));
+        }
+    };
 
     let status = resp.status().as_u16();
     let ok = (200..300).contains(&status);
@@ -1094,30 +1130,33 @@ fn relay_gemini(
     let mut reader = resp.into_body().into_reader();
     if event_stream && ok {
         return Ok(Response::sse(move |sse| {
-            // The stream's last event carries the usage; it is metered once the stream ends, with the
-            // time its first data line arrived.
+            // The stream's last event carries the usage; the call ends once the stream does, with the time its first
+            // data line arrived. A stream that breaks off ends without usage, and its hold is released.
             let mut first_data = None;
             let tail = read_sse(BufReader::new(reader), &mut first_data, |kind, data| {
                 sse.event(kind, data)
-            })?;
-            if let Some(tokens) = tokens_in_gemini_sse(&tail) {
-                let timing = CallTiming {
-                    provider: "gemini".to_string(),
-                    ttft_ms: first_data.map(|at| ms_between(started, at)),
-                    duration_ms: ms_between(started, Instant::now()),
-                    status,
-                    ratelimit,
-                };
-                defer_usage(cid, charge, model, tokens, Some(timing));
-            }
-            Ok(())
+            });
+            let timing = CallTiming {
+                provider: "gemini".to_string(),
+                ttft_ms: first_data.map(|at| ms_between(started, at)),
+                duration_ms: ms_between(started, Instant::now()),
+                status,
+                ratelimit,
+            };
+            let tokens = tail
+                .as_ref()
+                .ok()
+                .and_then(|tail| tokens_in_gemini_sse(tail));
+            defer_end(cid, admitted, model, tokens, Some(timing));
+            tail.map(|_| ())
         }));
     }
 
     let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|e| Response::error(502, &format!("upstream: {e}")))?;
+    if let Err(e) = reader.read_to_end(&mut bytes) {
+        end_call(app, cid, admitted, &model, None, None);
+        return Err(Response::error(502, &format!("upstream: {e}")));
+    }
     let timing = CallTiming {
         provider: "gemini".to_string(),
         ttft_ms: Some(headers_ms),
@@ -1128,11 +1167,15 @@ fn relay_gemini(
     if !ok {
         report_model_call(app, cid, &model, Tokens::default(), Some(0.0), &timing);
     }
-    let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| Response::error(502, "the upstream body is not JSON"))?;
-    if ok && let Some(tokens) = tokens_in_gemini(&value) {
-        record_usage(app, cid, charge, &model, tokens, Some(timing));
-    }
+    let value: Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            end_call(app, cid, admitted, &model, None, None);
+            return Err(Response::error(502, "the upstream body is not JSON"));
+        }
+    };
+    let metered = if ok { tokens_in_gemini(&value) } else { None };
+    end_call(app, cid, admitted, &model, metered, Some(timing));
     Ok(Response::json(status, &value))
 }
 
@@ -1210,9 +1253,9 @@ fn grant_for(app: &App, req: &Request, cid: u64, provider: &str) -> Result<Grant
 
 /// The gateway's policy for one WebSocket call, as over HTTP, read live: STOP ALL holds the call,
 /// the agent's current model and the list it is held to apply (a change since the socket opened
-/// counts), and an agent that cannot pay is refused with the same message as over HTTP's 402.
-/// The charge the call starts under is returned: its usage is metered under it.
-fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<Charge, String> {
+/// counts), and a call its budget cannot hold is refused with the same paused message as over HTTP.
+/// The call is held on its budget and returned with the charge it starts under.
+fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<Admitted, String> {
     let app = grant.app.upgrade().ok_or("the hub is shutting down")?;
     if app.control.paused() {
         return Err("the plaza is held (STOP ALL); waiting for the owner to resume".into());
@@ -1229,10 +1272,12 @@ fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<Charge, Stri
             &list,
         )?;
     }
-    if let Some(message) = payment_refusal(&app, grant.cid) {
-        return Err(message);
-    }
-    Ok(current_charge(&app, grant.cid))
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    admit_call(&app, grant.cid, &model, body)
 }
 
 fn limits() -> ws::Limits {
@@ -1298,19 +1343,6 @@ fn sse_frame(id: &Value, event: &str, data: &str) -> Value {
     json!({ "id": id, "event": event, "data": data })
 }
 
-/// Meters a `response.completed` event's usage, as the HTTP path meters a response.
-fn meter_responses(cid: u64, charge: &Charge, model: &str, frame: &str) {
-    let Ok(event) = serde_json::from_str::<Value>(frame) else {
-        return;
-    };
-    if event.get("type").and_then(Value::as_str) != Some("response.completed") {
-        return;
-    }
-    if let Some(tokens) = tokens_in(&event) {
-        defer_usage(cid, charge.clone(), model.to_string(), tokens, None);
-    }
-}
-
 /// The OpenAI Responses socket: each `response.create` is checked and sent upstream; every
 /// upstream frame goes back unchanged. One thread reads both sockets in turns.
 fn relay_responses(mut client: Socket, grant: Grant) {
@@ -1333,9 +1365,11 @@ fn relay_responses(mut client: Socket, grant: Grant) {
         }
     };
     let started = Instant::now();
-    let mut model = String::new();
-    // The charge of the call in flight, read when its `response.create` was admitted.
-    let mut charge = Charge::default();
+    // The call in flight, admitted when its `response.create` came in.
+    let mut in_flight = InFlight {
+        cid: grant.cid,
+        call: None,
+    };
     loop {
         if started.elapsed() >= LIFETIME {
             client.close(1001, "reconnect");
@@ -1362,8 +1396,8 @@ fn relay_responses(mut client: Socket, grant: Grant) {
                         return;
                     }
                 };
-                match admit(&grant, "openai", &mut body) {
-                    Ok(admitted) => charge = admitted,
+                let admitted = match admit(&grant, "openai", &mut body) {
+                    Ok(admitted) => admitted,
                     Err(message) => {
                         if client
                             .send(&text(
@@ -1376,12 +1410,13 @@ fn relay_responses(mut client: Socket, grant: Grant) {
                         }
                         continue;
                     }
-                }
-                model = body
+                };
+                let model = body
                     .get("model")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
+                in_flight.start(admitted, &model);
                 if upstream.send(&Message::Text(body.to_string())).is_err() {
                     client.close(1011, "the upstream connection failed");
                     return;
@@ -1396,7 +1431,7 @@ fn relay_responses(mut client: Socket, grant: Grant) {
             Ok(None) => {}
             Ok(Some(message)) => {
                 if let Message::Text(frame) = &message {
-                    meter_responses(grant.cid, &charge, &model, frame);
+                    in_flight.frame(frame);
                 }
                 if client.send(&message).is_err() {
                     upstream.close(1000, "");
@@ -1480,12 +1515,27 @@ fn stream_messages(
     id: &Value,
     request: &mut Value,
 ) -> Result<(), String> {
-    let charge = admit(grant, "anthropic", request)?;
+    let admitted = admit(grant, "anthropic", request)?;
     let model = request
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    let (usage, outcome) = match stream_call(client, grant, id, request) {
+        Ok(usage) => (usage, Ok(())),
+        Err(message) => (None, Err(message)),
+    };
+    defer_end(grant.cid, admitted, model, usage, None);
+    outcome
+}
+
+/// Runs one Messages stream upstream, sending its events as frames. Returns the usage its last event carries, if any.
+fn stream_call(
+    client: &mut Socket,
+    grant: &Grant,
+    id: &Value,
+    request: &Value,
+) -> Result<Option<Metered>, String> {
     let resp = upstream_post(
         "anthropic",
         &grant.base,
@@ -1507,10 +1557,7 @@ fn stream_messages(
         client.send(&text_frame(id, kind, data))
     })
     .map_err(|e| e.to_string())?;
-    if let Some(tokens) = tokens_in_sse(&tail) {
-        defer_usage(grant.cid, charge, model, tokens, None);
-    }
-    Ok(())
+    Ok(tokens_in_sse(&tail))
 }
 
 /// The bridge frame of one SSE event, as a socket message.
@@ -1745,14 +1792,17 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
             task: Some("task-7".into()),
             work: 42,
         };
-        defer_usage(
+        defer_end(
             cid,
-            started.clone(),
+            Admitted {
+                charge: started.clone(),
+                hold: None,
+            },
             "anthropic/x".into(),
-            Metered {
+            Some(Metered {
                 tokens,
                 cost_usd: None,
-            },
+            }),
             None,
         );
         let mut pending = pending_usage()
@@ -1764,11 +1814,11 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         *pending = rest;
         drop(pending);
         assert_eq!(mine.len(), 1);
-        let (_, charge, model, metered, _) = &mine[0];
+        let (_, admitted, model, metered, _) = &mine[0];
         // The task is the one the call started under, not whatever the agent works on when it drains.
-        assert_eq!(charge, &started);
+        assert_eq!(admitted.charge, started);
         assert_eq!(model, "anthropic/x");
-        assert_eq!(metered.tokens, tokens);
+        assert_eq!(metered.as_ref().map(|m| m.tokens), Some(tokens));
     }
 
     #[test]
@@ -2225,140 +2275,91 @@ data: [DONE]\n\n";
         );
     }
 
-    use apz_plaza::treasury::Treasury;
-
-    const PAYER: u64 = 7;
-
-    /// A treasury where agent `PAYER` has `wallet` credits (paid from the task "job", whose
-    /// escrow keeps 1000 credits).
-    fn funded(wallet: i64) -> Treasury {
-        let treasury = Treasury::new(apz_plaza::events::EventBus::new());
-        if wallet > 0 {
-            // The treasury's margin rule: pay at most a fifth of the task's real cost.
-            treasury
-                .fund_task("job", 6 * wallet + 1000)
-                .expect("the task is funded");
-            treasury
-                .charge_spend(Some("job"), 5 * wallet, "real cost")
-                .expect("the cost is spent");
-            treasury
-                .pay_agent("job", PAYER, wallet)
-                .expect("the agent is paid");
-        }
-        treasury
+    #[test]
+    fn a_call_names_its_answer_cap_in_whichever_spelling_its_provider_uses() {
+        assert_eq!(answer_cap(&json!({"model": "m", "max_tokens": 500})), 500);
+        assert_eq!(answer_cap(&json!({"max_output_tokens": 64})), 64);
+        assert_eq!(answer_cap(&json!({"max_completion_tokens": 8})), 8);
+        assert_eq!(
+            answer_cap(&json!({"generationConfig": {"maxOutputTokens": 9}})),
+            9
+        );
+        // No cap named: the hold takes the default answer (see work_loop::worst_case).
+        assert_eq!(answer_cap(&json!({"model": "m"})), 0);
     }
 
     #[test]
-    fn refusal_gate_refuses_broke_agents_and_never_refuses_with_charging_off() {
-        // A broke agent is refused and a funded one passes.
-        {
-            let message = refusal(true, None, 0, 0).expect("no wallet, no task: refused");
-            assert!(message.starts_with("cannot pay for this model call"));
+    fn a_refused_call_is_a_429_the_engine_backs_off_on_in_its_providers_shape() {
+        let message = format!("{}the work is paused", apz_proto::wire::MODEL_PAUSED);
+        for provider in ["anthropic", "gemini", "openai"] {
+            let answer = paused_answer(provider, &message);
+            assert_eq!(answer.status, 429, "{provider}");
             assert!(
-                refusal(true, Some("job"), 0, 0)
-                    .expect("an empty escrow and no wallet: refused")
-                    .contains("escrow has 0")
+                answer
+                    .headers
+                    .iter()
+                    .any(|(name, value)| name == "retry-after" && value == "30"),
+                "{provider}: {:?}",
+                answer.headers
             );
-            assert_eq!(refusal(true, None, 0, 25), None);
-            assert_eq!(
-                refusal(true, Some("job"), 40, 0),
-                None,
-                "the task's escrow pays"
+            let body = String::from_utf8_lossy(answer.bytes()).to_string();
+            assert!(
+                body.contains(apz_proto::wire::MODEL_PAUSED),
+                "{provider}: {body}"
             );
-            assert_eq!(
-                refusal(true, Some("job"), 0, 25),
-                None,
-                "an empty escrow falls back to the wallet"
-            );
-        }
-        // Charging off never refuses and charges nothing.
-        {
-            assert_eq!(refusal(false, None, 0, 0), None);
-            let treasury = funded(100);
-            assert_eq!(
-                charge_model_call(&treasury, false, |_, _| {}, PAYER, None, 50, "m"),
-                None
-            );
-            assert_eq!(treasury.wallet(PAYER), 100);
         }
     }
 
     #[test]
-    fn the_settings_default_charges_models() {
-        assert!(crate::settings::Settings::default().payments.charge_models);
-    }
-
-    #[test]
-    fn credits_are_the_cost_over_usd_per_credit_rounded_up() {
+    fn a_socket_call_settles_with_its_usage_or_releases_without_it() {
+        // The queue is shared by the process, so the test takes back only its own entries.
+        let cid = 9_100_002;
+        let admitted = |task: &str| Admitted {
+            charge: Charge {
+                task: Some(task.into()),
+                work: 1,
+            },
+            hold: None,
+        };
+        // A call that fails ends without usage.
+        let mut failing = InFlight { cid, call: None };
+        failing.start(admitted("failing"), "m");
+        failing.frame(r#"{"type":"response.failed"}"#);
+        // A call the socket closes on before it ends ends without usage too, and a frame that does not end it leaves it open.
+        let mut cut_off = InFlight { cid, call: None };
+        cut_off.start(admitted("cut-off"), "m");
+        cut_off.frame(r#"{"type":"response.created"}"#);
+        drop(cut_off);
+        // A call that completes ends with the usage its completed frame carries.
+        let mut completed = InFlight { cid, call: None };
+        completed.start(admitted("completed"), "m");
+        completed
+            .frame(r#"{"type":"response.completed","usage":{"input_tokens":3,"output_tokens":4}}"#);
+        let mut pending = pending_usage()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
+            .into_iter()
+            .partition(|entry| entry.0 == cid);
+        *pending = rest;
+        drop(pending);
+        let ended: Vec<(String, bool)> = mine
+            .iter()
+            .map(|(_, admitted, _, metered, _)| {
+                (
+                    admitted.charge.task.clone().unwrap_or_default(),
+                    metered.is_some(),
+                )
+            })
+            .collect();
         assert_eq!(
-            credits_for(Some(0.05), || 1.0),
-            50,
-            "reported cost wins over the estimate"
+            ended,
+            [
+                ("failing".to_string(), false),
+                ("cut-off".to_string(), false),
+                ("completed".to_string(), true),
+            ]
         );
-        assert_eq!(
-            credits_for(Some(0.0011), || 0.0),
-            2,
-            "a fraction of a credit rounds up"
-        );
-        assert_eq!(
-            credits_for(None, || 0.003),
-            3,
-            "the estimate is used without a reported cost"
-        );
-        assert_eq!(
-            credits_for(Some(0.0), || 1.0),
-            0,
-            "a zero cost is not charged"
-        );
-        assert_eq!(
-            credits_for(None, || 0.0),
-            0,
-            "an unpriced call is not charged"
-        );
-    }
-
-    #[test]
-    fn model_call_charges_come_from_the_wallet_or_escrow_and_are_capped() {
-        // A call is charged its credits from the wallet.
-        {
-            let treasury = funded(100);
-            let settled = crate::payments::settle(&treasury, PAYER, None, 50, "model call");
-            assert_eq!((settled.wanted, settled.charged), (50, 50));
-            assert_eq!(settled.error, None);
-            assert_eq!(treasury.wallet(PAYER), 50);
-        }
-        // A charge larger than the balance is capped and never negative.
-        {
-            let treasury = funded(30);
-            let settled =
-                charge_model_call(&treasury, true, |_, _| {}, PAYER, None, 50, "model call")
-                    .expect("short, so noted");
-            assert_eq!(
-                (settled.wanted, settled.charged, settled.available),
-                (50, 30, 30)
-            );
-            assert_eq!(treasury.wallet(PAYER), 0);
-            // A broke agent is charged nothing, and the call still goes through.
-            let broke = funded(0);
-            let settled = charge_model_call(&broke, true, |_, _| {}, PAYER, None, 5, "model call")
-                .expect("short, so noted");
-            assert_eq!((settled.charged, settled.available), (0, 0));
-            assert_eq!(broke.wallet(PAYER), 0);
-        }
-        // A task escrow pays first and is capped there.
-        {
-            let treasury = funded(30);
-            // The task keeps 1000 in escrow: a 1200 charge is capped there, the wallet is untouched.
-            let settled =
-                crate::payments::settle(&treasury, PAYER, Some("job"), 1200, "model call");
-            assert_eq!((settled.charged, settled.available), (1000, 1000));
-            assert_eq!(treasury.escrow_balance("job"), 0);
-            assert_eq!(treasury.wallet(PAYER), 30);
-            // With the escrow empty, the wallet pays.
-            let settled = crate::payments::settle(&treasury, PAYER, Some("job"), 10, "model call");
-            assert_eq!((settled.charged, settled.available), (10, 30));
-            assert_eq!(treasury.wallet(PAYER), 20);
-        }
     }
 
     /// What a mock upstream saw of one call: the request line and the whole head, lowercased.

@@ -67,7 +67,6 @@ mod node_link;
 mod nodes;
 mod openapi;
 mod owner_board;
-mod payments;
 mod placement;
 mod platforms;
 mod plaza;

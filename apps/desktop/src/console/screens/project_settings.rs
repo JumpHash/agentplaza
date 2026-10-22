@@ -1,9 +1,8 @@
 //! A project's Settings tab (the web's `project-settings.ts`): every setting its agents get, inherited from the plaza
-//! or overridden here, with Change and Reset to plaza; the models by role; and the project's budget, with credits set
-//! aside from the plaza's or given back. The instructions and skills are the prompt and skills bound to
-//! `project:<id>`. Each change is typed in a dialog (`ui::modal`), as the web's `modal()` does.
+//! or overridden here, with Change and Reset to plaza; and the models by role. The instructions and skills are the
+//! prompt and skills bound to `project:<id>`. Each change is typed in a dialog (`ui::modal`), as the web's `modal()` does.
 
-use iced::widget::{Space, column, container, pick_list, rich_text, row, span, text, text_input};
+use iced::widget::{Space, column, container, pick_list, row, text, text_input};
 use iced::{Alignment, Background, Color, Element, Length, Task, Theme};
 use serde_json::{Value, json};
 
@@ -77,7 +76,7 @@ const SPECS: [Spec; 9] = [
     Spec {
         key: "task_budget",
         label: "Task budget",
-        hint: "Credits a task gets when it names none",
+        hint: "What a task reserves when it names none, in the project budget’s unit",
         input: Input::Number,
     },
     Spec {
@@ -103,13 +102,6 @@ pub struct Edit {
     title: String,
 }
 
-/// Credits being set aside (or, `back`, given back to the plaza).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BudgetForm {
-    back: bool,
-    amount: String,
-}
-
 #[derive(Debug, Default)]
 pub struct State {
     /// `GET /v1/projects/{id}/settings/effective`; None until the first load.
@@ -120,7 +112,6 @@ pub struct State {
     pub edit: Option<Edit>,
     /// The role named for a new role's model, before its model is picked.
     pub new_role: Option<String>,
-    pub budget: Option<BudgetForm>,
 }
 
 #[derive(Debug, Clone)]
@@ -141,10 +132,6 @@ pub enum Msg {
     NewRole,
     RoleName(String),
     RoleNext,
-    /// Opens the budget form: set credits aside (false) or give some back (true).
-    Budget(bool),
-    Amount(String),
-    MoveBudget,
     /// A change went through (the line to show) or failed.
     Saved(Result<String, String>),
 }
@@ -231,7 +218,6 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
                     value: start_value(&current, s.input),
                     title: s.label.to_string(),
                 });
-                state.budget = None;
                 state.new_role = None;
             }
             Task::none()
@@ -248,7 +234,6 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
                 title: format!("{role}’s model"),
                 role: Some(role),
             });
-            state.budget = None;
             state.new_role = None;
             Task::none()
         }
@@ -291,13 +276,11 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
         Msg::Cancel => {
             state.edit = None;
             state.new_role = None;
-            state.budget = None;
             Task::none()
         }
         Msg::NewRole => {
             state.new_role = Some(String::new());
             state.edit = None;
-            state.budget = None;
             Task::none()
         }
         Msg::RoleName(name) => {
@@ -318,49 +301,6 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
                 value: String::new(),
             });
             Task::none()
-        }
-        Msg::Budget(back) => {
-            state.budget = Some(BudgetForm {
-                back,
-                amount: String::new(),
-            });
-            state.edit = None;
-            state.new_role = None;
-            Task::none()
-        }
-        Msg::Amount(a) => {
-            if let Some(b) = state.budget.as_mut() {
-                b.amount = a;
-            }
-            Task::none()
-        }
-        Msg::MoveBudget => {
-            let Some(form) = state.budget.clone() else {
-                return Task::none();
-            };
-            let n = match form.amount.trim().parse::<i64>() {
-                Ok(n) if n > 0 => n,
-                _ => {
-                    state.error = Some("A whole number of credits, more than 0.".into());
-                    return Task::none();
-                }
-            };
-            state.budget = None;
-            let c = ctx.client.clone();
-            let path = format!("/v1/projects/{project}/budget");
-            let credits = if form.back { -n } else { n };
-            let line = if form.back {
-                format!("{n} credits back to the plaza")
-            } else {
-                format!("{n} credits set aside")
-            };
-            client::task(
-                move || {
-                    c.post::<Value>(&path, &json!({ "credits": credits }))
-                        .map(|_| line)
-                },
-                Msg::Saved,
-            )
         }
         Msg::Saved(res) => {
             match res {
@@ -496,7 +436,7 @@ fn field<'a>(label: &str, control: Element<'a, Msg>, hint: &str) -> Element<'a, 
     col.into()
 }
 
-/// The dialog open over the tab, if any (the web's `modal()`): a change being typed, a role's name, or the budget form.
+/// The dialog open over the tab, if any (the web's `modal()`): a change being typed or a role's name.
 fn dialog<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
     let error: Option<Element<'a, Msg>> = state.error.as_deref().map(ui::error_line);
     if let Some(edit) = &state.edit {
@@ -571,37 +511,6 @@ fn dialog<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
                 ui::Kind::Primary,
                 Some(Msg::RoleNext),
             )],
-            Msg::Cancel,
-            DIALOG,
-        ));
-    }
-    if let Some(form) = &state.budget {
-        let (title, lead, go) = if form.back {
-            (
-                "Give credits back to the plaza",
-                "They go back to the plaza’s budget.",
-                "Give back",
-            )
-        } else {
-            (
-                "Set credits aside",
-                "They move from the plaza’s budget to this project’s: its tasks are funded from it.",
-                "Set aside",
-            )
-        };
-        let amount: Element<'a, Msg> = text_input("5000", &form.amount)
-            .on_input(Msg::Amount)
-            .on_submit(Msg::MoveBudget)
-            .padding(8)
-            .style(theme::input)
-            .into();
-        let mut body: Vec<Element<'a, Msg>> =
-            vec![ui::faint(lead).into(), field("Credits", amount, "")];
-        body.extend(error);
-        return Some(ui::modal(
-            title,
-            column(body).spacing(12).into(),
-            vec![ui::btn(go, None, ui::Kind::Primary, Some(Msg::MoveBudget))],
             Msg::Cancel,
             DIALOG,
         ));
@@ -694,54 +603,6 @@ pub fn view<'a>(state: &'a State, project: &'a str, live: bool) -> Element<'a, M
         Vec::new()
     };
     parts.push(ui::card_with("Models by role", role_actions, role_body));
-    // The budget.
-    let b = &view["budget"];
-    let own = b["own"].as_bool().unwrap_or(false);
-    let balance = b["balance"].as_i64().unwrap_or(0);
-    let plaza = b["plaza"].as_i64().unwrap_or(0);
-    let lead: Element<'a, Msg> = if own {
-        let spans: Vec<text::Span<'a>> = vec![
-            span(balance.to_string()).font(ui::SANS_SEMIBOLD),
-            span(
-                " credits left in this project’s budget. Its tasks are funded from it, and when it is over the rest goes back to the plaza.",
-            ),
-        ];
-        rich_text(spans)
-            .size(13.5)
-            .color(theme::palette().ink)
-            .into()
-    } else {
-        ui::prose(
-            "This project has no budget of its own yet: its tasks are funded from the plaza’s.",
-        )
-        .into()
-    };
-    let budget: Vec<Element<'a, Msg>> = vec![
-        lead,
-        ui::faint(format!("The plaza’s budget: {plaza} credits.")).into(),
-    ];
-    let mut budget_actions: Vec<Element<'a, Msg>> = Vec::new();
-    if live {
-        budget_actions.push(ui::btn_sm(
-            "Set credits aside…",
-            Some("plus"),
-            ui::Kind::Secondary,
-            Some(Msg::Budget(false)),
-        ));
-        if own && balance > 0 {
-            budget_actions.push(ui::btn_sm(
-                "Give back…",
-                None,
-                ui::Kind::Ghost,
-                Some(Msg::Budget(true)),
-            ));
-        }
-    }
-    parts.push(ui::card_with(
-        "Budget",
-        budget_actions,
-        column(budget).spacing(12).into(),
-    ));
     // Where its instructions and skills bind.
     parts.push(ui::card(
         "Instructions and skills",
@@ -808,7 +669,6 @@ mod tests {
             view: Some(json!({
                 "settings": { "effort": { "value": null, "source": "plaza" }, "max_turns": { "value": 40, "source": "project" } },
                 "role_models": {},
-                "budget": { "own": false, "balance": 0, "plaza": 100 },
             })),
             ..Default::default()
         };
@@ -816,15 +676,5 @@ mod tests {
         assert_eq!(state.edit.as_ref().map(|e| e.value.as_str()), Some("none"));
         let _ = update(&mut state, Msg::Change("max_turns"), "pr2", &ctx());
         assert_eq!(state.edit.as_ref().map(|e| e.value.as_str()), Some("40"));
-        let _ = update(&mut state, Msg::Budget(false), "pr2", &ctx());
-        assert!(state.edit.is_none() && state.budget.is_some());
-        let _ = update(&mut state, Msg::MoveBudget, "pr2", &ctx());
-        assert_eq!(
-            state.error.as_deref(),
-            Some("A whole number of credits, more than 0.")
-        );
-        assert_eq!(ui::thousands(15000), "15,000");
-        assert_eq!(ui::thousands(999), "999");
-        assert_eq!(ui::thousands(-1234), "-1,234");
     }
 }

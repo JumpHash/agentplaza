@@ -1,8 +1,7 @@
 //! `agentplaza projects`: Projects. The owner opens one (its plan theirs), pauses, resumes and archives it, and sets
-//! its settings and budget; the agents' plans go through their stages, which the owner approves or sends back. A
-//! project is in a mode: build, or maintenance, where its watchers keep it. The submodules hold the settings and the
-//! budget (`settings`), the maintenance (`maintenance`), the environments (`environments`) and the files of its
-//! repository (`files`).
+//! its settings; the agents' plans go through their stages, which the owner approves or sends back. A project is in a
+//! mode: build, or maintenance, where its watchers keep it. The submodules hold the settings (`settings`), the
+//! maintenance (`maintenance`), the environments (`environments`) and the files of its repository (`files`).
 
 pub mod environments;
 pub mod files;
@@ -61,8 +60,7 @@ pub enum Cmd {
         /// The project's id.
         id: String,
     },
-    /// Archive a project for good: its open tasks are withdrawn, and the rest of its budget goes back to the plaza.
-    /// Asks to confirm unless --yes.
+    /// Archive a project for good: its open tasks are withdrawn. Asks to confirm unless --yes.
     Archive {
         /// The project's id.
         id: String,
@@ -77,14 +75,6 @@ pub enum Cmd {
         id: String,
         #[command(subcommand)]
         action: Option<settings::Action>,
-    },
-    /// A project's budget: credits set aside from the plaza's budget for its tasks. Add `add CREDITS` to set more
-    /// aside, or `return CREDITS` to give some back.
-    Budget {
-        /// The project's id.
-        id: String,
-        #[command(subcommand)]
-        action: Option<settings::BudgetAction>,
     },
     /// Approve the project's plan (the owner's approval), with an optional note.
     Approve {
@@ -473,9 +463,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Pause { id } => lifecycle(ctx, &id, "pause", "paused project"),
         Cmd::Resume { id } => lifecycle(ctx, &id, "resume", "resumed project"),
         Cmd::Archive { id, yes } => {
-            let question = format!(
-                "Archive project {id}? Its open tasks are withdrawn, and the rest of its budget goes back to the plaza."
-            );
+            let question = format!("Archive project {id}? Its open tasks are withdrawn.");
             if !confirm(yes, &question)? {
                 println!("cancelled");
                 return Ok(());
@@ -483,7 +471,6 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             lifecycle(ctx, &id, "archive", "archived project")
         }
         Cmd::Settings { id, action } => settings::settings(ctx, &id, action),
-        Cmd::Budget { id, action } => settings::budget(ctx, &id, action),
         Cmd::Approve { id, note } => {
             let p = ctx.client.post(
                 &format!("/v1/projects/{}/approve", ctx::seg(&id)),

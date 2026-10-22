@@ -149,7 +149,6 @@ mod tests {
             .create(&CreateTask {
                 goal: goal.to_string(),
                 acceptance: None,
-                budget: None,
                 role: None,
                 after: after.iter().map(|id| id.to_string()).collect(),
                 project: project.map(str::to_string),

@@ -34,9 +34,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// The plaza at a glance: hub, nodes, agents, work, spend.
+    /// The plaza at a glance: hub, nodes, agents, work.
     Overview,
-    /// Talk to the orchestrator: a conversation drafts a project (its tasks, budget and settings), and /start opens
+    /// Talk to the orchestrator: a conversation drafts a project (its tasks and settings), and /start opens
     /// it and posts its tasks at once. `--list` lists your conversations.
     Chat(cmd::chat::Args),
     /// Agents: list (all, or a project's), inspect, create, talk to, stop, restart, set models.
@@ -45,7 +45,7 @@ enum Command {
     /// Seat templates: the roles a task's seats are filled from, built in and custom. `roles` lists them; `save` and
     /// `delete` change the custom ones.
     Roles(cmd::roles::Args),
-    /// Projects: open one, pause, resume or archive it, its settings and budget, its plan's stages.
+    /// Projects: open one, pause, resume or archive it, its settings, its plan's stages.
     #[command(subcommand)]
     Projects(cmd::projects::Cmd),
     /// Tasks: the work queue, each task in a project.
@@ -78,9 +78,6 @@ enum Command {
     /// The board: posts and announcements.
     #[command(subcommand)]
     Board(cmd::board::Cmd),
-    /// The treasury: budgets, balances, spend.
-    #[command(subcommand)]
-    Treasury(cmd::treasury::Cmd),
     /// Model usage: what the calls cost over a window, the series, the call log, and the prices.
     #[command(subcommand)]
     Usage(cmd::usage::Cmd),
@@ -217,7 +214,6 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Skills(c) => cmd::skills::run(&ctx, c),
         Command::Approvals(c) => cmd::approvals::run(&ctx, c),
         Command::Board(c) => cmd::board::run(&ctx, c),
-        Command::Treasury(c) => cmd::treasury::run(&ctx, c),
         Command::Usage(c) => cmd::usage::run(&ctx, c),
         Command::Metrics(c) => cmd::metrics::run(&ctx, c),
         Command::Rules(c) => cmd::rules::run(&ctx, c),
@@ -355,13 +351,6 @@ mod tests {
             "set needs a pair"
         );
         assert!(ok(&["projects", "settings", "pr3", "unset", "effort"]));
-        assert!(ok(&["projects", "budget", "pr3"]));
-        assert!(ok(&["projects", "budget", "pr3", "add", "5000"]));
-        assert!(ok(&["projects", "budget", "pr3", "return", "1000"]));
-        assert!(
-            !ok(&["projects", "budget", "pr3", "add", "0"]),
-            "credits are at least 1"
-        );
         // A project's life after launch: its mode, adopting one, maintenance, environments, files.
         assert!(ok(&["projects", "modes"]));
         assert!(ok(&["projects", "mode", "pr3", "maintenance"]));

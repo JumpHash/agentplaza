@@ -1,5 +1,5 @@
 // A project's Settings tab: every setting its agents get, inherited from the plaza or overridden here, with Reset to
-// plaza; and the project's budget. The instructions and skills are the prompt and skills bound to `project:<id>`. The
+// plaza. The instructions and skills are the prompt and skills bound to `project:<id>`. The
 // markup is the prototype's Settings tab (styles/proto/projects.css).
 
 import { api, type EffectiveSettings, type EffectiveValue, type Project } from '../api';
@@ -25,7 +25,7 @@ const SPECS: SettingSpec[] = [
   { key: 'max_turns', label: 'Turns per task', hint: 'How many model turns a work item may take (1 to 500)', kind: 'number' },
   { key: 'compress_at', label: 'Compress at', hint: 'The conversation size, in bytes, at which it is compressed (0: never)', kind: 'number' },
   { key: 'keep_recent', label: 'Turns kept', hint: 'How many recent turns a compression keeps (1 to 50)', kind: 'number' },
-  { key: 'task_budget', label: 'Task budget', hint: 'Credits a task gets when it names none', kind: 'number' },
+  { key: 'task_budget', label: 'Task budget', hint: 'What a task reserves when it names none, in the project budget’s unit', kind: 'number' },
   { key: 'permission_mode', label: 'Permission mode', hint: 'For agents with no mode of their own', kind: 'choice', choices: ['autonomous', 'ask', 'read_only'] },
   { key: 'review_timeout_minutes', label: 'Review timeout', hint: 'Minutes a finished task waits for a reviewer before you are asked', kind: 'number' },
 ];
@@ -101,31 +101,6 @@ function openEdit(p: Project, spec: SettingSpec, current: unknown, done: () => v
   ]);
 }
 
-/** Asks for credits to set aside for the project (or, `back`, to give back to the plaza). */
-function openBudget(p: Project, back: boolean, done: () => void): void {
-  const amount = input({ type: 'number', min: 1, step: 1, placeholder: '5000' });
-  dialog(back ? 'Give credits back to the plaza' : 'Set credits aside', [h('p.muted', null, back ? 'They go back to the plaza’s budget.' : 'They move from the plaza’s budget to this project’s: its tasks are funded from it.'), field('Credits', amount)], (close) => [
-    lbtn(
-      back ? 'Give back' : 'Set aside',
-      () => {
-        const n = Math.trunc(Number(amount.value));
-        if (!(n > 0)) {
-          toast('A whole number of credits, more than 0', 'error');
-          return;
-        }
-        void (async () => {
-          const ok = await attempt(() => api.moveProjectBudget(p.id, back ? -n : n), back ? `${n} credits back to the plaza` : `${n} credits set aside`);
-          if (ok) {
-            close();
-            done();
-          }
-        })();
-      },
-      { kind: 'primary' },
-    ),
-  ]);
-}
-
 /** The Settings tab of project `p`. */
 export function settingsTab(p: Project): HTMLElement {
   const root = h('div.pj-tab');
@@ -174,10 +149,6 @@ export function settingsTab(p: Project): HTMLElement {
         ),
       ]);
     };
-    const b = view.budget;
-    const budgetActs: HTMLElement[] = [];
-    if (live) budgetActs.push(lbtn('Set credits aside…', () => openBudget(p, false, () => void draw()), { size: 'sm', icon: 'plus' }));
-    if (live && b.own && b.balance > 0) budgetActs.push(lbtn('Give back…', () => openBudget(p, true, () => void draw()), { size: 'sm', kind: 'ghost' }));
     replace(
       root,
       card('Settings', table(['Setting', 'Value', 'From', ''], rows)),
@@ -185,16 +156,6 @@ export function settingsTab(p: Project): HTMLElement {
         'Models by role',
         roleRows.length ? table(null, roleRows) : h('p.muted', null, 'No role has a model of its own here or at the plaza: every role runs the model above.'),
         { actions: live ? [lbtn('Set a role’s model', newRole, { size: 'sm', icon: 'plus' })] : [] },
-      ),
-      card(
-        'Budget',
-        [
-          b.own
-            ? h('p', null, h('strong', null, `${b.balance} credits`), ' left in this project’s budget. Its tasks are funded from it, and when it is over the rest goes back to the plaza.')
-            : h('p', null, 'This project has no budget of its own yet: its tasks are funded from the plaza’s.'),
-          h('p.pj-faint', null, `The plaza’s budget: ${b.plaza} credits.`),
-        ],
-        { actions: budgetActs },
       ),
       card(
         'Instructions and skills',

@@ -97,9 +97,6 @@ impl Source for LiveSource<'_> {
     fn monthly_budget(&self) -> Option<f64> {
         self.m.settings.get().monthly_budget_usd
     }
-    fn treasury(&self) -> Option<(f64, f64)> {
-        misc::treasury(self)
-    }
     fn report(&self, node: &str) -> serde_json::Value {
         let node = node.strip_prefix("node:").unwrap_or(node);
         super::lock(&self.m.links)

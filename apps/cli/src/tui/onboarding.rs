@@ -37,7 +37,7 @@ pub const TOUR: [TourStep; 6] = [
         title: "Overview",
         tab: Some(Tab::Overview),
         lines: &[
-            "The plaza at a glance: the hub, its nodes and agents, the work and the spend.",
+            "The plaza at a glance: the hub, its nodes and agents, and the work.",
             "Command: `agentplaza overview`.",
         ],
     },
@@ -70,7 +70,7 @@ pub const TOUR: [TourStep; 6] = [
         tab: None,
         lines: &[
             "Model providers, their keys and models: `agentplaza models providers`.",
-            "The budget, the spend and the balances: `agentplaza treasury balances`.",
+            "What the model calls cost: `agentplaza usage summary`; their prices: `agentplaza usage prices`.",
         ],
     },
     TourStep {

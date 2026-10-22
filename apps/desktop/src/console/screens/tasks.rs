@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
 use iced::widget::text::Wrapping;
 use iced::widget::{
     Space, button, checkbox, column, container, mouse_area, pick_list, row, text, text_editor,
@@ -66,8 +65,6 @@ pub struct TaskRecord {
     pub acceptance: Option<String>,
     #[serde(default)]
     pub role: Option<String>,
-    #[serde(default)]
-    pub budget: f64,
     #[serde(default)]
     pub agent_cid: Option<u64>,
     #[serde(default)]
@@ -184,7 +181,6 @@ struct Draft {
     details: text_editor::Content,
     acceptance: text_editor::Content,
     role: Pick,
-    budget: String,
     assignee: Pick,
     posting: bool,
 }
@@ -197,7 +193,6 @@ impl Draft {
             details: text_editor::Content::new(),
             acceptance: text_editor::Content::new(),
             role: Pick::any_role(),
-            budget: String::new(),
             assignee: Pick::scheduler(),
             posting: false,
         }
@@ -260,7 +255,6 @@ pub enum Msg {
     FormDetails(text_editor::Action),
     FormAcceptance(text_editor::Action),
     FormRole(Pick),
-    FormBudget(String),
     FormAssignee(Pick),
     FormProject(scope::Pick),
     /// Moves the open task (from before projects) into a project, with the tasks linked to it.
@@ -513,12 +507,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
-        Msg::FormBudget(v) => {
-            if let Some(d) = state.draft.as_mut() {
-                d.budget = v;
-            }
-            Task::none()
-        }
         Msg::FormAssignee(p) => {
             if let Some(d) = state.draft.as_mut() {
                 d.assignee = p;
@@ -581,26 +569,6 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     if d.posting || d.title.trim().is_empty() {
         return Task::none();
     }
-    // Empty leaves the budget to the hub's default; anything given must be a whole number of
-    // credits at or above the hub's minimum (the hub refuses the rest with its own 400).
-    let budget_text = d.budget.trim().to_string();
-    let budget = if budget_text.is_empty() {
-        None
-    } else {
-        match budget_text.parse::<i64>() {
-            Ok(credits) if credits >= MIN_TASK_BUDGET => Some(credits),
-            Ok(_) => {
-                state.error = Some(format!(
-                    "Budget must be at least {MIN_TASK_BUDGET} credits."
-                ));
-                return Task::none();
-            }
-            Err(_) => {
-                state.error = Some("Budget must be a whole number of credits.".into());
-                return Task::none();
-            }
-        }
-    };
     let title = d.title.trim().to_string();
     let details = d.details.text().trim().to_string();
     let acceptance = d.acceptance.text().trim().to_string();
@@ -610,9 +578,6 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         format!("{title}\n\n{details}")
     };
     let mut body = json!({ "goal": goal, "project": project });
-    if let Some(budget) = budget {
-        body["budget"] = json!(budget);
-    }
     if !acceptance.is_empty() {
         body["acceptance"] = json!(acceptance);
     }
@@ -847,10 +812,6 @@ fn fmt_span(ms: i64) -> String {
 fn clock(ms: i64) -> String {
     let s = ms.div_euclid(1000).rem_euclid(86400);
     format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
-}
-
-fn fmt_num(v: f64) -> String {
-    format!("{v}")
 }
 
 fn tool_of(e: &EntryRecord) -> String {
@@ -1340,11 +1301,7 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
             .into()
         }
         _ => {
-            let meta = meta_text(format!(
-                "budget {} · created {}",
-                fmt_num(t.budget),
-                ago(t.created_at)
-            ));
+            let meta = meta_text(format!("created {}", ago(t.created_at)));
             match waits_on(t) {
                 Some(waits) => column![waits, meta].spacing(6).width(Length::Fill).into(),
                 None => meta,
@@ -1452,7 +1409,7 @@ fn assignee_link<'a>(state: &'a State, cid: Option<u64>) -> Element<'a, Msg> {
 }
 
 /// The new-task dialog, as the web's `openCreate` sheet: the project and title side by side, then details, acceptance,
-/// role and budget, and the assignee (one of the project's idle agents). Its head closes; the foot creates the task.
+/// role, and the assignee (one of the project's idle agents). Its head closes; the foot creates the task.
 fn draft_modal<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
     let Some(project) = d.project.as_ref() else {
         return ui::modal(
@@ -1491,11 +1448,6 @@ fn draft_modal<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
     )
     .style(crate::theme::pick_list)
     .width(Length::Fill);
-    let budget_hint = format!("{DEFAULT_TASK_BUDGET} (hub default)");
-    let budget = text_input(&budget_hint, &d.budget)
-        .on_input(Msg::FormBudget)
-        .style(theme::input)
-        .padding(8.0);
     let mut assignee_options = vec![Pick::scheduler()];
     assignee_options.extend(
         idle_agents(&state.agents, Some(project.id.as_str()))
@@ -1520,11 +1472,7 @@ fn draft_modal<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
         .spacing(14),
         section("Details", details.into()),
         section("Acceptance", acceptance.into()),
-        row![
-            section("Role", role.into()),
-            section("Budget", budget.into())
-        ]
-        .spacing(14),
+        section("Role", role.into()),
         section("Assign to", assignee.into()),
     ]
     .spacing(14);
@@ -1571,10 +1519,6 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         ),
         kv("Role", ui::faint(role).into()),
         kv("Assignee", assignee_link(state, t.agent_cid)),
-        kv(
-            "Budget",
-            ui::sans(fmt_num(t.budget), 12.0, crate::theme::palette().ink).into()
-        ),
         kv("Created", ui::faint(ago(t.created_at)).into()),
         kv("Updated", ui::faint(ago(t.updated_at)).into()),
     ]

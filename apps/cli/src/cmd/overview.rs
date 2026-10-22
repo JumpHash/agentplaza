@@ -1,4 +1,4 @@
-//! `agentplaza overview`: the plaza at a glance: hub, plaza state, nodes, agents, work, spend.
+//! `agentplaza overview`: the plaza at a glance: hub, plaza state, nodes, agents, work.
 
 use serde_json::{Value, json};
 
@@ -10,7 +10,6 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
     let plaza = ctx.client.get("/v1/plaza/state")?;
     let nodes = ctx.client.get("/v1/nodes")?;
     let agents = ctx.client.get("/v1/agents")?;
-    let treasury = ctx.client.get("/v1/treasury")?;
     let queued: u64 = agents
         .as_array()
         .map(|list| {
@@ -25,8 +24,6 @@ pub fn run(ctx: &Ctx) -> Result<(), String> {
         "overview": overview,
         "nodes": nodes,
         "queued": queued,
-        "spent": treasury.get("spent").cloned().unwrap_or(Value::Null),
-        "plaza_budget": treasury.get("plaza_budget").cloned().unwrap_or(Value::Null),
     });
     ctx.out(&report, print);
     Ok(())
@@ -64,14 +61,6 @@ fn print(r: &Value) {
                 "worker {} · orchestrator {}",
                 ctx::s(o, "default_model"),
                 ctx::s(o, "orchestrator_model")
-            ),
-        ),
-        (
-            "spent",
-            format!(
-                "{} of a plaza budget of {}",
-                ctx::text(r, "spent"),
-                ctx::text(r, "plaza_budget")
             ),
         ),
     ]);

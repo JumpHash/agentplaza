@@ -37,8 +37,6 @@ export const RECORD_FPS = { min: 1, max: 5 } as const;
 /** The hub-wide defaults' frames a second: the same bounds as a workstation's. */
 export const DEFAULT_FPS = RECORD_FPS;
 export const WORK_FOLDER_MAX = 512;
-/** The most credits an hour a workstation may cost (a bound of the form: 1,000,000 credits is $1,000 an hour). */
-export const RATE_MAX = 1_000_000;
 /** The largest file the work folder syncs (the daemon's and the hub's cap). */
 export const UPLOAD_MAX_BYTES = 512 * 1024 * 1024;
 
@@ -609,24 +607,6 @@ export function bytesText(n: number): string {
 
 // ---- Settings ------------------------------------------------------------------------------------------------------
 
-/** Credits an hour as dollars, to three places (1 credit is $0.001). */
-export function dollarsPerHour(credits: number): string {
-  return (credits / 1000).toFixed(3);
-}
-
-/** The rate in words: free at 0, else its dollars an hour. */
-export function rateText(credits: number): string {
-  return credits > 0 ? `$${dollarsPerHour(credits)} an hour` : 'Free';
-}
-
-/** A whole number of credits from `text`, from 0 to RATE_MAX, or null. */
-export function readRate(text: string): number | null {
-  const t = text.trim();
-  if (!/^\d+$/.test(t)) return null;
-  const n = Number(t);
-  return n <= RATE_MAX ? n : null;
-}
-
 /** The settings form as the controls hold them: text for the numbers, so a half-typed value is still a value. */
 export interface SettingsForm {
   takeover: Takeover;
@@ -636,7 +616,6 @@ export interface SettingsForm {
   record_takeovers: boolean;
   work_folder: string;
   snapshot_reset: boolean;
-  rate_per_hour: string;
 }
 
 export function settingsForm(s: StationSettings): SettingsForm {
@@ -648,7 +627,6 @@ export function settingsForm(s: StationSettings): SettingsForm {
     record_takeovers: s.record_takeovers,
     work_folder: s.work_folder,
     snapshot_reset: s.snapshot_reset,
-    rate_per_hour: String(s.rate_per_hour),
   };
 }
 
@@ -669,8 +647,6 @@ export function readSettings(f: SettingsForm): SettingsRead {
   if (days === null) return { ok: false, error: `Keep recordings for whole days, from ${RETENTION_DAYS.min} to ${RETENTION_DAYS.max}.` };
   const fps = wholeIn(f.record_fps, RECORD_FPS.min, RECORD_FPS.max);
   if (fps === null) return { ok: false, error: `Record whole frames per second, from ${RECORD_FPS.min} to ${RECORD_FPS.max}.` };
-  const rate = readRate(f.rate_per_hour);
-  if (rate === null) return { ok: false, error: `The rate is whole credits an hour, from 0 to ${RATE_MAX}.` };
   const folder = f.work_folder.trim();
   if (!folder) return { ok: false, error: 'The work folder cannot be empty.' };
   if (folder.length > WORK_FOLDER_MAX || hasControl(folder)) return { ok: false, error: `The work folder is a path of up to ${WORK_FOLDER_MAX} characters.` };
@@ -684,7 +660,6 @@ export function readSettings(f: SettingsForm): SettingsRead {
       record_takeovers: f.record_takeovers,
       work_folder: folder,
       snapshot_reset: f.snapshot_reset,
-      rate_per_hour: rate,
     },
   };
 }

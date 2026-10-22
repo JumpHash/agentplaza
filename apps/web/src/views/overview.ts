@@ -26,7 +26,7 @@ const ORCH: Record<string, [string, Tone]> = {
   asleep: ['Asleep', 'muted'],
   dozing: ['Asleep (light)', 'muted'],
 };
-const KIND_ICON: Record<string, LucideName> = { review: 'git-pull-request', tool: 'terminal', deploy: 'rocket', payment: 'credit-card' };
+const KIND_ICON: Record<string, LucideName> = { review: 'git-pull-request', tool: 'terminal', deploy: 'rocket' };
 
 /** A card with the prototype's head and body: `.ov-cardh` over `.ov-body`, flush when the body is a list. */
 function sectionCard(cls: string, head: Node[], body: Node, flush = false): HTMLElement {
@@ -51,7 +51,7 @@ const modelStat = (label: string, [name, provider]: [string, string]): HTMLEleme
   h('div.stat', null, h('span.stat-l', null, label), h('b.stat-v.ov-model', null, name), h('small', null, provider));
 
 export function mount(root: HTMLElement): Cleanup {
-  // Under a project, the overview is that project's: its agents, its tasks, its budget, its activity.
+  // Under a project, the overview is that project's: its agents, its tasks, its activity.
   const inProject = scope.get();
   const statsSlot = h('div');
   const orchSlot = h('div');
@@ -129,7 +129,6 @@ export function mount(root: HTMLElement): Cleanup {
   void loadWaiting();
 
   // The figures: the plaza's, or under a project the project's.
-  let budget: number | null = null;
   const drawStats = (): void => {
     const o = overview.get();
     if (!o) return replace(statsSlot, h('div.card.ov-card', null, empty('alert', 'apid is unreachable', 'Start apid, then reload.')));
@@ -147,7 +146,6 @@ export function mount(root: HTMLElement): Cleanup {
           stat('Agents', here.length, `${here.filter((a) => a.status === 'working').length} working`),
           stat('Open tasks', open, `${ts.filter((t) => t.state === 'done').length} done`),
           stat('Stage', p ? p.stage.charAt(0).toUpperCase() + p.stage.slice(1) : '—', p?.paused ? 'paused' : p?.archived ? 'archived' : 'in progress'),
-          stat('Budget', budget === null ? '—' : budget.toLocaleString('en-US'), budget === null ? 'from the plaza' : 'credits left'),
         ),
       );
       return;
@@ -165,14 +163,6 @@ export function mount(root: HTMLElement): Cleanup {
       ),
     );
   };
-  if (inProject)
-    void api
-      .projectBudget(inProject)
-      .then((b) => {
-        budget = b.own ? b.balance : null;
-        drawStats();
-      })
-      .catch(() => undefined);
 
   // The waiting card: the approvals and proposals the owner has yet to decide, under a project only its own.
   const nameOf = (cid: number): string => agentLabelIn(agents.get(), cid);
@@ -384,12 +374,11 @@ function composerBox(): Composer {
   };
 }
 
-/** What the waiting card says of an approval: its goal, its payment, or the tool call. */
+/** What the waiting card says of an approval: its goal, or the tool call. */
 export function waitTitle(a: Approval): string {
   const d = (a.detail ?? {}) as { goal?: string; task?: string };
   const inp = (a.input ?? {}) as { command?: unknown };
   if (a.kind === 'review') return d.goal || `Review of ${d.task}`;
-  if (a.kind === 'payment') return `Payment awaiting approval: ${a.subject}`;
   if (a.kind === 'deploy') return a.subject;
   if (a.kind === 'artifact.share') return `Share ${a.subject}`;
   return `${a.tool}${typeof inp.command === 'string' ? `: ${inp.command}` : typeof a.detail === 'string' ? `: ${a.detail}` : ''}`;

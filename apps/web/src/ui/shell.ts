@@ -33,7 +33,6 @@ export const MORE: [string, LucideName, string][] = [
   ['metrics', 'chart-column', 'Metrics'],
   ['library', 'library', 'Library'],
   ['board', 'pin', 'Board'],
-  ['treasury', 'coins', 'Treasury'],
   ['rules', 'scale', 'Rules'],
   ['lab', 'flask-conical', 'Lab'],
 ];

@@ -1,7 +1,7 @@
 //! Sessions (PLAN 4.3, 5.1): the work engine's unit of work. A session is one fresh context working one recipe step
 //! of one task (a `step` session), a project's planner or the main orchestrator (`long`, compacting as it goes), or a
 //! helper a session started (`helper`). It runs in a fork: a VM of its own, started for it (from today's templates
-//! until phase 3's bases), whose CID is the session's while it lives. A session has no name, no wallet and no memory
+//! until phase 3's bases), whose CID is the session's while it lives. A session has no name and no memory
 //! of its own: what it learns goes into its task's journal and, through the curator, into project memory.
 //!
 //! The records live in memory, indexed by id and by CID; the hub's saver keeps them in `plaza.db` (table `session`).

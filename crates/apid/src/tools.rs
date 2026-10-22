@@ -9,7 +9,7 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use apz_plaza::ConnectedAgent;
 use apz_plaza::social::PostRequest;
-use apz_plaza::tasks::{CreateTask, Task, resolve_budget};
+use apz_plaza::tasks::{CreateTask, Task};
 use apz_proto::chat::ToolSpec;
 use apz_proto::wire::WorkKind;
 use serde::Serialize;
@@ -67,7 +67,6 @@ const ALWAYS: &[&str] = &[
     "checkpoint_diff",
     "checkpoint_restore",
     "checkpoint_list",
-    "plaza_pay",
     "plaza_connector_propose",
     "plaza_skills",
     "plaza_skill_read",
@@ -110,7 +109,6 @@ const GATED: &[&str] = &[
     "plaza_agent_control",
     "plaza_loop",
     "plaza_agents",
-    "plaza_money",
     "plaza_post_task",
     "plaza_tasks_post",
     "plaza_task_link",
@@ -167,7 +165,6 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_send_message"
         | "plaza_message_seat"
         | "plaza_agents"
-        | "plaza_money"
         | "plaza_post_task"
         | "plaza_tasks_post"
         | "plaza_task_link"
@@ -175,7 +172,6 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_cancel_task"
         | "plaza_task_result"
         | "plaza_get_file"
-        | "plaza_pay"
         | "plaza_verdict" => Some(Runs::Host),
         name if crate::skills::agent_tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::toolbox::TOOLS.contains(&name) => Some(Runs::Host),
@@ -522,52 +518,7 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
     })
 }
 
-/// The rules a `plaza_money` report ends with (the system prompt's "How money works", minus its last sentence).
-const HOW_MONEY_WORKS: &str = "How money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
-     it is posted (plaza_post_task) — no wallet is debited and no transfer cap applies. The \
-     worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
-     work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
-     at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
-     nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. Your wallet \
-     is only debited by what you send yourself (plaza_pay), up to 1000 credits a day.";
-
-/// The plain-text `plaza_money` report: the caller's wallet, an optional task's
-/// money (`(id, state, money)`), then the rules.
-fn money_report(
-    cid: u64,
-    wallet: &apz_plaza::treasury::WalletMoney,
-    task: Option<(&str, &str, &apz_plaza::treasury::TaskMoney)>,
-) -> String {
-    let mut lines = vec![format!(
-        "your wallet (cid:{cid}): balance {} credits; sent today {} of the {} daily cap; earned {} from task payments",
-        wallet.balance,
-        wallet.sent_today,
-        apz_plaza::treasury::TRANSFER_DAILY_CAP,
-        wallet.earned
-    )];
-    if let Some((id, state, money)) = task {
-        lines.push(format!("task {id}: state {state}"));
-        lines.push(format!("budget (minted into escrow): {}", money.minted));
-        lines.push(format!("escrow balance now: {}", money.escrow));
-        lines.push(format!("real spend charged so far: {}", money.spent));
-        if money.paid.is_empty() {
-            lines.push("paid to agents: none yet".to_string());
-        } else {
-            let paid: Vec<String> = money
-                .paid
-                .iter()
-                .map(|(cid, amount)| format!("cid:{cid} {amount}"))
-                .collect();
-            lines.push(format!("paid to agents: {}", paid.join(", ")));
-        }
-        lines.push(format!("refunded to the plaza: {}", money.refunded));
-    }
-    lines.push(String::new());
-    lines.push(HOW_MONEY_WORKS.to_string());
-    lines.join("\n")
-}
-
-/// Plaza task tools (posting, assignment, results, money); `None` when `name` is not one of them.
+/// Plaza task tools (posting, assignment, results); `None` when `name` is not one of them.
 fn host_tasks(
     app: &App,
     agent: &Agent,
@@ -587,27 +538,6 @@ fn host_tasks(
         "plaza_task_result" => Some((|| -> Result<String, String> {
             let task = task_arg(app, input)?;
             Ok(task_json(&task).to_string())
-        })()),
-        "plaza_money" => Some((|| -> Result<String, String> {
-            let wallet = app.plaza.treasury.wallet_money(agent.cid);
-            let Some(task) = input.get("task").and_then(Value::as_str) else {
-                return Ok(money_report(agent.cid, &wallet, None));
-            };
-            let record = app
-                .plaza
-                .tasks
-                .find(task)
-                .ok_or_else(|| format!("no task {task}"))?;
-            let json = task_json(&record);
-            let state = json["state"]
-                .as_str()
-                .map_or_else(|| json["state"].to_string(), str::to_string);
-            let money = app.plaza.treasury.task_money(task);
-            Ok(money_report(
-                agent.cid,
-                &wallet,
-                Some((task, &state, &money)),
-            ))
         })()),
         "plaza_post_task" => Some((|| -> Result<String, String> {
             let title = str_arg(input, "title")?;
@@ -649,10 +579,6 @@ fn host_tasks(
                     p.stage
                 ));
             }
-            // An unfunded task would stop at its first model call: give it a working default, the project's when it
-            // sets one.
-            let budget =
-                budget_arg_or(input, crate::project_settings::task_budget(app, Some(pid)))?;
             // The assignee works on the project: checked before the task exists, so a refusal posts nothing.
             if let Some(cid) = input.get("assignee").and_then(Value::as_u64) {
                 let target = app
@@ -672,7 +598,6 @@ fn host_tasks(
                         .map(str::trim)
                         .filter(|a| !a.is_empty())
                         .map(str::to_string),
-                    budget: Some(budget),
                     role,
                     after,
                     project: Some(project.clone()),
@@ -689,18 +614,13 @@ fn host_tasks(
             let project = str_arg(input, "project")?;
             own_project(app, agent, Some(project.to_string()))?;
             takes_tasks(app, project)?;
-            let tasks: Vec<crate::task_plan::Planned> =
-                serde_json::from_value(input.get("tasks").cloned().unwrap_or(Value::Null))
-                    .map_err(|e| {
-                        format!("`tasks` must be a list of {{key, goal, acceptance?, role?, budget?, after?}}: {e}")
-                    })?;
-            let posted = crate::task_plan::post(
-                &app.projects,
-                &app.plaza.tasks,
-                project,
-                &tasks,
-                crate::project_settings::task_budget(app, Some(project)),
-            )?;
+            let tasks: Vec<crate::task_plan::Planned> = serde_json::from_value(
+                input.get("tasks").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|e| {
+                format!("`tasks` must be a list of {{key, goal, acceptance?, role?, after?}}: {e}")
+            })?;
+            let posted = crate::task_plan::post(&app.projects, &app.plaza.tasks, project, &tasks)?;
             for task in &posted {
                 app.work.note_poster(&task.id, agent.cid);
             }
@@ -736,31 +656,6 @@ fn host_tasks(
                 .withdraw()
                 .map_err(|e| format!("{e:?}"))?;
             Ok("cancelled".into())
-        })()),
-        "plaza_pay" => Some((|| -> Result<String, String> {
-            let to = u64_arg(input, "to")?;
-            let amount = input
-                .get("amount")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "missing integer `amount`".to_string())?;
-            let memo = str_arg(input, "memo")?;
-            // A payment over the owner's threshold is held: the treasury has no holds, so nothing moves
-            // until the owner approves it (approvals::decide -> payments::decided runs the transfer).
-            if crate::payments::held(amount, app.settings.get().payments.approve_over) {
-                let subject = format!("pay {amount} to {to}");
-                let detail = json!({"cid": agent.cid, "to": to, "amount": amount, "memo": memo});
-                let item = crate::approvals::submit(app, "payment", &subject, detail);
-                return Ok(format!(
-                    "awaiting owner approval ({}): paying {amount} to {to} is held until the owner decides",
-                    item.id
-                ));
-            }
-            let entry = app
-                .plaza
-                .treasury
-                .transfer(agent.cid, to, amount, memo)
-                .map_err(|e| format!("{e:?}"))?;
-            Ok(format!("paid {amount} to {to} (entry {entry})"))
         })()),
         _ => None,
     }
@@ -1096,7 +991,6 @@ fn task_json(task: &Task) -> Value {
         "id": view.id,
         "goal": view.goal,
         "state": view.state,
-        "budget": view.budget,
         "role": view.role,
         "acceptance": view.acceptance,
         "project": view.project,
@@ -1147,23 +1041,6 @@ fn u64_arg(input: &Value, key: &str) -> Result<u64, String> {
         .get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("missing integer `{key}`"))
-}
-
-/// A task's `budget` argument, through the one default and minimum in
-/// [`resolve_budget`]: absent (or null) → `default` (a project's `task_budget`), else the plaza's default; a number
-/// under the minimum, 0 included, or a value that is not a whole number → refused.
-pub fn budget_arg_or(input: &Value, default: Option<u64>) -> Result<u64, String> {
-    let requested = match input.get("budget") {
-        None | Some(Value::Null) => default,
-        Some(value) => Some(
-            value
-                .as_u64()
-                .ok_or("budget must be a whole number of credits")?,
-        ),
-    };
-    resolve_budget(requested).map_err(|refusal| {
-        format!("{refusal}. It is minted from the plaza's budget; your wallet is not debited.")
-    })
 }
 
 /// The optional `attachments` argument: at most 8 shared files the caller may read.
@@ -1252,17 +1129,6 @@ mod tests {
                 "{name} schema is not an object"
             );
         }
-        // The JSON spells the plaza's task budget floor out; it must be the floor the plaza enforces.
-        let floor = apz_plaza::tasks::MIN_TASK_BUDGET;
-        assert_eq!(
-            BUILTIN["plaza_post_task"].input_schema["properties"]["budget"]["minimum"],
-            floor
-        );
-        assert_eq!(
-            BUILTIN["plaza_tasks_post"].input_schema["properties"]["tasks"]["items"]["properties"]
-                ["budget"]["minimum"],
-            floor
-        );
         assert_eq!(
             serde_json::to_string(&build_spec("bash")).expect("bash spec serializes"),
             r#"{"name":"bash","description":"Run a shell command in your VM and return its output.","input_schema":{"type":"object","properties":{"command":{"type":"string"},"timeout_s":{"type":"integer","minimum":1}},"required":["command"],"additionalProperties":false}}"#
@@ -1641,33 +1507,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_tool_task_takes_the_default_budget_and_refuses_below_the_minimum() {
-        use apz_plaza::tasks::DEFAULT_TASK_BUDGET;
-        let default = DEFAULT_TASK_BUDGET as u64;
-        assert_eq!(budget_arg_or(&json!({}), None), Ok(default));
-        assert_eq!(
-            budget_arg_or(&json!({}), Some(3000)),
-            Ok(3000),
-            "a project's default"
-        );
-        assert_eq!(budget_arg_or(&json!({"budget": 500}), Some(3000)), Ok(500));
-        assert_eq!(budget_arg_or(&json!({"budget": null}), None), Ok(default));
-        assert_eq!(budget_arg_or(&json!({"budget": 200}), None), Ok(200));
-        assert_eq!(budget_arg_or(&json!({"budget": 5000}), None), Ok(5000));
-        for low in [100, 0] {
-            let refusal =
-                budget_arg_or(&json!({"budget": low}), None).expect_err("below the minimum");
-            assert!(
-                refusal.contains("minimum of 200"),
-                "names the minimum: {refusal}"
-            );
-            assert!(refusal.contains("wallet is not debited"), "{refusal}");
-        }
-        assert!(budget_arg_or(&json!({"budget": -5}), None).is_err());
-        assert!(budget_arg_or(&json!({"budget": "lots"}), None).is_err());
-    }
-
     /// Agents never run anything on the host: the host-side tools are the
     /// plaza's data operations only (no processes, files or network).
     #[test]
@@ -1686,13 +1525,12 @@ mod tests {
             "plaza_cancel_task",
             "plaza_task_result",
             "plaza_get_file",
-            "plaza_pay",
             "plaza_verdict",
         ]
         .into_iter()
         .filter(|name| runs(name) == Some(Runs::Host))
         .collect();
-        assert_eq!(host.len(), 15);
+        assert_eq!(host.len(), 14);
         assert_eq!(runs("fetch_url"), Some(Runs::Guest));
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");

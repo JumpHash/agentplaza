@@ -27,7 +27,6 @@ const DISK_CRIT_DAYS: f64 = 7.0;
 pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
     let month = Month::build(ctx, src);
     let nodes = load_nodes(ctx, src);
-    let treasury = src.treasury();
     let limits = rate_bars(src);
     let limits_body = if limits.is_empty() {
         empty("No rate limits reported.")
@@ -44,7 +43,7 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
             "This month, and when things run out",
             12,
             Body::Tiles {
-                tiles: spend_and_capacity_tiles(&month, treasury, &nodes),
+                tiles: spend_and_capacity_tiles(&month, &nodes),
             },
         ),
         panel(
@@ -220,7 +219,7 @@ fn load_nodes(ctx: &Ctx, src: &dyn Source) -> Vec<Node> {
         .collect()
 }
 
-fn spend_and_capacity_tiles(m: &Month, treasury: Option<(f64, f64)>, nodes: &[Node]) -> Vec<Tile> {
+fn spend_and_capacity_tiles(m: &Month, nodes: &[Node]) -> Vec<Tile> {
     let spend = &m.spend;
     let projected_status = match m.budget {
         Some(b) if b > 0.0 => status_of(spend.projected / b, 0.9, 1.0),
@@ -312,7 +311,6 @@ fn spend_and_capacity_tiles(m: &Month, treasury: Option<(f64, f64)>, nodes: &[No
             Tone::C1,
             Some("tokens"),
         ),
-        treasury_tile(treasury, spend.burn_per_day),
         stat(
             "VMs that still fit",
             vms_value,
@@ -335,45 +333,6 @@ fn stat(label: &str, value: String, note: String, tone: Tone, tab: Option<&str>)
         spark: Vec::new(),
         tone,
         tab: tab.map(String::from),
-    }
-}
-
-/// Treasury days at the month's burn: credits times the value of a credit, over the burn per day.
-fn treasury_tile(treasury: Option<(f64, f64)>, burn: f64) -> Tile {
-    match treasury {
-        None => stat(
-            "Treasury credits left",
-            "—".to_string(),
-            "no treasury set".to_string(),
-            Tone::C1,
-            None,
-        ),
-        Some((credits, usd_per_credit)) => {
-            let left = format!("{} credits left", format(Unit::Count, credits));
-            if burn > 0.0 {
-                let days = credits * usd_per_credit / burn;
-                stat(
-                    "Treasury credits left",
-                    // One decimal under ten days ("1.3 days", never "1 days").
-                    if days < 10.0 {
-                        format!("{days:.1} days")
-                    } else {
-                        format!("{days:.0} days")
-                    },
-                    left,
-                    Tone::C1,
-                    None,
-                )
-            } else {
-                stat(
-                    "Treasury credits left",
-                    "—".to_string(),
-                    left,
-                    Tone::C1,
-                    None,
-                )
-            }
-        }
     }
 }
 

@@ -73,7 +73,7 @@ impl Default for ModelPolicy {
     }
 }
 
-/// Price per million tokens, in credits (1 credit = $0.001).
+/// Price per million tokens, in US dollars.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, apz_store::Table)]
 pub struct Price {
     pub input: f64,
@@ -105,8 +105,6 @@ pub struct Settings {
     pub retention: Retention,
     /// How the plaza's laws are applied (see `laws.rs`).
     pub laws: LawsSettings,
-    /// How payments and model calls are gated and charged (see `payments.rs`, `llm_proxy.rs`).
-    pub payments: Payments,
     /// The Lab's settings (`docs/design/foundry.md`, "Hugging Face").
     pub foundry: FoundrySettings,
     /// The owner's explicit confirmation that a contributor model (one that trains its provider's
@@ -267,7 +265,6 @@ impl Default for Settings {
             vm_auto_checkpoints: true,
             retention: Retention::default(),
             laws: LawsSettings::default(),
-            payments: Payments::default(),
             foundry: FoundrySettings::default(),
             allow_training_models: false,
             review_timeout_minutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
@@ -295,27 +292,6 @@ pub struct LawsSettings {
     /// Whether an operation that has permit laws is refused unless one of them allows it. Off: only
     /// forbids refuse, and a permit only allows.
     pub strict_permits: bool,
-}
-
-/// How payments and model calls are gated and charged. Any `u64` is a valid threshold, so
-/// there is nothing to refuse at save time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
-#[serde(default)]
-pub struct Payments {
-    /// A payment over this many credits waits for the owner's approval. `0` means every payment asks.
-    pub approve_over: u64,
-    /// Whether model calls are charged to the agent's task escrow (or its wallet when it has no
-    /// task), and refused when it cannot pay.
-    pub charge_models: bool,
-}
-
-impl Default for Payments {
-    fn default() -> Self {
-        Self {
-            approve_over: 500,
-            charge_models: true,
-        }
-    }
 }
 
 /// The fewest a retention count may be, so the plaza keeps a usable window.
@@ -400,8 +376,6 @@ struct SettingsRow {
     #[table(flatten)]
     laws: LawsSettings,
     #[table(flatten)]
-    payments: Payments,
-    #[table(flatten)]
     foundry: FoundrySettings,
     allow_training_models: bool,
     review_timeout_minutes: u32,
@@ -442,7 +416,6 @@ impl From<&Settings> for SettingsRow {
             vm_auto_checkpoints: s.vm_auto_checkpoints,
             retention: s.retention,
             laws: s.laws,
-            payments: s.payments,
             foundry: s.foundry,
             allow_training_models: s.allow_training_models,
             review_timeout_minutes: s.review_timeout_minutes,
@@ -491,7 +464,6 @@ impl From<SettingsRow> for Settings {
             vm_auto_checkpoints: r.vm_auto_checkpoints,
             retention: r.retention,
             laws: r.laws,
-            payments: r.payments,
             foundry: r.foundry,
             allow_training_models: r.allow_training_models,
             review_timeout_minutes: r.review_timeout_minutes,
@@ -1702,36 +1674,6 @@ mod tests {
                 "the other ACP switches keep their defaults"
             );
         }
-
-        // payments_default_and_settings_saved_without_them_load_the_defaults: payments default, and settings saved without them load the defaults.
-        {
-            assert_eq!(
-                Payments::default(),
-                Payments {
-                    approve_over: 500,
-                    charge_models: true
-                }
-            );
-            assert_eq!(Settings::default().payments, Payments::default());
-
-            // Settings saved before payments existed carry no such key: they load the defaults.
-            let mut old = serde_json::to_value(Settings::default()).unwrap();
-            old.as_object_mut().unwrap().remove("payments");
-            let loaded: Settings = serde_json::from_value(old).unwrap();
-            assert_eq!(loaded.payments, Payments::default());
-
-            // A partial block keeps the fields it names and defaults the rest.
-            let partial: Settings =
-                serde_json::from_value(serde_json::json!({"payments": {"approve_over": 0}}))
-                    .unwrap();
-            assert_eq!(
-                partial.payments,
-                Payments {
-                    approve_over: 0,
-                    charge_models: true
-                }
-            );
-        }
     }
 
     #[test]
@@ -1870,23 +1812,5 @@ mod tests {
             saved, never,
             "0 (agents never sleep) and no never-roles are kept"
         );
-    }
-
-    #[test]
-    fn payments_round_trip_through_the_store() {
-        let store = Store::new(false);
-        let s = Settings {
-            payments: Payments {
-                approve_over: 0,
-                charge_models: false,
-            },
-            ..Settings::default()
-        };
-        assert_eq!(store.put(s.clone()).unwrap(), s);
-        assert_eq!(reloaded(&store, false).get().payments, s.payments);
-
-        let json = serde_json::to_string(&s).unwrap();
-        let back: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, s);
     }
 }

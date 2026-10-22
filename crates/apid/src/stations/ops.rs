@@ -184,7 +184,7 @@ pub fn revoke(app: &App, id: &str, actor: &str) -> Result<Station, Failure> {
     }
     for lease in app.stations.leases.drop_station(id) {
         recordings::end(app, id, &lease.id);
-        hooks::lease_ended(app, id, &lease, now());
+        hooks::lease_ended(app, id);
         let event = StationAudit::LeaseEnded {
             lease: lease.id.clone(),
             session: None,
@@ -384,7 +384,7 @@ fn release_with(
         .remove(lease_id)
         .ok_or((404, "no such lease".to_string()))?;
     recordings::end(app, station_id, lease_id);
-    hooks::lease_ended(app, station_id, &lease, now());
+    hooks::lease_ended(app, station_id);
     let close_error = match (lease.kind, lease.session, app.stations.live(station_id)) {
         (Kind::Pixel, Some(session), Some(link)) => link
             .request(Op::SessionClose { session }, RPC_TIMEOUT)
@@ -628,7 +628,7 @@ impl Hooks for Live<'_> {
                 if let Some(lease) = app.stations.leases.by_session(id, session) {
                     app.stations.leases.remove(&lease.id);
                     recordings::end(app, id, &lease.id);
-                    hooks::lease_ended(app, id, &lease, now());
+                    hooks::lease_ended(app, id);
                     let event = StationAudit::LeaseEnded {
                         lease: lease.id.clone(),
                         session: Some(session),

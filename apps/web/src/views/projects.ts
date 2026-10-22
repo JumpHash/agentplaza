@@ -384,7 +384,7 @@ function openSendBack(p: Project, done: () => void): void {
 function openArchive(p: Project, done: () => void): void {
   dialog(
     'Archive project?',
-    [h('p.muted', null, `Nothing more is done for ${p.title}: its open tasks are withdrawn, its agents stop working on it, and the rest of its budget goes back to the plaza. Its history stays.`)],
+    [h('p.muted', null, `Nothing more is done for ${p.title}: its open tasks are withdrawn and its agents stop working on it. Its history stays.`)],
     (close) => [
       lbtn('Cancel', () => close(), { kind: 'ghost' }),
       lbtn(

@@ -1,7 +1,7 @@
-// The words of the IDE's conversation view (views/ide-conversation.ts): the draft's tasks, budget and settings as lines,
+// The words of the IDE's conversation view (views/ide-conversation.ts): the draft's tasks and settings as lines,
 // whether Start can be pressed, and the text that streams in for a reply. Pure: no DOM, no fetch.
 
-import type { DraftTask, OwnerConversation, ProjectDraft, ProjectSettings } from '../api';
+import type { DraftTask, OwnerConversation, ProjectSettings } from '../api';
 import { roleLabel } from '../roles';
 
 /** A workspace id the IDE opens as a conversation: `conv-<n>`. */
@@ -21,11 +21,6 @@ export function startBlock(c: Pick<OwnerConversation, 'draft' | 'project' | 'arc
   if (!c.draft) return 'There is no draft yet: the orchestrator drafts the project as you talk.';
   if (c.draft.problems.length) return `Before it can start: ${c.draft.problems.join('; ')}.`;
   return null;
-}
-
-/** The draft's budget in words. */
-export function budgetText(draft: Pick<ProjectDraft, 'budget'>): string {
-  return draft.budget === undefined ? 'From the plaza’s budget' : `${draft.budget.toLocaleString('en-US')} credits`;
 }
 
 /** A draft's settings in words: `Builder model: anthropic/claude-sonnet-5-5 · effort high · permission: ask`. */

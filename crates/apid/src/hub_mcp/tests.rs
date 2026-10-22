@@ -151,7 +151,6 @@ impl Plaza for FakePlaza {
                     .create(&CreateTask {
                         goal: "Ship".into(),
                         acceptance: None,
-                        budget: None,
                         role: None,
                         after: Vec::new(),
                         project: project.map(String::from),
@@ -206,7 +205,6 @@ impl Plaza for FakePlaza {
                 .create(&CreateTask {
                     goal: "Ship".into(),
                     acceptance: None,
-                    budget: None,
                     role: Some("coder".into()),
                     after,
                     project: Some("pr1".into()),
@@ -225,10 +223,6 @@ impl Plaza for FakePlaza {
 
     fn machines(&self) -> Vec<Value> {
         vec![json!({ "name": "n0", "kind": "linux", "status": "up" })]
-    }
-
-    fn treasury(&self, _journal_limit: usize) -> Value {
-        json!({ "view": {}, "journal": {}, "plaza_budget": 0 })
     }
 
     fn usage(&self, _from_ms: u64, _to_ms: u64) -> Value {
@@ -524,7 +518,6 @@ fn tools_list_shows_what_the_scope_and_the_allowlist_permit() {
         "project_graph",
         "list_approvals",
         "list_machines",
-        "treasury_summary",
         "usage_summary",
         "list_laws",
         "search_library",

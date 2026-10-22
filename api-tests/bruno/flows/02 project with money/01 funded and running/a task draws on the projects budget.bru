@@ -17,8 +17,7 @@ headers {
 body:json {
   {
     "goal": "flows money task one",
-    "project": "{{flowMoneyPid}}",
-    "budget": 400
+    "project": "{{flowMoneyPid}}"
   }
 }
 
@@ -35,6 +34,5 @@ tests {
   test("the task is open with its budget", function () {
     const b = res.getBody();
     expect(b.state).to.equal('open');
-    expect(b.budget).to.equal(400);
   });
 }

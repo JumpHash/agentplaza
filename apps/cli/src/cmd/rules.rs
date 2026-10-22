@@ -442,11 +442,11 @@ mod tests {
     fn settings_with_strict_sets_the_switch() {
         // The strict setting keeps the rest of the settings and drops dev_models.
         {
-            let before = json!({ "dev_models": true, "laws": { "strict_permits": false }, "payments": { "approve_over": 5 } });
+            let before = json!({ "dev_models": true, "laws": { "strict_permits": false }, "memory_autoscale": true });
             let after = settings_with_strict(&before, true);
             assert!(after.get("dev_models").is_none());
             assert_eq!(after["laws"]["strict_permits"], json!(true));
-            assert_eq!(after["payments"]["approve_over"], json!(5));
+            assert_eq!(after["memory_autoscale"], json!(true));
             // The settings it was given are not changed.
             assert_eq!(before["dev_models"], json!(true));
         }

@@ -431,7 +431,7 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
     let app = Arc::clone(app);
     let (repo, change) = (repo.to_string(), change.to_string());
     std::thread::spawn(move || {
-        // The task is done when its change lands: the worker is paid now.
+        // The task is done when its change lands.
         if let Ok(detail) = app.weft.get(&format!("/changes/{change}"))
             && let Some(task) = detail["task"].as_str()
         {

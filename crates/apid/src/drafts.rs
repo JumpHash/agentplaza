@@ -44,9 +44,6 @@ pub struct Draft {
     #[serde(default)]
     #[table(child)]
     pub tasks: Vec<Planned>,
-    /// The project's budget, in credits.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<u64>,
     /// The project's settings overrides, when any were set: the project's own settings, as the plaza reads them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[table(child)]
@@ -76,8 +73,6 @@ struct Edit {
     repo: Option<String>,
     #[serde(default)]
     tasks: Option<Vec<Planned>>,
-    #[serde(default)]
-    budget: Option<u64>,
     #[serde(default)]
     settings: Option<crate::project_settings::ProjectSettings>,
 }
@@ -119,7 +114,6 @@ fn apply(current: Option<&Draft>, edit: Edit, by: &str, now: u64) -> Result<Draf
             .tasks
             .or_else(|| base.as_ref().map(|d| d.tasks.clone()))
             .unwrap_or_default(),
-        budget: edit.budget.or_else(|| base.as_ref().and_then(|d| d.budget)),
         settings: edit
             .settings
             .or_else(|| base.as_ref().and_then(|d| d.settings.clone())),
@@ -158,7 +152,7 @@ pub fn shape(draft: &Draft) -> Result<(), String> {
 }
 
 /// What still stops Start, as the plaza is now: no tasks; a task for a role the plaza does not have; the project's
-/// settings, which the plaza refuses; a budget below what the tasks need, or more than the plaza's budget holds.
+/// settings, which the plaza refuses.
 pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
     let mut found = Vec::new();
     if draft.tasks.is_empty() {
@@ -177,26 +171,6 @@ pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
     let settings = settings_of(draft);
     if let Err(why) = crate::project_settings::check(app, &settings) {
         found.push(format!("the settings: {why}"));
-    }
-    let task_budget = settings.task_budget;
-    let needed: u64 = draft
-        .tasks
-        .iter()
-        .map(|task| apz_plaza::tasks::resolve_budget(task.budget.or(task_budget)).unwrap_or(0))
-        .sum();
-    if let Some(budget) = draft.budget
-        && budget < needed
-    {
-        found.push(format!(
-            "the budget is {budget} credits, and the tasks alone need {needed}"
-        ));
-    }
-    if let Some(budget) = draft.budget
-        && i128::from(budget) > app.plaza.treasury.plaza_budget_balance()
-    {
-        found.push(format!(
-            "the budget is {budget} credits, more than the plaza's budget holds"
-        ));
     }
     found
 }
@@ -238,14 +212,14 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
         "type": "object",
         "properties": {
             "key": {"type": "string"}, "goal": {"type": "string"}, "acceptance": {"type": "string"},
-            "role": {"type": "string"}, "budget": {"type": "integer", "minimum": 0},
+            "role": {"type": "string"},
             "after": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["key", "goal"],
     });
     (name == "plaza_project_draft").then(|| {
         (
-            "Keep the project draft of the owner's conversation you are in current: the project you set up with the owner, which they start (you never start it). `read` returns the draft, its revision and what still stops Start. `write` changes it: give the revision you read (the owner may edit it too), and only the fields that change: title, goal, kind (code|other), repo (where the work goes, in words), tasks [{key, goal, acceptance, role, budget, after}] (after: keys of tasks of this list it runs after), budget (credits for the whole project) and settings (the project's overrides).",
+            "Keep the project draft of the owner's conversation you are in current: the project you set up with the owner, which they start (you never start it). `read` returns the draft, its revision and what still stops Start. `write` changes it: give the revision you read (the owner may edit it too), and only the fields that change: title, goal, kind (code|other), repo (where the work goes, in words), tasks [{key, goal, acceptance, role, after}] (after: keys of tasks of this list it runs after) and settings (the project's overrides).",
             json!({
                 "type": "object",
                 "properties": {
@@ -255,7 +229,6 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
                     "kind": {"type": "string", "enum": ["code", "other"]},
                     "repo": {"type": "string"},
                     "tasks": {"type": "array", "items": task, "maxItems": task_plan::MAX_PLANNED},
-                    "budget": {"type": "integer", "minimum": 0},
                     "settings": {"type": "object"},
                 },
                 "required": ["action"],
@@ -349,7 +322,7 @@ fn get_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     }
 }
 
-/// Body: `{revision, title?, goal?, kind?, repo?, tasks?, budget?, settings?}`.
+/// Body: `{revision, title?, goal?, kind?, repo?, tasks?, settings?}`.
 fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let edit: Edit = match req.json() {
         Ok(edit) => edit,
@@ -451,28 +424,15 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
         return Err((500, e));
     }
 
-    // 2. Its settings, and its budget set aside: its tasks are funded from it.
+    // 2. Its settings.
     let settings = settings_of(&draft);
-    let task_budget = settings.task_budget;
     if let Err(e) = app.project_settings.set(&pid, settings) {
         undo(app, &pid, &[]);
         return Err((500, format!("the project's settings were not saved: {e}")));
     }
-    if let Some(budget) = draft.budget
-        && let Err(e) = crate::project_settings::fund(app, &pid, budget)
-    {
-        undo(app, &pid, &[]);
-        return Err((409, e));
-    }
 
     // 3. Its tasks: the ledger creates them all or none.
-    let posted = match task_plan::post(
-        &app.projects,
-        &app.plaza.tasks,
-        &pid,
-        &draft.tasks,
-        task_budget,
-    ) {
+    let posted = match task_plan::post(&app.projects, &app.plaza.tasks, &pid, &draft.tasks) {
         Ok(posted) => posted,
         Err(e) => {
             undo(app, &pid, &[]);
@@ -525,8 +485,8 @@ fn posted_words(tasks: usize) -> String {
     }
 }
 
-/// Undoes a Start that failed after opening project `pid`: its tasks are withdrawn (their escrow back in its budget),
-/// the project is archived, which ends its agents' work, and its budget goes back to the plaza.
+/// Undoes a Start that failed after opening project `pid`: its tasks are withdrawn, and the project is archived,
+/// which ends its agents' work.
 fn undo(app: &App, pid: &str, tasks: &[String]) {
     for id in tasks {
         if let Some(task) = app.plaza.tasks.find(id) {
@@ -537,7 +497,6 @@ fn undo(app: &App, pid: &str, tasks: &[String]) {
         eprintln!("apid: project {pid} of a failed start not archived: {e}");
     }
     crate::work_loop::end_project(app, pid, "the project did not start");
-    crate::project_settings::return_rest(app, pid);
     if let Some(project) = app.projects.get(pid) {
         app.bus.publish("project", &project);
     }
@@ -559,7 +518,6 @@ mod tests {
             goal: format!("goal {key}"),
             acceptance: None,
             role: Some(role.into()),
-            budget: None,
             after: after.iter().map(|k| k.to_string()).collect(),
         }
     }
@@ -578,14 +536,14 @@ mod tests {
         let draft = apply(None, first(), "orchestrator", 10).expect("a first draft");
         assert_eq!(draft.revision, 1);
         assert_eq!(draft.kind, "code", "kind defaults to code");
-        // The owner changes the budget on revision 1: the rest is kept.
+        // The owner changes the title on revision 1: the rest is kept.
         let edit = Edit {
             revision: Some(1),
-            budget: Some(15_000),
+            title: Some("Ship 0.9".into()),
             ..Edit::default()
         };
         let owned = apply(Some(&draft), edit, "owner", 20).expect("the owner's edit");
-        assert_eq!((owned.revision, owned.budget), (2, Some(15_000)));
+        assert_eq!((owned.revision, owned.title.as_str()), (2, "Ship 0.9"));
         assert_eq!(owned.tasks, draft.tasks);
         assert_eq!(owned.updated_by, "owner");
         // The orchestrator still writing on revision 1 is told to read again.

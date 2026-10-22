@@ -34,7 +34,6 @@ pub mod stations;
 pub mod tasks;
 pub mod templates;
 pub mod tools;
-pub mod treasury;
 pub mod unfurl;
 pub mod usage;
 pub mod vault;

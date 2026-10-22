@@ -2,7 +2,7 @@
 //! terminal it is a line-oriented chat: the conversation so far, then each line you type goes to the orchestrator,
 //! whose answer prints as it is written (the hub's `delta` events) and stays once it is in. The project draft the
 //! orchestrator keeps in the conversation prints whenever its revision changes, and `/start` starts it at the revision
-//! on screen: the hub opens the project, saves its settings, sets its budget aside and posts its tasks, all or nothing.
+//! on screen: the hub opens the project, saves its settings and posts its tasks, all or nothing.
 //! Off a terminal, a message given as arguments is sent and the answer printed, so a script can talk to the
 //! orchestrator too.
 //!
@@ -429,7 +429,7 @@ fn task_rows(tasks: &[Value]) -> Vec<String> {
 }
 
 /// A project draft as lines (`GET …/draft`, or a conversation's `draft`): its revision, title and kind, and who edited
-/// it last; then the goal, where the work goes, the tasks with what they run after, the budget and the settings; then
+/// it last; then the goal, where the work goes, the tasks with what they run after, and the settings; then
 /// what still stops Start, or that nothing does. A started draft says so instead, with its project when it is known.
 pub(crate) fn draft_lines(draft: &Value, project: Option<&str>) -> Vec<String> {
     let by = match ctx::s(draft, "updated_by") {
@@ -460,9 +460,6 @@ pub(crate) fn draft_lines(draft: &Value, project: Option<&str>) -> Vec<String> {
         "tasks",
         &task_rows(array_at(draft, "tasks")).join("\n"),
     );
-    if let Some(budget) = draft.get("budget").and_then(Value::as_u64) {
-        field(&mut lines, "budget", &format!("{budget} credits"));
-    }
     let settings: Vec<String> = pairs(draft.get("settings").unwrap_or(&Value::Null))
         .into_iter()
         .map(|(key, value)| format!("{key}={value}"))
@@ -793,7 +790,6 @@ mod tests {
                 { "key": "2", "goal": "Fix the double-charge\nin detail", "role": "builder", "after": ["1"] },
                 { "key": "3", "goal": "Tag 0.9", "after": ["1", "2"] }
             ],
-            "budget": 15000,
             "settings": { "effort": "high", "role_models": { "qa": "openai/gpt-6" } },
             "updated_by": "orchestrator", "updated_ms": 50,
             "problems": ["task 3 is for a release, and no review follows it"]
@@ -812,7 +808,6 @@ mod tests {
                 "   tasks  1  qa        Survey the flaky tests",
                 "          2  builder   Fix the double-charge   after 1",
                 "          3  any role  Tag 0.9                 after 1, 2",
-                "  budget  15000 credits",
                 "settings  effort=high · role_models.qa=openai/gpt-6",
                 "Before it can start:",
                 "  - task 3 is for a release, and no review follows it",

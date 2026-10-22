@@ -167,7 +167,6 @@ const OBSERVE_TOOLS: &[&str] = &[
     "get_project",
     "list_approvals",
     "list_machines",
-    "treasury_summary",
     "usage_summary",
     "list_laws",
     "search_library",
@@ -1880,14 +1879,14 @@ mod tests {
         assert_eq!(tool_scope("skill_publish"), Some(Scope::Govern));
         assert_eq!(tool_scope("no_such_tool"), None);
         let total: usize = Scope::ALL.iter().map(|scope| tools_of(*scope).len()).sum();
-        assert_eq!(total, 29);
+        assert_eq!(total, 28);
     }
 
     #[test]
     fn mcp_hub_tool_lists_are_the_hub_registry() {
         // The hub's registry, in its order (crates/apid/src/hub_mcp/tools/mod.rs). This crate does not depend on apid,
         // so this pins the same names and scopes; a change to the registry must change this list too.
-        let registry: [(&str, Scope); 29] = [
+        let registry: [(&str, Scope); 28] = [
             ("plaza_status", Scope::Observe),
             ("list_agents", Scope::Observe),
             ("get_agent", Scope::Observe),
@@ -1899,7 +1898,6 @@ mod tests {
             ("get_project", Scope::Observe),
             ("list_approvals", Scope::Observe),
             ("list_machines", Scope::Observe),
-            ("treasury_summary", Scope::Observe),
             ("usage_summary", Scope::Observe),
             ("list_laws", Scope::Observe),
             ("search_library", Scope::Observe),

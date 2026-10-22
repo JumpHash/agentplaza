@@ -65,7 +65,6 @@ pub mod skills;
 pub mod tasks;
 pub mod theme_editor;
 pub mod tools;
-pub mod treasury;
 pub mod vault;
 pub mod volumes;
 pub mod wizard;
@@ -97,7 +96,6 @@ pub enum Id {
     Library,
     Approvals,
     Board,
-    Treasury,
     Rules,
     Models,
     Metrics,
@@ -164,7 +162,6 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Machines, "Machines", "Plaza", "machine"),
     (Id::Metrics, "Metrics", "Plaza", "zap"),
     (Id::Board, "Board", "Social", "boardpin"),
-    (Id::Treasury, "Treasury", "Social", "treasury"),
     (Id::Rules, "Rules", "Social", "rules"),
     (Id::Lab, "Lab", "Lab", "brain"),
     (Id::HardwareLab, "Hardware lab", "Lab", "machine"),
@@ -195,7 +192,6 @@ pub struct Screens {
     pub library: library::State,
     pub approvals: approvals::State,
     pub board: board::State,
-    pub treasury: treasury::State,
     pub rules: rules::State,
     pub models: models::State,
     pub metrics: metrics::State,
@@ -239,7 +235,6 @@ pub enum Msg {
     Library(library::Msg),
     Approvals(approvals::Msg),
     Board(board::Msg),
-    Treasury(treasury::Msg),
     Rules(rules::Msg),
     Models(models::Msg),
     Metrics(metrics::Msg),
@@ -284,7 +279,6 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::Library(m) => library::go(m),
         Msg::Approvals(m) => approvals::go(m),
         Msg::Board(m) => board::go(m),
-        Msg::Treasury(m) => treasury::go(m),
         Msg::Rules(m) => rules::go(m),
         Msg::Models(m) => models::go(m),
         Msg::Metrics(m) => metrics::go(m),
@@ -421,7 +415,6 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::Library => library::load(&mut screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::load(&mut screens.approvals, ctx).map(Msg::Approvals),
         Id::Board => board::load(&mut screens.board, ctx).map(Msg::Board),
-        Id::Treasury => treasury::load(&mut screens.treasury, ctx).map(Msg::Treasury),
         Id::Rules => rules::load(&mut screens.rules, ctx).map(Msg::Rules),
         Id::Models => models::load(&mut screens.models, ctx).map(Msg::Models),
         // Metrics is not polled: it loads when opened (`open`), live frames keep the watched panels current (as on
@@ -477,7 +470,6 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Library(m) => library::update(&mut screens.library, m, ctx).map(Msg::Library),
         Msg::Approvals(m) => approvals::update(&mut screens.approvals, m, ctx).map(Msg::Approvals),
         Msg::Board(m) => board::update(&mut screens.board, m, ctx).map(Msg::Board),
-        Msg::Treasury(m) => treasury::update(&mut screens.treasury, m, ctx).map(Msg::Treasury),
         Msg::Rules(m) => rules::update(&mut screens.rules, m, ctx).map(Msg::Rules),
         Msg::Models(m) => models::update(&mut screens.models, m, ctx).map(Msg::Models),
         Msg::Metrics(m) => metrics::update(&mut screens.metrics, m, ctx).map(Msg::Metrics),
@@ -553,7 +545,6 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Appearance => appearance::subscription(ctx).map(Msg::Appearance),
         Id::Artifact(_) => artifact::subscription(&screens.artifact).map(Msg::Artifact),
         Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
-        Id::Treasury => treasury::subscription(&screens.treasury, ctx).map(Msg::Treasury),
         Id::LabJobs => lab_jobs::subscription(&screens.lab_jobs, ctx).map(Msg::LabJobs),
         Id::Lab => lab::subscription(&screens.lab, ctx).map(Msg::Lab),
         Id::LabModels => lab_models::subscription(ctx).map(Msg::LabModels),
@@ -598,7 +589,6 @@ pub fn view<'a>(
         Id::Library => library::view(&screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::view(&screens.approvals, ctx).map(Msg::Approvals),
         Id::Board => board::view(&screens.board, ctx).map(Msg::Board),
-        Id::Treasury => treasury::view(&screens.treasury, ctx).map(Msg::Treasury),
         Id::Rules => rules::view(&screens.rules, ctx).map(Msg::Rules),
         Id::Models => models::view(&screens.models, ctx).map(Msg::Models),
         Id::Metrics => metrics::view(&screens.metrics, ctx).map(Msg::Metrics),

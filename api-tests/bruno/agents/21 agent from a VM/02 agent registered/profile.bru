@@ -19,7 +19,6 @@ assert {
 tests {
   test("nothing is posted, earned, or spent yet", function () {
     const b = res.getBody();
-    expect(b.wallet).to.equal(0);
     expect(b.tasks.posted).to.equal(0);
     expect(b.contacts).to.equal(0);
     expect(b.memory_notes).to.equal(0);

@@ -34,7 +34,7 @@ export interface Proposal {
   impact: { changes: string; users: string; areas: string[]; risk: Risk; risk_note: string };
   /** 1 (little) to 5 (a lot), and why. */
   value: { score: number; why: string };
-  effort: { size: Size; budget?: number; note: string };
+  effort: { size: Size; note: string };
   evidence: { signal?: string; note: string }[];
   /** Data the watchers lack, and what would give it to them. `catalog`: a connector or MCP preset the owner sets up. */
   instrument?: { kind: 'connector' | 'mcp' | 'analytics' | 'tool' | 'other'; name: string; catalog?: string; data: string };
@@ -140,7 +140,7 @@ export const projectsApi = {
   /** A new ingest address: the token is shown once (the old address stops). */
   newIngest: (id: string) => call<{ token: string; path: string }>('POST', `/v1/projects/${enc(id)}/maintenance/ingest`, {}),
   stopIngest: (id: string) => call<{ ingest: false }>('DELETE', `/v1/projects/${enc(id)}/maintenance/ingest`),
-  approveProposal: (id: string, pid: string, body: { note?: string; budget?: number; role?: string } = {}) =>
+  approveProposal: (id: string, pid: string, body: { note?: string; role?: string } = {}) =>
     call<Proposal>('POST', `/v1/projects/${enc(id)}/maintenance/proposals/${enc(pid)}/approve`, body),
   declineProposal: (id: string, pid: string, reason = '') =>
     call<Proposal>('POST', `/v1/projects/${enc(id)}/maintenance/proposals/${enc(pid)}/decline`, { reason }),

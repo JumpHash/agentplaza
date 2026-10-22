@@ -1,11 +1,11 @@
 // The IDE's conversation workspace (`#/talk/conv-<n>` and `#/ide/conv-<n>`): the owner's conversation with the
 // orchestrator, the project it drafts beside it, and Start. On the left, the conversations; in the centre, the chat
-// (answers stream in as they are written); on the right, the draft: its goal, tasks, budget and settings, with
+// (answers stream in as they are written); on the right, the draft: its goal, tasks and settings, with
 // what still stops Start, the owner's edits, and Start. Once started, the conversation stays the project's line to the
 // orchestrator. The markup is the prototype's talk screen (loom: m-workspace's talk, m-ide-chat's conversation and draft).
 
 import { api, type Delta, type OwnerConversation, type OwnerConversationSummary, type OwnerMessage, type ProjectDraft } from '../api';
-import { afterText, budgetText, settingsLine, startBlock, streamed } from '../ide/conversation-model';
+import { afterText, settingsLine, startBlock, streamed } from '../ide/conversation-model';
 import { consoleOrigin } from '../ide/open';
 import { hrefIn } from '../router';
 import { agentName, roleLabel } from '../roles';
@@ -50,20 +50,18 @@ function bubble(m: OwnerMessage, who: string): HTMLElement {
   );
 }
 
-/** The owner edits the draft's words and budget, on the revision on screen. */
+/** The owner edits the draft's words, on the revision on screen. */
 function openEdit(id: string, draft: ProjectDraft): void {
   const title = input({ value: draft.title });
   const goal = textarea({ rows: 4 });
   goal.value = draft.goal;
   const repo = input({ value: draft.repo ?? '', placeholder: 'agentplaza, a new branch release-0.9' });
-  const budget = input({ type: 'number', min: 0, step: 1, value: draft.budget ?? '', placeholder: 'From the plaza’s budget' });
   const save = button(
     'Save',
     () => {
-      const credits = budget.value.trim() === '' ? undefined : Math.trunc(Number(budget.value));
       void (async () => {
         const ok = await attempt(
-          () => api.editDraft(id, { revision: draft.revision, title: title.value.trim(), goal: goal.value.trim(), repo: repo.value.trim(), budget: credits }),
+          () => api.editDraft(id, { revision: draft.revision, title: title.value.trim(), goal: goal.value.trim(), repo: repo.value.trim() }),
           'Draft saved: the orchestrator sees your change with your next message',
         );
         if (ok) close();
@@ -73,7 +71,7 @@ function openEdit(id: string, draft: ProjectDraft): void {
   );
   const close = modal(
     'Edit the draft',
-    h('div.ic-form', null, field('Title', title), field('Goal', goal), field('Where the work goes', repo), field('Budget (credits)', budget)),
+    h('div.ic-form', null, field('Title', title), field('Goal', goal), field('Where the work goes', repo)),
     undefined,
     [save],
   );
@@ -219,7 +217,6 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
     const started = !!c.project;
     const facts: [string, string | Node][] = [];
     if (d.repo) facts.push(['Repo', d.repo]);
-    facts.push(['Budget', budgetText(d)]);
     const settings = settingsLine(d.settings);
     replace(
       draftEl,

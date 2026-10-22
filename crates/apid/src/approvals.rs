@@ -92,7 +92,7 @@ pub struct Approval {
     pub created_ms: u64,
     pub state: State,
     pub reason: Option<String>,
-    /// What the decision is: `tool` (a held tool call), `payment` or `review` (a done
+    /// What the decision is: `tool` (a held tool call) or `review` (a done
     /// task no reviewer took in time; the approval passes it and the denial fails it).
     #[serde(default = "tool_kind")]
     pub kind: String,
@@ -455,8 +455,6 @@ pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate
 
 /// Queues a decision of `kind` about `subject` for the owner, whatever the agent's mode,
 /// publishes it, and returns it. The agent is `detail["cid"]`, or 0 when there is none.
-// Used by the payments work, which is not wired yet.
-#[allow(dead_code)]
 pub fn submit(app: &App, kind: &str, subject: &str, detail: Value) -> Approval {
     let cid = detail_cid(&detail);
     let item = app.approvals.submit(cid, kind, subject, detail);
@@ -553,7 +551,7 @@ pub(crate) fn decide_approval(
             return Err((409, "this approval is already decided".to_string()));
         }
     };
-    // The decision is written before anything it starts (a payment, a review, a call's answer).
+    // The decision is written before anything it starts (a review, a call's answer).
     crate::store::saver::save_now(app, "approvals");
     app.metrics
         .registry
@@ -567,7 +565,6 @@ pub(crate) fn decide_approval(
     app.bus.publish("approval", &item);
     // The decision is recorded; each kind then does its own work with it.
     let applied = match item.kind.as_str() {
-        "payment" => crate::payments::decided(app, &item, approve),
         "review" => crate::review_graph::owner_ruled(app, &item, approve, action),
         "deploy" => crate::environments::decided(app, &item, approve),
         "artifact.share" => crate::shares::request::on_decided(app, &item),
@@ -886,11 +883,11 @@ mod tests {
         let store = Store::default();
         store.set_mode(6, Mode::ReadOnly);
         let detail = json!({ "cid": 6, "amount": 900, "to": "bob" });
-        let item = store.submit(6, "payment", "pay 900 to bob", detail.clone());
+        let item = store.submit(6, "tool", "run ls", detail.clone());
         assert_eq!(item.state, State::Pending);
-        assert_eq!(item.kind, "payment");
-        assert_eq!(item.subject, "pay 900 to bob");
-        assert_eq!(item.tool, "pay 900 to bob");
+        assert_eq!(item.kind, "tool");
+        assert_eq!(item.subject, "run ls");
+        assert_eq!(item.tool, "run ls");
         assert_eq!(item.detail, detail);
         assert_eq!(item.input, detail);
         assert_eq!(item.cid, 6);
@@ -907,13 +904,13 @@ mod tests {
     fn submit_holds_the_queue_cap() {
         let store = Store::default();
         for i in 0..(QUEUE_CAP + 5) {
-            store.submit(1, "payment", &format!("pay {i}"), json!({ "cid": 1 }));
+            store.submit(1, "tool", &format!("run {i}"), json!({ "cid": 1 }));
         }
         let list = store.list();
         assert_eq!(list.len(), QUEUE_CAP);
         // Newest first: the five oldest were dropped.
-        assert_eq!(list[0].subject, format!("pay {}", QUEUE_CAP + 4));
-        assert_eq!(list[QUEUE_CAP - 1].subject, "pay 5");
+        assert_eq!(list[0].subject, format!("run {}", QUEUE_CAP + 4));
+        assert_eq!(list[QUEUE_CAP - 1].subject, "run 5");
     }
 
     #[test]

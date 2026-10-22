@@ -1,6 +1,6 @@
 //! The IDE's conversation workspace (the web's `views/ide-conversation.ts`): the owner's conversation with the
 //! orchestrator, the project it drafts beside it, and Start. The IDE's sidebar lists the conversations; the centre is
-//! the chat (answers stream in as they are written); the right panel is the draft: its goal, tasks, budget and
+//! the chat (answers stream in as they are written); the right panel is the draft: its goal, tasks and
 //! settings, what still stops Start, the owner's edits, and Start. Once started, the conversation stays the project's
 //! line to the orchestrator.
 
@@ -66,14 +66,6 @@ pub fn start_block(c: &Value) -> Option<String> {
     (!problems.is_empty()).then(|| format!("Before it can start: {}.", problems.join("; ")))
 }
 
-/// The draft's budget in words.
-pub fn budget_text(draft: &Value) -> String {
-    match draft["budget"].as_i64() {
-        Some(n) => format!("{} credits", ui::thousands(n)),
-        None => "From the plaza's budget".into(),
-    }
-}
-
 /// A draft's settings in words: `Builder model: anthropic/claude-sonnet-5-5 · effort high · permission: ask`.
 pub fn settings_line(settings: &Value) -> String {
     let Some(map) = settings.as_object() else {
@@ -131,14 +123,13 @@ fn pending_of(c: &Value) -> Vec<u64> {
 
 // ---- State and messages ------------------------------------------------------------------------------------------
 
-/// The owner's edit of the draft's words and budget, on the revision on screen.
+/// The owner's edit of the draft's words, on the revision on screen.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DraftEdit {
     pub revision: u64,
     pub title: String,
     pub goal: String,
     pub repo: String,
-    pub budget: String,
 }
 
 /// The fields of the draft edit.
@@ -147,7 +138,6 @@ pub enum Field {
     Title,
     Goal,
     Repo,
-    Budget,
 }
 
 /// The conversation open in the IDE.
@@ -411,10 +401,6 @@ pub fn update(conv: &mut Conversation, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     title: d["title"].as_str().unwrap_or("").to_string(),
                     goal: d["goal"].as_str().unwrap_or("").to_string(),
                     repo: d["repo"].as_str().unwrap_or("").to_string(),
-                    budget: d["budget"]
-                        .as_u64()
-                        .map(|b| b.to_string())
-                        .unwrap_or_default(),
                 });
             }
             Task::none()
@@ -425,7 +411,6 @@ pub fn update(conv: &mut Conversation, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     Field::Title => edit.title = value,
                     Field::Goal => edit.goal = value,
                     Field::Repo => edit.repo = value,
-                    Field::Budget => edit.budget = value,
                 }
             }
             Task::none()
@@ -438,22 +423,12 @@ pub fn update(conv: &mut Conversation, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let Some(edit) = conv.edit.clone() else {
                 return Task::none();
             };
-            let mut body = json!({
+            let body = json!({
                 "revision": edit.revision,
                 "title": edit.title.trim(),
                 "goal": edit.goal.trim(),
                 "repo": edit.repo.trim(),
             });
-            match edit.budget.trim() {
-                "" => {}
-                raw => match raw.parse::<u64>() {
-                    Ok(n) => body["budget"] = json!(n),
-                    Err(_) => {
-                        conv.error = Some("The budget is a whole number of credits.".into());
-                        return Task::none();
-                    }
-                },
-            }
             let c = ctx.client.clone();
             let path = format!("/v1/owner/conversations/{}/draft", conv.id);
             client::task(move || c.patch::<Value>(&path, &body), Msg::Edited)
@@ -720,7 +695,7 @@ pub fn chat<'a, M: Clone + 'a>(
     .into()
 }
 
-/// The draft beside the chat: its title and revision, goal, repository, budget, settings and tasks, then
+/// The draft beside the chat: its title and revision, goal, repository, settings and tasks, then
 /// what stops Start (or Start), or once started the project and the way to it.
 pub fn draft<'a, M: Clone + 'a>(
     conv: &'a Conversation,
@@ -771,7 +746,6 @@ pub fn draft<'a, M: Clone + 'a>(
     if let Some(repo) = d["repo"].as_str().filter(|r| !r.is_empty()) {
         col = col.push(fact("Repo", repo.to_string()));
     }
-    col = col.push(fact("Budget", budget_text(d)));
     let settings = settings_line(&d["settings"]);
     if !settings.is_empty() {
         col = col.push(fact("Settings", settings));
@@ -889,7 +863,7 @@ pub fn draft<'a, M: Clone + 'a>(
     .into()
 }
 
-/// The owner's edit of the draft: its words, where the work goes, and its budget.
+/// The owner's edit of the draft: its words and where the work goes.
 fn edit_form<'a, M: Clone + 'a>(edit: &'a DraftEdit, wrap: fn(Msg) -> M) -> Element<'a, M> {
     let field = |label: &str, value: &'a str, placeholder: &str, which: Field| -> Element<'a, M> {
         column![
@@ -912,12 +886,6 @@ fn edit_form<'a, M: Clone + 'a>(edit: &'a DraftEdit, wrap: fn(Msg) -> M) -> Elem
                 &edit.repo,
                 "agentplaza, a new branch release-0.9",
                 Field::Repo
-            ),
-            field(
-                "Budget (credits)",
-                &edit.budget,
-                "From the plaza's budget",
-                Field::Budget
             ),
             row![
                 ui::btn_sm("Cancel", None, ui::Kind::Ghost, Some(wrap(Msg::CancelEdit))),
@@ -944,8 +912,6 @@ mod tests {
         );
         assert_eq!(after_text(&json!({ "after": ["1", "2"] })), "after 1, 2");
         assert_eq!(after_text(&json!({})), "");
-        assert_eq!(budget_text(&json!({ "budget": 15000 })), "15,000 credits");
-        assert_eq!(budget_text(&json!({})), "From the plaza's budget");
         assert_eq!(
             settings_line(
                 &json!({ "role_models": { "builder": "anthropic/claude-sonnet-5-5" }, "effort": "high", "permission_mode": "ask" })

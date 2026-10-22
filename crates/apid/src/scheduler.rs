@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 use apz_metrics::{EntityKind, Registry, SeriesKey};
 use apz_plaza::tasks::{FinishOutcome, TaskState};
-use apz_plaza::treasury::{MARGIN_CAP_PCT, PostError};
 use apz_proto::wire::{HostMessage, WorkKind, WorkStatus};
 use apz_store::rusqlite::Connection;
 use apz_store::{Db, RowSet, StoreError, TableDef};
@@ -24,7 +23,7 @@ use crate::agents::{Agent, Status};
 use crate::approvals::{Approval, State as ApprovalState, Store as ApprovalStore};
 use crate::state::App;
 
-/// The role that verifies done tasks before they pay.
+/// The role that verifies done tasks before they are done.
 pub const REVIEWER_ROLE: &str = "reviewer";
 
 /// What a work item is about, beyond its prompt.
@@ -179,7 +178,7 @@ impl Lanes {
 /// The work queues: one lane per agent, one item in flight per lane.
 /// A done task awaiting its reviewer's verdict.
 struct Review {
-    /// The worker whose done is being verified (paid on a pass).
+    /// The worker whose done is being verified.
     worker: u64,
     /// The reviewer's work item: only its verdict, or its end, settles the task.
     work: u64,
@@ -192,11 +191,9 @@ pub struct Queues {
     posters: Mutex<std::collections::HashMap<String, u64>>,
     /// task id → the review awaiting a verdict.
     reviews: Mutex<std::collections::HashMap<String, Review>>,
-    /// Held while a task is reviewed or ruled on, so a task is paid at most once and no review
+    /// Held while a task is reviewed or ruled on, so a task is ruled on at most once and no review
     /// starts on a task that a ruling has already ended.
     rulings: Mutex<()>,
-    /// task id → credits metered against it so far (its real cost).
-    spend: Mutex<std::collections::HashMap<String, i64>>,
     /// Work items interrupted to move their agent (`Queues::interrupt`): their end puts them back in the
     /// queue instead of ending them.
     interrupted: Mutex<BTreeSet<u64>>,
@@ -210,7 +207,6 @@ impl Default for Queues {
             posters: Mutex::default(),
             reviews: Mutex::default(),
             rulings: Mutex::default(),
-            spend: Mutex::default(),
             interrupted: Mutex::default(),
         }
     }
@@ -334,8 +330,7 @@ impl Queues {
         if let Some(task) = item.origin.task.as_deref()
             && !crate::work_loop::owns(app, task)
         {
-            // A worker's done is a claim: the task waits for a reviewer's verdict, and its
-            // escrow stays held until then (see `assign_reviews`).
+            // A worker's done is a claim: the task waits for a reviewer's verdict (see `assign_reviews`).
             let waiting = matches!(status, WorkStatus::Done)
                 && matches!(item.kind, WorkKind::Task)
                 && self.await_review(app, task, summary);
@@ -568,25 +563,8 @@ impl Queues {
         app.agents.update(cid, |a| a.status = Status::Offline);
     }
 
-    /// Adds metered `credits` to `task`'s real cost.
-    pub fn add_spend(&self, task: &str, credits: i64) {
-        // contract
-        let mut spend = self.spend.lock().unwrap_or_else(|p| p.into_inner());
-        *spend.entry(task.to_string()).or_insert(0) += credits;
-    }
-
-    /// The credits metered against `task` so far.
-    fn spent(&self, task: &str) -> i64 {
-        self.spend
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(task)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    /// The worker reported `task` done: it waits for a reviewer's verdict, and its escrow stays
-    /// held. False when the task cannot wait (it already ended), and the caller settles it as before.
+    /// The worker reported `task` done: it waits for a reviewer's verdict. False when the task cannot
+    /// wait (it already ended), and the caller settles it as before.
     fn await_review(&self, app: &App, task: &str, summary: &str) -> bool {
         app.plaza
             .tasks
@@ -701,9 +679,8 @@ impl Queues {
         true
     }
 
-    /// The reviewer's verdict on `task`, from review work `work`. Pass pays the
-    /// worker its margin-capped share and completes the task; fail fails it (the
-    /// escrow goes back to the plaza's budget).
+    /// The reviewer's verdict on `task`, from review work `work`: a pass completes the task, a fail
+    /// fails it.
     pub fn verdict(
         &self,
         app: &App,
@@ -724,7 +701,7 @@ impl Queues {
             .remove(task)
             .ok_or_else(|| format!("no verdict is pending on task {task}"))?;
         drop(reviews);
-        let summary = self.settle_ruling(app, task, review.worker, work, pass, notes);
+        let summary = self.settle_ruling(app, task, pass, notes);
         // The owner's card for this task, if one was raised, is no longer needed.
         publish_withdrawn(
             app,
@@ -741,7 +718,7 @@ impl Queues {
         Ok(summary)
     }
 
-    /// The owner's ruling on `task`, which is awaiting review: a pass pays the worker and completes the
+    /// The owner's ruling on `task`, which is awaiting review: a pass completes the
     /// task, a fail fails it. A reviewer still working on it is no longer awaited.
     pub fn owner_verdict(
         &self,
@@ -766,13 +743,11 @@ impl Queues {
         let worker = view
             .agent_cid
             .ok_or_else(|| format!("task {task} names no worker"))?;
-        let reviewer = self
-            .reviews
+        self.reviews
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(task);
-        let work = reviewer.map_or(0, |r| r.work);
-        let summary = self.settle_ruling(app, task, worker, work, pass, notes);
+        let summary = self.settle_ruling(app, task, pass, notes);
         drop(rulings);
         self.tell_poster(
             app,
@@ -784,32 +759,16 @@ impl Queues {
         Ok(summary)
     }
 
-    /// Pays the worker for a pass and ends the task, which releases the rest of its escrow. The caller
-    /// holds `rulings`, so the task is paid at most once.
-    fn settle_ruling(
-        &self,
-        app: &App,
-        task: &str,
-        worker: u64,
-        work: u64,
-        pass: bool,
-        notes: &str,
-    ) -> String {
-        let paid = if pass {
-            self.pay_worker(app, task, worker, work)
-        } else {
-            0
-        };
+    /// Ends the task on a verdict: a pass completes it, a fail fails it. The caller holds `rulings`, so the
+    /// task is ruled on at most once.
+    fn settle_ruling(&self, app: &App, task: &str, pass: bool, notes: &str) -> String {
         let status = if pass {
             WorkStatus::Done
         } else {
             WorkStatus::Failed
         };
         settle_task(app, task, status, notes);
-        format!(
-            "verdict {}: paid {paid}",
-            if pass { "pass" } else { "fail" }
-        )
+        format!("verdict {}", if pass { "pass" } else { "fail" })
     }
 
     /// Ends a review whose reviewer ended, or went offline, without a verdict: the task fails.
@@ -830,50 +789,6 @@ impl Queues {
         settle_task(app, &task, WorkStatus::Failed, reason);
         drop(rulings);
         self.tell_poster(app, &task, review.worker, "failed", reason);
-    }
-
-    /// Pays `worker` 20% of `task`'s real cost, capped by the chain's margin
-    /// cap; returns the amount paid.
-    fn pay_worker(&self, app: &App, task: &str, worker: u64, work: u64) -> i64 {
-        let spent = self.spent(task);
-        let treasury = &app.plaza.treasury;
-        let cap = spent * MARGIN_CAP_PCT / 100;
-        let paid = if cap <= 0 {
-            0
-        } else {
-            match treasury.pay_agent(task, worker, cap) {
-                Ok(_) => cap,
-                // The margin cap refused: pay what it still allows, or nothing.
-                Err(PostError::MarginCap {
-                    paid_to_agents,
-                    real_cost,
-                    ..
-                }) => {
-                    let allowance = real_cost * i128::from(MARGIN_CAP_PCT) / 100 - paid_to_agents;
-                    match i64::try_from(allowance) {
-                        Ok(allowance)
-                            if allowance > 0
-                                && treasury.pay_agent(task, worker, allowance).is_ok() =>
-                        {
-                            allowance
-                        }
-                        _ => 0,
-                    }
-                }
-                Err(_) => 0,
-            }
-        };
-        app.transcripts.record(
-            &app.bus,
-            worker,
-            work,
-            crate::transcript::Entry::Payment {
-                task: task.to_string(),
-                amount: paid,
-                spent,
-            },
-        );
-        paid
     }
 
     /// Starts the next item for every idle, connected agent that has queued work and nothing
@@ -1028,12 +943,6 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
     // A failed task's lane will never land.
     if finished && matches!(outcome, FinishOutcome::Failed) {
         crate::weft_hub::abandon(app, task.id(), summary);
-    }
-    // A task of a project that is over refunded its project's budget: that goes back to the plaza too.
-    if let Some(pid) = task.project()
-        && crate::projects::state(app, pid) == crate::projects::ProjectState::Over
-    {
-        crate::project_settings::return_rest(app, pid);
     }
 }
 

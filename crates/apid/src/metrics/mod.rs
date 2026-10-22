@@ -6,7 +6,7 @@
 //! * [`settings`] — the owner's choices: collection level, retention, budgets, outside endpoints.
 //! * [`ingest`] — node batches: clock-offset correction, columns and histograms into the rollup, events, reports.
 //! * [`collect`] — the hub's own collectors: API route timer, database timer, bus lag, socket count, queue and
-//!   approval gauges, agent states, treasury, store sizes, and the metrics system's own cost.
+//!   approval gauges, agent states, store sizes, and the metrics system's own cost.
 //! * [`traces`] — per-agent span rings, the tail sampler, kept traces.
 //! * [`alerting`] — rules, their evaluation as windows update, mute/acknowledge, history, notifications.
 //! * [`live`] — scopes watched live (leases) and the 2 s frames on `/v1/ws` (`metrics` events).

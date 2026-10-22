@@ -590,8 +590,6 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             ok,
             output,
         } => {
-            // One credit per tool report; task work is cancelled if its escrow runs out.
-            let _ = meter(app, cid, work, 1, "tool report");
             // A report carries no duration of its own, so the tool's time is recorded as 0.
             let tool = take_tool(cid, &call);
             collect::tool_call(app, cid, &tool, 0.0, ok);
@@ -894,26 +892,7 @@ fn model_call(
                     ratelimit: (None, None),
                 },
             );
-            let tokens = settings
-                .prices
-                .get(&model)
-                .map(|p| {
-                    (resp.usage.input_tokens as f64 * p.input
-                        + resp.usage.output_tokens as f64 * p.output)
-                        / 1_000_000.0
-                })
-                .unwrap_or(0.0);
-            // One credit per model call on top of the tokens, rounded up to whole credits.
-            let credits = (tokens + 1.0).ceil() as i64;
             app.agents.update(cid, |a| a.usage.add(&resp.usage));
-            if let Err(message) = meter(app, cid, work, credits, &format!("model {model}")) {
-                return HostMessage::ModelResult {
-                    req,
-                    ok: false,
-                    response: None,
-                    error: Some(message),
-                };
-            }
             HostMessage::ModelResult {
                 req,
                 ok: true,
@@ -938,51 +917,6 @@ fn model_call(
                 error: Some(message),
             }
         }
-    }
-}
-
-/// Charges `credits` of a model call to the work's task, through the shared charge
-/// ([`crate::payments::charge_model_call`]), which honours `payments.charge_models`.
-/// Only work (a task) is charged: agents talking or naming themselves cost the plaza's
-/// budget nothing (their tokens are
-/// still counted in their usage). A shortfall is recorded and the task's work is
-/// cancelled.
-pub(crate) fn meter(
-    app: &App,
-    cid: u64,
-    work: u64,
-    credits: i64,
-    memo: &str,
-) -> Result<(), String> {
-    let Some(task) = app.work.current(cid).and_then(|item| item.origin.task) else {
-        return Ok(());
-    };
-    let charging = app.settings.get().payments.charge_models;
-    let spend = |task: &str, credits: i64| app.work.add_spend(task, credits);
-    let charge = crate::payments::charge_model_call(
-        &app.plaza.treasury,
-        charging,
-        spend,
-        cid,
-        Some(&task),
-        credits,
-        memo,
-    );
-    match charge {
-        Some(settled) if settled.charged < settled.wanted => {
-            let message = "budget exhausted";
-            app.transcripts.record(
-                &app.bus,
-                cid,
-                work,
-                crate::transcript::Entry::Error {
-                    message: message.to_string(),
-                },
-            );
-            app.work.cancel(app, cid, message);
-            Err(message.to_string())
-        }
-        _ => Ok(()),
     }
 }
 

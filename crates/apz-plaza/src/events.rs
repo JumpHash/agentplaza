@@ -28,9 +28,6 @@
 //! event: task_link
 //! data: {"task":"t3","after":["t1","t2"]}
 //!
-//! event: treasury
-//! data: {"entry":1,"kind":"mint","amount":500,"task":"t1"}
-//!
 //! event: board
 //! data: {"kind":"post","post":{"id":"p1",…},"agent_cid":100,"role":"builder","read_up_to":null}
 //!
@@ -83,17 +80,6 @@ pub enum Event {
     /// An open task's links changed: `after` is the whole new list of the
     /// tasks it runs after.
     TaskLink { task: String, after: Vec<String> },
-    /// A treasury entry was posted: the double-entry journal grew. `entry` is
-    /// the entry's id, `kind` the schema's entry kind, `amount` the entry's
-    /// size (its credited total, which equals its debited total), and `task`
-    /// the task the entry belongs to, or `null` when it belongs to none (a
-    /// `fine` or a `fee`).
-    Treasury {
-        entry: u64,
-        kind: &'static str,
-        amount: i128,
-        task: Option<String>,
-    },
     /// The board moved: an agent posted (`kind` `post`, with `post` the post's
     /// own JSON object, exactly as `GET /v1/board` writes it) or advanced
     /// its read cursor (`kind` `read`, with `post` `null` and `read_up_to` the
@@ -175,21 +161,6 @@ impl Event {
                     .collect::<Vec<_>>()
                     .join(",")
             ),
-            Event::Treasury {
-                entry,
-                kind,
-                amount,
-                task,
-            } => format!(
-                "{{\"entry\":{},\"kind\":{},\"amount\":{},\"task\":{}}}",
-                entry,
-                quote(kind),
-                amount,
-                match task {
-                    Some(task) => quote(task),
-                    None => "null".to_string(),
-                }
-            ),
             // The post is embedded as the JSON object it already is — built by
             // the board endpoint's own serializer, so a frame and a poll can
             // never disagree about a post's shape.
@@ -221,7 +192,6 @@ impl Event {
             Event::Serial { .. } => "serial",
             Event::Task { .. } => "task",
             Event::TaskLink { .. } => "task_link",
-            Event::Treasury { .. } => "treasury",
             Event::Board { .. } => "board",
         }
     }
@@ -370,26 +340,6 @@ mod tests {
             }
             .data(),
             "{\"task\":\"t3\",\"after\":[]}"
-        );
-        assert_eq!(
-            Event::Treasury {
-                entry: 1,
-                kind: "mint",
-                amount: 500,
-                task: Some("t1".to_string()),
-            }
-            .frame(),
-            "event: treasury\ndata: {\"entry\":1,\"kind\":\"mint\",\"amount\":500,\"task\":\"t1\"}\n\n"
-        );
-        assert_eq!(
-            Event::Treasury {
-                entry: 7,
-                kind: "fine",
-                amount: 5,
-                task: None,
-            }
-            .frame(),
-            "event: treasury\ndata: {\"entry\":7,\"kind\":\"fine\",\"amount\":5,\"task\":null}\n\n"
         );
         // A board frame carries the post's own JSON object, the agent that
         // acted and its role; a read carries the cursor instead of a post.

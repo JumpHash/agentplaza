@@ -20,11 +20,6 @@ import { agoLabel, shortSpan, waitsByRole } from './work-model';
 import { checkBox, emptyBox } from './work';
 import { reviewPanel } from './review-graph';
 
-// The task budget's default and minimum: the hub's apz_plaza::tasks constants (DEFAULT_TASK_BUDGET,
-// MIN_TASK_BUDGET). The web console cannot import Rust, so these mirror them; keep them in step.
-const DEFAULT_TASK_BUDGET = 2000;
-const MIN_TASK_BUDGET = 200;
-
 const LANES = ['Open', 'In progress', 'Done', 'Failed or withdrawn'];
 const MARK: Record<string, string> = { Open: '○', 'In progress': '●', Done: '✓', 'Failed or withdrawn': '×' };
 const IDLE: Record<string, string> = {
@@ -352,8 +347,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const acceptance = textarea({ rows: 3 });
     const roles = Array.from(new Set(agents.get().filter((a) => a.tier === 'worker').map((a) => a.role).filter(Boolean))).sort();
     const roleSel = select([{ value: '', label: 'Any' }, ...roles.map((r) => ({ value: r, label: r }))]);
-    // Empty leaves the budget to the hub's default (the hint shows it).
-    const budget = input({ type: 'number', min: MIN_TASK_BUDGET, step: 1, placeholder: `${DEFAULT_TASK_BUDGET} (hub default)` });
     const assignee = select([]);
     // The assignee is one of the chosen project's idle agents.
     const fillAssignees = (): void => {
@@ -375,18 +368,10 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       h('div.wide', null, field('Details', details, 'Optional.')),
       h('div.wide', null, field('Acceptance', acceptance, 'Optional.')),
       field('Role', roleSel),
-      field('Budget', budget),
       h('div.wide', null, field('Assign to', assignee)),
     );
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const budgetText = budget.value.trim();
-      budget.setCustomValidity('');
-      if (budgetText && (!/^\d+$/.test(budgetText) || Number(budgetText) < MIN_TASK_BUDGET)) {
-        budget.setCustomValidity(`Budget must be a whole number of at least ${MIN_TASK_BUDGET} credits.`);
-        budget.reportValidity();
-        return;
-      }
       const goalTitle = titleIn.value.trim();
       if (!goalTitle) {
         titleIn.focus();
@@ -405,7 +390,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
               project: projectSel.value,
               acceptance: acc || undefined,
               role: roleSel.value || undefined,
-              budget: budgetText === '' ? undefined : Number(budgetText),
               assignee: assignee.value ? Number(assignee.value) : undefined,
             }),
           'Task created',
@@ -526,7 +510,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         t.ready ? h('div.task-act', null, 'Ready to claim') : null,
         t.blocked_by.length ? h('div.task-foot', null, 'Blocked by ', t.blocked_by.map((x) => chip(x, true))) : null,
         !t.ready && t.waiting_on.length ? h('div.task-foot', null, 'Waits on ', t.waiting_on.map((x) => chip(x, false))) : null,
-        h('div.task-foot', null, `budget ${t.budget} · created `, ageOf(t.created_at)),
+        h('div.task-foot', null, 'created ', ageOf(t.created_at)),
       );
     }
     const menu = h('button.iconbtn.task-menu-btn', { type: 'button', 'data-id': t.id, 'aria-label': `Moves for ${t.id}`, title: 'Moves' }, h('span', { 'aria-hidden': 'true' }, '⋯'));
@@ -661,7 +645,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       ['State', badge(labelOf(t.state), stateTone(t.state), true)],
       ['Role', t.role ? roleLabel(t.role) : 'Any role'],
       ['Assignee', a ? assigneeLink(a.cid) : 'Unassigned'],
-      ['Budget', String(t.budget)],
       ['Project', projectCell()],
     ];
     if (t.after.length) facts.push(['Runs after', ids(t.after, false)]);

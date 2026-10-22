@@ -1,5 +1,4 @@
-//! Budgets (PLAN 4.6, 10; W12, W13): per project and per task, in dollars or in tokens. They replace the credits,
-//! wallets and task escrow.
+//! Budgets (PLAN 4.6, 10; W12, W13): per project and per task, in dollars or in tokens.
 //!
 //! - A project's budget: `cap`, `spent`, and `reserved` (what its running tasks may still spend). What it has left is
 //!   `cap - spent - reserved - held`. A long-lived session (the planner) charges its project directly, under the
