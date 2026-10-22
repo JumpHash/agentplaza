@@ -470,6 +470,177 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
     every_save_succeeded(&hub);
 }
 
+#[test]
+fn a_second_session_on_a_task_starts_from_the_journal_and_the_handover_its_builder_left() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } });
+    let scratch = Scratch::new("work-engine-journal");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Release notes", "goal": "Write the 0.9 release notes.", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "role_models": { "builder": "mock/agent", "reviewer": "mock/echo" } })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    let (status, task) = hub.call(
+        "POST",
+        "/v1/tasks",
+        Some(json!({ "goal": "Draft the release notes", "project": pid })),
+    );
+    assert_eq!(status, 201, "{task}");
+    let tid = text(&task["id"]);
+    hub.wait_for(&format!("/v1/tasks/{tid}/seats"), WAIT, |s| {
+        s.as_array().is_some_and(|s| s.len() == 2)
+    });
+    hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+        s.as_array()
+            .is_some_and(|s| s.iter().any(|s| s["cid"].as_u64().is_some()))
+    });
+    let builder = sessions(&hub, &tid)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("a session: {}", hub.log()));
+    let builder_cid = builder["cid"].as_u64().expect("its VM");
+    let (status, _) = hub.guest(builder_cid, "hello", json!({ "role": "builder", "vm": 0 }));
+    assert_eq!(status, 200);
+    let (work, _) = first_work(&gateway, builder_cid);
+
+    // The builder writes its journal as it goes, and ends with its handover.
+    let output = |reply: Value| text(&reply["output"]);
+    let noted = output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "journal_note",
+        json!({ "kind": "decision", "text": "keep the notes in one file", "reason": "one place to read" }),
+    ));
+    assert_eq!(noted, format!("Noted: decision n1 on {tid}."), "{noted}");
+    output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "journal_note",
+        json!({ "kind": "dead_end", "text": "splitting by release", "why": "the links broke" }),
+    ));
+    output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "journal_note",
+        json!({ "kind": "open_question", "text": "is 0.8 in scope?", "thread": "th1" }),
+    ));
+    let written = output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "handover_write",
+        json!({
+            "stands": "The notes draft is in.",
+            "done": "Drafted the upgrade section.",
+            "next": "Proof the changelog links.",
+            "check_first": "The 0.9 anchor."
+        }),
+    ));
+    assert!(written.contains("Handover recorded"), "{written}");
+    let read = output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "journal_read",
+        json!({ "query": "one file" }),
+    ));
+    assert!(
+        read.contains("- decision n1: keep the notes in one file Reason: one place to read"),
+        "{read}"
+    );
+    assert!(
+        !read.contains("splitting by release"),
+        "the query narrows the notes: {read}"
+    );
+    // The summary is only a fallback: the handover the builder wrote is the one the next session starts from.
+    hub.work_done(builder_cid, work, "done", "A summary the handover beats.");
+
+    // The reviewer's session, the task's second, starts from the brief, the journal and the handover.
+    let reviewer = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["seat"] == "reviewer" && s["cid"].is_u64())
+        })
+    });
+    let reviewer_cid = reviewer
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["seat"] == "reviewer"))
+        .and_then(|s| s["cid"].as_u64())
+        .unwrap_or_else(|| panic!("a reviewer session: {reviewer}\n{}", hub.log()));
+    let (status, _) = hub.guest(
+        reviewer_cid,
+        "hello",
+        json!({ "role": "reviewer", "vm": 1 }),
+    );
+    assert_eq!(status, 200);
+    let (review_work, prompt) = first_work(&gateway, reviewer_cid);
+    assert!(
+        prompt.contains(&format!("Task {tid}: Draft the release notes")),
+        "{prompt}"
+    );
+    assert!(prompt.contains("The task's journal:"), "{prompt}");
+    assert!(
+        prompt.contains("- decision n1: keep the notes in one file Reason: one place to read"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- dead end n2: splitting by release Why: the links broke"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- open question n3: is 0.8 in scope? Thread: th1"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("Where things stand: The notes draft is in."),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Proof the changelog links."), "{prompt}");
+    assert!(
+        !prompt.contains("A summary the handover beats."),
+        "{prompt}"
+    );
+    let brief = output(tool(&hub, reviewer_cid, review_work, "brief", json!({})));
+    assert!(
+        brief.starts_with(&format!("Task {tid}: Draft the release notes")),
+        "{brief}"
+    );
+    let (_, ended) = hub.call(
+        "GET",
+        &format!("/v1/sessions/{}", text(&builder["id"])),
+        None,
+    );
+    assert!(
+        text(&ended["handover"]).contains("Proof the changelog links."),
+        "{ended}"
+    );
+}
+
 /// After a saver pass (every second), no component's write failed (a child row without its parent, a bad value).
 fn every_save_succeeded(hub: &Hub) {
     std::thread::sleep(Duration::from_millis(1500));

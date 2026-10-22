@@ -439,6 +439,11 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
             String::new()
         },
         egress_ca: crate::egress_inject::ca_for_role(app, &agent.role),
+        // A step session writes its handover before it ends (journal.rs).
+        handover: app
+            .sessions
+            .by_cid(agent.cid)
+            .is_some_and(|s| s.kind == crate::sessions::Kind::Step),
     }
 }
 

@@ -160,6 +160,8 @@ pub struct App {
     pub disk: crate::disk::Disk,
     pub chats: crate::chats::Chats,
     pub threads: crate::threads::Threads,
+    /// The tasks' journals: notes and handovers (journal.rs, 9.2).
+    pub journal: crate::journal::Journals,
     /// The unfurl answers for the references clients show as chips (unfurl/mod.rs); the memory fallback when there is no Postgres.
     pub unfurl: crate::unfurl::Cache,
     /// STOP ALL / resume.
@@ -300,6 +302,7 @@ impl App {
             disk: Default::default(),
             chats: Default::default(),
             threads: Default::default(),
+            journal: Default::default(),
             unfurl: crate::unfurl::Cache::default(),
             vault: Arc::clone(&vault),
             control: crate::control::Control::default(),

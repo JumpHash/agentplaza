@@ -53,6 +53,12 @@ pub const THREAD_CLOSE_BYTES: usize = 400 * 1024;
 const STUCK_FAILURES: u32 = 3;
 /// Token-limit stops a work item continues past (with a "continue" message).
 const TOKEN_LIMIT_CONTINUES: u32 = 1;
+/// How many times a step session that ends its turn without a handover is asked for one before it ends without.
+const HANDOVER_ASKS: u32 = 2;
+/// What a step's output says when its task is finished and nothing is left for another session: no handover is asked.
+const TASK_DONE: &str = "TASK DONE";
+/// What the harness asks a step session that ended its turn without a handover (journal.rs, 9.2).
+const HANDOVER_ASK: &str = "Write your handover with handover_write first: what stands, what is done, what is next, what to check first. Then end your turn. If the task is finished and nothing is left for another session, end with the line TASK DONE instead.";
 /// How often a local tool's thread is checked while the beat runs beside it.
 const LOCAL_POLL: Duration = Duration::from_millis(20);
 /// How long queued work waits for the profile. A hub restart can welcome the agent before its
@@ -905,6 +911,9 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         let mut paused_waits = 0u32;
         // The last tool call's name and input, and how many times in a row it failed.
         let mut failing: Option<(String, u32)> = None;
+        // Whether a handover was written in this work (a step session must write one), and how often it was asked.
+        let mut handed_over = false;
+        let mut handover_asks = 0u32;
         loop {
             if let Some(reason) = self.cancelled.take() {
                 return Ok((WorkStatus::Stopped, reason));
@@ -975,6 +984,9 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             let mut stuck = None;
             let outcomes = self.tool_turn(work, &uses)?;
             for ((id, name, input, _), (text, is_error)) in uses.into_iter().zip(outcomes) {
+                if name == "handover_write" && !is_error {
+                    handed_over = true;
+                }
                 let key = format!("{name} {input}");
                 failing = match (is_error, failing.take()) {
                     (false, _) => None,
@@ -1026,7 +1038,27 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             }
 
             match stop {
-                StopReason::EndTurn => return Ok((WorkStatus::Done, blocks_text(&content))),
+                StopReason::EndTurn => {
+                    let said = blocks_text(&content);
+                    if profile.handover && !handed_over && !said.contains(TASK_DONE) {
+                        if handover_asks < HANDOVER_ASKS {
+                            handover_asks += 1;
+                            match messages.last_mut() {
+                                Some(last) if last.role == Role::User => {
+                                    last.content.push(Block::Text {
+                                        text: HANDOVER_ASK.to_string(),
+                                    })
+                                }
+                                _ => messages.push(Message::user_text(HANDOVER_ASK)),
+                            }
+                            continue;
+                        }
+                        self.shared.note(&format!(
+                            "agent-harness: work {work} ended without a handover"
+                        ));
+                    }
+                    return Ok((WorkStatus::Done, said));
+                }
                 StopReason::Refusal => {
                     return Ok((WorkStatus::Failed, "the model declined".to_string()));
                 }
@@ -2443,6 +2475,83 @@ mod tests {
             host.send(&answer(2, json!([text("found")]), "end_turn"))
                 .unwrap();
             expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    fn step_welcome(max_turns: u32) -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system": "be brief",
+                "tools": [{"name": "handover_write", "description": "hand over", "input_schema": {"type": "object"}}],
+                "max_turns": max_turns, "handover": true,
+            },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_step_that_ends_without_a_handover_is_asked_for_one_twice_and_then_ends() {
+        let workspace = scratch("handover-asks");
+        run_hub(&workspace, |host| {
+            host.send(&step_welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([text("done")]), "end_turn"))
+                .unwrap();
+            let first = expect_type(host, "model_call");
+            let messages = &first["request"]["messages"];
+            assert_eq!(messages.as_array().map(Vec::len), Some(3), "{messages}");
+            assert!(
+                messages[2]["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("Write your handover with handover_write")),
+                "{messages}"
+            );
+            host.send(&answer(2, json!([text("still done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(3, json!([text("done again")]), "end_turn"))
+                .unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!(done["status"], "done", "{done}");
+            assert_eq!(done["summary"], "done again", "{done}");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_step_ends_at_once_once_it_wrote_its_handover_or_says_the_task_is_done() {
+        let workspace = scratch("handover-written");
+        run_hub(&workspace, |host| {
+            host.send(&step_welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(
+                1,
+                json!([tool_use(
+                    "h1",
+                    "handover_write",
+                    json!({"stands": "s", "done": "d", "next": "n"})
+                )]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&decision("h1", "done", "handover recorded", false))
+                .unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([text("written")]), "end_turn"))
+                .unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!(done["status"], "done", "{done}");
+            host.send(&work(2, "task", "t", "again")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(3, json!([text("TASK DONE")]), "end_turn"))
+                .unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!(done["summary"], "TASK DONE", "{done}");
             stop(host);
         });
     }
