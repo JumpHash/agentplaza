@@ -109,15 +109,23 @@ pub fn pick(candidates: &[Candidate]) -> Option<String> {
 /// taken off its free memory. The chosen node is then reserved for the new agent. A node whose
 /// machine stats did not answer is left out.
 pub fn choose_node(app: &App, role: &str) -> String {
-    let chosen = choose(&candidates(app, role));
+    let needs = app
+        .settings
+        .get()
+        .role_volumes
+        .get(role)
+        .cloned()
+        .unwrap_or_default();
+    let chosen = choose(&candidates(app, role, &needs));
     reserve(&chosen);
     chosen
 }
 
 /// The node an agent of `role` leaving `from` moves to: the best of the other nodes in service by
-/// [`pick`], reserved for it as a new agent's would be. None when none has room.
-pub fn target_for(app: &App, role: &str, from: &str) -> Option<String> {
-    let others: Vec<Candidate> = candidates(app, role)
+/// [`pick`] that hold the `needs` volumes (see [`lacking_volumes`]), reserved for it as a new agent's
+/// would be. None when none has room.
+pub fn target_for(app: &App, role: &str, from: &str, needs: &[String]) -> Option<String> {
+    let others: Vec<Candidate> = candidates(app, role, needs)
         .into_iter()
         .filter(|candidate| candidate.node != from)
         .collect();
@@ -126,13 +134,68 @@ pub fn target_for(app: &App, role: &str, from: &str) -> Option<String> {
     Some(chosen)
 }
 
-/// The nodes that report and are in service, each as a candidate for an agent of `role`.
-fn candidates(app: &App, role: &str) -> Vec<Candidate> {
+/// The data volumes `held` lacks of `needs` (pure), in the order `needs` lists them.
+pub fn lacking_volumes(held: &[String], needs: &[String]) -> Vec<String> {
+    needs
+        .iter()
+        .filter(|name| !held.contains(name))
+        .cloned()
+        .collect()
+}
+
+/// The names of the data volumes node `node` holds (its `GET /v1/volumes`); an error when it did not
+/// answer.
+fn volumes_on(app: &App, node: &str) -> Result<Vec<String>, String> {
+    let body = answered(
+        &format!("{node} GET /v1/volumes"),
+        fleet::noded(app, node, "GET", "/v1/volumes", None),
+    )?;
+    Ok(body
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|volume| volume["name"].as_str().map(str::to_string))
+        .collect())
+}
+
+/// The data volumes agent `cid`'s run carries on `node`, as the run there names them.
+pub fn agent_volumes(app: &App, cid: u64, node: &str) -> Result<Vec<String>, String> {
+    let (run, _) = crate::lifecycle::place(app, cid).map_err(|resp| body_text(&resp))?;
+    run_volumes(app, node, &run)
+}
+
+/// The data volumes run `run` carries on `node`, from its entry in the node's run list.
+fn run_volumes(app: &App, node: &str, run: &str) -> Result<Vec<String>, String> {
+    let body = answered(
+        &format!("{node} GET /v1/runs"),
+        fleet::noded(app, node, "GET", "/v1/runs", None),
+    )?;
+    let entry = body["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|entry| entry["id"].as_str() == Some(run))
+        .ok_or_else(|| format!("{node} has no run {run}"))?;
+    Ok(entry["volumes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|name| name.as_str().map(str::to_string))
+        .collect())
+}
+
+/// The nodes that report and are in service, each as a candidate for an agent of `role` that needs the
+/// `needs` volumes: a node that does not hold them all, or that did not say which it holds, is left out.
+fn candidates(app: &App, role: &str, needs: &[String]) -> Vec<Candidate> {
     let stopped = app.nodes.stopped_ids();
     let now = Instant::now();
     fleet::reports(app)
         .into_iter()
         .filter(|(node, _, _)| !stopped.contains(node))
+        .filter(|(node, _, _)| {
+            needs.is_empty()
+                || volumes_on(app, node).is_ok_and(|held| lacking_volumes(&held, needs).is_empty())
+        })
         .filter_map(|(node, _status, runs)| {
             let (total, used) = memory_of(app, &node)?;
             Some(Candidate {
@@ -487,6 +550,19 @@ fn move_claimed(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
         ));
     }
     let (run, vm) = crate::lifecycle::place(app, cid)?;
+    // The target must hold every data volume the VM carries: its snapshot names their devices, and a
+    // restore needs them (noded refuses an import that lacks one, so this only says so first).
+    let needs = run_volumes(app, &from, &run)
+        .map_err(|why| Response::error(502, &format!("cannot read the VM's volumes: {why}")))?;
+    let held = volumes_on(app, target)
+        .map_err(|why| Response::error(502, &format!("move to {target} failed: {why}")))?;
+    let lacking = lacking_volumes(&held, &needs);
+    if !lacking.is_empty() {
+        return Err(Response::error(
+            409,
+            &format!("node {target} does not hold volume {}", lacking.join(", ")),
+        ));
+    }
     let was_asleep = agent.status == Status::Asleep;
     if !was_asleep {
         sleep::put_to_sleep(app, cid)?;
@@ -1006,6 +1082,26 @@ mod tests {
             "unless the owner stopped it"
         );
         assert_eq!(target_refusal("n0", "n1", Some(&fresh), false, now), None);
+    }
+
+    #[test]
+    fn a_vm_moves_only_to_a_node_that_holds_every_volume_it_carries() {
+        let held = vec!["data".to_string(), "models".to_string()];
+        assert!(
+            lacking_volumes(&held, &[]).is_empty(),
+            "a VM with no volumes fits any node"
+        );
+        assert!(lacking_volumes(&held, &["models".to_string()]).is_empty());
+        assert_eq!(
+            lacking_volumes(&held, &["data".to_string(), "logs".to_string()]),
+            ["logs"],
+            "the volumes the node lacks, in the VM's order"
+        );
+        assert_eq!(
+            lacking_volumes(&[], &["data".to_string()]),
+            ["data"],
+            "a node that holds none refuses every volume"
+        );
     }
 
     #[test]

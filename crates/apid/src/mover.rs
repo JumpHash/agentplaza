@@ -234,8 +234,11 @@ fn leave(app: &App, cid: u64, role: &str, node: &str, now: bool) -> Result<Strin
         }
         return Err(Wait::Turn("finishing its turn first".into()));
     }
-    let Some(target) = placement::target_for(app, role, node) else {
-        return Err(Wait::Failed("no machine in service has room for it".into()));
+    let needs = placement::agent_volumes(app, cid, node).map_err(Wait::Failed)?;
+    let Some(target) = placement::target_for(app, role, node, &needs) else {
+        return Err(Wait::Failed(
+            "no machine in service has room for it, with its volumes".into(),
+        ));
     };
     placement::move_agent(app, cid, &target)
         .map(|moved| moved.to)

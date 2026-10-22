@@ -743,6 +743,8 @@ pub struct RunView<'a> {
     pub beats: Option<u32>,
     /// The role every VM of the run runs as, or `null`.
     pub role: Option<&'a str>,
+    /// The names of the shared data volumes every VM of the run carries.
+    pub volumes: Vec<&'a str>,
     /// Whether the run's guests are sandboxes (see [`CreateRun::sandbox`]).
     pub sandbox: bool,
     /// When the run was created, in milliseconds since the Unix epoch.
@@ -996,6 +998,8 @@ pub struct ImportedVm {
     /// The staged `workspace.img`, moved to the VM's workspace image on this node. `None` for a VM
     /// with no workspace volume: its export carries no workspace image.
     pub workspace: Option<PathBuf>,
+    /// The shared data volumes the VM carries, by name: each must be in this node's store.
+    pub volumes: Vec<String>,
 }
 
 /// An asleep VM, as an export reads it (see [`Registry::asleep_vm`]).
@@ -1405,10 +1409,12 @@ impl Registry {
         if names.is_empty() {
             return Ok(Vec::new());
         }
-        let store = self
-            .volumes
-            .as_deref()
-            .ok_or_else(|| "this node keeps no volumes".to_string())?;
+        let store = self.volumes.as_deref().ok_or_else(|| {
+            format!(
+                "this node keeps no volumes, so it holds none of {}",
+                names.join(", ")
+            )
+        })?;
         let volumes = names
             .iter()
             .map(|name| {
@@ -2665,6 +2671,10 @@ impl Registry {
         let vcpus = spawner_vcpus(vm.vcpus).map_err(VmOpError::Invalid)?;
         let memory_mib = spawner_memory_mib(vm.memory_mib).map_err(VmOpError::Invalid)?;
         let store = self.snapshot_store()?;
+        // The VM's data volumes: its snapshot names their devices, so the node must hold each one.
+        let volumes = self
+            .resolve_volumes(&vm.volumes)
+            .map_err(VmOpError::Invalid)?;
         let id = self.reserve_run_id();
         // A sandbox travels with its command line: its import is a sandbox, never a keepalive agent.
         let sandbox = is_sandbox_cmdline(&vm.cmdline);
@@ -2694,7 +2704,7 @@ impl Registry {
             workspace,
             balloon: vm.balloon_usable_mib,
             restore: None,
-            volumes: Vec::new(),
+            volumes: volumes.clone(),
         };
         let run = self.insert(
             id,
@@ -2706,7 +2716,7 @@ impl Registry {
                 keepalive: !sandbox,
                 balloon_usable_mib: vm.balloon_usable_mib,
                 sandbox,
-                volumes: Vec::new(),
+                volumes,
             },
         );
         {
@@ -3452,6 +3462,11 @@ impl Run {
             memory_mib: self.memory_mib,
             beats: self.beats,
             role: self.role.as_deref(),
+            volumes: self
+                .volumes
+                .iter()
+                .map(|volume| volume.name.as_str())
+                .collect(),
             sandbox: self.sandbox,
             created_at: self.created_at,
             ended_at: inner.ended_at,
