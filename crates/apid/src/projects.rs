@@ -13,7 +13,9 @@
 //!
 //! Documents are files in the plaza's file store (by id) or paths in the project's repo.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use apz_cache::Generations;
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_store::rusqlite::Connection;
@@ -226,6 +228,8 @@ impl Actor {
 #[derive(Default)]
 pub struct Store {
     items: Mutex<Vec<Project>>,
+    /// The hub's generations: each project whose record changes bumps its `project:<id>`.
+    gens: Arc<Generations<String>>,
 }
 
 fn now_ms() -> u64 {
@@ -294,8 +298,14 @@ fn plan_author(project: &Project) -> Option<u64> {
 }
 
 impl Store {
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
+    }
+
     /// Runs `change` on a copy of the projects and keeps the copy once it succeeds; a refusal leaves the store as it
-    /// was. The saver writes the change to plaza.db.
+    /// was. The saver writes the change to plaza.db. Each project whose record changed bumps its generation.
     fn mutate<T>(
         &self,
         change: impl FnOnce(&mut Vec<Project>) -> Result<T, String>,
@@ -306,6 +316,12 @@ impl Store {
             .map_err(|_| "projects are unavailable".to_string())?;
         let mut next: Vec<Project> = items.clone();
         let out = change(&mut next)?;
+        for changed in next.iter().filter(|p| !items.contains(p)) {
+            crate::sources::bump(&self.gens, &crate::sources::project(&changed.id));
+        }
+        for gone in items.iter().filter(|p| !next.contains(p)) {
+            crate::sources::bump(&self.gens, &crate::sources::project(&gone.id));
+        }
         *items = next;
         Ok(out)
     }
@@ -1789,6 +1805,29 @@ mod tests {
                 .unwrap()
                 .id,
             "pr2"
+        );
+    }
+
+    #[test]
+    fn a_change_moves_only_the_changed_projects_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::default().with_generations(std::sync::Arc::clone(&gens));
+        let first = store.open_for_owner("First", "goal", "code").expect("open");
+        let second = store
+            .open_for_owner("Second", "goal", "code")
+            .expect("open");
+        let before = gens.get(&crate::sources::project(&first.id));
+        store.set_paused(&first.id, true).expect("pause");
+        assert!(
+            gens.get(&crate::sources::project(&first.id)) > before,
+            "a pause moves the project"
+        );
+        let untouched = gens.get(&crate::sources::project(&second.id));
+        store.set_paused(&first.id, false).expect("resume");
+        assert_eq!(
+            gens.get(&crate::sources::project(&second.id)),
+            untouched,
+            "another project stays"
         );
     }
 }

@@ -122,6 +122,11 @@ pub struct App {
     pub deliverables: Arc<crate::deliverables::Store>,
     /// What agents found on the internet and judged, for every agent to use.
     pub toolbox: crate::toolbox::Store,
+    /// The hub's generations of its cached answers, by source (`sources.rs`, `skills`): a source's key moves with each
+    /// write of the source, and a cache answers only while the generation it was built from still holds (PLAN 30.4).
+    pub generations: Arc<apz_cache::Generations<String>>,
+    /// The sessions' tools sections, built from their sources and cached by them (`tools::Sections`).
+    pub tool_sections: crate::tools::Sections,
     /// Projects: every goal's flow from brief to delivery.
     pub projects: crate::projects::Store,
     /// Each chat's context and tool calls, and one-message model choices (`context_track.rs`).
@@ -234,6 +239,7 @@ impl App {
         let vault_env = env.clone();
         std::fs::create_dir_all(&config.state_dir)?;
         let token = write_token(&config.state_dir)?;
+        let generations: Arc<apz_cache::Generations<String>> = Arc::default();
         // The same file the token was just written to: noded and vsockd are told it, and every call
         // this app makes to them presents it.
         let internal = apz_http::auth::InternalToken::file(config.state_dir.join("internal.token"));
@@ -252,10 +258,10 @@ impl App {
         let prompt_store: Arc<dyn crate::prompts::PromptStore> = Arc::new(
             crate::prompts::store::SqlitePrompts::new(Arc::clone(store.db(crate::store::PLAZA))),
         );
-        let vault = Arc::new(crate::vault::Store::open(
-            &config.vault_key,
-            Arc::clone(store.db(crate::store::PLAZA)),
-        ));
+        let vault = Arc::new(
+            crate::vault::Store::open(&config.vault_key, Arc::clone(store.db(crate::store::PLAZA)))
+                .with_generations(Arc::clone(&generations)),
+        );
         // The vendor bindings (Auggie's session) show in the console's vault screen from boot.
         crate::vendor_relay::register(&vault);
         // The Library of deliverables, over the object store.
@@ -264,21 +270,25 @@ impl App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
             laws: crate::laws::global(),
-            connectors: crate::connectors::Store::new(Arc::clone(&vault)),
+            connectors: crate::connectors::Store::new(Arc::clone(&vault))
+                .with_generations(Arc::clone(&generations)),
             approvals: crate::approvals::Store::default(),
             acp_sessions: crate::acp::store::Sessions::default(),
             engine_feed: crate::engine_feed::Feed::default(),
             library: crate::library::Store::open(&config.state_dir),
             deliverables: Arc::clone(&library),
             toolbox: crate::toolbox::Store::default(),
-            projects: Default::default(),
+            generations: Arc::clone(&generations),
+            tool_sections: crate::tools::Sections::new(),
+            projects: crate::projects::Store::default().with_generations(Arc::clone(&generations)),
             context: Default::default(),
             project_settings: Default::default(),
             harness: crate::harness_control::Store::default(),
             weft: crate::weft_hub::Weft::default(),
             platforms: crate::platforms::Store::load(&config.state_dir),
             maintenance: Default::default(),
-            environments: Default::default(),
+            environments: crate::environments::Store::default()
+                .with_generations(Arc::clone(&generations)),
             reviews: crate::review_graph::Reviews::load(&config.state_dir),
             db: Arc::clone(&db),
             store: Arc::clone(&store),
@@ -294,7 +304,8 @@ impl App {
             unfurl: crate::unfurl::Cache::new(Arc::clone(store.db(crate::store::PLAZA))),
             vault: Arc::clone(&vault),
             control: crate::control::Control::default(),
-            custom_roles: crate::roles_custom::Store::default(),
+            custom_roles: crate::roles_custom::Store::default()
+                .with_generations(Arc::clone(&generations)),
             agent_proposals: crate::agent_proposals::Store::default(),
             nodes: crate::nodes::Store::default(),
             stations: crate::stations::Store::default(),
@@ -305,7 +316,8 @@ impl App {
                 apz_plaza::now_ms(),
             ),
             foundry: crate::foundry::store::Foundry::new(foundry_dir),
-            mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port),
+            mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port)
+                .with_generations(Arc::clone(&generations)),
             hub_auth,
             hub_mcp: crate::hub_mcp::HubMcp::open(
                 crate::hub_mcp::default_origins(
@@ -321,14 +333,16 @@ impl App {
                 // Skill files are kept in the object store, by BLAKE3 hash.
                 let skill_blobs: Arc<dyn crate::skills::Blobs> =
                     Arc::new(crate::skills::blobs::StoreBlobs::new(Arc::clone(&blobs)));
-                crate::skills::Skills::new(
+                crate::skills::Skills::with_generations(
                     Arc::new(crate::skills::store_db::DbSkills::new(Arc::clone(
                         store.db(crate::store::PLAZA),
                     ))),
                     skill_blobs,
+                    Arc::clone(&generations),
                 )
             },
-            settings: settings::Store::new(config.dev_models),
+            settings: settings::Store::new(config.dev_models)
+                .with_generations(Arc::clone(&generations)),
             appearance: crate::appearance::Store::new(),
             artifacts: Arc::new(crate::artifacts::Store::new(
                 Arc::clone(store.db(crate::store::PLAZA)),
@@ -339,7 +353,8 @@ impl App {
                 &config.state_dir,
             )),
             providers: providers::Store::new(Arc::clone(&vault)),
-            engines: crate::engine_instances::Store::load(&config.state_dir)?,
+            engines: crate::engine_instances::Store::load(&config.state_dir)?
+                .with_generations(Arc::clone(&generations)),
             usage_providers: crate::usage_providers::Store::load(&config.state_dir)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
             spawned: spawned::Store::default(),

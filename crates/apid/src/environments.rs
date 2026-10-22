@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use apz_cache::Generations;
 use apz_http::{Params, Response, RouteDoc, Router};
 use apz_store::rusqlite::Connection;
 use apz_store::{RowSet, StoreError, TableDef};
@@ -123,6 +124,8 @@ struct ProjectEnvs {
 #[derive(Default)]
 pub struct Store {
     items: Mutex<Vec<ProjectEnvs>>,
+    /// The hub's generations: a change to a project's environments bumps its `project:<id>`.
+    gens: Arc<Generations<String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -134,6 +137,12 @@ fn now_ms() -> u64 {
 }
 
 impl Store {
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
+    }
+
     fn of(&self, project: &str) -> Vec<Environment> {
         lock(&self.items)
             .iter()
@@ -161,6 +170,7 @@ impl Store {
         };
         let out = change(&mut next[at])?;
         *items = next;
+        crate::sources::bump(&self.gens, &crate::sources::project(project));
         Ok(out)
     }
 
@@ -1018,5 +1028,20 @@ mod tests {
         again.load(&conn).unwrap();
         assert_eq!(again.of("pr1"), store.of("pr1"));
         assert_eq!(again.of("pr1")[0].variables["REGION"], "eu");
+    }
+
+    #[test]
+    fn a_change_to_a_projects_environments_moves_its_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::default().with_generations(std::sync::Arc::clone(&gens));
+        let key = crate::sources::project("app");
+        store
+            .mutate("app", |_| Ok::<(), String>(()))
+            .expect("a change");
+        assert!(
+            gens.get(&key) > 0,
+            "a change to the environments moves the project"
+        );
+        assert_eq!(gens.get(&crate::sources::project("other")), 0);
     }
 }

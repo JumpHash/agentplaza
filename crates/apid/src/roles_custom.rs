@@ -8,8 +8,9 @@
 //! POST   /v1/roles        body RoleDef → the saved RoleDef (create or update a custom role)
 //! DELETE /v1/roles/{id}   → refused while agents of that role run
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use apz_cache::Generations;
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_store::rusqlite::Connection;
 use apz_store::{RowSet, StoreError, TableDef};
@@ -72,9 +73,17 @@ pub struct RoleView {
 #[derive(Default)]
 pub struct Store {
     roles: Mutex<Vec<RoleDef>>,
+    /// The hub's generations: each role's `role:<id>` is bumped by a save or a removal.
+    gens: Arc<Generations<String>>,
 }
 
 impl Store {
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
+    }
+
     pub fn list(&self) -> Vec<RoleDef> {
         self.roles.lock().map(|r| r.clone()).unwrap_or_default()
     }
@@ -93,6 +102,7 @@ impl Store {
             }
             None => roles.push(def.clone()),
         }
+        crate::sources::bump(&self.gens, &crate::sources::role(&def.id));
         Ok(def)
     }
     pub fn remove(&self, id: &str) -> Result<(), String> {
@@ -102,6 +112,7 @@ impl Store {
             .position(|r| r.id == id)
             .ok_or_else(|| format!("no role {id}"))?;
         roles.remove(i);
+        crate::sources::bump(&self.gens, &crate::sources::role(id));
         Ok(())
     }
     /// Every role's rows, as they are now (the saver writes what changed).
@@ -434,5 +445,24 @@ mod tests {
             serde_json::to_value(store.list()).unwrap()
         );
         assert_eq!(restored.list().len(), 2, "the order is kept");
+    }
+
+    #[test]
+    fn a_save_and_a_removal_move_the_role_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::default().with_generations(std::sync::Arc::clone(&gens));
+        let key = crate::sources::role("scout");
+        store.save(sample("scout")).expect("save");
+        let created = gens.get(&key);
+        store.save(sample("scout")).expect("save again");
+        let replaced = gens.get(&key);
+        assert!(replaced > created, "a save moves the role");
+        store.remove("scout").expect("remove");
+        assert!(gens.get(&key) > replaced, "a removal moves the role");
+        assert_eq!(
+            gens.get(&crate::sources::role("other")),
+            0,
+            "only the role's own source moves"
+        );
     }
 }

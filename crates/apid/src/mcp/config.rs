@@ -818,6 +818,8 @@ struct Inner {
 #[derive(Default)]
 pub struct Store {
     inner: Mutex<Inner>,
+    /// The hub's generations: every change to a server or its tool listing bumps `mcp`.
+    gens: std::sync::Arc<apz_cache::Generations<String>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -893,9 +895,19 @@ impl Store {
         removed
     }
 
-    /// Republishes the tool risks the laws read.
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(
+        mut self,
+        gens: std::sync::Arc<apz_cache::Generations<String>>,
+    ) -> Self {
+        self.gens = gens;
+        self
+    }
+
+    /// Republishes the tool risks the laws read, and bumps the MCP source.
     fn changed(&self, inner: &Inner) {
         crate::mcp::publish_risks(&inner.servers, &inner.tools);
+        crate::sources::bump(&self.gens, crate::sources::MCP);
     }
 
     /// The component's rows as its state is now: each server, with the tools it last offered as its children.
@@ -1265,5 +1277,20 @@ mod tests {
         let mut renamed = npm("github");
         renamed.name = "Renamed".into();
         assert_eq!(store.replace("github", renamed).unwrap().name, "Renamed");
+    }
+
+    #[test]
+    fn a_change_to_a_server_or_its_tools_moves_the_mcp_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::default().with_generations(std::sync::Arc::clone(&gens));
+        let key = crate::sources::MCP.to_string();
+        store.insert(npm("docs")).expect("insert");
+        let inserted = gens.get(&key);
+        assert!(inserted > 0, "adding a server moves the MCP source");
+        store.set_tools("docs", Vec::new());
+        let listed = gens.get(&key);
+        assert!(listed > inserted, "a tool listing moves it");
+        assert!(store.remove("docs"));
+        assert!(gens.get(&key) > listed, "a removal moves it");
     }
 }

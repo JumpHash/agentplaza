@@ -11,9 +11,12 @@ pub mod routes;
 pub mod store_db;
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use apz_cache::{Cache, Generations};
 use apz_skill::{FileInfo, Finding, Report};
 use serde::Serialize;
+use serde_json::{Value, json};
 
 pub const MAX_TITLE: usize = 120;
 pub const MAX_NOTE: usize = 500;
@@ -299,19 +302,196 @@ pub fn seed_builtins(skills: &Skills, actor: &str, now_ms: u64) -> Result<usize,
     Ok(imported)
 }
 
+/// The generation of the library as a whole: bumped by every write of any skill (the sessions' skills sections read it).
+pub const LIBRARY: &str = "skills";
+
+/// The generation of one skill: bumped by every write of that skill (its summary is cached by it).
+pub fn skill_key(id: &str) -> String {
+    format!("skill:{id}")
+}
+
+/// A skill's summary is kept until its generation moves, or this long at most.
+const SUMMARY_AGE: Duration = Duration::from_secs(24 * 3600);
+
+/// The store with its writes counted in the generations: each write bumps the skill's generation and the library's, after
+/// the write has committed (so a cache built before the write never stores over it, see `apz_cache`). Every write of the
+/// library goes through this wrapper, so no write path can miss a bump.
+struct Bumped {
+    inner: Arc<dyn SkillStore>,
+    gens: Arc<Generations<String>>,
+}
+
+impl Bumped {
+    fn bump(&self, id: &str) {
+        self.gens.bump(&skill_key(id));
+        self.gens.bump(&LIBRARY.to_string());
+    }
+}
+
+impl SkillStore for Bumped {
+    fn list(&self, archived: bool) -> Result<Vec<Skill>, String> {
+        self.inner.list(archived)
+    }
+    fn get(&self, id: &str) -> Result<Option<Skill>, String> {
+        self.inner.get(id)
+    }
+    fn versions(&self, id: &str) -> Result<Vec<VersionMeta>, String> {
+        self.inner.versions(id)
+    }
+    fn version(&self, id: &str, version: u32) -> Result<Option<Version>, String> {
+        self.inner.version(id, version)
+    }
+    fn create(
+        &self,
+        new: &NewSkill,
+        first: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
+        let skill = self.inner.create(new, first, actor, now_ms)?;
+        self.bump(&skill.id);
+        Ok(skill)
+    }
+    fn add_version(
+        &self,
+        id: &str,
+        base: u32,
+        next: &NewVersion,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<VersionMeta, StoreError> {
+        let meta = self.inner.add_version(id, base, next, actor, now_ms)?;
+        self.bump(id);
+        Ok(meta)
+    }
+    fn set_meta(
+        &self,
+        id: &str,
+        title: &str,
+        tags: &[String],
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
+        let skill = self.inner.set_meta(id, title, tags, actor, now_ms)?;
+        self.bump(id);
+        Ok(skill)
+    }
+    fn set_bindings(
+        &self,
+        id: &str,
+        bindings: &[String],
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
+        let skill = self.inner.set_bindings(id, bindings, actor, now_ms)?;
+        self.bump(id);
+        Ok(skill)
+    }
+    fn set_active(
+        &self,
+        id: &str,
+        version: Option<u32>,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
+        let skill = self.inner.set_active(id, version, actor, now_ms)?;
+        self.bump(id);
+        Ok(skill)
+    }
+    fn set_archived(
+        &self,
+        id: &str,
+        archived: bool,
+        actor: &str,
+        now_ms: u64,
+    ) -> Result<Skill, StoreError> {
+        let skill = self.inner.set_archived(id, archived, actor, now_ms)?;
+        self.bump(id);
+        Ok(skill)
+    }
+    fn events(&self, id: &str, limit: u32) -> Result<Vec<Event>, String> {
+        self.inner.events(id, limit)
+    }
+    fn bound(&self, binding: &str) -> Result<Vec<(Skill, VersionMeta)>, String> {
+        self.inner.bound(binding)
+    }
+}
+
 /// The library as apid uses it.
 pub struct Skills {
-    store: Arc<dyn SkillStore>,
+    store: Bumped,
     blobs: Arc<dyn Blobs>,
+    gens: Arc<Generations<String>>,
+    /// Each skill's summary, by skill id, built from its versions (see [`Skills::summary`]).
+    summaries: Cache<String, Value>,
 }
 
 impl Skills {
-    pub fn new(store: Arc<dyn SkillStore>, blobs: Arc<dyn Blobs>) -> Skills {
-        Skills { store, blobs }
+    /// The library counting its writes in `gens`, the hub's generations.
+    pub fn with_generations(
+        store: Arc<dyn SkillStore>,
+        blobs: Arc<dyn Blobs>,
+        gens: Arc<Generations<String>>,
+    ) -> Skills {
+        Skills {
+            store: Bumped {
+                inner: store,
+                gens: Arc::clone(&gens),
+            },
+            blobs,
+            gens,
+            summaries: Cache::new(SUMMARY_AGE),
+        }
+    }
+
+    /// The summary of skill `id` (its fields, live version's score and best version), as the list and detail routes show
+    /// it. Built from the store only when the skill changed since the last summary: a list of N skills reads the
+    /// versions of each once, not on every list.
+    pub fn summary(&self, id: &str) -> Result<Value, StoreError> {
+        let value = self
+            .summaries
+            .get(
+                &id.to_string(),
+                || self.gens.get(&skill_key(id)),
+                || self.build_summary(id),
+            )
+            .map_err(StoreError::Failed)?;
+        Ok((*value).clone())
+    }
+
+    /// The summary read fresh from the store (after the generation was read, so a write that lands meanwhile is never
+    /// missed: its bump moves the generation and this build is not stored).
+    fn build_summary(&self, id: &str) -> Result<Value, String> {
+        let skill = self
+            .store
+            .get(id)?
+            .ok_or_else(|| format!("no skill {id}"))?;
+        let versions = self.store.versions(id)?;
+        let best = apz_prompt::best_version(versions.iter().map(|v| (v.version, v.score)));
+        let score = skill
+            .active_version
+            .and_then(|live| versions.iter().find(|v| v.version == live))
+            .map(|v| v.score);
+        Ok(json!({
+            "id": skill.id,
+            "name": skill.name,
+            "title": skill.title,
+            "description": skill.description,
+            "tags": skill.tags,
+            "bindings": skill.bindings,
+            "active_version": skill.active_version,
+            "latest_version": skill.latest_version,
+            "best_version": best,
+            "score": score,
+            "source": skill.source,
+            "created_ms": skill.created_ms,
+            "updated_ms": skill.updated_ms,
+            "archived_ms": skill.archived_ms,
+        }))
     }
 
     pub fn store(&self) -> &dyn SkillStore {
-        &*self.store
+        &self.store
     }
 
     pub fn blobs(&self) -> &dyn Blobs {

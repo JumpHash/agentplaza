@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
+use apz_cache::Generations;
 use apz_plaza::ConnectedAgent;
 use apz_plaza::social::PostRequest;
 use apz_plaza::tasks::{CreateTask, Task};
@@ -16,6 +17,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::agents::{self, Agent};
+use crate::laws::Laws;
 use crate::scheduler::Origin;
 use crate::settings::tier_of;
 use crate::state::App;
@@ -209,32 +211,141 @@ pub fn specs_for(app: &App, role: &str, project: Option<&str>) -> Vec<ToolSpec> 
     specs
 }
 
-/// The tool specs agent `agent` is offered: its role's, plus the library tools it may use.
-pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
-    let mut specs = specs_for(
-        app,
-        &agent.role,
-        crate::projects::project_of(app, agent.cid).as_deref(),
-    );
-    specs.extend(crate::library::specs_for(app, agent.cid));
-    specs.extend(crate::mcp::specs_for_agent(app, agent));
+/// A session's tools section is kept this long at most, whatever its sources say.
+const SECTION_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// What a session's tools section is built from besides its sources: the role it runs as, the project it works on and
+/// the node it runs on (the MCP servers offered depend on the node).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SectionKey {
+    pub role: String,
+    pub project: Option<String>,
+    pub node: Option<String>,
+}
+
+/// A session's tools section, built from its sources: the tools it is offered except the library's (those are per agent)
+/// and its `## Skills` prompt section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Section {
+    /// The role's tools: grants, plaza tools, connectors, with the maintenance and environment tools where they apply.
+    pub tools: Vec<ToolSpec>,
+    /// The MCP servers' tools the session may use on its node.
+    pub mcp: Vec<ToolSpec>,
+    /// The `## Skills` section of its system prompt, when it has skills.
+    pub skills: Option<String>,
+}
+
+/// The sections of the sessions, each built once per key and rebuilt when a source it was built from moves.
+pub struct Sections {
+    cache: apz_cache::Cache<SectionKey, Section>,
+}
+
+impl Default for Sections {
+    fn default() -> Self {
+        Sections::new()
+    }
+}
+
+impl Sections {
+    pub fn new() -> Sections {
+        Sections {
+            cache: apz_cache::Cache::new(SECTION_AGE),
+        }
+    }
+
+    /// The section for `key`: answered from the cache while `current` (the generation of its sources now) is the one it was
+    /// built at, else built by `build` (once for every caller that misses, see `apz_cache::Cache`).
+    pub fn get(
+        &self,
+        key: &SectionKey,
+        current: impl Fn() -> u64,
+        build: impl Fn() -> Section,
+    ) -> Arc<Section> {
+        self.cache
+            .get(key, current, || Ok::<_, String>(build()))
+            .expect("a section is built from its sources, which cannot fail")
+    }
+
+    /// How many sections were built (a test counts them).
+    #[cfg(test)]
+    pub fn builds(&self) -> u64 {
+        self.cache.stats().1
+    }
+}
+
+/// The generation of the sources `key`'s section is built from: the generations of the connectors, the vault, the MCP
+/// servers, the settings, the engines, the skills, the role and the project, and the laws. Each only moves up, so their sum
+/// moves with any of them.
+pub fn section_generation(gens: &Generations<String>, laws: &Laws, key: &SectionKey) -> u64 {
+    let mut keys = vec![
+        crate::sources::CONNECTORS.to_string(),
+        crate::sources::VAULT.to_string(),
+        crate::sources::MCP.to_string(),
+        crate::sources::SETTINGS.to_string(),
+        crate::sources::ENGINES.to_string(),
+        crate::skills::LIBRARY.to_string(),
+        crate::sources::role(&key.role),
+    ];
+    if let Some(project) = &key.project {
+        keys.push(crate::sources::project(project));
+    }
+    keys.iter().fold(laws.generation(), |sum, key| {
+        sum.wrapping_add(gens.get(key))
+    })
+}
+
+/// The section of the tools `agent` is offered (its role's, on its project and node), from the cache while its sources
+/// have not moved.
+pub fn section(app: &App, agent: &Agent) -> Arc<Section> {
+    let key = SectionKey {
+        role: agent.role.clone(),
+        project: crate::projects::project_of(app, agent.cid),
+        node: app.nodes.owner_of_cid(agent.cid).map(|n| n.id),
+    };
+    app.tool_sections.get(
+        &key,
+        || section_generation(&app.generations, app.laws, &key),
+        || build_section(app, &key),
+    )
+}
+
+/// Builds the section of `key` from the stores: the same specs `specs_for_agent` offered before the cache.
+fn build_section(app: &App, key: &SectionKey) -> Section {
+    let project = key.project.as_deref();
+    let mut tools = specs_for(app, &key.role, project);
     // A project's maintenance and environment tools are offered only where they apply: the maintenance tools on a
     // project in maintenance, the environment tools on one that has environments.
-    let project = crate::projects::project_of(app, agent.cid).and_then(|id| app.projects.get(&id));
-    let maintained = project.as_ref().is_some_and(|p| p.in_maintenance());
-    let has_envs = project
-        .as_ref()
-        .is_some_and(|p| !crate::environments::list(app, &p.id).is_empty());
-    specs.retain(|spec| {
+    let found = project.and_then(|id| app.projects.get(id));
+    let maintained = found.as_ref().is_some_and(|p| p.in_maintenance());
+    let has_envs = project.is_some_and(|id| !crate::environments::list(app, id).is_empty());
+    tools.retain(|spec| {
         (maintained || !crate::maintenance::TOOLS.contains(&spec.name.as_str()))
             && (has_envs || !crate::environments::TOOLS.contains(&spec.name.as_str()))
     });
     // The engines offered are the owner's enabled ones: the built-in ones in `engines_enabled`, then the
     // instances the owner added (`engine_instances.rs`).
     let enabled = enabled_engines(app);
-    for spec in specs.iter_mut().filter(|spec| spec.name == "code_engine") {
+    for spec in tools.iter_mut().filter(|spec| spec.name == "code_engine") {
         restrict_engines(&mut spec.input_schema, &enabled);
     }
+    Section {
+        tools,
+        mcp: crate::mcp::specs_for(app, &key.role, key.node.as_deref(), project),
+        skills: crate::skills::agent_tools::prompt_section(app, &key.role, project),
+    }
+}
+
+/// The tool specs agent `agent` is offered: its role's, plus the library tools it may use.
+pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
+    with_library(app, agent, &section(app, agent))
+}
+
+/// The tools of `agent` from its `section`: the section's role tools, then the library tools it may use (per agent, so
+/// not cached), then the MCP tools.
+pub fn with_library(app: &App, agent: &Agent, section: &Section) -> Vec<ToolSpec> {
+    let mut specs = section.tools.clone();
+    specs.extend(crate::library::specs_for(app, agent.cid));
+    specs.extend(section.mcp.iter().cloned());
     specs
 }
 
@@ -1537,5 +1648,170 @@ mod tests {
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");
         }
+    }
+
+    /// The sources a section is built from, as the tests move them.
+    struct Sources {
+        gens: Generations<String>,
+        laws: Laws,
+    }
+
+    impl Sources {
+        fn new() -> Sources {
+            Sources {
+                gens: Generations::new(),
+                laws: Laws::builtin(),
+            }
+        }
+    }
+
+    /// The section every test reads: builder on project `p1`, running on node `n1`.
+    fn section_key() -> SectionKey {
+        SectionKey {
+            role: "builder".into(),
+            project: Some("p1".into()),
+            node: Some("n1".into()),
+        }
+    }
+
+    fn empty_section() -> Section {
+        Section {
+            tools: Vec::new(),
+            mcp: Vec::new(),
+            skills: None,
+        }
+    }
+
+    /// Reads the section of `key` through `sections` now; true when it was built rather than answered from the cache.
+    fn builds_on_read(sections: &Sections, src: &Sources, key: &SectionKey) -> bool {
+        let before = sections.builds();
+        sections.get(
+            key,
+            || section_generation(&src.gens, &src.laws, key),
+            empty_section,
+        );
+        sections.builds() > before
+    }
+
+    /// A section read once is answered from the cache until a change to one of its sources; that change rebuilds it
+    /// once, and the read after it is answered from the new build.
+    fn a_change_rebuilds_the_section(change: impl FnOnce(&Sources)) {
+        let src = Sources::new();
+        let sections = Sections::new();
+        let key = section_key();
+        assert!(
+            builds_on_read(&sections, &src, &key),
+            "the first read builds"
+        );
+        assert!(
+            !builds_on_read(&sections, &src, &key),
+            "nothing changed: no build"
+        );
+        change(&src);
+        assert!(
+            builds_on_read(&sections, &src, &key),
+            "the change rebuilds it"
+        );
+        assert!(
+            !builds_on_read(&sections, &src, &key),
+            "the next read is cached"
+        );
+    }
+
+    #[test]
+    fn a_section_is_built_once_while_its_sources_do_not_move() {
+        let src = Sources::new();
+        let sections = Sections::new();
+        let key = section_key();
+        for _ in 0..3 {
+            sections.get(
+                &key,
+                || section_generation(&src.gens, &src.laws, &key),
+                empty_section,
+            );
+        }
+        assert_eq!(sections.builds(), 1);
+        // Another session's section is built apart.
+        let other = SectionKey {
+            role: "reviewer".into(),
+            ..section_key()
+        };
+        assert!(builds_on_read(&sections, &src, &other));
+    }
+
+    #[test]
+    fn a_change_to_the_role_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::role("builder"));
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_project_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::project("p1"));
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_connectors_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::CONNECTORS.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_vault_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::VAULT.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_mcp_servers_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::MCP.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_settings_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::SETTINGS.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_engines_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::ENGINES.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_a_skill_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::skills::LIBRARY.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_laws_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| src.laws.set_strict(true));
+    }
+
+    #[test]
+    fn a_change_to_what_a_section_is_not_built_from_leaves_it_cached() {
+        let src = Sources::new();
+        let sections = Sections::new();
+        let key = section_key();
+        assert!(builds_on_read(&sections, &src, &key));
+        src.gens.bump(&crate::sources::role("reviewer"));
+        src.gens.bump(&crate::sources::project("p2"));
+        src.gens.bump(&crate::skills::skill_key("pdf-forms"));
+        assert!(
+            !builds_on_read(&sections, &src, &key),
+            "another role, project or skill leaves the section cached"
+        );
     }
 }

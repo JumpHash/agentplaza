@@ -430,7 +430,7 @@ fn commit(
         };
         let skill = skills.store().create(&new, &nv, OWNER, now)?;
         bus.publish("skill", &json!({ "id": skill.id, "action": "import" }));
-        out.push(summary(skills.store(), &skill)?);
+        out.push(skills.summary(&skill.id)?);
     }
     Ok(json!({"skills": out}))
 }
@@ -457,35 +457,6 @@ fn unique_id(store: &dyn SkillStore, title: &str) -> Result<String, Fail> {
         ));
     }
     Ok(candidate)
-}
-
-/// A skill as the list routes show it (the same fields as SkillSummary in apps/web/src/api.ts).
-fn summary(store: &dyn SkillStore, skill: &Skill) -> Result<Value, Fail> {
-    let versions = store.versions(&skill.id)?;
-    let score = skill
-        .active_version
-        .and_then(|live| versions.iter().find(|v| v.version == live))
-        .map(|v| v.score);
-    let best = versions
-        .iter()
-        .max_by_key(|v| (v.score, v.version))
-        .map(|v| v.version);
-    Ok(json!({
-        "id": skill.id,
-        "name": skill.name,
-        "title": skill.title,
-        "description": skill.description,
-        "tags": skill.tags,
-        "bindings": skill.bindings,
-        "active_version": skill.active_version,
-        "latest_version": skill.latest_version,
-        "best_version": best,
-        "score": score,
-        "source": skill.source,
-        "created_ms": skill.created_ms,
-        "updated_ms": skill.updated_ms,
-        "archived_ms": skill.archived_ms,
-    }))
 }
 
 // ---- GitHub check and update ----
@@ -902,9 +873,10 @@ mod tests {
     }
 
     fn library() -> Skills {
-        Skills::new(
+        Skills::with_generations(
             Arc::new(DbSkills::for_tests()),
             Arc::new(TestBlobs::default()),
+            Arc::default(),
         )
     }
 

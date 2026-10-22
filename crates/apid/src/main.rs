@@ -92,6 +92,7 @@ mod shares;
 mod shutdown;
 mod skills;
 mod sleep;
+mod sources;
 mod spawned;
 mod state;
 mod stations;

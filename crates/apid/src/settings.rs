@@ -4,8 +4,9 @@
 //! `// contract` — keep them.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use apz_cache::Generations;
 use apz_gateway::ModelRef;
 use apz_http::{Response, RouteDoc, Router};
 use apz_plaza::social::{self, Prune};
@@ -496,6 +497,8 @@ pub fn def() -> &'static apz_store::TableDef {
 pub struct Store {
     dev_models: bool,
     inner: Mutex<Settings>,
+    /// The hub's generations: a save bumps `settings`.
+    gens: Arc<Generations<String>>,
 }
 
 /// The model in canonical `provider/model[@effort]` form.
@@ -526,7 +529,14 @@ impl Store {
         Self {
             dev_models,
             inner: Mutex::new(fresh(dev_models)),
+            gens: Arc::default(),
         }
+    }
+
+    /// Counts this store's saves in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
     }
 
     /// Replaces the settings with what the store holds (at start; the defaults when nothing is stored). A stored
@@ -580,7 +590,9 @@ impl Store {
         self.check(&new)?;
         let mut guard = self.lock();
         new.board_pauses = guard.board_pauses.clone();
-        Ok(install(&mut guard, new))
+        let saved = install(&mut guard, new);
+        crate::sources::bump(&self.gens, crate::sources::SETTINGS);
+        Ok(saved)
     }
 
     /// Pauses (`on`) or resumes the deliveries of one project's board, or of the whole board (`project`
@@ -604,6 +616,7 @@ impl Store {
         }
         let changed = next.board_pauses != before;
         let saved = install(&mut guard, next);
+        crate::sources::bump(&self.gens, crate::sources::SETTINGS);
         Ok((changed, saved.board_pauses))
     }
 
@@ -1812,5 +1825,17 @@ mod tests {
             saved, never,
             "0 (agents never sleep) and no never-roles are kept"
         );
+    }
+
+    #[test]
+    fn a_save_moves_the_settings_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::new(false).with_generations(std::sync::Arc::clone(&gens));
+        let key = crate::sources::SETTINGS.to_string();
+        store.put(store.get()).expect("put");
+        let saved = gens.get(&key);
+        assert!(saved > 0, "a put moves the settings");
+        store.set_board_pause(None, true).expect("pause");
+        assert!(gens.get(&key) > saved, "a board pause moves the settings");
     }
 }
