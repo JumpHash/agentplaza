@@ -39,6 +39,7 @@ use crate::console::boot;
 use crate::console::client::{self, Client};
 use crate::console::events;
 use crate::console::rich;
+use crate::console::roles;
 use crate::console::shell;
 use crate::console::ui::{self, Tone};
 
@@ -727,8 +728,8 @@ pub(super) fn selected_project(st: &State) -> Option<&ProjectRow> {
     }
 }
 
-/// The breadcrumb's parts: the project's title (or "Plaza" when no project names the workspace), the agent's or
-/// repo's name, and the branch (a repo's ref, or "workspace" for an agent's working copy). A conversation on screen
+/// The breadcrumb's parts: the project's title (or "Plaza" when no project names the workspace), the agent's label
+/// or repo's name, and the branch (a repo's ref, or "workspace" for an agent's working copy). A conversation on screen
 /// is "Conversations", its title, and the project it started, if it did.
 pub(super) fn crumbs(st: &State) -> (String, String, String) {
     if let Some(conv) = &st.conversation {
@@ -748,16 +749,9 @@ pub(super) fn crumbs(st: &State) -> (String, String, String) {
         .filter(|t: &String| !t.is_empty())
         .unwrap_or_else(|| "Plaza".to_string());
     match st.ide.workspace.as_ref() {
-        Some(WorkspaceId::Agent(_)) => {
+        Some(WorkspaceId::Agent(cid)) => {
             let name = selected_agent(st)
-                .map(|a| a.name.clone())
-                .unwrap_or_else(|| {
-                    st.ide
-                        .workspace
-                        .as_ref()
-                        .map(WorkspaceId::to_string)
-                        .unwrap_or_default()
-                });
+                .map_or_else(|| roles::agent_label("", *cid), |a| a.label.clone());
             (project, name, "workspace".to_string())
         }
         Some(WorkspaceId::Repo { name, git_ref }) => (project, name.clone(), git_ref.clone()),
@@ -1041,11 +1035,15 @@ pub(super) fn working(st: &State) -> bool {
     current_info(st).is_some_and(|w| w.status.contains("work"))
 }
 
-pub(super) fn choice(w: &WorkspaceInfo) -> Choice {
-    let mut name = if w.name.is_empty() {
-        w.id.clone()
-    } else {
-        w.name.clone()
+pub(super) fn choice(w: &WorkspaceInfo, roster: &[AgentRow]) -> Choice {
+    let mut name = match WorkspaceId::from_str(&w.id) {
+        // An agent is named by its label from the roster (a listing carries no role), else by its cid.
+        Ok(WorkspaceId::Agent(cid)) => roster
+            .iter()
+            .find(|a| a.cid == cid)
+            .map_or_else(|| roles::agent_label("", cid), |a| a.label.clone()),
+        _ if w.name.is_empty() => w.id.clone(),
+        _ => w.name.clone(),
     };
     // A repo workspace is shown on the branch it serves.
     if let Ok(WorkspaceId::Repo { git_ref, .. }) = WorkspaceId::from_str(&w.id) {
@@ -1957,7 +1955,7 @@ pub(super) fn right_panel(st: &State, width: f32) -> Element<'_, Msg> {
     let (body, padding) = match &st.conversation {
         Some(conv) => {
             let roster: Vec<(u64, String)> =
-                st.roster.iter().map(|a| (a.cid, a.name.clone())).collect();
+                st.roster.iter().map(|a| (a.cid, a.label.clone())).collect();
             (
                 ide_conversation::draft(conv, &roster, now_ms(), Msg::Conversation, Msg::Shell),
                 Padding {
@@ -1989,8 +1987,7 @@ pub(super) fn centre_column(st: &State) -> Element<'_, Msg> {
             .as_ref()
             .and_then(|c| c["cid"].as_u64())
             .and_then(|cid| st.roster.iter().find(|a| a.cid == cid))
-            .map(|a| a.name.clone())
-            .filter(|n| !n.trim().is_empty())
+            .map(|a| a.label.clone())
             .unwrap_or_else(|| "The orchestrator".to_string());
         return ide_conversation::chat(conv, who, now_ms(), Msg::Conversation);
     }

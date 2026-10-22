@@ -20,9 +20,9 @@ mod tests {
         };
         assert!(ready(&[]));
         assert!(
-            ready(&[row(Need::Garage, State::Missing, false)]),
-            "Garage is optional"
+            ready(&[row(Need::Hypervisor, State::Missing, false)]),
+            "the hypervisor is optional"
         );
-        assert!(!ready(&[row(Need::Docker, State::Missing, true)]));
+        assert!(!ready(&[row(Need::Services, State::Missing, true)]));
     }
 }

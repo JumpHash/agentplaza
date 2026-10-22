@@ -25,7 +25,7 @@ use super::workstations_files as files;
 use super::workstations_live as live;
 use super::workstations_rec as rec;
 use super::workstations_vms as vms;
-use crate::console::{Ctx, client, events, ui};
+use crate::console::{Ctx, client, events, roles, ui};
 use crate::theme;
 
 /// The longest name, and the longest join-code label, in characters (the hub's limit).
@@ -212,12 +212,12 @@ pub struct AuditRow {
     pub kind: String,
 }
 
-/// An agent's CID and name (`GET /v1/agents`), for the leases and the audit.
+/// An agent's CID and role (`GET /v1/agents`), for its label in the leases and the audit.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct AgentName {
+pub struct AgentRole {
     pub cid: u64,
-    pub name: String,
+    pub role: String,
 }
 
 /// The reply to a settings PUT: the stored settings, and whether they reached the workstation.
@@ -307,7 +307,7 @@ pub enum Dialog {
         id: String,
         name: String,
     },
-    /// Release a lease of the open workstation: the agent's name for the words.
+    /// Release a lease of the open workstation: the agent's label for the words.
     ConfirmRelease {
         lease: String,
         who: String,
@@ -329,8 +329,8 @@ pub enum Dialog {
 pub struct State {
     pub stations: Load<Vec<Station>>,
     pub codes: Load<Vec<Code>>,
-    /// The agents' names by CID.
-    names: HashMap<u64, String>,
+    /// The agents' labels by CID.
+    labels: HashMap<u64, String>,
     /// The list's thumbnails of each station's screen, by station id; a station with none has no entry.
     thumbs: HashMap<String, image::Handle>,
     /// When the thumbnails were last taken.
@@ -365,7 +365,7 @@ pub enum Msg {
     Go(Id),
     StationsLoaded(Result<Vec<Station>, String>),
     CodesLoaded(Result<Vec<Code>, String>),
-    AgentsLoaded(Result<Vec<AgentName>, String>),
+    AgentsLoaded(Result<Vec<AgentRole>, String>),
     AuditLoaded(String, Result<Vec<AuditRow>, String>),
     /// A bus frame: the station and lease frames reload the screen.
     Event(events::Event),
@@ -435,7 +435,7 @@ pub fn leave(state: &mut State) {
 }
 
 /// Loads the screen's data (on open, on every poll tick, and on a bus frame): the workstations, the join
-/// codes and the agents' names, and the open workstation's audit.
+/// codes and the agents' labels, and the open workstation's audit.
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let (stations, codes, agents) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
     let mut tasks = vec![
@@ -448,7 +448,7 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
             Msg::CodesLoaded,
         ),
         client::task(
-            move || agents.get::<Vec<AgentName>>("/v1/agents"),
+            move || agents.get::<Vec<AgentRole>>("/v1/agents"),
             Msg::AgentsLoaded,
         ),
     ];
@@ -603,7 +603,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::AgentsLoaded(Ok(list)) => {
-            state.names = list.into_iter().map(|a| (a.cid, a.name)).collect();
+            state.labels = list
+                .into_iter()
+                .map(|a| (a.cid, roles::agent_label(&a.role, a.cid)))
+                .collect();
             Task::none()
         }
         Msg::AgentsLoaded(Err(_)) => Task::none(),
@@ -775,7 +778,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let Some(found) = station.leases.iter().find(|l| l.id == lease) else {
                 return Task::none();
             };
-            let who = agent_name(state, found.agent);
+            let who = agent_label(state, found.agent);
             state.dialog = Some(Dialog::ConfirmRelease { lease, who });
             state.error = None;
             Task::none()
@@ -1446,7 +1449,7 @@ fn station_page<'a>(
     ));
     parts.push(ui::card(
         "Recordings",
-        rec::station_view(&state.rec, &state.names).map(Msg::Rec),
+        rec::station_view(&state.rec, &state.labels).map(Msg::Rec),
     ));
     parts.push(ui::card("Settings", settings_view(state, s)));
     parts.push(flush_card("Audit", audit_view(state)));
@@ -1582,7 +1585,7 @@ fn leases_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
                 _ => ui::faint("—").into(),
             };
             vec![
-                mono_text(agent_name(state, l.agent)),
+                mono_text(agent_label(state, l.agent)),
                 task,
                 ui::faint(lease_kind_label(&l.kind)).into(),
                 ui::badge(&label, tone),
@@ -1748,7 +1751,7 @@ fn audit_view(state: &State) -> Element<'_, Msg> {
                 .map(|r| {
                     let agent = r
                         .agent
-                        .map(|cid| agent_name(state, cid))
+                        .map(|cid| agent_label(state, cid))
                         .unwrap_or_else(|| "—".to_string());
                     vec![
                         ui::faint(ago(r.at_ms)).into(),
@@ -2013,13 +2016,13 @@ fn boxed(_: &Theme) -> container::Style {
     }
 }
 
-/// The agent's name for a CID, or "agent N" when the list has none.
-fn agent_name(state: &State, cid: u64) -> String {
+/// The agent's label for a CID, or "agent #N" when the list does not have it.
+fn agent_label(state: &State, cid: u64) -> String {
     state
-        .names
+        .labels
         .get(&cid)
         .cloned()
-        .unwrap_or_else(|| format!("agent {cid}"))
+        .unwrap_or_else(|| roles::agent_label("", cid))
 }
 
 // ---- View-model helpers (pure, tested below) ----

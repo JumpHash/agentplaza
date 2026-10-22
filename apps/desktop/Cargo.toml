@@ -31,7 +31,7 @@ iced = { version = "0.14", default-features = false, features = [
     "canvas",
     # The IDE's editor: syntax highlighting in `text_editor` (iced_highlighter, syntect).
     "highlighter",
-    # The console's icons (the web console's lucide set) and agent portraits.
+    # The console's icons (the web console's lucide set) and images.
     "svg",
     "image",
     "markdown",

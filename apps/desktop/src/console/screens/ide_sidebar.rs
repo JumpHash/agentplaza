@@ -1,5 +1,5 @@
 //! The IDE's left sidebar: a search field, the owner's conversations with the orchestrator, the projects as
-//! collapsible groups of agents and repos (Coral's grouping), each agent's status dot, name, current task and unread
+//! collapsible groups of agents and repos (Coral's grouping), each agent's status dot, label, current task and unread
 //! count, a hover card with what the agent is, and "+ New conversation" and "+ New agent" at the foot. In project
 //! mode (the IDE opened under a project) it is that project's: its head with the way to its tasks, board, work and
 //! settings, its conversation, and its agents and repo only. Rows come from the roster `ide.rs` loads (`ide_model`
@@ -26,10 +26,10 @@ use serde_json::Value;
 /// How many conversations the sidebar lists.
 const CONVERSATIONS: usize = 6;
 
-/// The status dot's diameter, and the rule drawn through a finished agent's name.
+/// The status dot's diameter, and the rule drawn through a finished agent's label.
 const DOT: f32 = 9.0;
 
-/// The agents the search field keeps: each word must appear in the name, the role or the current task.
+/// The agents the search field keeps: each word must appear in the label, the role or the current task.
 fn matching(st: &State) -> Vec<AgentRow> {
     if st.sidebar_query.trim().is_empty() {
         return st.roster.clone();
@@ -40,7 +40,7 @@ fn matching(st: &State) -> Vec<AgentRow> {
         .map(|a| {
             format!(
                 "{} {} {}",
-                a.name,
+                a.label,
                 a.role_label,
                 a.task.as_deref().unwrap_or("")
             )
@@ -548,9 +548,9 @@ pub fn dot_mark<'a>(dot: Dot) -> Element<'a, Msg> {
     }
 }
 
-/// A name with a rule through its middle (iced has no strikethrough): a finished agent's name.
-fn struck(name: String) -> Element<'static, Msg> {
-    // The rule is one pixel tall, centred on the name: only the line takes the colour, not the whole stacked row.
+/// A label with a rule through its middle (iced has no strikethrough): a finished agent's label.
+fn struck(label: String) -> Element<'static, Msg> {
+    // The rule is one pixel tall, centred on the label: only the line takes the colour, not the whole stacked row.
     let line = container(Space::new().width(Length::Fill).height(Length::Fixed(1.0))).style(|_| {
         container::Style {
             background: Some(theme::palette().ink_3.into()),
@@ -563,7 +563,7 @@ fn struck(name: String) -> Element<'static, Msg> {
         .align_y(Alignment::Center);
     Stack::new()
         .push(
-            text(name)
+            text(label)
                 .font(Font {
                     weight: Weight::Medium,
                     ..theme::SANS
@@ -575,7 +575,7 @@ fn struck(name: String) -> Element<'static, Msg> {
         .into()
 }
 
-/// One agent: its dot, name, unread count, and its current task in italics. The row opens the agent's workspace
+/// One agent: its dot, label, unread count, and its current task in italics. The row opens the agent's workspace
 /// when it has one; an agent with no VM has no workspace to open. The hover card says what it is.
 fn agent_row(
     st: &State,
@@ -585,22 +585,26 @@ fn agent_row(
 ) -> Element<'static, Msg> {
     let dot = ide_model::dot(&agent.status, last);
     let id = apz_ide::WorkspaceId::Agent(agent.cid).to_string();
-    let listed = st.workspaces.iter().find(|w| w.id == id).map(ide::choice);
+    let listed = st
+        .workspaces
+        .iter()
+        .find(|w| w.id == id)
+        .map(|w| ide::choice(w, &st.roster));
     let selected = st
         .ide
         .workspace
         .as_ref()
         .is_some_and(|ws| ws.to_string() == id);
-    let name: Element<'static, Msg> = if dot == Dot::Done {
-        struck(agent.name.clone())
+    let label: Element<'static, Msg> = if dot == Dot::Done {
+        struck(agent.label.clone())
     } else {
-        text(agent.name.clone())
+        text(agent.label.clone())
             .font(theme::SANS)
             .size(theme::TYPE_UI)
             .color(theme::palette().ink)
             .into()
     };
-    let mut top = row![dot_mark(dot), name]
+    let mut top = row![dot_mark(dot), label]
         .spacing(8)
         .align_y(Alignment::Center);
     top = top.push(Space::new().width(Length::Fill));
@@ -646,7 +650,7 @@ fn repo_row(st: &State, w: &super::ide::WorkspaceInfo) -> Element<'static, Msg> 
         .workspace
         .as_ref()
         .is_some_and(|ws| ws.to_string() == w.id);
-    let label = ide::choice(w).label;
+    let label = ide::choice(w, &st.roster).label;
     let short = label
         .split(" · ")
         .nth(1)
@@ -663,7 +667,7 @@ fn repo_row(st: &State, w: &super::ide::WorkspaceInfo) -> Element<'static, Msg> 
     .width(Length::Fill)
     .padding([6, 8])
     .style(theme::register_row(selected))
-    .on_press(Msg::Pick(ide::choice(w)))
+    .on_press(Msg::Pick(ide::choice(w, &st.roster)))
     .into()
 }
 
@@ -703,7 +707,7 @@ fn station_row(st: &State, w: &super::ide::WorkspaceInfo) -> Element<'static, Ms
         .width(Length::Fill)
         .padding([6, 8])
         .style(theme::register_row(selected))
-        .on_press(Msg::Pick(ide::choice(w)))
+        .on_press(Msg::Pick(ide::choice(w, &st.roster)))
         .into()
 }
 
@@ -721,7 +725,7 @@ fn hover_card(agent: &AgentRow, last: Option<&str>) -> Element<'static, Msg> {
     };
     let outcome = last.map(|o| format!("Last work: {o}")).unwrap_or_default();
     let body = column![
-        ui::mono(agent.name.clone(), 12.5, p.ink),
+        ui::mono(agent.label.clone(), 12.5, p.ink),
         ui::faint(format!("Role: {}", agent.role_label)),
         ui::faint(format!("Model: {model}")),
         ui::faint(format!("Now: {now}")),
@@ -784,18 +788,9 @@ pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     st.stations = roster.stations;
                     st.roster_loaded = true;
                     st.roster_error = None;
-                    // The board names its authors from this roster, so a post reads by name, not by cid.
-                    st.board.adopt_names(st.roster.iter().map(|a| {
-                        let name = a.name.trim();
-                        (
-                            a.cid,
-                            if name.is_empty() {
-                                "Unnamed".to_string()
-                            } else {
-                                name.to_string()
-                            },
-                        )
-                    }));
+                    // The board names its authors from this roster, so a post reads by label, not by cid.
+                    st.board
+                        .adopt_names(st.roster.iter().map(|a| (a.cid, a.label.clone())));
                 }
                 Err(e) => st.roster_error = Some(e),
             }

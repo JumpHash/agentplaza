@@ -16,9 +16,9 @@ use serde_json::{Value, json};
 
 use super::history::{RepoRow, size_text};
 use super::history_ops;
-use crate::console::Ctx;
 use crate::console::client::{self, Client, enc};
 use crate::console::ui::{self, Kind, Tone};
+use crate::console::{Ctx, roles};
 use crate::theme;
 
 /// The most lines of a file the viewer draws (the web's cap).
@@ -135,12 +135,12 @@ struct Where {
     hits: Vec<Hit>,
 }
 
-/// `GET /v1/agents`: an agent's number and name.
+/// `GET /v1/agents`: an agent's number and role, for its label.
 #[derive(Debug, Deserialize)]
-struct AgentName {
+struct AgentRole {
     cid: u64,
     #[serde(default)]
-    name: String,
+    role: String,
 }
 
 /// A run of lines one change, source and actor wrote in a row (the blame gutter shows each run once).
@@ -200,8 +200,8 @@ pub struct Data {
     /// Trace: the file traced (the first file while none is picked), and its runs.
     trace: String,
     runs: Vec<Run>,
-    /// The agents' names by cid; an agent without a name shows as `agent N`.
-    names: BTreeMap<u64, String>,
+    /// The agents' labels by cid; an agent the list does not have shows as `agent #N`.
+    labels: BTreeMap<u64, String>,
 }
 
 // ---- Navigation and state --------------------------------------------------------------------------------
@@ -319,7 +319,7 @@ pub fn fetch(
             if head == "root" {
                 return Ok(data);
             }
-            data.names = names(client);
+            data.labels = labels(client);
             data.files = listing(client, head)?;
             if !want.file.is_empty() && data.files.iter().any(|f| f.path == want.file) {
                 data.file = want.file.clone();
@@ -335,7 +335,7 @@ pub fn fetch(
             }
         }
         View::Trace => {
-            data.names = names(client);
+            data.labels = labels(client);
             if head != "root" {
                 data.files = listing(client, head).unwrap_or_default();
             }
@@ -375,14 +375,13 @@ fn read_text(client: &Client, rev: &str, path: &str) -> Option<String> {
     String::from_utf8(reply.body).ok()
 }
 
-/// The agents' names: an agent without one shows as `agent N`.
-fn names(client: &Client) -> BTreeMap<u64, String> {
+/// The agents' labels: an agent the list does not have shows as `agent #N`.
+fn labels(client: &Client) -> BTreeMap<u64, String> {
     client
-        .get::<Vec<AgentName>>("/v1/agents")
+        .get::<Vec<AgentRole>>("/v1/agents")
         .unwrap_or_default()
         .into_iter()
-        .filter(|a| !a.name.trim().is_empty())
-        .map(|a| (a.cid, a.name))
+        .map(|a| (a.cid, roles::agent_label(&a.role, a.cid)))
         .collect()
 }
 
@@ -920,7 +919,7 @@ fn viewer<'a>(state: &'a State, data: &'a Data) -> Element<'a, Msg> {
             format!(
                 "{} · {}{model}",
                 run.change,
-                name_of(&data.names, run.cid, &run.kind)
+                author_of(&data.labels, run.cid, &run.kind)
             ),
         );
         for n in run.from..=run.to {
@@ -993,14 +992,14 @@ fn viewer<'a>(state: &'a State, data: &'a Data) -> Element<'a, Msg> {
     column(out).spacing(8).into()
 }
 
-/// A line's author as the web names it: the agent's name, or the kind when no agent wrote it.
-fn name_of(names: &BTreeMap<u64, String>, cid: Option<u64>, kind: &str) -> String {
+/// A line's author as the web names it: the agent's label, or the kind when no agent wrote it.
+fn author_of(labels: &BTreeMap<u64, String>, cid: Option<u64>, kind: &str) -> String {
     match cid {
         None => kind.to_string(),
-        Some(c) => names
+        Some(c) => labels
             .get(&c)
             .cloned()
-            .unwrap_or_else(|| format!("agent {c}")),
+            .unwrap_or_else(|| roles::agent_label("", c)),
     }
 }
 
@@ -1030,7 +1029,7 @@ fn trace_body<'a>(data: &'a Data) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = if data.runs.is_empty() {
         hint("No lines in this file.")
     } else {
-        runs_table(&data.names, &data.runs)
+        runs_table(&data.labels, &data.runs)
     };
     ui::card("Agent trace", column![top, body].spacing(12).into())
 }
@@ -1048,7 +1047,7 @@ fn field<'a>(label: &str, control: Element<'a, Msg>, hint_text: &str) -> Element
 }
 
 /// The runs as the web's table: the lines, who wrote them, the change, the revision and the turn.
-fn runs_table<'a>(names: &BTreeMap<u64, String>, runs: &[Run]) -> Element<'a, Msg> {
+fn runs_table<'a>(labels: &BTreeMap<u64, String>, runs: &[Run]) -> Element<'a, Msg> {
     let p = theme::palette();
     let widths = [
         Length::Shrink,
@@ -1074,7 +1073,7 @@ fn runs_table<'a>(names: &BTreeMap<u64, String>, runs: &[Run]) -> Element<'a, Ms
     for r in runs {
         let items: Vec<Element<'a, Msg>> = vec![
             ui::mono(format!("L{}–{}", r.from, r.to), 12.0, p.ink).into(),
-            written_by(names, r),
+            written_by(labels, r),
             ui::mono(r.change.clone(), 12.0, p.ink_2).into(),
             ui::mono(r.source.clone(), 12.0, p.ink_2).into(),
             ui::faint(r.turn.map_or("—".to_string(), |t| format!("turn {t}"))).into(),
@@ -1099,11 +1098,11 @@ fn cells<'a>(widths: &[Length; 5], items: Vec<Element<'a, Msg>>) -> Element<'a, 
 }
 
 /// Who wrote a run: its owner, its agent with the model, or its kind.
-fn written_by<'a>(names: &BTreeMap<u64, String>, r: &Run) -> Element<'a, Msg> {
+fn written_by<'a>(labels: &BTreeMap<u64, String>, r: &Run) -> Element<'a, Msg> {
     let (name, badge, tone) = match r.kind.as_str() {
         "owner" => ("Owner".to_string(), "human".to_string(), Tone::Muted),
         "agent" => (
-            name_of(names, r.cid, "agent"),
+            author_of(labels, r.cid, "agent"),
             r.model
                 .as_ref()
                 .map_or("ai".to_string(), |m| format!("ai · {m}")),

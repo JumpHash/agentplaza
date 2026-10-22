@@ -29,7 +29,7 @@ use crate::console::engine::kit;
 use crate::console::engine::machine_stage::View;
 use crate::console::floor_engine::EngineProgram;
 use crate::console::ui::{Kind, Tone};
-use crate::console::{Ctx, client, render_card, ui};
+use crate::console::{Ctx, client, render_card, roles, ui};
 use crate::theme::{SANS, SANS_SEMIBOLD};
 
 /// A machine's row in the topology, and the topology's fleet column.
@@ -162,7 +162,7 @@ const DEFAULT_SORT: Sort = Sort {
 struct Data {
     overview: Option<Overview>,
     machines: Vec<Machine>,
-    /// Agents by CID, for the names of the VMs.
+    /// Agents by CID, for the labels of the VMs.
     agents: HashMap<u64, AgentRef>,
 }
 
@@ -175,7 +175,7 @@ struct Overview {
 
 #[derive(Debug, Clone)]
 struct AgentRef {
-    name: String,
+    label: String,
     role_label: String,
 }
 
@@ -987,7 +987,7 @@ fn gpu_line(m: &Machine, name: &str, vendor: &str, memory_mib: Option<f64>) -> S
     }
 }
 
-/// The machine's agents' VMs: each agent's name opens the agent.
+/// The machine's agents' VMs: each agent's label opens the agent.
 fn agent_list<'a>(data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
     let Some(plaza) = m.stats.as_ref().and_then(|s| s.plaza.as_ref()) else {
         return ui::faint("This node doesn't report its agents yet.").into();
@@ -1001,10 +1001,9 @@ fn agent_list<'a>(data: &'a Data, m: &'a Machine) -> Element<'a, Msg> {
         .map(|v| {
             let agent = v.cid.and_then(|c| data.agents.get(&c));
             let name = match (agent, v.cid) {
-                (Some(a), _) if a.name.trim().is_empty() => "Unnamed".to_string(),
-                (Some(a), _) => a.name.clone(),
+                (Some(a), _) => a.label.clone(),
                 (None, None) => "Unattached".to_string(),
-                (None, Some(c)) => format!("CID {c}"),
+                (None, Some(c)) => roles::agent_label("", c),
             };
             let role = agent
                 .map(|a| a.role_label.clone())
@@ -2331,10 +2330,9 @@ fn resources<'a>(state: &'a State, data: &'a Data, m: &'a Machine) -> Element<'a
         for v in &vms {
             let agent = v.cid.and_then(|c| data.agents.get(&c));
             let name = match (agent, v.cid) {
-                (Some(a), _) if a.name.trim().is_empty() => "Unnamed".to_string(),
-                (Some(a), _) => a.name.clone(),
+                (Some(a), _) => a.label.clone(),
                 (None, None) => "Unattached".to_string(),
-                (None, Some(c)) => format!("CID {c}"),
+                (None, Some(c)) => roles::agent_label("", c),
             };
             let role = agent
                 .map(|a| a.role_label.clone())
@@ -2935,7 +2933,7 @@ fn parse_agent(a: &Value) -> Option<(u64, AgentRef)> {
     Some((
         cid,
         AgentRef {
-            name: text(a, "name"),
+            label: roles::agent_label_of(a),
             role_label,
         },
     ))

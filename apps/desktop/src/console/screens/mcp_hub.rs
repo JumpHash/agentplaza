@@ -397,7 +397,7 @@ pub struct AcpSession {
 pub struct EditorSnippets {
     /// Zed's `agent_servers` entry, which opens the hub's default agent.
     pub zed: String,
-    /// The same entry with `--agent <name>`, for one agent the owner names.
+    /// The same entry with `--agent <cid>`, for one agent the owner picks.
     pub zed_agent: String,
     /// The JetBrains ACP settings: a command, then its arguments.
     pub jetbrains: String,
@@ -410,7 +410,7 @@ pub fn editor_snippets() -> EditorSnippets {
     EditorSnippets {
         zed: r#"{"agent_servers": {"AgentPlaza": {"command": "agentplaza", "args": ["acp"]}}}"#
             .to_string(),
-        zed_agent: r#"{"agent_servers": {"AgentPlaza": {"command": "agentplaza", "args": ["acp", "--agent", "<name>"]}}}"#
+        zed_agent: r#"{"agent_servers": {"AgentPlaza": {"command": "agentplaza", "args": ["acp", "--agent", "<cid>"]}}}"#
             .to_string(),
         jetbrains: "Command: agentplaza\nArguments: acp".to_string(),
         neovim: r#"adapters = { acp = { agentplaza = { command = "agentplaza", args = { "acp" } } } }"#
@@ -1644,7 +1644,7 @@ fn editors_card(state: &State) -> Element<'_, Msg> {
     parts.push(snippet(
         "Zed, one agent",
         &snippets.zed_agent,
-        "The same, pinned to one plaza agent. Replace <name> with the agent's name.",
+        "The same, pinned to one plaza agent. Replace <cid> with the agent's CID.",
     ));
     parts.push(snippet(
         "JetBrains IDEs",
@@ -2006,7 +2006,7 @@ mod tests {
         let named: Value = serde_json::from_str(&s.zed_agent).expect("the named block is JSON");
         assert_eq!(
             named["agent_servers"]["AgentPlaza"]["args"],
-            json!(["acp", "--agent", "<name>"])
+            json!(["acp", "--agent", "<cid>"])
         );
     }
 

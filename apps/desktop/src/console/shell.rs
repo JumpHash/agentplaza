@@ -16,7 +16,7 @@ use iced::{
 
 use super::events;
 use super::screens::{Id, NAV, appearance, projects::Tab};
-use super::{Ctx, new_project, scope, toast, ui};
+use super::{Ctx, new_project, roles, scope, toast, ui};
 use crate::theme::SANS;
 use apz_theme::appearance::ModeChoice;
 
@@ -110,7 +110,7 @@ pub struct State {
     pub new_project: Option<new_project::Form>,
     /// More is open in the sidebar (the screens past the first six).
     pub more: bool,
-    /// The sidebar's lists: approvals waiting, tasks, the owner's conversations, and the agents (for names and the
+    /// The sidebar's lists: approvals waiting, tasks, the owner's conversations, and the agents (for their labels and the
     /// live line), from `/v1/approvals`, `/v1/tasks`, `/v1/owner/conversations` and `/v1/agents`.
     pub approvals: Vec<serde_json::Value>,
     pub tasks: Vec<serde_json::Value>,
@@ -807,11 +807,7 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Tasks
             | Id::Task(_)
             | Id::Library
-            | Id::RobotLab
-            | Id::HardwareLab
             | Id::Ide(_)
-            | Id::Society
-            | Id::Conversations
             | Id::Board
             | Id::Treasury
             | Id::Rules
@@ -968,10 +964,7 @@ const MORE: &[(Id, &str, &str)] = &[
     (Id::Tasks, "Tasks", "list-checks"),
     (Id::Metrics, "Metrics", "chart-column"),
     (Id::Library, "Library", "library"),
-    (Id::Society, "Society", "network"),
-    (Id::Conversations, "Conversations", "messages-square"),
     (Id::Board, "Board", "pin"),
-    (Id::Council, "Council", "landmark"),
     (Id::Treasury, "Treasury", "coins"),
     (Id::Rules, "Rules", "scale"),
     (Id::Lab, "Lab", "flask-conical"),
@@ -1586,10 +1579,13 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
             });
             for t in moving.take(6) {
                 let tid = t["id"].as_str().unwrap_or("").to_string();
-                let who = t["agent_cid"]
-                    .as_u64()
-                    .and_then(|cid| state.agents.iter().find(|a| a["cid"].as_u64() == Some(cid)))
-                    .and_then(|a| a["name"].as_str());
+                let who = t["agent_cid"].as_u64().map(|cid| {
+                    state
+                        .agents
+                        .iter()
+                        .find(|a| a["cid"].as_u64() == Some(cid))
+                        .map_or_else(|| roles::agent_label("", cid), roles::agent_label_of)
+                });
                 let updated = t["updated_ms"]
                     .as_u64()
                     .or(t["updated_at"].as_u64())
@@ -1896,8 +1892,6 @@ fn top_bar_title(current: &Id) -> &'static str {
         .map(|e| if e.0 == Id::History { "Weft" } else { e.1 })
         .or_else(|| super::screens::lab::Section::of(current).map(|_| "Lab"))
         .or(match current {
-            Id::RobotLab => Some("Robot lab"),
-            Id::HardwareLab => Some("Hardware lab"),
             Id::Ide(_) => Some("IDE"),
             Id::Artifact(_) => Some("Artifact"),
             _ => None,
@@ -1926,16 +1920,12 @@ fn crumbs(state: &State) -> Vec<String> {
     match &state.current {
         Id::Project(id) | Id::ProjectTab(id, _) => vec![scope::title_in(&state.projects, id)],
         Id::Agent(cid) => {
-            let name = state
+            let label = state
                 .agents
                 .iter()
                 .find(|a| a["cid"].as_u64() == Some(*cid))
-                .and_then(|a| a["name"].as_str());
-            vec![
-                "Agents".into(),
-                name.map(str::to_string)
-                    .unwrap_or_else(|| format!("agent {cid}")),
-            ]
+                .map_or_else(|| roles::agent_label("", *cid), roles::agent_label_of);
+            vec!["Agents".into(), label]
         }
         Id::Task(id) => vec!["Tasks".into(), id.clone()],
         other => vec![top_bar_title(other).to_string()],
@@ -1949,7 +1939,7 @@ fn live_items(state: &State) -> Vec<(String, bool, Id)> {
         .iter()
         .filter(|a| a["status"] == "working")
         .map(|a| {
-            let name = a["name"].as_str().unwrap_or("agent");
+            let name = roles::agent_label_of(a);
             let stage = a["step"]["stage"].as_str().unwrap_or("");
             let verb = match stage {
                 "approval" => "waits on you".to_string(),
@@ -2241,7 +2231,7 @@ pub fn palette_items(
             all.push(PaletteItem {
                 group: "Agents",
                 icon: "bot",
-                label: a["name"].as_str().unwrap_or("agent").to_string(),
+                label: roles::agent_label_of(a),
                 hint: a["role"].as_str().unwrap_or("").to_string(),
                 to: Id::Agent(cid),
             });

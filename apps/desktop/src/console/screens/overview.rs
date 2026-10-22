@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use super::Id;
 use super::approvals::{self, Approval, Proposal};
 use super::work_model::{self as model};
-use crate::console::{Ctx, chat_tools, client, ui};
+use crate::console::{Ctx, chat_tools, client, roles, ui};
 use crate::theme::{self, TYPE_META, TYPE_PROSE, TYPE_UI};
 
 const FEED_MAX: usize = 40;
@@ -102,7 +102,7 @@ struct Counts {
 #[derive(Debug, Clone, Deserialize)]
 struct Agent {
     cid: u64,
-    name: String,
+    role: String,
     role_label: String,
     tier: String,
     status: String,
@@ -364,7 +364,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let sub = match orch {
         Some(o) => format!(
             "{} plans the work and delegates it to the fleet · {} · Ctrl+Enter to send",
-            name(o),
+            roles::agent_label(&o.role, o.cid),
             o.model
         ),
         None => String::new(),
@@ -615,7 +615,7 @@ fn composer_box<'a>(state: &'a State, orch: &'a Agent) -> Element<'a, Msg> {
         .width(Length::Fixed(360.0));
     let pick = row![
         ui::dot::<Msg>(tone),
-        text(name(orch))
+        text(roles::agent_label(&orch.role, orch.cid))
             .font(SANS_MEDIUM)
             .size(TYPE_UI)
             .color(p.ink)
@@ -824,7 +824,7 @@ fn waiting<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
     let mut rows = column![].spacing(0);
     let mut lines: Vec<(&str, String, String)> = Vec::new();
     for a in &list {
-        let who = name_of(state, a.cid);
+        let who = label_of(state, a.cid);
         lines.push((
             kind_icon(&a.kind),
             wait_title(a),
@@ -840,7 +840,11 @@ fn waiting<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
         lines.push((
             "user-plus",
             title,
-            format!("{} · {}", p.by, approvals::ago(p.created_ms)),
+            format!(
+                "{} · {}",
+                label_of(state, p.by_cid),
+                approvals::ago(p.created_ms)
+            ),
         ));
     }
     for (i, (icon, title, sub)) in lines.into_iter().enumerate() {
@@ -905,7 +909,7 @@ fn wait_row<'a>(icon: &str, title: String, sub: String) -> Element<'a, Msg> {
         .into()
 }
 
-/// The line of a waiting approval: its goal, its escalation, its payment, or the tool call.
+/// The line of a waiting approval: its goal, its payment, or the tool call.
 fn wait_title(a: &Approval) -> String {
     let goal = a.detail.get("goal").and_then(Value::as_str);
     let task = a.detail.get("task").and_then(Value::as_str);
@@ -913,7 +917,6 @@ fn wait_title(a: &Approval) -> String {
         "review" => goal
             .map(str::to_string)
             .unwrap_or_else(|| format!("Review of {}", task.unwrap_or(""))),
-        "sanction" => format!("Escalation: {}", a.subject),
         "payment" => format!("Payment awaiting approval: {}", a.subject),
         "deploy" => a.subject.clone(),
         "artifact.share" => format!("Share {}", a.subject),
@@ -936,16 +939,15 @@ fn kind_icon(kind: &str) -> &'static str {
         "tool" => "terminal",
         "deploy" => "rocket",
         "payment" => "credit-card",
-        "sanction" => "gavel",
         _ => "shield-check",
     }
 }
 
-/// An agent's name for the waiting list: "Unnamed" while blank, "agent <cid>" when unknown.
-fn name_of(state: &State, cid: u64) -> String {
+/// An agent's label for the waiting list and the feed: its role and cid, "agent #<cid>" when unknown.
+fn label_of(state: &State, cid: u64) -> String {
     match state.agents.iter().find(|x| x.cid == cid) {
-        Some(a) => name(a),
-        None => format!("agent {cid}"),
+        Some(a) => roles::agent_label(&a.role, a.cid),
+        None => roles::agent_label("", cid),
     }
 }
 
@@ -961,12 +963,7 @@ fn activity<'a>(state: &'a State) -> Element<'a, Msg> {
         let now = now_ms();
         let mut list = column![].spacing(8);
         for item in &state.feed {
-            let who = state
-                .agents
-                .iter()
-                .find(|a| a.cid == item.cid)
-                .map(name)
-                .unwrap_or_else(|| format!("agent {}", item.cid));
+            let who = label_of(state, item.cid);
             list = list.push(
                 row![
                     container(
@@ -1081,7 +1078,7 @@ fn projects<'a>(state: &'a State) -> Element<'a, Msg> {
     ov_card(vec![head_title("Projects")], column(rows).into(), true)
 }
 
-/// The Fleet card: a tile per agent (its dot, its name, its work or state), opening its transcript.
+/// The Fleet card: a tile per agent (its dot, its label, its work or state), opening its transcript.
 fn fleet<'a>(agents: Vec<&'a Agent>) -> Element<'a, Msg> {
     if agents.is_empty() {
         return ov_card(
@@ -1130,7 +1127,7 @@ fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
         ui::dot::<Msg>(tone),
         column![
             container(
-                text(name(a))
+                text(roles::agent_label(&a.role, a.cid))
                     .font(SANS_MEDIUM)
                     .size(TYPE_UI)
                     .color(p.ink)
@@ -1256,15 +1253,6 @@ fn rule<'a>(color: Color) -> Element<'a, Msg> {
             ..Default::default()
         })
         .into()
-}
-
-/// The name an agent chose for itself, or "Unnamed" while it has none.
-fn name(a: &Agent) -> String {
-    if a.name.trim().is_empty() {
-        "Unnamed".to_string()
-    } else {
-        a.name.clone()
-    }
 }
 
 /// The feed line for a transcript entry, if the feed shows that kind.

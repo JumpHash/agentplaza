@@ -6,13 +6,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::console::roles;
+
 // ---- The roster and the projects --------------------------------------------------------------
 
 /// One agent as the sidebar shows it (`GET /v1/agents`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRow {
     pub cid: u64,
-    pub name: String,
+    /// The agent's label, the name it is shown by: its role and its cid (`roles::agent_label_of`).
+    pub label: String,
     pub role_label: String,
     pub model: String,
     pub status: String,
@@ -52,7 +55,7 @@ pub fn parse_agent(v: &Value) -> Option<AgentRow> {
         .map(str::to_string);
     Some(AgentRow {
         cid,
-        name: text(v, "name"),
+        label: roles::agent_label_of(v),
         role_label,
         model: text(v, "model"),
         status: text(v, "status"),
@@ -1154,29 +1157,29 @@ mod tests {
     #[test]
     fn a_roster_entry_reads_its_work_and_its_usage() {
         let v = json!({
-            "cid": 4, "name": "Ada", "role": "dev", "role_label": "Developer", "status": "working",
+            "cid": 4, "role": "builder", "role_label": "Builder", "status": "working",
             "model": "m1", "last_seen_ms": 5000, "usage": {"input_tokens": 10, "output_tokens": 5},
             "work": {"kind": "task", "prompt": "Fix the parser"}
         });
         let row = parse_agent(&v).expect("an agent");
         assert_eq!(
-            (row.cid, row.role_label.as_str(), row.tokens),
-            (4, "Developer", 15)
+            (row.cid, row.label.as_str(), row.tokens),
+            (4, "Builder #4", 15)
         );
+        assert_eq!(row.role_label, "Builder");
         assert_eq!(row.task.as_deref(), Some("Fix the parser"));
-        assert!(parse_agent(&json!({"name": "no cid"})).is_none());
+        assert!(parse_agent(&json!({"status": "working"})).is_none());
     }
 
     #[test]
     fn an_agent_is_under_the_project_it_works_on_and_project_mode_shows_that_one() {
         let agent = |cid: u64, project: Option<&str>, orchestrator: bool| {
-            let mut a =
-                parse_agent(&json!({ "cid": cid, "name": format!("a{cid}"), "project": project }))
-                    .expect("an agent");
+            let mut a = parse_agent(&json!({ "cid": cid, "project": project })).expect("an agent");
             a.orchestrator = orchestrator;
             a
         };
-        // Ada works on p2 though she wrote p1's brief; Bo, on no project, wrote p1's; the orchestrator leads p2.
+        // Agent 1 works on p2 though it wrote p1's brief; agent 2, on no project, wrote p1's;
+        // agent 9, the orchestrator, leads p2.
         let agents = vec![
             agent(1, Some("p2"), false),
             agent(2, None, false),
@@ -1196,7 +1199,7 @@ mod tests {
         assert_eq!(
             g[1].agents,
             vec![1, 9],
-            "p2: its member (not under p1, whose brief she wrote), and its lead"
+            "p2: its member (not under p1, whose brief it wrote), and its lead"
         );
         let mode = project_group(&agents, &projects, &repos, "p2");
         assert_eq!(mode.len(), 1);

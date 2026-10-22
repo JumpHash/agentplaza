@@ -11,9 +11,9 @@ use iced::widget::{Space, Stack, button, column, container, row, text_editor};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
 use serde_json::{Value, json};
 
+use super::Id;
 use super::wizard::{self, ProposalView, WizardMsg};
-use super::{Id, sanctions};
-use crate::console::{Ctx, client, new_project::editor, rich, scope, ui};
+use crate::console::{Ctx, client, new_project::editor, rich, roles, scope, ui};
 use crate::theme::{self, SANS_MEDIUM, SANS_SEMIBOLD};
 
 #[derive(Debug, Default)]
@@ -24,12 +24,9 @@ pub struct State {
     failed: bool,
     approvals: Vec<Approval>,
     proposals: Vec<Proposal>,
-    /// (cid, name) of every agent, to name the agents the approvals belong to.
-    agents: Vec<(u64, String)>,
-    /// The agents as the hub sent them: under a project, the approvals its agents asked for.
+    /// The agents as the hub sent them: their labels name the approvals' agents, and under a project, the approvals
+    /// its agents asked for.
     roster: Vec<Value>,
-    /// The sanction ids of the suspensions in force: an escalation offers Lift only for these.
-    suspensions: HashSet<u64>,
     /// Reasons typed but not yet sent, keyed `ap-<id>` (approval) or `pp-<id>` (rejection of a proposal).
     reasons: HashMap<String, Content>,
     /// The editor a card shows before anything is typed in it.
@@ -44,7 +41,7 @@ pub struct State {
     proposals_open: bool,
     history_open: bool,
     pub error: Option<String>,
-    /// Answers still due from the running load (four calls); 0 when idle.
+    /// Answers still due from the running load (three calls); 0 when idle.
     pending: u8,
     /// A reload was asked for while a load ran: it starts once the running one settles.
     again: bool,
@@ -61,15 +58,14 @@ pub enum Msg {
     Approvals(Result<Value, String>),
     Proposals(Result<Value, String>),
     Agents(Result<Value, String>),
-    Sanctions(Result<sanctions::Register, String>),
     /// A hub event: the approval and agent_proposal topics reload the screen.
     Event(crate::console::events::Event),
     /// An edit to a card's reason (or a rejection's reason), by its draft key.
     Edit(String, text_editor::Action),
     /// Opens the item on the right.
     Select(String),
-    /// Approve (true) or deny (false) an approval; `action` picks the call explicitly (`acknowledge`, `lift`,
-    /// `retire`, `rework`) and is None for the plain Approve and Deny, and a review's Pass and Fail.
+    /// Approve (true) or deny (false) an approval; `action` picks the call explicitly (`rework`, a review's Send
+    /// back) and is None for the plain Approve and Deny, and a review's Pass and Fail.
     Decide(String, bool, Option<&'static str>),
     Decided(String, Result<(), String>),
     RejectOpen(String),
@@ -88,13 +84,13 @@ pub enum Msg {
 pub(super) struct Approval {
     pub(super) id: String,
     pub(super) cid: u64,
-    /// "tool", "sanction", "payment", "review", "artifact.share" and the rest; a tool approval is "tool".
+    /// "tool", "payment", "review", "artifact.share" and the rest; a tool approval is "tool".
     pub(super) kind: String,
     /// What the approval is about: the tool for a tool approval.
     pub(super) subject: String,
     pub(super) tool: String,
     pub(super) input: Value,
-    /// The kind's own detail (a sanction's sanction_id, a payment's amount); the input for a tool.
+    /// The kind's own detail (a payment's amount); the input for a tool.
     pub(super) detail: Value,
     pub(super) created_ms: i64,
     pub(super) state: String,
@@ -132,7 +128,7 @@ pub(super) struct Proposal {
     pub(super) count: u64,
     pub(super) reason: String,
     pub(super) instruction: String,
-    pub(super) by: String,
+    pub(super) by_cid: u64,
     pub(super) created_ms: i64,
     pub(super) decided_ms: i64,
     pub(super) state: String,
@@ -155,7 +151,7 @@ impl Proposal {
             count: v.get("count").and_then(Value::as_u64).unwrap_or(1),
             reason: field(v, "reason"),
             instruction: field(v, "instruction"),
-            by: field(v, "by"),
+            by_cid: v.get("by_cid").and_then(Value::as_u64).unwrap_or(0),
             created_ms: v.get("created_ms").and_then(Value::as_i64).unwrap_or(0),
             decided_ms: v.get("decided_ms").and_then(Value::as_i64).unwrap_or(0),
             state: field(v, "state"),
@@ -177,16 +173,11 @@ pub(super) fn list<T>(v: &Value, parse: fn(&Value) -> Option<T>) -> Vec<T> {
         .unwrap_or_default()
 }
 
-fn agent_entry(v: &Value) -> Option<(u64, String)> {
-    Some((v.get("cid")?.as_u64()?, field(v, "name")))
-}
-
-/// The agent's name as the web shows it: "Unnamed" when blank, "agent <cid>" when unknown.
-fn name_of(agents: &[(u64, String)], cid: u64) -> String {
-    match agents.iter().find(|(c, _)| *c == cid) {
-        Some((_, name)) if name.trim().is_empty() => "Unnamed".to_string(),
-        Some((_, name)) => name.clone(),
-        None => format!("agent {cid}"),
+/// The agent's label as the web shows it: its role and its cid; `agent #<cid>` when the list does not have it.
+fn label_of(roster: &[Value], cid: u64) -> String {
+    match roster.iter().find(|a| a["cid"].as_u64() == Some(cid)) {
+        Some(agent) => roles::agent_label_of(agent),
+        None => roles::agent_label("", cid),
     }
 }
 
@@ -215,7 +206,6 @@ fn wait_title(a: &Approval) -> String {
     match a.kind.as_str() {
         "review" if !goal.is_empty() => goal,
         "review" => format!("Review of {}", field(&a.detail, "task")),
-        "sanction" => format!("Escalation: {}", a.subject),
         "payment" => format!("Payment awaiting approval: {}", a.subject),
         "deploy" => a.subject.clone(),
         "artifact.share" => format!("Share {}", a.subject),
@@ -237,7 +227,6 @@ fn kind_icon(kind: &str) -> &'static str {
         "tool" => "terminal",
         "deploy" => "rocket",
         "payment" => "credit-card",
-        "sanction" => "gavel",
         "proposal" => "user-plus",
         _ => "shield-check",
     }
@@ -249,7 +238,7 @@ fn kind_colors(kind: &str) -> (Color, Color) {
     match kind {
         "review" => (p.review, p.review_soft),
         "tool" => (p.warn, p.warn_soft),
-        "deploy" | "sanction" => (p.crit, p.crit_soft),
+        "deploy" => (p.crit, p.crit_soft),
         "payment" => (p.info, p.info_soft),
         "proposal" => (p.signal_ink, p.signal_soft),
         _ => (p.ink_2, p.hover),
@@ -556,18 +545,13 @@ pub fn go(msg: &Msg) -> Option<Id> {
 
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    // One load at a time: a reload asked for meanwhile runs once the four answers are in.
+    // One load at a time: a reload asked for meanwhile runs once the three answers are in.
     if state.pending > 0 {
         state.again = true;
         return Task::none();
     }
-    state.pending = 4;
-    let (c1, c2, c3, c4) = (
-        ctx.client.clone(),
-        ctx.client.clone(),
-        ctx.client.clone(),
-        ctx.client.clone(),
-    );
+    state.pending = 3;
+    let (c1, c2, c3) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
     Task::batch([
         client::task(move || c1.get::<Value>("/v1/approvals"), Msg::Approvals),
         client::task(
@@ -575,14 +559,10 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
             Msg::Proposals,
         ),
         client::task(move || c3.get::<Value>("/v1/agents"), Msg::Agents),
-        client::task(
-            move || sanctions::list(&c4, None, None, None),
-            Msg::Sanctions,
-        ),
     ])
 }
 
-/// One of the four load answers arrived; the last one starts a reload that was asked for meanwhile.
+/// One of the three load answers arrived; the last one starts a reload that was asked for meanwhile.
 fn settled(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     state.pending = state.pending.saturating_sub(1);
     let next = if state.pending == 0 && std::mem::take(&mut state.again) {
@@ -619,19 +599,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Agents(res) => {
             if let Ok(v) = res {
-                state.agents = list(&v, agent_entry);
                 state.roster = v.as_array().cloned().unwrap_or_default();
-            }
-            settled(state, ctx)
-        }
-        Msg::Sanctions(res) => {
-            if let Ok(register) = res {
-                state.suspensions = register
-                    .suspensions
-                    .iter()
-                    .filter(|s| s.active)
-                    .map(|s| s.id)
-                    .collect();
             }
             settled(state, ctx)
         }
@@ -899,7 +867,7 @@ fn list_pane<'a>(state: &'a State, scope: Option<&str>, current: Option<&str>) -
                     "user-plus",
                     "proposal",
                     title,
-                    p.by.clone(),
+                    label_of(&state.roster, p.by_cid),
                     p.created_ms,
                     current == Some(p.id.as_str()),
                     Msg::Select(p.id.clone()),
@@ -924,7 +892,7 @@ fn list_pane<'a>(state: &'a State, scope: Option<&str>, current: Option<&str>) -
                 kind_icon(&a.kind),
                 &a.kind,
                 wait_title(a),
-                name_of(&state.agents, a.cid),
+                label_of(&state.roster, a.cid),
                 a.created_ms,
                 current == Some(a.id.as_str()),
                 Msg::Select(a.id.clone()),
@@ -983,7 +951,7 @@ fn history_row<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
             crate::theme::TYPE_CODE,
             theme::palette().ink,
         ),
-        ui::text_link(&name_of(&state.agents, a.cid), Msg::Go(Id::Agent(a.cid))),
+        ui::text_link(&label_of(&state.roster, a.cid), Msg::Go(Id::Agent(a.cid))),
     ]
     .spacing(4)
     .width(Length::Fill);
@@ -1033,61 +1001,16 @@ fn proposal_row<'a>(p: &'a Proposal) -> Element<'a, Msg> {
     .into()
 }
 
-/// A waiting approval's card: a review with its calls, a sanction, or a plain card (a tool call, a payment, a share).
+/// A waiting approval's card: a review with its calls, or a plain card (a tool call, a payment, a share).
 fn waiting_card<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
     let busy = state.busy.contains(&a.id);
     let key = format!("ap-{}", a.id);
     let decide = move |approve: bool, action: Option<&'static str>| {
         (!busy).then(|| Msg::Decide(a.id.clone(), approve, action))
     };
-    let agent = ui::text_link(&name_of(&state.agents, a.cid), Msg::Go(Id::Agent(a.cid)));
+    let agent = ui::text_link(&label_of(&state.roster, a.cid), Msg::Go(Id::Agent(a.cid)));
     if a.kind == "review" && is_review(a) {
         return review_card(state, a, &key, busy);
-    }
-    if a.kind == "sanction" {
-        let lift = a
-            .detail
-            .get("sanction_id")
-            .and_then(Value::as_u64)
-            .filter(|id| state.suspensions.contains(id));
-        let mut calls = vec![ui::btn(
-            "Retire",
-            None,
-            ui::Kind::Danger,
-            decide(false, Some("retire")),
-        )];
-        if lift.is_some() {
-            calls.push(ui::btn(
-                "Lift",
-                None,
-                ui::Kind::Secondary,
-                decide(false, Some("lift")),
-            ));
-        }
-        calls.push(ui::btn(
-            "Acknowledge",
-            None,
-            ui::Kind::Primary,
-            decide(true, Some("acknowledge")),
-        ));
-        return card(
-            card_head(
-                tile(kind_icon("sanction"), "sanction", 36.0, 18.0, 10.0),
-                wait_title(a),
-                vec![agent],
-                a.created_ms,
-            ),
-            ui::sans(
-                "Retire only records your decision. apid does not retire the agent.",
-                crate::theme::TYPE_UI,
-                theme::palette().ink_2,
-            )
-            .into(),
-            card_foot(
-                reason_box(state, &key, busy, "Reason (optional)", 56.0),
-                calls,
-            ),
-        );
     }
     let deny = ui::btn("Deny", None, ui::Kind::Danger, decide(false, None));
     let approve = ui::btn("Approve", None, ui::Kind::Primary, decide(true, None));
@@ -1215,10 +1138,7 @@ fn review_card<'a>(state: &'a State, a: &'a Approval, key: &str, busy: bool) -> 
     } else {
         goal
     };
-    let worker = match field(d, "worker") {
-        name if name.trim().is_empty() => name_of(&state.agents, a.cid),
-        name => name,
-    };
+    let worker = label_of(&state.roster, a.cid);
     let mut meta = vec![format!("Worker: {worker}")];
     let change = field(d, "change");
     if !change.is_empty() {
@@ -1291,7 +1211,7 @@ fn review_card<'a>(state: &'a State, a: &'a Approval, key: &str, busy: bool) -> 
             tile(kind_icon("review"), "review", 36.0, 18.0, 10.0),
             title,
             vec![
-                ui::text_link(&name_of(&state.agents, a.cid), Msg::Go(Id::Agent(a.cid))),
+                ui::text_link(&label_of(&state.roster, a.cid), Msg::Go(Id::Agent(a.cid))),
                 ui::badge("Review", ui::Tone::Signal),
             ],
             a.created_ms,
@@ -1346,7 +1266,7 @@ fn proposal_card<'a>(state: &'a State, p: &'a Proposal, rctx: &rich::RichCtx) ->
         ));
     }
     body = body.push(ui::sans(
-        format!("Proposed by {}", p.by),
+        format!("Proposed by {}", label_of(&state.roster, p.by_cid)),
         crate::theme::TYPE_UI,
         theme::palette().ink_2,
     ));
@@ -1497,8 +1417,6 @@ mod tests {
         let bare = approval("review", json!({ "task": "t1", "run": "r1" }), Value::Null);
         assert_eq!(wait_title(&bare), "Review of t1");
         assert!(is_review(&bare));
-        let sanction = approval("sanction", Value::Null, Value::Null);
-        assert_eq!(wait_title(&sanction), "Escalation: lab_dataset");
         let tool = approval("tool", Value::Null, json!({ "command": "pnpm add x" }));
         assert_eq!(wait_title(&tool), "shell: pnpm add x");
         assert_eq!(

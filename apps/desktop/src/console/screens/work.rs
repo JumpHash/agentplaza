@@ -64,12 +64,12 @@ const LINE_CHARS: usize = 33;
 /// The map's scroll area, so a selected card can be scrolled into view.
 static MAP_ID: LazyLock<iced::widget::Id> = LazyLock::new(|| iced::widget::Id::new("work-map"));
 
-/// An agent, with what the cards read of it: its name, and its step now.
+/// An agent, with what the cards read of it: its role, for its label, and its step now.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Agent {
     pub cid: u64,
     #[serde(default)]
-    pub name: String,
+    pub role: String,
     #[serde(default)]
     pub step: Option<Step>,
 }
@@ -197,7 +197,7 @@ fn snapshot(
             .then(b.updated_ms.cmp(&a.updated_ms))
     });
     let tasks = hub.get::<TasksReply>("/v1/tasks")?.tasks;
-    // Names and steps: without them the cards still draw, with "agent 7" and no step.
+    // Roles and steps: without them the cards still draw, with "agent #7" and no step.
     let agents: Vec<Agent> = hub.get("/v1/agents").unwrap_or_default();
     let current = if current.is_empty() {
         wanted
@@ -414,12 +414,14 @@ fn step_of(state: &State, cid: u64) -> Option<Step> {
     }
 }
 
-/// An agent's name, or "agent 7" until it chooses one (as the web's Work screen says it).
-fn name_of(state: &State, cid: u64) -> String {
-    match state.agents.iter().find(|a| a.cid == cid) {
-        Some(a) if !a.name.trim().is_empty() => a.name.clone(),
-        _ => format!("agent {cid}"),
-    }
+/// An agent's label: its role and its cid, or "agent #7" while the roster does not know its role.
+fn label_of(state: &State, cid: u64) -> String {
+    let role = state
+        .agents
+        .iter()
+        .find(|a| a.cid == cid)
+        .map_or("", |a| a.role.as_str());
+    roles::agent_label(role, cid)
 }
 
 fn state_of(state: &State, t: &GraphTask) -> WorkState {
@@ -708,7 +710,7 @@ fn body<'a>(state: &'a State, g: &model::Graph) -> Element<'a, Msg> {
         return ui::loading();
     }
     if !building || g.tasks.is_empty() {
-        return planning(p);
+        return planning(state, p);
     }
     map_or_columns(state, g, Some(p))
 }
@@ -1007,14 +1009,14 @@ fn linked_map<'a>(
     let as_id = |id: &str| id.to_string();
     let tasks = ledger(state);
     let ready = |id: &str| ready_at(&tasks, id);
-    let name = |cid: u64| name_of(state, cid);
+    let label = |cid: u64| label_of(state, cid);
     let step = |cid: u64| step_of(state, cid);
     let ctx = LineContext {
         edges: &g.edges,
         state_of: &hub_state,
         task_name: &as_id,
         ready_at: &ready,
-        name_of: &name,
+        label_of: &label,
         step_of: &step,
         now: now_ms(),
     };
@@ -1237,14 +1239,14 @@ fn state_columns<'a>(
     let as_id = |id: &str| id.to_string();
     let tasks = ledger(state);
     let ready = |id: &str| ready_at(&tasks, id);
-    let name = |cid: u64| name_of(state, cid);
+    let label = |cid: u64| label_of(state, cid);
     let step = |cid: u64| step_of(state, cid);
     let ctx = LineContext {
         edges: &g.edges,
         state_of: &hub_state,
         task_name: &as_id,
         ready_at: &ready,
-        name_of: &name,
+        label_of: &label,
         step_of: &step,
         now: now_ms(),
     };
@@ -1348,7 +1350,7 @@ fn flat_card<'a>(
 }
 
 /// While the project plans, its stages are the columns: that is where the work is.
-fn planning<'a>(p: &'a Project) -> Element<'a, Msg> {
+fn planning<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     let pal = theme::palette();
     let at = model::stage_index(&p.stage);
     let doc =
@@ -1399,7 +1401,7 @@ fn planning<'a>(p: &'a Project) -> Element<'a, Msg> {
                 doc(
                     d.kind.to_uppercase(),
                     d.title.clone(),
-                    format!("{} · {}", d.by, ago(d.at_ms)),
+                    format!("{} · {}", label_of(state, d.by_cid), ago(d.at_ms)),
                     None,
                 )
             })
@@ -1452,7 +1454,7 @@ fn planning<'a>(p: &'a Project) -> Element<'a, Msg> {
             };
             doc(
                 kind.to_string(),
-                c.by.clone(),
+                label_of(state, c.by_cid),
                 format!("revision {} · {}", c.revision, ago(c.at_ms)),
                 Some(tone),
             )
@@ -1632,7 +1634,7 @@ fn drawer<'a>(state: &'a State, g: &model::Graph) -> Option<Element<'a, Msg>> {
             "→",
             row![
                 say("Claimed by".into(), pal.ink),
-                drawer_link(name_of(state, cid), Msg::Go(Id::Agent(cid)))
+                drawer_link(label_of(state, cid), Msg::Go(Id::Agent(cid)))
             ]
             .spacing(4)
             .into(),
@@ -1647,14 +1649,14 @@ fn drawer<'a>(state: &'a State, g: &model::Graph) -> Option<Element<'a, Msg>> {
             let hub_state = |id: &str| by_id.get(id).map(|u| u.state.clone());
             let tasks = ledger(state);
             let ready = |id: &str| ready_at(&tasks, id);
-            let name = |cid: u64| name_of(state, cid);
+            let label = |cid: u64| label_of(state, cid);
             let agent_step = |cid: u64| step_of(state, cid);
             let ctx = LineContext {
                 edges: &g.edges,
                 state_of: &hub_state,
                 task_name: &title,
                 ready_at: &ready,
-                name_of: &name,
+                label_of: &label,
                 step_of: &agent_step,
                 now,
             };
@@ -1695,7 +1697,7 @@ fn drawer<'a>(state: &'a State, g: &model::Graph) -> Option<Element<'a, Msg>> {
         let body: Element<'a, Msg> = match t.reviewer_cid {
             Some(cid) => row![
                 say("In review by".into(), pal.info),
-                drawer_link(name_of(state, cid), Msg::Go(Id::Agent(cid)))
+                drawer_link(label_of(state, cid), Msg::Go(Id::Agent(cid)))
             ]
             .spacing(4)
             .into(),
@@ -1903,7 +1905,7 @@ mod tests {
         let mut state = State {
             agents: vec![Agent {
                 cid: 7,
-                name: "Ada".into(),
+                role: "qa".into(),
                 step: Some(Step {
                     stage: "thinking".into(),
                     tool: None,
@@ -1924,7 +1926,7 @@ mod tests {
         assert_eq!(step_of(&state, 7).map(|s| s.stage), Some("approval".into()));
         state.steps.insert(7, None);
         assert_eq!(step_of(&state, 7), None);
-        assert_eq!(name_of(&state, 7), "Ada");
-        assert_eq!(name_of(&state, 8), "agent 8");
+        assert_eq!(label_of(&state, 7), "QA #7");
+        assert_eq!(label_of(&state, 8), "agent #8");
     }
 }

@@ -1,6 +1,5 @@
 //! The agent page's side panels (`agent-detail.ts` side column, `agent-harness.ts`): model and
-//! reasoning effort (the model picker), harness limits and loops, permissions. Also the memory
-//! library the page's Memory tab shows (`memory.ts`): the notes, a find box, and a reader.
+//! reasoning effort (the model picker), harness limits and loops, permissions.
 
 use iced::widget::{Space, button, column, container, row, text, text_input};
 use iced::{Alignment, Border, Element, Length, Padding, Task, Theme};
@@ -9,8 +8,8 @@ use serde_json::{Value, json};
 
 use super::agent::ago;
 use crate::console::picker::{self, Choice, Picker, PickerMsg};
-use crate::console::{Ctx, client, rich, ui};
-use crate::theme::{MONO_MEDIUM, SANS, SANS_MEDIUM, SANS_SEMIBOLD, TYPE_ITEM, TYPE_META};
+use crate::console::{Ctx, client, ui};
+use crate::theme::{MONO_MEDIUM, SANS, SANS_MEDIUM, SANS_SEMIBOLD, TYPE_ITEM};
 
 /// The reasoning efforts a model name can pin (`provider/model@effort`).
 const EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -62,20 +61,6 @@ pub struct Side {
     loop_prompt: String,
     loop_every: String,
     loop_max: String,
-    // Memory: the notes, the find box, and the one being read.
-    memory_loaded: bool,
-    notes: Vec<Note>,
-    search: String,
-    reading: Option<Note>,
-    // The rich content of the note being read: the hub's cards and images (`console::rich`).
-    cards: rich::Cards,
-    // The graph view of the same notes (a toggle beside the list).
-    graph_on: bool,
-    graph: super::memory_graph::Layout,
-    /// The note the keyboard is on in the graph (ringed), walked with Tab.
-    graph_kb: Option<String>,
-    /// The debounce tick of the latest `memory` event: only the last one reloads the notes.
-    memory_tick: u64,
 }
 
 /// An agent's harness limits; a missing one is the plaza default.
@@ -110,39 +95,6 @@ pub struct Loop {
     pub last_summary: Option<String>,
 }
 
-/// One memory note; the list carries no body, a read does.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Note {
-    pub slug: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub updated_ms: u64,
-    #[serde(default)]
-    pub size: u64,
-    #[serde(default)]
-    pub links: Vec<String>,
-    #[serde(default)]
-    pub body: String,
-    #[serde(default)]
-    pub backlinks: Vec<String>,
-    #[serde(default)]
-    pub provenance: Option<Provenance>,
-}
-
-/// Where a note came from: the task and the work item that wrote it.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Provenance {
-    #[serde(default)]
-    pub task: Option<String>,
-    #[serde(default)]
-    pub work: Option<u64>,
-}
-
 /// What a control call does to the panels once it succeeds.
 #[derive(Debug, Clone, Copy)]
 pub enum After {
@@ -153,10 +105,6 @@ pub enum After {
 
 #[derive(Debug, Clone)]
 pub enum SideMsg {
-    /// A key the graph takes: Tab walks the notes, Enter or Space opens the one in focus.
-    Key(super::memory_graph::Key),
-    /// The 30-second fallback reload of the notes, while the Memory tab is shown.
-    Refresh,
     Agent(Result<Value, String>),
     Catalogue(Result<(Value, Value), String>),
     /// The owner's favourites after a star in the picker.
@@ -189,18 +137,6 @@ pub enum SideMsg {
     LoopStarted(Result<Value, String>),
     StopLoop(String),
     LoopStopped(Result<Value, String>),
-    Memory(Result<Vec<Note>, String>),
-    Search(String),
-    SearchSubmit,
-    OpenNote(String),
-    NoteRead(Result<Note, String>),
-    /// A rich-content click or load in the note being read.
-    Rich(rich::Ev),
-    ToggleGraph,
-    /// Shows the graph (true) or the list (false): the web's Graph and List buttons.
-    SetGraph(bool),
-    MemoryTick(Result<u64, String>),
-    Graph(super::memory_graph::Msg),
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -215,20 +151,10 @@ struct AgentRec {
     model_override: Option<String>,
     #[serde(default)]
     status: String,
-    /// The robot species the hub sent (read by the floor once it is wired).
-    #[serde(default)]
-    #[allow(dead_code)]
-    species: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct NotesEnvelope {
-    #[serde(default)]
-    notes: Vec<Note>,
-}
-
-/// Loads the panels' data for agent `cid`. A new agent resets the panels; the inputs and the
-/// open note survive the 4 s reloads.
+/// Loads the panels' data for agent `cid`. A new agent resets the panels; the inputs survive the
+/// 4 s reloads.
 pub fn load(side: &mut Side, cid: u64, ctx: &Ctx) -> Task<SideMsg> {
     if side.cid != cid {
         *side = Side {
@@ -237,14 +163,9 @@ pub fn load(side: &mut Side, cid: u64, ctx: &Ctx) -> Task<SideMsg> {
         };
         side.loop_every = "30".into();
         side.loop_max = "0".into();
-        side.graph_on = true;
     }
     side.error = None;
-    let mut tasks = vec![
-        fetch_agent(ctx, cid),
-        fetch_loops(ctx, cid),
-        fetch_memory(ctx, cid),
-    ];
+    let mut tasks = vec![fetch_agent(ctx, cid), fetch_loops(ctx, cid)];
     if !side.catalogue_loaded {
         tasks.push(fetch_catalogue(ctx));
     }
@@ -555,121 +476,10 @@ pub fn update(side: &mut Side, msg: SideMsg, ctx: &Ctx) -> Task<SideMsg> {
             side.error = Some(e);
             Task::none()
         }
-        SideMsg::Memory(Ok(list)) => {
-            side.memory_loaded = true;
-            // Show the newest note until one is open; refresh an open note that changed.
-            let fetch = match side.reading.as_ref() {
-                Some(open) => list
-                    .iter()
-                    .find(|n| n.slug == open.slug)
-                    .filter(|n| n.updated_ms != open.updated_ms)
-                    .map(|n| n.slug.clone()),
-                None => list
-                    .iter()
-                    .max_by_key(|n| n.updated_ms)
-                    .map(|n| n.slug.clone()),
-            };
-            if side
-                .reading
-                .as_ref()
-                .is_some_and(|open| !list.iter().any(|n| n.slug == open.slug))
-            {
-                side.reading = None;
-            }
-            side.graph.refresh(&list);
-            side.notes = list;
-            match fetch {
-                Some(slug) => fetch_note(ctx, cid, slug),
-                None => Task::none(),
-            }
-        }
-        SideMsg::Memory(Err(e)) => {
-            side.memory_loaded = true;
-            side.error = Some(e);
-            Task::none()
-        }
-        SideMsg::Search(s) => {
-            side.search = s;
-            Task::none()
-        }
-        // Enter opens the first note whose title holds the find text, as the web does.
-        SideMsg::SearchSubmit => {
-            let q = side.search.trim().to_lowercase();
-            match side
-                .notes
-                .iter()
-                .find(|n| n.title.to_lowercase().contains(&q))
-            {
-                Some(n) => fetch_note(ctx, cid, n.slug.clone()),
-                None => Task::none(),
-            }
-        }
-        SideMsg::OpenNote(slug) => fetch_note(ctx, cid, slug),
-        SideMsg::NoteRead(Ok(note)) => {
-            side.reading = Some(note);
-            prefetch_reading(side, ctx)
-        }
-        SideMsg::Rich(ev) => {
-            rich::apply(&mut side.cards, ev);
-            Task::none()
-        }
-        SideMsg::NoteRead(Err(e)) => {
-            side.error = Some(e);
-            Task::none()
-        }
-        SideMsg::ToggleGraph => {
-            side.graph_on = !side.graph_on;
-            Task::none()
-        }
-        SideMsg::SetGraph(on) => {
-            side.graph_on = on;
-            Task::none()
-        }
-        SideMsg::Graph(super::memory_graph::Msg::Open(slug)) => fetch_note(ctx, cid, slug),
-        SideMsg::Graph(super::memory_graph::Msg::Drag { slug, x, y }) => {
-            side.graph.hold(&slug, x, y);
-            Task::none()
-        }
-        SideMsg::Graph(super::memory_graph::Msg::Drop) => {
-            side.graph.release();
-            Task::none()
-        }
-        SideMsg::Key(super::memory_graph::Key::Tab { back }) => {
-            side.graph_kb = super::memory_graph::walk(&side.graph, side.graph_kb.as_deref(), back);
-            Task::none()
-        }
-        SideMsg::Key(super::memory_graph::Key::Open) => match side.graph_kb.clone() {
-            Some(slug) => fetch_note(ctx, cid, slug),
-            None => Task::none(),
-        },
-        SideMsg::Refresh => fetch_memory(ctx, cid),
-        SideMsg::MemoryTick(Ok(tick)) => {
-            if tick == side.memory_tick {
-                fetch_memory(ctx, cid)
-            } else {
-                Task::none()
-            }
-        }
-        SideMsg::MemoryTick(Err(_)) => Task::none(),
     }
 }
 
-/// A rich-content click or load, as the side column's message.
-fn on_rich(action: rich::RichAction) -> SideMsg {
-    SideMsg::Rich(rich::Ev::Action(action))
-}
-
-/// Asks the hub for the cards of the note being read that it does not hold yet.
-fn prefetch_reading(side: &mut Side, ctx: &Ctx) -> Task<SideMsg> {
-    let Some(note) = side.reading.as_ref() else {
-        return Task::none();
-    };
-    let body = note.body.clone();
-    let rctx = rich::context(&side.cards, None, None);
-    rich::prefetch(&mut side.cards, &ctx.client, &rctx, &[body.as_str()]).map(SideMsg::Rich)
-}
-
-/// The side column (the web's `aside.ag-side`, minus the conduct and checkpoint cards the page draws): the model, the
+/// The side column (the web's `aside.ag-side`, minus the checkpoint card the page draws): the model, the
 /// harness and the permissions, 12 apart.
 pub fn view<'a>(side: &'a Side, _ctx: &'a Ctx) -> Element<'a, SideMsg> {
     let mut parts: Vec<Element<'a, SideMsg>> = Vec::new();
@@ -910,251 +720,6 @@ fn choice<'a>(name: &str, hint: &str, active: bool, msg: SideMsg) -> Element<'a,
         .into()
 }
 
-/// A `memory` event from the hub: the notes reload once the burst has settled (250 ms, as the web), so a run of
-/// writes costs one fetch.
-pub fn memory_changed(side: &mut Side) -> Task<SideMsg> {
-    side.memory_tick += 1;
-    let tick = side.memory_tick;
-    client::task(
-        move || {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            Ok::<u64, String>(tick)
-        },
-        SideMsg::MemoryTick,
-    )
-}
-
-/// The note a backlink or `[[link]]` names: its slug, or the slug of its title (the web's `resolveRef`).
-fn resolve_ref<'a>(notes: &'a [Note], r: &str) -> Option<&'a Note> {
-    let want = slugify(r);
-    notes
-        .iter()
-        .find(|n| n.slug == r || n.slug == want || slugify(&n.title) == want)
-}
-
-/// The web's slug rule: lower case, runs of other characters become one dash, no edge dashes, at most 60.
-fn slugify(text: &str) -> String {
-    let mut out = String::new();
-    for c in text.to_lowercase().chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-        } else if !out.is_empty() && !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_end_matches('-').chars().take(60).collect()
-}
-
-/// The Memory tab (`memory.ts`): a card with the note count and the find box, then Graph or List, and the chosen note
-/// read beside the graph (or under the table).
-pub fn memory_view<'a>(side: &'a Side) -> Element<'a, SideMsg> {
-    let count = if side.memory_loaded {
-        let n = side.notes.len();
-        format!("{n} {}", if n == 1 { "note" } else { "notes" })
-    } else {
-        String::new()
-    };
-    let find = text_input("Find a note…", &side.search)
-        .on_input(SideMsg::Search)
-        .on_submit(SideMsg::SearchSubmit)
-        .style(crate::theme::input)
-        .width(Length::Fixed(208.0));
-    let head = row![muted(count), find]
-        .spacing(8)
-        .align_y(Alignment::Center);
-    let body: Element<'a, SideMsg> = if !side.memory_loaded {
-        muted("Loading memory…")
-    } else if side.notes.is_empty() {
-        ui::empty(
-            "brain",
-            "No memories yet",
-            "Notes the agent writes appear here, linked like a little brain.",
-        )
-    } else {
-        memory_body(side)
-    };
-    container(column![head, body].spacing(GAP))
-        .padding(16)
-        .width(Length::Fill)
-        .style(ui::card_style)
-        .into()
-}
-
-/// The Graph and List choices and what they show for the find text.
-fn memory_body<'a>(side: &'a Side) -> Element<'a, SideMsg> {
-    let q = side.search.trim().to_lowercase();
-    let toolbar = row![
-        ui::btn_sm(
-            "Graph",
-            None,
-            ui::Kind::Ghost,
-            Some(SideMsg::SetGraph(true))
-        ),
-        ui::btn_sm(
-            "List",
-            None,
-            ui::Kind::Ghost,
-            Some(SideMsg::SetGraph(false))
-        ),
-    ]
-    .spacing(4);
-    let mut matched: Vec<&Note> = side
-        .notes
-        .iter()
-        .filter(|n| q.is_empty() || n.title.to_lowercase().contains(&q))
-        .collect();
-    matched.sort_by_key(|n| std::cmp::Reverse(n.updated_ms));
-    if matched.is_empty() {
-        return column![toolbar, muted("No notes match.")]
-            .spacing(GAP)
-            .into();
-    }
-    let open = side.reading.as_ref().map(|n| n.slug.as_str());
-    if side.graph_on {
-        let graph = super::memory_graph::view(&side.graph, q, side.graph_kb.as_deref(), open)
-            .map(SideMsg::Graph);
-        let left = column![graph, ui::faint(GRAPH_HINT)]
-            .spacing(8)
-            .width(Length::FillPortion(13));
-        let right = container(reader(side)).width(Length::FillPortion(10));
-        column![toolbar, row![left, right].spacing(GAP)]
-            .spacing(GAP)
-            .into()
-    } else {
-        column![toolbar, note_table(&matched, open), reader(side)]
-            .spacing(GAP)
-            .into()
-    }
-}
-
-const GRAPH_HINT: &str =
-    "Click a note to read it. Solid lines are links; dashed lines join notes that share a tag.";
-
-/// A line of secondary text at the item size (the web's `.muted`).
-fn muted<'a>(content: impl Into<String>) -> Element<'a, SideMsg> {
-    text(content.into())
-        .font(SANS)
-        .size(TYPE_ITEM)
-        .color(crate::theme::palette().ink_3)
-        .into()
-}
-
-/// The open note, or the prompt to pick one.
-fn reader<'a>(side: &'a Side) -> Element<'a, SideMsg> {
-    match &side.reading {
-        Some(doc) => {
-            let rctx = rich::context(&side.cards, None, None);
-            reader_view(doc, &side.notes, &rctx, &side.cards)
-        }
-        None => muted("Pick a note to read it."),
-    }
-}
-
-/// One cell of a table: padded 9 by 12, its first and last cells flush with the card's text.
-fn cell<'a>(
-    content: Element<'a, SideMsg>,
-    portion: u16,
-    first: bool,
-    last: bool,
-) -> Element<'a, SideMsg> {
-    container(content)
-        .padding(Padding {
-            top: 9.0,
-            right: if last { 0.0 } else { 12.0 },
-            bottom: 9.0,
-            left: if first { 0.0 } else { 12.0 },
-        })
-        .width(Length::FillPortion(portion))
-        .into()
-}
-
-/// The List view as the web's `.tbl`: the labels over a strong rule, a ruled row per note, the open one tinted, a click
-/// opening it.
-fn note_table<'a>(notes: &[&'a Note], open: Option<&str>) -> Element<'a, SideMsg> {
-    let p = crate::theme::palette();
-    let label = |s: &str, portion: u16, first: bool, last: bool| {
-        cell(
-            text(s.to_string())
-                .font(SANS_MEDIUM)
-                .size(TYPE_META)
-                .color(p.ink_3)
-                .into(),
-            portion,
-            first,
-            last,
-        )
-    };
-    let head = row![
-        label("Title", 4, true, false),
-        label("Kind", 2, false, false),
-        label("Tags", 3, false, false),
-        label("Updated", 2, false, true),
-    ];
-    let mut lines: Vec<Element<'a, SideMsg>> = vec![
-        head.into(),
-        container(Space::new().height(1.0))
-            .width(Length::Fill)
-            .style(|_: &Theme| container::Style {
-                background: Some(crate::theme::palette().rule_strong.into()),
-                ..Default::default()
-            })
-            .into(),
-    ];
-    for n in notes {
-        let tags: Vec<Element<'a, SideMsg>> = n
-            .tags
-            .iter()
-            .map(|t| ui::badge(&format!("#{t}"), ui::Tone::Muted))
-            .collect();
-        let content = row![
-            cell(
-                text(n.title.clone())
-                    .font(SANS)
-                    .size(TYPE_ITEM)
-                    .color(p.ink)
-                    .into(),
-                4,
-                true,
-                false,
-            ),
-            cell(ui::badge(&n.kind, kind_tone(&n.kind)), 2, false, false),
-            cell(ui::chip_row(tags), 3, false, false),
-            cell(ui::faint(ago(n.updated_ms)).into(), 2, false, true),
-        ]
-        .align_y(Alignment::Center);
-        let is_open = open == Some(n.slug.as_str());
-        lines.push(
-            button(content)
-                .padding(0)
-                .width(Length::Fill)
-                .style(move |_: &Theme, status: button::Status| {
-                    let hovered =
-                        matches!(status, button::Status::Hovered | button::Status::Pressed);
-                    button::Style {
-                        background: (hovered || is_open)
-                            .then(|| crate::theme::palette().hover.into()),
-                        text_color: crate::theme::palette().ink,
-                        border: Border::default(),
-                        ..Default::default()
-                    }
-                })
-                .on_press(SideMsg::OpenNote(n.slug.clone()))
-                .into(),
-        );
-        lines.push(ui::hairline());
-    }
-    column(lines).width(Length::Fill).into()
-}
-
-/// The tone a note's kind is drawn in (the web's `KIND_T`).
-fn kind_tone(kind: &str) -> ui::Tone {
-    match kind {
-        "person" => ui::Tone::Signal,
-        "journal" => ui::Tone::Warn,
-        _ => ui::Tone::Info,
-    }
-}
-
 /// A loop as the web's `.ag-row`: the prompt, its state and runs, the last summary, and Stop while it runs.
 fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
     let tone = match l.state.as_str() {
@@ -1204,79 +769,6 @@ fn loop_row<'a>(l: &'a Loop) -> Element<'a, SideMsg> {
             left: 0.0,
         })
         .width(Length::Fill)
-        .into()
-}
-
-/// One note open: its kind, title and stamp (when it was updated and by which work), its tags as chips, its body, and
-/// the notes that link to it (the web's `.mem-read`).
-fn reader_view<'a>(
-    doc: &'a Note,
-    notes: &'a [Note],
-    rctx: &rich::RichCtx,
-    cards: &'a rich::Cards,
-) -> Element<'a, SideMsg> {
-    let mut stamp = format!("Updated {}", ago(doc.updated_ms));
-    if let Some(p) = &doc.provenance {
-        if let Some(task) = &p.task {
-            stamp.push_str(&format!(" · task {task}"));
-        }
-        if let Some(work) = p.work {
-            stamp.push_str(&format!(" · work #{work}"));
-        }
-    }
-    let mut items: Vec<Element<'a, SideMsg>> = vec![
-        row![
-            ui::badge(&doc.kind, kind_tone(&doc.kind)),
-            text(doc.title.clone())
-                .font(SANS_SEMIBOLD)
-                .size(TYPE_ITEM)
-                .color(crate::theme::palette().ink),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .into(),
-        ui::faint(stamp).into(),
-    ];
-    if !doc.tags.is_empty() {
-        let tags: Vec<Element<'a, SideMsg>> = doc
-            .tags
-            .iter()
-            .map(|t| ui::badge(&format!("#{t}"), ui::Tone::Muted))
-            .collect();
-        items.push(ui::chip_row(tags));
-    }
-    items.push(rich::view(&doc.body, rctx, cards, &on_rich));
-    if !doc.backlinks.is_empty() {
-        // Each backlink opens its note; one that names no note yet reads as a plain chip.
-        let chips: Vec<Element<'a, SideMsg>> = doc
-            .backlinks
-            .iter()
-            .map(|b| match resolve_ref(notes, b) {
-                Some(n) => link_chip(&n.title, n.slug.clone()),
-                None => ui::badge(b, ui::Tone::Muted),
-            })
-            .collect();
-        items.push(
-            column![sub_head("Linked from"), ui::chip_row(chips)]
-                .spacing(8)
-                .into(),
-        );
-    }
-    column(items).spacing(8).into()
-}
-
-/// A note's title as a chip that opens the note (the web's `.chip.t-info` button).
-fn link_chip<'a>(title: &str, slug: String) -> Element<'a, SideMsg> {
-    let ink = crate::theme::palette().ink;
-    button(ui::badge(title, ui::Tone::Info))
-        .padding(0)
-        .style(move |_: &Theme, _: button::Status| button::Style {
-            background: None,
-            text_color: ink,
-            border: Border::default(),
-            ..Default::default()
-        })
-        .on_press(SideMsg::OpenNote(slug))
         .into()
 }
 
@@ -1596,25 +1088,6 @@ fn fetch_loops(ctx: &Ctx, cid: u64) -> Task<SideMsg> {
             })
         },
         SideMsg::Loops,
-    )
-}
-
-fn fetch_memory(ctx: &Ctx, cid: u64) -> Task<SideMsg> {
-    let c = ctx.client.clone();
-    client::task(
-        move || {
-            c.get::<NotesEnvelope>(&format!("/v1/agents/{cid}/memory"))
-                .map(|e| e.notes)
-        },
-        SideMsg::Memory,
-    )
-}
-
-fn fetch_note(ctx: &Ctx, cid: u64, slug: String) -> Task<SideMsg> {
-    let c = ctx.client.clone();
-    client::task(
-        move || c.get::<Note>(&format!("/v1/agents/{cid}/memory/{slug}")),
-        SideMsg::NoteRead,
     )
 }
 

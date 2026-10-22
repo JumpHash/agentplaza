@@ -9,11 +9,8 @@ pub mod appearance;
 pub mod approvals;
 pub mod artifact;
 pub mod board;
-pub mod conversations;
-pub mod council;
 pub mod e2b;
 pub mod egress;
-pub mod engine_lab;
 pub mod floor;
 pub mod history;
 mod history_map;
@@ -47,7 +44,6 @@ pub mod machines;
 pub mod mcp;
 pub mod mcp_hub;
 pub mod mcp_wizard;
-pub mod memory_graph;
 pub mod metrics;
 pub mod models;
 pub mod nodes;
@@ -63,11 +59,9 @@ pub mod prompts;
 pub mod provider_wizard;
 pub mod providers_api;
 pub mod rules;
-pub mod sanctions;
 pub mod setup;
 pub mod skill_editor;
 pub mod skills;
-pub mod society;
 pub mod tasks;
 pub mod theme_editor;
 pub mod tools;
@@ -102,10 +96,7 @@ pub enum Id {
     History,
     Library,
     Approvals,
-    Society,
-    Conversations,
     Board,
-    Council,
     Treasury,
     Rules,
     Models,
@@ -152,9 +143,6 @@ pub enum Id {
     /// One model's page, by its id.
     LabModelDetail(String),
     LabBreeders,
-    /// The engine's labs (the web's hidden `#/robot-lab`, `#/hardware-lab`): not in the sidebar.
-    RobotLab,
-    HardwareLab,
     /// The IDE, not in the sidebar: one workspace by its id (`agent:<cid>` or `repo:<name>@<ref>`), or the picker when none.
     Ide(Option<String>),
 }
@@ -173,15 +161,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Approvals, "Approvals", "Plaza", "approval"),
     (Id::Machines, "Machines", "Plaza", "machine"),
     (Id::Metrics, "Metrics", "Plaza", "zap"),
-    (Id::Society, "Society", "Social", "society"),
-    (
-        Id::Conversations,
-        "Conversations",
-        "Social",
-        "conversations",
-    ),
     (Id::Board, "Board", "Social", "boardpin"),
-    (Id::Council, "Council", "Social", "council"),
     (Id::Treasury, "Treasury", "Social", "treasury"),
     (Id::Rules, "Rules", "Social", "rules"),
     (Id::Lab, "Lab", "Lab", "brain"),
@@ -211,11 +191,7 @@ pub struct Screens {
     pub history: history::State,
     pub library: library::State,
     pub approvals: approvals::State,
-    pub engine_lab: engine_lab::State,
-    pub society: society::State,
-    pub conversations: conversations::State,
     pub board: board::State,
-    pub council: council::State,
     pub treasury: treasury::State,
     pub rules: rules::State,
     pub models: models::State,
@@ -258,11 +234,7 @@ pub enum Msg {
     History(history::Msg),
     Library(library::Msg),
     Approvals(approvals::Msg),
-    EngineLab(engine_lab::Msg),
-    Society(society::Msg),
-    Conversations(conversations::Msg),
     Board(board::Msg),
-    Council(council::Msg),
     Treasury(treasury::Msg),
     Rules(rules::Msg),
     Models(models::Msg),
@@ -306,11 +278,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::History(m) => history::go(m),
         Msg::Library(m) => library::go(m),
         Msg::Approvals(m) => approvals::go(m),
-        Msg::EngineLab(_) => None,
-        Msg::Society(m) => society::go(m),
-        Msg::Conversations(m) => conversations::go(m),
         Msg::Board(m) => board::go(m),
-        Msg::Council(m) => council::go(m),
         Msg::Treasury(m) => treasury::go(m),
         Msg::Rules(m) => rules::go(m),
         Msg::Models(m) => models::go(m),
@@ -446,17 +414,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         Id::History => history::load(&mut screens.history, ctx).map(Msg::History),
         Id::Library => library::load(&mut screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::load(&mut screens.approvals, ctx).map(Msg::Approvals),
-        Id::RobotLab => {
-            engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Robot).map(Msg::EngineLab)
-        }
-        Id::HardwareLab => engine_lab::open(&mut screens.engine_lab, engine_lab::Kind::Hardware)
-            .map(Msg::EngineLab),
-        Id::Society => society::load(&mut screens.society, ctx).map(Msg::Society),
-        Id::Conversations => {
-            conversations::load(&mut screens.conversations, ctx).map(Msg::Conversations)
-        }
         Id::Board => board::load(&mut screens.board, ctx).map(Msg::Board),
-        Id::Council => council::load(&mut screens.council, ctx).map(Msg::Council),
         Id::Treasury => treasury::load(&mut screens.treasury, ctx).map(Msg::Treasury),
         Id::Rules => rules::load(&mut screens.rules, ctx).map(Msg::Rules),
         Id::Models => models::load(&mut screens.models, ctx).map(Msg::Models),
@@ -511,15 +469,7 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::History(m) => history::update(&mut screens.history, m, ctx).map(Msg::History),
         Msg::Library(m) => library::update(&mut screens.library, m, ctx).map(Msg::Library),
         Msg::Approvals(m) => approvals::update(&mut screens.approvals, m, ctx).map(Msg::Approvals),
-        Msg::EngineLab(m) => {
-            engine_lab::update(&mut screens.engine_lab, m, ctx).map(Msg::EngineLab)
-        }
-        Msg::Society(m) => society::update(&mut screens.society, m, ctx).map(Msg::Society),
-        Msg::Conversations(m) => {
-            conversations::update(&mut screens.conversations, m, ctx).map(Msg::Conversations)
-        }
         Msg::Board(m) => board::update(&mut screens.board, m, ctx).map(Msg::Board),
-        Msg::Council(m) => council::update(&mut screens.council, m, ctx).map(Msg::Council),
         Msg::Treasury(m) => treasury::update(&mut screens.treasury, m, ctx).map(Msg::Treasury),
         Msg::Rules(m) => rules::update(&mut screens.rules, m, ctx).map(Msg::Rules),
         Msg::Models(m) => models::update(&mut screens.models, m, ctx).map(Msg::Models),
@@ -584,9 +534,6 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Skills => skills::subscription(ctx).map(Msg::Skills),
         Id::History => history::subscription(ctx).map(Msg::History),
         Id::Platforms => platforms::subscription(&screens.platforms, ctx).map(Msg::Platforms),
-        Id::RobotLab | Id::HardwareLab => {
-            engine_lab::subscription(&screens.engine_lab).map(Msg::EngineLab)
-        }
         Id::Machines => machines::subscription(&screens.machines).map(Msg::Machines),
         Id::Workstations => {
             workstations::subscription(&screens.workstations, ctx).map(Msg::Workstations)
@@ -598,7 +545,6 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Agent(_) => agent::stream(ctx).map(Msg::Agent),
         Id::Treasury => treasury::subscription(&screens.treasury, ctx).map(Msg::Treasury),
         Id::LabJobs => lab_jobs::subscription(&screens.lab_jobs, ctx).map(Msg::LabJobs),
-        Id::Society => society::subscription().map(Msg::Society),
         Id::Lab => lab::subscription(&screens.lab, ctx).map(Msg::Lab),
         Id::LabModels => lab_models::subscription(ctx).map(Msg::LabModels),
         Id::Rules => rules::subscription(ctx).map(Msg::Rules),
@@ -609,9 +555,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Library => library::subscription(ctx).map(Msg::Library),
         Id::Tasks | Id::Task(_) => tasks::subscription(ctx).map(Msg::Tasks),
         Id::Approvals => approvals::subscription(ctx).map(Msg::Approvals),
-        Id::Conversations => conversations::subscription(ctx).map(Msg::Conversations),
         Id::Board => board::subscription(ctx).map(Msg::Board),
-        Id::Council => council::subscription(ctx).map(Msg::Council),
         Id::LabDatasets => lab_datasets::subscription(ctx).map(Msg::LabDatasets),
         Id::LabRecipes => lab_recipes::subscription(ctx).map(Msg::LabRecipes),
         Id::Ide(_) => ide::subscription(&screens.ide, ctx).map(Msg::Ide),
@@ -642,15 +586,7 @@ pub fn view<'a>(
         Id::History => history::view(&screens.history, ctx).map(Msg::History),
         Id::Library => library::view(&screens.library, ctx).map(Msg::Library),
         Id::Approvals => approvals::view(&screens.approvals, ctx).map(Msg::Approvals),
-        Id::RobotLab | Id::HardwareLab => {
-            engine_lab::view(&screens.engine_lab, ctx).map(Msg::EngineLab)
-        }
-        Id::Society => society::view(&screens.society, ctx).map(Msg::Society),
-        Id::Conversations => {
-            conversations::view(&screens.conversations, ctx).map(Msg::Conversations)
-        }
         Id::Board => board::view(&screens.board, ctx).map(Msg::Board),
-        Id::Council => council::view(&screens.council, ctx).map(Msg::Council),
         Id::Treasury => treasury::view(&screens.treasury, ctx).map(Msg::Treasury),
         Id::Rules => rules::view(&screens.rules, ctx).map(Msg::Rules),
         Id::Models => models::view(&screens.models, ctx).map(Msg::Models),

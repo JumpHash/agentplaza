@@ -157,15 +157,6 @@ fn boot() -> (Console, Task<Msg>) {
         } else if name.eq_ignore_ascii_case("LabJobs") {
             // A Lab section has no nav entry; this opens the Jobs tab for the snapshot harness.
             console.shell.current = screens::Id::LabJobs;
-        } else if let Some(id) = [
-            ("RobotLab", screens::Id::RobotLab),
-            ("HardwareLab", screens::Id::HardwareLab),
-        ]
-        .into_iter()
-        .find_map(|(n, id)| name.eq_ignore_ascii_case(n).then_some(id))
-        {
-            // The engine's labs are hidden from the sidebar, as the web's lab routes are.
-            console.shell.current = id;
         } else if name.eq_ignore_ascii_case("Ide") {
             // The IDE is not in the sidebar; `APZ_IDE_WS=<workspace id>` opens that workspace on it.
             console.shell.current = screens::Id::Ide(

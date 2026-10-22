@@ -76,7 +76,7 @@ pub struct Doc {
     pub kind: String,
     pub title: String,
     #[serde(default)]
-    pub by: String,
+    pub by_cid: u64,
     #[serde(default)]
     pub at_ms: i64,
 }
@@ -86,7 +86,7 @@ pub struct Doc {
 pub struct Critique {
     pub verdict: String,
     #[serde(default)]
-    pub by: String,
+    pub by_cid: u64,
     #[serde(default)]
     pub revision: u64,
     #[serde(default)]
@@ -293,7 +293,7 @@ pub struct LineContext<'a> {
     pub task_name: &'a dyn Fn(&str) -> String,
     /// When a ready task became ready (see `ready_since`), when the screen knows.
     pub ready_at: &'a dyn Fn(&str) -> Option<i64>,
-    pub name_of: &'a dyn Fn(u64) -> String,
+    pub label_of: &'a dyn Fn(u64) -> String,
     pub step_of: &'a dyn Fn(u64) -> Option<Step>,
     pub now: i64,
 }
@@ -326,9 +326,9 @@ pub fn card_line(t: &GraphTask, state: WorkState, ctx: &LineContext<'_>) -> Stri
             Some(cid) => {
                 let step = step_text((ctx.step_of)(cid).as_ref(), ctx.now);
                 if step.is_empty() {
-                    (ctx.name_of)(cid)
+                    (ctx.label_of)(cid)
                 } else {
-                    format!("{} · {step}", (ctx.name_of)(cid))
+                    format!("{} · {step}", (ctx.label_of)(cid))
                 }
             }
         },
@@ -344,10 +344,10 @@ pub fn card_line(t: &GraphTask, state: WorkState, ctx: &LineContext<'_>) -> Stri
                 match step {
                     Some(s) => format!(
                         "{what} · {} · {}",
-                        (ctx.name_of)(cid),
+                        (ctx.label_of)(cid),
                         short_span(ctx.now - s.since_ms)
                     ),
-                    None => format!("{what} · {}", (ctx.name_of)(cid)),
+                    None => format!("{what} · {}", (ctx.label_of)(cid)),
                 }
             }
         },
@@ -356,15 +356,15 @@ pub fn card_line(t: &GraphTask, state: WorkState, ctx: &LineContext<'_>) -> Stri
             Some(cid) => {
                 let step = step_text((ctx.step_of)(cid).as_ref(), ctx.now);
                 if step.is_empty() {
-                    format!("Reviewed by {}", (ctx.name_of)(cid))
+                    format!("Reviewed by {}", (ctx.label_of)(cid))
                 } else {
-                    format!("Reviewed by {} · {step}", (ctx.name_of)(cid))
+                    format!("Reviewed by {} · {step}", (ctx.label_of)(cid))
                 }
             }
         },
         WorkState::Done | WorkState::Failed | WorkState::Withdrawn => match t.agent_cid {
             None => state.label().to_string(),
-            Some(cid) => format!("{} · {}", state.label(), (ctx.name_of)(cid)),
+            Some(cid) => format!("{} · {}", state.label(), (ctx.label_of)(cid)),
         },
     }
 }
@@ -844,8 +844,8 @@ mod tests {
             "id": "pr1", "title": "Release", "goal": "g", "kind": "other", "stage": "implementation", "lead_cid": 1,
             "owner_approval": false, "repo": null,
             "docs": [{ "kind": "brief", "title": "The brief", "file": "f1", "repo_path": null, "commit": null,
-                       "summary": "s", "by_cid": 1, "by": "Ada", "at_ms": 0 }],
-            "critiques": [{ "by_cid": 3, "by": "Cy", "verdict": "approve", "text": "ok", "revision": 1, "at_ms": 0 }],
+                       "summary": "s", "by_cid": 1, "at_ms": 0 }],
+            "critiques": [{ "by_cid": 3, "verdict": "approve", "text": "ok", "revision": 1, "at_ms": 0 }],
             "revision": 1, "approved_by": "Mayor", "tasks": ["t1", "t2"], "history": [], "created_ms": 0, "updated_ms": 0
         }))
         .expect("the hub's project reads")
@@ -935,20 +935,14 @@ mod tests {
         let state_of = |id: &str| states.get(id).map(|s| s.to_string());
         let task_name = |id: &str| format!("T{}", &id[1..]);
         let no_time = |_: &str| None;
-        let name_of = |cid: u64| {
-            if cid == 7 {
-                "Ada".to_string()
-            } else {
-                format!("agent {cid}")
-            }
-        };
+        let label_of = |cid: u64| roles::agent_label(if cid == 7 { "qa" } else { "" }, cid);
         let thinking = |cid: u64| (cid == 7).then(|| step("thinking", None, NOW - 5_000));
         let ctx = LineContext {
             edges: &links,
             state_of: &state_of,
             task_name: &task_name,
             ready_at: &no_time,
-            name_of: &name_of,
+            label_of: &label_of,
             step_of: &thinking,
             now: NOW,
         };
@@ -968,7 +962,7 @@ mod tests {
         };
         assert_eq!(
             card_line(&claimed, WorkState::Working, &ctx),
-            "Ada · Thinking · 5s"
+            "QA #7 · Thinking · 5s"
         );
         let asks = |_: u64| Some(step("approval", Some("plaza_pay"), NOW - 120_000));
         let deciding = LineContext {
@@ -977,7 +971,7 @@ mod tests {
         };
         assert_eq!(
             card_line(&claimed, WorkState::NeedsYou, &deciding),
-            "Approve plaza_pay · Ada · 2m"
+            "Approve plaza_pay · QA #7 · 2m"
         );
         let qa = GraphTask {
             role: Some("qa".into()),
@@ -1012,7 +1006,7 @@ mod tests {
         };
         assert_eq!(
             card_line(&in_review, WorkState::Review, &ctx),
-            "Reviewed by agent 9"
+            "Reviewed by agent #9"
         );
     }
 

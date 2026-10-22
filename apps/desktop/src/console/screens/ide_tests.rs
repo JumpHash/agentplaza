@@ -14,7 +14,7 @@ fn info(cid: u64, writable: bool, status: &str) -> WorkspaceInfo {
         id: format!("agent:{cid}"),
         kind: "agent".into(),
         owner: cid.to_string(),
-        name: "scout".into(),
+        name: String::new(),
         writable,
         status: status.into(),
         os: None,
@@ -206,7 +206,11 @@ fn switching_workspace_is_refused_while_an_edit_is_unsaved() {
     let mut st = screen_with_a_tab();
     st.workspaces.push(info(8, true, "idle"));
     type_into(&mut st, "a.txt", "two\n");
-    let _ = update(&mut st, Msg::Pick(choice(&info(8, true, "idle"))), &ctx());
+    let _ = update(
+        &mut st,
+        Msg::Pick(choice(&info(8, true, "idle"), &[])),
+        &ctx(),
+    );
     assert_eq!(st.ide.workspace, Some(WorkspaceId::Agent(7)));
     assert!(st.notice.is_some());
 }
@@ -272,7 +276,7 @@ fn selecting_a_workstation_moves_the_centre_and_the_panel_off_the_views_it_lacks
     };
     st.centre = Centre::Chat;
     st.right = RightTab::Board;
-    let _ = update(&mut st, Msg::Pick(choice(&station())), &ctx());
+    let _ = update(&mut st, Msg::Pick(choice(&station(), &[])), &ctx());
     assert_eq!(st.ide.workspace, Some(WorkspaceId::Station("w3".into())));
     assert_eq!(
         st.centre,

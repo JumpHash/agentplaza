@@ -12,20 +12,14 @@ use iced::{Alignment, Background, Border, Color, Element, Font, Length, Padding,
 use serde_json::Value;
 
 use super::Id;
-use super::project_team;
 use super::wizard::{self, WizardMsg};
-use crate::console::engine::roles::{agent_hue, role_hue};
 use crate::console::ui::{Kind, Tone};
-use crate::console::{Ctx, client, render_card, scope, ui};
+use crate::console::{Ctx, client, roles, scope, ui};
 use crate::theme::{self};
 
-/// The table's head labels and the badges: mono, semibold / medium.
+/// The agent labels and the empty states' titles: sans, medium.
 const SANS_MEDIUM: Font = Font {
     weight: Weight::Medium,
-    ..theme::SANS
-};
-const SANS_SEMIBOLD: Font = Font {
-    weight: Weight::Semibold,
     ..theme::SANS
 };
 /// Table cells are 14px serif, as the web's `.table`.
@@ -137,11 +131,9 @@ impl fmt::Display for RoleChoice {
 #[derive(Debug, Clone)]
 struct AgentRow {
     cid: u64,
-    name: String,
     role: String,
     role_label: String,
     orchestrator: bool,
-    species: String,
     status: String,
     model: String,
     model_source: String,
@@ -184,11 +176,9 @@ fn parse(v: &Value) -> Option<AgentRow> {
     };
     Some(AgentRow {
         cid,
-        name: field("name"),
         role,
         role_label,
         orchestrator: field("tier") == "orchestrator",
-        species: field("species").to_string(),
         status: field("status"),
         model: field("model"),
         model_source: field("model_source"),
@@ -339,7 +329,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let client = ctx.client.clone();
             let line = format!(
                 "{} works on {} now",
-                raw_name(&state.raw, cid),
+                raw_label(&state.raw, cid),
                 scope::title_in(&state.projects, &project)
             );
             client::task(
@@ -356,7 +346,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Leave(cid, project) => {
             let client = ctx.client.clone();
-            let line = format!("{} is back on the bench", raw_name(&state.raw, cid));
+            let line = format!("{} is back on the bench", raw_label(&state.raw, cid));
             client::task(
                 move || {
                     client
@@ -441,7 +431,7 @@ fn bench_card<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
         let n = waiting.len();
         let mut lines: Vec<Element<'a, Msg>> = Vec::new();
         for (slot, a) in waiting.iter().enumerate() {
-            lines.push(bench_row(a, project, slot, &cols));
+            lines.push(bench_row(a, project, &cols));
             if slot + 1 < n {
                 lines.push(rule(crate::theme::palette().rule));
             }
@@ -460,22 +450,21 @@ fn bench_card<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
 }
 
 /// A bench row: the agent, its model, and Add to project.
-fn bench_row<'a>(a: &AgentRow, project: &str, slot: usize, cols: &[Col]) -> Element<'a, Msg> {
+fn bench_row<'a>(a: &AgentRow, project: &str, cols: &[Col]) -> Element<'a, Msg> {
     let add = ui::btn_sm::<Msg>(
         "Add to project",
         Some("plus"),
         Kind::Secondary,
         Some(Msg::Join(a.cid, project.to_string())),
     );
-    grid_row(cols, vec![agent_cell(a, slot), model_cell(a), add], 0.0)
+    grid_row(cols, vec![agent_cell(a), model_cell(a), add], 0.0)
 }
 
-/// An agent's name from the roster, for the lines a move shows.
-fn raw_name(raw: &[Value], cid: u64) -> String {
+/// An agent's label from the roster, for the lines a move shows.
+fn raw_label(raw: &[Value], cid: u64) -> String {
     raw.iter()
         .find(|a| a["cid"].as_u64() == Some(cid))
-        .map(project_team::agent_name)
-        .unwrap_or_else(|| format!("Agent {cid}"))
+        .map_or_else(|| roles::agent_label("", cid), roles::agent_label_of)
 }
 
 fn head<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
@@ -710,7 +699,7 @@ fn table<'a>(
     let live = scope::picks(&state.projects);
     let n = rows.len();
     for (slot, a) in rows.into_iter().enumerate() {
-        lines.push(row_view(a, slot, state, scope, &cols, &live));
+        lines.push(row_view(a, state, scope, &cols, &live));
         if slot + 1 < n {
             lines.push(rule(crate::theme::palette().rule));
         }
@@ -725,13 +714,12 @@ const EDGE: f32 = 16.0;
 
 fn row_view<'a>(
     a: &'a AgentRow,
-    slot: usize,
     state: &'a State,
     scope: Option<&'a str>,
     cols: &[Col],
     live: &[scope::Pick],
 ) -> Element<'a, Msg> {
-    let mut cells = vec![agent_cell(a, slot)];
+    let mut cells = vec![agent_cell(a)];
     if scope.is_none() {
         cells.push(project_cell(a, state));
     }
@@ -777,57 +765,11 @@ fn rule<'a>(color: Color) -> Element<'a, Msg> {
         .into()
 }
 
-/// The web's roster avatar (`avatar(a, 30)`): the agent's robot on its hue, the initial tile under it where the GPU cannot draw.
-const AVATAR: f32 = 30.0;
-
-fn agent_cell<'a>(a: &AgentRow, slot: usize) -> Element<'a, Msg> {
-    let initial = name(a)
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_default();
-    let tile = container(
-        text(initial)
-            .font(SANS_SEMIBOLD)
-            .size(12.0)
-            .color(crate::theme::palette().ink_2),
-    )
-    .width(Length::Fixed(AVATAR))
-    .height(Length::Fixed(AVATAR))
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .style(|_: &Theme| container::Style {
-        background: Some(Background::Color(crate::theme::palette().sheet_2)),
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: (AVATAR / 2.0).into(),
-        },
-        ..Default::default()
-    });
-    let spec = render_card::PortraitSpec {
-        cid: a.cid,
-        orchestrator: a.orchestrator,
-        role_hue: if a.orchestrator {
-            25.0
-        } else {
-            role_hue(&a.role)
-        },
-        body_hue: agent_hue(a.cid),
-        offline: matches!(a.status.as_str(), "offline" | "asleep" | "dozing"),
-        species: crate::console::engine::robot::species_of(Some(a.species.as_str()), a.cid),
-    };
-    let layers: Vec<Element<'a, Msg>> = match render_card::robot_portrait(slot, spec, AVATAR) {
-        Some(robot) => vec![tile.into(), robot],
-        None => vec![tile.into()],
-    };
-    let portrait = iced::widget::stack(layers)
-        .width(Length::Fixed(AVATAR))
-        .height(Length::Fixed(AVATAR));
-    // The name line: the status dot, the name, and the word for a napping agent (the dot alone does not tell asleep).
+fn agent_cell<'a>(a: &AgentRow) -> Element<'a, Msg> {
+    // The label line: the status dot, the label, and the word for a napping agent (the dot alone does not tell asleep).
     let mut name_line = row![
         ui::dot::<Msg>(status_tone(&a.status)),
-        text(name(a))
+        text(roles::agent_label(&a.role, a.cid))
             .font(SANS_MEDIUM)
             .size(CELL)
             .color(crate::theme::palette().ink)
@@ -838,20 +780,15 @@ fn agent_cell<'a>(a: &AgentRow, slot: usize) -> Element<'a, Msg> {
     if let Some(word) = sleep_word(&a.status) {
         name_line = name_line.push(ui::badge::<Msg>(word, Tone::Muted));
     }
-    row![
-        portrait,
-        column![
-            name_line,
-            text(a.role_label.clone())
-                .font(theme::SANS)
-                .size(12.0)
-                .color(crate::theme::palette().ink_3)
-                .wrapping(Wrapping::None)
-        ]
-        .spacing(1),
+    column![
+        name_line,
+        text(a.role_label.clone())
+            .font(theme::SANS)
+            .size(12.0)
+            .color(crate::theme::palette().ink_3)
+            .wrapping(Wrapping::None)
     ]
-    .spacing(10)
-    .align_y(Alignment::Center)
+    .spacing(1)
     .into()
 }
 
@@ -1064,7 +1001,6 @@ fn work_tone(kind: &str) -> Tone {
     match kind {
         "task" => Tone::Signal,
         "chat" => Tone::Info,
-        "motion" => Tone::Warn,
         _ => Tone::Muted,
     }
 }
@@ -1082,15 +1018,6 @@ fn compact(n: u64) -> String {
         }
     } else {
         format!("{:.1}M", n as f64 / 1_000_000.0)
-    }
-}
-
-/// The name an agent chose for itself, or "Unnamed" while it has none.
-fn name(a: &AgentRow) -> String {
-    if a.name.trim().is_empty() {
-        "Unnamed".to_string()
-    } else {
-        a.name.clone()
     }
 }
 

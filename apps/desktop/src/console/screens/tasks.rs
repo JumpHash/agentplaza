@@ -99,8 +99,6 @@ pub struct TaskRecord {
 pub struct AgentRecord {
     pub cid: u64,
     #[serde(default)]
-    pub name: String,
-    #[serde(default)]
     pub role: String,
     #[serde(default)]
     pub role_label: String,
@@ -938,11 +936,10 @@ fn role_label(agents: &[AgentRecord], role: &str) -> String {
         .unwrap_or_else(|| roles::label(role))
 }
 
-fn agent_name(agents: &[AgentRecord], cid: u64) -> String {
+fn agent_label(agents: &[AgentRecord], cid: u64) -> String {
     match agents.iter().find(|a| a.cid == cid) {
-        Some(a) if a.name.trim().is_empty() => "Unnamed".to_string(),
-        Some(a) => a.name.clone(),
-        None => format!("agent {cid}"),
+        Some(a) => roles::agent_label(&a.role, a.cid),
+        None => roles::agent_label("", cid),
     }
 }
 
@@ -1438,12 +1435,12 @@ fn meta_text<'a>(s: String) -> Element<'a, Msg> {
     sans_text(s, 11.5, crate::theme::palette().ink_3)
 }
 
-/// The assignee's name, which opens the agent; "Unassigned" when there is none.
+/// The assignee's label, which opens the agent; "Unassigned" when there is none.
 fn assignee_link<'a>(state: &'a State, cid: Option<u64>) -> Element<'a, Msg> {
     match cid {
         None => ui::faint("Unassigned").into(),
         Some(cid) => button(ui::sans(
-            agent_name(&state.agents, cid),
+            agent_label(&state.agents, cid),
             11.5,
             crate::theme::palette().ink,
         ))
@@ -1505,7 +1502,7 @@ fn draft_modal<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
             .into_iter()
             .map(|a| Pick {
                 key: a.cid.to_string(),
-                label: agent_name(&state.agents, a.cid),
+                label: agent_label(&state.agents, a.cid),
             }),
     );
     let assignee = pick_list(
@@ -1559,7 +1556,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         .into_iter()
         .map(|a| Pick {
             key: a.cid.to_string(),
-            label: agent_name(&state.agents, a.cid),
+            label: agent_label(&state.agents, a.cid),
         })
         .collect();
     let role = t

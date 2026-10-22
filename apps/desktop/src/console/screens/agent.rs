@@ -1,7 +1,6 @@
 //! One agent's page (parity with the web console's agent detail): the back link and actions, the
-//! profile card, the transcript and chat (or the memory library), and the side column: model,
-//! harness, permissions (`agent_side`), then details and queue. Restart, wipe and retire ask first;
-//! cancel and stop act at once.
+//! transcript and chat, and the side column: model, harness, permissions (`agent_side`), checkpoints,
+//! then details and queue. Restart, wipe and retire ask first; cancel and stop act at once.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,41 +14,26 @@ use iced::{Alignment, Border, Element, Length, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Id, agent_side, ide, lab_common, nodes, sanctions};
-use crate::console::engine::roles::{agent_hue, role_hue};
+use super::{Id, agent_side, ide, lab_common, nodes};
 use crate::console::rich;
-use crate::console::{Ctx, chat_tools, client, events, scope, ui};
+use crate::console::{Ctx, chat_tools, client, events, roles, scope, ui};
 use crate::theme::SANS;
 
-/// The profile and infractions refresh at most this often; the transcript on every poll.
+/// The projects and checkpoints refresh at most this often; the transcript on every poll.
 const EXTRAS_EVERY: Duration = Duration::from_secs(15);
 const SIDE_WIDTH: f32 = 300.0;
 const TRANSCRIPT_HEIGHT: f32 = 480.0;
-/// The portrait's square, and the infractions shown before "Show all".
-const AVATAR: f32 = 56.0;
-const INFRACTIONS_SHOWN: usize = 10;
 /// The transcript follows new text while the reader is within this many pixels of its bottom (the web's NEAR_BOTTOM_PX).
 const NEAR_BOTTOM_PX: f32 = 80.0;
 const TRANSCRIPT_ID: &str = "agent-transcript";
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
-    #[default]
-    Transcript,
-    Memory,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dialog {
     Restart,
     Wipe {
-        memory: bool,
         transcript: bool,
-        identity: bool,
     },
     Retire,
-    /// Lift the suspension with this sanction id; the reason is typed in the card.
-    Lift(u64),
     /// Roll the VM back to this checkpoint (by name). A safety checkpoint is taken first.
     Restore(String),
     /// Delete this checkpoint (by name).
@@ -62,9 +46,7 @@ pub enum Dialog {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wipe {
-    Memory,
     Transcript,
-    Identity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,18 +106,12 @@ pub struct State {
     /// The line a finished action leaves (the web's toast): "Restarting", "Stopped", …
     pub notice: Option<String>,
     pub agent: Option<Value>,
-    pub profile: Option<Value>,
-    pub infractions: Vec<Value>,
-    /// The last infractions request failed: the headline says so instead of a count.
-    pub infractions_failed: bool,
-    pub infractions_all: bool,
     pub entries: Vec<Value>,
     pub last_seq: u64,
     pub extras_at: Option<Instant>,
     pub fetching: bool,
     pub busy: bool,
     pub sending: bool,
-    pub tab: Tab,
     /// The More menu under the head is open.
     pub more: bool,
     pub composer: text_editor::Content,
@@ -143,20 +119,15 @@ pub struct State {
     /// The tool blocks and results the reader has opened, by (entry seq, block index).
     pub open: HashSet<(u64, usize)>,
     pub side: agent_side::Side,
-    /// The agent's sanctions and suspensions, refreshed with the profile.
-    pub conduct: Option<sanctions::Register>,
-    /// The reason typed for a lift, and the lift's error (shown in its card).
-    pub lift_reason: String,
-    pub lift_error: Option<String>,
-    /// The VM checkpoints, newest first, refreshed with the profile (`checkpoints_error` when the read failed).
+    /// The VM checkpoints, newest first, refreshed with the projects (`checkpoints_error` when the read failed).
     pub checkpoints: Vec<Checkpoint>,
     pub checkpoints_error: Option<String>,
     /// The label typed for the next checkpoint, and the count typed for a fork (its error in the card).
     pub checkpoint_label: String,
     pub fork_n: String,
     pub fork_error: Option<String>,
-    /// The names of the agents the last fork made, listed under the checkpoints.
-    pub forked: Vec<String>,
+    /// The cids of the agents the last fork made, listed under the checkpoints.
+    pub forked: Vec<u64>,
     /// The nodes the Move card lists (loaded when it opens), the one picked, and the move's error.
     pub move_nodes: Option<Vec<nodes::NodeView>>,
     pub move_to: Option<String>,
@@ -165,11 +136,11 @@ pub struct State {
     pub live: Vec<LiveTurn>,
     /// Set once the reader scrolls away from the bottom; until then the transcript follows new text.
     pub scrolled_up: bool,
-    /// Every project, refreshed with the profile: where the agent works, and the ones it can be put on.
+    /// Every project, refreshed with the checkpoints: where the agent works, and the ones it can be put on.
     pub projects: Vec<Value>,
 }
 
-/// One poll: the agent, the transcript after the last seq, and (when due) the profile and infractions.
+/// One poll: the agent, the transcript after the last seq, and (when due) the projects and checkpoints.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     pub cid: u64,
@@ -178,12 +149,10 @@ pub struct Snapshot {
     pub extras: Option<Extras>,
 }
 
-/// The slower reads of a poll: the profile, and the infractions (or why they did not load).
+/// The slower reads of a poll: the projects, and the checkpoints (or why they did not load).
 #[derive(Debug, Clone)]
 pub struct Extras {
-    pub profile: Option<Value>,
     pub projects: Option<Vec<Value>>,
-    pub infractions: Result<Vec<Value>, String>,
     pub checkpoints: Result<Vec<Checkpoint>, String>,
 }
 
@@ -192,7 +161,6 @@ pub enum Msg {
     Go(Id),
     /// Opens the IDE on a target (the agent's workspace, see `ide::target`).
     OpenIde(String),
-    Tab(Tab),
     /// Opens or closes the More row under the head.
     ToggleMore,
     Polled(Result<Snapshot, String>),
@@ -210,19 +178,15 @@ pub enum Msg {
         result: Result<(), String>,
     },
     Expand((u64, usize)),
-    ShowAll,
     Side(agent_side::SideMsg),
-    Conduct(Result<sanctions::Register, String>),
-    LiftReason(String),
-    Lifted(Result<sanctions::Sanction, String>),
     /// The checkpoint label typed for the next one.
     CheckpointLabel(String),
     /// Takes a checkpoint now, with the label typed (if any).
     Take,
     /// The fork count typed in the card.
     ForkCount(String),
-    /// A fork answered: the names of the agents it made.
-    Forked(Result<Vec<String>, String>),
+    /// A fork answered: the cids of the agents it made.
+    Forked(Result<Vec<u64>, String>),
     /// The nodes the Move card lists, loaded when it opens.
     MoveNodes(Result<Vec<nodes::NodeView>, String>),
     /// A node picked in the Move card.
@@ -249,7 +213,6 @@ pub fn go(msg: &Msg) -> Option<Id> {
         Msg::Go(id) => Some(id.clone()),
         Msg::OpenIde(target) => Some(Id::Ide(Some(target.clone()))),
         Msg::Rich(rich::Ev::Action(action)) => action.route(),
-        Msg::Side(agent_side::SideMsg::Rich(rich::Ev::Action(action))) => action.route(),
         _ => None,
     }
 }
@@ -374,25 +337,7 @@ fn transcript_id() -> iced::widget::Id {
 
 /// The hub's events, while this page is open: the live `delta` text.
 pub fn stream(ctx: &Ctx) -> iced::Subscription<Msg> {
-    // The graph's keys. A key a focused text field captures (the find box, the composer) has status Captured and never
-    // reaches here, as the web ignores keys while typing.
-    let keys = iced::event::listen_with(|event, status, _| match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. })
-            if status == iced::event::Status::Ignored =>
-        {
-            super::memory_graph::key(&key, modifiers.shift())
-                .map(|k| Msg::Side(agent_side::SideMsg::Key(k)))
-        }
-        _ => None,
-    });
-    // The web re-reads the notes every 30 seconds as a fallback to the live events; the Memory tab ignores it when hidden.
-    let refresh =
-        iced::time::every(Duration::from_secs(30)).map(|_| Msg::Side(agent_side::SideMsg::Refresh));
-    iced::Subscription::batch([
-        events::subscription(&ctx.client).map(Msg::Event),
-        keys,
-        refresh,
-    ])
+    events::subscription(&ctx.client).map(Msg::Event)
 }
 
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
@@ -412,21 +357,12 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let after = state.last_seq;
     let client = ctx.client.clone();
     let poll = client::task(move || fetch(&client, cid, after, extras), Msg::Polled);
-    let conduct = if extras {
-        let client = ctx.client.clone();
-        client::task(
-            move || sanctions::list(&client, Some(cid), None, None),
-            Msg::Conduct,
-        )
-    } else {
-        Task::none()
-    };
     let tools = if state.chat_tools.is_loaded() {
         Task::none()
     } else {
         chat_tools::load(&ctx.client, chat_tools::Target::Agent(cid)).map(Msg::ChatTools)
     };
-    Task::batch([poll, side, conduct, tools])
+    Task::batch([poll, side, tools])
 }
 
 fn fetch(client: &client::Client, cid: u64, after: u64, extras: bool) -> Result<Snapshot, String> {
@@ -436,18 +372,12 @@ fn fetch(client: &client::Client, cid: u64, after: u64, extras: bool) -> Result<
     ))?;
     entries.sort_by_key(|e| u(e, "seq"));
     let extras = extras.then(|| {
-        let profile = client
-            .get::<Value>(&format!("/v1/agents/{cid}/profile"))
-            .ok();
-        let infractions = client.get::<Vec<Value>>(&format!("/v1/agents/{cid}/infractions"));
         let checkpoints = client
             .get::<Value>(&format!("/v1/agents/{cid}/vm-checkpoints"))
             .and_then(parse_checkpoints);
         let projects = client.get::<Vec<Value>>("/v1/projects").ok();
         Extras {
-            profile,
             projects,
-            infractions,
             checkpoints,
         }
     });
@@ -495,10 +425,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.more = !state.more;
             Task::none()
         }
-        Msg::Tab(tab) => {
-            state.tab = tab;
-            Task::none()
-        }
         Msg::Polled(result) => {
             state.fetching = false;
             let mut grew = false;
@@ -518,13 +444,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         }
                     }
                     if let Some(Extras {
-                        profile,
                         projects,
-                        infractions,
                         checkpoints,
                     }) = snap.extras
                     {
-                        state.profile = profile;
                         if let Some(list) = projects {
                             state.projects = list;
                         }
@@ -534,20 +457,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                                 state.checkpoints_error = None;
                             }
                             Err(e) => {
-                                // Nothing stale under the error line, as the infractions do.
+                                // Nothing stale under the error line.
                                 state.checkpoints.clear();
                                 state.checkpoints_error = Some(e);
-                            }
-                        }
-                        match infractions {
-                            Ok(list) => {
-                                state.infractions = list;
-                                state.infractions_failed = false;
-                            }
-                            Err(_) => {
-                                // Nothing stale under a headline that says the list is unavailable.
-                                state.infractions.clear();
-                                state.infractions_failed = true;
                             }
                         }
                     }
@@ -561,15 +473,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Task::none()
             };
             Task::batch([scroll, prefetch(state, ctx)])
-        }
-        Msg::Event(e) if e.kind == "memory" => {
-            // A note of this agent changed: the Memory tab reloads (debounced in the side panel).
-            let mine = e.data.get("cid").and_then(Value::as_u64) == Some(state.cid);
-            if mine {
-                agent_side::memory_changed(&mut state.side).map(Msg::Side)
-            } else {
-                Task::none()
-            }
         }
         Msg::ChatTools(m) => {
             chat_tools::update(&mut state.chat_tools, m, &ctx.client).map(Msg::ChatTools)
@@ -631,10 +534,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             dispatch(state, ctx, path, json!({}), false, note)
         }
         Msg::Ask(dialog) => {
-            if matches!(dialog, Dialog::Lift(_)) {
-                state.lift_reason.clear();
-                state.lift_error = None;
-            }
             if matches!(dialog, Dialog::Move) {
                 state.move_nodes = None;
                 state.move_to = None;
@@ -650,16 +549,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::Toggle(which) => {
-            if let Some(Dialog::Wipe {
-                memory,
-                transcript,
-                identity,
-            }) = state.dialog.as_mut()
-            {
+            if let Some(Dialog::Wipe { transcript }) = state.dialog.as_mut() {
                 let flag = match which {
-                    Wipe::Memory => memory,
                     Wipe::Transcript => transcript,
-                    Wipe::Identity => identity,
                 };
                 *flag = !*flag;
             }
@@ -671,17 +563,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Proceed => {
             let cid = state.cid;
-            // A lift keeps its card open until the hub answers, so a refused lift can be read and retried.
-            if let Some(Dialog::Lift(id)) = state.dialog.clone() {
-                let reason = state.lift_reason.trim().to_string();
-                if reason.is_empty() || state.busy {
-                    return Task::none();
-                }
-                state.busy = true;
-                state.lift_error = None;
-                let client = ctx.client.clone();
-                return client::task(move || sanctions::lift(&client, id, &reason), Msg::Lifted);
-            }
             // The fork card stays open until the hub answers, so a refused count can be read and corrected.
             if let Some(Dialog::Fork) = state.dialog.clone() {
                 let Some(n) = fork_count(&state.fork_n) else {
@@ -698,7 +579,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     move || {
                         client
                             .post::<Value>(&path, &json!({ "n": n }))
-                            .and_then(|v| fork_names(&v))
+                            .and_then(|v| fork_cids(&v))
                     },
                     Msg::Forked,
                 );
@@ -712,13 +593,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                     false,
                     "Restarting",
                 ),
-                Some(Dialog::Wipe {
-                    memory,
-                    transcript,
-                    identity,
-                }) => {
-                    let body =
-                        json!({ "memory": memory, "transcript": transcript, "identity": identity });
+                Some(Dialog::Wipe { transcript }) => {
+                    let body = json!({ "transcript": transcript });
                     dispatch(
                         state,
                         ctx,
@@ -750,9 +626,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         c.delete(&path).map(|_| ())
                     })
                 }
-                None | Some(Dialog::Lift(_)) | Some(Dialog::Fork) | Some(Dialog::Move) => {
-                    Task::none()
-                }
+                None | Some(Dialog::Fork) | Some(Dialog::Move) => Task::none(),
             }
         }
         Msg::MoveNodes(Ok(list)) => {
@@ -838,44 +712,17 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Forked(result) => {
             state.busy = false;
             match result {
-                Ok(names) => {
+                Ok(cids) => {
                     state.dialog = None;
                     state.fork_n.clear();
                     state.fork_error = None;
-                    state.forked = names;
+                    state.forked = cids;
                     state.notice = Some("Forked".to_string());
                     // The fork took a checkpoint of its own, and the new agents join the roster.
                     state.extras_at = None;
                     return load(state, ctx);
                 }
                 Err(e) => state.fork_error = Some(e),
-            }
-            Task::none()
-        }
-        Msg::LiftReason(reason) => {
-            state.lift_reason = reason;
-            Task::none()
-        }
-        Msg::Lifted(result) => {
-            state.busy = false;
-            match result {
-                Ok(_) => {
-                    state.dialog = None;
-                    state.lift_reason.clear();
-                    state.lift_error = None;
-                    state.notice = Some("Lifted".to_string());
-                    // Refresh the register now, not on the next 15-second tick.
-                    state.extras_at = None;
-                    return load(state, ctx);
-                }
-                Err(e) => state.lift_error = Some(e),
-            }
-            Task::none()
-        }
-        Msg::Conduct(result) => {
-            match result {
-                Ok(register) => state.conduct = Some(register),
-                Err(e) => state.error = Some(e),
             }
             Task::none()
         }
@@ -904,15 +751,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if !state.open.remove(&key) {
                 state.open.insert(key);
             }
-            Task::none()
-        }
-        Msg::ShowAll => {
-            state.infractions_all = !state.infractions_all;
-            Task::none()
-        }
-        Msg::Side(agent_side::SideMsg::Key(_) | agent_side::SideMsg::Refresh)
-            if !matches!(state.tab, Tab::Memory) =>
-        {
             Task::none()
         }
         Msg::Side(m) => agent_side::update(&mut state.side, m, ctx).map(Msg::Side),
@@ -966,8 +804,7 @@ fn page<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let name = state
         .agent
         .as_ref()
-        .map(agent_name)
-        .unwrap_or_else(|| format!("Agent {}", state.cid));
+        .map_or_else(|| roles::agent_label("", state.cid), roles::agent_label_of);
     let busy = state.busy;
     let pick = |m: Msg| if busy { None } else { Some(m) };
     let working = state
@@ -1054,11 +891,7 @@ fn page<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
                 "Wipe…",
                 Some("trash"),
                 ui::Kind::DangerOutline,
-                pick(Msg::Ask(Dialog::Wipe {
-                    memory: false,
-                    transcript: false,
-                    identity: false,
-                })),
+                pick(Msg::Ask(Dialog::Wipe { transcript: false })),
             ));
             more.push(ui::btn(
                 "Retire",
@@ -1080,11 +913,10 @@ fn page<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         body.push(dialog_card(state, d, &name));
     }
     match state.agent.as_ref() {
-        Some(a) => {
+        Some(_) => {
             if let Some(e) = &state.error {
                 body.push(ui::error_line(e));
             }
-            body.push(profile_card(state, a));
         }
         None => match &state.error {
             Some(e) => body.push(ui::empty("alert", "Could not load this agent", e)),
@@ -1092,25 +924,13 @@ fn page<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         },
     }
 
-    let tabs = ui::tabs(
-        &[(Tab::Transcript, "Transcript"), (Tab::Memory, "Memory")],
-        state.tab,
-        Msg::Tab,
-    );
-    let content: Element<'a, Msg> = match state.tab {
-        Tab::Transcript => column![transcript_card(state), composer_view(state)]
-            .spacing(16)
-            .width(Length::Fill)
-            .into(),
-        Tab::Memory => agent_side::memory_view(&state.side).map(Msg::Side),
-    };
-    let main = column![tabs, content].spacing(16).width(Length::Fill);
+    let main = column![transcript_card(state), composer_view(state)]
+        .spacing(16)
+        .width(Length::Fill);
 
-    // The side column, as the web's `aside.ag-side`: it starts under the tabs (36 tall, then the 16 gap).
+    // The side column, as the web's `aside.ag-side`: it starts level with the transcript.
     let mut side: Vec<Element<'a, Msg>> = vec![
-        Space::new().height(Length::Fixed(36.0)).into(),
         agent_side::view(&state.side, ctx).map(Msg::Side),
-        conduct_card(state),
         checkpoints_card(state),
     ];
     if let Some(a) = state.agent.as_ref() {
@@ -1166,7 +986,7 @@ fn project_line<'a>(state: &'a State, a: &'a Value) -> Option<Element<'a, Msg>> 
     let mut line = row![ui::sans(
         format!(
             "{} is on the bench: it does nothing until it works on a project.",
-            agent_name(a)
+            roles::agent_label_of(a)
         ),
         13.0,
         ink_2
@@ -1243,33 +1063,6 @@ fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg>
     let busy = state.busy;
     let proceed = if busy { None } else { Some(Msg::Proceed) };
     match d {
-        Dialog::Lift(_) => {
-            let reason = text_input("Why lift this suspension?", &state.lift_reason)
-                .on_input(Msg::LiftReason)
-                .size(13.0)
-                .style(crate::theme::input);
-            let lift = if busy || state.lift_reason.trim().is_empty() {
-                None
-            } else {
-                Some(Msg::Proceed)
-            };
-            let mut body = column![
-                ui::faint("The suspension ends now. The reason goes on the record."),
-                reason
-            ]
-            .spacing(10);
-            if let Some(e) = &state.lift_error {
-                body = body.push(ui::error_line(e));
-            }
-            body = body.push(
-                row![
-                    ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
-                    ui::btn("Lift", None, ui::Kind::Primary, lift)
-                ]
-                .spacing(8),
-            );
-            ui::card(&format!("Lift {name}'s suspension?"), body.into())
-        }
         Dialog::Move => move_card(state, name),
         Dialog::Restart => ui::card(
             &format!("Restart {name}?"),
@@ -1284,24 +1077,14 @@ fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg>
             .spacing(10)
             .into(),
         ),
-        Dialog::Wipe {
-            memory,
-            transcript,
-            identity,
-        } => ui::card(
+        Dialog::Wipe { transcript } => ui::card(
             &format!("Wipe {name}"),
             column![
                 ui::faint("The agent's VM restarts with a fresh workspace. This cannot be undone."),
                 checkbox(true).label("Workspace (always)"),
-                checkbox(*memory)
-                    .label("Memory notes")
-                    .on_toggle(|_| Msg::Toggle(Wipe::Memory)),
                 checkbox(*transcript)
                     .label("Conversation transcript")
                     .on_toggle(|_| Msg::Toggle(Wipe::Transcript)),
-                checkbox(*identity)
-                    .label("Name and reputation")
-                    .on_toggle(|_| Msg::Toggle(Wipe::Identity)),
                 row![
                     ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::Dismiss)),
                     ui::btn("Wipe", None, ui::Kind::Danger, proceed)
@@ -1383,483 +1166,6 @@ fn dialog_card<'a>(state: &'a State, d: &Dialog, name: &str) -> Element<'a, Msg>
             ui::card(&format!("Fork {name}"), body.into())
         }
     }
-}
-
-/// The profile: the portrait with its stamp, the name and role, the money, standing, conduct and
-/// record tiles, then the infractions (`agent-profile.ts`). The portrait is the agent's hue and
-/// initial until the desktop draws portraits.
-/// The profile card, as the web's: the robot beside the tier, the role, the model and the number; then six tiles
-/// (balance, reputation, conduct, tasks, network, tokens), the record and the infractions.
-fn profile_card<'a>(state: &'a State, a: &'a Value) -> Element<'a, Msg> {
-    let p = state.profile.as_ref();
-    let pv = |k: &str| f(p, k);
-    let orchestrator = s(a, "tier") == "orchestrator";
-    let hue = if orchestrator {
-        25.0
-    } else {
-        role_hue(s(a, "role"))
-    };
-    let cid = u(a, "cid");
-    let body_hue = agent_hue(cid);
-    let name = agent_name(a);
-    let initial = name
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_else(|| "A".to_string());
-    let letter = container(
-        text(initial)
-            .font(ui::SANS_SEMIBOLD)
-            .size(16.0)
-            .color(crate::theme::palette().ink_2),
-    )
-    .width(Length::Fixed(AVATAR))
-    .height(Length::Fixed(AVATAR))
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .style(|_: &Theme| container::Style {
-        background: Some(crate::theme::palette().sheet_2.into()),
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: (AVATAR / 2.0).into(),
-        },
-        ..Default::default()
-    });
-    let spec = crate::console::render_card::PortraitSpec {
-        cid,
-        orchestrator,
-        role_hue: hue,
-        body_hue,
-        offline: !matches!(s(a, "status"), "working" | "idle"),
-        species: crate::console::engine::robot::species_of(Some(s(a, "species")), cid),
-    };
-    let layers: Vec<Element<'a, Msg>> =
-        match crate::console::render_card::robot_portrait(7, spec, AVATAR) {
-            Some(robot) => vec![letter.into(), robot],
-            None => vec![letter.into()],
-        };
-    let picture = iced::widget::stack(layers)
-        .width(Length::Fixed(AVATAR))
-        .height(Length::Fixed(AVATAR));
-    let top = row![
-        picture,
-        column![
-            ui::label(if orchestrator {
-                "ORCHESTRATOR"
-            } else {
-                "CITIZEN"
-            }),
-            row![
-                ui::badge::<Msg>(s(a, "role_label"), ui::Tone::Signal),
-                ui::mono(s(a, "model").to_string(), 12.5, crate::theme::palette().ink),
-                ui::faint(format!("agent #{cid}")),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        ]
-        .spacing(4)
-        .width(Length::Fill),
-    ]
-    .spacing(12)
-    .align_y(Alignment::Center);
-
-    let usage = a.get("usage");
-    let tokens = f(usage, "input_tokens") + f(usage, "output_tokens");
-    let conf = pv("confidence");
-    let rep: Element<'a, Msg> = match p {
-        Some(_) if conf >= 0.05 => meter(
-            pv("reputation"),
-            100.0,
-            format!("{} / 100", pv("reputation").round()),
-        ),
-        Some(_) => figure("Unrated"),
-        None => figure("—"),
-    };
-    let rep_sub = match p {
-        Some(_) if conf >= 0.05 => format!("{}% confident", (conf * 100.0).round()),
-        Some(_) => "no rated work yet".to_string(),
-        None => String::new(),
-    };
-    let conduct: Element<'a, Msg> = match p {
-        Some(_) => meter(
-            pv("conduct"),
-            100.0,
-            conduct_text(pv("conduct")).to_string(),
-        ),
-        None => figure("—"),
-    };
-    let tk = |k: &str| f(p.and_then(|p| p.get("tasks")), k);
-    let fines = p.and_then(|p| p.get("fines"));
-    let tiles_a = row![
-        tile(
-            "Balance",
-            match p {
-                Some(_) => figure(format!("{} cr", compact(pv("wallet")))),
-                None => figure("—"),
-            },
-            match p {
-                Some(_) => format!(
-                    "earned {} · spent {}",
-                    compact(pv("earned")),
-                    compact(pv("spent"))
-                ),
-                None => String::new(),
-            }
-        ),
-        tile("Reputation", rep, rep_sub),
-        tile(
-            "Conduct",
-            conduct,
-            match p {
-                Some(_) => format!(
-                    "{} violations · {} refusals",
-                    violations(p).len(),
-                    pv("denials").round()
-                ),
-                None => String::new(),
-            }
-        ),
-    ]
-    .spacing(12);
-    let tiles_b = row![
-        tile(
-            "Tasks",
-            match p {
-                Some(_) => figure(format!("{} verified", tk("verified"))),
-                None => figure("—"),
-            },
-            match p {
-                Some(_) => format!(
-                    "{} done · {} failed · {} posted",
-                    tk("done"),
-                    tk("failed"),
-                    tk("posted")
-                ),
-                None => String::new(),
-            }
-        ),
-        tile(
-            "Network",
-            match p {
-                Some(_) => figure(format!("{} contacts", pv("contacts"))),
-                None => figure("—"),
-            },
-            match p {
-                Some(_) => format!("{} memories", pv("memory_notes")),
-                None => String::new(),
-            }
-        ),
-        tile(
-            "Tokens",
-            figure(compact(tokens)),
-            match p {
-                Some(p) => format!("joined {}", ago(u(p, "joined_ms"))),
-                None => String::new(),
-            }
-        ),
-    ]
-    .spacing(12);
-
-    let mut record: Vec<Element<'a, Msg>> = Vec::new();
-    let viol = violations(p);
-    if p.is_some() && (!viol.is_empty() || f(fines, "count") > 0.0) {
-        for v in viol.iter().take(5) {
-            record.push(ledger(
-                row![
-                    ui::badge::<Msg>(s(v, "law"), ui::Tone::Danger),
-                    ui::prose(s(v, "detail").to_string()),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into(),
-                ui::faint(ago(u(v, "at_ms"))).into(),
-            ));
-        }
-        if f(fines, "count") > 0.0 {
-            record.push(ledger(
-                row![
-                    ui::badge::<Msg>("fines", ui::Tone::Warn),
-                    ui::faint(format!(
-                        "{} fines, {} cr in total",
-                        f(fines, "count"),
-                        compact(f(fines, "total"))
-                    )),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into(),
-                Space::new().into(),
-            ));
-        }
-    } else if p.is_some() {
-        record.push(ui::faint("A clean record: no violations, no fines.").into());
-    }
-
-    let n = state.infractions.len();
-    let headline: Element<'a, Msg> = if state.extras_at.is_none() {
-        ui::faint("Loading…").into()
-    } else if state.infractions_failed {
-        ui::faint("Infractions unavailable").into()
-    } else if n == 0 {
-        ui::badge::<Msg>("No infractions", ui::Tone::Ok)
-    } else {
-        ui::badge::<Msg>(
-            &format!("{} infraction{}", n, if n == 1 { "" } else { "s" }),
-            ui::Tone::Danger,
-        )
-    };
-    let mut inf: Vec<Element<'a, Msg>> = vec![headline];
-    let shown = if state.infractions_all {
-        n
-    } else {
-        INFRACTIONS_SHOWN
-    };
-    for r in state.infractions.iter().take(shown) {
-        inf.push(ledger(
-            column![
-                ui::link(
-                    pick_str(s(r, "law_title"), s(r, "law")),
-                    Msg::Go(Id::Rules),
-                    false
-                ),
-                ui::faint(s(r, "law")),
-                row![
-                    ui::mono(s(r, "tool"), 12.0, crate::theme::palette().ink_2),
-                    ui::faint(s(r, "detail")),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            ]
-            .spacing(2)
-            .into(),
-            ui::faint(ago(u(r, "at_ms"))).into(),
-        ));
-    }
-    if n > INFRACTIONS_SHOWN {
-        inf.push(ui::btn_sm::<Msg>(
-            if state.infractions_all {
-                "Show fewer"
-            } else {
-                "Show all"
-            },
-            None,
-            ui::Kind::Ghost,
-            Some(Msg::ShowAll),
-        ));
-    }
-
-    let body = column![
-        top,
-        tiles_a,
-        tiles_b,
-        column(record),
-        column(inf).spacing(8)
-    ]
-    .spacing(16)
-    .width(Length::Fill);
-    container(body)
-        .padding(16)
-        .width(Length::Fill)
-        .style(ui::card_style)
-        .into()
-}
-
-/// The Conduct section: the active suspensions, each with a Lift, then the sanctions, newest first.
-fn conduct_card<'a>(state: &'a State) -> Element<'a, Msg> {
-    let Some(register) = state.conduct.as_ref() else {
-        return ui::card("Conduct", ui::faint("Loading…").into());
-    };
-    let mut rows: Vec<Element<'a, Msg>> = Vec::new();
-    let suspended: Vec<&sanctions::Suspension> =
-        register.suspensions.iter().filter(|s| s.active).collect();
-    if suspended.is_empty() {
-        rows.push(ui::faint("No active suspensions.").into());
-    } else {
-        rows.push(ui::label("Suspended now").into());
-        for s in suspended {
-            rows.push(
-                row![
-                    ui::badge(&s.law, ui::Tone::Danger),
-                    ui::mono(s.tool.clone(), 12.0, crate::theme::palette().ink_2),
-                    ui::faint(left(s.until_ms)),
-                    Space::new().width(Length::Fill),
-                    ui::btn(
-                        "Lift",
-                        None,
-                        ui::Kind::Primary,
-                        (!state.busy).then_some(Msg::Ask(Dialog::Lift(s.id)))
-                    ),
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center)
-                .into(),
-            );
-        }
-    }
-    rows.push(ui::label("Sanctions").into());
-    if register.sanctions.is_empty() {
-        rows.push(ui::faint("No sanctions on record.").into());
-    } else {
-        let mut newest: Vec<&sanctions::Sanction> = register.sanctions.iter().collect();
-        newest.sort_by_key(|s| std::cmp::Reverse(s.at_ms));
-        rows.extend(newest.into_iter().map(sanction_row));
-    }
-    ui::card("Conduct", column(rows).spacing(10).into())
-}
-
-/// One sanction: what, under which law, how severe, how many offences, the outcome, the fine, when,
-/// and the owner's lift with its reason.
-fn sanction_row<'a>(s: &'a sanctions::Sanction) -> Element<'a, Msg> {
-    let tone = if s.lifted.is_some() {
-        ui::Tone::Muted
-    } else {
-        ui::Tone::Danger
-    };
-    let offences = format!("{} offence{}", s.count, if s.count == 1 { "" } else { "s" });
-    let mut line = column![
-        row![
-            ui::badge(&s.sanction, tone),
-            ui::sans(s.law.clone(), 12.0, crate::theme::palette().ink),
-            ui::sans(s.severity.clone(), 12.0, crate::theme::palette().ink_2),
-            ui::faint(offences),
-            Space::new().width(Length::Fill),
-            ui::faint(ago(s.at_ms)),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center),
-    ]
-    .spacing(4);
-    if !s.outcome.is_empty() {
-        line = line.push(ui::faint(s.outcome.clone()));
-    }
-    if s.fine > 0 {
-        line = line.push(ui::faint(format!("{} cr fine", compact(s.fine as f64))));
-    }
-    if let Some(lifted) = &s.lifted {
-        line = line.push(ui::faint(format!("lifted by owner: {}", lifted.why)));
-    }
-    if let Some(action) = &s.owner_action {
-        let word = if action.action == "retire" {
-            "Retired"
-        } else {
-            "Acknowledged"
-        };
-        line = line.push(ui::faint(format!(
-            "{word} by the owner, {}",
-            ago(action.at_ms)
-        )));
-    }
-    line.into()
-}
-
-/// The time left on a suspension, in the web's short words.
-fn left(until_ms: u64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let secs = until_ms.saturating_sub(now) / 1000;
-    match secs {
-        0..=59 => format!("{secs}s left"),
-        60..=3599 => format!("{}m left", secs / 60),
-        3600..=86_399 => format!("{}h left", secs / 3600),
-        _ => format!("{}d left", secs / 86_400),
-    }
-}
-
-/// A profile tile, as the web's `.ag-tile`: a bordered box with its label, its figure and its caption.
-fn tile<'a>(label: &'static str, value: Element<'a, Msg>, sub: String) -> Element<'a, Msg> {
-    container(
-        column![ui::faint(label), value, ui::faint(sub)]
-            .spacing(4)
-            .width(Length::Fill),
-    )
-    .padding(12)
-    .width(Length::Fill)
-    .style(|_: &Theme| container::Style {
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: crate::theme::skin().radius.into(),
-        },
-        ..Default::default()
-    })
-    .into()
-}
-
-/// A tile's figure: 18 semibold, as the web's `.ag-tile .num`.
-fn figure<'a>(value: impl Into<String>) -> Element<'a, Msg> {
-    text(value.into())
-        .font(ui::SANS_SEMIBOLD)
-        .size(18.0)
-        .color(crate::theme::palette().ink)
-        .into()
-}
-
-/// A meter, as the web's `.ag-meter`: a 6px track in sheet-2, filled to `value` of `max` in signal, its caption under it.
-fn meter<'a>(value: f64, max: f64, caption: String) -> Element<'a, Msg> {
-    let share = (value / max).clamp(0.0, 1.0);
-    let filled = (share * 1000.0).round() as u16;
-    let mut bar = row![].height(Length::Fill);
-    if filled > 0 {
-        bar = bar.push(
-            container(Space::new().width(Length::Fill).height(Length::Fill))
-                .width(Length::FillPortion(filled))
-                .height(Length::Fill)
-                .style(|_: &Theme| container::Style {
-                    background: Some(crate::theme::palette().signal.into()),
-                    ..Default::default()
-                }),
-        );
-    }
-    if filled < 1000 {
-        bar = bar.push(
-            Space::new()
-                .width(Length::FillPortion(1000 - filled))
-                .height(Length::Fill),
-        );
-    }
-    let track = container(bar)
-        .width(Length::Fill)
-        .height(Length::Fixed(6.0))
-        .clip(true)
-        .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().sheet_2.into()),
-            border: Border::default().rounded(3.0),
-            ..Default::default()
-        });
-    column![
-        track,
-        text(caption)
-            .font(ui::SANS_SEMIBOLD)
-            .size(14.0)
-            .color(crate::theme::palette().ink)
-    ]
-    .spacing(8)
-    .width(Length::Fill)
-    .into()
-}
-
-/// A record line, as the web's `.ag-row`: a rule over it, the left part and the right one (a time, or nothing).
-fn ledger<'a>(left: Element<'a, Msg>, right: Element<'a, Msg>) -> Element<'a, Msg> {
-    let rule = container(Space::new().height(Length::Fixed(1.0)))
-        .width(Length::Fill)
-        .style(|_: &Theme| container::Style {
-            background: Some(crate::theme::palette().rule.into()),
-            ..Default::default()
-        });
-    column![
-        rule,
-        container(
-            row![left, Space::new().width(Length::Fill), right]
-                .spacing(8)
-                .align_y(Alignment::Center)
-        )
-        .padding([8, 0])
-        .width(Length::Fill),
-    ]
-    .into()
 }
 
 fn transcript_card<'a>(state: &'a State) -> Element<'a, Msg> {
@@ -2164,13 +1470,13 @@ fn parse_checkpoints(body: Value) -> Result<Vec<Checkpoint>, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The names of the agents a fork made (`{forks: [{cid, run, name}], checkpoint}`).
-fn fork_names(reply: &Value) -> Result<Vec<String>, String> {
+/// The cids of the agents a fork made (`{forks: [{cid, run}], checkpoint}`).
+fn fork_cids(reply: &Value) -> Result<Vec<u64>, String> {
     let forks = reply
         .get("forks")
         .and_then(Value::as_array)
         .ok_or_else(|| "the fork reply has no forks".to_string())?;
-    Ok(forks.iter().map(|f| s(f, "name").to_string()).collect())
+    Ok(forks.iter().map(|f| u(f, "cid")).collect())
 }
 
 /// A fork's count: 1 to 8 copies, as the hub takes them.
@@ -2279,7 +1585,13 @@ fn checkpoints_card<'a>(state: &'a State) -> Element<'a, Msg> {
         .into(),
     );
     if !state.forked.is_empty() {
-        items.push(ui::faint(format!("Forked: {}", state.forked.join(", "))).into());
+        let role = state.agent.as_ref().map_or("", |a| s(a, "role"));
+        let labels: Vec<String> = state
+            .forked
+            .iter()
+            .map(|cid| roles::agent_label(role, *cid))
+            .collect();
+        items.push(ui::faint(format!("Forked: {}", labels.join(", "))).into());
     }
     ui::card("Machine checkpoints", column(items).spacing(12).into())
 }
@@ -2289,34 +1601,6 @@ fn offline(state: &State) -> bool {
         .agent
         .as_ref()
         .is_some_and(|a| s(a, "status") == "offline")
-}
-
-fn agent_name(a: &Value) -> String {
-    let name = s(a, "name");
-    if name.is_empty() {
-        format!("Agent {}", u(a, "cid"))
-    } else {
-        name.to_string()
-    }
-}
-
-fn conduct_text(score: f64) -> &'static str {
-    if score >= 90.0 {
-        "Exemplary"
-    } else if score >= 70.0 {
-        "Good standing"
-    } else if score >= 40.0 {
-        "Under watch"
-    } else {
-        "In trouble"
-    }
-}
-
-fn violations(p: Option<&Value>) -> &[Value] {
-    p.and_then(|p| p.get("violations"))
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
 }
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -2564,12 +1848,12 @@ mod tests {
     }
 
     #[test]
-    fn a_fork_reply_names_its_new_agents() {
+    fn a_fork_reply_lists_the_cids_it_made() {
         let reply = json!({
-            "forks": [{"cid": 8, "run": "r1", "name": "Ada 2"}, {"cid": 9, "run": "r1", "name": "Ada 3"}],
+            "forks": [{"cid": 8, "run": "r1"}, {"cid": 9, "run": "r1"}],
             "checkpoint": {"name": "cp-1-fork"}
         });
-        assert_eq!(fork_names(&reply).unwrap(), vec!["Ada 2", "Ada 3"]);
-        assert!(fork_names(&json!({"ok": true})).is_err());
+        assert_eq!(fork_cids(&reply).unwrap(), vec![8, 9]);
+        assert!(fork_cids(&json!({"ok": true})).is_err());
     }
 }

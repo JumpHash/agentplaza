@@ -28,17 +28,16 @@ pub fn is_conversation_id(id: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// The name of agent `cid` from `roster` ((cid, name) pairs), or `agent <cid>`.
-fn name_in(roster: &[(u64, String)], cid: u64) -> String {
+/// The label of agent `cid` in `roster` ((cid, label) pairs), or `agent #<cid>` if it is not listed.
+fn label_in(roster: &[(u64, String)], cid: u64) -> String {
     roster
         .iter()
         .find(|(c, _)| *c == cid)
-        .map(|(_, n)| n.clone())
-        .filter(|n| !n.trim().is_empty())
-        .unwrap_or_else(|| format!("agent {cid}"))
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| roles::agent_label("", cid))
 }
 
-/// One role of the team as the draft shows it: `2 Builder (Ada from the bench, 1 new)`.
+/// One role of the team as the draft shows it: `2 Builder (Builder #300 from the bench, 1 new)`.
 pub fn seat_line(seat: &Value, roster: &[(u64, String)]) -> String {
     let count = seat["count"].as_u64().unwrap_or(0);
     let named: Vec<String> = seat["bench"]
@@ -46,7 +45,7 @@ pub fn seat_line(seat: &Value, roster: &[(u64, String)]) -> String {
         .into_iter()
         .flatten()
         .filter_map(Value::as_u64)
-        .map(|cid| name_in(roster, cid))
+        .map(|cid| label_in(roster, cid))
         .collect();
     let fresh = count.saturating_sub(named.len() as u64);
     let mut parts = Vec::new();
@@ -772,7 +771,7 @@ pub fn chat<'a, M: Clone + 'a>(
 }
 
 /// The draft beside the chat: its title and revision, goal, repository, team, budget, settings and tasks, then
-/// what stops Start (or Start), or once started the project and the way to it. `roster` names the bench agents.
+/// what stops Start (or Start), or once started the project and the way to it. `roster` labels the bench agents.
 pub fn draft<'a, M: Clone + 'a>(
     conv: &'a Conversation,
     roster: &[(u64, String)],
@@ -996,7 +995,7 @@ mod tests {
     use super::*;
 
     fn roster() -> Vec<(u64, String)> {
-        vec![(300, "Ada".into()), (304, "Rhea".into())]
+        vec![(300, "Builder #300".into()), (304, "Librarian #304".into())]
     }
 
     #[test]
@@ -1012,14 +1011,14 @@ mod tests {
                 &json!({ "role": "builder", "count": 2, "bench": [300] }),
                 &roster()
             ),
-            "2 Builder (Ada from the bench, 1 new)"
+            "2 Builder (Builder #300 from the bench, 1 new)"
         );
         assert_eq!(
             seat_line(
                 &json!({ "role": "librarian", "count": 1, "bench": [304] }),
                 &roster()
             ),
-            "1 Librarian (Rhea from the bench)"
+            "1 Librarian (Librarian #304 from the bench)"
         );
         assert_eq!(
             seat_line(&json!({ "role": "qa", "count": 1 }), &roster()),
@@ -1030,7 +1029,7 @@ mod tests {
                 &json!({ "role": "qa", "count": 1, "bench": [999] }),
                 &roster()
             ),
-            "1 QA (agent 999 from the bench)"
+            "1 QA (agent #999 from the bench)"
         );
         assert_eq!(
             team_line(

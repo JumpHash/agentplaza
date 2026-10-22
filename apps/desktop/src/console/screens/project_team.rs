@@ -2,19 +2,14 @@
 //! agents that held its tasks before it had members, with one step to put them all on it. New agents can be spawned
 //! for it; they join at their first hello.
 
-use iced::widget::{Space, button, column, container, row, stack, text};
+use iced::widget::{Space, button, column, container, row, text};
 use iced::{Alignment, Background, Border, Color, Element, Length, Task, Theme};
 use serde_json::{Value, json};
 
 use super::Id;
 use super::wizard::{self, WizardMsg};
-use crate::console::engine::robot::species_of;
-use crate::console::engine::roles::{agent_hue, role_hue};
-use crate::console::{Ctx, client, render_card, roles, ui};
+use crate::console::{Ctx, client, roles, ui};
 use crate::theme;
-
-/// An agent's portrait, as the web's `avatar(a, 28)`.
-const AVATAR: f32 = 28.0;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -25,7 +20,7 @@ pub struct State {
     /// The agents holding tasks of the project from before membership, each with `tasks`.
     pub suggested: Vec<Value>,
     pub error: Option<String>,
-    /// A line for the last move ("Ada joined Release 0.9").
+    /// A line for the last move ("QA #301 joined Release 0.9").
     pub note: Option<String>,
     /// A move is in flight.
     pub busy: bool,
@@ -106,7 +101,7 @@ pub fn update(
             let c = ctx.client.clone();
             let id = project.to_string();
             let line = match cids.as_slice() {
-                [cid] => format!("{} joined {title}", name_of(&state.everyone(), *cid)),
+                [cid] => format!("{} joined {title}", label_of(&state.everyone(), *cid)),
                 _ => format!("{} agents joined {title}", cids.len()),
             };
             client::task(
@@ -129,7 +124,7 @@ pub fn update(
             state.busy = true;
             let c = ctx.client.clone();
             let path = format!("/v1/projects/{project}/members/{cid}");
-            let line = format!("{} is back on the bench", name_of(&state.everyone(), cid));
+            let line = format!("{} is back on the bench", label_of(&state.everyone(), cid));
             client::task(move || c.delete(&path).map(|_| line), Msg::Moved)
         }
         Msg::Moved(res) => {
@@ -159,7 +154,7 @@ pub fn update(
 }
 
 impl State {
-    /// Every agent the tab lists, for their names in the lines it shows.
+    /// Every agent the tab lists, for their labels in the lines it shows.
     fn everyone(&self) -> Vec<&Value> {
         self.members
             .iter()
@@ -170,19 +165,11 @@ impl State {
     }
 }
 
-/// An agent's name, or "Unnamed" while it has none.
-pub fn agent_name(a: &Value) -> String {
-    match a["name"].as_str().map(str::trim) {
-        Some(n) if !n.is_empty() => n.to_string(),
-        _ => "Unnamed".into(),
-    }
-}
-
-fn name_of(list: &[&Value], cid: u64) -> String {
+/// An agent's label (its role and cid), or "agent #<cid>" for one the tab does not list.
+fn label_of(list: &[&Value], cid: u64) -> String {
     list.iter()
         .find(|a| a["cid"].as_u64() == Some(cid))
-        .map(|a| agent_name(a))
-        .unwrap_or_else(|| format!("Agent {cid}"))
+        .map_or_else(|| roles::agent_label("", cid), |a| roles::agent_label_of(a))
 }
 
 /// A capitalised word (the web's `cap`).
@@ -205,9 +192,9 @@ fn rule<'a>(color: Color) -> Element<'a, Msg> {
         .into()
 }
 
-/// An agent's name, bold, to its page: ink, signal-ink under the pointer (the web's `.pj-clip` link).
-fn name_link<'a>(name: String, cid: u64) -> Element<'a, Msg> {
-    button(text(name).font(ui::SANS_SEMIBOLD).size(13.5))
+/// An agent's label, bold, to its page: ink, signal-ink under the pointer (the web's `.pj-clip` link).
+fn name_link<'a>(label: String, cid: u64) -> Element<'a, Msg> {
+    button(text(label).font(ui::SANS_SEMIBOLD).size(13.5))
         .padding(0)
         .style(|_: &Theme, status: button::Status| button::Style {
             background: None,
@@ -223,58 +210,6 @@ fn name_link<'a>(name: String, cid: u64) -> Element<'a, Msg> {
         .into()
 }
 
-/// The agent's portrait: its robot over the letter tile, which shows where the GPU cannot draw.
-fn avatar<'a>(a: &Value, slot: usize) -> Element<'a, Msg> {
-    let cid = a["cid"].as_u64().unwrap_or(0);
-    let name = agent_name(a);
-    let initial = name
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_default();
-    let tile = container(
-        text(initial)
-            .font(ui::SANS_SEMIBOLD)
-            .size(12.0)
-            .color(theme::palette().ink_2),
-    )
-    .width(Length::Fixed(AVATAR))
-    .height(Length::Fixed(AVATAR))
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .style(|_: &Theme| container::Style {
-        background: Some(Background::Color(theme::palette().sheet_2)),
-        border: Border {
-            color: theme::palette().rule,
-            width: 1.0,
-            radius: (AVATAR / 2.0).into(),
-        },
-        ..Default::default()
-    });
-    let orchestrator = a["tier"].as_str() == Some("orchestrator");
-    let status = a["status"].as_str().unwrap_or("offline");
-    let spec = render_card::PortraitSpec {
-        cid,
-        orchestrator,
-        role_hue: if orchestrator {
-            25.0
-        } else {
-            role_hue(a["role"].as_str().unwrap_or(""))
-        },
-        body_hue: agent_hue(cid),
-        offline: matches!(status, "offline" | "asleep" | "dozing"),
-        species: species_of(a["species"].as_str(), cid),
-    };
-    let mut layers: Vec<Element<'a, Msg>> = vec![tile.into()];
-    if let Some(robot) = render_card::robot_portrait(slot, spec, AVATAR) {
-        layers.push(robot);
-    }
-    stack(layers)
-        .width(Length::Fixed(AVATAR))
-        .height(Length::Fixed(AVATAR))
-        .into()
-}
-
 /// The status chip (the web's `badge(word, tone, true)`): asleep and dozing say so, the rest their status word.
 fn status_chip<'a>(status: &str) -> Element<'a, Msg> {
     let (word, tone) = match status {
@@ -287,11 +222,10 @@ fn status_chip<'a>(status: &str) -> Element<'a, Msg> {
     ui::badge_dot(&word, tone)
 }
 
-/// One agent's line (the web's `.pj-mrow`): its portrait, its name to its page over its role and note, its status, and
+/// One agent's line (the web's `.pj-mrow`): its label to its page over its role and note, its status, and
 /// its action; a rule above it.
 fn person<'a>(
     a: &Value,
-    slot: usize,
     note: Option<String>,
     action: Option<Element<'a, Msg>>,
 ) -> Element<'a, Msg> {
@@ -302,8 +236,7 @@ fn person<'a>(
         _ => role,
     };
     let mut line = row![
-        avatar(a, slot),
-        column![name_link(agent_name(a), cid), ui::faint(sub)]
+        column![name_link(roles::agent_label_of(a), cid), ui::faint(sub)]
             .spacing(4)
             .width(Length::Fill),
         status_chip(a["status"].as_str().unwrap_or("offline")),
@@ -347,8 +280,7 @@ pub fn view<'a>(state: &'a State, project: &str, live: bool) -> Element<'a, Msg>
     // Working on it: each with Back to the bench, and why it waits if it does.
     let working: Vec<Element<'a, Msg>> = members
         .iter()
-        .enumerate()
-        .map(|(i, a)| {
+        .map(|a| {
             let cid = a["cid"].as_u64().unwrap_or(0);
             let action = live.then(|| {
                 ui::btn_sm(
@@ -358,7 +290,7 @@ pub fn view<'a>(state: &'a State, project: &str, live: bool) -> Element<'a, Msg>
                     (!busy).then_some(Msg::Remove(cid)),
                 )
             });
-            person(a, i, a["held"].as_str().map(str::to_string), action)
+            person(a, a["held"].as_str().map(str::to_string), action)
         })
         .collect();
     let body: Element<'a, Msg> = if members.is_empty() {
@@ -401,7 +333,7 @@ pub fn view<'a>(state: &'a State, project: &str, live: bool) -> Element<'a, Msg>
         let mut lines: Vec<Element<'a, Msg>> = vec![
             ui::faint("These agents hold tasks of this project from before agents worked on one project at a time. Put them on it, and its tasks run again.").into(),
         ];
-        for (i, a) in state.suggested.iter().enumerate() {
+        for a in state.suggested.iter() {
             let cid = a["cid"].as_u64().unwrap_or(0);
             let holds = a["tasks"]
                 .as_array()
@@ -414,7 +346,6 @@ pub fn view<'a>(state: &'a State, project: &str, live: bool) -> Element<'a, Msg>
                 .unwrap_or_default();
             lines.push(person(
                 a,
-                i,
                 Some(format!("holds {holds}")),
                 Some(add_btn(cid, busy)),
             ));
@@ -439,9 +370,9 @@ pub fn view<'a>(state: &'a State, project: &str, live: bool) -> Element<'a, Msg>
             let mut lines: Vec<Element<'a, Msg>> = vec![
                 ui::faint("Agents on no project do nothing, and sleep. Adding one stops nothing: it has no work.").into(),
             ];
-            for (i, a) in state.bench.iter().enumerate() {
+            for a in state.bench.iter() {
                 let cid = a["cid"].as_u64().unwrap_or(0);
-                lines.push(person(a, i, None, Some(add_btn(cid, busy))));
+                lines.push(person(a, None, Some(add_btn(cid, busy))));
             }
             column(lines).spacing(12).into()
         };
@@ -471,9 +402,9 @@ mod tests {
     fn a_load_fills_the_members_the_bench_and_the_agents_from_before() {
         let mut state = State::default();
         let v = json!({
-            "members": [{ "cid": 300, "name": "Ada", "role": "builder", "status": "idle" }],
-            "bench": [{ "cid": 301, "name": "", "role": "qa" }],
-            "suggested": [{ "cid": 302, "name": "Quinn", "tasks": ["t1", "t2"] }],
+            "members": [{ "cid": 300, "role": "builder", "status": "idle" }],
+            "bench": [{ "cid": 301, "role": "qa" }],
+            "suggested": [{ "cid": 302, "role": "planner", "tasks": ["t1", "t2"] }],
         });
         let _ = update(
             &mut state,
@@ -485,9 +416,9 @@ mod tests {
         );
         assert_eq!(state.members.as_ref().map(Vec::len), Some(1));
         assert_eq!((state.bench.len(), state.suggested.len()), (1, 1));
-        assert_eq!(name_of(&state.everyone(), 301), "Unnamed");
-        assert_eq!(name_of(&state.everyone(), 302), "Quinn");
-        assert_eq!(name_of(&state.everyone(), 999), "Agent 999");
+        assert_eq!(label_of(&state.everyone(), 301), "QA #301");
+        assert_eq!(label_of(&state.everyone(), 302), "Planner #302");
+        assert_eq!(label_of(&state.everyone(), 999), "agent #999");
     }
 
     #[test]
@@ -510,13 +441,16 @@ mod tests {
         );
         let _ = update(
             &mut state,
-            Msg::Moved(Ok("Ada is back on the bench".into())),
+            Msg::Moved(Ok("Builder #300 is back on the bench".into())),
             "pr2",
             "Release 0.9",
             true,
             &ctx(),
         );
         assert!(!state.busy);
-        assert_eq!(state.note.as_deref(), Some("Ada is back on the bench"));
+        assert_eq!(
+            state.note.as_deref(),
+            Some("Builder #300 is back on the bench")
+        );
     }
 }

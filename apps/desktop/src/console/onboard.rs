@@ -671,11 +671,7 @@ fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
         let action: Element<'a, Msg> = if state.fixing == Some(check.need) {
             ui::faint(t("wizard.deps.running")).into()
         } else if check.state == setup::State::Missing && check.fix.is_some() {
-            let label = if check.need == Need::Docker {
-                t("wizard.deps.install")
-            } else {
-                t("wizard.deps.setup")
-            };
+            let label = t("wizard.deps.setup");
             ui::btn_sm(
                 label,
                 None,

@@ -681,11 +681,7 @@ fn requirements(state: &State) -> Element<'_, Msg> {
         };
         let action: Element<'_, Msg> = match (check.state, check.fix.is_some()) {
             (setup::State::Missing, true) => {
-                let text = match check.need {
-                    setup::Need::Docker => "Install",
-                    setup::Need::DockerRunning => "Start",
-                    _ => "Set up",
-                };
+                let text = "Set up";
                 ui::btn(
                     text,
                     None,
