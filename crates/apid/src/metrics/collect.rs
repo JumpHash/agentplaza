@@ -189,13 +189,8 @@ fn hourly(m: &Metrics, now_ms: u64) {
     }
     drop_stale_latest(&mut super::lock(&m.latest), now_ms);
     m.store.prune(now_ms, &m.settings.get().retention);
-    let kind = m.store.kind();
     for (name, bytes) in m.store.sizes() {
-        let entity = if kind == "postgres" {
-            format!("store:postgres · {name}")
-        } else {
-            format!("store:{name}")
-        };
+        let entity = format!("store:sqlite · {name}");
         m.registry
             .gauge(SeriesKey::new("store.bytes", EntityKind::Service, &entity))
             .set(bytes as f64);

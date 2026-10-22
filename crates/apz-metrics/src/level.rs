@@ -5,7 +5,18 @@ use serde::{Deserialize, Serialize};
 
 /// How much is collected. Ordered: `Off < Basic < Standard < Full`.
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    apz_store::Column,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Level {

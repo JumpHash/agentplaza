@@ -1,9 +1,8 @@
 //! The hub's metrics: what it records itself (model calls, tools, turns, agent states, its own API, database and
 //! bus), what nodes send in their heartbeats, where it is kept, and the `/v1/metrics/*` routes the consoles read.
 //!
-//! * [`store`] — the [`store::Store`] trait: closed windows, events, model calls, kept traces and small saved
-//!   values; [`mem`] keeps them in memory (and saved values in files) when there is no Postgres, [`pg`] in the
-//!   partitioned metrics tables (sql/migrations/0014_metrics.sql) over its own connection.
+//! * [`store`] — the [`store::Store`] trait: closed windows, events, model calls, kept traces and the saved values;
+//!   [`sqlite`] keeps them in `metrics.db` (typed tables, sql/metrics/0001_init.sql).
 //! * [`settings`] — the owner's choices: collection level, retention, budgets, outside endpoints.
 //! * [`ingest`] — node batches: clock-offset correction, columns and histograms into the rollup, events, reports.
 //! * [`collect`] — the hub's own collectors: API route timer, database timer, bus lag, socket count, queue and
@@ -21,7 +20,6 @@
 //! batches. Overview tiles and alert checks read the open windows, never a table.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use apz_metrics::level::Governor;
@@ -34,14 +32,13 @@ pub mod collect;
 pub mod export;
 pub mod ingest;
 pub mod live;
-pub mod mem;
-pub mod pg;
 pub mod prom;
 pub mod routes;
 pub mod scope;
 pub mod settings;
 pub mod source;
 pub mod source_misc;
+pub mod sqlite;
 pub mod store;
 pub mod traces;
 
@@ -83,13 +80,9 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// Metrics over Postgres (its own connection to `db_url`) when given, else in memory with saved values under
-    /// `state_dir/metrics`.
-    pub fn open(state_dir: &Path, db_url: Option<&str>, now_ms: u64) -> Metrics {
-        let store: Box<dyn store::Store> = match db_url.and_then(pg::PgStore::connect) {
-            Some(pg) => Box::new(pg),
-            None => Box::new(mem::MemStore::new(Some(state_dir.join("metrics")))),
-        };
+    /// Metrics over the store's metrics file (`store::METRICS`); the saved values load from it.
+    pub fn open(db: Arc<apz_store::Db>, now_ms: u64) -> Metrics {
+        let store: Box<dyn store::Store> = Box::new(sqlite::SqliteStore::new(db));
         let settings = settings::Holder::load(store.as_ref());
         let level = settings.get().level;
         Metrics {

@@ -1,0 +1,3 @@
+-- Puts one model call (its id is assigned): ?1 at ms, ?2 cid, ?3 role, ?4 run, ?5 node, ?6 provider, ?7 model, ?8 engine, ?9 tokens in, ?10 cache read, ?11 cache write, ?12 tokens out, ?13 cost USD, ?14 time to first token ms (NULL when none), ?15 duration ms (NULL when none), ?16 status, ?17 retries, ?18 task (NULL when none), ?19 trace id (NULL when none).
+INSERT INTO model_call (at_ms, cid, role, run, node, provider, model, engine, tokens_in, cache_read, cache_write, tokens_out, cost_usd, ttft_ms, duration_ms, status, retries, task, trace_id)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19);

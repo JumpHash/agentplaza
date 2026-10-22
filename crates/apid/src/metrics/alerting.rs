@@ -39,8 +39,6 @@ pub struct Saved {
 /// One line of the alert history: (time, rule id, subject, what, value, lasted ms).
 type HistoryEntry = (u64, String, String, String, f64, Option<u64>);
 
-/// The key the saved value is stored under.
-const SAVED_KEY: &str = "alerts";
 /// How many history entries are kept.
 const HISTORY_LIMIT: usize = 500;
 /// The window a reading of a rule looks back over, when it is not a daily sum.
@@ -51,6 +49,109 @@ const DAY_MS: u64 = 86_400_000;
 /// Separates the rule id and the subject in the tracker's keys.
 const KEY_SEP: char = '\u{1f}';
 
+/// The saved alert state as its table (`metric_alerts`, one row): what [`Saved`] keeps, with each list as child rows.
+#[derive(Clone, Debug, Default, PartialEq, apz_store::Table)]
+#[table(name = "metric_alerts")]
+pub struct Stored {
+    #[table(child)]
+    pub rules: Vec<Rule>,
+    #[table(map)]
+    pub states: HashMap<String, State>,
+    #[table(child)]
+    pub muted: Vec<Mute>,
+    #[table(child)]
+    pub acked: Vec<Ack>,
+    #[table(child)]
+    pub history: Vec<HistoryRow>,
+}
+
+/// A rule muted until a time.
+#[derive(Clone, Debug, PartialEq, apz_store::Table)]
+pub struct Mute {
+    pub rule: String,
+    pub until_ms: u64,
+}
+
+/// A subject of a rule acknowledged while it fires.
+#[derive(Clone, Debug, PartialEq, apz_store::Table)]
+pub struct Ack {
+    pub rule: String,
+    pub subject: String,
+}
+
+/// One line of the alert history.
+#[derive(Clone, Debug, PartialEq, apz_store::Table)]
+pub struct HistoryRow {
+    pub at_ms: u64,
+    pub rule: String,
+    pub subject: String,
+    pub what: String,
+    pub value: f64,
+    pub lasted_ms: Option<u64>,
+}
+
+impl Stored {
+    fn from_saved(saved: &Saved) -> Stored {
+        Stored {
+            rules: saved.rules.clone(),
+            states: saved.tracker.states.clone(),
+            muted: saved
+                .muted
+                .iter()
+                .map(|(rule, until_ms)| Mute {
+                    rule: rule.clone(),
+                    until_ms: *until_ms,
+                })
+                .collect(),
+            acked: saved
+                .acked
+                .iter()
+                .map(|(rule, subject)| Ack {
+                    rule: rule.clone(),
+                    subject: subject.clone(),
+                })
+                .collect(),
+            history: saved
+                .history
+                .iter()
+                .map(|(at_ms, rule, subject, what, value, lasted)| HistoryRow {
+                    at_ms: *at_ms,
+                    rule: rule.clone(),
+                    subject: subject.clone(),
+                    what: what.clone(),
+                    value: *value,
+                    lasted_ms: *lasted,
+                })
+                .collect(),
+        }
+    }
+
+    fn into_saved(self) -> Saved {
+        Saved {
+            rules: self.rules,
+            tracker: Tracker {
+                states: self.states,
+            },
+            muted: self
+                .muted
+                .into_iter()
+                .map(|m| (m.rule, m.until_ms))
+                .collect(),
+            acked: self
+                .acked
+                .into_iter()
+                .map(|a| (a.rule, a.subject))
+                .collect(),
+            history: self
+                .history
+                .into_iter()
+                .map(|h| (h.at_ms, h.rule, h.subject, h.what, h.value, h.lasted_ms))
+                .collect(),
+            values: HashMap::new(),
+        }
+    }
+}
+
 pub struct Alerts {
     inner: Mutex<Saved>,
 }
@@ -58,10 +159,7 @@ pub struct Alerts {
 impl Alerts {
     /// Loads saved alerts, adding any starter rule not yet saved.
     pub fn load(store: &dyn Store) -> Alerts {
-        let mut saved: Saved = store
-            .kv_get(SAVED_KEY)
-            .and_then(|json| serde_json::from_str(&json).ok())
-            .unwrap_or_default();
+        let mut saved = store.alerts().map(Stored::into_saved).unwrap_or_default();
         for starter in starter_rules() {
             if !saved.rules.iter().any(|rule| rule.id == starter.id) {
                 saved.rules.push(starter);
@@ -335,9 +433,7 @@ fn keep_present_values(values: &mut HashMap<String, f64>, present: &HashSet<Stri
 
 /// Writes the saved state through the store.
 fn save(store: &dyn Store, saved: &Saved) {
-    if let Ok(json) = serde_json::to_string(saved) {
-        store.kv_put(SAVED_KEY, &json);
-    }
+    store.put_alerts(&Stored::from_saved(saved));
 }
 
 /// Puts an entry first in the history, keeping the newest entries.
@@ -409,8 +505,10 @@ mod tests {
     use apz_metrics::alerts::{Cmp, Notify, Severity};
     use apz_metrics::query::AggFn;
 
+    use std::sync::Arc;
+
     use super::*;
-    use crate::metrics::mem::MemStore;
+    use crate::metrics::sqlite::{SqliteStore, scratch_store};
 
     /// A new owner's rule with no id yet.
     fn owner_rule() -> Rule {
@@ -432,7 +530,8 @@ mod tests {
 
     #[test]
     fn loading_adds_the_starter_rules_and_a_starter_only_changes_its_switch() {
-        let store = MemStore::new(None);
+        let files = scratch_store("alerts-starters");
+        let store = SqliteStore::new(Arc::clone(files.db(crate::store::METRICS)));
         let alerts = Alerts::load(&store);
         let rules = alerts.rules();
         assert_eq!(rules.len(), starter_rules().len());
@@ -462,7 +561,8 @@ mod tests {
 
     #[test]
     fn delete_refuses_a_starter_and_removes_an_owners_rule() {
-        let store = MemStore::new(None);
+        let files = scratch_store("alerts-delete");
+        let store = SqliteStore::new(Arc::clone(files.db(crate::store::METRICS)));
         let alerts = Alerts::load(&store);
         let starter_id = alerts.rules()[0].id.clone();
         assert_eq!(

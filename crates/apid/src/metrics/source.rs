@@ -117,14 +117,10 @@ impl Source for LiveSource<'_> {
         misc::links(self)
     }
     fn saved(&self) -> Saved {
-        self.m
-            .store
-            .kv_get("dashboards")
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_else(|| Saved {
-                starter: true,
-                ..Saved::default()
-            })
+        self.m.store.dashboards().unwrap_or_else(|| Saved {
+            starter: true,
+            ..Saved::default()
+        })
     }
     fn basis_days(&self) -> u32 {
         self.m.settings.get().basis_days

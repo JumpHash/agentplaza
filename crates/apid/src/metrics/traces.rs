@@ -98,7 +98,9 @@ impl Traces {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::mem::MemStore;
+    use std::sync::Arc;
+
+    use crate::metrics::sqlite::{SqliteStore, scratch_store};
     use apz_metrics::trace::{Keep, SpanKind};
 
     fn span(id: u32, start_ms: u64, ok: bool) -> Span {
@@ -127,7 +129,8 @@ mod tests {
 
     #[test]
     fn an_error_turn_is_kept_and_stored() {
-        let store = MemStore::new(None);
+        let files = scratch_store("traces-error");
+        let store = SqliteStore::new(Arc::clone(files.db(crate::store::METRICS)));
         let traces = Traces::new(7);
         traces.span(1, span(1, 100, true));
         let kept = traces
@@ -140,7 +143,8 @@ mod tests {
 
     #[test]
     fn an_ordinary_turn_of_an_open_agent_is_kept_as_open() {
-        let store = MemStore::new(None);
+        let files = scratch_store("traces-open");
+        let store = SqliteStore::new(Arc::clone(files.db(crate::store::METRICS)));
         let traces = Traces::new(7);
         traces.mark_open(2, 5000);
         traces.span(2, span(1, 100, true));
@@ -153,7 +157,8 @@ mod tests {
 
     #[test]
     fn spans_added_before_the_end_appear_in_the_stored_trace_in_order() {
-        let store = MemStore::new(None);
+        let files = scratch_store("traces-order");
+        let store = SqliteStore::new(Arc::clone(files.db(crate::store::METRICS)));
         let traces = Traces::new(7);
         traces.mark_open(3, u64::MAX);
         traces.span(3, span(1, 100, true));

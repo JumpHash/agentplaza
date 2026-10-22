@@ -310,10 +310,7 @@ impl App {
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::default(),
             metrics: crate::metrics::Metrics::open(
-                &config.state_dir,
-                env.get("APZ_DATABASE_URL")
-                    .map(String::as_str)
-                    .filter(|u| !u.trim().is_empty()),
+                Arc::clone(store.db(crate::store::METRICS)),
                 apz_plaza::now_ms(),
             ),
             foundry: crate::foundry::store::Foundry::open(foundry_dir, apz_plaza::now_ms()),
