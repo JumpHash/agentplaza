@@ -107,8 +107,11 @@ pub fn auto_checkpoint(app: &App, cid: u64, tool: &str) {
                 &app.bus,
                 cid,
                 0,
-                "vm_checkpoint",
-                json!({ "checkpoint": view, "auto": true }),
+                crate::transcript::Entry::VmCheckpoint {
+                    checkpoint: Some(view),
+                    auto: Some(true),
+                    deleted: None,
+                },
             );
             publish_agent(app, cid);
         }
@@ -269,8 +272,11 @@ fn create_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         &app.bus,
         cid,
         0,
-        "vm_checkpoint",
-        json!({ "checkpoint": view, "auto": false }),
+        crate::transcript::Entry::VmCheckpoint {
+            checkpoint: Some(view.clone()),
+            auto: Some(false),
+            deleted: None,
+        },
     );
     publish_agent(app, cid);
     Response::json(200, &view)
@@ -311,8 +317,10 @@ fn restore_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
         &app.bus,
         cid,
         0,
-        "vm_restore",
-        json!({ "name": name, "safety": safety }),
+        crate::transcript::Entry::VmRestore {
+            name: name.to_string(),
+            safety: safety.clone(),
+        },
     );
     publish_agent(app, cid);
     Response::json(200, &json!({ "ok": true, "safety": safety }))
@@ -346,8 +354,11 @@ fn delete_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
         &app.bus,
         cid,
         0,
-        "vm_checkpoint",
-        json!({ "deleted": name }),
+        crate::transcript::Entry::VmCheckpoint {
+            checkpoint: None,
+            auto: None,
+            deleted: Some(name.to_string()),
+        },
     );
     Response::json(200, &json!({ "ok": true }))
 }
@@ -401,8 +412,10 @@ fn fork_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
             &app.bus,
             fork.cid,
             0,
-            "forked_from",
-            json!({ "cid": cid, "checkpoint": reply.checkpoint }),
+            crate::transcript::Entry::ForkedFrom {
+                cid,
+                checkpoint: reply.checkpoint.clone(),
+            },
         );
         forks.push(json!({ "cid": fork.cid, "run": fork.run }));
     }
@@ -410,8 +423,10 @@ fn fork_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         &app.bus,
         cid,
         0,
-        "fork",
-        json!({ "forks": forks, "checkpoint": reply.checkpoint }),
+        crate::transcript::Entry::Fork {
+            forks: serde_json::to_value(&forks).unwrap_or(Value::Null),
+            checkpoint: reply.checkpoint.clone(),
+        },
     );
     publish_agent(app, cid);
     Response::json(

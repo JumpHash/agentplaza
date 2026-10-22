@@ -96,8 +96,6 @@ pub fn status(ctx: &Ctx) -> Response {
             "url": format!("{}/mcp", ctx.public_url.trim_end_matches('/')),
             "tokens": live,
             "stored": ctx.db.enabled(),
-            "transcript_held": ctx.db.spooled().0,
-            "transcript_dropped": ctx.db.spooled().1,
         }),
     )
 }

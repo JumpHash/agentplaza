@@ -318,8 +318,10 @@ impl Queues {
             &app.bus,
             cid,
             work,
-            "work_end",
-            json!({ "status": state, "summary": summary }),
+            crate::transcript::Entry::WorkEnd {
+                status: outcome_of(status),
+                summary: summary.to_string(),
+            },
         );
         app.bus.publish(
             "work",
@@ -392,8 +394,9 @@ impl Queues {
             &app.bus,
             cid,
             work,
-            "work_interrupted",
-            json!({ "reason": "its machine is stopping; the work resumes on another machine" }),
+            crate::transcript::Entry::WorkInterrupted {
+                reason: "its machine is stopping; the work resumes on another machine".to_string(),
+            },
         );
         app.bus.publish(
             "work",
@@ -493,8 +496,10 @@ impl Queues {
             &app.bus,
             cid,
             work,
-            "work_end",
-            json!({ "status": "stopped", "summary": reason }),
+            crate::transcript::Entry::WorkEnd {
+                status: crate::transcript::Outcome::Stopped,
+                summary: reason.to_string(),
+            },
         );
         app.bus.publish(
             "work",
@@ -538,8 +543,10 @@ impl Queues {
                 &app.bus,
                 cid,
                 item.id,
-                "work_end",
-                json!({ "status": "failed", "summary": "agent went offline" }),
+                crate::transcript::Entry::WorkEnd {
+                    status: crate::transcript::Outcome::Failed,
+                    summary: "agent went offline".to_string(),
+                },
             );
             app.bus.publish(
                 "work",
@@ -851,8 +858,11 @@ impl Queues {
             &app.bus,
             worker,
             work,
-            "payment",
-            json!({ "task": task, "amount": paid, "spent": spent }),
+            crate::transcript::Entry::Payment {
+                task: task.to_string(),
+                amount: paid,
+                spent,
+            },
         );
         paid
     }
@@ -917,13 +927,12 @@ impl Queues {
             &app.bus,
             cid,
             item.id,
-            "work_start",
-            json!({
-                "kind": item.kind,
-                "thread": item.thread,
-                "prompt": item.prompt,
-                "origin": item.origin,
-            }),
+            crate::transcript::Entry::WorkStart {
+                kind: item.kind.into(),
+                thread: item.thread.clone(),
+                prompt: item.prompt.clone(),
+                origin: serde_json::to_value(&item.origin).unwrap_or(Value::Null),
+            },
         );
         app.bus.publish(
             "work",
@@ -979,6 +988,15 @@ fn set_queued_gauge(registry: &Registry, lanes: &Lanes, cid: u64) {
 }
 
 /// The wire spelling of a work status, for the transcript and events.
+/// The outcome a work item's status records (`work_end`).
+fn outcome_of(status: WorkStatus) -> crate::transcript::Outcome {
+    match status {
+        WorkStatus::Done => crate::transcript::Outcome::Done,
+        WorkStatus::Failed => crate::transcript::Outcome::Failed,
+        WorkStatus::Stopped => crate::transcript::Outcome::Stopped,
+    }
+}
+
 fn status_str(status: WorkStatus) -> &'static str {
     match status {
         WorkStatus::Done => "done",

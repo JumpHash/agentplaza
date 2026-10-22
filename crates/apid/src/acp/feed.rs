@@ -21,7 +21,7 @@ use std::collections::HashSet;
 use apz_acp::map::{cap_update, tool_kind_for_operation};
 use serde_json::{Value, json};
 
-use crate::transcript::Entry;
+use crate::transcript::StoredEntry;
 
 /// The most of a tool's input or output an update carries, in bytes.
 pub const CONTENT_BYTES: usize = 16 * 1024;
@@ -164,13 +164,26 @@ impl Feed {
 
 /// The updates that replay one work item from its transcript entries (other works' are skipped),
 /// starting with its prompt as a `user_message_chunk`.
-pub fn replay(work: u64, entries: &[Entry]) -> Vec<Value> {
+pub fn replay(work: u64, entries: &[StoredEntry]) -> Vec<Value> {
+    let frames: Vec<Value> = entries
+        .iter()
+        .map(|entry| serde_json::to_value(entry).unwrap_or(Value::Null))
+        .collect();
+    replay_frames(work, &frames)
+}
+
+/// [`replay`] over the entries as the bus carries them: each frame is `{cid, work, kind, data, ...}`.
+fn replay_frames(work: u64, frames: &[Value]) -> Vec<Value> {
     let mut state: Option<Feed> = None;
     let mut updates = Vec::new();
-    for entry in entries.iter().filter(|entry| entry.work == work) {
-        let feed = state.get_or_insert_with(|| Feed::new(entry.cid, work));
-        if entry.cid == feed.cid {
-            updates.extend(feed.entry(&entry.kind, &entry.data, true));
+    for frame in frames
+        .iter()
+        .filter(|frame| frame["work"].as_u64() == Some(work))
+    {
+        let cid = frame["cid"].as_u64().unwrap_or_default();
+        let feed = state.get_or_insert_with(|| Feed::new(cid, work));
+        if cid == feed.cid {
+            updates.extend(feed.entry(str_of(frame, "kind"), &frame["data"], true));
         }
     }
     capped(updates)
@@ -314,15 +327,8 @@ mod tests {
         json!({ "seq": 1, "at_ms": 1, "cid": cid, "work": work, "kind": kind, "data": data })
     }
 
-    fn entry(work: u64, kind: &str, data: Value) -> Entry {
-        Entry {
-            seq: 1,
-            at_ms: 1,
-            cid: CID,
-            work,
-            kind: kind.to_string(),
-            data,
-        }
+    fn entry(work: u64, kind: &str, data: Value) -> Value {
+        transcript(CID, work, kind, data)
     }
 
     #[test]
@@ -644,7 +650,7 @@ mod tests {
             entry(WORK, "work_end", json!({"status": "done", "summary": ""})),
         ];
         assert_eq!(
-            replay(WORK, &entries),
+            replay_frames(WORK, &entries),
             vec![
                 json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "fix it"}}),
                 json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "On it."}}),

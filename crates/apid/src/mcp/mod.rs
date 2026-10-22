@@ -31,7 +31,7 @@ use std::time::Instant;
 use apz_metrics::{EntityKind, SeriesKey};
 use apz_proto::chat::ToolSpec;
 use secrecy::ExposeSecret;
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::agents::Agent;
@@ -357,8 +357,13 @@ pub fn call_for_agent(
             &app.bus,
             agent.cid,
             work,
-            "mcp_call",
-            json!({"server": entry.server, "tool": entry.tool, "ms": ms, "ok": ok, "output_bytes": output_bytes}),
+            crate::transcript::Entry::McpCall {
+                server: entry.server.clone(),
+                tool: entry.tool.clone(),
+                ms,
+                ok,
+                output_bytes,
+            },
         );
     };
     let output = match result {

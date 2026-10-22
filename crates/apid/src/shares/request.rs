@@ -91,8 +91,11 @@ fn share_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         record(
             app,
             cid,
-            "share_request",
-            json!({"artifact": id, "title": artifact.title, "approval": item.id}),
+            crate::transcript::Entry::ShareRequest {
+                artifact: id.to_string(),
+                title: artifact.title.clone(),
+                approval: item.id.to_string(),
+            },
         );
         Ok(Response::json(
             202,
@@ -128,8 +131,11 @@ pub fn on_decided(app: &App, approval: &Approval) -> Result<(), String> {
     record(
         app,
         approval.cid,
-        "share_decision",
-        json!({"text": text, "approved": approved, "title": title}),
+        crate::transcript::Entry::ShareDecision {
+            text,
+            approved,
+            title,
+        },
     );
     Ok(())
 }
@@ -239,9 +245,9 @@ fn agent_of(app: &App, cid: u64) -> String {
 }
 
 /// Records a line in the transcript of agent `cid`, under its current work (0 when it has none).
-fn record(app: &App, cid: u64, kind: &'static str, data: Value) {
+fn record(app: &App, cid: u64, entry: crate::transcript::Entry) {
     let work = app.work.current(cid).map_or(0, |item| item.id);
-    app.transcripts.record(&app.bus, cid, work, kind, data);
+    app.transcripts.record(&app.bus, cid, work, entry);
 }
 
 #[cfg(test)]

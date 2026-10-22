@@ -1,8 +1,7 @@
-//! The file fallback for transcripts and the IDE audit: used when apid runs without Postgres
+//! The file fallback for the audits and the recordings: used when apid runs without Postgres
 //! (`APZ_DATABASE_URL` unset), with the same operations and orders as the Postgres queries in
 //! `sql`. Append-only JSON lines, one record per line:
 //!
-//!   <state_dir>/transcripts/<cid>.jsonl        (newest) and <cid>.1.jsonl, <cid>.2.jsonl
 //!   <state_dir>/ide-audit.jsonl                (newest) and ide-audit.1.jsonl, ide-audit.2.jsonl
 //!   <state_dir>/station-audit.jsonl            (newest) and station-audit.1.jsonl, station-audit.2.jsonl
 //!   <state_dir>/station-recordings.jsonl       (newest) and .1, .2: the recordings' index, a put or a delete per line
@@ -20,19 +19,14 @@
 //! A file rotates to `.1` once it reaches `ROTATE_BYTES` (`.1` moves to `.2`; the old `.2` is
 //! dropped). Rotation fsyncs the file it retires. Pages read backwards from the end of the files,
 //! so a page costs its own size, not the file's. A line that does not parse (a write torn by a
-//! crash) is skipped, and a new record never joins a torn line. A seq already stored for the cid
-//! in a kept generation is ignored, as the primary key would ignore it; a seq above the cid's
-//! highest stored seq is appended without a scan. Unlike Postgres, a record rotated out of the two
-//! kept generations is forgotten, so a seq that old would be accepted again (the agents' seqs only
-//! grow, so this does not arise).
+//! crash) is skipped, and a new record never joins a torn line.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -53,27 +47,6 @@ pub const RECORDING_EVENTS_FILE: &str = "station-recording-events.jsonl";
 pub const RECORDING_FRAMES_FILE: &str = "station-recording-frames.jsonl";
 /// How much a backwards read takes from the file at a time.
 const CHUNK: u64 = 64 * 1024;
-
-/// One transcript record as a page returns it: (seq, work, kind, at_ms, data).
-pub type TranscriptRow = (u64, u64, String, u64, Value);
-
-#[derive(Serialize)]
-struct TranscriptOut<'a> {
-    seq: u64,
-    work: u64,
-    kind: &'a str,
-    at_ms: u64,
-    data: &'a Value,
-}
-
-#[derive(Deserialize)]
-struct TranscriptIn {
-    seq: u64,
-    work: u64,
-    kind: String,
-    at_ms: u64,
-    data: Value,
-}
 
 /// One line of the recordings' index: the recording as written, or the deletion of an id.
 #[derive(Serialize, Deserialize)]
@@ -114,19 +87,14 @@ struct FrameIn {
     ts_ms: u64,
 }
 
-/// The open files and the per-cid bookkeeping, under one lock.
+/// The open files, under one lock.
 #[derive(Default)]
 struct Open {
-    transcripts: HashMap<u64, Option<File>>,
-    /// The highest seq stored per cid (None: nothing stored), read lazily from the tail.
-    high: HashMap<u64, Option<u64>>,
     ide_audit: Option<File>,
     station_audit: Option<File>,
     station_recordings: Option<File>,
     recording_events: Option<File>,
     recording_frames: Option<File>,
-    /// Appended since the last `sync`.
-    dirty: bool,
 }
 
 pub struct Files {
@@ -156,10 +124,6 @@ impl Files {
         self.open.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn transcript_path(&self, cid: u64) -> PathBuf {
-        self.dir.join("transcripts").join(format!("{cid}.jsonl"))
-    }
-
     fn ide_audit_path(&self) -> PathBuf {
         self.dir.join(IDE_AUDIT_FILE)
     }
@@ -178,107 +142,6 @@ impl Files {
 
     fn recording_frames_path(&self) -> PathBuf {
         self.dir.join(RECORDING_FRAMES_FILE)
-    }
-
-    /// Appends one transcript record. `Ok(false)` when `seq` is already stored for `cid`.
-    pub fn append_transcript(
-        &self,
-        cid: u64,
-        seq: u64,
-        work: u64,
-        kind: &str,
-        at_ms: u64,
-        data: &Value,
-    ) -> Result<bool, String> {
-        let mut guard = self.lock();
-        let open = &mut *guard;
-        let high = match open.high.get(&cid).copied() {
-            Some(high) => high,
-            None => {
-                let high = self
-                    .newest(&self.transcript_path(cid), |r: &TranscriptIn| r.seq)
-                    .map_err(text)?;
-                open.high.insert(cid, high);
-                high
-            }
-        };
-        if high.is_some_and(|high| seq <= high)
-            && self.has_transcript_seq(cid, seq).map_err(text)?
-        {
-            return Ok(false);
-        }
-        let line = to_line(&TranscriptOut {
-            seq,
-            work,
-            kind,
-            at_ms,
-            data,
-        })?;
-        let slot = open.transcripts.entry(cid).or_default();
-        self.append_line(slot, &self.transcript_path(cid), &line, false)
-            .map_err(text)?;
-        open.high
-            .insert(cid, Some(high.map_or(seq, |high| high.max(seq))));
-        open.dirty = true;
-        Ok(true)
-    }
-
-    /// The newest `limit` records of `cid`, oldest first (the order `Db::transcript` returns).
-    pub fn transcript(&self, cid: u64, limit: i64) -> Result<Vec<TranscriptRow>, String> {
-        let limit = limit.max(0) as usize;
-        let _guard = self.lock();
-        let mut rows: Vec<TranscriptRow> = Vec::new();
-        for file in generations(&self.transcript_path(cid)) {
-            if rows.len() >= limit {
-                break;
-            }
-            for_each_line_rev(&file, self.chunk, |line| {
-                if let Ok(row) = serde_json::from_slice::<TranscriptIn>(line) {
-                    rows.push((row.seq, row.work, row.kind, row.at_ms, row.data));
-                }
-                rows.len() < limit
-            })
-            .map_err(text)?;
-        }
-        rows.sort_by_key(|a| std::cmp::Reverse(a.0));
-        rows.truncate(limit);
-        rows.reverse();
-        Ok(rows)
-    }
-
-    /// Every cid that has transcript records.
-    pub fn transcript_cids(&self) -> Result<Vec<u64>, String> {
-        let dir = self.dir.join("transcripts");
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.to_string()),
-        };
-        let mut cids = BTreeSet::new();
-        for entry in entries {
-            let name = entry.map_err(text)?.file_name();
-            let name = name.to_string_lossy();
-            if let Some(stem) = name.strip_suffix(".jsonl")
-                && let Some(cid) = stem
-                    .split('.')
-                    .next()
-                    .and_then(|cid| cid.parse::<u64>().ok())
-            {
-                cids.insert(cid);
-            }
-        }
-        Ok(cids.into_iter().collect())
-    }
-
-    /// Deletes every generation of `cid`'s transcript.
-    pub fn delete_transcript(&self, cid: u64) -> Result<(), String> {
-        let mut open = self.lock();
-        open.transcripts.remove(&cid);
-        open.high.remove(&cid);
-        for file in generations(&self.transcript_path(cid)) {
-            remove_if_exists(&file).map_err(text)?;
-        }
-        Ok(())
     }
 
     /// Appends one IDE audit row and fsyncs it before returning: an owner action is on disk when its answer is.
@@ -547,59 +410,6 @@ impl Files {
             .join(format!("{station}.json")))
     }
 
-    /// Fsyncs the files written since the last call (the periodic saver runs it).
-    pub fn sync(&self) -> Result<(), String> {
-        let mut open = self.lock();
-        if !open.dirty {
-            return Ok(());
-        }
-        for file in open.transcripts.values().flatten() {
-            file.sync_all().map_err(text)?;
-        }
-        open.dirty = false;
-        Ok(())
-    }
-
-    /// Whether `seq` is stored for `cid`, in any generation.
-    fn has_transcript_seq(&self, cid: u64, seq: u64) -> io::Result<bool> {
-        for file in generations(&self.transcript_path(cid)) {
-            let mut found = false;
-            for_each_line_rev(&file, self.chunk, |line| {
-                found =
-                    serde_json::from_slice::<TranscriptIn>(line).is_ok_and(|row| row.seq == seq);
-                !found
-            })?;
-            if found {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// The key (seq or id) of the newest record in `path`'s generations, if any has one.
-    fn newest<T: DeserializeOwned>(
-        &self,
-        path: &Path,
-        key: impl Fn(&T) -> u64,
-    ) -> io::Result<Option<u64>> {
-        for file in generations(path) {
-            let mut found = None;
-            for_each_line_rev(&file, self.chunk, |line| {
-                match serde_json::from_slice::<T>(line) {
-                    Ok(row) => {
-                        found = Some(key(&row));
-                        false
-                    }
-                    Err(_) => true,
-                }
-            })?;
-            if found.is_some() {
-                return Ok(found);
-            }
-        }
-        Ok(None)
-    }
-
     /// Appends one audit row to `path` (private, mode 0600) and fsyncs it. The caller holds the lock.
     fn append_audit<T: Serialize>(
         &self,
@@ -831,139 +641,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("state dir");
         dir
-    }
-
-    fn seqs(rows: &[TranscriptRow]) -> Vec<u64> {
-        rows.iter().map(|r| r.0).collect()
-    }
-
-    #[test]
-    fn transcripts_round_trip_and_pages_are_newest_first_across_a_restart() {
-        let dir = state("round-trip");
-        let files = Files::open(&dir);
-        for seq in 1..=5 {
-            assert_eq!(
-                files.append_transcript(7, seq, 2, "step", 100 + seq, &json!({ "n": seq })),
-                Ok(true)
-            );
-        }
-        assert_eq!(
-            seqs(&files.transcript(7, 3).unwrap()),
-            vec![3, 4, 5],
-            "the newest three, oldest first"
-        );
-        assert_eq!(files.transcript_cids().unwrap(), vec![7]);
-        drop(files);
-
-        let reopened = Files::open(&dir);
-        assert_eq!(
-            seqs(&reopened.transcript(7, 500).unwrap()),
-            vec![1, 2, 3, 4, 5]
-        );
-        assert_eq!(reopened.transcript(7, 500).unwrap()[4].4, json!({ "n": 5 }));
-        assert_eq!(
-            reopened.append_transcript(7, 6, 2, "step", 106, &json!({})),
-            Ok(true)
-        );
-        assert_eq!(seqs(&reopened.transcript(7, 2).unwrap()), vec![5, 6]);
-    }
-
-    #[test]
-    fn a_duplicate_seq_is_ignored_even_after_rotation() {
-        let dir = state("duplicate");
-        let files = Files::open_with(&dir, 150, CHUNK);
-        for seq in 1..=12 {
-            assert_eq!(
-                files.append_transcript(9, seq, 1, "step", seq, &json!({ "n": seq })),
-                Ok(true)
-            );
-        }
-        // Duplicates are found in the kept generations: the oldest kept record and the newest.
-        let rows = files.transcript(9, 500).unwrap();
-        let oldest_kept = rows[0].0;
-        assert!(
-            oldest_kept > 1,
-            "the test needs a rotation to have dropped the oldest records"
-        );
-        assert_eq!(
-            files.append_transcript(9, oldest_kept, 1, "step", 3, &json!({ "again": true })),
-            Ok(false)
-        );
-        assert_eq!(
-            files.append_transcript(9, 12, 1, "step", 12, &json!({})),
-            Ok(false),
-            "the newest seq too"
-        );
-        let rows = files.transcript(9, 500).unwrap();
-        assert!(
-            rows.iter().all(|r| r.4 != json!({ "again": true })),
-            "the duplicate's data is not stored"
-        );
-        let mut sorted = seqs(&rows);
-        sorted.dedup();
-        assert_eq!(sorted.len(), rows.len(), "no seq appears twice");
-    }
-
-    #[test]
-    fn a_torn_last_line_is_skipped_and_the_next_record_starts_clean() {
-        let dir = state("torn");
-        let files = Files::open(&dir);
-        files
-            .append_transcript(4, 1, 1, "step", 1, &json!({}))
-            .unwrap();
-        files
-            .append_transcript(4, 2, 1, "step", 2, &json!({}))
-            .unwrap();
-        drop(files);
-        let path = dir.join("transcripts").join("4.jsonl");
-        let mut torn = fs::OpenOptions::new().append(true).open(&path).unwrap();
-        torn.write_all(br#"{"seq":3,"work":1,"ki"#).unwrap();
-        drop(torn);
-
-        let files = Files::open(&dir);
-        assert_eq!(
-            seqs(&files.transcript(4, 500).unwrap()),
-            vec![1, 2],
-            "the torn line is not a record"
-        );
-        assert_eq!(
-            files.append_transcript(4, 3, 1, "step", 3, &json!({ "fresh": true })),
-            Ok(true)
-        );
-        let rows = files.transcript(4, 500).unwrap();
-        assert_eq!(seqs(&rows), vec![1, 2, 3]);
-        assert_eq!(
-            rows[2].4,
-            json!({ "fresh": true }),
-            "the new record is intact, not joined to the torn bytes"
-        );
-    }
-
-    #[test]
-    fn rotation_keeps_two_generations_and_pages_span_them() {
-        let dir = state("rotation");
-        let files = Files::open_with(&dir, 200, CHUNK);
-        for seq in 1..=30 {
-            files
-                .append_transcript(5, seq, 1, "step", seq, &json!({ "pad": "x".repeat(20) }))
-                .unwrap();
-        }
-        let folder = dir.join("transcripts");
-        assert!(folder.join("5.jsonl").exists());
-        assert!(folder.join("5.1.jsonl").exists());
-        assert!(folder.join("5.2.jsonl").exists());
-        assert!(
-            !folder.join("5.3.jsonl").exists(),
-            "only two rotations are kept"
-        );
-        let rows = seqs(&files.transcript(5, 500).unwrap());
-        assert_eq!(*rows.last().unwrap(), 30);
-        assert!(
-            rows.windows(2).all(|w| w[1] == w[0] + 1),
-            "the retained records are contiguous: {rows:?}"
-        );
-        assert!(rows[0] > 1, "the oldest generation was dropped");
-        assert_eq!(seqs(&files.transcript(5, 3).unwrap()), vec![28, 29, 30]);
     }
 
     /// The IDE audit: rows come back newest first (by at_ms, then the later row first), filtered by

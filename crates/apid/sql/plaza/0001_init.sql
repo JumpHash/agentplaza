@@ -315,6 +315,438 @@ CREATE TABLE "deploy" (
     FOREIGN KEY ("project_environment_project", "environments_pos") REFERENCES "environment" ("project_environment_project", "environments_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component connectors
+CREATE TABLE "connectors" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "connectors_settings" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "settings_key" TEXT NOT NULL,
+    "enabled" INTEGER NOT NULL CHECK ("enabled" IN (0, 1)),
+    PRIMARY KEY ("connectors_pos", "settings_key"),
+    FOREIGN KEY ("connectors_pos") REFERENCES "connectors" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connectors_settings_roles" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "settings_key" TEXT NOT NULL,
+    "roles_pos" INTEGER NOT NULL CHECK ("roles_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "settings_key", "roles_pos"),
+    FOREIGN KEY ("connectors_pos", "settings_key") REFERENCES "connectors_settings" ("connectors_pos", "settings_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connectors_settings_projects" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "settings_key" TEXT NOT NULL,
+    "projects_pos" INTEGER NOT NULL CHECK ("projects_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "settings_key", "projects_pos"),
+    FOREIGN KEY ("connectors_pos", "settings_key") REFERENCES "connectors_settings" ("connectors_pos", "settings_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_proposal" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "proposals_pos" INTEGER NOT NULL CHECK ("proposals_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "proposer_cid" INTEGER NOT NULL CHECK ("proposer_cid" >= 0),
+    "proposer" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "state" TEXT NOT NULL,
+    "note" TEXT,
+    PRIMARY KEY ("connectors_pos", "proposals_pos"),
+    FOREIGN KEY ("connectors_pos") REFERENCES "connectors" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_proposal_checks" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "proposals_pos" INTEGER NOT NULL CHECK ("proposals_pos" >= 0),
+    "checks_pos" INTEGER NOT NULL CHECK ("checks_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "proposals_pos", "checks_pos"),
+    FOREIGN KEY ("connectors_pos", "proposals_pos") REFERENCES "connector_proposal" ("connectors_pos", "proposals_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_proposal_spec" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "proposals_pos" INTEGER NOT NULL CHECK ("proposals_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "category" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
+    "docs_url" TEXT NOT NULL,
+    "base_url" TEXT NOT NULL,
+    "auth_kind" TEXT NOT NULL,
+    "auth_name" TEXT,
+    PRIMARY KEY ("connectors_pos", "proposals_pos"),
+    FOREIGN KEY ("connectors_pos", "proposals_pos") REFERENCES "connector_proposal" ("connectors_pos", "proposals_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_proposal_spec_fields" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "proposals_pos" INTEGER NOT NULL CHECK ("proposals_pos" >= 0),
+    "fields_pos" INTEGER NOT NULL CHECK ("fields_pos" >= 0),
+    "name" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "env" TEXT NOT NULL,
+    "hint" TEXT NOT NULL,
+    "secret" INTEGER NOT NULL CHECK ("secret" IN (0, 1)),
+    "required" INTEGER NOT NULL CHECK ("required" IN (0, 1)),
+    PRIMARY KEY ("connectors_pos", "proposals_pos", "fields_pos"),
+    FOREIGN KEY ("connectors_pos", "proposals_pos") REFERENCES "connector_proposal_spec" ("connectors_pos", "proposals_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_proposal_spec_actions" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "proposals_pos" INTEGER NOT NULL CHECK ("proposals_pos" >= 0),
+    "actions_pos" INTEGER NOT NULL CHECK ("actions_pos" >= 0),
+    "name" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
+    "risk" TEXT NOT NULL,
+    "method" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    "input_schema_content" TEXT,
+    PRIMARY KEY ("connectors_pos", "proposals_pos", "actions_pos"),
+    FOREIGN KEY ("connectors_pos", "proposals_pos") REFERENCES "connector_proposal_spec" ("connectors_pos", "proposals_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component settings
+CREATE TABLE "settings" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "default_model" TEXT NOT NULL,
+    "orchestrator_model" TEXT NOT NULL,
+    "effort" TEXT,
+    "max_turns" INTEGER NOT NULL CHECK ("max_turns" >= 0),
+    "max_tokens" INTEGER NOT NULL CHECK ("max_tokens" >= 0),
+    "memory_autoscale" INTEGER NOT NULL CHECK ("memory_autoscale" IN (0, 1)),
+    "vm_auto_checkpoints" INTEGER NOT NULL CHECK ("vm_auto_checkpoints" IN (0, 1)),
+    "retention_posts_max" INTEGER NOT NULL CHECK ("retention_posts_max" >= 0),
+    "retention_posts_days" INTEGER NOT NULL CHECK ("retention_posts_days" >= 0),
+    "retention_usage_calls_max" INTEGER NOT NULL CHECK ("retention_usage_calls_max" >= 0),
+    "retention_usage_days" INTEGER NOT NULL CHECK ("retention_usage_days" >= 0),
+    "laws_strict_permits" INTEGER NOT NULL CHECK ("laws_strict_permits" IN (0, 1)),
+    "payments_approve_over" INTEGER NOT NULL CHECK ("payments_approve_over" >= 0),
+    "payments_charge_models" INTEGER NOT NULL CHECK ("payments_charge_models" IN (0, 1)),
+    "foundry_hf_max_gb" INTEGER NOT NULL CHECK ("foundry_hf_max_gb" >= 0),
+    "allow_training_models" INTEGER NOT NULL CHECK ("allow_training_models" IN (0, 1)),
+    "review_timeout_minutes" INTEGER NOT NULL CHECK ("review_timeout_minutes" >= 0),
+    "workstation_recordings_record" INTEGER NOT NULL CHECK ("workstation_recordings_record" IN (0, 1)),
+    "workstation_recordings_retention_days" INTEGER NOT NULL CHECK ("workstation_recordings_retention_days" >= 0),
+    "workstation_recordings_record_fps" INTEGER NOT NULL CHECK ("workstation_recordings_record_fps" >= 0),
+    "workstation_recordings_record_takeovers" INTEGER NOT NULL CHECK ("workstation_recordings_record_takeovers" IN (0, 1)),
+    "engines_mode" TEXT NOT NULL,
+    "acp_enabled" INTEGER NOT NULL CHECK ("acp_enabled" IN (0, 1)),
+    "acp_write_back" INTEGER NOT NULL CHECK ("acp_write_back" IN (0, 1)),
+    "acp_v2" INTEGER NOT NULL CHECK ("acp_v2" IN (0, 1)),
+    "idle_sleep_min" INTEGER NOT NULL CHECK ("idle_sleep_min" >= 0),
+    "doze_idle_s" INTEGER NOT NULL CHECK ("doze_idle_s" >= 0),
+    "health_interval_s" INTEGER NOT NULL CHECK ("health_interval_s" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "settings_role_models" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "role_models_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "role_models_key"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_model_policy" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    PRIMARY KEY ("settings_pos"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_model_policy_orchestrator" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "orchestrator_pos" INTEGER NOT NULL CHECK ("orchestrator_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "orchestrator_pos"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings_model_policy" ("settings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_model_policy_worker" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "worker_pos" INTEGER NOT NULL CHECK ("worker_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "worker_pos"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings_model_policy" ("settings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_fetch_block" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "fetch_block_pos" INTEGER NOT NULL CHECK ("fetch_block_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "fetch_block_pos"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_prices" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "prices_key" TEXT NOT NULL,
+    "input" REAL NOT NULL,
+    "output" REAL NOT NULL,
+    PRIMARY KEY ("settings_pos", "prices_key"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_board_pauses" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "all" INTEGER NOT NULL CHECK ("all" IN (0, 1)),
+    PRIMARY KEY ("settings_pos"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_board_pauses_projects" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "value"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings_board_pauses" ("settings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_engines_enabled" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "engines_enabled_pos" INTEGER NOT NULL CHECK ("engines_enabled_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "engines_enabled_pos"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_sleep_never_roles" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "sleep_never_roles_pos" INTEGER NOT NULL CHECK ("sleep_never_roles_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "sleep_never_roles_pos"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_role_volumes" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "role_volumes_key" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "role_volumes_key"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_role_volumes_volumes" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "role_volumes_key" TEXT NOT NULL,
+    "volumes_pos" INTEGER NOT NULL CHECK ("volumes_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "role_volumes_key", "volumes_pos"),
+    FOREIGN KEY ("settings_pos", "role_volumes_key") REFERENCES "settings_role_volumes" ("settings_pos", "role_volumes_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_favourite_models" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "favourite_models_pos" INTEGER NOT NULL CHECK ("favourite_models_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "favourite_models_pos"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component appearance
+CREATE TABLE "appearance" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "appearance_choice" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "theme" TEXT NOT NULL,
+    "skin" TEXT,
+    "background_preset" TEXT,
+    "mode" TEXT NOT NULL CHECK ("mode" IN ('system', 'light', 'dark')),
+    "density" TEXT NOT NULL CHECK ("density" IN ('compact', 'default', 'comfortable')),
+    "code_size" REAL NOT NULL,
+    "chosen" INTEGER NOT NULL CHECK ("chosen" IN (0, 1)),
+    PRIMARY KEY ("appearance_pos"),
+    FOREIGN KEY ("appearance_pos") REFERENCES "appearance" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_choice_background" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "pattern" TEXT NOT NULL CHECK ("pattern" IN ('none', 'dots', 'weave', 'grid', 'blueprint', 'contours')),
+    "scale" REAL NOT NULL,
+    "strength" REAL NOT NULL,
+    "strength_dark" REAL,
+    "motion" TEXT NOT NULL CHECK ("motion" IN ('still', 'slow')),
+    "pointer" INTEGER NOT NULL CHECK ("pointer" IN (0, 1)),
+    "ornament" TEXT NOT NULL CHECK ("ornament" IN ('none', 'threads', 'orbits')),
+    "grain" REAL NOT NULL,
+    "grain_dark" REAL,
+    "scope" TEXT NOT NULL CHECK ("scope" IN ('pages', 'all')),
+    PRIMARY KEY ("appearance_pos"),
+    FOREIGN KEY ("appearance_pos") REFERENCES "appearance_choice" ("appearance_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_choice_background_fields" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "fields_pos" INTEGER NOT NULL CHECK ("fields_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("appearance_pos", "fields_pos"),
+    FOREIGN KEY ("appearance_pos") REFERENCES "appearance_choice_background" ("appearance_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    "schema" INTEGER NOT NULL CHECK ("schema" >= 0),
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "about" TEXT NOT NULL,
+    "skin" TEXT NOT NULL,
+    "background_preset" TEXT,
+    "source" TEXT,
+    PRIMARY KEY ("appearance_pos", "themes_pos"),
+    FOREIGN KEY ("appearance_pos") REFERENCES "appearance" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_background" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "pattern" TEXT NOT NULL CHECK ("pattern" IN ('none', 'dots', 'weave', 'grid', 'blueprint', 'contours')),
+    "scale" REAL NOT NULL,
+    "strength" REAL NOT NULL,
+    "strength_dark" REAL,
+    "motion" TEXT NOT NULL CHECK ("motion" IN ('still', 'slow')),
+    "pointer" INTEGER NOT NULL CHECK ("pointer" IN (0, 1)),
+    "ornament" TEXT NOT NULL CHECK ("ornament" IN ('none', 'threads', 'orbits')),
+    "grain" REAL NOT NULL,
+    "grain_dark" REAL,
+    "scope" TEXT NOT NULL CHECK ("scope" IN ('pages', 'all')),
+    PRIMARY KEY ("appearance_pos", "themes_pos"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_background_fields" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    "fields_pos" INTEGER NOT NULL CHECK ("fields_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("appearance_pos", "themes_pos", "fields_pos"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme_background" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_palette" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    PRIMARY KEY ("appearance_pos", "themes_pos"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_palette_light" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    PRIMARY KEY ("appearance_pos", "themes_pos"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme_palette" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_palette_light_entries" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    "entries_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("appearance_pos", "themes_pos", "entries_key"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme_palette_light" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_palette_dark" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    PRIMARY KEY ("appearance_pos", "themes_pos"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme_palette" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_palette_dark_entries" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    "entries_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("appearance_pos", "themes_pos", "entries_key"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme_palette_dark" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_overrides" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    PRIMARY KEY ("appearance_pos", "themes_pos"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_overrides_light" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    PRIMARY KEY ("appearance_pos", "themes_pos"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme_overrides" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_overrides_light_entries" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    "entries_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("appearance_pos", "themes_pos", "entries_key"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme_overrides_light" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_overrides_dark" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    PRIMARY KEY ("appearance_pos", "themes_pos"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme_overrides" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "appearance_theme_overrides_dark_entries" (
+    "appearance_pos" INTEGER NOT NULL CHECK ("appearance_pos" >= 0),
+    "themes_pos" INTEGER NOT NULL CHECK ("themes_pos" >= 0),
+    "entries_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("appearance_pos", "themes_pos", "entries_key"),
+    FOREIGN KEY ("appearance_pos", "themes_pos") REFERENCES "appearance_theme_overrides_dark" ("appearance_pos", "themes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component providers
+CREATE TABLE "providers" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "provider" (
+    "providers_pos" INTEGER NOT NULL CHECK ("providers_pos" >= 0),
+    "providers_pos_2" INTEGER NOT NULL CHECK ("providers_pos_2" >= 0),
+    "id" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('anthropic', 'openai', 'openai-responses', 'azure-openai', 'gemini', 'bedrock', 'vertex-anthropic', 'vertex-gemini', 'openai-compatible', 'openai-decisions', 'systemone', 'azure-decisions', 'mock')),
+    "label" TEXT,
+    "accent" TEXT,
+    "enabled" INTEGER NOT NULL CHECK ("enabled" IN (0, 1)),
+    "base_url" TEXT,
+    "auth_kind" TEXT NOT NULL CHECK ("auth_kind" IN ('none', 'env', 'secret', 'command')),
+    "auth_env" TEXT,
+    "auth_secret" TEXT,
+    "auth_command" TEXT,
+    "extra_body_content" TEXT,
+    PRIMARY KEY ("providers_pos", "providers_pos_2"),
+    FOREIGN KEY ("providers_pos") REFERENCES "providers" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "provider_extra_headers" (
+    "providers_pos" INTEGER NOT NULL CHECK ("providers_pos" >= 0),
+    "providers_pos_2" INTEGER NOT NULL CHECK ("providers_pos_2" >= 0),
+    "extra_headers_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("providers_pos", "providers_pos_2", "extra_headers_key"),
+    FOREIGN KEY ("providers_pos", "providers_pos_2") REFERENCES "provider" ("providers_pos", "providers_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "provider_models" (
+    "providers_pos" INTEGER NOT NULL CHECK ("providers_pos" >= 0),
+    "providers_pos_2" INTEGER NOT NULL CHECK ("providers_pos_2" >= 0),
+    "models_pos" INTEGER NOT NULL CHECK ("models_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("providers_pos", "providers_pos_2", "models_pos"),
+    FOREIGN KEY ("providers_pos", "providers_pos_2") REFERENCES "provider" ("providers_pos", "providers_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "provider_options" (
+    "providers_pos" INTEGER NOT NULL CHECK ("providers_pos" >= 0),
+    "providers_pos_2" INTEGER NOT NULL CHECK ("providers_pos_2" >= 0),
+    "region" TEXT,
+    "project" TEXT,
+    "location" TEXT,
+    "path" TEXT,
+    "max_tokens_field" TEXT,
+    "models_cache_secs" INTEGER CHECK ("models_cache_secs" >= 0),
+    "websocket" INTEGER CHECK ("websocket" IN (0, 1)),
+    "replay_reasoning" INTEGER CHECK ("replay_reasoning" IN (0, 1)),
+    "mistral_compat" INTEGER CHECK ("mistral_compat" IN (0, 1)),
+    "reasoning_effort" INTEGER CHECK ("reasoning_effort" IN (0, 1)),
+    "first_party" INTEGER CHECK ("first_party" IN (0, 1)),
+    "refusal_fallbacks" INTEGER CHECK ("refusal_fallbacks" IN (0, 1)),
+    PRIMARY KEY ("providers_pos", "providers_pos_2"),
+    FOREIGN KEY ("providers_pos", "providers_pos_2") REFERENCES "provider" ("providers_pos", "providers_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "provider_options_trains_on_data" (
+    "providers_pos" INTEGER NOT NULL CHECK ("providers_pos" >= 0),
+    "providers_pos_2" INTEGER NOT NULL CHECK ("providers_pos_2" >= 0),
+    "trains_on_data_pos" INTEGER NOT NULL CHECK ("trains_on_data_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("providers_pos", "providers_pos_2", "trains_on_data_pos"),
+    FOREIGN KEY ("providers_pos", "providers_pos_2") REFERENCES "provider_options" ("providers_pos", "providers_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "provider_offered" (
+    "providers_pos" INTEGER NOT NULL CHECK ("providers_pos" >= 0),
+    "offered_pos" INTEGER NOT NULL CHECK ("offered_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("providers_pos", "offered_pos"),
+    FOREIGN KEY ("providers_pos") REFERENCES "providers" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component sessions
 CREATE TABLE "session" (
     "id" TEXT NOT NULL,

@@ -390,7 +390,8 @@ fn run_wake(cid: u64, node: &str) {
             if let Some(times) = book().wake_started.get_mut(&cid) {
                 times.node_done = Some(std::time::Instant::now());
             }
-            hub.transcripts.record(&hub.bus, cid, 0, "wake", json!({}));
+            hub.transcripts
+                .record(&hub.bus, cid, 0, crate::transcript::Entry::Wake {});
         }
         Err(err) => {
             forget_wake(cid);
@@ -800,8 +801,9 @@ pub(crate) fn put_to_sleep(app: &App, cid: u64) -> Result<(), Response> {
                 &app.bus,
                 cid,
                 0,
-                "sleep",
-                json!({ "snapshot": body["snapshot"] }),
+                crate::transcript::Entry::Sleep {
+                    snapshot: body["snapshot"].clone(),
+                },
             );
             crate::metrics::ingest::record_event(
                 &app.metrics,

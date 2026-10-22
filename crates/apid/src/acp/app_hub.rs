@@ -13,7 +13,6 @@ use crate::events::Frame;
 use crate::scheduler::Origin;
 use crate::settings::{Tier, tier_of};
 use crate::state::App;
-use crate::transcript::Entry;
 
 /// How many transcript entries one read takes from the log.
 const ENTRY_PAGE: usize = 1000;
@@ -105,7 +104,7 @@ impl Hub for AppHub<'_> {
         }
     }
 
-    fn entries(&self, cid: u64, works: &[u64]) -> Vec<Entry> {
+    fn entries(&self, cid: u64, works: &[u64]) -> Vec<crate::transcript::StoredEntry> {
         let mut out = Vec::new();
         let mut after = 0;
         loop {
@@ -158,11 +157,11 @@ impl Hub for AppHub<'_> {
         let mut output = 0;
         let mut calls = 0;
         for entry in self.entries(cid, &[work]) {
-            if entry.kind != "model_response" || entry.data["usage"].is_null() {
+            let crate::transcript::Entry::ModelResponse { usage, .. } = &entry.entry else {
                 continue;
-            }
-            input += entry.data["usage"]["input_tokens"].as_u64().unwrap_or(0);
-            output += entry.data["usage"]["output_tokens"].as_u64().unwrap_or(0);
+            };
+            input += usage.input_tokens;
+            output += usage.output_tokens;
             calls += 1;
         }
         // The gateway's engine calls of the work are in the usage ledger, not the transcript: they
