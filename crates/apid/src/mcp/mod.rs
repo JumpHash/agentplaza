@@ -276,7 +276,7 @@ pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
     let laws = crate::laws::global();
     let mut specs = Vec::new();
     for server in app.mcp.store.list() {
-        let project = app.members.project_of(agent.cid);
+        let project = crate::projects::project_of(app, agent.cid);
         if !allowed(&server, &agent.role, node.as_deref(), project.as_deref()) {
             continue;
         }
@@ -321,7 +321,7 @@ pub fn call_for_agent(
         .owner_of_cid(agent.cid)
         .map(|n| n.id)
         .ok_or("your node is not known")?;
-    let project = app.members.project_of(agent.cid);
+    let project = crate::projects::project_of(app, agent.cid);
     if !allowed(&server, &agent.role, Some(&node), project.as_deref()) {
         return Err(format!(
             "{name} is not available to the {} role on this node and project",

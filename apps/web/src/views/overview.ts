@@ -2,7 +2,7 @@ import '../styles/proto/overview.css';
 import { agentLabelIn, agentName, roleLabel } from '../roles';
 import { api, type Agent, type AgentProposal, type AgentStep, type Approval, type Entry, type Project, type Task } from '../api';
 import { go, href } from '../router';
-import { inScope, isLive, onBench, projectTitle, scope } from '../scope';
+import { inScope, isLive, projectTitle, scope } from '../scope';
 import { agents, on, overview, RESYNC } from '../store';
 import { ago, attempt, clip, dot, empty, stat, type Tone } from '../ui/components';
 import { attachBar, maySend } from '../ui/attach-bar';
@@ -128,14 +128,14 @@ export function mount(root: HTMLElement): Cleanup {
   };
   void loadWaiting();
 
-  // The figures: the plaza's (with its bench), or under a project the project's.
+  // The figures: the plaza's, or under a project the project's.
   let budget: number | null = null;
   const drawStats = (): void => {
     const o = overview.get();
     if (!o) return replace(statsSlot, h('div.card.ov-card', null, empty('alert', 'apid is unreachable', 'Start apid, then reload.')));
     const roster = agents.get();
     if (inProject) {
-      const team = roster.filter((a) => a.project === inProject);
+      const here = roster.filter((a) => a.project === inProject);
       const ts = drawn?.ts ?? [];
       const open = ts.filter((t) => t.state === 'open' || t.state === 'claimed').length;
       const p = drawn?.ps[0];
@@ -144,7 +144,7 @@ export function mount(root: HTMLElement): Cleanup {
         h(
           'div.ov-stats',
           null,
-          stat('Agents', team.length, `${team.filter((a) => a.status === 'working').length} working`),
+          stat('Agents', here.length, `${here.filter((a) => a.status === 'working').length} working`),
           stat('Open tasks', open, `${ts.filter((t) => t.state === 'done').length} done`),
           stat('Stage', p ? p.stage.charAt(0).toUpperCase() + p.stage.slice(1) : '—', p?.paused ? 'paused' : p?.archived ? 'archived' : 'in progress'),
           stat('Budget', budget === null ? '—' : budget.toLocaleString('en-US'), budget === null ? 'from the plaza' : 'credits left'),
@@ -153,13 +153,12 @@ export function mount(root: HTMLElement): Cleanup {
       return;
     }
     const open = (o.tasks['open'] ?? 0) + (o.tasks['claimed'] ?? 0);
-    const bench = roster.filter(onBench).length;
     replace(
       statsSlot,
       h(
         'div.ov-stats',
         null,
-        stat('Agents', o.agents.total.toLocaleString('en-US'), `${o.agents.working.toLocaleString('en-US')} working · ${bench} on the bench`),
+        stat('Agents', o.agents.total.toLocaleString('en-US'), `${o.agents.working.toLocaleString('en-US')} working`),
         stat('Open tasks', open.toLocaleString('en-US'), `${(o.tasks['done'] ?? 0).toLocaleString('en-US')} done`),
         modelStat('Worker model', modelParts(o.default_model)),
         modelStat('Orchestrator model', modelParts(o.orchestrator_model)),

@@ -4,11 +4,16 @@
 
 mod common;
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use common::{FakeDaemon, Hub, Scratch, text};
+
+/// The CID noded gives the planner VM a project's run starts.
+const PLANNER: u64 = 600;
+const WAIT: Duration = Duration::from_secs(20);
 
 /// Agent `cid`'s VM says hello as the builder on VM 0, and the hub registers it.
 fn hello(hub: &Hub, cid: u64) {
@@ -22,6 +27,45 @@ fn message(hub: &Hub, cid: u64, body: Value) -> Value {
     let (status, reply) = hub.guest(cid, "message", body);
     assert_eq!(status, 200, "{reply}");
     reply
+}
+
+/// noded and the agent gateway, sharing the VMs noded started: each run's VM is [`PLANNER`], and the gateway answers
+/// the status poll with the VMs started so far.
+fn daemons() -> (FakeDaemon, FakeDaemon) {
+    let started: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let spawned = Arc::clone(&started);
+    let noded = FakeDaemon::serve(move |method, path, body| {
+        let mut vms = spawned.lock().unwrap_or_else(|p| p.into_inner());
+        if method == "GET" && path.starts_with("/v1/runs") {
+            let runs = json!({ "runs": [{ "id": "r1", "ended_at": null, "vms": vms.clone() }] });
+            (200, runs.to_string())
+        } else if method == "POST" && path == "/v1/runs" {
+            let role = serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|b| b["role"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            let id = vms.len();
+            vms.push(json!({ "id": id, "guest_cid": PLANNER, "role": role }));
+            let vm = json!({ "id": id, "guest_cid": PLANNER, "state": "running" });
+            (200, json!({ "id": "r1", "vms": [vm] }).to_string())
+        } else {
+            (200, "{}".into())
+        }
+    });
+    let reported = Arc::clone(&started);
+    let gateway = FakeDaemon::serve(move |_, path, _| {
+        if path.starts_with("/v1/status") {
+            let vms = reported.lock().unwrap_or_else(|p| p.into_inner());
+            let agents: Vec<Value> = vms
+                .iter()
+                .map(|vm| json!({ "cid": vm["guest_cid"], "role": vm["role"] }))
+                .collect();
+            (200, json!({ "agents": agents }).to_string())
+        } else {
+            (200, r#"{"ok":true}"#.into())
+        }
+    });
+    (noded, gateway)
 }
 
 #[test]
@@ -77,36 +121,59 @@ fn a_message_from_an_agent_that_never_said_hello_is_refused() {
 
 #[test]
 fn each_guest_message_type_is_answered() {
+    let (noded, gateway) = daemons();
+    let roles = json!({ "roles": {
+        "planner": { "role": "planner", "title": "Planner", "tools": ["bash", "read_file"] },
+    } });
     let scratch = Scratch::new("internal-messages");
-    let hub = Hub::start(&scratch, None, None);
-    let cid = 430;
-    hello(&hub, cid);
+    let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Messages", "goal": "Answer each guest message" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    // The project's planner: a long-lived session on the VM noded started for it, which the work loop starts on a tick.
+    let planners = hub.wait_for(&format!("/v1/sessions?project={pid}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["role"] == "planner" && s["cid"] == PLANNER)
+        })
+    });
+    assert!(
+        planners
+            .as_array()
+            .is_some_and(|s| s.iter().any(|s| s["role"] == "planner")),
+        "a planner session: {planners}\n{}",
+        hub.log()
+    );
+    let (status, body) = hub.guest(PLANNER, "hello", json!({ "role": "planner", "vm": 0 }));
+    assert_eq!(status, 200, "{body}");
 
-    // On the bench (no project), a model call and a tool request are refused before any provider or tool runs, so
-    // nothing leaves the hub. Each reply still comes back in its own type.
+    // Its project paused, the session's model call and tool request are held: each reply comes back in its own type.
+    let (status, paused) = hub.call("POST", &format!("/v1/projects/{pid}/pause"), None);
+    assert_eq!(status, 200, "{paused}");
     let reply = message(
         &hub,
-        cid,
+        PLANNER,
         json!({ "type": "model_call", "req": 7, "work": 1, "request": { "model": "", "messages": [] } }),
     );
     assert_eq!(reply["reply"]["type"], "model_result", "{reply}");
     assert_eq!(reply["reply"]["req"], 7, "{reply}");
     assert_eq!(reply["reply"]["ok"], false, "{reply}");
-    assert!(
-        text(&reply["reply"]["error"]).contains("on the bench"),
-        "{reply}"
-    );
+    assert!(text(&reply["reply"]["error"]).contains("paused"), "{reply}");
 
     let reply = message(
         &hub,
-        cid,
+        PLANNER,
         json!({ "type": "tool_request", "work": 1, "call": "toolu_2", "name": "bash", "input": {} }),
     );
     assert_eq!(reply["reply"]["type"], "tool_decision", "{reply}");
     assert_eq!(reply["reply"]["call"], "toolu_2", "{reply}");
     assert_eq!(reply["reply"]["decision"], "deny", "{reply}");
     assert!(
-        text(&reply["reply"]["output"]).contains("on the bench"),
+        text(&reply["reply"]["output"]).contains("paused"),
         "{reply}"
     );
 
@@ -128,7 +195,7 @@ fn each_guest_message_type_is_answered() {
     ];
     for body in others {
         let kind = body["type"].clone();
-        let reply = message(&hub, cid, body);
+        let reply = message(&hub, PLANNER, body);
         assert!(reply["reply"].is_null(), "{kind}: {reply}");
     }
 }
@@ -194,11 +261,12 @@ fn the_egress_report_and_check_need_the_token() {
     );
     assert_eq!(status, 403, "{body}");
 
-    // With the token, the check answers with its allow field. The agent is on the bench, so it reaches no host.
+    // With the token, the check answers with its allow field. The agent has no session, so no project holds it: the
+    // laws decide for its host, and the answer is a decision either way.
     let (status, answer) = hub.internal("/internal/egress/check", check);
     assert_eq!(status, 200, "{answer}");
-    assert_eq!(answer["allow"], false, "{answer}");
-    assert!(text(&answer["reason"]).contains("on the bench"), "{answer}");
+    assert!(answer["allow"].is_boolean(), "{answer}");
+    assert!(!text(&answer["reason"]).contains("paused"), "{answer}");
 
     // With the token, the VM's report of its connection is recorded.
     let (status, body) = hub.guest(cid, "egress", report);

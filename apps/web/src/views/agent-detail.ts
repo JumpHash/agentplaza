@@ -6,7 +6,7 @@ import { go, href } from '../router';
 import { openIde } from '../ide/open';
 import { prewake } from '../prewake';
 import { agentName } from '../roles';
-import { liveProjects, onBench, projects, projectTitle } from '../scope';
+import { projectTitle } from '../scope';
 import { agents, on, refreshAgents } from '../store';
 import { ago, attempt, badge, button, card, clip, compact, empty, field, input, modal, textarea } from '../ui/components';
 import { h, icon, lu, replace } from '../ui/dom';
@@ -614,41 +614,12 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     );
   };
 
-  /** Where the agent works, why it waits if it does, and the move: onto a project from the bench, or back to it. */
+  /** Where the agent works, and why its work waits if it does. */
   const projectLine = (a: Agent): HTMLElement | null => {
     if (a.tier === 'orchestrator') return h('p.ag-row-sub', null, 'Works on every project: it opens them and runs them.');
     if (a.kind === 'model') return null;
-    if (a.project) {
-      const pid = a.project;
-      return h(
-        'p.ag-row-sub',
-        null,
-        'Works on ',
-        h('a', { href: href('projects', pid) }, projectTitle(pid)),
-        a.joined_ms ? ` since ${ago(a.joined_ms)}` : null,
-        a.held ? ` · ${a.held}` : null,
-        ' ',
-        button('Back to the bench', () => void act(() => attempt(() => api.removeMember(pid, cid), `${agentName(a)} is back on the bench`).then(() => void refreshAgents())), {
-          size: 'sm',
-          kind: 'ghost',
-          disabled: busy,
-        }),
-      );
-    }
-    if (!onBench(a)) return null;
-    const live = liveProjects(projects.get());
-    const put = live.length
-      ? (() => {
-          const sel = h('select.select', { 'aria-label': 'Put on a project' }, h('option', { value: '' }, 'Put on a project…'), ...live.map((p) => h('option', { value: p.id }, p.title))) as HTMLSelectElement;
-          sel.addEventListener('change', () => {
-            if (!sel.value) return;
-            const to = sel.value;
-            void act(() => attempt(() => api.addMember(to, cid), `${agentName(a)} works on ${projectTitle(to)} now`).then(() => void refreshAgents()));
-          });
-          return sel;
-        })()
-      : null;
-    return h('p.ag-row-sub', null, `${agentName(a)} is on the bench: it does nothing until it works on a project. `, put);
+    if (a.project) return h('p.ag-row-sub', null, 'Works on ', h('a', { href: href('projects', a.project) }, projectTitle(a.project)), a.held ? ` · ${a.held}` : null);
+    return h('p.ag-row-sub', null, 'Works on no project right now.');
   };
 
   /** The More menu: Sleep, Fork, Move and Restart, then a rule and the rare destructive Wipe and Retire. */

@@ -1,6 +1,6 @@
 // Tasks: the board of every task (four lanes of live cards) and one task in full (goal, result, facts, and a timeline
 // from the assignee's transcript). A task is open, in progress, done, or failed or withdrawn. An open task moves by drag
-// or from its ⋯ menu: into In progress it is assigned to an idle member of its project, into Failed or withdrawn it is
+// or from its ⋯ menu: into In progress it is assigned to an idle agent of its project, into Failed or withdrawn it is
 // withdrawn; a task outside projects dropped on a project moves into it. The markup is the prototype's (m-work.js,
 // styles/proto/work.css).
 
@@ -73,7 +73,7 @@ const cidName = (cid: number): string => {
 };
 const idleWorkers = (): Agent[] => agents.get().filter((a) => a.status === 'idle' && a.tier === 'worker');
 /** The idle workers on `project`: a project's task goes only to its agents. */
-const idleMembers = (project: string | null): Agent[] => idleWorkers().filter((a) => !!project && a.project === project);
+const idleAgents = (project: string | null): Agent[] => idleWorkers().filter((a) => !!project && a.project === project);
 /** The projects that take tasks now: live, their plan approved. */
 const takingTasks = () => liveProjects(projects.get()).filter((p) => p.stage === 'implementation' || p.stage === 'review');
 const statusOf = (cid: number | null): string => agents.get().find((a) => a.cid === cid)?.status ?? 'offline';
@@ -359,7 +359,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     const fillAssignees = (): void => {
       replace(
         assignee,
-        [{ value: '', label: 'Let the scheduler choose' }, ...idleMembers(projectSel.value).map((a) => ({ value: String(a.cid), label: agentName(a) }))].map((o) =>
+        [{ value: '', label: 'Let the scheduler choose' }, ...idleAgents(projectSel.value).map((a) => ({ value: String(a.cid), label: agentName(a) }))].map((o) =>
           h('option', { value: o.value }, o.label),
         ),
       );
@@ -630,7 +630,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
     const a = agents.get().find((x) => x.cid === t.agent_cid);
     const isOpen = t.state === 'open';
-    const assignSel = select([{ value: '', label: 'Assign to…' }, ...idleMembers(t.project).map((x) => ({ value: String(x.cid), label: agentName(x) }))], '');
+    const assignSel = select([{ value: '', label: 'Assign to…' }, ...idleAgents(t.project).map((x) => ({ value: String(x.cid), label: agentName(x) }))], '');
     assignSel.setAttribute('aria-label', 'Assign to…');
     assignSel.addEventListener('change', async () => {
       const cid = Number(assignSel.value);
@@ -715,7 +715,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   }
 
   // ---- Drag and drop: pointer events, so mouse and touch alike ----
-  // Open to In progress assigns (a popover picks an idle member of the project). Open to Failed or withdrawn withdraws.
+  // Open to In progress assigns (a popover picks an idle agent of the project). Open to Failed or withdrawn withdraws.
   // Any other move is refused, with its reason in a toast. A task outside projects dropped on a project in the strip
   // moves into it. Each allowed move is also in the card's ⋯ menu.
 
@@ -730,7 +730,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     if (from === 'Failed or withdrawn') return { kind: 'refuse', why: 'Ended tasks stay ended: the hub decides their state' };
     if (ln === 'In progress') {
       if (!t.project) return { kind: 'refuse', why: 'Move it into a project first, then assign it.' };
-      return idleMembers(t.project).length ? { kind: 'assign' } : { kind: 'refuse', why: `No idle member in ${projectTitle(t.project)} to assign.` };
+      return idleAgents(t.project).length ? { kind: 'assign' } : { kind: 'refuse', why: `No idle agent in ${projectTitle(t.project)} to assign.` };
     }
     if (ln === 'Failed or withdrawn') return { kind: 'withdraw' };
     return { kind: 'refuse', why: 'Only the hub marks a task done: it decides when the work is finished.' };
@@ -843,14 +843,14 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       flushPending();
       return;
     }
-    // Assign: the ghost goes, the placeholder stays while the popover picks the member; cancelling brings the card back.
+    // Assign: the ghost goes, the placeholder stays while the popover picks the agent; cancelling brings the card back.
     d.ghost?.remove();
     d.ghost = null;
     popOpen(
       e?.clientX ?? 0,
       e?.clientY ?? 0,
       'Assign to…',
-      idleMembers(t.project).map((a) => ({ label: agentName(a), run: () => void assignTo(t, a) })),
+      idleAgents(t.project).map((a) => ({ label: agentName(a), run: () => void assignTo(t, a) })),
       'Nobody idle in this project.',
       () => {
         d.card.classList.remove('is-src');
@@ -899,7 +899,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const menuFor = (t: Task, x: number, y: number): void => {
     const items: Item[] = [];
     if (laneOf(t.state) === 'Open') {
-      idleMembers(t.project).forEach((a) => items.push({ label: `Assign to ${agentName(a)}`, run: () => void assignTo(t, a) }));
+      idleAgents(t.project).forEach((a) => items.push({ label: `Assign to ${agentName(a)}`, run: () => void assignTo(t, a) }));
       items.push({ label: 'Withdraw', run: () => void withdraw(t) });
     }
     if (!t.project) takingTasks().forEach((p) => items.push({ label: `Move into ${p.title}`, run: () => void moveTo(t, p.id) }));

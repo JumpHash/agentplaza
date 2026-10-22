@@ -664,22 +664,7 @@ mod tests {
         ),
         ("librarian", &["read_memory", "search", "transcript_search"]),
         ("architect", &["bash", "read_file", "list", "search"]),
-        (
-            "mayor",
-            &[
-                "read_file",
-                "list",
-                "search",
-                "transcript_search",
-                "assign_task",
-                "spawn_agent",
-                "hibernate_agent",
-                "approve_plan",
-                "approve_merge",
-                "escalate",
-                "send_message",
-            ],
-        ),
+        ("auditor", &["read_audit", "read_usage", "search"]),
         (
             "legal-gov-judge",
             &["read_case_record", "search_precedent", "issue_ruling"],
@@ -738,7 +723,7 @@ mod tests {
     #[test]
     fn a_role_without_a_write_grant_runs_the_read_only_script() {
         let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("mayor"))).with_agent(320, "mayor");
+            FakeLedger::with_task(task("t1", "open", Some("auditor"))).with_agent(320, "auditor");
         let operator = FakeOperator::default()
             .with_agent(320, FakeAgent::default().with_file("design.md", "do it\n"));
         let (mut dispatcher, _log) = dispatcher_with_roles(ledger, operator, GRANTS);
@@ -748,7 +733,7 @@ mod tests {
         assert_eq!(
             dispatcher.operator.sequence(),
             vec![(320, "search".to_string())],
-            "a mayor may not write, so it does not"
+            "an auditor may not write, so it does not"
         );
         assert!(
             dispatcher

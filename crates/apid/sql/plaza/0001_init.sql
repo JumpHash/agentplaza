@@ -404,25 +404,6 @@ CREATE TABLE "conversation_store_items_draft_tasks_after" (
     PRIMARY KEY ("conversation_store_pos", "items_pos", "tasks_pos", "after_pos"),
     FOREIGN KEY ("conversation_store_pos", "items_pos", "tasks_pos") REFERENCES "conversation_store_items_draft_tasks" ("conversation_store_pos", "items_pos", "tasks_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
-CREATE TABLE "conversation_store_items_draft_team" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "team_pos" INTEGER NOT NULL CHECK ("team_pos" >= 0),
-    "role" TEXT NOT NULL,
-    "count" INTEGER NOT NULL CHECK ("count" >= 0),
-    "model" TEXT,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "team_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items_draft" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_team_bench" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "team_pos" INTEGER NOT NULL CHECK ("team_pos" >= 0),
-    "bench_pos" INTEGER NOT NULL CHECK ("bench_pos" >= 0),
-    "value" INTEGER NOT NULL CHECK ("value" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "team_pos", "bench_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos", "team_pos") REFERENCES "conversation_store_items_draft_team" ("conversation_store_pos", "items_pos", "team_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
 CREATE TABLE "conversation_store_items_draft_settings" (
     "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
     "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),

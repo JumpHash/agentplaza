@@ -26,7 +26,7 @@ use crate::state::App;
 
 /// Every component still snapshotted into Postgres, by name, in restore order. The task ledger and the components of
 /// `plaza.db` are not here: `store` keeps them.
-pub const COMPONENTS: &[&str] = &["treasury", "members"];
+pub const COMPONENTS: &[&str] = &["treasury"];
 
 pub mod data_migrate;
 pub mod hub_mcp;
@@ -40,7 +40,6 @@ const MINUTE: Duration = Duration::from_secs(60);
 pub fn snapshot_of(app: &App, component: &str) -> String {
     match component {
         "treasury" => app.plaza.treasury.snapshot(),
-        "members" => app.members.snapshot(),
         _ => String::new(),
     }
 }
@@ -49,7 +48,6 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
 pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String> {
     match component {
         "treasury" => app.plaza.treasury.restore(json),
-        "members" => app.members.restore(json),
         other => Err(format!("unknown component {other}")),
     }
 }

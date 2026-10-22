@@ -256,8 +256,8 @@ impl Plaza for App {
         if let Some(refusal) = chat_refusal(&agent.kind, agent.status) {
             return Err(refusal.to_string());
         }
-        // An agent on the bench, or on a paused project, takes no chat (it would only wait).
-        if let Some(why) = crate::membership::held(self, &agent) {
+        // An agent whose project is paused or over takes no chat (it would only wait).
+        if let Some(why) = crate::projects::held(self, &agent) {
             return Err(why);
         }
         Ok(queue_owner_chat(self, cid, text))

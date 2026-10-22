@@ -1,13 +1,16 @@
 //! A conversation that becomes a project, end to end on a scratch hub: the orchestrator drafts it with its tool, the
-//! owner edits the draft and starts it, and Start opens the project, posts its tasks, puts the agent named from the
-//! bench on it and spawns the one the team still needs, which joins at its first hello. The conversation then stays
-//! the project's line: the orchestrator is told there, and a task it posts there goes to the project.
+//! owner edits the draft and starts it, and Start opens the project and posts its tasks. No agent joins at Start: a
+//! task's seats start sessions on VMs of their own, so the first ready task's builder seat starts one on the next tick,
+//! and that session takes the task. The conversation then stays the project's line: the orchestrator is told there, and
+//! a task it posts there goes to the project.
 //!
 //! noded and the agent gateway are stood in for: noded reports the agents' VMs (so the hub trusts their roles) and
-//! takes spawns, and the gateway takes the work the hub pushes, which the test answers as the agents' harnesses would.
+//! starts the VMs the hub asks for, and the gateway takes the work the hub pushes, which the test answers as the agents'
+//! harnesses would.
 
 mod common;
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -15,10 +18,13 @@ use serde_json::{Value, json};
 use common::{FakeDaemon, Hub, Scratch, text};
 
 const ORCHESTRATOR: u64 = 109;
-/// A builder on the bench.
+/// A builder the fleet runs: it has no session, so no project holds it.
 const BUILDER: u64 = 300;
-/// The QA agent Start spawns.
-const SPAWNED_QA: u64 = 400;
+/// The VM the first task's builder seat starts. Each next VM noded starts gets the next CID.
+const SEAT_VM: u64 = 400;
+
+/// The VMs noded runs, as (cid, role).
+type Vms = Arc<Mutex<Vec<(u64, String)>>>;
 
 /// The orchestrator's tool request for `name` in work item `work`: the hub's decision.
 fn tool(hub: &Hub, work: u64, name: &str, input: Value) -> Value {
@@ -45,41 +51,57 @@ fn pushed(gateway: &FakeDaemon, cid: u64) -> Vec<(u64, String)> {
         .collect()
 }
 
-#[test]
-fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
-    let noded = FakeDaemon::serve(|method, path, _| {
+/// noded and the agent gateway, sharing the VMs noded runs: a new run's VM gets the next CID from [`SEAT_VM`].
+fn daemons(vms: &Vms) -> (FakeDaemon, FakeDaemon) {
+    let started = Arc::clone(vms);
+    let noded = FakeDaemon::serve(move |method, path, body| {
+        let mut vms = started.lock().unwrap_or_else(|p| p.into_inner());
         if method == "GET" && path.starts_with("/v1/runs") {
-            let runs = json!({ "runs": [{
-                "id": "r1",
-                "ended_at": null,
-                "vms": [
-                    { "id": 0, "guest_cid": ORCHESTRATOR, "role": "orchestrator" },
-                    { "id": 1, "guest_cid": BUILDER, "role": "builder" },
-                ],
-            }] });
-            (200, runs.to_string())
-        } else if method == "POST" && path.starts_with("/v1/runs") {
-            // noded answers a new run with its view: each VM with the CID it gave it.
+            let list: Vec<Value> = vms
+                .iter()
+                .enumerate()
+                .map(|(i, (cid, role))| json!({ "id": i, "guest_cid": cid, "role": role }))
+                .collect();
             (
                 200,
-                json!({ "id": "r2", "vms": [{ "id": 0, "guest_cid": SPAWNED_QA, "state": "running" }] })
-                    .to_string(),
+                json!({ "runs": [{ "id": "r1", "ended_at": null, "vms": list }] }).to_string(),
             )
+        } else if method == "POST" && path == "/v1/runs" {
+            let role = serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|b| b["role"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            let cid = SEAT_VM + vms.iter().filter(|(cid, _)| *cid >= SEAT_VM).count() as u64;
+            vms.push((cid, role));
+            let vm = json!({ "id": vms.len() - 1, "guest_cid": cid, "state": "running" });
+            (200, json!({ "id": "r2", "vms": [vm] }).to_string())
         } else {
             (200, "{}".into())
         }
     });
-    let gateway = FakeDaemon::serve(|_, path, _| {
+    let reported = Arc::clone(vms);
+    let gateway = FakeDaemon::serve(move |_, path, _| {
         if path.starts_with("/v1/status") {
-            let agents = json!({ "agents": [
-                { "cid": ORCHESTRATOR, "role": "orchestrator" },
-                { "cid": BUILDER, "role": "builder" },
-            ] });
-            (200, agents.to_string())
+            let vms = reported.lock().unwrap_or_else(|p| p.into_inner());
+            let agents: Vec<Value> = vms
+                .iter()
+                .map(|(cid, role)| json!({ "cid": cid, "role": role }))
+                .collect();
+            (200, json!({ "agents": agents }).to_string())
         } else {
             (200, r#"{"ok":true}"#.into())
         }
     });
+    (noded, gateway)
+}
+
+#[test]
+fn a_draft_the_owner_starts_becomes_a_project_with_its_tasks() {
+    let vms: Vms = Arc::new(Mutex::new(vec![
+        (ORCHESTRATOR, "orchestrator".to_string()),
+        (BUILDER, "builder".to_string()),
+    ]));
+    let (noded, gateway) = daemons(&vms);
     let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
@@ -97,7 +119,7 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
         assert_eq!(agent["role"], role, "{agent}\n{}", hub.log());
     }
 
-    // The owner asks; the orchestrator drafts the project in the conversation, naming the builder from the bench.
+    // The owner asks; the orchestrator drafts the project in the conversation: its tasks and its budget.
     let (status, conversation) = hub.call(
         "POST",
         "/v1/owner/conversations",
@@ -117,10 +139,6 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
         "tasks": [
             { "key": "1", "goal": "Survey the flaky scheduler tests", "role": "qa" },
             { "key": "2", "goal": "Make the scheduler tests deterministic", "role": "builder", "after": ["1"] },
-        ],
-        "team": [
-            { "role": "builder", "count": 1, "bench": [BUILDER] },
-            { "role": "qa", "count": 1 },
         ],
         "budget": 9000,
     });
@@ -169,8 +187,9 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
     assert_eq!(status, 200, "{started}\n{}", hub.log());
     let pid = text(&started["started"]["project"]);
     assert_eq!(started["project"], pid.as_str());
-    assert_eq!(started["started"]["joined"], json!([BUILDER]));
-    assert_eq!(started["started"]["spawned"][0]["role"], "qa");
+    // Start joins no agent and spawns none: the project's tasks run on the sessions their seats start.
+    assert!(started["started"].get("joined").is_none(), "{started}");
+    assert!(started["started"].get("spawned").is_none(), "{started}");
     let tasks = started["started"]["tasks"]
         .as_array()
         .cloned()
@@ -179,45 +198,64 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
     let (status, again) = start(2);
     assert_eq!(status, 409, "a conversation starts one project: {again}");
 
-    // The project: the owner's plan, the orchestrator its lead, its tasks, the builder from the bench on it.
+    // The project: the owner's plan, the orchestrator its lead, its tasks, and no agent on it yet.
     let (_, project) = hub.call("GET", &format!("/v1/projects/{pid}"), None);
     assert_eq!(project["stage"], "implementation", "{project}");
     assert_eq!(project["lead_cid"], ORCHESTRATOR);
     assert_eq!(project["tasks"].as_array().map(Vec::len), Some(2));
     assert!(text(&project["goal"]).contains("release-0.9"), "{project}");
     let (_, builder) = hub.call("GET", &format!("/v1/agents/{BUILDER}"), None);
-    assert_eq!(builder["project"], pid.as_str(), "{builder}");
+    assert!(builder["project"].is_null(), "no agent joined: {builder}");
     // Its budget was set aside, and its two tasks (2000 each, the default) are funded from it.
     let (_, budget) = hub.call("GET", &format!("/v1/projects/{pid}/budget"), None);
     assert_eq!(budget["balance"], 4000, "{budget}");
+
+    // The first task's builder seat starts a session on a VM of its own, and that session takes the task.
+    let seated = hub.wait_for(
+        &format!("/v1/sessions?project={pid}"),
+        Duration::from_secs(20),
+        |s| {
+            s.as_array().is_some_and(|s| {
+                s.iter()
+                    .any(|s| s["seat"] == "builder" && s["cid"] == SEAT_VM)
+            })
+        },
+    );
+    assert!(
+        seated
+            .as_array()
+            .is_some_and(|s| s.iter().any(|s| s["seat"] == "builder")),
+        "a builder session: {seated}\n{}",
+        hub.log()
+    );
     let spawn = noded
         .seen()
         .into_iter()
         .find(|(method, path, _)| method == "POST" && path.starts_with("/v1/runs"))
-        .expect("Start asked noded for the QA agent");
+        .expect("the seat asked noded for its VM");
     let spawn: Value = serde_json::from_str(&spawn.2).unwrap_or_default();
     assert_eq!(
         (spawn["role"].clone(), spawn["n"].clone()),
-        (json!("qa"), json!(1))
+        (json!("builder"), json!(1))
     );
 
-    // The spawned QA agent joins the project at its first hello, and the ready task goes to it.
-    let (status, hello) = hub.guest(SPAWNED_QA, "hello", json!({ "role": "qa", "vm": 0 }));
+    // The seat's VM says hello, and the ready task goes to its session.
+    let (status, hello) = hub.guest(SEAT_VM, "hello", json!({ "role": "builder", "vm": 0 }));
     assert_eq!(status, 200, "{hello}");
     assert!(text(&hello["profile"]["system"]).contains(&format!("You work on project {pid}")));
-    let qa = hub.wait_for(
-        &format!("/v1/agents/{SPAWNED_QA}"),
+    let seat_agent = hub.wait_for(
+        &format!("/v1/agents/{SEAT_VM}"),
         Duration::from_secs(5),
         |a| a["project"] == pid.as_str(),
     );
-    assert_eq!(qa["project"], pid.as_str(), "{qa}");
+    assert_eq!(seat_agent["project"], pid.as_str(), "{seat_agent}");
     let first = text(&tasks[0]["id"]);
     let claimed = hub.wait_for(
         &format!("/v1/tasks/{first}"),
         Duration::from_secs(15),
-        |task| task["agent_cid"] == SPAWNED_QA,
+        |task| task["agent_cid"] == SEAT_VM,
     );
-    assert_eq!(claimed["agent_cid"], SPAWNED_QA, "{claimed}\n{}", hub.log());
+    assert_eq!(claimed["agent_cid"], SEAT_VM, "{claimed}\n{}", hub.log());
 
     // The orchestrator is told in the conversation, and a task it posts there goes to the project.
     let notice = pushed(&gateway, ORCHESTRATOR)

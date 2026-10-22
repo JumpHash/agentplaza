@@ -1,6 +1,6 @@
-// The IDE sidebar's grouping and the start choice. Pure: no DOM, no fetch, no store. An agent belongs to the project it
-// works on (its membership), and the orchestrator to every project it leads; an agent from before membership, to the
-// projects holding a task it is an assignee of. The agents in none sit in "No project" (for a worker, the bench).
+// The IDE sidebar's grouping and the start choice. Pure: no DOM, no fetch, no store. An agent sits under the project of its
+// live session. With none, it sits under the projects it leads and those holding a task it is assigned or working on; the
+// rest sit in "No project".
 import { agentName } from '../roles';
 import type { Agent, IdeWorkspaceInfo, Project, Task } from '../api';
 import { currentTask } from './view';
@@ -41,7 +41,7 @@ export function byRecent(projects: Project[]): Project[] {
  * assignee of (it claimed the task, or it is working on it now).
  */
 export function projectsOf(agent: Pick<Agent, 'cid' | 'work' | 'project'>, projects: Project[], tasks: Task[]): Project[] {
-  // A member is its project's, and only its project's.
+  // An agent on a project sits under that project only.
   if (agent.project) return projects.filter((p) => p.id === agent.project);
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const hits = projects.filter(

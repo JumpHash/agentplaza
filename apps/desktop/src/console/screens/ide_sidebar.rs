@@ -85,7 +85,7 @@ pub fn view(st: &State) -> Element<'_, Msg> {
         list = list.push(ui::faint("Loading agents…"));
     } else if groups.is_empty() {
         list = list.push(ui::faint(if st.project.is_some() {
-            "Nobody works on this project yet: add agents from the bench in its Team tab."
+            "Nobody works on this project yet."
         } else {
             "Nothing yet. Start with a conversation: the pen above."
         }));

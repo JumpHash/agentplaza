@@ -129,9 +129,9 @@ export interface Agent {
   cid: number; role: string; role_label: string; tier: Tier; status: AgentStatus;
   /** Where the model comes from: the agent's own override, its project's settings, the plaza's role model, the default. */
   model: string; model_override: string | null; model_source: 'agent' | 'project' | 'role' | 'default';
-  /** The project it works on (null: on the bench, or the orchestrator, which works on every project), since when, and
-   * why it does not work now (on the bench, or its project paused), if it does not. */
-  project?: string | null; joined_ms?: number | null; held?: string | null;
+  /** The project of its live session (null: no live session, or the orchestrator, which works on every project), and why
+   * its work waits now (its project is paused or over), if it does. */
+  project?: string | null; held?: string | null;
   connected_at_ms: number; last_seen_ms: number; run: string | null; vm: number | null;
   usage: Usage; work: WorkItem | null; queue: number;
   kind: string;
@@ -343,8 +343,6 @@ export interface EffectiveValue { value: unknown; source: 'project' | 'plaza' }
 /** A project's budget: its own `town_budget` account (once credits are set aside), and the plaza's. */
 export interface ProjectBudget { project: string; own: boolean; balance: number; plaza: number }
 export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue>; budget: ProjectBudget }
-/** An agent that holds tasks of a project from before membership, with those tasks. */
-export type SuggestedMember = Agent & { tasks: string[] };
 /** A message of the owner's conversation with the orchestrator: the owner's, the orchestrator's answer (with how its
  * work ended), or a plaza notice (a project started, a task ended). */
 export interface OwnerMessage {
@@ -353,10 +351,8 @@ export interface OwnerMessage {
   attachments?: { id: string; name: string; size: number; type: string }[];
 }
 export interface DraftTask { key: string; goal: string; acceptance?: string; role?: string; budget?: number; after?: string[] }
-/** One role on a draft's team: `count` agents, of which `bench` (guest CIDs) come from the bench and the rest are spawned. */
-export interface DraftSeat { role: string; count: number; bench?: number[]; model?: string }
 export interface ProjectDraft {
-  revision: number; title: string; goal: string; kind: 'code' | 'other'; repo?: string; tasks: DraftTask[]; team: DraftSeat[];
+  revision: number; title: string; goal: string; kind: 'code' | 'other'; repo?: string; tasks: DraftTask[];
   budget?: number; settings?: ProjectSettings; updated_by: 'owner' | 'orchestrator'; updated_ms: number; started_ms?: number;
   /** What still stops Start. */
   problems: string[];
@@ -371,7 +367,7 @@ export interface OwnerConversationSummary {
   id: string; title: string; cid: number; created_ms: number; updated_ms: number; archived: boolean; project: string | null;
   draft: { revision: number; title: string } | null; messages: number; pending: number; last: { from: string; text: string; at_ms: number } | null;
 }
-export interface StartedProject { project: string; tasks: { key: string; id: string; after: string[]; ready: boolean }[]; joined: number[]; spawned: { role: string; count: number }[] }
+export interface StartedProject { project: string; tasks: { key: string; id: string; after: string[]; ready: boolean }[] }
 export interface HarnessLimits { max_turns: number | null; compress_at: number | null; keep_recent: number | null }
 export interface HarnessLoop { id: string; cid: number; prompt: string; every_secs: number; max_runs: number; runs: number; next_at_ms: number; state: 'running' | 'done' | 'stopped'; by: string; by_cid: number; created_ms: number; last_work: number | null; last_summary: string | null }
 export interface LawInfo {
@@ -672,11 +668,11 @@ export const api = {
   saveSettings: (s: Settings) => put<Settings>('/v1/settings', s),
 
   agents: readable<Agent[]>('/v1/agents'),
-  /** A project's agents, or the bench (`bench`: the agents that could join a project and are on none). */
+  /** The agents whose live session is on `project`. */
   agentsOf: (project: string) => get<Agent[]>(`/v1/agents${query({ project })}`),
   agent: (cid: number) => get<Agent>(`/v1/agents/${cid}`),
-  /** Spawns `count` agents of `role`; with a `project`, they join it at their first hello. */
-  spawnAgents: (role: string, count: number, model?: string, project?: string) => post<unknown>('/v1/agents', { role, count, model, project }),
+  /** Spawns `count` agents of `role`, on `node` when one is named. */
+  spawnAgents: (role: string, count: number, model?: string, node?: string) => post<unknown>('/v1/agents', { role, count, model, node }),
   setAgentModel: (cid: number, model: string | null) => patch<Agent>(`/v1/agents/${cid}`, { model }),
   killAgent: (cid: number) => del<unknown>(`/v1/agents/${cid}`),
   /** `attachments`: ids from api-projects.ts `attach`, which the agent may read from this turn on. */
@@ -739,10 +735,6 @@ export const api = {
   pauseProject: (id: string) => post<Project>(`/v1/projects/${id}/pause`),
   resumeProject: (id: string) => post<Project>(`/v1/projects/${id}/resume`),
   archiveProject: (id: string) => post<Project>(`/v1/projects/${id}/archive`),
-  projectMembers: (id: string) => get<Agent[]>(`/v1/projects/${id}/members`),
-  addMember: (id: string, cid: number) => post<Agent>(`/v1/projects/${id}/members`, { cid }),
-  removeMember: (id: string, cid: number) => del<unknown>(`/v1/projects/${id}/members/${cid}`),
-  suggestedMembers: (id: string) => get<SuggestedMember[]>(`/v1/projects/${id}/suggested-members`),
   projectSettings: (id: string) => get<ProjectSettings>(`/v1/projects/${id}/settings`),
   /** A field set to `null` goes back to the plaza's; `role_models` merge role by role. */
   patchProjectSettings: (id: string, change: Record<string, unknown>) => patch<ProjectSettings>(`/v1/projects/${id}/settings`, change),

@@ -124,8 +124,6 @@ pub struct App {
     pub toolbox: crate::toolbox::Store,
     /// Projects: every goal's flow from brief to delivery.
     pub projects: crate::projects::Store,
-    /// The project each agent works on; one with none is on the bench and does nothing (`membership`).
-    pub members: crate::membership::Members,
     /// The owner's conversations with the orchestrator, each its own thread (`conversations`).
     pub conversations: crate::conversations::Store,
     /// Each chat's context and tool calls, and one-message model choices (`context_track.rs`).
@@ -277,7 +275,6 @@ impl App {
             deliverables: Arc::clone(&library),
             toolbox: crate::toolbox::Store::default(),
             projects: Default::default(),
-            members: crate::membership::Members::load(config.state_dir.join("members.json")),
             context: Default::default(),
             conversations: crate::conversations::Store::default(),
             project_settings: Default::default(),

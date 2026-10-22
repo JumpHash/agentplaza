@@ -1710,7 +1710,7 @@ mod tests {
         for amount in [5, 900] {
             let verdict = laws.check(
                 "7",
-                "finance",
+                "auditor",
                 "plaza_pay",
                 &json!({"to": 9, "amount": amount, "memo": "thanks"}),
             );
@@ -1729,7 +1729,7 @@ mod tests {
         assert!(
             laws.refusal(
                 7,
-                "finance",
+                "auditor",
                 "plaza_pay",
                 &json!({"to": 9, "amount": 900, "memo": "thanks"})
             )
@@ -1756,7 +1756,7 @@ mod tests {
     #[test]
     fn every_tool_offered_to_a_role_is_permitted_by_a_law() {
         let laws = Laws::builtin();
-        let mut roles = vec!["builder", "reviewer", "planner", "finance"];
+        let mut roles = vec!["builder", "reviewer", "planner", "auditor"];
         roles.push(crate::settings::ORCHESTRATOR_ROLE);
         for role in roles {
             for tool in crate::tools::offered_names(role) {

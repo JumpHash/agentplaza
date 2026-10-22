@@ -64,7 +64,7 @@ pub struct AgentProposal {
     #[serde(default)]
     #[table(list)]
     pub spawned: Vec<u64>,
-    /// The project the agents work on once they connect; none leaves them on the bench.
+    /// The project the agents are for (open, or paused): they work on it only through a task's seat.
     #[serde(default)]
     pub project: Option<String>,
 }
@@ -145,7 +145,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
                     "budget": {"type": "integer"},
                     "count": {"type": "integer", "minimum": 1, "maximum": 8},
                     "model": {"type": "string"},
-                    "project": {"type": "string", "description": "the project the agents will work on (pr<n>); without one they wait on the bench until the owner puts them on one"},
+                    "project": {"type": "string", "description": "the project the agents are for (pr<n>): they work on it only through a task's seat"},
                     "reason": {"type": "string"},
                     "instruction": {"type": "string"}
                 }),
@@ -425,8 +425,8 @@ fn check_role_shape(def: &RoleDef) -> Result<(), String> {
 /// The model, when given, must be allowed for the role's tier.
 /// A proposal's project must exist and still take agents.
 fn check_project(app: &App, project: &str) -> Result<(), String> {
-    use crate::membership::ProjectState;
-    match crate::membership::project_state(app, project) {
+    use crate::projects::ProjectState;
+    match crate::projects::state(app, project) {
         ProjectState::Missing => Err(format!("no project {project}")),
         ProjectState::Over => Err(format!("project {project} is over (archived or delivered)")),
         ProjectState::Active | ProjectState::Paused => Ok(()),

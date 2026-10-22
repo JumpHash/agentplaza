@@ -400,14 +400,10 @@ fn fork_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     };
     let mut forks = Vec::with_capacity(reply.forks.len());
     for fork in &reply.forks {
-        // The fork's first hello is matched to its own CID with this model (see `Store::expect_cid`), and it
-        // works on its parent's project.
-        app.spawned.expect_cid(
-            fork.cid,
-            &agent.role,
-            agent.model_override.clone(),
-            app.members.project_of(cid),
-        );
+        // The fork's first hello is matched to its own CID with this model (see `Store::expect_cid`). It works on no
+        // project until a session puts it on one.
+        app.spawned
+            .expect_cid(fork.cid, &agent.role, agent.model_override.clone());
         app.transcripts.record(
             &app.bus,
             fork.cid,

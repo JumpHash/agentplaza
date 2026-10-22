@@ -1,13 +1,12 @@
-//! `agentplaza projects`: Projects. The owner opens one (its plan theirs), puts agents on it from the bench, pauses,
-//! resumes and archives it, and sets its settings and budget; the agents' plans go through their stages, which the
-//! owner approves or sends back. A project is in a mode: build, or maintenance, where its watchers keep it. The
-//! submodules hold the members (`members`), the settings and the budget (`settings`), the maintenance (`maintenance`),
-//! the environments (`environments`) and the files of its repository (`files`).
+//! `agentplaza projects`: Projects. The owner opens one (its plan theirs), pauses, resumes and archives it, and sets
+//! its settings and budget; the agents' plans go through their stages, which the owner approves or sends back. A
+//! project is in a mode: build, or maintenance, where its watchers keep it. The submodules hold the settings and the
+//! budget (`settings`), the maintenance (`maintenance`), the environments (`environments`) and the files of its
+//! repository (`files`).
 
 pub mod environments;
 pub mod files;
 pub mod maintenance;
-pub mod members;
 pub mod settings;
 
 use std::path::PathBuf;
@@ -35,13 +34,13 @@ const STAGES: [&str; 8] = [
 pub enum Cmd {
     /// List them, with their stage and whether they are active, paused, archived or delivered.
     List,
-    /// One project in full: its goal and state, its tasks and members, its documents, critiques and history.
+    /// One project in full: its goal and state, its tasks, its documents, critiques and history.
     Show {
         /// The project's id.
         id: String,
     },
-    /// Open a project as the owner: its plan is yours, so it is at implementation at once and takes tasks. Put agents
-    /// on it with `projects members ID add CID`; `agentplaza chat` drafts, staffs and plans one with the orchestrator.
+    /// Open a project as the owner: its plan is yours, so it is at implementation at once and takes tasks.
+    /// `agentplaza chat` drafts and starts one with the orchestrator.
     Create {
         /// The project's title.
         title: String,
@@ -51,14 +50,6 @@ pub enum Cmd {
         /// `code` (it gets a repository; the hub's default) or `other`.
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["code", "other"]))]
         kind: Option<String>,
-    },
-    /// A project's agents. Add `add CID` to put an agent on it (from the bench, or from another project, whose work
-    /// stops), `remove CID` to send one back to the bench, or `suggested` for the agents that hold its tasks.
-    Members {
-        /// The project's id.
-        id: String,
-        #[command(subcommand)]
-        action: Option<members::Action>,
     },
     /// Pause a project: its agents' work waits until it is resumed.
     Pause {
@@ -70,8 +61,8 @@ pub enum Cmd {
         /// The project's id.
         id: String,
     },
-    /// Archive a project for good: its open tasks are withdrawn, its agents go back to the bench, and the rest of its
-    /// budget goes back to the plaza. Asks to confirm unless --yes.
+    /// Archive a project for good: its open tasks are withdrawn, and the rest of its budget goes back to the plaza.
+    /// Asks to confirm unless --yes.
     Archive {
         /// The project's id.
         id: String,
@@ -209,8 +200,8 @@ fn array_at<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key).map(array).unwrap_or_default()
 }
 
-/// Where a project stands for its agents: `archived` or `delivered` (it is over, and they are back on the bench, or
-/// `maintenance` when it is delivered and kept up by its watchers), `paused` (their work waits), or `active`.
+/// Where a project stands for its agents: `archived` or `delivered` (it is over), `maintenance` (it is delivered and
+/// kept up by its watchers), `paused` (their work waits), or `active`.
 pub(crate) fn state_of(p: &Value) -> &'static str {
     let flag = |key: &str| p.get(key).and_then(Value::as_bool).unwrap_or(false);
     if flag("archived") {
@@ -389,18 +380,12 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         }
         Cmd::Show { id } => {
             let p = ctx.client.get(&format!("/v1/projects/{}", ctx::seg(&id)))?;
-            // The JSON is the hub's project as it is; the task list and the members are read only for the table view.
-            let (tasks, members) = if ctx.json {
-                (Vec::new(), Value::Null)
+            // The JSON is the hub's project as it is; the task list is read only for the table view.
+            let tasks = if ctx.json {
+                Vec::new()
             } else {
                 let all = ctx.client.get("/v1/tasks")?;
-                let members = ctx
-                    .client
-                    .get(&format!("/v1/projects/{}/members", ctx::seg(&id)))?;
-                (
-                    task_rows(array_at(&p, "tasks"), array_at(&all, "tasks")),
-                    members,
-                )
+                task_rows(array_at(&p, "tasks"), array_at(&all, "tasks"))
             };
             ctx.out(&p, |p| {
                 ctx::fields(&[
@@ -423,20 +408,6 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                         title_of(goal)
                     };
                     println!("  {}  {}  {}", ctx::s(t, "id"), ctx::s(t, "state"), title);
-                }
-                println!("\nMembers ({})", array(&members).len());
-                for a in array(&members) {
-                    let held = match ctx::s(a, "held") {
-                        "" => String::new(),
-                        why => format!(" (held: {why})"),
-                    };
-                    println!(
-                        "  {}  {}  {}  {}{held}",
-                        ctx::text(a, "cid"),
-                        super::agents::label_of(a),
-                        ctx::s(a, "role"),
-                        ctx::s(a, "status")
-                    );
                 }
                 println!("\nDocuments ({})", array_at(p, "docs").len());
                 for d in array_at(p, "docs") {
@@ -496,16 +467,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             ctx.out(&p, |p| {
                 let id = ctx::s(p, "id");
                 println!("opened project {id} ({})", ctx::s(p, "stage"));
-                println!("put agents on it: agentplaza projects members {id} add <cid>");
             });
             Ok(())
         }
-        Cmd::Members { id, action } => members::members(ctx, &id, action),
         Cmd::Pause { id } => lifecycle(ctx, &id, "pause", "paused project"),
         Cmd::Resume { id } => lifecycle(ctx, &id, "resume", "resumed project"),
         Cmd::Archive { id, yes } => {
             let question = format!(
-                "Archive project {id}? Its open tasks are withdrawn, its agents go back to the bench, and the rest of its budget goes back to the plaza."
+                "Archive project {id}? Its open tasks are withdrawn, and the rest of its budget goes back to the plaza."
             );
             if !confirm(yes, &question)? {
                 println!("cancelled");

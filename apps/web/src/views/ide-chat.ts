@@ -249,7 +249,7 @@ export function chatPane(opts: ChatPaneOpts): ChatPane {
     syncComposer();
     try {
       // Working, the text steers the work in flight; idle, it is a chat turn of its own (the hub says so when the agent
-      // is on the bench, or its project is paused).
+      // cannot work now, as when its project is paused).
       if (opts.working()) await api.agentControl(opts.cid, { action: 'steer', text, attachments: ids });
       else await api.chat(opts.cid, text, ids);
       if (!alive) return;

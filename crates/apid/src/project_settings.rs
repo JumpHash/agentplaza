@@ -194,7 +194,7 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         if !crate::roles_custom::exists(app, role) {
             return Err(format!("role_models: the plaza has no role {role}"));
         }
-        if crate::membership::plaza_wide(role) {
+        if crate::settings::plaza_wide(role) {
             return Err(format!(
                 "role_models: {role} works on every project, so a project sets no model for it"
             ));
@@ -278,9 +278,7 @@ pub fn merged(current: &ProjectSettings, patch: &Value) -> Result<ProjectSetting
 
 /// The overrides of the project agent `cid` works on, if it works on one.
 pub fn of_agent(app: &App, cid: u64) -> Option<ProjectSettings> {
-    app.members
-        .project_of(cid)
-        .map(|project| app.project_settings.get(&project))
+    crate::projects::project_of(app, cid).map(|project| app.project_settings.get(&project))
 }
 
 /// The model agent `agent` runs, from the project's overrides (its role's, else the project's default); `None` when
@@ -345,8 +343,8 @@ fn budget_view(app: &App, pid: &str) -> Value {
 }
 
 /// After a change to project `pid`'s overrides, its agents get their new profiles at once.
-fn push_members(app: &App, pid: &str) {
-    for cid in app.members.members(pid) {
+fn push_agents(app: &App, pid: &str) {
+    for cid in crate::projects::agents_of(app, pid) {
         if let Some(agent) = app.agents.get(cid)
             && agent.status != crate::agents::Status::Offline
         {
@@ -404,7 +402,7 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if let Err(e) = app.project_settings.set(id, next.clone()) {
         return Response::error(500, &format!("settings not saved: {e}"));
     }
-    push_members(app, id);
+    push_agents(app, id);
     if let Some(project) = app.projects.get(id) {
         app.bus.publish("project", &project);
     }

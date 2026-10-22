@@ -1,4 +1,4 @@
-/* The Projects screens (the list, a project's Plan, Team, Settings, Maintenance and Environments tabs): the prototype's
+/* The Projects screens (the list, a project's Plan, Settings, Maintenance and Environments tabs): the prototype's
    m-projects and m-maint rules, with the console's token names (see base.css for the map). */
 
 /* ---- The list and the project page ---- */
@@ -74,9 +74,6 @@
 .pj-track i { height: 4px; border-radius: 2px; background: var(--rule-strong); }
 .pj-track i.done { background: color-mix(in srgb, var(--ok) 70%, transparent); }
 .pj-track i.cur { background: var(--signal); }
-.pj-mrow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--rule); }
-.pj-mrow-main { flex: 1; min-width: 0; display: grid; gap: 4px; }
-.pj-clip { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
 .pj-none { margin: 0; color: var(--ink-3); }
 /* The dialogs: components' modal() puts its body in .sheet-b; the prototype's fields sit in that column, and the
    actions sit in the sheet's own footer (.sheet-f, from base.css). */
@@ -92,7 +89,7 @@
   .pj-h1 { font-size: var(--fs-h2); }
 }
 
-/* ---- Team and Settings ---- */
+/* ---- Settings ---- */
 .pj-cell-actions { white-space: nowrap; text-align: right; }
 .pj-cell-actions .pj-acts { justify-content: flex-end; }
 

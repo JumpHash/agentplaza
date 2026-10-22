@@ -9,11 +9,11 @@ pub fn role_family(role: &str, tier: &str) -> &'static str {
         return "command";
     }
     match role.trim().to_ascii_lowercase().as_str() {
-        "orchestrator" | "mayor" | "mayor-office" => "command",
+        "orchestrator" => "command",
         "architect" | "builder" | "qa" | "reviewer" | "release" => "build",
         "edge-operator" | "incident" | "security-reviewer" => "operations",
         "librarian" | "researcher" | "planner" => "knowledge",
-        "finance" | "auditor" => "money",
+        "auditor" => "money",
         _ => "other",
     }
 }
@@ -27,7 +27,6 @@ pub fn role_label(role: &str) -> String {
         "breeder" => "Breeder",
         "builder" => "Builder",
         "edge-operator" => "Edge operator",
-        "finance" => "Finance",
         "incident" => "Incident",
         "legal-agents-counsel" => "Legal · agents' counsel",
         "legal-agents-defender" => "Legal · agents' defender",
@@ -35,8 +34,6 @@ pub fn role_label(role: &str) -> String {
         "legal-gov-judge" => "Legal · government judge",
         "legal-gov-prosecutor" => "Legal · government prosecutor",
         "librarian" => "Librarian",
-        "mayor" => "Mayor",
-        "mayor-office" => "Mayor · office",
         "planner" => "Planner",
         "qa" => "QA",
         "release" => "Release",

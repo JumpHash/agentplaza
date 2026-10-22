@@ -789,7 +789,7 @@ pub fn composer_view<'a>(compose: &'a Composer, mentionable: &[String]) -> Eleme
     };
     let input = text_editor(&compose.content)
         .style(crate::theme::editor)
-        .placeholder("Message the team… (@ to mention)")
+        .placeholder("Message the agents… (@ to mention)")
         .padding(6.0)
         .height(Length::Fixed(64.0))
         .key_binding(|kp| {

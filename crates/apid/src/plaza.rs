@@ -163,7 +163,7 @@ fn connected(app: &App, cid: u64) -> Result<ConnectedAgent, Response> {
     Ok(agents::connected_agent(&agent))
 }
 
-/// Checks that connected agent `cid` may take a task of `project` (see `membership::may_take_task`): a 409 when it
+/// Checks that connected agent `cid` may take a task of `project` (see `projects::may_take_task`): a 409 when it
 /// may not.
 fn takes(app: &App, cid: u64, project: Option<&str>) -> Result<(), Response> {
     let Some(agent) = app.agents.get(cid) else {
@@ -172,7 +172,7 @@ fn takes(app: &App, cid: u64, project: Option<&str>) -> Result<(), Response> {
             &format!("no agent with guest CID {cid}"),
         ));
     };
-    crate::membership::may_take_task(app, &agent, project).map_err(|why| Response::error(409, &why))
+    crate::projects::may_take_task(app, &agent, project).map_err(|why| Response::error(409, &why))
 }
 
 /// The prompt an assigned task is worked from: its goal, and its acceptance
@@ -765,7 +765,7 @@ fn board_view(app: &App, req: &Request) -> Response {
 
 /// `POST /v1/board`: a connected agent posts. The author is always an agent;
 /// the driver defaults to the caller. The post is on the author's project's
-/// board; an agent on the bench, or on a project the owner paused (the project's own pause, which holds
+/// board; an agent whose project the owner paused or archived (the project's own pause, which holds
 /// its agents), does not post (409). The board's pause (`/v1/board/pause`) is different: it stores the
 /// post and only holds the deliveries of its mentions until it resumes (settings::BoardPauses).
 fn board_post(app: &App, body: &[u8]) -> Response {
@@ -786,10 +786,10 @@ fn board_post(app: &App, body: &[u8]) -> Response {
         Ok(agent) => agent,
         Err(refused) => return refused,
     };
-    if let Some(why) = crate::membership::held_cid(app, author.cid) {
+    if let Some(why) = crate::projects::held_cid(app, author.cid) {
         return Response::error(409, &why);
     }
-    post.project = app.members.project_of(author.cid);
+    post.project = crate::projects::project_of(app, author.cid);
     match app.plaza.social.post(&author, post) {
         Ok(post) => Response::json(201, &post),
         Err(refused) => Response::error(refused.status(), refused.message()),
@@ -847,8 +847,8 @@ pub(crate) fn notify_post_author(
         return;
     }
     let (author_cid, subject) = (found.agent_cid, found.subject);
-    // An author on the bench, or on a paused project, sees the comment when it works again.
-    if Some(author_cid) == commenter || crate::membership::held_cid(app, author_cid).is_some() {
+    // An author whose project is paused or over sees the comment when it works again.
+    if Some(author_cid) == commenter || crate::projects::held_cid(app, author_cid).is_some() {
         return;
     }
     app.work.enqueue(

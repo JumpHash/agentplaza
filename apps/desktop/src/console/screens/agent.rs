@@ -17,7 +17,6 @@ use serde_json::{Value, json};
 use super::{Id, agent_side, ide, lab_common, nodes};
 use crate::console::rich;
 use crate::console::{Ctx, chat_tools, client, events, roles, scope, ui};
-use crate::theme::SANS;
 
 /// The projects and checkpoints refresh at most this often; the transcript on every poll.
 const EXTRAS_EVERY: Duration = Duration::from_secs(15);
@@ -136,7 +135,7 @@ pub struct State {
     pub live: Vec<LiveTurn>,
     /// Set once the reader scrolls away from the bottom; until then the transcript follows new text.
     pub scrolled_up: bool,
-    /// Every project, refreshed with the checkpoints: where the agent works, and the ones it can be put on.
+    /// Every project, refreshed with the checkpoints: the titles of the projects the agent's work is on.
     pub projects: Vec<Value>,
 }
 
@@ -203,9 +202,6 @@ pub enum Msg {
     Scrolled(scrollable::Viewport),
     /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
     Rich(rich::Ev),
-    /// Puts the agent on a project from the bench, or sends it back to the bench from its project.
-    Join(String),
-    Leave(String),
 }
 
 pub fn go(msg: &Msg) -> Option<Id> {
@@ -395,31 +391,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Rich(ev) => {
             rich::apply(&mut state.cards, ev);
             Task::none()
-        }
-        Msg::Join(project) => {
-            let cid = state.cid;
-            dispatch_with(
-                state,
-                ctx,
-                false,
-                "Works on the project now",
-                move |client| {
-                    client
-                        .post::<Value>(
-                            &format!("/v1/projects/{project}/members"),
-                            &serde_json::json!({ "cid": cid }),
-                        )
-                        .map(|_| ())
-                },
-            )
-        }
-        Msg::Leave(project) => {
-            let cid = state.cid;
-            dispatch_with(state, ctx, false, "Back on the bench", move |client| {
-                client
-                    .delete(&format!("/v1/projects/{project}/members/{cid}"))
-                    .map(|_| ())
-            })
         }
         Msg::ToggleMore => {
             state.more = !state.more;
@@ -946,7 +917,7 @@ fn page<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     )
 }
 
-/// Where the agent works, why it waits if it does, and the move: onto a project from the bench, or back to it.
+/// Where the agent works, and why its work waits, if it does. An agent with no live session works on no project.
 fn project_line<'a>(state: &'a State, a: &'a Value) -> Option<Element<'a, Msg>> {
     let ink_2 = crate::theme::palette().ink_2;
     if scope::is_orchestrator(a) {
@@ -955,7 +926,6 @@ fn project_line<'a>(state: &'a State, a: &'a Value) -> Option<Element<'a, Msg>> 
     if s(a, "kind") == "model" {
         return None;
     }
-    let busy = state.busy;
     if let Some(pid) = a["project"].as_str().filter(|p| !p.is_empty()) {
         let mut line = row![
             ui::sans("Works on", 13.0, ink_2),
@@ -966,45 +936,22 @@ fn project_line<'a>(state: &'a State, a: &'a Value) -> Option<Element<'a, Msg>> 
         ]
         .spacing(6)
         .align_y(Alignment::Center);
-        if let Some(ms) = a["joined_ms"].as_u64().filter(|ms| *ms > 0) {
-            line = line.push(ui::faint(format!("since {}", ago(ms))));
-        }
         if let Some(why) = a["held"].as_str() {
             line = line.push(ui::faint(format!("· {why}")));
         }
-        line = line.push(ui::btn_sm(
-            "Back to the bench",
-            None,
-            ui::Kind::Ghost,
-            (!busy).then(|| Msg::Leave(pid.to_string())),
-        ));
         return Some(line.into());
     }
-    if !scope::on_bench(a) {
-        return None;
-    }
-    let mut line = row![ui::sans(
-        format!(
-            "{} is on the bench: it does nothing until it works on a project.",
-            roles::agent_label_of(a)
-        ),
-        13.0,
-        ink_2
-    )]
-    .spacing(10)
-    .align_y(Alignment::Center);
-    let live = scope::picks(&state.projects);
-    if !live.is_empty() && !busy {
-        line = line.push(
-            iced::widget::pick_list(live, None::<scope::Pick>, |p: scope::Pick| Msg::Join(p.id))
-                .placeholder("Put on a project…")
-                .style(crate::theme::pick_list)
-                .text_size(12.5)
-                .font(SANS)
-                .padding([4, 8]),
-        );
-    }
-    Some(line.into())
+    Some(
+        ui::sans(
+            format!(
+                "{} works on no project: it has no live session.",
+                roles::agent_label_of(a)
+            ),
+            13.0,
+            ink_2,
+        )
+        .into(),
+    )
 }
 
 /// The web's head: the back link, the name and the status badge, the actions right; the More row under them when open.

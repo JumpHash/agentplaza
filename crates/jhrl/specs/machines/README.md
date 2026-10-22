@@ -45,7 +45,7 @@ State counts: the `quick` model (2 machines, 2 tool calls, 2 VMs) has 64,316 dis
 
 ## Approval: escalation chains (0094)
 
-A request moves up its chain on deadlines and expires to deny after the last step (AP-038). C-004 requests (irreversible, external, money-moving) have the chain `["owner"]` only (AP-052). Decisions can arrive late, from any authority, at any time. The model has two chains (a town request, mayor then owner, and a C-004 request, owner only) and three authorities.
+A request moves up its chain on deadlines and expires to deny after the last step (AP-038). C-004 requests (irreversible, external, money-moving) have the chain `["owner"]` only (AP-052). Decisions can arrive late, from any authority, at any time. The model has two chains (a town request, orchestrator then owner, and a C-004 request, owner only) and three authorities.
 
 State count for the `two chains, three authorities` model: 11 distinct states.
 
@@ -62,7 +62,7 @@ State count for the `two chains, three authorities` model: 11 distinct states.
 | Witness | Shows |
 |---|---|
 | A town request escalates to the owner | The town request reaches the owner's step while still pending |
-| An escalated request is approved by the owner | The owner approves a request that escalated from the mayor |
+| An escalated request is approved by the owner | The owner approves a request that escalated from the orchestrator |
 
 ## Economy: escrow, subcontracts, payment, clawback, fines (0039, 0109–0112)
 

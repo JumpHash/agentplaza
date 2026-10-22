@@ -29,7 +29,6 @@
 .ag-clip{display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
 .ag-acts{justify-content:flex-end;flex-wrap:nowrap}
 .ag-acts .select{width:124px;max-width:124px;min-width:0}
-.ag-bench{margin-top:var(--gap)}
 .ag-page{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:var(--gap);align-items:start}
 .ag-main{display:flex;flex-direction:column;gap:16px;min-width:0}
 /* The main tab row is 36px and the gap below it is 16px: the side's first card starts with the main card. */

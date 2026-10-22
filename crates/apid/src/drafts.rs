@@ -6,18 +6,16 @@
 //! (`POST …/start {revision}`) takes the revision the owner looked at and checks the whole draft. Then, all or
 //! nothing, it:
 //! - opens the project (its plan the owner's, the orchestrator its lead);
-//! - posts its tasks;
-//! - spawns the agents the team still needs, and puts the named ones on it from the bench.
+//! - posts its tasks.
 //!
-//! A step that fails undoes the ones before it: the tasks are withdrawn, and the project is archived, which sends its
-//! agents back to the bench. Afterwards the conversation is the project's line to the orchestrator: it is told there
-//! that the project started, and the project's notices (a task ended, tasks to replan) come there too.
+//! The project's planner starts on the work loop's next tick, and each task's seats fill from there (`work_loop.rs`).
+//! A step that fails undoes the ones before it: the tasks are withdrawn, and the project is archived, which ends its
+//! agents' work. Afterwards the conversation is the project's line to the orchestrator: it is told there that the
+//! project started, and the project's notices (a task ended, tasks to replan) come there too.
 //!
 //! GET   /v1/owner/conversations/{id}/draft               → the draft, and what still stops Start (`problems`)
 //! PATCH /v1/owner/conversations/{id}/draft {revision, …} → the conversation, its draft one revision on
 //! POST  /v1/owner/conversations/{id}/start {revision}    → the conversation, with its project, and what Start did
-
-use std::collections::BTreeSet;
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
@@ -25,31 +23,10 @@ use serde_json::{Value, json};
 
 use crate::agents::Agent;
 use crate::conversations::{self, Conversation};
-use crate::settings::tier_of;
 use crate::state::App;
 use crate::task_plan::{self, Planned};
 
 pub const TOOLS: &[&str] = &["plaza_project_draft"];
-
-/// The most agents of one role a draft's team may have.
-pub const MAX_SEAT: u32 = 16;
-/// The most seats (roles) a team may have.
-const MAX_SEATS: usize = 24;
-
-/// One role on a draft's team (a row of `conversation_draft_team`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
-pub struct Seat {
-    pub role: String,
-    /// How many agents of the role the project has.
-    pub count: u32,
-    /// Agents on the bench to put on it (counted in `count`, by guest CID); the rest are spawned.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[table(list)]
-    pub bench: Vec<u64>,
-    /// The model of the spawned ones (else the plaza's for the role).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
 
 /// A conversation's project draft (a child of the conversation's row).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
@@ -67,9 +44,6 @@ pub struct Draft {
     #[serde(default)]
     #[table(child)]
     pub tasks: Vec<Planned>,
-    #[serde(default)]
-    #[table(child)]
-    pub team: Vec<Seat>,
     /// The project's budget, in credits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<u64>,
@@ -102,8 +76,6 @@ struct Edit {
     repo: Option<String>,
     #[serde(default)]
     tasks: Option<Vec<Planned>>,
-    #[serde(default)]
-    team: Option<Vec<Seat>>,
     #[serde(default)]
     budget: Option<u64>,
     #[serde(default)]
@@ -147,10 +119,6 @@ fn apply(current: Option<&Draft>, edit: Edit, by: &str, now: u64) -> Result<Draf
             .tasks
             .or_else(|| base.as_ref().map(|d| d.tasks.clone()))
             .unwrap_or_default(),
-        team: edit
-            .team
-            .or_else(|| base.as_ref().map(|d| d.team.clone()))
-            .unwrap_or_default(),
         budget: edit.budget.or_else(|| base.as_ref().and_then(|d| d.budget)),
         settings: edit
             .settings
@@ -163,8 +131,8 @@ fn apply(current: Option<&Draft>, edit: Edit, by: &str, now: u64) -> Result<Draf
     Ok(draft)
 }
 
-/// Whether a draft is well formed, whatever the plaza holds: its text within bounds, its tasks a list that can be
-/// posted (keys once, links inside the list, no cycle), its team's counts sound.
+/// Whether a draft is well formed, whatever the plaza holds: its text within bounds, and its tasks a list that can be
+/// posted (keys once, links inside the list, no cycle).
 pub fn shape(draft: &Draft) -> Result<(), String> {
     let chars = |text: &str| text.trim().chars().count();
     if !(1..=120).contains(&chars(&draft.title)) {
@@ -186,88 +154,22 @@ pub fn shape(draft: &Draft) -> Result<(), String> {
     if !draft.tasks.is_empty() {
         task_plan::check(&draft.tasks, |_| false)?;
     }
-    if draft.team.len() > MAX_SEATS {
-        return Err(format!("a team has at most {MAX_SEATS} roles"));
-    }
-    let mut cids = BTreeSet::new();
-    for seat in &draft.team {
-        if seat.role.trim().is_empty() {
-            return Err("a seat names its role".into());
-        }
-        if !(1..=MAX_SEAT).contains(&seat.count) {
-            return Err(format!("{}: a role has 1 to {MAX_SEAT} agents", seat.role));
-        }
-        if seat.bench.len() > seat.count as usize {
-            return Err(format!(
-                "{}: {} agents from the bench, but a count of {}",
-                seat.role,
-                seat.bench.len(),
-                seat.count
-            ));
-        }
-        for cid in &seat.bench {
-            if !cids.insert(*cid) {
-                return Err(format!("agent {cid} is named twice on the team"));
-            }
-        }
-    }
     Ok(())
 }
 
-/// What still stops Start, as the plaza is now: no tasks; a role the plaza does not have, or the orchestrator's; an
-/// agent named from the bench that is not on it (or not of its seat's role); a task for a role the team does not
-/// have; a model the role may not use; a budget below what the tasks need.
+/// What still stops Start, as the plaza is now: no tasks; a task for a role the plaza does not have; the project's
+/// settings, which the plaza refuses; a budget below what the tasks need, or more than the plaza's budget holds.
 pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
     let mut found = Vec::new();
     if draft.tasks.is_empty() {
         found.push("the draft has no tasks yet".to_string());
     }
-    for seat in &draft.team {
-        if !crate::roles_custom::exists(app, &seat.role) {
-            found.push(format!("the plaza has no role {}", seat.role));
-            continue;
-        }
-        if crate::membership::plaza_wide(&seat.role) {
-            found.push(format!(
-                "{} works on every project: it is no seat on a team",
-                seat.role
-            ));
-        }
-        if let Some(model) = &seat.model
-            && let Err(why) = app.settings.allowed(tier_of(&seat.role), model)
-        {
-            found.push(format!("{}: {why}", seat.role));
-        }
-        for cid in &seat.bench {
-            match app.agents.get(*cid) {
-                None => found.push(format!("agent {cid} is not on the roster")),
-                Some(agent) if agent.kind == "model" => {
-                    found.push(format!("agent {cid} is a model agent, which takes no work"));
-                }
-                Some(agent) if agent.role != seat.role => found.push(format!(
-                    "{} (agent {cid}) is a {}, not a {}",
-                    agent.label(),
-                    agent.role,
-                    seat.role
-                )),
-                Some(agent) => {
-                    if let Some(project) = app.members.project_of(*cid) {
-                        found.push(format!(
-                            "{} (agent {cid}) works on project {project}, not on the bench",
-                            agent.label()
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    let roles: BTreeSet<&str> = draft.team.iter().map(|seat| seat.role.as_str()).collect();
     for task in &draft.tasks {
         if let Some(role) = task.role.as_deref().filter(|r| !r.is_empty())
-            && !roles.contains(role)
+            && !crate::roles_custom::exists(app, role)
         {
             found.push(format!(
-                "task {} is for a {role}, and the team has none",
+                "task {} is for a {role}, and the plaza has no such role",
                 task.key.trim()
             ));
         }
@@ -341,19 +243,9 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
         },
         "required": ["key", "goal"],
     });
-    let seat = json!({
-        "type": "object",
-        "properties": {
-            "role": {"type": "string"},
-            "count": {"type": "integer", "minimum": 1, "maximum": MAX_SEAT},
-            "bench": {"type": "array", "items": {"type": "integer"}, "description": "guest CIDs of agents on the bench (plaza_agents: project null) to put on it; counted in count"},
-            "model": {"type": "string"},
-        },
-        "required": ["role", "count"],
-    });
     (name == "plaza_project_draft").then(|| {
         (
-            "Keep the project draft of the owner's conversation you are in current: the project you set up with the owner, which they start (you never start it). `read` returns the draft, its revision and what still stops Start. `write` changes it: give the revision you read (the owner may edit it too), and only the fields that change: title, goal, kind (code|other), repo (where the work goes, in words), tasks [{key, goal, acceptance, role, budget, after}] (after: keys of tasks of this list it runs after), team [{role, count, bench, model}] (bench: agents from the bench by CID, counted in count; the rest are spawned), budget (credits for the whole project) and settings (the project's overrides).",
+            "Keep the project draft of the owner's conversation you are in current: the project you set up with the owner, which they start (you never start it). `read` returns the draft, its revision and what still stops Start. `write` changes it: give the revision you read (the owner may edit it too), and only the fields that change: title, goal, kind (code|other), repo (where the work goes, in words), tasks [{key, goal, acceptance, role, budget, after}] (after: keys of tasks of this list it runs after), budget (credits for the whole project) and settings (the project's overrides).",
             json!({
                 "type": "object",
                 "properties": {
@@ -363,7 +255,6 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
                     "kind": {"type": "string", "enum": ["code", "other"]},
                     "repo": {"type": "string"},
                     "tasks": {"type": "array", "items": task, "maxItems": task_plan::MAX_PLANNED},
-                    "team": {"type": "array", "items": seat},
                     "budget": {"type": "integer", "minimum": 0},
                     "settings": {"type": "object"},
                 },
@@ -395,22 +286,10 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
                     Ok(())
                 })
                 .map_err(|(_, e)| e)?;
-            let bench: Vec<Value> = app
-                .agents
-                .list()
-                .into_iter()
-                .filter(|a| {
-                    a.kind != "model"
-                        && !crate::membership::plaza_wide(&a.role)
-                        && app.members.project_of(a.cid).is_none()
-                })
-                .map(|a| json!({"cid": a.cid, "name": a.label(), "role": a.role, "status": a.status}))
-                .collect();
             Ok(json!({
                 "conversation": id,
                 "project": conversation.project,
                 "draft": conversation.draft.as_ref().map(|draft| view(app, draft)),
-                "bench": bench,
             })
             .to_string())
         }
@@ -470,7 +349,7 @@ fn get_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     }
 }
 
-/// Body: `{revision, title?, goal?, kind?, repo?, tasks?, team?, budget?, settings?}`.
+/// Body: `{revision, title?, goal?, kind?, repo?, tasks?, budget?, settings?}`.
 fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let edit: Edit = match req.json() {
         Ok(edit) => edit,
@@ -518,9 +397,8 @@ fn start_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 
 // ---- Start --------------------------------------------------------------------------------------------------------
 
-/// Starts conversation `id`'s draft at `revision`: checks it, then opens the project, posts its tasks, spawns the
-/// team's new agents and puts the named ones on it from the bench, undoing what was done when a step fails. Returns
-/// the conversation and what Start did.
+/// Starts conversation `id`'s draft at `revision`: checks it, then opens the project and posts its tasks, undoing what
+/// was done when a step fails. Returns the conversation and what Start did.
 pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value), (u16, String)> {
     let conversation = app
         .conversations
@@ -603,38 +481,6 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
     };
     let task_ids: Vec<String> = posted.iter().map(|task| task.id.clone()).collect();
 
-    // 4. The team: the new agents (they join at their first hello), then the ones from the bench.
-    let mut spawned = Vec::new();
-    for seat in &draft.team {
-        let new = seat.count.saturating_sub(seat.bench.len() as u32);
-        if new == 0 {
-            continue;
-        }
-        match crate::agents::spawn_agents(
-            app,
-            &seat.role,
-            new,
-            seat.model.as_deref(),
-            None,
-            Some(&pid),
-        ) {
-            Ok(reply) => spawned.push(json!({"role": seat.role, "count": new, "reply": reply})),
-            Err(e) => {
-                undo(app, &pid, &task_ids);
-                let code = if e.starts_with("noded") { 502 } else { 409 };
-                return Err((code, format!("{} agents were not spawned: {e}", seat.role)));
-            }
-        }
-    }
-    let mut joined = Vec::new();
-    for cid in draft.team.iter().flat_map(|seat| seat.bench.iter()) {
-        if let Err((code, e)) = crate::membership::join_project(app, *cid, &pid) {
-            undo(app, &pid, &task_ids);
-            return Err((code, format!("agent {cid} did not join: {e}")));
-        }
-        joined.push(*cid);
-    }
-
     // The orchestrator leads it from this conversation: it hears when each task ends.
     for task in &task_ids {
         app.work.note_poster(task, conversation.cid);
@@ -653,54 +499,34 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
     }
     app.bus
         .publish("owner_conversation", &conversations::view(app, &started));
-    let new_agents: u32 = draft
-        .team
-        .iter()
-        .map(|seat| seat.count.saturating_sub(seat.bench.len() as u32))
-        .sum();
-    let staffed = staffing(task_ids.len(), joined.len(), new_agents as usize);
+    let posted_in_words = posted_words(task_ids.len());
     let notice = format!(
-        "[plaza] The owner started project {pid} \"{}\" from this conversation's draft (revision {revision}): {staffed} (tasks {}). You lead it from here: the plaza hands each task out once everything it runs after is done. Follow the tasks with plaza_task_result, replan blocked ones, post new tasks to {pid} when the owner asks, and answer the owner in this conversation.",
+        "[plaza] The owner started project {pid} \"{}\" from this conversation's draft (revision {revision}): {posted_in_words} (tasks {}). You lead it from here: the plaza hands each task out once everything it runs after is done. Follow the tasks with plaza_task_result, replan blocked ones, post new tasks to {pid} when the owner asks, and answer the owner in this conversation.",
         draft.title.trim(),
         task_ids.join(", "),
     );
     let shown = format!(
-        "You started project {pid} \"{}\": {staffed}.",
+        "You started project {pid} \"{}\": {posted_in_words}.",
         draft.title.trim()
     );
     conversations::notify(app, id, &shown, &notice);
     let done = json!({
         "project": pid,
         "tasks": posted,
-        "joined": joined,
-        "spawned": spawned,
     });
     Ok((app.conversations.get(id).unwrap_or(started), done))
 }
 
-/// What Start did, in words: `2 tasks posted, 1 agent from the bench on it, 1 new one on its way`; a part with none is
-/// left out (a project always has a task).
-fn staffing(tasks: usize, bench: usize, new: usize) -> String {
-    let mut parts = vec![match tasks {
+/// What Start did, in words: `2 tasks posted` (a project always has a task).
+fn posted_words(tasks: usize) -> String {
+    match tasks {
         1 => "1 task posted".to_string(),
         n => format!("{n} tasks posted"),
-    }];
-    match bench {
-        0 => {}
-        1 => parts.push("1 agent from the bench on it".to_string()),
-        n => parts.push(format!("{n} agents from the bench on it")),
     }
-    match new {
-        0 => {}
-        1 => parts.push("1 new one on its way".to_string()),
-        n => parts.push(format!("{n} new ones on their way")),
-    }
-    parts.join(", ")
 }
 
 /// Undoes a Start that failed after opening project `pid`: its tasks are withdrawn (their escrow back in its budget),
-/// the project is archived, which sends its agents back to the bench (and spawned ones arriving later stay there),
-/// and its budget goes back to the plaza.
+/// the project is archived, which ends its agents' work, and its budget goes back to the plaza.
 fn undo(app: &App, pid: &str, tasks: &[String]) {
     for id in tasks {
         if let Some(task) = app.plaza.tasks.find(id) {
@@ -710,7 +536,7 @@ fn undo(app: &App, pid: &str, tasks: &[String]) {
     if let Err(e) = app.projects.archive(pid) {
         eprintln!("apid: project {pid} of a failed start not archived: {e}");
     }
-    crate::membership::release_project(app, pid);
+    crate::work_loop::end_project(app, pid, "the project did not start");
     crate::project_settings::return_rest(app, pid);
     if let Some(project) = app.projects.get(pid) {
         app.bus.publish("project", &project);
@@ -723,19 +549,8 @@ mod tests {
 
     #[test]
     fn start_says_what_it_did_in_words() {
-        assert_eq!(
-            staffing(7, 3, 2),
-            "7 tasks posted, 3 agents from the bench on it, 2 new ones on their way"
-        );
-        assert_eq!(
-            staffing(2, 1, 1),
-            "2 tasks posted, 1 agent from the bench on it, 1 new one on its way"
-        );
-        assert_eq!(staffing(1, 0, 2), "1 task posted, 2 new ones on their way");
-        assert_eq!(
-            staffing(1, 1, 0),
-            "1 task posted, 1 agent from the bench on it"
-        );
+        assert_eq!(posted_words(7), "7 tasks posted");
+        assert_eq!(posted_words(1), "1 task posted");
     }
 
     fn task(key: &str, role: &str, after: &[&str]) -> Planned {
@@ -754,12 +569,6 @@ mod tests {
             title: Some("Release 0.9".into()),
             goal: Some("Fix the flaky scheduler tests and tag 0.9.".into()),
             tasks: Some(vec![task("1", "qa", &[]), task("2", "builder", &["1"])]),
-            team: Some(vec![Seat {
-                role: "builder".into(),
-                count: 2,
-                bench: vec![104],
-                model: None,
-            }]),
             ..Edit::default()
         }
     }
@@ -813,16 +622,6 @@ mod tests {
         });
         assert!(why.contains("cycle") || why.contains("itself"), "{why}");
         let (_, why) = bad(Edit {
-            team: Some(vec![Seat {
-                role: "builder".into(),
-                count: 1,
-                bench: vec![104, 105],
-                model: None,
-            }]),
-            ..first()
-        });
-        assert!(why.contains("count of 1"), "{why}");
-        let (_, why) = bad(Edit {
             kind: Some("film".into()),
             ..first()
         });
@@ -833,7 +632,8 @@ mod tests {
                 .is_err()
         );
         assert!(serde_json::from_value::<Edit>(json!({"settings": {"max_turns": 5}})).is_ok());
-        // An edit with a field the draft does not have is not one.
+        // An edit with a field the draft does not have is not one: a draft has no team any more.
         assert!(serde_json::from_value::<Edit>(json!({"title": "x", "owner": "me"})).is_err());
+        assert!(serde_json::from_value::<Edit>(json!({"team": []})).is_err());
     }
 }

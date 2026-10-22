@@ -579,19 +579,16 @@ mod tests {
         let mut doc: serde_json::Value = serde_json::from_str(&text).expect("JSON");
         doc.as_object_mut().expect("an object").remove("fleet");
         let fleet = Fleet::parse(&doc.to_string(), 100, 128, 1).expect("every role");
-        // Slot order. The sixteen roles that existed before `breeder` keep the
-        // CIDs they had (alphabetical over those sixteen); `breeder` takes the
-        // next slot, so no existing role's CID moves.
-        let pinned: [(&str, u64); 17] = [
+        // Slot order. Each role keeps the slot its manifest entry gives it, so
+        // no CID moves when a role is retired: the slots 4, 7 and 8, which the
+        // retired roles held, stay empty.
+        let pinned: [(&str, u64); 14] = [
             ("architect", 0),
             ("auditor", 1),
             ("builder", 2),
             ("edge-operator", 3),
-            ("finance", 4),
             ("incident", 5),
             ("librarian", 6),
-            ("mayor", 7),
-            ("mayor-office", 8),
             ("orchestrator", 9),
             ("planner", 10),
             ("qa", 11),
@@ -639,9 +636,9 @@ mod tests {
             "plaza.role=builder plaza.keepalive=1 plaza.vm=1"
         );
         assert_eq!(
-            super::Fleet::parse(&with(r#"["mayor"]"#), 100, MIN_MEMORY_MIB, 1),
+            super::Fleet::parse(&with(r#"["auditor"]"#), 100, MIN_MEMORY_MIB, 1),
             Err(FleetError::UnknownFleetRole {
-                name: "mayor".into()
+                name: "auditor".into()
             })
         );
         assert_eq!(

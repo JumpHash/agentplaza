@@ -1624,7 +1624,10 @@ mod tests {
                 ok(&p, "({used: 1 cr} with .used = 2 cr).used"),
                 Value::Num(Num::int(2), Dim::CREDITS)
             );
-            assert_eq!(ok(&p, "[\"mayor\", \"owner\"][1]"), Value::str("owner"));
+            assert_eq!(
+                ok(&p, "[\"orchestrator\", \"owner\"][1]"),
+                Value::str("owner")
+            );
             assert!(ev(&p, "[1][1]").unwrap_err().msg.contains("out of range"));
             assert_eq!(
                 ok(&p, "[for (a, b) in [(1, 2), (3, 4)] yield a + b]").to_string(),
