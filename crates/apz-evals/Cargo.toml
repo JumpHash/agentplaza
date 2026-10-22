@@ -1,0 +1,19 @@
+[package]
+name = "apz-evals"
+publish = false
+description = "The eval suite (PLAN 13.6): runs fixed tasks end to end on a scratch hub, with real harness processes and scripted models, and compares the report with a committed baseline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+apz-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "apz-evals"
+path = "src/main.rs"
+
+[lints]
+workspace = true

@@ -85,6 +85,7 @@ pub fn router() -> Router<App> {
     let router = crate::engine_instances::routes(router);
     let router = crate::context_track::routes(router);
     let router = crate::usage_providers::routes(router);
+    let router = crate::evals::routes(router);
     let router = decisions::routes(router);
     let router = agents::routes(router);
     let router = plaza::routes(router);

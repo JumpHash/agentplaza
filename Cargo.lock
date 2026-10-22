@@ -537,6 +537,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-evals"
+version = "0.1.0"
+dependencies = [
+ "apz-http",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "apz-gateway"
 version = "0.1.0"
 dependencies = [

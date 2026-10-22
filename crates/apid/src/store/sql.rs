@@ -21,6 +21,11 @@ pub const USAGE_WORK_ADD: &str = include_str!("../../sql/queries/usage_work_add.
 pub const USAGE_WORK_TOTALS: &str = include_str!("../../sql/queries/usage_work_totals.sql");
 pub const USAGE_WORKS_PRUNE: &str = include_str!("../../sql/queries/usage_works_prune.sql");
 
+// The eval records (evals.rs): a page of runs, the scores, and the landed flag of a task's runs.
+pub const EVAL_RUNS_PAGE: &str = include_str!("../../sql/queries/eval_runs_page.sql");
+pub const EVAL_SCORES: &str = include_str!("../../sql/queries/eval_scores.sql");
+pub const EVAL_RUNS_LANDED: &str = include_str!("../../sql/queries/eval_runs_landed.sql");
+
 // A page of the vault's audit log (vault/audit.rs).
 pub const VAULT_AUDIT_PAGE: &str = include_str!("../../sql/queries/vault_audit_page.sql");
 
@@ -93,6 +98,9 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "usage_work_add", USAGE_WORK_ADD),
     ("plaza", "usage_work_totals", USAGE_WORK_TOTALS),
     ("plaza", "usage_works_prune", USAGE_WORKS_PRUNE),
+    ("plaza", "eval_runs_page", EVAL_RUNS_PAGE),
+    ("plaza", "eval_scores", EVAL_SCORES),
+    ("plaza", "eval_runs_landed", EVAL_RUNS_LANDED),
     ("plaza", "vault_audit_page", VAULT_AUDIT_PAGE),
     (
         "metrics",

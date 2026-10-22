@@ -618,6 +618,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             policy,
             name,
             input,
+            duration_ms,
         } => {
             // One credit per tool report; task work is cancelled if its escrow runs out.
             let _ = meter(app, cid, work, 1, "tool report");
@@ -630,8 +631,10 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 let input = input.unwrap_or(Value::Null);
                 record_local(app, cid, work, &call, &tool, &input, policy);
             }
-            // A report carries no duration of its own, so the tool's time is recorded as 0.
-            collect::tool_call(app, cid, &tool, 0.0, ok);
+            // A harness from before v7 sends no duration: its calls count as 0 ms.
+            let ms = duration_ms.unwrap_or(0);
+            app.evals.tool(cid, &tool, ms, ok);
+            collect::tool_call(app, cid, &tool, ms as f64, ok);
             let snap = app.context.on_tool(cid, work, &tool, ok, output.len());
             crate::context_track::publish(app, &snap);
             if crate::library::take_package_call(cid, &call)

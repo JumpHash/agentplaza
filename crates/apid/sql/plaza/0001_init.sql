@@ -2407,3 +2407,42 @@ CREATE TABLE "usage_work" (
 ) STRICT;
 CREATE INDEX "usage_work_work" ON "usage_work" ("work");
 
+-- eval runs (written through)
+CREATE TABLE "eval_run" (
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "session" TEXT NOT NULL,
+    "project" TEXT NOT NULL,
+    "task" TEXT,
+    "recipe" TEXT NOT NULL,
+    "step" TEXT NOT NULL,
+    "seat" TEXT NOT NULL,
+    "round" INTEGER NOT NULL CHECK ("round" >= 0),
+    "engine" TEXT NOT NULL,
+    "engine_version" TEXT NOT NULL,
+    "model" TEXT,
+    "provider" TEXT,
+    "harness" TEXT NOT NULL,
+    "node" TEXT,
+    "tokens_in" INTEGER NOT NULL CHECK ("tokens_in" >= 0),
+    "tokens_out" INTEGER NOT NULL CHECK ("tokens_out" >= 0),
+    "tokens_cached" INTEGER NOT NULL CHECK ("tokens_cached" >= 0),
+    "cost_micros" INTEGER NOT NULL CHECK ("cost_micros" >= 0),
+    "model_calls" INTEGER NOT NULL CHECK ("model_calls" >= 0),
+    "tool_calls" INTEGER NOT NULL CHECK ("tool_calls" >= 0),
+    "tool_ms" INTEGER NOT NULL CHECK ("tool_ms" >= 0),
+    "wall_ms" INTEGER NOT NULL CHECK ("wall_ms" >= 0),
+    "verdict" INTEGER CHECK ("verdict" IN (0, 1)),
+    "outcome" TEXT NOT NULL,
+    "ok" INTEGER NOT NULL CHECK ("ok" IN (0, 1)),
+    "landed" INTEGER CHECK ("landed" IN (0, 1)),
+    "reverted" INTEGER CHECK ("reverted" IN (0, 1)),
+    "ended_ms" INTEGER NOT NULL CHECK ("ended_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "eval_run_project" ON "eval_run" ("project");
+CREATE INDEX "eval_run_task" ON "eval_run" ("task");
+CREATE INDEX "eval_run_seat" ON "eval_run" ("seat");
+CREATE INDEX "eval_run_model" ON "eval_run" ("model");
+CREATE INDEX "eval_run_ended_ms" ON "eval_run" ("ended_ms");
+

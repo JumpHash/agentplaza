@@ -260,5 +260,6 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
         ("usage calls", crate::usage::call_def),
         ("usage hours", crate::usage::hour_def),
         ("usage works", crate::usage::work_def),
+        ("eval runs", crate::evals::def),
     ]
 }

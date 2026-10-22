@@ -3474,6 +3474,106 @@
         }
       }
     },
+    "/v1/evals/runs": {
+      "get": {
+        "operationId": "get_v1_evals_runs",
+        "tags": [
+          "evals"
+        ],
+        "summary": "List the eval records of step sessions, newest first",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/evals/scores": {
+      "get": {
+        "operationId": "get_v1_evals_scores",
+        "tags": [
+          "evals"
+        ],
+        "summary": "Score the step sessions by seat, model and engine",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/evals/tools": {
+      "get": {
+        "operationId": "get_v1_evals_tools",
+        "tags": [
+          "evals"
+        ],
+        "summary": "Show each tool's calls, errors and latency (p50, p95)",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/decisions/default": {
       "get": {
         "operationId": "get_v1_decisions_default",

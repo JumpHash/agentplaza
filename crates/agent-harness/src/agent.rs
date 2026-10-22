@@ -64,6 +64,24 @@ type Outcome = Result<String, String>;
 /// A call's run, owned, so that it runs on a thread of its own.
 type Thunk<'a> = Box<dyn FnOnce() -> Outcome + Send + 'a>;
 
+/// A call's outcome and how long the call ran, in milliseconds (the tool's time, as the report carries it).
+struct Timed {
+    outcome: Outcome,
+    ms: u64,
+}
+
+impl Timed {
+    /// Runs `run` and times it.
+    fn run(run: impl FnOnce() -> Outcome) -> Timed {
+        let started = Instant::now();
+        let outcome = run();
+        Timed {
+            outcome,
+            ms: started.elapsed().as_millis() as u64,
+        }
+    }
+}
+
 /// How the policy and the hub settle one of a model turn's tool calls.
 enum Route {
     /// Refused for its input: the text the model sees, without asking the hub.
@@ -104,7 +122,7 @@ struct Run {
 struct Turn {
     steps: Vec<Step>,
     /// Each run's outcome, once it has one.
-    outcomes: Vec<Option<Outcome>>,
+    outcomes: Vec<Option<Timed>>,
     /// The results settled so far, in the model's order.
     results: Vec<(String, bool)>,
 }
@@ -115,7 +133,7 @@ struct Early {
     policy: String,
     name: String,
     input: Value,
-    outcome: Outcome,
+    timed: Timed,
 }
 
 /// A read-only call still running while its answer streams.
@@ -124,17 +142,18 @@ struct Running<'scope> {
     policy: String,
     name: String,
     input: Value,
-    thread: thread::ScopedJoinHandle<'scope, Outcome>,
+    thread: thread::ScopedJoinHandle<'scope, Timed>,
 }
 
 /// The report a guest sends once it has run a call. A call the policy decided carries its record: its tool, its
-/// input and the policy it was decided under.
+/// input and the policy it was decided under. It carries how long the call ran.
 fn tool_report(
     work: u64,
     call: &str,
     ok: bool,
     output: String,
     record: Option<&(String, String, Value)>,
+    ms: u64,
 ) -> GuestMessage {
     let (policy, name, input) = match record {
         Some((policy, name, input)) => (
@@ -152,6 +171,7 @@ fn tool_report(
         policy,
         name,
         input,
+        duration_ms: Some(ms),
     }
 }
 
@@ -667,7 +687,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
     fn run_jobs(
         &mut self,
         jobs: Vec<(usize, Thunk<'a>)>,
-        done: &mut dyn FnMut(&mut Self, usize, Outcome) -> Result<(), SessionError>,
+        done: &mut dyn FnMut(&mut Self, usize, Timed) -> Result<(), SessionError>,
     ) -> Result<(), SessionError> {
         let total = jobs.len();
         if total == 0 {
@@ -689,9 +709,11 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                             .unwrap_or_else(PoisonError::into_inner)
                             .pop_front();
                         let Some((index, job)) = next else { break };
-                        let outcome = panic::catch_unwind(AssertUnwindSafe(job))
-                            .unwrap_or_else(|_| Err("internal: the tool panicked".to_string()));
-                        let _ = finished.send((index, outcome));
+                        let timed = Timed::run(|| {
+                            panic::catch_unwind(AssertUnwindSafe(job))
+                                .unwrap_or_else(|_| Err("internal: the tool panicked".to_string()))
+                        });
+                        let _ = finished.send((index, timed));
                     }
                 });
             }
@@ -699,9 +721,9 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             let mut seen = 0;
             while seen < total {
                 match outcomes.recv_timeout(LOCAL_POLL) {
-                    Ok((index, outcome)) => {
+                    Ok((index, timed)) => {
                         seen += 1;
-                        done(&mut *self, index, outcome)?;
+                        done(&mut *self, index, timed)?;
                     }
                     Err(RecvTimeoutError::Timeout) => {
                         self.beat_when_due()?;
@@ -1160,7 +1182,8 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                             continue;
                         };
                         let (name, input) = (whole.name.clone(), whole.input.clone());
-                        let thread = scope.spawn(move || run_guest_tool(workspace, &name, &input));
+                        let thread = scope
+                            .spawn(move || Timed::run(|| run_guest_tool(workspace, &name, &input)));
                         running.push(Running {
                             id: whole.id,
                             policy,
@@ -1192,17 +1215,17 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 thread::sleep(LOCAL_POLL);
             }
             for call in running {
-                let outcome = call
-                    .thread
-                    .join()
-                    .unwrap_or_else(|_| Err("internal: the tool panicked".to_string()));
+                let timed = call.thread.join().unwrap_or_else(|_| Timed {
+                    outcome: Err("internal: the tool panicked".to_string()),
+                    ms: 0,
+                });
                 self.early.insert(
                     call.id,
                     Early {
                         policy: call.policy,
                         name: call.name,
                         input: call.input,
-                        outcome,
+                        timed,
                     },
                 );
             }
@@ -1301,7 +1324,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                             && ran.input == run.input
                             && run.allowance.policy.as_deref() == Some(ran.policy.as_str())
                     })
-                    .map(|ran| ran.outcome),
+                    .map(|ran| ran.timed),
                 Step::Settled(..) => None,
             })
             .collect();
@@ -1336,8 +1359,8 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                     }
                 })
                 .collect();
-            self.run_jobs(jobs, &mut |agent, index, outcome| {
-                turn.outcomes[index] = Some(outcome);
+            self.run_jobs(jobs, &mut |agent, index, timed| {
+                turn.outcomes[index] = Some(timed);
                 agent.settle(work, &mut turn)
             })?;
         }
@@ -1353,7 +1376,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             let result = match step {
                 Step::Settled(text, is_error) => (text.clone(), *is_error),
                 Step::Run(run) => match turn.outcomes[index].take() {
-                    Some(outcome) => self.report(work, run, outcome)?,
+                    Some(timed) => self.report(work, run, timed)?,
                     None => break,
                 },
             };
@@ -1368,9 +1391,9 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         &mut self,
         work: u64,
         run: &Run,
-        outcome: Outcome,
+        timed: Timed,
     ) -> Result<(String, bool), SessionError> {
-        let (ok, output) = match outcome {
+        let (ok, output) = match timed.outcome {
             Ok(output) => (true, output),
             Err(err) => (false, err),
         };
@@ -1388,6 +1411,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 ok,
                 output.clone(),
                 record.as_ref(),
+                timed.ms,
             ))?;
             return Ok((library::summary(&output), false));
         }
@@ -1398,6 +1422,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             ok,
             output.clone(),
             record.as_ref(),
+            timed.ms,
         ))?;
         Ok((output, !ok))
     }
@@ -3097,5 +3122,29 @@ mod tests {
                 rss_mib: 200.0,
             }]
         );
+    }
+
+    #[test]
+    fn a_tool_report_carries_how_long_its_call_ran_and_a_timed_run_keeps_its_outcome() {
+        let report = tool_report(1, "toolu_1", true, "ok".into(), None, 7);
+        assert_eq!(
+            report,
+            GuestMessage::ToolReport {
+                work: 1,
+                call: "toolu_1".into(),
+                ok: true,
+                output: "ok".into(),
+                policy: None,
+                name: None,
+                input: None,
+                duration_ms: Some(7),
+            }
+        );
+        let timed = Timed::run(|| {
+            thread::sleep(Duration::from_millis(20));
+            Err("late".to_string())
+        });
+        assert_eq!(timed.outcome, Err("late".to_string()));
+        assert!(timed.ms >= 20, "{}", timed.ms);
     }
 }

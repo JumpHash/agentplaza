@@ -175,6 +175,8 @@ pub struct App {
     pub prices: crate::prices::Catalog,
     /// Every model call's tokens, cache hits and cost.
     pub usage: crate::usage::Ledger,
+    /// The eval records of step sessions (`evals.rs`): written as sessions end, read by `/v1/evals`.
+    pub evals: crate::evals::Evals,
     /// Metrics: what the hub records, what nodes send, the store, alerts and the `/v1/metrics` routes.
     pub metrics: crate::metrics::Metrics,
     /// The Foundry: recipes, datasets, training jobs and their series (`<state>/foundry`).
@@ -305,6 +307,7 @@ impl App {
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
+            evals: crate::evals::Evals::new(Arc::clone(store.db(crate::store::PLAZA))),
             metrics: crate::metrics::Metrics::open(
                 Arc::clone(store.db(crate::store::METRICS)),
                 apz_plaza::now_ms(),
