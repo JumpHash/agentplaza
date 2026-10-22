@@ -9,20 +9,27 @@
 //! The index is part 3 of every session's prompt (agents.rs), so it depends on main alone: the sessions of a project
 //! at the same main carry the same bytes.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use apz_blobs::Hash;
+use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_store::rusqlite::Connection;
 use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::agents::Agent;
 use crate::state::App;
 
 /// The host tools this module serves.
-pub const TOOLS: &[&str] = &["memory_search", "memory_get", "memory_propose"];
+pub const TOOLS: &[&str] = &[
+    "memory_search",
+    "memory_get",
+    "memory_propose",
+    "memory_record_decision",
+];
 
 /// Where a project's entries live in its repo, and the index the hub renders there (never edited by hand).
 const DIR: &str = ".plaza/memory/";
@@ -114,6 +121,14 @@ pub struct Proposal {
     pub created_ms: u64,
 }
 
+/// A landing of memory the hub queued and has not seen land yet: its change, and what it writes and deletes.
+#[derive(Clone)]
+struct Pending {
+    change: String,
+    write: Vec<Entry>,
+    delete: Vec<String>,
+}
+
 /// The project memory: the entries read from each project's main, and the proposals agents made.
 #[derive(Default)]
 pub struct Store {
@@ -121,9 +136,27 @@ pub struct Store {
     /// The projects whose entries were read in this process (a project not in here is read at first use).
     read: Mutex<HashSet<String>>,
     proposals: Mutex<Vec<Proposal>>,
+    /// The memory changes queued on each project's main (see [`land`]), so the next one builds on them.
+    pending: Mutex<BTreeMap<String, Vec<Pending>>>,
+    /// Serialises the landings: an entry's id is allocated and its change opened under it.
+    landing: Mutex<()>,
 }
 
 impl Store {
+    /// The proposals of `project`, in the order they were made.
+    pub fn proposals_of(&self, project: &str) -> Vec<Proposal> {
+        lock(&self.proposals)
+            .iter()
+            .filter(|p| p.project == project)
+            .cloned()
+            .collect()
+    }
+
+    /// Removes the proposals named `ids` (the curator answered them); the other proposals stay.
+    pub fn take_proposals(&self, ids: &[String]) {
+        lock(&self.proposals).retain(|p| !ids.contains(&p.id));
+    }
+
     /// The project's entries as the index last had them, all statuses.
     pub fn entries_of(&self, project: &str) -> Vec<Entry> {
         lock(&self.entries)
@@ -254,6 +287,402 @@ pub fn landed(app: &App, repo: &str) {
             eprintln!("apid: project memory of {}: {why}", project.id);
         }
     }
+}
+
+/// What a landing made: the change on main and the ids of the entries it writes, in the order they were given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Landing {
+    pub change: String,
+    pub ids: Vec<String>,
+}
+
+/// An entry the curator, the planner or the owner writes, before it has an id: its type and text, and where it came
+/// from. [`land`] gives it its id, path and verification; the caller sets the rest.
+pub fn draft(project: &str, kind: &str, body: String) -> Entry {
+    Entry {
+        key: String::new(),
+        project: project.to_string(),
+        id: String::new(),
+        kind: kind.to_string(),
+        status: "active".into(),
+        title: title_of(&body),
+        body,
+        path: String::new(),
+        anchors: Vec::new(),
+        supersedes: Vec::new(),
+        links: Vec::new(),
+        verified_commit: String::new(),
+        verified_date: String::new(),
+        provenance_task: String::new(),
+        provenance_session: String::new(),
+        provenance_change: String::new(),
+    }
+}
+
+/// Lands entries and deletions on `project`'s main as one change, the hub's own: a lane the hub opens (stacked on the
+/// memory change it queued last, if that has not landed), sealed and queued for the landing queue, where the land event
+/// reads the entries back. An entry without an id gets the next one of its type; the index is regenerated with the
+/// entries, and each entry is a file of its own. Landings are serialised, so ids are not reused.
+pub fn land(
+    app: &App,
+    project: &str,
+    title: &str,
+    mut write: Vec<Entry>,
+    delete: &[String],
+) -> Result<Landing, String> {
+    let _order = lock(&app.project_memory.landing);
+    let repo = crate::weft_hub::ensure_repo(app, project)?;
+    prune_landed(app, project)?;
+    let stacked = pending_of(app, project).last().map(|p| p.change.clone());
+    let detail = app.weft.get(&format!("/repos/{repo}"))?;
+    let head = detail["refs"]["main"]
+        .as_str()
+        .ok_or_else(|| format!("{repo} has no main"))?
+        .to_string();
+    let now = now_ms();
+    let mut taken: Vec<String> = effective(app, project).into_iter().map(|e| e.id).collect();
+    for entry in write.iter_mut() {
+        if entry.id.is_empty() {
+            entry.id = next_id(&entry.kind, &taken);
+            taken.push(entry.id.clone());
+        }
+        entry.project = project.to_string();
+        entry.key = format!("{project}/{}", entry.id);
+        if entry.path.is_empty() {
+            entry.path = format!("{DIR}{}/{}-{}.md", entry.kind, entry.id, slug(&entry.title));
+        }
+        entry.verified_commit = head.clone();
+        entry.verified_date = day_of(now);
+    }
+    let mut expected = effective(app, project);
+    expected.retain(|e| !delete.contains(&e.path) && !write.iter().any(|w| w.key == e.key));
+    expected.extend(write.iter().cloned());
+    let mut files: Vec<(String, Vec<u8>)> = write
+        .iter()
+        .map(|e| (e.path.clone(), render(e).into_bytes()))
+        .collect();
+    files.push((
+        INDEX.to_string(),
+        format!("{}\n", index_text(&expected)).into_bytes(),
+    ));
+    let hashes: Vec<Hash> = files.iter().map(|(_, bytes)| Hash::of(bytes)).collect();
+    let bytes_of = |hash: &Hash| {
+        files
+            .iter()
+            .zip(&hashes)
+            .find(|(_, h)| *h == hash)
+            .map(|((_, bytes), _)| bytes.clone())
+            .ok_or_else(|| format!("no bytes for {}", hash.hex()))
+    };
+    app.weft.client("hub")?.upload(&hashes, &bytes_of)?;
+    let mut lane = json!({ "repo": repo, "title": title, "author": { "kind": "hub" } });
+    if let Some(change) = &stacked {
+        lane["stacked_on"] = json!(change);
+    }
+    let opened = app.weft.post("/lanes", &lane)?;
+    let change = opened["change"]
+        .as_str()
+        .ok_or("Weft opened no lane for the memory change")?
+        .to_string();
+    let mut deltas: Vec<Value> = files
+        .iter()
+        .zip(&hashes)
+        .map(|((path, _), hash)| json!({ "path": path, "after": hash, "mode": 0o100644 }))
+        .collect();
+    deltas.extend(
+        delete
+            .iter()
+            .map(|path| json!({ "path": path, "after": null, "mode": 0o100644 })),
+    );
+    let covers: Vec<String> = files
+        .iter()
+        .map(|(path, _)| path.clone())
+        .chain(delete.iter().cloned())
+        .collect();
+    app.weft.hub(
+        "revision.draft",
+        json!({ "change": change, "n": 1, "deltas": deltas, "tool_calls": ["memory"] }),
+    )?;
+    app.weft.hub(
+        "revision.seal",
+        json!({ "change": change, "n": 1, "deltas": deltas }),
+    )?;
+    app.weft.hub(
+        "intent.set",
+        json!({ "change": change, "n": 1, "intents": [{ "title": title, "kind": "change", "covers": covers }] }),
+    )?;
+    app.weft.hub(
+        "queue.add",
+        json!({ "repo": repo, "ref": "main", "change": change, "n": 1 }),
+    )?;
+    let ids = write.iter().map(|e| e.id.clone()).collect();
+    lock(&app.project_memory.pending)
+        .entry(project.to_string())
+        .or_default()
+        .push(Pending {
+            change: change.clone(),
+            write,
+            delete: delete.to_vec(),
+        });
+    Ok(Landing { change, ids })
+}
+
+/// The memory changes queued on `project`'s main, which have not landed yet.
+fn pending_of(app: &App, project: &str) -> Vec<Pending> {
+    lock(&app.project_memory.pending)
+        .get(project)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Drops the queued changes that have landed or were abandoned. A landed one is read back first, so the entries it
+/// wrote stay in the index.
+fn prune_landed(app: &App, project: &str) -> Result<(), String> {
+    let queued = pending_of(app, project);
+    let state = |change: &str| {
+        app.weft
+            .get(&format!("/changes/{change}"))
+            .map(|c| c["state"].as_str().unwrap_or("").to_string())
+            .unwrap_or_default()
+    };
+    let done: Vec<bool> = queued
+        .iter()
+        .map(|p| matches!(state(&p.change).as_str(), "landed" | "abandoned"))
+        .collect();
+    if done.iter().any(|d| *d) {
+        refresh(app, project)?;
+    }
+    let open: Vec<Pending> = queued
+        .into_iter()
+        .zip(done)
+        .filter(|(_, done)| !done)
+        .map(|(p, _)| p)
+        .collect();
+    lock(&app.project_memory.pending).insert(project.to_string(), open);
+    Ok(())
+}
+
+/// The entries `project` will have once the memory changes queued on its main land: the entries read from main, with
+/// each queued change applied in order.
+fn effective(app: &App, project: &str) -> Vec<Entry> {
+    let mut all = entries(app, project);
+    for change in pending_of(app, project) {
+        all.retain(|e| {
+            !change.delete.contains(&e.path) && !change.write.iter().any(|w| w.key == e.key)
+        });
+        all.extend(change.write);
+    }
+    all
+}
+
+/// The prefix an entry's id takes for its type (`D-0042`, `P-0017`).
+fn prefix(kind: &str) -> char {
+    match kind {
+        "decision" => 'D',
+        "convention" => 'C',
+        "pitfall" => 'P',
+        "howto" => 'H',
+        "map" => 'M',
+        "glossary" => 'G',
+        "fact" => 'F',
+        _ => 'R',
+    }
+}
+
+/// The next id of `kind`, after every id in `taken`: four digits, as in 9.3.
+fn next_id(kind: &str, taken: &[String]) -> String {
+    let head = format!("{}-", prefix(kind));
+    let last = taken
+        .iter()
+        .filter_map(|id| id.strip_prefix(&head)?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    format!("{head}{:04}", last + 1)
+}
+
+/// The first words of a title, lowercase and joined by dashes, for an entry's file name.
+fn slug(title: &str) -> String {
+    let words: Vec<String> = title
+        .to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .take(6)
+        .map(str::to_string)
+        .collect();
+    if words.is_empty() {
+        "entry".into()
+    } else {
+        words.join("-")
+    }
+}
+
+/// An entry's file: its front matter (9.3), then its text.
+pub fn render(entry: &Entry) -> String {
+    let mut lines = vec![
+        "---".to_string(),
+        format!("id: {}", entry.id),
+        format!("type: {}", entry.kind),
+        format!("status: {}", entry.status),
+    ];
+    if !entry.anchors.is_empty() {
+        lines.push("anchors:".into());
+        lines.extend(entry.anchors.iter().map(|anchor| format!("  - {anchor}")));
+    }
+    lines.push(format!("supersedes: [{}]", entry.supersedes.join(", ")));
+    lines.push(format!("links: [{}]", entry.links.join(", ")));
+    lines.push(format!(
+        "provenance: {{ task: {}, session: {}, change: {} }}",
+        entry.provenance_task, entry.provenance_session, entry.provenance_change
+    ));
+    lines.push(format!(
+        "verified: {{ commit: {}, date: {} }}",
+        entry.verified_commit, entry.verified_date
+    ));
+    lines.push("---".into());
+    format!("{}\n{}\n", lines.join("\n"), entry.body)
+}
+
+/// The UTC date (`YYYY-MM-DD`) of `ms` since the epoch (Howard Hinnant's civil-from-days).
+fn day_of(ms: u64) -> String {
+    let z = (ms / 86_400_000) as i64 + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// The entry as the memory view shows it.
+fn entry_json(entry: &Entry) -> Value {
+    json!({
+        "id": entry.id,
+        "type": entry.kind,
+        "status": entry.status,
+        "flagged": entry.status == "flagged",
+        "title": entry.title,
+        "text": entry.body,
+        "path": entry.path,
+        "anchors": entry.anchors,
+        "links": entry.links,
+        "supersedes": entry.supersedes,
+        "verified": { "commit": entry.verified_commit, "date": entry.verified_date },
+        "provenance": {
+            "task": entry.provenance_task,
+            "session": entry.provenance_session,
+            "change": entry.provenance_change,
+        },
+    })
+}
+
+/// `GET /v1/projects/{id}/memory`: the index and every entry (retired and superseded ones too), by type then id.
+fn memory_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+    let project = p.get("id");
+    if app.projects.get(project).is_none() {
+        return Response::error(404, "no such project");
+    }
+    let mut all = entries(app, project);
+    all.sort_by(|a, b| (rank(&a.kind), &a.id).cmp(&(rank(&b.kind), &b.id)));
+    let list: Vec<Value> = all.iter().map(entry_json).collect();
+    Response::json(200, &json!({ "index": index_text(&all), "entries": list }))
+}
+
+/// The entry `id` of `project`, when it has one.
+fn entry_of(app: &App, project: &str, id: &str) -> Option<Entry> {
+    entries(app, project).into_iter().find(|e| e.id == id)
+}
+
+/// `PATCH /v1/projects/{id}/memory/{entry}`: the owner's edit, as a change to main (202 with the change). A decision's
+/// new text is a new decision that supersedes it (9.6); anything else changes in place.
+fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let project = p.get("id");
+    if app.projects.get(project).is_none() {
+        return Response::error(404, "no such project");
+    }
+    let Some(old) = entry_of(app, project, p.get("entry")) else {
+        return Response::error(404, "no such entry");
+    };
+    let patch: Value = match req.json() {
+        Ok(patch) => patch,
+        Err(e) => return Response::error(400, &format!("bad body: {e}")),
+    };
+    let edit = match owner_edit(&old, &patch) {
+        Ok(edit) => edit,
+        Err(why) => return Response::error(400, &why),
+    };
+    let (write, title) = edit;
+    match land(app, project, &title, write, &[]) {
+        Ok(landing) => Response::json(202, &json!({ "change": landing.change })),
+        Err(why) => Response::error(503, &why),
+    }
+}
+
+/// `DELETE /v1/projects/{id}/memory/{entry}`: the owner deletes the entry's file, as a change to main (202).
+fn delete_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+    let project = p.get("id");
+    if app.projects.get(project).is_none() {
+        return Response::error(404, "no such project");
+    }
+    let Some(old) = entry_of(app, project, p.get("entry")) else {
+        return Response::error(404, "no such entry");
+    };
+    match land(
+        app,
+        project,
+        &format!("The owner deletes {}", old.id),
+        Vec::new(),
+        std::slice::from_ref(&old.path),
+    ) {
+        Ok(landing) => Response::json(202, &json!({ "change": landing.change })),
+        Err(why) => Response::error(503, &why),
+    }
+}
+
+/// The entries an owner's PATCH writes and the change's title: a decision whose text changes is superseded by a new
+/// decision (the old one is kept, as superseded); any other entry is edited in place (its text, anchors, or status
+/// `active` or `retired`).
+fn owner_edit(old: &Entry, patch: &Value) -> Result<(Vec<Entry>, String), String> {
+    let text = match patch.get("text") {
+        Some(_) => Some(text_of(&arg(patch, "text"))?),
+        None => None,
+    };
+    let anchors = match patch.get("anchors") {
+        Some(_) => Some(anchors_from(patch)?),
+        None => None,
+    };
+    let status = match patch.get("status").and_then(Value::as_str) {
+        None => None,
+        Some(s @ ("active" | "retired")) => Some(s.to_string()),
+        Some(_) => return Err("status is active or retired".into()),
+    };
+    if text.is_none() && anchors.is_none() && status.is_none() {
+        return Err("nothing to change: give text, anchors or status".into());
+    }
+    let title = format!("The owner edits {}", old.id);
+    if old.kind == "decision" && text.is_some() {
+        let mut new = draft(&old.project, "decision", text.unwrap_or_default());
+        new.anchors = anchors.unwrap_or_else(|| old.anchors.clone());
+        new.links = old.links.clone();
+        new.supersedes = vec![old.id.clone()];
+        let mut superseded = old.clone();
+        superseded.status = "superseded".into();
+        return Ok((vec![new, superseded], title));
+    }
+    let mut edited = old.clone();
+    if let Some(text) = text {
+        edited.title = title_of(&text);
+        edited.body = text;
+    }
+    if let Some(anchors) = anchors {
+        edited.anchors = anchors;
+    }
+    if let Some(status) = status {
+        edited.status = status;
+    }
+    Ok((vec![edited], title))
 }
 
 /// Whether a file of the repo is an entry: a `.md` under the memory folder, other than the index. Paths with other
@@ -522,8 +951,103 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
                 proposal.id
             ))
         }
+        "memory_record_decision" => record_decision(app, agent, &project, input),
         other => Err(format!("{other} is not a memory tool")),
     }
+}
+
+/// `memory_record_decision` (9.4): the planner records a decision and its reason. It lands at once as a decision entry,
+/// and the project's chat is told; a decision the owner made in the chat also opens a memory card, for the owner to keep
+/// it or retire it.
+fn record_decision(
+    app: &App,
+    agent: &Agent,
+    project: &str,
+    input: &Value,
+) -> Result<String, String> {
+    if agent.role != crate::work_loop::PLANNER_ROLE {
+        return Err("only the project's planner records decisions".into());
+    }
+    let text = text_of(&arg(input, "text"))?;
+    let reason = arg(input, "reason");
+    if reason.is_empty() {
+        return Err("reason is required".into());
+    }
+    let mut decision = draft(project, "decision", format!("{text}\n\nReason: {reason}"));
+    decision.anchors = anchors_from(input)?;
+    decision.provenance_session = app
+        .sessions
+        .by_cid(agent.cid)
+        .map(|s| s.id)
+        .unwrap_or_default();
+    let title = decision.title.clone();
+    let landing = land(
+        app,
+        project,
+        &format!("Decision: {title}"),
+        vec![decision],
+        &[],
+    )?;
+    let id = landing.ids.first().cloned().unwrap_or_default();
+    let now = now_ms();
+    let chat = crate::work_loop::project_chat(app, project, now);
+    crate::work_loop::notice(app, &chat, &format!("Decision {id} recorded: {title}"), now);
+    if input.get("owner").and_then(Value::as_bool) == Some(true) {
+        crate::curator::ask_owner(app, project, &id, &title, now);
+    }
+    Ok(format!(
+        "Recorded decision {id}; it joins the project's memory when the change lands. End your turn now."
+    ))
+}
+
+/// The text of an entry: not empty, within `TEXT_MAX`, and with no line that would end its front matter.
+pub fn text_of(text: &str) -> Result<String, String> {
+    if text.is_empty() {
+        return Err("text is required".into());
+    }
+    if text.chars().count() > TEXT_MAX {
+        return Err(format!("text is over {TEXT_MAX} characters"));
+    }
+    if text.lines().any(|line| line.trim_end() == "---") {
+        return Err("text may not have a line of ---".into());
+    }
+    Ok(text.to_string())
+}
+
+/// The anchors `input` names (`anchors`): up to `ANCHORS_MAX`, each one non-empty and within `ANCHOR_MAX`, without
+/// repeats.
+pub fn anchors_from(input: &Value) -> Result<Vec<String>, String> {
+    let raw = input
+        .get("anchors")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if raw.len() > ANCHORS_MAX {
+        return Err(format!("anchors takes at most {ANCHORS_MAX} entries"));
+    }
+    let mut anchors: Vec<String> = Vec::new();
+    for anchor in raw.iter().filter_map(Value::as_str).map(str::trim) {
+        if anchor.is_empty() || anchor.chars().count() > ANCHOR_MAX {
+            return Err(format!(
+                "an anchor is empty or over {ANCHOR_MAX} characters"
+            ));
+        }
+        if !anchors.iter().any(|a| a == anchor) {
+            anchors.push(anchor.to_string());
+        }
+    }
+    Ok(anchors)
+}
+
+/// The routes of the owner's memory view (the IDE's).
+pub fn routes(router: Router<App>) -> Router<App> {
+    router
+        .get("/v1/projects/{id}/memory", memory_route)
+        .doc(RouteDoc::new("Read a project's memory: its index and every entry, flagged and retired ones included").errors(&[404]))
+        .route("PATCH", "/v1/projects/{id}/memory/{entry}", patch_route)
+        .doc(RouteDoc::new("Edit an entry of a project's memory as the owner: a decision's new text supersedes it, other entries change in place; the change lands on main").errors(&[400, 404, 503]))
+        .route("DELETE", "/v1/projects/{id}/memory/{entry}", delete_route)
+        .doc(RouteDoc::new("Delete an entry of a project's memory as the owner: a change to main").errors(&[404, 503]))
 }
 
 /// A proposal from `memory_propose`'s input, checked: a type, the text and why (within their limits), and up to
@@ -549,25 +1073,7 @@ fn proposal_from(
             return Err(format!("{name} is over {max} characters"));
         }
     }
-    let raw = input
-        .get("anchors")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    if raw.len() > ANCHORS_MAX {
-        return Err(format!("anchors takes at most {ANCHORS_MAX} entries"));
-    }
-    let mut anchors: Vec<String> = Vec::new();
-    for anchor in raw.iter().filter_map(Value::as_str).map(str::trim) {
-        if anchor.is_empty() || anchor.chars().count() > ANCHOR_MAX {
-            return Err(format!(
-                "an anchor is empty or over {ANCHOR_MAX} characters"
-            ));
-        }
-        if !anchors.iter().any(|a| a == anchor) {
-            anchors.push(anchor.to_string());
-        }
-    }
+    let anchors = anchors_from(input)?;
     Ok(Proposal {
         id: String::new(),
         project: project.to_string(),
@@ -824,5 +1330,130 @@ A move must release its claim before waking the agent on the target: `wake_with`
         assert!(store.entries_of("pr-1").is_empty());
         assert_eq!(store.entries_of("pr-2")[0].title, "Two.");
         assert!(store.is_read("pr-1") && store.is_read("pr-2"));
+    }
+
+    #[test]
+    fn an_entry_renders_to_a_file_that_reads_back_as_the_same_entry() {
+        let mut e = draft(
+            "pr-1",
+            "pitfall",
+            "A move must release its claim.\nThe wake waits for it.".into(),
+        );
+        e.id = "P-0017".into();
+        e.key = "pr-1/P-0017".into();
+        e.path = ".plaza/memory/pitfalls/P-0017-a-move-must-release.md".into();
+        e.anchors = vec![
+            "sym:apid::placement::move_claimed".into(),
+            "sym:apid::sleep::wake_with".into(),
+        ];
+        e.links = vec!["D-0042".into()];
+        e.provenance_task = "T-311".into();
+        e.provenance_session = "s-9042".into();
+        e.verified_commit = "976118ce".into();
+        e.verified_date = "2026-10-20".into();
+        let back = parse("pr-1", &e.path, &render(&e)).expect("the file parses");
+        assert_eq!(back, e);
+        assert!(!render(&e).contains("supersedes: [D"), "{}", render(&e));
+    }
+
+    #[test]
+    fn ids_count_on_from_the_highest_of_their_type_and_files_take_the_title_words() {
+        let taken = ["D-0042", "C-0007", "P-0017", "D-0007"].map(String::from);
+        assert_eq!(next_id("decision", &taken), "D-0043");
+        assert_eq!(next_id("fact", &taken), "F-0001");
+        assert_eq!(next_id("pitfall", &taken[..2]), "P-0001");
+        assert_eq!(
+            slug("Move releases its claim first, then wakes."),
+            "move-releases-its-claim-first-then"
+        );
+        assert_eq!(slug("  --  "), "entry");
+    }
+
+    #[test]
+    fn a_date_is_the_utc_day_of_its_milliseconds() {
+        assert_eq!(day_of(0), "1970-01-01");
+        assert_eq!(day_of(86_400_000 * 20_384 + 5_000), "2025-10-23");
+        assert_eq!(day_of(86_400_000 * 20_384 - 1), "2025-10-22");
+    }
+
+    #[test]
+    fn an_owner_edit_supersedes_a_decision_and_changes_other_entries_in_place() {
+        let mut old = entry_in(
+            "pr-1",
+            "D-0042",
+            "decision",
+            "active",
+            "Sessions, not agents.",
+        );
+        old.path = ".plaza/memory/decisions/D-0042-sessions-not-agents.md".into();
+        let (write, title) =
+            owner_edit(&old, &json!({ "text": "Sessions, not named agents." })).unwrap();
+        assert_eq!(title, "The owner edits D-0042");
+        assert_eq!(
+            write.len(),
+            2,
+            "the new decision and the old one, superseded"
+        );
+        assert!(write[0].id.is_empty() && write[0].kind == "decision");
+        assert_eq!(write[0].supersedes, ["D-0042"]);
+        assert_eq!(write[0].body, "Sessions, not named agents.");
+        assert_eq!(
+            (write[1].id.as_str(), write[1].status.as_str()),
+            ("D-0042", "superseded")
+        );
+
+        let mut pitfall = entry_in("pr-1", "P-0002", "pitfall", "active", "Old.");
+        pitfall.path = ".plaza/memory/pitfalls/P-0002-old.md".into();
+        let (write, _) = owner_edit(&pitfall, &json!({ "status": "retired" })).unwrap();
+        assert_eq!(write.len(), 1, "a pitfall changes in place");
+        assert_eq!(
+            (
+                write[0].id.as_str(),
+                write[0].status.as_str(),
+                write[0].path.as_str()
+            ),
+            ("P-0002", "retired", pitfall.path.as_str())
+        );
+        assert!(
+            owner_edit(&pitfall, &json!({}))
+                .unwrap_err()
+                .starts_with("nothing to change")
+        );
+        assert_eq!(
+            owner_edit(&pitfall, &json!({ "status": "flagged" })).unwrap_err(),
+            "status is active or retired"
+        );
+        assert_eq!(
+            owner_edit(&pitfall, &json!({ "text": "---" })).unwrap_err(),
+            "text may not have a line of ---"
+        );
+    }
+
+    #[test]
+    fn a_landing_takes_the_proposals_it_answers_and_leaves_the_others() {
+        let store = Store::default();
+        for text in ["one", "two"] {
+            let input = json!({ "type": "fact", "text": text, "why": "seen" });
+            store.add_proposal(proposal_from("pr-1", 7, "b", &input, 0).unwrap());
+        }
+        store.add_proposal(
+            proposal_from(
+                "pr-2",
+                7,
+                "b",
+                &json!({ "type": "fact", "text": "three", "why": "seen" }),
+                0,
+            )
+            .unwrap(),
+        );
+        assert_eq!(store.proposals_of("pr-1").len(), 2);
+        store.take_proposals(&["mp1".to_string()]);
+        let left: Vec<String> = store
+            .proposals_of("pr-1")
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(left, ["mp2"]);
+        assert_eq!(store.proposals_of("pr-2").len(), 1);
     }
 }

@@ -164,6 +164,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.project_memory.load_proposals(conn),
         },
         Component {
+            name: "memory_curations",
+            def: crate::curator::def,
+            rows: |app| app.curator.rows(),
+            load: |app, conn| app.curator.load(conn),
+        },
+        Component {
             name: "nodes",
             def: crate::nodes::def,
             rows: |app| app.nodes.rows(),

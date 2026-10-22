@@ -56,6 +56,7 @@ pub fn owns(app: &App, task: &str) -> bool {
 pub fn tick(app: &App) {
     let now = now();
     ensure_planners(app, now);
+    crate::curator::tick(app, now);
     assign_tasks(app, now);
     for seat in app.seats.ready() {
         start_seat(app, &seat, now);
@@ -66,7 +67,7 @@ pub fn tick(app: &App) {
 
 /// Whether project `id` takes work: it exists, is not paused or archived, and is in a stage that runs tasks, or in
 /// maintenance (its planner sweeps it, and the tasks the owner picks from its proposals run).
-fn project_active(app: &App, id: &str) -> bool {
+pub fn project_active(app: &App, id: &str) -> bool {
     app.projects.get(id).is_some_and(|p| {
         !p.paused
             && !p.archived
@@ -236,7 +237,7 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
 }
 
 /// A session that could not start, or whose VM went away: it fails and its seat goes again (or fails for good).
-fn fail_session(app: &App, session: &Session, why: &str, now: u64) {
+pub fn fail_session(app: &App, session: &Session, why: &str, now: u64) {
     finish_session(app, &session.id, why, true, now);
     if let Some(cid) = session.cid {
         retire(app, cid);
@@ -352,6 +353,11 @@ pub fn on_hello(app: &App, cid: u64) -> bool {
     }
     let _ = app.sessions.set_state(&session.id, State::Running, now);
     app.bus.publish("session", &app.sessions.get(&session.id));
+    // A project's curator has no task: its work is the run it was started for (curator.rs).
+    if session.seat.as_deref() == Some(crate::curator::SEAT) && session.task.is_none() {
+        crate::curator::start_work(app, &session, cid);
+        return true;
+    }
     // A long-lived session (a planner) waits for its chats' messages and the loop's reports.
     let Some(task_id) = session.task.clone() else {
         return true;
@@ -409,6 +415,11 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
         return true;
     }
     let now = now();
+    if session.seat.as_deref() == Some(crate::curator::SEAT) && session.task.is_none() {
+        // A curator's run ends with its answer (memory_land) or without one: its tasks wait for the next run.
+        end_session(app, &session, summary, status == WorkStatus::Failed, now);
+        return true;
+    }
     let (Some(task), Some(seat)) = (session.task.clone(), session.seat.clone()) else {
         return false;
     };
@@ -621,6 +632,15 @@ pub fn clashed(app: &App, task: &str, prompt: &str) {
 }
 
 fn close_task(app: &App, task: &str, now: u64) {
+    // The task's journal waits for its project's curator (curator.rs).
+    if let Some(project) = app
+        .plaza
+        .tasks
+        .find(task)
+        .and_then(|t| t.project().map(str::to_string))
+    {
+        crate::curator::requested(app, &project, task);
+    }
     for s in app.sessions.list(&crate::sessions::Filter {
         task: Some(task.to_string()),
         live: true,
@@ -636,7 +656,7 @@ fn close_task(app: &App, task: &str, now: u64) {
 }
 
 /// Ends a session with its handover and retires its VM.
-fn end_session(app: &App, session: &Session, handover: &str, failed: bool, now: u64) {
+pub fn end_session(app: &App, session: &Session, handover: &str, failed: bool, now: u64) {
     let _ = app.sessions.update(&session.id, |s| {
         if s.handover.is_none() && !handover.is_empty() {
             s.handover = Some(handover.to_string());
@@ -1104,6 +1124,7 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
         cards::Kind::Proposal => crate::agent_proposals::card_answered(app, card),
         cards::Kind::Disk => crate::disk::card_answered(app, card),
         cards::Kind::Start => crate::drafts::answered(app, card),
+        cards::Kind::Memory => crate::curator::card_answered(app, card),
         _ => "recorded".into(),
     }
 }

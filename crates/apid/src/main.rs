@@ -32,6 +32,7 @@ mod connectors;
 mod content;
 mod context_track;
 mod control;
+mod curator;
 mod db;
 mod decisions;
 mod deliverables;
