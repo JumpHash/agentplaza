@@ -1160,7 +1160,7 @@ mod tests {
 
     /// A store in `dir` over a booted vault and a local-disk deliverables store, as the hub has them at start.
     fn open(dir: &Path) -> (Store, Arc<deliverables::Store>) {
-        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
         vault.boot(apz_plaza::now_ms()).expect("boot");
         let objects = Arc::new(
             deliverables::Store::load(dir, &BTreeMap::new(), Arc::new(vault)).expect("objects"),

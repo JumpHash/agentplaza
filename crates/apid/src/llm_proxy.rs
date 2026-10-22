@@ -1630,11 +1630,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let now = apz_plaza::now_ms();
-        let vault = Arc::new(crate::vault::Store::open(
-            &dir,
-            &dir.join("vault.key"),
-            None,
-        ));
+        let vault = Arc::new(crate::vault::Store::open_in(&dir, &dir.join("vault.key")));
         vault.boot(now).unwrap();
         vault
             .create(
@@ -1908,7 +1904,7 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         use crate::vault::NewSecret;
         use secrecy::SecretString;
         let now = apz_plaza::now_ms();
-        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
         vault.boot(now).unwrap();
         vault
             .create(
@@ -1935,15 +1931,16 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         std::fs::create_dir_all(&dir).unwrap();
         let vault = anthropic_key_in(&dir, crate::vault::Scope::Plaza);
         drop(vault);
-        let path = dir.join("vault.json");
-        let text = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(
-            &path,
-            text.replacen("provider:anthropic", "provider:anthropix", 1),
-        )
-        .unwrap();
-        // Boot refuses the changed file; the vault stays up to say why.
-        let vault = crate::vault::Store::open(&dir, &dir.join("vault.key"), None);
+        assert_eq!(
+            crate::vault::tamper_rows(
+                &dir,
+                "UPDATE vault_entry_binding SET value = ?2 WHERE value = ?1",
+                &["provider:anthropic", "provider:anthropix"],
+            ),
+            1
+        );
+        // Boot refuses the changed rows; the vault stays up to say why.
+        let vault = crate::vault::Store::open_in(&dir, &dir.join("vault.key"));
         let _ = vault.boot(apz_plaza::now_ms());
         let providers = crate::providers::test_store(Arc::new(vault));
         let caller = Caller::Agent {

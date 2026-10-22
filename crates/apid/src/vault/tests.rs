@@ -7,7 +7,7 @@ use apz_http::{Request, Response};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 
-use super::model::Scope;
+use super::model::{Document, Scope};
 use super::routes::{self, Ctx};
 use super::{Consumer, NewSecret, OnBehalf, Store, Unlock, VaultError, node_for_cid};
 use crate::events::Bus;
@@ -30,15 +30,26 @@ fn scratch(name: &str) -> PathBuf {
 fn fresh(name: &str) -> (Store, PathBuf) {
     let dir = scratch(name);
     let key = dir.join("config").join("vault.key");
-    let store = Store::open(&dir, &key, None);
+    let store = Store::open_in(&dir, &key);
     store.boot(NOW).expect("boot");
     (store, dir)
 }
 
+/// A restart: the folder is closed by dropping the vault first (the caller does), then opened and booted again.
 fn reopen(dir: &Path) -> Store {
-    let store = Store::open(dir, &dir.join("config").join("vault.key"), None);
+    let store = Store::open_in(dir, &dir.join("config").join("vault.key"));
     store.boot(NOW).expect("boot");
     store
+}
+
+/// The vault's document as the tables hold it, as JSON: the shape the file had.
+fn stored_json(store: &Store) -> Value {
+    let doc: Document = store
+        .db
+        .read(|conn| apz_store::table::load_one(conn, super::def()))
+        .expect("read")
+        .expect("a stored document");
+    serde_json::to_value(&doc).expect("json")
 }
 
 fn secret(value: &str) -> SecretString {
@@ -100,10 +111,8 @@ fn keyfile_slot(store: &Store) -> String {
         .to_string()
 }
 
-fn wrap_cts(dir: &Path) -> (Vec<String>, Vec<String>) {
-    let doc: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("vault.json")).expect("vault.json"))
-            .expect("json");
+fn wrap_cts(store: &Store) -> (Vec<String>, Vec<String>) {
+    let doc = stored_json(store);
     let slots = doc["slots"]
         .as_array()
         .expect("slots")
@@ -123,7 +132,7 @@ fn wrap_cts(dir: &Path) -> (Vec<String>, Vec<String>) {
 // ----- the spec's tests --------------------------------------------------------------------
 
 #[test]
-fn a_scope_or_binding_edited_in_the_file_is_tampered() {
+fn a_scope_or_binding_edited_in_the_database_is_tampered() {
     let (store, dir) = fresh("tamper");
     store
         .create(
@@ -138,13 +147,15 @@ fn a_scope_or_binding_edited_in_the_file_is_tampered() {
         )
         .expect("created");
     drop(store);
-    let path = dir.join("vault.json");
-    let text = std::fs::read_to_string(&path).expect("read");
-    std::fs::write(
-        &path,
-        text.replacen("provider:anthropic", "provider:openai", 1),
-    )
-    .expect("edited");
+    assert_eq!(
+        super::tamper_rows(
+            &dir,
+            "UPDATE vault_entry_binding SET value = ?2 WHERE value = ?1",
+            &["provider:anthropic", "provider:openai"],
+        ),
+        1,
+        "one stored binding is edited"
+    );
     let store = reopen(&dir);
     assert_eq!(status_state(&store), "tampered");
     assert!(matches!(store.list(), Err(VaultError::Tampered(_))));
@@ -159,19 +170,24 @@ fn a_scope_or_binding_edited_in_the_file_is_tampered() {
 fn a_flipped_byte_in_a_keyslot_fails_to_unseal() {
     let (store, dir) = fresh("flip-slot");
     store.seal("owner", NOW).expect("sealed");
-    drop(store);
-    let path = dir.join("vault.json");
-    let text = std::fs::read_to_string(&path).expect("read");
-    let mut doc: Value = serde_json::from_str(&text).expect("json");
-    let ct = doc["slots"][0]["wrap"]["ct"]
+    let ct = stored_json(&store)["slots"][0]["wrap"]["ct"]
         .as_str()
         .expect("ct")
         .to_string();
+    drop(store);
     let mut bytes = super::model::dec(&ct).expect("base64");
     bytes[0] ^= 1;
-    doc["slots"][0]["wrap"]["ct"] = Value::from(super::model::enc(&bytes));
+    let flipped = super::model::enc(&bytes);
     // The index MAC covers the slot without its wrap, so only the AEAD notices this change.
-    std::fs::write(&path, doc.to_string()).expect("edited");
+    assert_eq!(
+        super::tamper_rows(
+            &dir,
+            "UPDATE vault_slot SET wrap_ct = ?2 WHERE wrap_ct = ?1",
+            &[&ct, &flipped],
+        ),
+        1,
+        "one stored wrap is edited"
+    );
     let store = reopen(&dir);
     assert_eq!(status_state(&store), "sealed");
     assert_eq!(
@@ -293,7 +309,8 @@ fn a_key_file_with_0644_permissions_is_refused() {
             store.unseal(Unlock::Keyfile, "owner", NOW),
             Err(VaultError::KeyFile(_))
         ));
-        let reopened = Store::open(&dir, &key, None);
+        drop(store);
+        let reopened = Store::open_in(&dir, &key);
         assert!(
             matches!(reopened.boot(NOW), Err(VaultError::KeyFile(_))),
             "the hub does not start with it"
@@ -331,7 +348,7 @@ fn rekey_keeps_every_value_and_changes_every_wrapped_key() {
     let passphrase = store
         .add_passphrase(&secret("correct horse battery"), "owner", NOW)
         .expect("slot");
-    let (slots_before, deks_before) = wrap_cts(&dir);
+    let (slots_before, deks_before) = wrap_cts(&store);
     let key_before = std::fs::read_to_string(dir.join("config").join("vault.key")).expect("key");
     store
         .rekey(
@@ -340,7 +357,7 @@ fn rekey_keeps_every_value_and_changes_every_wrapped_key() {
             NOW,
         )
         .expect("rekeyed");
-    let (slots_after, deks_after) = wrap_cts(&dir);
+    let (slots_after, deks_after) = wrap_cts(&store);
     assert!(
         slots_before.iter().zip(&slots_after).all(|(a, b)| a != b),
         "every slot re-wrapped"
@@ -362,6 +379,7 @@ fn rekey_keeps_every_value_and_changes_every_wrapped_key() {
             .expose_secret(),
         "alpha-value-0000000000001"
     );
+    drop(store);
     let reopened = reopen(&dir);
     // BETA_KEY is scoped to n0: the owner testing on the hub's machine resolves it.
     let beta = Consumer {
@@ -674,23 +692,18 @@ fn the_audit_chain_verifies_and_an_edited_line_breaks_it_at_that_line() {
         )
         .expect("made");
     assert!(store.check_audit().expect("checked").ok);
-    let path = dir.join("vault-audit.jsonl");
-    let text = std::fs::read_to_string(&path).expect("read");
-    let lines: Vec<&str> = text.lines().collect();
-    assert!(lines.len() >= 3);
-    let edited: String = lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            if i == 1 {
-                line.replacen("\"owner\"", "\"ownex\"", 1)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(&path, format!("{edited}\n")).expect("edited");
+    assert!(store.audit_page(0, 100).expect("page").len() >= 3);
+    drop(store);
+    // Line 2 (seq 2, the first create) is edited in its row: its actor no longer matches its MAC.
+    assert_eq!(
+        super::tamper_rows(
+            &dir,
+            "UPDATE vault_audit SET actor = ?2 WHERE seq = 2 AND actor = ?1",
+            &["owner", "ownex"],
+        ),
+        1,
+        "one audit row is edited"
+    );
     let store = reopen(&dir);
     let verdict = store.check_audit().expect("checked");
     assert_eq!(
@@ -938,9 +951,11 @@ fn no_value_appears_in_any_route_response_event_or_file() {
         );
     }
     assert!(
-        files
+        store
+            .audit_page(0, 1000)
+            .expect("audit")
             .iter()
-            .any(|t| t.contains("\"event\":\"create\"") || t.contains("\"event\": \"create\"")),
+            .any(|line| line["event"] == "create"),
         "the audit did record the create"
     );
 }
@@ -976,9 +991,7 @@ fn legacy_plaintext_hints_are_migrated_on_an_unsealed_start() {
         )
         .expect("made");
     write_legacy_hints(&store);
-    let before: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("vault.json")).expect("read"))
-            .expect("json");
+    let before = stored_json(&store);
     assert_eq!(
         before["entries"][0]["versions"][0]["hint"], HINT,
         "the old file holds the hint in clear"
@@ -996,9 +1009,7 @@ fn legacy_plaintext_hints_are_migrated_on_an_unsealed_start() {
     // The unsealed start (the key file) migrates the file.
     let store = reopen(&dir);
     assert_eq!(status_state(&store), "unsealed");
-    let after: Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("vault.json")).expect("read"))
-            .expect("json");
+    let after = stored_json(&store);
     let version = &after["entries"][0]["versions"][0];
     assert!(
         version.get("hint").is_none(),
@@ -1025,18 +1036,18 @@ fn legacy_plaintext_hints_are_migrated_on_an_unsealed_start() {
     // Once is enough: a second unsealed start leaves the file byte for byte as the seal saved it. (The
     // seal writes the usage counters the resolve above moved, so the snapshot comes after it.)
     store.seal("owner", NOW).expect("sealed");
-    let migrated = std::fs::read(dir.join("vault.json")).expect("read");
+    let migrated = stored_json(&store);
     drop(store);
     let store = reopen(&dir);
     assert_eq!(
-        std::fs::read(dir.join("vault.json")).expect("read"),
+        stored_json(&store),
         migrated,
         "the second start changes nothing"
     );
-    let audit = std::fs::read_to_string(dir.join("vault-audit.jsonl")).expect("read");
-    let migrates: Vec<Value> = audit
-        .lines()
-        .map(|l| serde_json::from_str::<Value>(l).expect("a line"))
+    let migrates: Vec<Value> = store
+        .audit_page(0, usize::MAX)
+        .expect("audit")
+        .into_iter()
         .filter(|r| r["event"] == "migrate")
         .collect();
     assert_eq!(
@@ -1143,4 +1154,274 @@ fn the_egress_binding_is_a_binding() {
     // A usage hub's management key (usage_providers).
     assert!(super::valid_binding("usage:home"));
     assert!(!super::valid_binding("usage:"));
+}
+
+/// The vault's tables are STRICT, typed and free of JSON, as every store table is.
+#[test]
+fn the_vault_tables_pass_the_schema_lint() {
+    let (store, _dir) = fresh("lint");
+    let problems = store.db.read(apz_store::lint::schema).expect("read");
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
+/// The tables give back the document the index MAC covers: the same canonical view, and the MAC checks.
+#[test]
+fn a_document_read_back_from_the_tables_passes_the_index_mac() {
+    let (store, _dir) = fresh("index-mac-tables");
+    store
+        .create(
+            new(
+                "ALPHA_KEY",
+                "alpha-value-0000000000021",
+                nodes_scope(&["n1", "n2"]),
+                &["hf", "provider:openai"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("made");
+    let id = store
+        .create(
+            new(
+                "BETA_KEY",
+                "beta-value-00000000000022",
+                Scope::Plaza,
+                &["mcp:github"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("made");
+    store
+        .rotate(&id, &secret("beta-value-00000000000023"), "owner", NOW)
+        .expect("rotated");
+    store
+        .add_passphrase(&secret("correct horse battery"), "owner", NOW)
+        .expect("slot");
+    store.delete(&id, "owner", NOW).expect("deleted");
+    let keys = store.lock().keys.clone().expect("unsealed");
+    let read: Document = store
+        .db
+        .read(|conn| apz_store::table::load_one(conn, super::def()))
+        .expect("read")
+        .expect("a stored document");
+    let in_memory = store.lock().doc.clone().expect("a document");
+    assert_eq!(
+        super::crypto::canonical(&super::model::index_view(&read)),
+        super::crypto::canonical(&super::model::index_view(&in_memory)),
+        "the rows give back the view the MAC covers"
+    );
+    assert!(
+        super::index_ok(&keys, &read),
+        "the stored document checks against its index MAC"
+    );
+}
+
+#[test]
+fn a_version_edited_in_its_row_fails_the_index_mac() {
+    let (store, dir) = fresh("version-row");
+    store
+        .create(
+            new(
+                "ALPHA_KEY",
+                "alpha-value-0000000000024",
+                Scope::Plaza,
+                &["hf"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("made");
+    let ct = stored_json(&store)["entries"][0]["versions"][0]["ct"]
+        .as_str()
+        .expect("ct")
+        .to_string();
+    drop(store);
+    let mut bytes = super::model::dec(&ct).expect("base64");
+    bytes[0] ^= 1;
+    let flipped = super::model::enc(&bytes);
+    assert_eq!(
+        super::tamper_rows(
+            &dir,
+            "UPDATE vault_version SET ct = ?2 WHERE ct = ?1",
+            &[&ct, &flipped]
+        ),
+        1,
+        "one stored version is edited"
+    );
+    let store = reopen(&dir);
+    assert_eq!(status_state(&store), "tampered");
+    assert!(matches!(
+        store.list(),
+        Err(VaultError::Tampered(reason)) if reason.contains("index MAC")
+    ));
+}
+
+#[test]
+fn a_restart_reads_the_same_secrets_and_the_node_lists_keep_their_order() {
+    let (store, dir) = fresh("restart-reads");
+    store
+        .create(
+            new(
+                "ALPHA_KEY",
+                "alpha-value-0000000000025",
+                Scope::Plaza,
+                &["hf"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("made");
+    store
+        .create(
+            new(
+                "NODE_KEY",
+                "node-value-00000000000026",
+                nodes_scope(&["n1", "n2"]),
+                &["connector:slack", "hf"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("made");
+    drop(store);
+    let store = reopen(&dir);
+    assert_eq!(status_state(&store), "unsealed");
+    assert_eq!(
+        store
+            .resolve("ALPHA_KEY", &hub("hf"), NOW)
+            .expect("resolves")
+            .expose_secret(),
+        "alpha-value-0000000000025"
+    );
+    let fleet = vec![node("n1", 1000, 100, false), node("n2", 1100, 100, false)];
+    let on_n2 = Consumer::agent(&fleet, 1105, "connector:slack");
+    assert_eq!(
+        store
+            .resolve("NODE_KEY", &on_n2, NOW)
+            .expect("on n2")
+            .expose_secret(),
+        "node-value-00000000000026"
+    );
+    let on_n1 = Consumer::agent(&fleet, 1005, "hf");
+    assert!(store.resolve("NODE_KEY", &on_n1, NOW).is_ok());
+}
+
+#[test]
+fn the_audit_chain_survives_a_restart_and_keeps_growing() {
+    let (store, dir) = fresh("audit-restart");
+    store
+        .create(
+            new(
+                "ALPHA_KEY",
+                "alpha-value-0000000000027",
+                Scope::Plaza,
+                &["hf"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("made");
+    let before = store.audit_page(0, usize::MAX).expect("audit").len();
+    drop(store);
+    let store = reopen(&dir);
+    store
+        .create(
+            new(
+                "BETA_KEY",
+                "beta-value-00000000000028",
+                Scope::Plaza,
+                &["hf"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("made");
+    // The restart's unseal and the new create are two lines after the ones before it.
+    let lines = store.audit_page(0, usize::MAX).expect("audit").len();
+    assert_eq!(lines, before + 2, "the restart's unseal and the create");
+    let verdict = store.check_audit().expect("checked");
+    assert!(verdict.ok, "the chain verifies across the restart");
+    assert_eq!(verdict.verified, lines as u64);
+    assert_eq!(store.audit_ok(), Some(true));
+}
+
+#[test]
+fn a_broken_audit_still_records_what_comes_after() {
+    let (store, dir) = fresh("audit-broken-records");
+    store
+        .create(
+            new(
+                "ALPHA_KEY",
+                "alpha-value-0000000000030",
+                Scope::Plaza,
+                &["hf"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("made");
+    drop(store);
+    assert_eq!(
+        super::tamper_rows(
+            &dir,
+            "UPDATE vault_audit SET actor = ?2 WHERE seq = 2 AND actor = ?1",
+            &["owner", "ownex"],
+        ),
+        1
+    );
+    let store = reopen(&dir);
+    store
+        .create(
+            new(
+                "BETA_KEY",
+                "beta-value-00000000000031",
+                Scope::Plaza,
+                &["hf"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("the create still succeeds");
+    let lines = store.audit_page(0, usize::MAX).expect("audit");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["event"] == "create" && l["name"] == "BETA_KEY"),
+        "the event after the break is recorded"
+    );
+    let verdict = store.check_audit().expect("checked");
+    assert_eq!(
+        (verdict.ok, verdict.broken_at),
+        (false, Some(2)),
+        "the verdict still names the first break"
+    );
+}
+
+#[test]
+fn a_scope_row_missing_from_the_database_is_tampered() {
+    let (store, dir) = fresh("scope-row");
+    store
+        .create(
+            new(
+                "ALPHA_KEY",
+                "alpha-value-0000000000029",
+                nodes_scope(&["n1"]),
+                &["hf"],
+            ),
+            "owner",
+            NOW,
+        )
+        .expect("made");
+    drop(store);
+    assert_eq!(
+        super::tamper_rows(&dir, "DELETE FROM vault_entry_scope", &[]),
+        1
+    );
+    let store = reopen(&dir);
+    assert_eq!(
+        status_state(&store),
+        "tampered",
+        "a scope that is gone fails the index MAC, and is not read as the plaza"
+    );
 }

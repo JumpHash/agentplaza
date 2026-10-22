@@ -528,7 +528,7 @@ mod tests {
     }
 
     fn open(dir: &Path) -> Store {
-        let store = Store::open(dir, &dir.join("vault.key"), None);
+        let store = Store::open_in(dir, &dir.join("vault.key"));
         store.boot(NOW).expect("boot");
         store
     }
@@ -769,9 +769,7 @@ mod tests {
             .find(|v| v["name"] == "UNBOUND_FAKE")
             .unwrap();
         assert_eq!(view["label"], "imported, not used by anything yet");
-        let audit = fs::read_to_string(state.join("vault-audit.jsonl")).unwrap();
-        assert!(audit.lines().any(|line| {
-            let v: Value = serde_json::from_str(line).unwrap();
+        assert!(store.audit_page(0, usize::MAX).unwrap().iter().any(|v| {
             v["event"] == "migrate" && v["name"] == "UNBOUND_FAKE" && v["detail"] == "unbound"
         }));
         let bytes = all_bytes(&state);
