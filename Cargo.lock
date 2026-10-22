@@ -704,6 +704,7 @@ dependencies = [
 name = "apz-prompt"
 version = "0.1.0"
 dependencies = [
+ "apz-store",
  "serde",
  "serde_json",
 ]
@@ -749,6 +750,7 @@ name = "apz-skill"
 version = "0.1.0"
 dependencies = [
  "apz-prompt",
+ "apz-store",
  "serde",
  "serde_json",
  "zip",

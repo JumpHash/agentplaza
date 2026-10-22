@@ -190,7 +190,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::skills::store_mem::MemorySkills;
+    use crate::skills::store_db::DbSkills;
     use crate::skills::tests::MemBlobs;
     use crate::skills::{FileBody, FileIn, NewSkill, Source};
 
@@ -198,7 +198,7 @@ mod tests {
 
     fn library() -> Skills {
         Skills::new(
-            Arc::new(MemorySkills::in_memory()),
+            Arc::new(DbSkills::for_tests()),
             Arc::new(MemBlobs::default()),
         )
     }

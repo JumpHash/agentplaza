@@ -1,5 +1,5 @@
-//! The `SkillStore` contract, run against both stores (`MemorySkills` always, `DbSkills` with APZ_TEST_DATABASE_URL),
-//! and the `Skills` rules on top (preparing versions into blobs, publishing with errors refused).
+//! The `SkillStore` contract, run against the SQLite store (`DbSkills`), and the `Skills` rules on top (preparing
+//! versions into blobs, publishing with errors refused).
 
 use std::sync::Arc;
 
@@ -180,7 +180,7 @@ pub(crate) fn conformance(store: Arc<dyn SkillStore>) {
 
 #[test]
 fn builtin_skills_are_seeded_once() {
-    let skills = skills_on(Arc::new(store_mem::MemorySkills::in_memory()));
+    let skills = skills_on(Arc::new(store_db::DbSkills::for_tests()));
     assert_eq!(seed_builtins(&skills, "owner", T0), Ok(1));
     assert_eq!(seed_builtins(&skills, "owner", T0 + 1), Ok(0));
     let held: Vec<Skill> = skills
@@ -209,24 +209,104 @@ fn builtin_skills_are_seeded_once() {
 }
 
 #[test]
-fn memory_store_keeps_the_contract() {
-    conformance(Arc::new(store_mem::MemorySkills::in_memory()));
+fn store_keeps_the_contract() {
+    conformance(Arc::new(store_db::DbSkills::for_tests()));
 }
 
 #[test]
-fn db_store_keeps_the_contract() {
-    let Some(url) = crate::db::test_database("skills_contract") else {
-        return;
-    };
-    let env = std::collections::BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
-    let db = Arc::new(crate::db::Db::connect(&env));
-    assert!(db.enabled());
-    conformance(Arc::new(store_db::DbSkills::new(db)));
+fn skills_survive_a_reopen() {
+    let dir = tempfile::Builder::new()
+        .prefix("apid-skills-reopen")
+        .tempdir()
+        .expect("a temporary folder");
+    let blobs: Arc<dyn Blobs> = Arc::new(MemBlobs::default());
+    {
+        let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+        let skills = Skills::new(
+            Arc::new(store_db::DbSkills::new(Arc::clone(
+                store.db(crate::store::PLAZA),
+            ))),
+            Arc::clone(&blobs),
+        );
+        skills
+            .store()
+            .create(
+                &new_skill("pdf", &["role:builder"]),
+                &version(&skills, GOOD, "first"),
+                "owner",
+                T0,
+            )
+            .expect("creates");
+        skills
+            .store()
+            .add_version(
+                "pdf",
+                1,
+                &version(&skills, &format!("{GOOD}\nMore.\n"), "two"),
+                "owner",
+                T0 + 1,
+            )
+            .expect("adds a version");
+        skills
+            .store()
+            .set_active("pdf", Some(2), "owner", T0 + 2)
+            .expect("publishes");
+        skills
+            .store()
+            .set_meta("pdf", "Kept title", &["docs".into()], "owner", T0 + 3)
+            .expect("edits");
+    }
+
+    let store = crate::store::open_for_tests(dir.path()).expect("the store opens again");
+    let skills = Skills::new(
+        Arc::new(store_db::DbSkills::new(Arc::clone(
+            store.db(crate::store::PLAZA),
+        ))),
+        blobs,
+    );
+    let back = skills
+        .store()
+        .get("pdf")
+        .expect("reads")
+        .expect("the skill is there");
+    assert_eq!(back.title, "Kept title");
+    assert_eq!(back.tags, vec!["docs".to_string()]);
+    assert_eq!(back.bindings, vec!["role:builder".to_string()]);
+    assert_eq!((back.latest_version, back.active_version), (2, Some(2)));
+    let v1 = skills
+        .store()
+        .version("pdf", 1)
+        .expect("reads")
+        .expect("version 1 is there");
+    assert_eq!(v1.skill_md, GOOD);
+    assert_eq!((v1.files.len(), v1.meta.file_count), (1, 1));
+    assert_eq!(skills.store().versions("pdf").expect("lists").len(), 2);
+    assert_eq!(
+        skills.store().bound("role:builder").expect("binds").len(),
+        1
+    );
+    let actions: Vec<Action> = skills
+        .store()
+        .events("pdf", 50)
+        .expect("reads the history")
+        .iter()
+        .map(|e| e.action)
+        .collect();
+    assert_eq!(
+        actions,
+        vec![
+            Action::Edit,
+            Action::Publish,
+            Action::Version,
+            Action::Version,
+            Action::Create
+        ]
+    );
 }
 
 #[test]
 fn prepare_refuses_unsafe_paths_and_publish_refuses_errors() {
-    let skills = skills_on(Arc::new(store_mem::MemorySkills::in_memory()));
+    let skills = skills_on(Arc::new(store_db::DbSkills::for_tests()));
     let bad_path = vec![FileIn {
         path: "../x".into(),
         body: FileBody::Bytes(vec![1]),
@@ -288,7 +368,7 @@ fn a_version_file_is_kept_in_the_object_store_under_its_hash() {
     let dir = scratch("version-file");
     let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
     let skills = Skills::new(
-        Arc::new(store_mem::MemorySkills::in_memory()),
+        Arc::new(store_db::DbSkills::for_tests()),
         Arc::new(StoreBlobs::new(Arc::clone(&objects))),
     );
     let reference = b"# Reference\n";
@@ -342,7 +422,7 @@ fn store_blobs_read_only_lower_case_hashes_the_store_holds() {
 
 #[test]
 fn hashes_are_every_file_of_every_version_archived_or_not() {
-    let skills = skills_on(Arc::new(store_mem::MemorySkills::in_memory()));
+    let skills = skills_on(Arc::new(store_db::DbSkills::for_tests()));
     assert_eq!(skills.hashes(), Ok(Vec::new()));
     let first = skills
         .prepare(
@@ -395,7 +475,7 @@ fn a_known_hash_reads_its_bytes_back_from_the_store() {
     let dir = scratch("known-hash");
     let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
     let skills = Skills::new(
-        Arc::new(store_mem::MemorySkills::in_memory()),
+        Arc::new(store_db::DbSkills::for_tests()),
         Arc::new(StoreBlobs::new(objects)),
     );
     let reference = b"# Reference\n";

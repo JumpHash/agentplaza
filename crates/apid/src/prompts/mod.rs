@@ -1,13 +1,11 @@
 //! The prompt library (docs/design/prompt-library.md): system prompts, AGENTS.md files and fragments, each with
 //! immutable versions checked by `apz_prompt`, a live version, bindings to roles or the whole plaza, and an
-//! append-only history. `PromptStore` is served by Postgres (`store_db`, migration 0006) or, without a database, by
-//! `MemoryPrompts` (`store_mem`, persisted to `<state_dir>/prompts.json`). `Prompts` is what the rest of apid uses:
-//! the routes, the system-prompt builder (`bound_body`) and the built-in import (`seed`).
+//! append-only history. `PromptStore` is served by `plaza.db` (`store`, typed tables). `Prompts` is what the rest of
+//! apid uses: the routes, the system-prompt builder (`bound_body`) and the built-in import (`seed`).
 
 pub mod routes;
 pub mod seed;
-pub mod store_db;
-pub mod store_mem;
+pub mod store;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -25,13 +23,16 @@ pub const MAX_TAGS: usize = 16;
 pub const MAX_TAG: usize = 32;
 
 /// One prompt (without its versions' bodies).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, apz_store::Table)]
+#[table(name = "prompt")]
 pub struct Prompt {
     /// A slug: `^[a-z0-9][a-z0-9-]{0,62}$`.
+    #[table(key)]
     pub id: String,
     pub kind: Kind,
     pub title: String,
     pub description: String,
+    #[table(list)]
     pub tags: Vec<String>,
     /// `role:<role>` (system only) or `plaza` (agents_md only).
     pub binding: Option<String>,
@@ -72,7 +73,7 @@ pub struct Version {
     pub findings: Vec<Finding>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     Create,
@@ -84,38 +85,13 @@ pub enum Action {
     Restore,
 }
 
-impl Action {
-    pub const ALL: [Action; 7] = [
-        Action::Create,
-        Action::Version,
-        Action::Publish,
-        Action::Unpublish,
-        Action::Edit,
-        Action::Archive,
-        Action::Restore,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Action::Create => "create",
-            Action::Version => "version",
-            Action::Publish => "publish",
-            Action::Unpublish => "unpublish",
-            Action::Edit => "edit",
-            Action::Archive => "archive",
-            Action::Restore => "restore",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Action> {
-        Action::ALL.into_iter().find(|a| a.as_str() == s)
-    }
-}
-
-/// One history row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One history row. Its id is its place in the history (the stream's key).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, apz_store::Table)]
+#[table(name = "prompt_event")]
 pub struct Event {
+    #[table(key)]
     pub id: u64,
+    #[table(index)]
     pub prompt_id: String,
     pub action: Action,
     /// The version created or published (none for edit, archive, restore, unpublish).

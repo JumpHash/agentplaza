@@ -847,7 +847,7 @@ fn short(sha: &str) -> &str {
 mod tests {
     use super::*;
     use crate::skills::Blobs;
-    use crate::skills::store_mem::MemorySkills;
+    use crate::skills::store_db::DbSkills;
     use std::sync::Arc;
 
     /// File bytes in memory, by their BLAKE3 hash.
@@ -903,7 +903,7 @@ mod tests {
 
     fn library() -> Skills {
         Skills::new(
-            Arc::new(MemorySkills::in_memory()),
+            Arc::new(DbSkills::for_tests()),
             Arc::new(TestBlobs::default()),
         )
     }

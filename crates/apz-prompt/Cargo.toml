@@ -8,6 +8,12 @@ publish = false
 
 [dependencies]
 serde.workspace = true
+# The hub's store derives its tables on the kinds, severities and findings. Off by default: the desktop runs the
+# checks without SQLite (apid enables the feature, as it does for apz-station).
+apz-store = { path = "../apz-store", optional = true }
+
+[features]
+store = ["dep:apz-store"]
 
 [dev-dependencies]
 serde_json.workspace = true

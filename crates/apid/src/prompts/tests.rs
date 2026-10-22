@@ -1,10 +1,11 @@
-//! The `PromptStore` contract, run against both stores: `MemoryPrompts` always, `DbPrompts` with
-//! APZ_TEST_DATABASE_URL set. Plus the `Prompts` rules on top (unchanged bodies, publishing with errors, the cache).
+//! The `PromptStore` contract, run against `SqlitePrompts` in a temporary `plaza.db`, and the reopen of that store.
+//! Plus the `Prompts` rules on top (unchanged bodies, publishing with errors, the cache).
 
 use std::sync::Arc;
 
 use apz_prompt::Kind;
 
+use super::store::SqlitePrompts;
 use super::*;
 
 const T0: u64 = 1_800_000_000_000;
@@ -198,47 +199,59 @@ pub(crate) fn conformance(store: &dyn PromptStore) {
 }
 
 #[test]
-fn memory_store_keeps_the_contract() {
-    conformance(&store_mem::MemoryPrompts::in_memory());
+fn sqlite_store_keeps_the_contract() {
+    conformance(&SqlitePrompts::for_tests());
 }
 
 #[test]
-fn memory_store_survives_a_reload() {
-    let dir = std::env::temp_dir().join(format!("apid-prompts-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn sqlite_store_survives_a_reopen() {
+    let dir = tempfile::Builder::new()
+        .prefix("apid-prompts-reopen")
+        .tempdir()
+        .expect("a temporary folder");
+    let body = format!("{GOOD_SYSTEM}\nMore.\n");
     {
-        let store = store_mem::MemoryPrompts::open(&dir);
-        store
+        let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+        let prompts = SqlitePrompts::new(Arc::clone(store.db(crate::store::PLAZA)));
+        prompts
             .create(
-                &new_prompt("a", Kind::Fragment, None),
-                &version(Kind::Fragment, "# A\n\ntext\n"),
+                &new_prompt("rev", Kind::System, Some("role:reviewer")),
+                &version(Kind::System, GOOD_SYSTEM),
                 "owner",
                 T0,
             )
             .unwrap();
-        store.set_active("a", Some(1), "owner", T0 + 1).unwrap();
+        prompts
+            .add_version("rev", 1, &version(Kind::System, &body), "owner", T0 + 1)
+            .unwrap();
+        prompts.set_active("rev", Some(2), "owner", T0 + 2).unwrap();
     }
-    let store = store_mem::MemoryPrompts::open(&dir);
-    assert_eq!(store.get("a").unwrap().unwrap().active_version, Some(1));
-    assert_eq!(store.events("a", 10).unwrap().len(), 3);
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-#[test]
-fn db_store_keeps_the_contract() {
-    let Some(url) = crate::db::test_database("prompts_contract") else {
-        return;
-    };
-    let env = std::collections::BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
-    let db = Arc::new(crate::db::Db::connect(&env));
-    assert!(db.enabled());
-    conformance(&store_db::DbPrompts::new(db));
+    let store = crate::store::open_for_tests(dir.path()).expect("the store opens again");
+    let prompts = SqlitePrompts::new(Arc::clone(store.db(crate::store::PLAZA)));
+    let rev = prompts.get("rev").unwrap().unwrap();
+    assert_eq!(rev.tags, vec!["t".to_string()]);
+    assert_eq!(rev.binding.as_deref(), Some("role:reviewer"));
+    assert_eq!((rev.latest_version, rev.active_version), (2, Some(2)));
+    assert_eq!(prompts.bound("role:reviewer").unwrap().unwrap().1, body);
+    let first = prompts.version("rev", 1).unwrap().unwrap();
+    assert_eq!(first.body, GOOD_SYSTEM);
+    assert_eq!(
+        first.findings,
+        apz_prompt::check(Kind::System, GOOD_SYSTEM).findings
+    );
+    // The history comes back whole, and the next event takes the id after the last one written before the reopen.
+    prompts.set_active("rev", None, "owner", T0 + 3).unwrap();
+    let events = prompts.events("rev", 50).unwrap();
+    assert_eq!(
+        events.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![5, 4, 3, 2, 1]
+    );
+    assert_eq!(events[0].action, Action::Unpublish);
 }
 
 #[test]
 fn prompts_refuses_to_publish_a_version_with_errors_and_skips_unchanged_bodies() {
-    let prompts = Prompts::new(Arc::new(store_mem::MemoryPrompts::in_memory()));
+    let prompts = Prompts::new(Arc::new(SqlitePrompts::for_tests()));
     let bad = "# Bad\n\n```\nunclosed fence\n";
     prompts
         .create(
@@ -261,7 +274,7 @@ fn prompts_refuses_to_publish_a_version_with_errors_and_skips_unchanged_bodies()
 
 #[test]
 fn bound_body_is_cached_and_cleared_by_writes() {
-    let prompts = Prompts::new(Arc::new(store_mem::MemoryPrompts::in_memory()));
+    let prompts = Prompts::new(Arc::new(SqlitePrompts::for_tests()));
     assert_eq!(prompts.bound_body("plaza"), None);
     let rules = "# House rules\n\n## Setup\n- `cargo build`\n\n## Testing\n- `cargo test`\n";
     prompts
