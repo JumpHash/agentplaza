@@ -32,16 +32,16 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// The per-VM process mode ([`SpawnMode::Process`]): the parent half of the
-/// `apz-vmm` child protocol. Linux only (the child boots through
-/// [`crate::builder`]). Read the module documentation for what is proxied
-/// and why.
-#[cfg(target_os = "linux")]
+/// `apz-vmm` child protocol. Linux and macOS (the child boots the VM through
+/// [`spawn`], whose backend is KVM or Hypervisor.framework). Read the module
+/// documentation for what is proxied and why.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod process;
 
 /// How long the per-VM process is given to report that its VM is up or to
 /// fail. A boot that is still silently working after this is treated as a
 /// boot failure, so a stuck child cannot hold a [`spawn`] call forever.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const CHILD_BOOT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often [`VmHandle::wait_timeout`] re-checks whether the VM's backend
@@ -494,8 +494,8 @@ pub enum SpawnMode {
     /// ([`crate::jail::jailer`]) can confine: `unshare(CLONE_NEWUSER)` — the
     /// unprivileged road to a mount namespace — is refused by a multi-threaded
     /// process, and the child is single-threaded at its boot by construction,
-    /// because one process holds one VM. Linux only (the child boots through
-    /// [`crate::builder`]).
+    /// because one process holds one VM. Linux and macOS (the child boots the VM
+    /// through [`spawn`]; macOS has no jail).
     Process,
 }
 
@@ -633,7 +633,7 @@ fn mode_from_env() -> Result<SpawnMode, SpawnError> {
 /// the running binary (and of its parent directory, which is where cargo puts
 /// it relative to a `deps/` test or example binary). Every candidate is
 /// returned in order when none exists, so the error names what was tried.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn child_binary() -> Result<PathBuf, SpawnError> {
     if let Some(path) = CHILD_BINARY
         .lock()
@@ -1634,27 +1634,25 @@ pub fn materialize_workspaces(
 /// the two modes interchangeable to a caller.
 fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
     if spawn_mode()? == SpawnMode::Process {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             return process::boot(spec, runtime);
         }
-        // The per-VM process boots through `crate::builder`, which is the
-        // Linux/KVM path. Windows has no `apz-vmm` binary either, so there the
-        // request boots in-process (warned once); macOS refuses the mode rather
-        // than silently downgrading it.
+        // The per-VM process runs on Linux and macOS (its child is `apz-vmm`).
+        // Windows has no `apz-vmm` binary, so there the request boots in-process
+        // (warned once).
         #[cfg(windows)]
         {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
-                eprintln!("vmm: APZ_VMM_SPAWN=process is Linux-only; booting in-process");
+                eprintln!("vmm: APZ_VMM_SPAWN=process needs an `apz-vmm` binary this platform does not have; booting in-process");
             });
         }
-        #[cfg(not(any(target_os = "linux", windows)))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         {
             let _ = (spec, runtime);
             return Err(SpawnError::SpawnMode {
-                reason: "the per-VM process mode is Linux-only: this platform has no `apz-vmm` \
-                         binary to run"
+                reason: "the per-VM process mode needs an `apz-vmm` binary: this platform has none"
                     .to_string(),
             });
         }

@@ -99,7 +99,7 @@
 //! window neither the backstop nor the supervisor covers is a daemon that dies
 //! before the child's `prctl(2)` lands; it is one syscall wide, and it is
 //! documented at the child's `arm_parent_death_signal`
-//! (`crates/vmm/src/bin/apz-vmm/linux.rs`).
+//! (`crates/vmm/src/bin/apz-vmm/child.rs`).
 //!
 //! **The muxer: the child binds its own socket.** `VmSpec::vsock`'s
 //! `uds_path` is handed to the child verbatim (`--uds`), and the child's
@@ -176,6 +176,7 @@ const RECLAIM_TIMEOUT: Duration = Duration::from_secs(120);
 /// uid/gid target ([`crate::jail::jailer`]) and the seccomp jail's mode
 /// ([`crate::jail`]). A deployment configures the child's confinement through
 /// these and nothing else reaches it (see the `env_clear` in [`boot`]).
+#[cfg(target_os = "linux")]
 const CONFINEMENT_ENV: [&str; 6] = [
     crate::jail::jailer::JAILER_ENV,
     crate::jail::jailer::JAIL_ROOT_ENV,
@@ -184,6 +185,10 @@ const CONFINEMENT_ENV: [&str; 6] = [
     crate::jail::JAIL_ENV,
     crate::jail::NO_JAIL_ENV,
 ];
+
+/// macOS has no jail (the node's sandbox confines the per-VM process), so there is no switch to pass on.
+#[cfg(not(target_os = "linux"))]
+const CONFINEMENT_ENV: [&str; 0] = [];
 
 /// A child-spawn request for the supervisor thread: the fully-built command,
 /// and the channel the child (or the spawn error) is answered on.
@@ -490,7 +495,7 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
             } else {
                 libc::SIGKILL
             };
-            if let Err(err) = crate::sys::send_signal(pid as i32, signal) {
+            if let Err(err) = send_signal(pid as i32, signal) {
                 // `ESRCH` here is the VM having stopped between the two checks;
                 // anything else is reported rather than swallowed, because a
                 // VM that cannot be signalled is a VM that cannot be killed.
@@ -825,6 +830,19 @@ fn timed_out() -> std::io::Error {
 
 /// The `sockaddr_un` for `path`, and its length. A path that leaves no room for
 /// the terminating NUL in `sun_path` (`SUN_LEN`) is refused.
+/// Sends `signal` to the child `pid` (`kill(2)`): the portable form of what the supervisor needs,
+/// with the errno kept for the `ESRCH` check the caller makes.
+#[allow(unsafe_code)]
+fn send_signal(pid: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: `kill` takes a pid and a signal number and touches no memory.
+    let rc = unsafe { libc::kill(pid, signal) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 #[allow(unsafe_code)]
 fn sockaddr_un(path: &Path) -> std::io::Result<(libc::sockaddr_un, libc::socklen_t)> {
     use std::os::unix::ffi::OsStrExt;
@@ -1226,7 +1244,20 @@ mod tests {
         fd
     }
 
+    /// A binary that exits 0 at once, where this platform keeps `true` (macOS has no `/bin/true`).
+    const TRUE_BINARY: &str = if cfg!(target_os = "macos") {
+        "/usr/bin/true"
+    } else {
+        "/bin/true"
+    };
+
+    // macOS queues a connect past a zero backlog instead of refusing it (measured), so there is no
+    // full backlog to give up on there.
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS never refuses a connect for a full unix-socket backlog"
+    )]
     // `connect_within` starts no thread (it retries a non-blocking connect), so nothing is left behind when it gives
     // up; this pins that it gives up in time.
     fn connect_within_gives_up_on_a_full_backlog_in_time() {
@@ -1654,11 +1685,11 @@ mod tests {
         // supervisor did not die with the caller that first needed it.
         for _ in 0..2 {
             let mut child =
-                spawn_supervised(Command::new("/bin/true"), std::path::Path::new("/bin/true"))
+                spawn_supervised(Command::new(TRUE_BINARY), std::path::Path::new(TRUE_BINARY))
                     .expect("the supervisor spawns for a later caller");
             assert!(
                 child.wait().expect("the child is reapable").success(),
-                "/bin/true exits 0"
+                "{TRUE_BINARY} exits 0"
             );
         }
     }

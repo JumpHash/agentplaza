@@ -37,16 +37,35 @@
 //!
 //! # What is verified where
 //!
-//! The decoding, the PSCI state machine and the interrupt controller model are
-//! unit-tested on the host. The FFI, the vCPU threads and the device tree
-//! written for a real guest cannot be executed here (no Apple Silicon host),
-//! so they are checked by type and by review, and their protocol decisions are
-//! documented against the reference implementation (QEMU's HVF backend) and
-//! Apple's headers. Booting a guest on this backend needs an Apple Silicon
-//! machine and a kernel image for it. The virtio devices (vsock, workspace, data
-//! volumes) are the shared `devices::virtio` ones over the [`crate::pal`] POSIX
-//! event layer, whose tests run on Linux; their wiring here has not run on a Mac
-//! either.
+//! The decoding, the PSCI state machine, the interrupt controller model and
+//! the console are unit-tested on every host. The Apple Silicon half runs on
+//! the Mac that builds this crate, through the hypervisor runner: the VM tests
+//! run when cargo's runner for `aarch64-apple-darwin` is `scripts/hvf-run.sh`,
+//! which signs each test binary ad hoc with the `com.apple.security.hypervisor`
+//! entitlement and then runs it:
+//!
+//! ```text
+//! CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER="$PWD/scripts/hvf-run.sh" cargo test -p vmm
+//! ```
+//!
+//! Without the variable the VM tests say why on stderr and pass without
+//! running anything. Run on Apple Silicon (macOS 26):
+//!
+//! - the vCPU payload tests (`hvf::vcpu::tests`): a store to an address the VMM
+//!   does not map exits with that address, width and value, decoded by
+//!   [`exit`]; a PSCI SYSTEM_OFF through HVC ends the payload; a saved vCPU and
+//!   its memory resume in a fresh VM;
+//! - `tests/hvf.rs`: a payload booted through the spawner is snapshotted while it
+//!   waits on the console, its VM is destroyed, and the snapshot restores into a
+//!   fresh VM that resumes and powers off; the same in per-VM `apz-vmm`
+//!   processes, the snapshot restored in a second process (a fork); and the arm64
+//!   guest kernel of `target/guest/aarch64` boots, prints its banner and first
+//!   heartbeat on the serial console, and powers off through PSCI.
+//!
+//! Not run on hardware yet: the virtio devices of this backend (the vsock
+//! device, the workspace and the data volumes). Their wiring builds and the
+//! shared device code is tested on Linux, but no test here boots a guest with
+//! them, so the vsock path to a Mac node is unverified.
 //!
 //! # One VM per process
 //!

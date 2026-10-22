@@ -193,12 +193,12 @@ fn check_spec(spec: &VmSpec, id: u32) -> Result<usize, BootError> {
     Ok(vcpu_count)
 }
 
-/// The guest memory, not yet mapped.
-fn guest_memory(spec: &VmSpec) -> Result<GuestMemoryMmap, BootError> {
+/// The guest memory of `memory_mib` MiB, not yet mapped.
+pub(super) fn guest_memory(memory_mib: usize) -> Result<GuestMemoryMmap, BootError> {
     // Guest memory: the aarch64 layout's DRAM regions (one for any size this
     // port boots, two only past the 64-bit MMIO hole). The regions are the
     // process's own pages, which is what `hv_vm_map` maps.
-    let regions = arch_memory_regions(mib_to_bytes(spec.memory_mib));
+    let regions = arch_memory_regions(mib_to_bytes(memory_mib));
     let raw = anonymous(&regions)?;
     let memory = GuestMemoryMmap::from_regions(
         raw.into_iter()
@@ -213,7 +213,7 @@ fn guest_memory(spec: &VmSpec) -> Result<GuestMemoryMmap, BootError> {
 
 fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
     let vcpu_count = check_spec(spec, id)?;
-    let memory = guest_memory(spec)?;
+    let memory = guest_memory(spec.memory_mib)?;
 
     // The VM, and the guest memory mapped into its address space. A device
     // access is a load or store to an address this leaves unmapped: that is
@@ -321,7 +321,7 @@ fn restore_inner(
         )));
     }
     let gic = gic::Gic::from_state(&snapshot.gic, vcpu_count).map_err(BootError::Snapshot)?;
-    let memory = guest_memory(spec)?;
+    let memory = guest_memory(spec.memory_mib)?;
     crate::hvf::snapshot::fill_memory(&memory, dir, &snapshot).map_err(BootError::Snapshot)?;
     let mut vm = HvfVm::create()?;
     vm.map_guest_memory(&memory)?;
