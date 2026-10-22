@@ -476,7 +476,7 @@ fn system_parts(app: &App, agent: &Agent, role_prompt: &str) -> Vec<SystemPart> 
         ),
         crate::skills::agent_tools::prompt_section(app, &agent.role, project.as_deref()),
     ]);
-    // The project's rules, and the paragraph about its project.
+    // The project's rules, the index of its memory (PLAN 9.5), and the paragraph about its project.
     let project_part = join_sections([
         section(
             "Project rules (AGENTS.md)",
@@ -484,6 +484,12 @@ fn system_parts(app: &App, agent: &Agent, role_prompt: &str) -> Vec<SystemPart> 
                 .as_deref()
                 .and_then(|pid| app.prompts.bound_body(&format!("project:{pid}")))
                 .map(|rules| render_vars(&rules, agent)),
+        ),
+        section(
+            "Project memory",
+            project.as_deref().map(|pid| {
+                crate::project_memory::index_text(&crate::project_memory::entries(app, pid))
+            }),
         ),
         crate::projects::prompt_section(app, agent.cid, &agent.role)
             .map(|paragraph| format!("## Your project\n\n{paragraph}")),
