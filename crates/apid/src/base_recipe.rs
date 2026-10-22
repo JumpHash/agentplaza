@@ -5,10 +5,7 @@
 //! through the node's link. Nothing here starts a VM: the caller gives a [`VmRunner`] (noded's, or a fake in tests).
 //!
 //! The recipe engine (4.1) takes this list over as the built-in `base` recipe (21.1): the steps and their order move
-//! there unchanged. Its one caller, the hub's build of a base on a landing (16.4), comes with 3.3.
-
-// Nothing outside the tests builds a base yet (3.3 does); until then the module is only run by its tests.
-#![allow(dead_code)]
+//! there unchanged. Its caller is base_builds.rs, the hub's build of a base on a landing (16.4).
 
 use apz_lsp::{Language, ServerSpec};
 
