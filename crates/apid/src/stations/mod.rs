@@ -6,6 +6,7 @@
 //! - `link`: one station's live link: requests and their answers by id, event fan-out, the loop that serves it.
 //! - `leases`: an agent's claim on a station, the pixel capacity of a machine, and the queue.
 //! - `ops`: the actions with the rest of the hub: the audit, the hello and events, grants, STOP ALL, the ticker.
+//! - `audit`: the station audit, one typed entry per kind, in the `station_audit` table of `plaza.db`.
 //! - `recordings`: a lease's recording (its actions, its frames in Garage), the sampler and the retention sweep.
 //! - `api`: the routes, listed in its module docs.
 //! - `screen`: the live view (`WS .../screen`) and the thumbnails; the viewers of a session share one stream.
@@ -15,7 +16,7 @@
 //! - `tools`: the workstation tools agents and the owner's MCP client are offered, parsed into operations for `act`.
 //! - `vms`: the workstation VMs the hub makes on its nodes (a VM enrols with its join code; its leases snapshot and
 //!   revert its disk through the node).
-//! - `sync`: the work folder's two-way sync: the hub's mirror (rows in `station_sync_files`, content in the object
+//! - `sync`: the work folder's two-way sync: the hub's mirror (rows in `station_sync_file`, content in the object
 //!   store), the reconcile pass with a station's manifest, conflicts (kept on both sides), and the owner's file routes.
 //!
 //! The containment rule holds: a station is never the hub's own machine (refused at join and at every hello), and
@@ -23,6 +24,7 @@
 
 mod act;
 mod api;
+pub mod audit;
 mod control;
 mod hooks;
 mod leases;
@@ -37,7 +39,7 @@ pub mod tools;
 mod vms;
 
 pub use api::routes;
-pub use ops::{audit_row, freeze_all, spawn};
+pub use ops::{freeze_all, spawn};
 pub use registry::{Store, def as store_def};
 // The agents' pixel path (stations/act.rs) asks these before a screenshot or an input.
 #[allow(unused_imports)]
