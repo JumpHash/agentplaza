@@ -1,9 +1,10 @@
 //! The work-folder sync, the hub's half (docs/design/workstations.md section 8).
 //!
 //! Each workstation's work folder is mirrored by its daemon (apz-workstation's `sync.rs`). The hub keeps its own mirror:
-//! one row per path in `station_sync_file` (`plaza.db`, see [`def`]), and the content of every version under `sync/<sha256>` in the
-//! object store. A pass (`reconcile`) compares the station's manifest with those rows, path by path, and moves what
-//! changed on one side to the other. Each row keeps `base`, the content both sides last agreed on:
+//! one row per path in `station_sync_file` (`plaza.db`, see [`def`]), and the content of every version in the hub's
+//! object store (`app.blobs`), under its BLAKE3 hash. A pass (`reconcile`) compares the station's manifest with those
+//! rows, path by path, and moves what changed on one side to the other. Each row keeps `base`, the content both sides
+//! last agreed on:
 //!
 //! - only the station changed: the hub pulls the file (or records its deletion);
 //! - only the hub changed: the hub pushes its copy (or the deletion) against `base`, so the station refuses if it moved;
@@ -39,13 +40,13 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use apz_blobs::Hash;
 use apz_store::rusqlite::params;
 
 use super::audit::{StationAudit, read_rows, save};
 use super::link::StationLink;
 use super::ops::{self, Failure};
 use crate::deliverables::{Deliverable, Upload, clean_name, guess_type};
-use crate::skills::sha256_hex;
 use crate::state::App;
 use crate::store::sql;
 
@@ -150,7 +151,7 @@ pub trait Remote {
     fn delete(&self, path: &str, base: &str) -> Result<(), String>;
 }
 
-/// The content store the hub keeps versions in.
+/// The content store the hub keeps versions in: each under its BLAKE3 hash, as the hex text the rows name.
 pub trait Blobs {
     fn put(&self, bytes: &[u8]) -> Result<String, String>;
     fn get(&self, hash: &str) -> Result<Vec<u8>, String>;
@@ -454,7 +455,7 @@ impl Pass<'_> {
     /// The station's content, pulled and checked against its hash, and stored in the hub's content store.
     fn fetch(&self, path: &str, hash: &str) -> Result<Vec<u8>, String> {
         let bytes = self.remote.pull(path, hash)?;
-        if sha256_hex(&bytes) != hash {
+        if Hash::of(&bytes).to_string() != hash {
             return Err(format!("the station's {path} does not hash to {hash}"));
         }
         self.blobs.put(&bytes)?;
@@ -654,30 +655,18 @@ impl Remote for LinkRemote<'_> {
     }
 }
 
-/// The hub's content store: the Library's object store (Garage, or its folder), under `sync/<sha256>`.
-pub struct Objects<'a>(pub &'a crate::deliverables::Store);
-
-fn object_key(hash: &str) -> Result<String, String> {
-    let plain = hash.len() == 64
-        && hash
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c));
-    if !plain {
-        return Err(format!("{hash} is not a sha256"));
-    }
-    Ok(format!("sync/{hash}"))
-}
-
-impl Blobs for Objects<'_> {
+/// The hub's object store (`app.blobs`) keeps the versions, each under its BLAKE3 hash: a version is read back only as
+/// the bytes that hash to the one its row names.
+impl Blobs for apz_blobs::Blobs {
     fn put(&self, bytes: &[u8]) -> Result<String, String> {
-        let hash = sha256_hex(bytes);
-        self.0.put_object(&object_key(&hash)?, bytes)?;
-        Ok(hash)
+        let hash: Hash = apz_blobs::Blobs::put(self, bytes)?;
+        Ok(hash.to_string())
     }
 
     fn get(&self, hash: &str) -> Result<Vec<u8>, String> {
-        let bytes = self.0.get_object(&object_key(hash)?)?;
-        if sha256_hex(&bytes) != hash {
+        let want: Hash = hash.parse()?;
+        let bytes = apz_blobs::Blobs::get(self, &want)?;
+        if Hash::of(&bytes) != want {
             return Err(format!("the stored content does not hash to {hash}"));
         }
         Ok(bytes)
@@ -711,6 +700,18 @@ pub fn def() -> &'static apz_store::TableDef {
 pub fn station_rows(db: &apz_store::Db, station: &str) -> Result<Vec<Row>, String> {
     db.read(|conn| read_rows(conn, sql::STATION_SYNC_FILE_ROWS, def(), params![station]))
         .map_err(|err| err.to_string())
+}
+
+/// Every content hash the sync rows name, each once: the hub's copy of each path and the version both sides last agreed
+/// (see [`super::blob_hashes`]).
+pub fn content_hashes(db: &apz_store::Db) -> Result<Vec<String>, String> {
+    db.read(|conn| {
+        let mut stmt = conn.prepare_cached(sql::STATION_SYNC_CONTENT_HASHES)?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let hashes = rows.collect::<Result<Vec<String>, _>>()?;
+        Ok(hashes)
+    })
+    .map_err(|err| err.to_string())
 }
 
 /// Writes the given rows of one workstation, each replacing its path's row, in one transaction.
@@ -826,7 +827,7 @@ fn run(app: &App, station: &str) -> Result<Outcome, String> {
         station,
         &record.name,
         &LinkRemote(&link),
-        &Objects(&app.deliverables),
+        &*app.blobs,
         &DbLedger(plaza(app)),
         apz_plaza::now_ms(),
         Limits::default(),
@@ -1016,14 +1017,11 @@ pub fn list(app: &App, station: &str, prefix: &str) -> Result<Vec<FileView>, Fai
         .collect())
 }
 
-/// A live file's content and its row.
-pub fn read(app: &App, station: &str, path: &str) -> Result<(Vec<u8>, FileView), Failure> {
+/// The hash of a live file's content: the route serves the bytes the object store keeps under it.
+pub fn read(app: &App, station: &str, path: &str) -> Result<String, Failure> {
     station_or_404(app, station)?;
     let row = live_row(app, station, path)?;
-    let bytes = Objects(&app.deliverables)
-        .get(row.hash.as_deref().unwrap_or_default())
-        .map_err(server_error)?;
-    Ok((bytes, view(&row)))
+    Ok(row.hash.unwrap_or_default())
 }
 
 fn live_row(app: &App, station: &str, path: &str) -> Result<Row, Failure> {
@@ -1051,9 +1049,7 @@ pub fn put(
             format!("the sync takes files up to {SYNC_FILE_CAP} bytes"),
         ));
     }
-    let hash = Objects(&app.deliverables)
-        .put(bytes)
-        .map_err(server_error)?;
+    let hash = Blobs::put(&*app.blobs, bytes).map_err(server_error)?;
     let previous = rows_of(app, station)?.into_iter().find(|r| r.path == path);
     let row = Row {
         station: station.to_string(),
@@ -1107,9 +1103,8 @@ pub fn deliver(
     let (author_cid, actor) = by;
     station_or_404(app, station)?;
     let row = live_row(app, station, path)?;
-    let bytes = Objects(&app.deliverables)
-        .get(row.hash.as_deref().unwrap_or_default())
-        .map_err(server_error)?;
+    let bytes =
+        Blobs::get(&*app.blobs, row.hash.as_deref().unwrap_or_default()).map_err(server_error)?;
     let base = path.rsplit('/').next().unwrap_or(path);
     let name = clean_name(base).map_err(|e| (400, e))?;
     let upload = Upload {
@@ -1145,8 +1140,8 @@ mod tests {
 
     const NOW: u64 = 1_791_991_920_000; // 2026-10-14 15:32 UTC
 
-    fn sha(bytes: &[u8]) -> String {
-        sha256_hex(bytes)
+    fn hash_of(bytes: &[u8]) -> String {
+        Hash::of(bytes).to_string()
     }
 
     /// The station in memory: its files by path, whether its folder is there, and the calls the hub made.
@@ -1196,7 +1191,7 @@ mod tests {
                 .iter()
                 .map(|(p, b)| SyncEntry {
                     path: p.clone(),
-                    hash: sha(b),
+                    hash: hash_of(b),
                     size: b.len() as u64,
                 })
                 .collect();
@@ -1213,7 +1208,7 @@ mod tests {
             }
             let files = self.files.borrow();
             let bytes = files.get(path).ok_or("no such file")?;
-            if sha(bytes) != hash {
+            if hash_of(bytes) != hash {
                 return Err("changed".into());
             }
             Ok(bytes.clone())
@@ -1227,11 +1222,11 @@ mod tests {
             base: Option<&str>,
         ) -> Result<(), String> {
             let mut files = self.files.borrow_mut();
-            let current = files.get(path).map(|b| sha(b));
+            let current = files.get(path).map(|b| hash_of(b));
             if current.as_deref() != base {
                 return Err(format!("conflict: {path} changed on the station"));
             }
-            if sha(bytes) != hash {
+            if hash_of(bytes) != hash {
                 return Err("hash mismatch".into());
             }
             files.insert(path.to_string(), bytes.to_vec());
@@ -1241,7 +1236,7 @@ mod tests {
         fn delete(&self, path: &str, base: &str) -> Result<(), String> {
             let mut files = self.files.borrow_mut();
             match files.get(path) {
-                Some(b) if sha(b) == base => {
+                Some(b) if hash_of(b) == base => {
                     files.remove(path);
                     Ok(())
                 }
@@ -1259,7 +1254,7 @@ mod tests {
 
     impl Blobs for Hub {
         fn put(&self, bytes: &[u8]) -> Result<String, String> {
-            let hash = sha(bytes);
+            let hash = hash_of(bytes);
             self.blobs.borrow_mut().insert(hash.clone(), bytes.to_vec());
             Ok(hash)
         }
@@ -1343,12 +1338,12 @@ mod tests {
         assert_eq!(
             (row.hash.as_deref(), row.base.as_deref(), row.version),
             (
-                Some(sha(b"a,b\n1,2\n")).as_deref(),
-                Some(sha(b"a,b\n1,2\n")).as_deref(),
+                Some(hash_of(b"a,b\n1,2\n")).as_deref(),
+                Some(hash_of(b"a,b\n1,2\n")).as_deref(),
                 1
             )
         );
-        assert_eq!(hub.get(&sha(b"a,b\n1,2\n")).unwrap(), b"a,b\n1,2\n");
+        assert_eq!(hub.get(&hash_of(b"a,b\n1,2\n")).unwrap(), b"a,b\n1,2\n");
 
         let second = pass(&station, &hub);
         assert_eq!(
@@ -1370,7 +1365,7 @@ mod tests {
         assert_eq!(station.files.borrow()["notes.md"], b"v2 from the owner");
         assert_eq!(
             hub.rows.borrow()["notes.md"].base,
-            Some(sha(b"v2 from the owner"))
+            Some(hash_of(b"v2 from the owner"))
         );
     }
 
@@ -1403,7 +1398,7 @@ mod tests {
         assert_eq!(out.deleted, 1);
         assert_eq!(hub.rows.borrow()["gone.txt"].hash, None);
         assert_eq!(
-            hub.get(&sha(b"edited on the station")).unwrap(),
+            hub.get(&hash_of(b"edited on the station")).unwrap(),
             b"edited on the station"
         );
 
@@ -1416,7 +1411,7 @@ mod tests {
         assert_eq!(out.pulled, 1);
         assert_eq!(
             hub.rows.borrow()["kept.txt"].hash,
-            Some(sha(b"edited again"))
+            Some(hash_of(b"edited again"))
         );
     }
 
@@ -1451,9 +1446,9 @@ mod tests {
         assert_eq!(rows[copy].conflict_of.as_deref(), Some("plan.md"));
         assert_eq!(
             rows[copy].hash.as_deref(),
-            Some(sha(b"the station's text")).as_deref()
+            Some(hash_of(b"the station's text")).as_deref()
         );
-        assert_eq!(rows["plan.md"].base, Some(sha(b"the hub's text")));
+        assert_eq!(rows["plan.md"].base, Some(hash_of(b"the hub's text")));
         drop(rows);
 
         let again = pass(&station, &hub);
@@ -1555,7 +1550,7 @@ mod tests {
         assert!(out.more, "the raced row waits for the next pass");
         assert_eq!(
             hub.rows.borrow()["a.txt"].hash,
-            Some(sha(b"owner's newer text"))
+            Some(hash_of(b"owner's newer text"))
         );
     }
 
@@ -1567,7 +1562,7 @@ mod tests {
                 Ok(SyncManifest {
                     entries: vec![SyncEntry {
                         path: "x.txt".into(),
-                        hash: sha(b"claimed"),
+                        hash: hash_of(b"claimed"),
                         size: 7,
                     }],
                     state: FolderState::Present,
@@ -1750,11 +1745,11 @@ mod tests {
         let row = |path: &str| Row {
             station: "ws-7".into(),
             path: path.into(),
-            hash: Some(sha(path.as_bytes())),
+            hash: Some(hash_of(path.as_bytes())),
             size: 1,
             mtime_ms: 0,
             version: 1,
-            base: Some(sha(path.as_bytes())),
+            base: Some(hash_of(path.as_bytes())),
             conflict_of: None,
             synced_ms: NOW,
         };
@@ -1831,7 +1826,7 @@ mod tests {
                     .iter()
                     .map(|(p, b)| SyncEntry {
                         path: p.clone(),
-                        hash: sha(b),
+                        hash: hash_of(b),
                         size: b.len() as u64,
                     })
                     .collect();
@@ -1843,7 +1838,7 @@ mod tests {
             }
             SyncOp::Pull { path, hash, offset } => {
                 let bytes = files.get(&path).ok_or("no such file")?;
-                if sha(bytes) != hash {
+                if hash_of(bytes) != hash {
                     return Err("changed since the scan".into());
                 }
                 let size = bytes.len() as u64;
@@ -1872,7 +1867,7 @@ mod tests {
                 let offset = offset.unwrap_or(0);
                 let total = total.unwrap_or(data.len() as u64);
                 if offset == 0 {
-                    if files.get(&path).map(|b| sha(b)) != base_hash {
+                    if files.get(&path).map(|b| hash_of(b)) != base_hash {
                         return Err(format!("conflict: {path} changed on the station"));
                     }
                     partial.insert(path.clone(), Vec::new());
@@ -1892,7 +1887,7 @@ mod tests {
                     .unwrap());
                 }
                 let whole = partial.remove(&path).unwrap();
-                if sha(&whole) != hash {
+                if hash_of(&whole) != hash {
                     return Err("the content does not hash to its hash".into());
                 }
                 files.insert(path.clone(), whole);
@@ -1905,7 +1900,7 @@ mod tests {
             }
             SyncOp::Delete { path, base_hash } => {
                 match files.get(&path) {
-                    Some(bytes) if sha(bytes) == base_hash => {
+                    Some(bytes) if hash_of(bytes) == base_hash => {
                         files.remove(&path);
                     }
                     Some(_) => return Err("conflict".into()),
@@ -1981,7 +1976,7 @@ mod tests {
         .unwrap();
         assert_eq!((out.pulled, out.errors.len()), (2, 0), "{:?}", out.errors);
         assert_eq!(
-            hub.get(&sha(&big)).unwrap(),
+            hub.get(&hash_of(&big)).unwrap(),
             big,
             "the chunks joined back into the file"
         );
@@ -2087,5 +2082,48 @@ mod tests {
         let theirs = station_rows(db, "ws-2").unwrap();
         assert_eq!(theirs.len(), 1, "another workstation's rows are apart");
         assert_eq!(theirs[0].path, "other.txt");
+    }
+
+    /// A version is kept in the hub's object store under its BLAKE3 hash, and the row names that hash: read back through
+    /// the row, the bytes are the version; a hash the store does not hold is not found.
+    #[test]
+    fn a_version_is_kept_under_its_blake3_hash_and_its_row_reads_it_back() {
+        let dir = std::env::temp_dir().join(format!("apid-sync-content-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::store::open(&dir).expect("the store opens");
+        let db = store.db(crate::store::PLAZA);
+        let blobs = apz_blobs::Blobs::open(&dir.join("blobs")).expect("the blobs open");
+        let text: &[u8] = b"a,b\n1,2\n";
+        let hash = Blobs::put(&blobs, text).unwrap();
+        assert_eq!(hash, Hash::of(text).to_string(), "named by its BLAKE3 hash");
+        save_rows(
+            db,
+            "ws-1",
+            &[Row {
+                station: "ws-1".into(),
+                path: "report.csv".into(),
+                hash: Some(hash.clone()),
+                size: text.len() as u64,
+                mtime_ms: NOW,
+                version: 1,
+                base: Some(hash.clone()),
+                conflict_of: None,
+                synced_ms: NOW,
+            }],
+        )
+        .unwrap();
+        let row = station_rows(db, "ws-1").unwrap().remove(0);
+        assert_eq!(
+            row.hash.as_deref(),
+            Some(hash.as_str()),
+            "the row names the version"
+        );
+        assert_eq!(
+            Blobs::get(&blobs, row.hash.as_deref().unwrap()).unwrap(),
+            text.to_vec(),
+            "read back through the row, the version's bytes"
+        );
+        assert!(Blobs::get(&blobs, &hash_of(b"never stored")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

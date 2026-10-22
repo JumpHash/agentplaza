@@ -103,10 +103,16 @@ pub const STATION_RECORDING_FRAME_PAGE: &str =
     include_str!("../../sql/queries/station_recording_frame_page.sql");
 pub const STATION_RECORDING_FRAME_DELETE: &str =
     include_str!("../../sql/queries/station_recording_frame_delete.sql");
+pub const STATION_RECORDING_FRAME_GET: &str =
+    include_str!("../../sql/queries/station_recording_frame_get.sql");
+pub const STATION_RECORDING_FRAME_HASHES: &str =
+    include_str!("../../sql/queries/station_recording_frame_hashes.sql");
 
 // The work-folder sync's mirror (`station_sync_file`: stations/sync.rs).
 pub const STATION_SYNC_FILE_ROWS: &str =
     include_str!("../../sql/queries/station_sync_file_rows.sql");
+pub const STATION_SYNC_CONTENT_HASHES: &str =
+    include_str!("../../sql/queries/station_sync_content_hashes.sql");
 
 // The transcripts (`entry` in transcripts.db; transcript.rs).
 pub const TRANSCRIPT_PAGE: &str = include_str!("../../sql/queries/transcript_page.sql");
@@ -182,7 +188,22 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
         "station_recording_frame_delete",
         STATION_RECORDING_FRAME_DELETE,
     ),
+    (
+        "plaza",
+        "station_recording_frame_get",
+        STATION_RECORDING_FRAME_GET,
+    ),
+    (
+        "plaza",
+        "station_recording_frame_hashes",
+        STATION_RECORDING_FRAME_HASHES,
+    ),
     ("plaza", "station_sync_file_rows", STATION_SYNC_FILE_ROWS),
+    (
+        "plaza",
+        "station_sync_content_hashes",
+        STATION_SYNC_CONTENT_HASHES,
+    ),
     (
         "metrics",
         "metric_agg_1h_bucket_clear",

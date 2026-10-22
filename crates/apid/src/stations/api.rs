@@ -59,6 +59,7 @@ use super::sync;
 use crate::deliverables::guess_type;
 use crate::settings::RecordingDefaults;
 use crate::state::App;
+use crate::storage;
 
 /// Who the owner's routes record as the actor of an action.
 pub(super) const OWNER: &str = "owner";
@@ -95,9 +96,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
             recording_show_route(app, p.get("id"))
         })
         .doc(RouteDoc::new("Show a recording and its events").errors(&[404, 500]))
-        .get("/v1/stations/recordings/{id}/frames/{seq}", |app, _, p| {
-            recording_frame_route(app, p.get("id"), p.get("seq"))
-        })
+        .get(
+            "/v1/stations/recordings/{id}/frames/{seq}",
+            |app, req, p| recording_frame_route(app, req, p.get("id"), p.get("seq")),
+        )
         .doc(RouteDoc::new("Get one JPEG frame of a recording").errors(&[404, 500]))
         .delete("/v1/stations/recordings/{id}", |app, _, p| {
             recording_delete_route(app, p.get("id"))
@@ -171,8 +173,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
             sync_files_route(app, req, p.get("id"))
         })
         .doc(RouteDoc::new("List a workstation's mirrored files"))
-        .get("/v1/stations/{id}/files/{path..}", |app, _, p| {
-            sync_read_route(app, p.get("id"), p.get("path"))
+        .get("/v1/stations/{id}/files/{path..}", |app, req, p| {
+            sync_read_route(app, req, p.get("id"), p.get("path"))
         })
         .doc(RouteDoc::new("Read a mirrored file"))
         .route("PUT", "/v1/stations/{id}/files/{path..}", |app, req, p| {
@@ -255,10 +257,15 @@ fn sync_files_route(app: &App, req: &Request, id: &str) -> Response {
     }
 }
 
-fn sync_read_route(app: &App, id: &str, path: &str) -> Response {
+fn sync_read_route(app: &App, req: &Request, id: &str, path: &str) -> Response {
     match sync::read(app, id, path) {
-        Ok((bytes, _)) => Response::new(200, guess_type(path), bytes)
-            .with_header("x-content-type-options", "nosniff"),
+        Ok(hash) => storage::blob_response(
+            &app.blobs,
+            req,
+            &hash,
+            guess_type(path),
+            vec![("x-content-type-options", "nosniff".to_string())],
+        ),
         Err(failure) => fail(failure),
     }
 }
@@ -499,14 +506,18 @@ fn recording_show_route(app: &App, id: &str) -> Response {
     }
 }
 
-fn recording_frame_route(app: &App, id: &str, seq: &str) -> Response {
+fn recording_frame_route(app: &App, req: &Request, id: &str, seq: &str) -> Response {
     let Ok(seq) = seq.parse::<u64>() else {
         return Response::error(400, "a frame's seq is a number, counted from 1");
     };
     match recordings::frame(app, id, seq) {
-        Ok(Some(jpeg)) => {
-            Response::new(200, "image/jpeg", jpeg).with_header("x-content-type-options", "nosniff")
-        }
+        Ok(Some(hash)) => storage::blob_response(
+            &app.blobs,
+            req,
+            &hash,
+            "image/jpeg",
+            vec![("x-content-type-options", "nosniff".to_string())],
+        ),
         Ok(None) => Response::error(404, "no such frame"),
         Err(reason) => Response::error(500, &reason),
     }

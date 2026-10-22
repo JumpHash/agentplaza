@@ -104,7 +104,7 @@ pub trait Plaza: Sync {
         Ok(out)
     }
 
-    /// Adds a skill version authored over MCP. Each file is `{path, content_b64}` (new bytes) or `{path, sha256}`
+    /// Adds a skill version authored over MCP. Each file is `{path, content_b64}` (new bytes) or `{path, hash}`
     /// (bytes already in the library). It never publishes.
     fn skill_propose(
         &self,
@@ -352,7 +352,7 @@ fn skill_file_in(file: &Value) -> Result<crate::skills::FileIn, String> {
         .unwrap_or(false);
     let body = match (
         file.get("content_b64").and_then(Value::as_str),
-        file.get("sha256").and_then(Value::as_str),
+        file.get("hash").and_then(Value::as_str),
     ) {
         (Some(encoded), None) => {
             let bytes = base64::engine::general_purpose::STANDARD
@@ -360,10 +360,10 @@ fn skill_file_in(file: &Value) -> Result<crate::skills::FileIn, String> {
                 .map_err(|err| format!("{path}: content_b64 is not base64: {err}"))?;
             crate::skills::FileBody::Bytes(bytes)
         }
-        (None, Some(sha256)) => crate::skills::FileBody::Known(sha256.to_string()),
+        (None, Some(hash)) => crate::skills::FileBody::Known(hash.to_string()),
         _ => {
             return Err(format!(
-                "{path}: give content_b64 or sha256, not both or neither"
+                "{path}: give content_b64 or hash, not both or neither"
             ));
         }
     };

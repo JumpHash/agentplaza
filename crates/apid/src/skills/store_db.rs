@@ -261,7 +261,7 @@ impl SkillStore for DbSkills {
                 warnings: report.warnings,
                 infos: report.infos,
                 rules_version: report.rules_version,
-                sha256: next.sha256.clone(),
+                hash: next.hash.clone(),
                 file_count: next.files.len() as u32,
                 total_bytes: total_bytes(next),
                 source_commit: next.source_commit.clone(),
@@ -451,7 +451,8 @@ fn source_columns(
     }
 }
 
-/// Writes a version, its files and its check findings (seq from 0).
+/// Writes a version, its files and its check findings (seq from 0). The `sha256` columns (migration 0007) keep their
+/// names: they hold the hash, BLAKE3 now, which is 32 bytes as the columns check.
 fn insert_version(
     tx: &mut Transaction<'_>,
     id: &str,
@@ -467,7 +468,7 @@ fn insert_version(
             &id,
             &version,
             &next.skill_md,
-            &next.sha256,
+            &next.hash,
             &next.note,
             &actor,
             &(report.score as i16),
@@ -488,7 +489,7 @@ fn insert_version(
                 &id,
                 &version,
                 &f.path,
-                &f.sha256,
+                &f.hash,
                 &(f.size as i64),
                 &f.executable,
             ],
@@ -576,7 +577,7 @@ fn meta_of(row: &Row, at: usize) -> Result<VersionMeta, postgres::Error> {
         warnings: row.try_get::<_, i32>(at + 6)? as u32,
         infos: row.try_get::<_, i32>(at + 7)? as u32,
         rules_version: row.try_get::<_, i32>(at + 8)? as u32,
-        sha256: row.try_get(at + 9)?,
+        hash: row.try_get(at + 9)?,
         file_count: row.try_get::<_, i32>(at + 10)? as u32,
         total_bytes: row.try_get::<_, i64>(at + 11)? as u64,
         source_commit: row.try_get(at + 12)?,
@@ -586,7 +587,7 @@ fn meta_of(row: &Row, at: usize) -> Result<VersionMeta, postgres::Error> {
 fn file_of(row: &Row) -> Result<SkillFile, postgres::Error> {
     Ok(SkillFile {
         path: row.try_get(0)?,
-        sha256: row.try_get(1)?,
+        hash: row.try_get(1)?,
         size: row.try_get::<_, i64>(2)? as u64,
         executable: row.try_get(3)?,
     })

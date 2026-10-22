@@ -99,6 +99,7 @@ pub fn router() -> Router<App> {
     let router = crate::hub_mcp::owner::routes(router);
     let router = crate::library::routes(router);
     let router = crate::deliverables::routes(router);
+    let router = crate::storage::routes(router);
     let router = crate::toolbox::routes(router);
     let router = crate::adopt::routes(router);
     let router = crate::projects::routes(router);

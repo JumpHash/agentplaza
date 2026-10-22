@@ -75,7 +75,7 @@ pub struct PlazaUsage {
 /// One plaza service process.
 #[derive(Debug, PartialEq, Serialize)]
 pub struct ServiceUsage {
-    /// `apid`, `hub` (the `vsockd` process), `noded` or `garage`.
+    /// `apid`, `hub` (the `vsockd` process) or `noded`.
     pub name: &'static str,
     pub pid: u32,
     /// Busy share since the previous sample, in percent of all CPU time.
@@ -420,7 +420,6 @@ fn service_name(comm: &str) -> Option<&'static str> {
         "apid" => Some("apid"),
         "vsockd" => Some("hub"),
         "noded" => Some("noded"),
-        "garage" => Some("garage"),
         _ => None,
     }
 }
