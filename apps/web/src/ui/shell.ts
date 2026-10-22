@@ -4,9 +4,10 @@
 // the work. The screens mount into `.page` exactly as before; the shell only frames them.
 
 import { api, type Approval, type OwnerConversationSummary, type Project, type Task } from '../api';
+import { workApi, type Card } from '../api-work';
 import { hrefIn, type Route } from '../router';
 import { isLive, projects, scope, switchTo } from '../scope';
-import { agents, overview } from '../store';
+import { agents, on, overview } from '../store';
 import { agentName } from '../roles';
 import { openIde } from '../ide/open';
 import { openNewProject } from './new-project';
@@ -22,10 +23,12 @@ import type { LucideName } from './icons.gen';
 /** The screens of the sidebar, in its order; More holds the rest. */
 export const NAV: [string, LucideName, string][] = [
   ['overview', 'house', 'Overview'],
+  ['inbox', 'inbox', 'Inbox'],
   ['approvals', 'shield-check', 'Approvals'],
+  ['chats', 'message-square', 'Chats'],
   ['work', 'workflow', 'Work'],
   ['history', 'git-branch', 'Weft'],
-  ['agents', 'bot', 'Agents'],
+  ['sessions', 'bot', 'Sessions'],
   ['machines', 'server', 'Machines'],
 ];
 export const MORE: [string, LucideName, string][] = [
@@ -189,7 +192,7 @@ export function openPalette(): void {
   const items: Item[] = [
     ...[...NAV, ...MORE].map(([k, ic, l]) => ({ group: 'Go to', icon: ic, label: l, hint: 'Screen', to: `#/${k}` })),
     ...projects.get().filter(isLive).map((p) => ({ group: 'Projects', icon: 'folder' as LucideName, label: p.title, hint: STAGE[p.stage] ?? p.stage, to: `#/projects/${encodeURIComponent(p.id)}/plan` })),
-    ...agents.get().map((a) => ({ group: 'Agents', icon: 'bot' as LucideName, label: agentName(a), hint: a.role ?? '', to: `#/agents/${a.cid}` })),
+    ...agents.get().map((a) => ({ group: 'Sessions', icon: 'bot' as LucideName, label: agentName(a), hint: a.role ?? '', to: `#/sessions/${a.cid}` })),
     ...SETTINGS.flatMap(([g, gl, list]) =>
       list.map(([k, l]) => ({ group: 'Settings', icon: GROUP_ICON[g] ?? 'settings', label: l === gl ? l : `${gl}: ${l}`, hint: 'Settings', to: `#/settings/${g}/${k}` })),
     ),
@@ -274,11 +277,14 @@ interface SideData {
   approvals: Approval[];
   tasks: Task[];
   conversations: OwnerConversationSummary[];
+  /** The cards waiting for the owner (the inbox's count). */
+  cards: Card[];
 }
-const side: SideData = { approvals: [], tasks: [], conversations: [] };
+const side: SideData = { approvals: [], tasks: [], conversations: [], cards: [] };
 
 async function refreshSide(): Promise<void> {
-  const [approvals, tasks, conversations] = await Promise.allSettled([api.approvals(), api.tasks(), api.ownerConversations()]);
+  const [approvals, tasks, conversations, cards] = await Promise.allSettled([api.approvals(), api.tasks(), api.ownerConversations(), workApi.cards(true)]);
+  if (cards.status === 'fulfilled') side.cards = cards.value;
   if (approvals.status === 'fulfilled') side.approvals = approvals.value.filter((a) => (a as { status?: string }).status === undefined || (a as { status?: string }).status === 'pending');
   if (tasks.status === 'fulfilled') side.tasks = tasks.value;
   if (conversations.status === 'fulfilled') side.conversations = conversations.value;
@@ -326,7 +332,7 @@ function sidebarBody(route: Route): HTMLElement[] {
     saveUi();
     redraw();
   });
-  const nav = h('nav.nav', { 'aria-label': 'Plaza' }, NAV.map((n) => navRow(n, cur, n[0] === 'approvals' ? pending : undefined)), more, moreOn ? MORE.map((n) => navRow(n, cur)) : null);
+  const nav = h('nav.nav', { 'aria-label': 'Plaza' }, NAV.map((n) => navRow(n, cur, n[0] === 'approvals' ? pending : n[0] === 'inbox' ? side.cards.length : undefined)), more, moreOn ? MORE.map((n) => navRow(n, cur)) : null);
 
   const scroll = h('div.scroll');
   const drafting = side.conversations.filter((c) => !c.project && !c.archived);
@@ -479,7 +485,7 @@ function liveEl(): HTMLButtonElement {
   liveBtn = h('button.top-live.hide-sm', { type: 'button', 'data-tone': 'live', title: 'What the agents are doing now. Click to open it', hidden: true });
   liveBtn.addEventListener('click', () => {
     const items = liveItems();
-    location.hash = items[liveAt % Math.max(1, items.length)]?.to ?? '#/agents';
+    location.hash = items[liveAt % Math.max(1, items.length)]?.to ?? '#/sessions';
   });
   return liveBtn;
 }
@@ -491,7 +497,7 @@ function liveItems(): { text: string; tone: string; to: string }[] {
       const work = (a as { work?: { origin?: { task?: string } } | null }).work;
       const step = (a as { step?: { stage?: string; tool?: string } | null }).step;
       const verb = step?.stage === 'approval' ? 'waits on you' : step?.stage === 'tool' ? `runs ${step.tool ?? 'a tool'}` : step?.stage === 'streaming' ? 'is writing' : 'is thinking';
-      return { text: `${agentName(a)} ${verb} · ${work?.origin?.task ?? 'chat'}`, tone: step?.stage === 'approval' ? 'needs' : 'live', to: step?.stage === 'approval' ? '#/approvals' : `#/agents/${a.cid}` };
+      return { text: `${agentName(a)} ${verb} · ${work?.origin?.task ?? 'chat'}`, tone: step?.stage === 'approval' ? 'needs' : 'live', to: step?.stage === 'approval' ? '#/approvals' : `#/sessions/${a.cid}` };
     });
 }
 function drawLive(): void {
@@ -718,6 +724,7 @@ export function startShell(): void {
     void refreshSide().then(() => replace(frame().side, sidebarBody(current)));
   };
   pull();
+  on('card', pull);
   setInterval(pull, 15000);
   setInterval(() => {
     liveAt++;

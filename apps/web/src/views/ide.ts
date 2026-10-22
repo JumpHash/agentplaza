@@ -27,7 +27,7 @@ import { sidebar } from './ide-sidebar';
 import { palette, type Palette } from './ide-palette';
 import { cidOf, closeOverlay, message, newCtx, readStore, VIEWS, type IdeCtx } from './ide-ctx';
 import { applyLayout, closeDrawerIfNarrow, layoutEdges, MID_QUERY, onBreakpoint, readDrawerPrefs, readLayout, setDrawer, toggleLeftPanel, toggleRightPanel } from './ide-layout';
-import { autoSelect, newAgent, openKey, selectAgent, selectWorkspace, setCentre, setRight } from './ide-select';
+import { autoSelect, openKey, selectAgent, selectWorkspace, setCentre, setRight } from './ide-select';
 import { lastAgentCid, loadChangedDirs, refreshProjects, scheduleRefresh } from './ide-data';
 import { openTab, reloadTab, save } from './ide-editing';
 import { openQuick, toggleSearch } from './ide-panels';
@@ -118,7 +118,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   const sideEl = sidebar({
     onOpen: (key) => openKey(c, key),
-    onNewAgent: () => newAgent(),
     onHide: () => toggleLeftPanel(c),
     onConsole: () => leaveIde(c),
   });
@@ -233,7 +232,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     frame.drawer.close.addEventListener('click', () => setDrawer(c, false));
     for (const v of VIEWS) frame.centre.seg[v].addEventListener('click', () => setCentre(c, v));
     frame.centre.popout.addEventListener('click', () => {
-      if (c.cid !== null) go('agents', c.cid);
+      if (c.cid !== null) go('sessions', c.cid);
     });
     for (const k of Object.keys(frame.right.tabs) as RightView[]) frame.right.tabs[k].addEventListener('click', () => setRight(c, k));
     // The dock's own tabs: the Diff is the centre's Diff view; the Terminal and the Run open the drawer on their tab.

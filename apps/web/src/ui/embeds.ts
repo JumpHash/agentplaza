@@ -799,7 +799,7 @@ export function refNode(value: RefSpan['value'], embeds: EmbedContext): HTMLElem
 
 /** An agent's page, by its cid. Agents have no names, so a name opens nothing. */
 function openAgentPage(who: number | string): void {
-  if (typeof who === 'number') go('agents', who);
+  if (typeof who === 'number') go('sessions', who);
 }
 
 /** A library item opens on the Library (a deliverable by its id); a library tool (`name/version`) on the Tools screen. */

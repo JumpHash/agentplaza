@@ -454,7 +454,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       );
     }
     if (t.agent_cid !== null) {
-      step('→', h('span', null, 'Claimed by ', h('a', { href: href('agents', t.agent_cid) }, nameOf(t.agent_cid))));
+      step('→', h('span', null, 'Claimed by ', h('a', { href: href('sessions', t.agent_cid) }, nameOf(t.agent_cid))));
       if (state === 'working' || state === 'needs-you') step('●', lineOf(g, t, state));
       if (state === 'needs-you') step('!', h('a', { href: href('approvals') }, 'Decide in Approvals'));
     } else if (state === 'ready') {

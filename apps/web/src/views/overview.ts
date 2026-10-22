@@ -8,10 +8,12 @@ import { ago, attempt, clip, dot, empty, stat, type Tone } from '../ui/component
 import { attachBar, maySend } from '../ui/attach-bar';
 import { contextBar, loadModelChoices, modelChip } from '../ui/chat-tools';
 import { contextApi } from '../api-context';
+import { workApi, type Budget } from '../api-work';
 import { h, lu, replace } from '../ui/dom';
 import type { LucideName } from '../ui/icons.gen';
 import { openNewProject } from '../ui/new-project';
 import type { Cleanup } from './index';
+import { isBudgetOf, leftStat } from './budget-model';
 import { planWaitsForOwner, waitsForOwner, type StepOf } from './work-model';
 
 // Overview: the plaza at a glance, in the prototype's bare page. The orchestrator's composer leads, then the three
@@ -129,7 +131,7 @@ export function mount(root: HTMLElement): Cleanup {
   void loadWaiting();
 
   // The figures: the plaza's, or under a project the project's.
-  let budget: number | null = null;
+  let budget: Budget | null = null;
   const drawStats = (): void => {
     const o = overview.get();
     if (!o) return replace(statsSlot, h('div.card.ov-card', null, empty('alert', 'apid is unreachable', 'Start apid, then reload.')));
@@ -139,6 +141,7 @@ export function mount(root: HTMLElement): Cleanup {
       const ts = drawn?.ts ?? [];
       const open = ts.filter((t) => t.state === 'open' || t.state === 'claimed').length;
       const p = drawn?.ps[0];
+      const left = leftStat(budget);
       replace(
         statsSlot,
         h(
@@ -147,7 +150,7 @@ export function mount(root: HTMLElement): Cleanup {
           stat('Agents', here.length, `${here.filter((a) => a.status === 'working').length} working`),
           stat('Open tasks', open, `${ts.filter((t) => t.state === 'done').length} done`),
           stat('Stage', p ? p.stage.charAt(0).toUpperCase() + p.stage.slice(1) : '—', p?.paused ? 'paused' : p?.archived ? 'archived' : 'in progress'),
-          stat('Budget', budget === null ? '—' : budget.toLocaleString('en-US'), budget === null ? 'from the plaza' : 'credits left'),
+          stat('Budget', left.value, left.sub),
         ),
       );
       return;
@@ -165,14 +168,17 @@ export function mount(root: HTMLElement): Cleanup {
       ),
     );
   };
-  if (inProject)
-    void api
-      .projectBudget(inProject)
+  // The project's budget figure: read now, and again when a budget frame for the project arrives (see the listeners below).
+  const loadBudget = (project: string): void => {
+    void workApi
+      .projectBudget(project)
       .then((b) => {
-        budget = b.own ? b.balance : null;
+        budget = b;
         drawStats();
       })
       .catch(() => undefined);
+  };
+  if (inProject) loadBudget(inProject);
 
   // The waiting card: the approvals and proposals the owner has yet to decide, under a project only its own.
   const nameOf = (cid: number): string => agentLabelIn(agents.get(), cid);
@@ -223,6 +229,9 @@ export function mount(root: HTMLElement): Cleanup {
     }),
     on('project', scheduleProjects),
     on('task', scheduleProjects),
+    on('budget', (data) => {
+      if (inProject && isBudgetOf(data, { kind: 'project', id: inProject })) loadBudget(inProject);
+    }),
     on('approval', scheduleWaiting),
     on('agent_proposal', scheduleWaiting),
     on('agent_step', (data) => {
@@ -351,7 +360,7 @@ function composerBox(): Composer {
   };
   send.addEventListener('click', () => void submit());
   transcript.addEventListener('click', () => {
-    if (cid) go('agents', cid);
+    if (cid) go('sessions', cid);
   });
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit();
@@ -362,7 +371,7 @@ function composerBox(): Composer {
     aim: (next, name, model, label, tone) => {
       const moved = next !== cid;
       cid = next;
-      const line = h('a.pick', { href: href('agents', next), title: `${name} · ${model}` }, dot(tone), h('span', null, name), h('span.muted', null, label));
+      const line = h('a.pick', { href: href('sessions', next), title: `${name} · ${model}` }, dot(tone), h('span', null, name), h('span.muted', null, label));
       if (pick) pick.replaceWith(line);
       else cbar.prepend(line);
       pick = line;
@@ -412,7 +421,7 @@ function renderFleet(root: HTMLElement, list: Agent[]): void {
           dot(tone),
           h('span.ov-min', null, h('span.ov-strong.ov-clip', null, agentName(a)), h('span.muted.ov-clip', null, sub)),
         );
-        tile.addEventListener('click', () => go('agents', a.cid));
+        tile.addEventListener('click', () => go('sessions', a.cid));
         return tile;
       }),
     ),
@@ -429,7 +438,7 @@ function pushFeed(feed: HTMLElement, wait: HTMLElement, e: Entry): void {
     'li',
     null,
     h('span.muted.ov-time', null, ago(e.at_ms)),
-    h('span.ov-feedmain', null, h('a.ov-agent', { href: href('agents', e.cid) }, name), ' ', h('span.muted', null, line)),
+    h('span.ov-feedmain', null, h('a.ov-agent', { href: href('sessions', e.cid) }, name), ' ', h('span.muted', null, line)),
   );
   feed.prepend(item);
   while (feed.children.length > FEED_MAX) feed.lastElementChild?.remove();

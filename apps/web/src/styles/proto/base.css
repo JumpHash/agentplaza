@@ -390,7 +390,7 @@ hr{border:0;border-top:1px solid var(--rule);margin:4px 0}
 .view-head h1,.rl-head h1,.nd-head h1{font:600 var(--fs-h1)/1.25 var(--font-display);letter-spacing:-.018em;text-wrap:balance;margin:0}
 .view-head p,.view-head .lede{margin-top:6px}
 .view-sub{color:var(--ink-3);font-weight:400}
-.ag-head-actions,.mdl-head-a,.view-head .actions,.view-head>div:last-child:not(:first-child){display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mdl-head-a,.view-head .actions,.view-head>div:last-child:not(:first-child){display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .badge-t{display:inline-flex;align-items:center;gap:5px;font:500 11px/1 var(--font);border-radius:6px;padding:3px 6px;white-space:nowrap;background:var(--hover);color:var(--ink-2);max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .badge-t.t-ok{color:var(--ok);background:var(--ok-soft)}
 .badge-t.t-warn{color:var(--warn);background:var(--warn-soft)}

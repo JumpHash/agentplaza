@@ -1,6 +1,6 @@
 // The IDE's navigator (the threads column): the head (the mark, the brand, New conversation and Hide), the actions (search,
 // Needs you, Console), the project's links in project mode, the list (projects with their agents and repo workspaces, the
-// workstations, the conversations, a hover card, keyboard movement) and the foot (the hub's status and New agent). The agents
+// workstations, the conversations, a hover card, keyboard movement) and the foot (the hub's status). The agents
 // are grouped by project (an agent is listed under every project it leads or holds a task of); the agents in no project sit
 // last in "No project", collapsed while any project exists. The workstations form their own group, after the projects and
 // before No project. A terminal row shows under its agent only when a terminal exists for that workspace. It loads its own
@@ -26,7 +26,6 @@ import { iconBtn } from './ide-frame';
 
 export interface SidebarOpts {
   onOpen(key: string): void;
-  onNewAgent(): void;
   /** The head's Hide button and Ctrl/Cmd+Alt+B: the navigator shows or hides. */
   onHide(): void;
   /** The Console action and Escape: back to the screen the IDE was opened from. */
@@ -183,10 +182,10 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   const listHeadText = h('span', null, '');
   const listHead = h('div.inav-lh', null, listHeadText);
 
-  // The foot: the hub's status (the agents working) and New agent.
+  // The foot: the hub's status (the agents working).
   const hubText = h('span', null, '');
   const hub = h('a.inav-hub', { href: '#/machines', title: 'The hub and its agents' }, h('span.dotlive'), hubText);
-  const foot = h('div.inav-foot', null, hub, h('span.sp'), iconBtn('user-plus', 'New agent', () => opts.onNewAgent()));
+  const foot = h('div.inav-foot', null, hub);
 
   const el = h('div.ide-side', null, head, acts, ...(projectHead ? [projectHead] : []), listHead, list, foot);
 
