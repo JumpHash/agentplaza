@@ -6,7 +6,6 @@
 //! internet, installed in their own VMs and judged. `plaza_toolbox_share` records one, so what
 //! one agent learns reaches every other. The owner sees the discoveries at `GET /v1/toolbox`.
 
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,9 +34,11 @@ pub const REASON_MAX: usize = 500;
 const KINDS: &[&str] = &["cli", "library", "service", "api", "technique"];
 
 /// One thing an agent found and judged: a CLI, a library, a service, an API or a technique.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "discovery")]
 pub struct Discovery {
     /// `d<seq>`.
+    #[table(key)]
     pub id: String,
     /// What it is called, as its makers call it.
     pub name: String,
@@ -54,38 +55,27 @@ pub struct Discovery {
     pub url: Option<String>,
     /// Free-form tags for search ("video", "audio", "pdf", ...), chosen by agents.
     #[serde(default)]
+    #[table(list)]
     pub tags: Vec<String>,
     pub by_cid: u64,
     pub by: String,
     pub at_ms: u64,
     /// Agents that tried it too and vouch for it (cids), the finder excluded.
     #[serde(default)]
+    #[table(list)]
     pub endorsed_by: Vec<u64>,
     /// The owner's flag: why this should not be used (shown to agents beside it), or None.
     #[serde(default)]
     pub flagged: Option<String>,
 }
 
-/// The discoveries, kept in `<state-dir>/toolbox.json`.
+/// The discoveries: the in-memory working copy of the `discovery` table (the hub's store saves it).
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     items: Mutex<Vec<Discovery>>,
 }
 
 impl Store {
-    /// Reads `<state_dir>/toolbox.json`; missing or unparsable means empty.
-    pub fn load(state_dir: &Path) -> Self {
-        let path = state_dir.join("toolbox.json");
-        let items = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Vec<Discovery>>(&bytes).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            items: Mutex::new(items),
-        }
-    }
-
     /// All discoveries, newest first.
     pub fn list(&self) -> Vec<Discovery> {
         let mut items = self
@@ -95,18 +85,6 @@ impl Store {
             .unwrap_or_default();
         items.sort_by_key(|a| std::cmp::Reverse(a.at_ms));
         items
-    }
-
-    /// Writes the whole list to a temp file next to `path`, then renames it over `path`.
-    /// Errors are ignored: the in-memory list stays the truth for this process.
-    fn save(&self, items: &[Discovery]) {
-        let Ok(json) = serde_json::to_string_pretty(items) else {
-            return;
-        };
-        let tmp = self.path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(&tmp, &self.path);
-        }
     }
 
     /// Records a discovery, or — when the same agent already shared one with the same name
@@ -243,7 +221,6 @@ impl Store {
             items.push(d.clone());
             d
         };
-        self.save(&items);
         Ok(result)
     }
 
@@ -347,7 +324,6 @@ impl Store {
             .position(|d| d.id == id)
             .ok_or_else(|| format!("no discovery {id}"))?;
         let removed = items.remove(i);
-        self.save(&items);
         Ok(removed)
     }
 
@@ -373,7 +349,6 @@ impl Store {
             .ok_or_else(|| format!("no discovery {id}"))?;
         d.flagged = reason;
         let flagged = d.clone();
-        self.save(&items);
         Ok(flagged)
     }
 }
@@ -427,25 +402,33 @@ fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
 }
 
 impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let Ok(items) = self.items.lock() else {
-            return String::new();
-        };
-        serde_json::to_string_pretty(&*items).unwrap_or_default()
+    /// The discoveries as their rows, in their order (the hub's saver diffs them against the last save).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        let items = self
+            .items
+            .lock()
+            .map_err(|_| apz_store::StoreError::invalid("the toolbox is locked"))?;
+        apz_store::RowSet::list(def(), items.iter())
     }
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let next: Vec<Discovery> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    /// Replaces the discoveries with the stored ones, in their saved order (at start).
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let next: Vec<Discovery> = apz_store::table::load_list(conn, def())?;
         let mut items = self
             .items
             .lock()
-            .map_err(|_| "toolbox is unavailable".to_string())?;
-        self.save(&next);
+            .map_err(|_| apz_store::StoreError::invalid("the toolbox is locked"))?;
         *items = next;
         Ok(())
     }
+}
+
+/// The discoveries' tables.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Discovery)
 }
 
 #[cfg(test)]
@@ -453,25 +436,42 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn snapshot_restores_into_a_fresh_store() {
-        let a = Store::load(&temp_dir("snapshot"));
-        a.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
-        let b = Store::load(&temp_dir("snapshot-restored"));
-        b.restore(&a.snapshot()).unwrap();
-        assert_eq!(b.snapshot(), a.snapshot());
-        assert_eq!(b.list().len(), 1);
+    /// The state as JSON, in its order.
+    fn state_json(store: &Store) -> Value {
+        serde_json::to_value(&*store.items.lock().unwrap()).unwrap()
     }
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("apid-toolbox-{tag}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    #[test]
+    fn rows_round_trip_through_the_store() {
+        let store = Store::default();
+        store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
+        let mut pandoc_input = input("Pandoc", "cli");
+        pandoc_input["url"] = json!(" https://pandoc.org ");
+        store.share(2, "beta", &pandoc_input).unwrap();
+        store.share(2, "beta", &input("FFMPEG", "cli")).unwrap();
+        store.flag("d1", Some("leaks keys".into())).unwrap();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let restored = Store::default();
+        restored.load(&conn).unwrap();
+        assert_eq!(state_json(&restored), state_json(&store));
+        let items = restored.list();
+        assert_eq!(items.len(), 2);
+        let ffmpeg = items.iter().find(|d| d.id == "d1").unwrap();
+        assert_eq!(ffmpeg.endorsed_by, vec![2], "endorsement kept");
+        assert_eq!(ffmpeg.flagged.as_deref(), Some("leaks keys"), "flag kept");
+        let pandoc = items.iter().find(|d| d.id == "d2").unwrap();
+        assert_eq!(
+            pandoc.url.as_deref(),
+            Some("https://pandoc.org"),
+            "url kept"
+        );
+        assert_eq!(
+            restored.share(3, "gamma", &input("Sox", "cli")).unwrap().id,
+            "d3",
+            "ids go on after a load"
+        );
     }
 
     fn input(name: &str, kind: &str) -> Value {
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn share_new_then_search_by_tag_and_word() {
-        let store = Store::load(&temp_dir("new"));
+        let store = Store::default();
         let d = store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
         assert_eq!(d.id, "d1");
         assert_eq!(
@@ -513,7 +513,7 @@ mod tests {
         // same_agent_resharing_updates_in_place: resharing the same name by the
         // same agent updates the entry in place.
         {
-            let store = Store::load(&temp_dir("same"));
+            let store = Store::default();
             store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
             let mut again = input("ffmpeg", "cli");
             again["verdict"] = json!("works, slow on large files");
@@ -528,7 +528,7 @@ mod tests {
         // another_agent_endorses_the_same_name: another agent sharing the same
         // name endorses the entry and appends its verdict.
         {
-            let store = Store::load(&temp_dir("endorse"));
+            let store = Store::default();
             store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
             let mut beta = input("FFMPEG", "cli");
             beta["verdict"] = json!("also works, used it for podcasts");
@@ -546,7 +546,7 @@ mod tests {
         // bad_kind_is_refused: an unknown kind is refused, names the field, and
         // stores nothing.
         {
-            let store = Store::load(&temp_dir("kind"));
+            let store = Store::default();
             let err = store
                 .share(1, "alpha", &input("Dance", "dance"))
                 .unwrap_err();
@@ -557,19 +557,13 @@ mod tests {
 
     #[test]
     fn owner_flags_unflags_and_removes() {
-        let dir = temp_dir("owner");
-        let store = Store::load(&dir);
+        let store = Store::default();
         store.share(1, "alpha", &input("FFmpeg", "cli")).unwrap();
         let d = store.flag("d1", Some("  leaks keys  ".into())).unwrap();
         assert_eq!(
             d.flagged.as_deref(),
             Some("leaks keys"),
             "reason is trimmed"
-        );
-        assert_eq!(
-            Store::load(&dir).list()[0].flagged.as_deref(),
-            Some("leaks keys"),
-            "flag persists"
         );
         assert_eq!(
             store.flag("d1", Some("   ".into())).unwrap().flagged,
@@ -585,20 +579,6 @@ mod tests {
         assert_eq!(store.flag("d9", None).unwrap_err(), "no discovery d9");
         assert_eq!(store.remove("d1").unwrap().name, "FFmpeg");
         assert!(store.list().is_empty(), "removed from the list");
-        assert_eq!(Store::load(&dir).list().len(), 0, "removal persists");
         assert_eq!(store.remove("d1").unwrap_err(), "no discovery d1");
-    }
-
-    #[test]
-    fn share_persists_across_loads() {
-        let dir = temp_dir("persist");
-        Store::load(&dir)
-            .share(1, "alpha", &input("FFmpeg", "cli"))
-            .unwrap();
-        let reloaded = Store::load(&dir);
-        let items = reloaded.list();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].name, "FFmpeg");
-        assert_eq!(reloaded.search("ffmpeg").len(), 1);
     }
 }

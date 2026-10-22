@@ -1,6 +1,7 @@
 //! The editors' ACP sessions: which agent each one drives, its work items, and its title. Kept in
-//! memory and saved with the plaza state (`db::snapshot_of` component `acp_sessions`), so an editor
-//! can list, load and resume its sessions after the hub restarts.
+//! memory and saved in the hub's store (component `acp_sessions`: the `acp_session` table, with its
+//! `works` and `repo` child tables), so an editor can list, load and resume its sessions after the
+//! hub restarts.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,10 +21,12 @@ const ID_BYTES: usize = 8;
 /// Tells the fallback ids apart when the OS refuses random bytes.
 static FALLBACK: AtomicU64 = AtomicU64::new(0);
 
-/// One editor session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One editor session (a row of `acp_session`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "acp_session")]
 pub struct Session {
     /// `acp-<16 hex>`; also the agent's thread for this session.
+    #[table(key)]
     pub id: String,
     pub cid: u64,
     /// The editor's project folder, as the editor named it (shown and listed, never opened).
@@ -33,23 +36,24 @@ pub struct Session {
     /// The first prompt's first line, at most 80 characters.
     pub title: String,
     /// The work items this session queued, oldest first.
+    #[table(list)]
     pub works: Vec<u64>,
     pub created_ms: u64,
     pub updated_ms: u64,
     pub closed: bool,
     /// The plaza repository the editor's project is mirrored to, when the editor linked one; the
-    /// agent works on a branch of it. Snapshots from before the link existed have none.
+    /// agent works on a branch of it. None when the editor linked none.
     #[serde(default)]
+    #[table(child)]
     pub repo: Option<RepoLink>,
     /// Who opened it: `owner`, or `token:<id>` for the editor of a hub MCP token. Only the opener and
-    /// the owner may use the session. A snapshot from before this field existed has `""`, which is
-    /// the owner's.
+    /// the owner may use the session. `""` (the default) is the owner's.
     #[serde(default)]
     pub opener: String,
 }
 
 /// The plaza repository a session's project is mirrored to (`_meta.agentplaza.repo`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct RepoLink {
     pub name: String,
     /// The editor's branch on the plaza: `editor/<branch>`.
@@ -146,27 +150,30 @@ impl Sessions {
         }
     }
 
-    /// The whole state as JSON, for Postgres; "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
+    /// The sessions as their table rows, as they are now (the hub's saver writes what changed).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
         let inner = self.lock();
-        if inner.is_empty() {
-            return String::new();
-        }
-        serde_json::to_string(&*inner).unwrap_or_default()
+        apz_store::RowSet::list(def(), inner.values())
     }
 
-    /// Replaces the state with a [`Sessions::snapshot`]; a refusal changes nothing. An empty
-    /// snapshot is no sessions, which is what [`Sessions::snapshot`] writes for them.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let mut map: BTreeMap<String, Session> = if json.is_empty() {
-            BTreeMap::new()
-        } else {
-            serde_json::from_str(json).map_err(|e| format!("bad acp sessions snapshot: {e}"))?
-        };
+    /// Replaces the sessions with what the store holds (at start), keeping at most [`KEEP`]: the
+    /// oldest go, as in [`Sessions::open`].
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let stored: Vec<Session> = apz_store::table::load_list(conn, def())?;
+        let mut map: BTreeMap<String, Session> =
+            stored.into_iter().map(|s| (s.id.clone(), s)).collect();
         trim(&mut map, "");
         *self.lock() = map;
         Ok(())
     }
+}
+
+/// The sessions' tables: `acp_session`, with its `works` and `repo` child tables.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Session)
 }
 
 /// A fresh `acp-<16 hex>` id that no session has. The OS random bytes are the usual source; the
@@ -311,35 +318,57 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_round_trips_and_an_empty_one_is_empty() {
-        assert_eq!(Sessions::default().snapshot(), "");
+    fn the_sessions_come_back_whole_from_their_tables() {
         let sessions = Sessions::default();
-        let s = sessions.open(3, "/a", "zed 1", "token:mcp_a", 10);
-        sessions.add_work(&s.id, 9, "hello", 20);
-        let other = Sessions::default();
-        other.restore(&sessions.snapshot()).unwrap();
-        assert_eq!(other.list(None), sessions.list(None));
-        other.restore("").unwrap();
-        assert!(other.list(None).is_empty());
+        let a = sessions.open(3, "/a", "zed 1", "token:mcp_a", 10);
+        sessions.add_work(&a.id, 9, "hello\nmore", 20);
+        sessions.add_work(&a.id, 10, "again", 30);
+        sessions.set_repo(
+            &a.id,
+            RepoLink {
+                name: "app".into(),
+                branch: "editor/main".into(),
+                commit: "abc1234".into(),
+                dirty: true,
+            },
+        );
+        let b = sessions.open(1, "/b", "zed", "owner", 40);
+        sessions.close(&b.id, 50);
+        let before = serde_json::to_value(&*sessions.lock()).unwrap();
+
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &sessions.rows().unwrap()).unwrap();
+        let back = Sessions::default();
+        back.load(&conn).unwrap();
+        assert_eq!(serde_json::to_value(&*back.lock()).unwrap(), before);
+        assert_eq!(back.list(None), sessions.list(None));
+
+        // No sessions: the rows are gone, and the next load has none.
+        apz_store::table::replace(&conn, def(), &Sessions::default().rows().unwrap()).unwrap();
+        back.load(&conn).unwrap();
+        assert!(back.list(None).is_empty());
     }
 
     #[test]
-    fn a_session_names_its_opener_and_an_older_one_is_the_owners() {
+    fn a_store_that_cannot_be_read_changes_nothing() {
+        let sessions = Sessions::default();
+        let s = sessions.open(1, "/a", "zed", "owner", 10);
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        assert!(sessions.load(&conn).is_err(), "no tables to read");
+        assert_eq!(sessions.get(&s.id), Some(s));
+    }
+
+    #[test]
+    fn a_session_names_its_opener() {
         let sessions = Sessions::default();
         let s = sessions.open(1, "/a", "zed", "token:mcp_a", 10);
         assert_eq!(s.opener, "token:mcp_a");
-        // A snapshot saved before the field existed restores with no opener, which is the owner's.
-        let id = &s.id;
-        let old = format!(
-            "{{\"{id}\":{{\"id\":\"{id}\",\"cid\":1,\"cwd\":\"/a\",\"client\":\"zed\",\"title\":\"\",\"works\":[],\"created_ms\":10,\"updated_ms\":10,\"closed\":false}}}}"
-        );
-        let restored = Sessions::default();
-        restored.restore(&old).unwrap();
-        assert_eq!(restored.get(id).unwrap().opener, "");
     }
 
     #[test]
-    fn a_repo_link_is_recorded_and_an_older_snapshot_has_none() {
+    fn a_repo_link_is_recorded() {
         let sessions = Sessions::default();
         let s = sessions.open(1, "/a", "zed", "owner", 10);
         assert_eq!(s.repo, None);
@@ -351,21 +380,5 @@ mod tests {
         };
         sessions.set_repo(&s.id, link.clone());
         assert_eq!(sessions.get(&s.id).unwrap().repo, Some(link));
-        // A snapshot saved before the field existed restores with no link.
-        let id = &s.id;
-        let old = format!(
-            "{{\"{id}\":{{\"id\":\"{id}\",\"cid\":1,\"cwd\":\"/a\",\"client\":\"zed\",\"title\":\"\",\"works\":[],\"created_ms\":10,\"updated_ms\":10,\"closed\":false}}}}"
-        );
-        let restored = Sessions::default();
-        restored.restore(&old).unwrap();
-        assert_eq!(restored.get(id).unwrap().repo, None);
-    }
-
-    #[test]
-    fn a_bad_snapshot_changes_nothing() {
-        let sessions = Sessions::default();
-        let s = sessions.open(1, "/a", "zed", "owner", 10);
-        assert!(sessions.restore("{not json").is_err());
-        assert_eq!(sessions.get(&s.id), Some(s));
     }
 }

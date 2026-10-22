@@ -29,20 +29,7 @@ use crate::state::App;
 /// Every component still snapshotted into Postgres, by name, in restore order. The task ledger and the components of
 /// `plaza.db` are not here: `store` keeps them.
 pub const COMPONENTS: &[&str] = &[
-    "treasury",
-    "members",
-    "conversations",
-    "toolbox",
-    "harness",
-    "approvals",
-    "acp_sessions",
-    "library",
-    "deliverables",
-    "prices",
-    "usage",
-    "foundry",
-    "models",
-    "mcp",
+    "treasury", "members", "prices", "usage", "foundry", "models", "mcp",
 ];
 
 pub mod data_migrate;
@@ -61,13 +48,6 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
     match component {
         "treasury" => app.plaza.treasury.snapshot(),
         "members" => app.members.snapshot(),
-        "conversations" => app.conversations.snapshot(),
-        "toolbox" => app.toolbox.snapshot(),
-        "harness" => app.harness.snapshot(),
-        "approvals" => app.approvals.snapshot(),
-        "acp_sessions" => app.acp_sessions.snapshot(),
-        "library" => app.library.snapshot(),
-        "deliverables" => app.deliverables.snapshot(),
         "prices" => app.prices.snapshot(),
         "usage" => app.usage.snapshot(),
         "foundry" => app.foundry.snapshot(),
@@ -82,13 +62,6 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
     match component {
         "treasury" => app.plaza.treasury.restore(json),
         "members" => app.members.restore(json),
-        "conversations" => app.conversations.restore(json),
-        "toolbox" => app.toolbox.restore(json),
-        "harness" => app.harness.restore(json),
-        "approvals" => app.approvals.restore(json),
-        "acp_sessions" => app.acp_sessions.restore(json),
-        "library" => app.library.restore(json),
-        "deliverables" => app.deliverables.restore(json),
         "prices" => app.prices.restore(json),
         "usage" => app.usage.restore(json),
         "foundry" => app.foundry.restore(json),

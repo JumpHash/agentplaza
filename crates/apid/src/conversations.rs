@@ -5,7 +5,9 @@
 //! Every change publishes an `owner_conversation` event (the agents' direct messages are `conversation` events). The turns in between (model calls, tool calls) are the
 //! orchestrator's transcript on the thread.
 //!
-//! Kept in `conversations.json` under the state dir, and with the plaza state (component `conversations`).
+//! Kept in the hub's store (`plaza.db`, component `conversations`): the conversations are the rows of
+//! `conversation_store`'s child table, with their messages, attachments and draft as child tables. The owner's
+//! messages and changes are saved at once (`saver::save_now`), the rest on the saver's next pass.
 //!
 //! GET   /v1/owner/conversations[?archived=true]      → [summary], newest first
 //! POST  /v1/owner/conversations {text}               → 201 the conversation, its first message queued
@@ -14,11 +16,12 @@
 //! POST  /v1/owner/conversations/{id}/messages {text} → the conversation, the message queued
 //! GET   /v1/owner/conversations/{id}/transcript?after=&limit= → the orchestrator's entries on the thread
 
-use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_proto::wire::WorkKind;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -41,8 +44,8 @@ pub const ORCHESTRATOR: &str = "orchestrator";
 /// Who the plaza's notices in a conversation are from (a project started, a task ended).
 pub const PLAZA: &str = "plaza";
 
-/// One message of a conversation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One message of a conversation: a row of `conversation_store_items_messages`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Message {
     /// [`OWNER`], [`ORCHESTRATOR`] or [`PLAZA`].
     pub from: String,
@@ -54,13 +57,26 @@ pub struct Message {
     /// How an answer's work ended: `done`, `failed` or `stopped`. None on the owner's messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// The files the owner attached: `[{id, name, size, type}]`.
+    /// The files the owner attached.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attachments: Vec<Value>,
+    #[table(child)]
+    pub attachments: Vec<Attachment>,
 }
 
-/// One conversation with the orchestrator.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A file the owner attached to a message, as the consoles show it: `{id, name, size, type}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct Attachment {
+    /// The file's id in the Library of deliverables.
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    /// Its media type.
+    #[serde(rename = "type")]
+    pub mime: String,
+}
+
+/// One conversation with the orchestrator (a child row of `conversation_store`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Conversation {
     /// `conv-<n>`; also the orchestrator's thread for it.
     pub id: String,
@@ -68,8 +84,10 @@ pub struct Conversation {
     pub title: String,
     /// The orchestrator it talks to.
     pub cid: u64,
+    #[table(child)]
     pub messages: Vec<Message>,
     /// The work items its messages queued, oldest first.
+    #[table(list)]
     pub works: Vec<u64>,
     pub created_ms: u64,
     pub updated_ms: u64,
@@ -84,6 +102,7 @@ pub struct Conversation {
     pub project: Option<String>,
     /// The project the orchestrator drafts with the owner, which the owner starts (`drafts`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(child)]
     pub draft: Option<crate::drafts::Draft>,
     /// The draft revision the orchestrator last read or wrote: an edit of the owner's after it is pointed out with the
     /// next message.
@@ -117,34 +136,42 @@ impl Conversation {
     }
 }
 
-/// The saved form: the id counter and the conversations, oldest first.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+/// The conversations and the id counter: one row of `conversation_store`, the conversations its child rows (oldest
+/// first). The counter is kept so an id is never handed out twice, even after a conversation was dropped.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "conversation_store")]
 struct Saved {
     next: u64,
+    #[table(child)]
     items: Vec<Conversation>,
 }
 
-/// The conversations and their file.
+/// The conversations, in memory: the hub's saver keeps them in `plaza.db`.
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     inner: Mutex<Saved>,
 }
 
-impl Store {
-    /// Loads the store; a missing or unreadable file starts empty.
-    pub fn load(path: PathBuf) -> Self {
-        let inner = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            inner: Mutex::new(inner),
-        }
-    }
+/// The conversations' table: `conversation_store`.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Saved)
+}
 
+impl Store {
     fn guard(&self) -> MutexGuard<'_, Saved> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The conversations' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::one(def(), &*self.guard())
+    }
+
+    /// Replaces the conversations with what the store holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Option<Saved> = apz_store::table::load_one(conn, def())?;
+        *self.guard() = stored.unwrap_or_default();
+        Ok(())
     }
 
     /// Every conversation, newest first.
@@ -160,12 +187,11 @@ impl Store {
 
     /// Opens a conversation with orchestrator `cid`, titled from `first` and holding it as the owner's first
     /// message (its work item not yet queued).
-    pub fn open(&self, cid: u64, first: &str, now: u64) -> std::io::Result<Conversation> {
+    pub fn open(&self, cid: u64, first: &str, now: u64) -> Conversation {
         let mut saved = self.guard();
-        let mut next = saved.clone();
-        next.next += 1;
+        saved.next += 1;
         let mut conversation = Conversation {
-            id: format!("conv-{}", next.next),
+            id: format!("conv-{}", saved.next),
             title: title_of(first),
             cid,
             messages: Vec::new(),
@@ -179,14 +205,12 @@ impl Store {
             draft_seen: 0,
         };
         conversation.push(owner_message(first, now));
-        next.items.push(conversation.clone());
-        keep_within(&mut next.items);
-        self.save(&next)?;
-        *saved = next;
-        Ok(conversation)
+        saved.items.push(conversation.clone());
+        keep_within(&mut saved.items);
+        conversation
     }
 
-    /// Changes conversation `id` with `change`, and writes the file; a refusal or a failed write changes nothing.
+    /// Changes conversation `id` with `change`; a refusal changes nothing.
     pub fn update(
         &self,
         id: &str,
@@ -201,38 +225,8 @@ impl Store {
             .ok_or_else(|| (404, format!("no conversation {id}")))?;
         change(conversation).map_err(|e| (409, e))?;
         let changed = conversation.clone();
-        self.save(&next)
-            .map_err(|e| (500, format!("conversations not saved: {e}")))?;
         *saved = next;
         Ok(changed)
-    }
-
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let saved = self.guard();
-        if saved.items.is_empty() && saved.next == 0 {
-            return String::new();
-        }
-        serde_json::to_string(&*saved).unwrap_or_default()
-    }
-
-    /// Replaces the state with a [`Store::snapshot`] and writes the file; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let restored: Saved =
-            serde_json::from_str(json).map_err(|e| format!("conversations: {e}"))?;
-        let mut saved = self.guard();
-        self.save(&restored)
-            .map_err(|e| format!("conversations: {e}"))?;
-        *saved = restored;
-        Ok(())
-    }
-
-    /// Writes the state to the file atomically (tmp file, then rename).
-    fn save(&self, saved: &Saved) -> std::io::Result<()> {
-        let text = serde_json::to_string_pretty(saved).map_err(std::io::Error::other)?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &self.path)
     }
 }
 
@@ -408,8 +402,7 @@ pub fn open_with(
     let files = crate::deliverables::attach(app, attachments, agent.cid).map_err(|e| (400, e))?;
     let opened = app
         .conversations
-        .open(agent.cid, &text, apz_plaza::now_ms())
-        .map_err(|e| (500, format!("conversations not saved: {e}")))?;
+        .open(agent.cid, &text, apz_plaza::now_ms());
     if !attachments.is_empty() {
         let views = crate::deliverables::attachment_views(app, attachments);
         app.conversations.update(&opened.id, |c| {
@@ -421,6 +414,8 @@ pub fn open_with(
     }
     let prompt = join_files(&text, &files);
     let conversation = queue(app, &opened.id, agent.cid, &prompt, OWNER, mcp)?;
+    // The owner's message is written at once, not on the saver's next pass.
+    crate::store::saver::save_now(app, "conversations");
     app.bus
         .publish("owner_conversation", &view(app, &conversation));
     Ok(conversation)
@@ -507,6 +502,8 @@ pub fn say_with(
     };
     let prompt = join_files(&prompt, &files);
     let conversation = queue(app, id, agent.cid, &prompt, OWNER, mcp)?;
+    // The owner's message is written at once, not on the saver's next pass.
+    crate::store::saver::save_now(app, "conversations");
     app.bus
         .publish("owner_conversation", &view(app, &conversation));
     Ok(conversation)
@@ -711,6 +708,7 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(())
     });
     if let Ok(conversation) = &result {
+        crate::store::saver::save_now(app, "conversations");
         app.bus
             .publish("owner_conversation", &view(app, conversation));
     }
@@ -750,12 +748,8 @@ fn transcript_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 mod tests {
     use super::*;
 
-    fn store(name: &str) -> Store {
-        let dir =
-            std::env::temp_dir().join(format!("apid-conversations-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Store::load(dir.join("conversations.json"))
+    fn store() -> Store {
+        Store::default()
     }
 
     fn answer_to(work: u64, text: &str) -> Message {
@@ -771,11 +765,9 @@ mod tests {
 
     #[test]
     fn each_conversation_is_a_thread_of_its_own_with_its_answers() {
-        let conversations = store("threads");
-        let first = conversations
-            .open(9, "The scheduler tests are flaky\nand I want 0.9 out", 10)
-            .unwrap();
-        let second = conversations.open(9, "Something else", 11).unwrap();
+        let conversations = store();
+        let first = conversations.open(9, "The scheduler tests are flaky\nand I want 0.9 out", 10);
+        let second = conversations.open(9, "Something else", 11);
         assert_eq!(first.id, "conv-1");
         assert_eq!(second.id, "conv-2");
         assert_eq!(first.title, "The scheduler tests are flaky");
@@ -831,18 +823,34 @@ mod tests {
     }
 
     #[test]
-    fn conversations_survive_a_restart_and_a_snapshot() {
-        let conversations = store("restart");
-        conversations.open(9, "Hello", 5).unwrap();
-        let again = Store::load(conversations.path.clone());
+    fn conversations_come_back_whole_from_their_tables_with_the_counter() {
+        let conversations = store();
+        let first = conversations.open(9, "Hello", 5);
+        let queued = conversations
+            .update(&first.id, |c| {
+                c.messages[0].attachments.push(Attachment {
+                    id: "f1".into(),
+                    name: "notes.md".into(),
+                    size: 12,
+                    mime: "text/markdown".into(),
+                });
+                c.works.push(7);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(queued.messages[0].attachments.len(), 1);
+        let before = serde_json::to_value(&*conversations.guard()).unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &conversations.rows().unwrap()).unwrap();
+        let again = Store::default();
+        again.load(&conn).unwrap();
+        assert_eq!(serde_json::to_value(&*again.guard()).unwrap(), before);
         assert_eq!(again.get("conv-1").unwrap().title, "Hello");
         // The counter is kept: a new conversation never reuses an id.
-        assert_eq!(again.open(9, "Again", 6).unwrap().id, "conv-2");
-        let other = store("restore");
-        other.restore(&again.snapshot()).unwrap();
-        assert_eq!(other.list().len(), 2);
-        assert!(other.restore("not json").is_err());
-        assert_eq!(other.list().len(), 2, "a refused restore changes nothing");
+        assert_eq!(again.open(9, "Again", 6).id, "conv-2");
     }
 
     #[test]

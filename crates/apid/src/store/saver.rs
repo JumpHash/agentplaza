@@ -129,11 +129,21 @@ fn save_one(app: &App, c: &Component) -> Result<bool, StoreError> {
 }
 
 /// Writes component `name` now (an owner's message, a card answer, a rule): its write commits before this returns.
-/// Whether it is saved (false when the write failed; the next pass tries again).
+/// Whether it is saved: false when the write failed (the next pass tries again), and for a component held out of
+/// writes since its load failed.
 pub fn save_now(app: &App, name: &str) -> bool {
     let Some(c) = components::all().into_iter().find(|c| c.name == name) else {
         return false;
     };
+    if app
+        .saved
+        .held_out
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(c.name)
+    {
+        return false;
+    }
     match save_one(app, &c) {
         Ok(_) => true,
         Err(e) => {

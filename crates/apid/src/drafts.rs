@@ -36,22 +36,23 @@ pub const MAX_SEAT: u32 = 16;
 /// The most seats (roles) a team may have.
 const MAX_SEATS: usize = 24;
 
-/// One role on a draft's team.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One role on a draft's team (a row of `conversation_draft_team`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Seat {
     pub role: String,
     /// How many agents of the role the project has.
     pub count: u32,
     /// Agents on the bench to put on it (counted in `count`, by guest CID); the rest are spawned.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list)]
     pub bench: Vec<u64>,
     /// The model of the spawned ones (else the plaza's for the role).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
 
-/// A conversation's project draft.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A conversation's project draft (a child of the conversation's row).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Draft {
     /// Bumped by every edit, the orchestrator's or the owner's.
     pub revision: u64,
@@ -64,15 +65,18 @@ pub struct Draft {
     pub repo: Option<String>,
     /// The task list, as a plan's (`task_plan`): `after` names keys of the list.
     #[serde(default)]
+    #[table(child)]
     pub tasks: Vec<Planned>,
     #[serde(default)]
+    #[table(child)]
     pub team: Vec<Seat>,
     /// The project's budget, in credits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<u64>,
-    /// The project's settings overrides.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub settings: Value,
+    /// The project's settings overrides, when any were set: the project's own settings, as the plaza reads them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(child)]
+    pub settings: Option<crate::project_settings::ProjectSettings>,
     /// `orchestrator` or `owner`: who made the last edit.
     pub updated_by: String,
     pub updated_ms: u64,
@@ -103,7 +107,7 @@ struct Edit {
     #[serde(default)]
     budget: Option<u64>,
     #[serde(default)]
-    settings: Option<Value>,
+    settings: Option<crate::project_settings::ProjectSettings>,
 }
 
 /// `edit` applied to `current` (none: a first draft) by `by`, at `now`: the next revision, checked for shape
@@ -150,8 +154,7 @@ fn apply(current: Option<&Draft>, edit: Edit, by: &str, now: u64) -> Result<Draf
         budget: edit.budget.or_else(|| base.as_ref().and_then(|d| d.budget)),
         settings: edit
             .settings
-            .or_else(|| base.as_ref().map(|d| d.settings.clone()))
-            .unwrap_or(Value::Null),
+            .or_else(|| base.as_ref().and_then(|d| d.settings.clone())),
         updated_by: by.to_string(),
         updated_ms: now,
         started_ms: None,
@@ -207,9 +210,6 @@ pub fn shape(draft: &Draft) -> Result<(), String> {
                 return Err(format!("agent {cid} is named twice on the team"));
             }
         }
-    }
-    if !draft.settings.is_null() && !draft.settings.is_object() {
-        return Err("a draft's settings are an object".into());
     }
     Ok(())
 }
@@ -273,14 +273,10 @@ pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
         }
     }
     let settings = settings_of(draft);
-    if let Err(why) = &settings {
-        found.push(format!("the settings: {why}"));
-    } else if let Ok(settings) = &settings
-        && let Err(why) = crate::project_settings::check(app, settings)
-    {
+    if let Err(why) = crate::project_settings::check(app, &settings) {
         found.push(format!("the settings: {why}"));
     }
-    let task_budget = settings.ok().and_then(|s| s.task_budget);
+    let task_budget = settings.task_budget;
     let needed: u64 = draft
         .tasks
         .iter()
@@ -304,14 +300,8 @@ pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
 }
 
 /// The draft's settings as a project's overrides (none set when it has none).
-fn settings_of(draft: &Draft) -> Result<crate::project_settings::ProjectSettings, String> {
-    if draft.settings.is_null() {
-        return Ok(crate::project_settings::ProjectSettings::default());
-    }
-    crate::project_settings::merged(
-        &crate::project_settings::ProjectSettings::default(),
-        &draft.settings,
-    )
+fn settings_of(draft: &Draft) -> crate::project_settings::ProjectSettings {
+    draft.settings.clone().unwrap_or_default()
 }
 
 /// The draft as the API shows it: its fields, and what still stops Start.
@@ -332,6 +322,8 @@ fn save(app: &App, id: &str, draft: Draft, seen: bool) -> Result<Conversation, (
         c.draft = Some(draft);
         Ok(())
     })?;
+    // The draft's edit is written at once, not on the saver's next pass.
+    crate::store::saver::save_now(app, "conversations");
     app.bus
         .publish("owner_conversation", &conversations::view(app, &saved));
     Ok(saved)
@@ -582,7 +574,7 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
     }
 
     // 2. Its settings, and its budget set aside: its tasks are funded from it.
-    let settings = settings_of(&draft).unwrap_or_default();
+    let settings = settings_of(&draft);
     let task_budget = settings.task_budget;
     if let Err(e) = app.project_settings.set(&pid, settings) {
         undo(app, &pid, &[]);
@@ -835,11 +827,12 @@ mod tests {
             ..first()
         });
         assert!(why.contains("kind"), "{why}");
-        let (_, why) = bad(Edit {
-            settings: Some(json!([1])),
-            ..first()
-        });
-        assert!(why.contains("settings"), "{why}");
+        // The settings are the project's own, typed: an unknown one is refused when the edit is read.
+        assert!(
+            serde_json::from_value::<Edit>(json!({"settings": {"max_turns": 5, "owner": "me"}}))
+                .is_err()
+        );
+        assert!(serde_json::from_value::<Edit>(json!({"settings": {"max_turns": 5}})).is_ok());
         // An edit with a field the draft does not have is not one.
         assert!(serde_json::from_value::<Edit>(json!({"title": "x", "owner": "me"})).is_err());
     }

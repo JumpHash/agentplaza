@@ -11,7 +11,6 @@
 //! With strict permits on, an operation that has permit laws is refused unless one of them allows it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
@@ -20,7 +19,6 @@ use jhrl::ast::{Effect, Item, Law, Scope, TypeExpr};
 use jhrl::authz::{Decision, Entity, EntityStore, Request, authorize_except, check_authz};
 use jhrl::span::{Diag, SourceMap};
 use jhrl::value::Value;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
@@ -244,62 +242,6 @@ struct Seen {
     tool: String,
     input: Json,
     at_ms: u64,
-}
-
-/// Reads a state file (`permissions.json`, the approvals' modes). A missing file is
-/// `Ok(None)`. A file that exists but does not parse is copied to `<name>.corrupt-<unix-ms>`, never
-/// over an existing copy, and left where it is: it is read again at every start, so the damage is
-/// reported until the owner restores or removes it. The error names both paths. Any other read
-/// failure is reported and the file is left where it is.
-pub(crate) fn read_state<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            let message = format!("could not read {}: {e}", path.display());
-            eprintln!("laws: {message}");
-            return Err(message);
-        }
-    };
-    match serde_json::from_str(&text) {
-        Ok(value) => Ok(Some(value)),
-        Err(e) => {
-            let aside = corrupt_copy_path(path);
-            let message = match std::fs::copy(path, &aside) {
-                Ok(_) => format!(
-                    "{} does not parse ({e}); a copy is kept at {}, and the damaged file is left in place: it is read again at every start until it is restored or removed",
-                    path.display(),
-                    aside.display()
-                ),
-                Err(copied) => format!(
-                    "{} does not parse ({e}) and could not be copied to {}: {copied}; the damaged file is left in place",
-                    path.display(),
-                    aside.display()
-                ),
-            };
-            eprintln!("laws: {message}");
-            Err(message)
-        }
-    }
-}
-
-/// `<name>.corrupt-<unix-ms>` beside `path`, its millisecond moved on past any copy already there.
-fn corrupt_copy_path(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    loop {
-        let candidate = path.with_file_name(format!("{name}.corrupt-{ms}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-        ms += 1;
-    }
 }
 
 pub struct Laws {

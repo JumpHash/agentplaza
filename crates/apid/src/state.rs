@@ -260,7 +260,7 @@ impl App {
         // The vendor bindings (Auggie's session) show in the console's vault screen from boot.
         crate::vendor_relay::register(&vault);
         // The Library of deliverables, shared with the skill library's file store.
-        let library = Arc::new(crate::deliverables::Store::load(
+        let library = Arc::new(crate::deliverables::Store::open(
             &config.state_dir,
             &env,
             Arc::clone(&vault),
@@ -270,20 +270,18 @@ impl App {
             bus: events::Bus::default(),
             laws: crate::laws::global(),
             connectors: crate::connectors::Store::new(Arc::clone(&vault)),
-            approvals: crate::approvals::Store::load(&config.state_dir),
+            approvals: crate::approvals::Store::default(),
             acp_sessions: crate::acp::store::Sessions::default(),
             engine_feed: crate::engine_feed::Feed::default(),
-            library: crate::library::Store::load(&config.state_dir),
+            library: crate::library::Store::open(&config.state_dir),
             deliverables: Arc::clone(&library),
-            toolbox: crate::toolbox::Store::load(&config.state_dir),
+            toolbox: crate::toolbox::Store::default(),
             projects: Default::default(),
             members: crate::membership::Members::load(config.state_dir.join("members.json")),
             context: Default::default(),
-            conversations: crate::conversations::Store::load(
-                config.state_dir.join("conversations.json"),
-            ),
+            conversations: crate::conversations::Store::default(),
             project_settings: Default::default(),
-            harness: crate::harness_control::Store::load(&config.state_dir),
+            harness: crate::harness_control::Store::default(),
             weft: crate::weft_hub::Weft::default(),
             platforms: crate::platforms::Store::load(&config.state_dir),
             maintenance: Default::default(),
