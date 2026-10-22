@@ -1,7 +1,7 @@
 // Copyright 2026 AgentPlaza
 // SPDX-License-Identifier: Apache-2.0
 //
-// The per-VM process body (Linux). Its dispatcher — and the reason a *binary*
+// The per-VM process body (Linux and macOS). Its dispatcher — and the reason a *binary*
 // is the shape — is `../apz-vmm.rs`; `vmm::spawner::process` is the parent
 // half. Read either of those first.
 //
@@ -64,6 +64,7 @@ use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use vmm::jail::jailer::{self, Access};
 use vmm::spawner::process::{parse_snapshot_kind, snapshot_kind_word};
 use vmm::spawner::{
@@ -176,6 +177,73 @@ pub(crate) fn main() -> ExitCode {
 /// on the other end of the pipes.
 const PARENT_DEATH_SIGNAL: libc::c_int = libc::SIGKILL;
 
+/// macOS: the same backstop, through kqueue. The filter `EVFILT_PROC` with `NOTE_EXIT` on the parent's
+/// pid is delivered when that process exits, however it exits (a `SIGKILL`, a crash, an exit that
+/// skipped the stop path). A watch thread takes the event and sends this process
+/// [`PARENT_DEATH_SIGNAL`]. macOS has no parent-death signal that follows a thread, so the watch is
+/// per process: the supervisor-thread rule of `vmm::spawner::process` is Linux's alone.
+#[cfg(target_os = "macos")]
+fn arm_parent_death_signal() -> std::io::Result<()> {
+    // SAFETY: `getppid` takes no arguments and reads no memory.
+    let parent = unsafe { libc::getppid() };
+    // SAFETY: `kqueue` takes no arguments; the descriptor it returns is owned by the watch thread.
+    let queue = unsafe { libc::kqueue() };
+    if queue < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let change = libc::kevent {
+        ident: parent as usize,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // SAFETY: `change` is one valid change entry; no events are asked for, and the timeout is null.
+    let rc = unsafe { libc::kevent(queue, &change, 1, std::ptr::null_mut(), 0, std::ptr::null()) };
+    if rc < 0 {
+        // ESRCH: the parent has already exited, so the watch cannot be armed.
+        return Err(std::io::Error::last_os_error());
+    }
+    // The parent may have exited between `getppid` and the registration, in which case it is no
+    // longer the parent the watch is on.
+    // SAFETY: as above.
+    if unsafe { libc::getppid() } != parent {
+        return Err(std::io::Error::other(
+            "the parent exited before the watch was armed",
+        ));
+    }
+    thread::Builder::new()
+        .name("apz_vmm_parent_watch".to_string())
+        .spawn(move || {
+            loop {
+                // SAFETY: `event` is one zeroed entry for the kernel to fill, and the queue is
+                // this thread's to wait on.
+                let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+                let n = unsafe {
+                    libc::kevent(queue, std::ptr::null(), 0, &mut event, 1, std::ptr::null())
+                };
+                if n > 0 {
+                    // The parent exited: this process goes with it.
+                    // SAFETY: `kill` on this process's own pid with a fixed signal.
+                    unsafe { libc::kill(libc::getpid(), PARENT_DEATH_SIGNAL) };
+                    return;
+                }
+                if n < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    // Without the watch the backstop is gone: fail closed, as the Linux arm does.
+                    eprintln!(
+                        "apz-vmm: the parent-death watch failed: {}",
+                        std::io::Error::last_os_error()
+                    );
+                    // SAFETY: as above.
+                    unsafe { libc::kill(libc::getpid(), PARENT_DEATH_SIGNAL) };
+                    return;
+                }
+            }
+        })
+        .map(|_| ())
+}
+
 /// Arms the parent-death backstop: `prctl(PR_SET_PDEATHSIG, SIGKILL)`, so this
 /// process is killed by the kernel the moment the process that spawned it dies
 /// — however it dies (a `SIGKILL`ed daemon, a crash, an OOM kill, an exit that
@@ -219,6 +287,7 @@ const PARENT_DEATH_SIGNAL: libc::c_int = libc::SIGKILL;
 /// reads the VM's exit — while this is the backstop for a parent that could
 /// not ask, and `SIGKILL` is the right backstop because there is nothing left
 /// to negotiate with.
+#[cfg(target_os = "linux")]
 fn arm_parent_death_signal() -> std::io::Result<()> {
     // SAFETY: `PR_SET_PDEATHSIG` takes the signal as an integer in its second
     // argument and reads no memory; the remaining variadic slots are unused
@@ -404,12 +473,8 @@ fn run(launch: Launch) -> Result<ExitCode, String> {
     // the jail the boot builds, at the path it is named by: the restore
     // directory read-only, the snapshot root read-write. See
     // `jailer::bind_in_every_jail`.
-    if let Some(restore) = &spec.restore {
-        jailer::bind_in_every_jail(restore, Access::ReadOnly);
-    }
-    if let Some(root) = &snapshot_root {
-        jailer::bind_in_every_jail(root, Access::ReadWrite);
-    }
+    #[cfg(target_os = "linux")]
+    bind_into_the_jail(&spec, snapshot_root.as_deref());
 
     let mut handle = vmm::spawner::spawn(spec).map_err(|err| err.to_string())?;
 
@@ -488,6 +553,19 @@ fn run(launch: Launch) -> Result<ExitCode, String> {
             eprintln!("apz-vmm: the VM was stopped by the host");
             Ok(ExitCode::from(CHILD_EXIT_FAILED as u8))
         }
+    }
+}
+
+/// The jail's binds for what the VM reads and writes outside its own images: the restore directory
+/// read-only and the snapshot root read-write, each at the path it is named by. macOS has no jail;
+/// its per-VM process is confined by the node's sandbox instead.
+#[cfg(target_os = "linux")]
+fn bind_into_the_jail(spec: &VmSpec, snapshot_root: Option<&Path>) {
+    if let Some(restore) = &spec.restore {
+        jailer::bind_in_every_jail(restore, Access::ReadOnly);
+    }
+    if let Some(root) = snapshot_root {
+        jailer::bind_in_every_jail(root, Access::ReadWrite);
     }
 }
 

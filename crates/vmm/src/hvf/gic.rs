@@ -194,6 +194,9 @@ const GIC_PIDR2_GICV3: u32 = 0x30;
 /// private interrupt of one redistributor.
 #[derive(Debug, Clone)]
 struct Interrupts<const N: usize> {
+    /// The interrupt ID of index 0: 0 for the private interrupts, `NUM_PRIVATE_INTIDS` for the SPIs.
+    /// The registers name interrupts by ID, so every access goes through [`Interrupts::index`].
+    first: u64,
     /// `ICFGR`: the 2-bit configuration field. Stored only - this model always
     /// treats a raised interrupt as a latched edge - but the guest programs it,
     /// and reading it back must not invent different bits.
@@ -211,8 +214,9 @@ struct Interrupts<const N: usize> {
 }
 
 impl<const N: usize> Interrupts<N> {
-    fn new() -> Self {
+    fn new(first: u64) -> Self {
         Self {
+            first,
             config: [0; N],
             group1: [false; N],
             enabled: [false; N],
@@ -225,6 +229,14 @@ impl<const N: usize> Interrupts<N> {
     /// Applies a write of `size` bytes at `offset` (relative to `base`) to one
     /// of the bit-per-interrupt registers (`IGROUPR`, `ISENABLER`, ...): each
     /// set bit of `value` names an interrupt.
+    /// The index of interrupt `intid` in these arrays, or `None` for an ID they do not hold.
+    fn index(&self, intid: u64) -> Option<usize> {
+        intid
+            .checked_sub(self.first)
+            .filter(|index| *index < N as u64)
+            .map(|index| index as usize)
+    }
+
     fn write_bits(
         &mut self,
         base: u64,
@@ -235,12 +247,11 @@ impl<const N: usize> Interrupts<N> {
     ) {
         let first = (offset - base) * 8;
         for i in 0..size as u64 * 8 {
-            let intid = first + i;
-            if intid >= N as u64 {
-                break;
-            }
+            let Some(index) = self.index(first + i) else {
+                continue;
+            };
             if (value >> i) & 1 == 1 {
-                bits(self, intid as usize);
+                bits(self, index);
             }
         }
     }
@@ -248,11 +259,10 @@ impl<const N: usize> Interrupts<N> {
     /// Applies a write to `IPRIORITYR`: one byte per interrupt.
     fn write_priority(&mut self, offset: u64, size: u8, value: u64) {
         for i in 0..size as u64 {
-            let intid = offset - GICD_IPRIORITYR + i;
-            if intid >= N as u64 {
-                break;
-            }
-            self.priority[intid as usize] = ((value >> (8 * i)) & 0xff) as u8;
+            let Some(index) = self.index(offset - GICD_IPRIORITYR + i) else {
+                continue;
+            };
+            self.priority[index] = ((value >> (8 * i)) & 0xff) as u8;
         }
     }
 
@@ -260,11 +270,10 @@ impl<const N: usize> Interrupts<N> {
     /// byte.
     fn write_config(&mut self, offset: u64, size: u8, value: u64) {
         for i in 0..size as u64 * 4 {
-            let intid = (offset - GICD_ICFGR) * 4 + i;
-            if intid >= N as u64 {
-                break;
-            }
-            self.config[intid as usize] = ((value >> (2 * i)) & 0x3) as u8;
+            let Some(index) = self.index((offset - GICD_ICFGR) * 4 + i) else {
+                continue;
+            };
+            self.config[index] = ((value >> (2 * i)) & 0x3) as u8;
         }
     }
 
@@ -272,11 +281,10 @@ impl<const N: usize> Interrupts<N> {
     fn read_priority(&self, offset: u64, size: u8) -> u64 {
         let mut value = 0u64;
         for i in 0..size as u64 {
-            let intid = offset - GICD_IPRIORITYR + i;
-            if intid >= N as u64 {
-                break;
-            }
-            value |= u64::from(self.priority[intid as usize]) << (8 * i);
+            let Some(index) = self.index(offset - GICD_IPRIORITYR + i) else {
+                continue;
+            };
+            value |= u64::from(self.priority[index]) << (8 * i);
         }
         value
     }
@@ -285,11 +293,10 @@ impl<const N: usize> Interrupts<N> {
     fn read_config(&self, offset: u64, size: u8) -> u64 {
         let mut value = 0u64;
         for i in 0..size as u64 * 4 {
-            let intid = (offset - GICD_ICFGR) * 4 + i;
-            if intid >= N as u64 {
-                break;
-            }
-            value |= u64::from(self.config[intid as usize] & 3) << (2 * i);
+            let Some(index) = self.index((offset - GICD_ICFGR) * 4 + i) else {
+                continue;
+            };
+            value |= u64::from(self.config[index] & 3) << (2 * i);
         }
         value
     }
@@ -300,11 +307,10 @@ impl<const N: usize> Interrupts<N> {
         let first = offset * 8;
         let mut value = 0u64;
         for i in 0..size as u64 * 8 {
-            let intid = first + i;
-            if intid >= N as u64 {
-                break;
-            }
-            if bits(self, intid as usize) {
+            let Some(index) = self.index(first + i) else {
+                continue;
+            };
+            if bits(self, index) {
                 value |= 1 << i;
             }
         }
@@ -347,7 +353,7 @@ struct CpuInterface {
 impl CpuInterface {
     fn new() -> Self {
         Self {
-            private: Interrupts::new(),
+            private: Interrupts::new(0),
             sre: 0,
             pmr: RESET_PMR,
             ctlr: 0,
@@ -413,12 +419,13 @@ impl<const N: usize> Interrupts<N> {
         }
     }
 
-    fn from_state(state: &InterruptsState) -> Result<Self, String> {
+    fn from_state(state: &InterruptsState, first: u64) -> Result<Self, String> {
         fn take<T: Copy, const N: usize>(what: &str, from: &[T]) -> Result<[T; N], String> {
             <[T; N]>::try_from(from)
                 .map_err(|_| format!("{what}: {} entries, the model has {N}", from.len()))
         }
         Ok(Self {
+            first,
             config: take("config", &state.config)?,
             group1: take("group1", &state.group1)?,
             enabled: take("enabled", &state.enabled)?,
@@ -545,7 +552,7 @@ impl Gic {
         // resets to Group 1 and disabled, and every routing register resets to
         // the first CPU. The guest programs all of this itself; the reset
         // values are the ones a single-security-state implementation uses.
-        let mut spis = Interrupts::new();
+        let mut spis = Interrupts::new(NUM_PRIVATE_INTIDS as u64);
         spis.group1 = [true; { NUM_INTIDS - NUM_PRIVATE_INTIDS }];
         let cpus = (0..vcpu_count)
             .map(|_| {
@@ -608,7 +615,7 @@ impl Gic {
             .iter()
             .map(|cpu| {
                 let mut restored = CpuInterface {
-                    private: Interrupts::from_state(&cpu.private)?,
+                    private: Interrupts::from_state(&cpu.private, 0)?,
                     sre: cpu.sre,
                     pmr: cpu.pmr,
                     ctlr: cpu.ctlr,
@@ -629,7 +636,7 @@ impl Gic {
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
             ctlr: state.ctlr,
-            spis: Interrupts::from_state(&state.spis)?,
+            spis: Interrupts::from_state(&state.spis, NUM_PRIVATE_INTIDS as u64)?,
             route,
             cpus,
         })
@@ -1215,9 +1222,10 @@ const fn router_spi(offset: u64) -> Option<u32> {
     if offset < GICD_IROUTER || !(offset - GICD_IROUTER).is_multiple_of(8) {
         return None;
     }
-    let spi = ((offset - GICD_IROUTER) / 8) as u32;
-    if spi < NUM_INTIDS as u32 - SPI_BASE {
-        Some(spi)
+    // `GICD_IROUTER<n>` is named by the interrupt ID `n`: the SPIs start at SPI_BASE.
+    let intid = ((offset - GICD_IROUTER) / 8) as u32;
+    if intid >= SPI_BASE && (intid as usize) < NUM_INTIDS {
+        Some(intid - SPI_BASE)
     } else {
         None
     }
@@ -1444,8 +1452,13 @@ mod tests {
     /// Enables the SPI numbered `spi` and routes it to `cpu`.
     fn enable_spi(gic: &mut Gic, spi: u32, cpu: usize) {
         // `ICENABLER` defaults to disabled; enable, route, then raise.
-        gic.dist_write(GICD_ISENABLER + (spi as u64 / 32) * 4, 4, 1 << (spi % 32));
-        gic.dist_write(GICD_IROUTER + u64::from(spi) * 8, 8, cpu as u64);
+        let intid = SPI_BASE + spi;
+        gic.dist_write(
+            GICD_ISENABLER + (u64::from(intid) / 32) * 4,
+            4,
+            1 << (intid % 32),
+        );
+        gic.dist_write(GICD_IROUTER + u64::from(intid) * 8, 8, cpu as u64);
     }
 
     #[test]
@@ -1522,7 +1535,7 @@ mod tests {
 
         // ... and disabling the interrupt hides it as well.
         gic.dist_write(GICD_CTLR, 4, u64::from(GICD_CTLR_ENABLE_GRP1));
-        gic.dist_write(GICD_ICENABLER, 4, 1 << UART_SPI);
+        gic.dist_write(GICD_ICENABLER + 4, 4, 1 << UART_SPI);
         assert!(!gic.irq_line(0));
     }
 
@@ -1530,13 +1543,18 @@ mod tests {
     fn priorities_are_byte_addressable_and_read_back() {
         let mut gic = gic(1);
         // The kernel writes one byte per SPI priority.
-        gic.dist_write(GICD_IPRIORITYR + u64::from(UART_SPI), 1, 0xd0);
-        let word = gic.dist_read(GICD_IPRIORITYR + (u64::from(UART_SPI) & !3), 4) as u32;
+        gic.dist_write(GICD_IPRIORITYR + u64::from(SPI_BASE + UART_SPI), 1, 0xd0);
+        let word = gic.dist_read(GICD_IPRIORITYR + (u64::from(SPI_BASE + UART_SPI) & !3), 4) as u32;
         assert_eq!((word >> ((UART_SPI % 4) * 8)) & 0xff, 0xd0);
 
-        // ... and four bytes at a time while resetting the range.
-        gic.dist_write(GICD_IPRIORITYR, 4, 0xa0a0_a0a0);
-        assert_eq!(gic.dist_read(GICD_IPRIORITYR, 4) as u32, 0xa0a0_a0a0);
+        // ... and four bytes at a time while resetting the range. The SGI and PPI priorities are the
+        // redistributor's: the distributor has no bytes for them, so they read as zero.
+        gic.dist_write(GICD_IPRIORITYR + u64::from(SPI_BASE), 4, 0xa0a0_a0a0);
+        assert_eq!(
+            gic.dist_read(GICD_IPRIORITYR + u64::from(SPI_BASE), 4) as u32,
+            0xa0a0_a0a0
+        );
+        assert_eq!(gic.dist_read(GICD_IPRIORITYR, 4) as u32, 0);
     }
 
     #[test]
@@ -1545,10 +1563,10 @@ mod tests {
         unmask(&mut gic, 0);
         enable_spi(&mut gic, UART_SPI, 0);
         // Two enabled SPIs, the lower priority number being more urgent.
-        gic.dist_write(GICD_ISENABLER, 4, 1 << 3);
-        gic.dist_write(GICD_IROUTER + 3 * 8, 8, 0);
-        gic.dist_write(GICD_IPRIORITYR + u64::from(UART_SPI), 1, 0xc0);
-        gic.dist_write(GICD_IPRIORITYR + 3, 1, 0x80);
+        gic.dist_write(GICD_ISENABLER + 4, 4, 1 << 3);
+        gic.dist_write(GICD_IROUTER + u64::from(SPI_BASE + 3) * 8, 8, 0);
+        gic.dist_write(GICD_IPRIORITYR + u64::from(SPI_BASE + UART_SPI), 1, 0xc0);
+        gic.dist_write(GICD_IPRIORITYR + u64::from(SPI_BASE + 3), 1, 0x80);
 
         gic.raise_spi(3);
         gic.raise_spi(UART_SPI);
@@ -1587,8 +1605,8 @@ mod tests {
         unmask(&mut gic, 0);
         enable_spi(&mut gic, 2, 0);
         enable_spi(&mut gic, 8, 0);
-        gic.dist_write(GICD_IPRIORITYR + 2, 1, 0xc0);
-        gic.dist_write(GICD_IPRIORITYR + 8, 1, 0x80);
+        gic.dist_write(GICD_IPRIORITYR + u64::from(SPI_BASE + 2), 1, 0xc0);
+        gic.dist_write(GICD_IPRIORITYR + u64::from(SPI_BASE + 8), 1, 0x80);
 
         gic.raise_spi(2);
         assert_eq!(gic.ack(0), SPI_BASE + 2);
@@ -1851,8 +1869,11 @@ mod tests {
 
         // `GICD_IROUTER` reads back the affinity the guest wrote, and routing
         // the SPI to a vCPU that exists delivers it there again.
-        assert_eq!(gic.dist_read(GICD_IROUTER + u64::from(UART_SPI) * 8, 8), 5);
-        gic.dist_write(GICD_IROUTER + u64::from(UART_SPI) * 8, 8, 1);
+        assert_eq!(
+            gic.dist_read(GICD_IROUTER + u64::from(SPI_BASE + UART_SPI) * 8, 8),
+            5
+        );
+        gic.dist_write(GICD_IROUTER + u64::from(SPI_BASE + UART_SPI) * 8, 8, 1);
         assert!(!gic.irq_line(0));
         assert!(gic.irq_line(1));
         assert_eq!(gic.ack(1), UART_INTID);
