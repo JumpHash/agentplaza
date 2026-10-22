@@ -8,9 +8,10 @@
 //! `launch.json` (the runtime and the accelerators the job holds) and `exit` (the exit code, written
 //! when the process ends), and the job's own `home`, `bin` and `cache`. The sandbox reads the trainer
 //! project and uv's managed-Python directory, writes the job directory and the read-write mounts the
-//! job asks for (which must sit under the state directory), and reaches no network. The trainer
-//! project is read-only and is not installed: its environment is made beforehand with `uv sync`,
-//! and a job only runs it.
+//! job asks for (which must sit under the state directory), and reaches no network but, for a loose
+//! job (`network: "hub"`), the hub's port on loopback. The trainer project is read-only and is not
+//! installed: its environment is made beforehand with `uv sync --extra <cpu|cuda|rocm|xpu>`, which
+//! picks the torch build, and a job only runs it.
 //!
 //! A job outlives its exit: its directory is kept, with the exit code, until `DELETE` removes it,
 //! and finished jobs older than 24 h are reaped on each `GET /v1/train`.
@@ -37,7 +38,7 @@ use apz_sandbox::{Limits, Network, Sandboxed, Spec};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{Accelerator, Node, Trainer, command_stdout, command_within};
+use crate::{Accelerator, Node, Trainer, TrainerEnv, command_stdout, command_within};
 
 /// The trainer project: the directory with `pyproject.toml` and the `apz_train` package. Defaults
 /// to `<state>/trainer`.
@@ -143,7 +144,7 @@ fn check_runner(runner: &Path) -> Result<(), String> {
     }
     if !runner.join(".venv").is_dir() {
         return Err(format!(
-            "the trainer project has no environment: run uv sync --project {} once",
+            "the trainer project has no environment: run uv sync --project {} --extra <cpu|cuda|rocm|xpu> once",
             runner.display()
         ));
     }
@@ -246,6 +247,7 @@ struct Inputs {
     vendor: Option<&'static str>,
     uv: Result<(), String>,
     runner: Result<(), String>,
+    env: TrainerEnv,
     sandbox: Result<&'static str, String>,
     grant: Result<(), String>,
 }
@@ -267,6 +269,7 @@ fn choose_trainer(input: &Inputs) -> Trainer {
             runtime: Some(runtime),
             ok: false,
             detail: why.clone(),
+            trainer_env: input.env.clone(),
         };
     }
     let kind = input.sandbox.as_ref().copied().unwrap_or("sandbox");
@@ -282,6 +285,7 @@ fn choose_trainer(input: &Inputs) -> Trainer {
         runtime: Some(runtime),
         ok: true,
         detail,
+        trainer_env: input.env.clone(),
     }
 }
 
@@ -301,13 +305,121 @@ pub fn probe_trainer(vendors: &[&str]) -> Trainer {
         (Some(uv), Ok(_)) => device_grant(os, vendor, uv, &state),
         _ => Ok(()),
     };
+    let runner = runner_dir(&state);
     choose_trainer(&Inputs {
         os,
         vendor,
         uv: uv.map(|_| ()).ok_or_else(|| UV_HINT.to_string()),
-        runner: check_runner(&runner_dir(&state)),
+        runner: check_runner(&runner),
+        env: trainer_env(&runner, vendor),
         sandbox,
         grant,
+    })
+}
+
+/// The torch build the trainer's environment holds, against the accelerator the node trains on. A node with no
+/// accelerator takes any build; an accelerator needs its own (see [`expected_build`]), and the detail names the
+/// `uv sync --extra` that installs it. Reads the environment's `torch/version.py`: no Python runs.
+fn trainer_env(runner: &Path, vendor: Option<&str>) -> TrainerEnv {
+    let (need, extra) = expected_build(vendor);
+    let torch = torch_version_file(runner)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| torch_build(&text));
+    let sync = format!("run uv sync --project {} --extra {extra}", runner.display());
+    match (torch, need) {
+        (None, _) => TrainerEnv {
+            torch: None,
+            matches: false,
+            detail: format!("the trainer has no torch: {sync}"),
+        },
+        (Some(build), None) => TrainerEnv {
+            torch: Some(build),
+            matches: true,
+            detail: format!(
+                "torch is the {build} build; this machine has no accelerator to need another"
+            ),
+        },
+        (Some(build), Some(need)) if build == need => TrainerEnv {
+            torch: Some(build),
+            matches: true,
+            detail: format!("torch is the {build} build, the one this machine's accelerators need"),
+        },
+        (Some(build), Some(need)) => TrainerEnv {
+            torch: Some(build),
+            matches: false,
+            detail: format!(
+                "torch is the {build} build, but this machine's accelerators need the {need} build: {sync}"
+            ),
+        },
+    }
+}
+
+/// The torch build an accelerator needs and the uv extra that installs it. macOS takes the PyPI wheel (MPS) for
+/// every extra, so its extra is `cpu`. No accelerator needs no build (None).
+fn expected_build(vendor: Option<&str>) -> (Option<&'static str>, &'static str) {
+    match vendor {
+        Some("nvidia") => (Some("cuda"), "cuda"),
+        Some("amd") => (Some("rocm"), "rocm"),
+        Some("intel") => (Some("xpu"), "xpu"),
+        Some("apple") => (Some("default"), "cpu"),
+        _ => (None, "cpu"),
+    }
+}
+
+/// The `torch/version.py` of the trainer's environment: under `.venv/Lib` on Windows, else under
+/// `.venv/lib/<python>`.
+fn torch_version_file(runner: &Path) -> Option<PathBuf> {
+    let venv = runner.join(".venv");
+    let windows = venv
+        .join("Lib")
+        .join("site-packages")
+        .join("torch")
+        .join("version.py");
+    if windows.is_file() {
+        return Some(windows);
+    }
+    std::fs::read_dir(venv.join("lib"))
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| {
+            entry
+                .path()
+                .join("site-packages")
+                .join("torch")
+                .join("version.py")
+        })
+        .find(|path| path.is_file())
+}
+
+/// The torch build a `torch/version.py` describes: `xpu`, `rocm` or `cuda` by its local version label (`+xpu`,
+/// `+rocm6.2`, `+cu124`) or the attribute that is set (`xpu`, `hip`, `cuda`); `cpu` by `+cpu`; else `default`, the
+/// PyPI wheel (macOS's, with MPS).
+fn torch_build(version_py: &str) -> &'static str {
+    let version = version_attr(version_py, "__version__").unwrap_or_default();
+    let label = version.split_once('+').map_or("", |(_, label)| label);
+    if label.starts_with("xpu") || version_attr(version_py, "xpu").is_some() {
+        "xpu"
+    } else if label.starts_with("rocm") || version_attr(version_py, "hip").is_some() {
+        "rocm"
+    } else if label.starts_with("cu") || version_attr(version_py, "cuda").is_some() {
+        "cuda"
+    } else if label.starts_with("cpu") {
+        "cpu"
+    } else {
+        "default"
+    }
+}
+
+/// The string a module's `name = '...'` line holds; None when the line says `None` or is not there.
+fn version_attr(text: &str, name: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        if key.trim() != name {
+            return None;
+        }
+        let value = value.trim();
+        let quoted = value.strip_prefix(['\'', '"'])?.strip_suffix(['\'', '"'])?;
+        Some(quoted.to_string())
     })
 }
 
@@ -326,7 +438,8 @@ pub struct StartRequest {
     pub args: Vec<String>,
     #[serde(default)]
     pub mounts: Vec<Mount>,
-    /// `none` (the default). A job gets no network: the node has no egress proxy for jobs.
+    /// `none` (the default): no network. `hub`: loopback TCP to the hub's port, which the job's `--hub`
+    /// argument names (a loose job on the hub's own machine). `host` is refused.
     #[serde(default)]
     pub network: String,
     #[serde(default)]
@@ -341,12 +454,11 @@ pub struct RequestLimits {
     pub processes: Option<u32>,
 }
 
-/// A bind mount: a path under the state directory, read-only unless `ro` is false. The native
-/// runner grants the host path; `container` is checked but not mapped.
+/// A bind mount: a host path under the state directory, read-only unless `ro` is false. The native
+/// runner grants the host path itself.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Mount {
     pub host: String,
-    pub container: String,
     #[serde(default = "read_only")]
     pub ro: bool,
 }
@@ -390,14 +502,15 @@ fn validate(
     };
     let network = match request.network.as_str() {
         "" | "none" => Network::None,
+        "hub" => Network::LoopbackPort(hub_port(&request.args)?),
         "host" => {
             return Err(
-                "network host is not available: a trainer job gets no network, because the node \
-                 has no egress proxy for jobs"
+                "network host is not available: a trainer job gets no network, or the hub's loopback port \
+                 (network hub), because the node has no egress proxy for jobs"
                     .into(),
             );
         }
-        other => return Err(format!("network is none, not {other:?}")),
+        other => return Err(format!("network is none or hub, not {other:?}")),
     };
     if request.env.len() > MAX_ENV {
         return Err(format!("at most {MAX_ENV} env entries"));
@@ -506,19 +619,31 @@ fn plain_path(text: &str) -> bool {
         && !text.split(['/', '\\']).any(|part| part == "..")
 }
 
-/// A mount's host path must be absolute and exist under the state directory (symlinks resolved);
-/// its container path must be absolute.
+/// The hub's port for a loose job: the port in the `--hub` argument's `http://127.0.0.1:<port>/` URL.
+/// The sandbox grants that one port, on loopback, and nothing else.
+fn hub_port(args: &[String]) -> Result<u16, String> {
+    const REFUSED: &str = "network hub needs --hub http://127.0.0.1:<port>/... among the job's args: \
+                           a loose job reaches its hub on loopback only";
+    let url = args
+        .iter()
+        .position(|arg| arg == "--hub")
+        .and_then(|at| args.get(at + 1))
+        .ok_or(REFUSED)?;
+    let rest = url.strip_prefix("http://127.0.0.1:").ok_or(REFUSED)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let after = &rest[digits.len()..];
+    match digits.parse::<u16>() {
+        Ok(port) if port != 0 && (after.is_empty() || after.starts_with('/')) => Ok(port),
+        _ => Err(REFUSED.into()),
+    }
+}
+
+/// A mount's host path must be absolute and exist under the state directory (symlinks resolved).
 fn check_mount(mount: &Mount, state: &Path) -> Result<(), String> {
     if !Path::new(&mount.host).is_absolute() || !plain_path(&mount.host) {
         return Err(format!(
             "mount host {:?} must be an absolute path without commas or '..'",
             mount.host
-        ));
-    }
-    if !mount.container.starts_with('/') || !plain_path(&mount.container) {
-        return Err(format!(
-            "mount container path {:?} must be absolute without commas or '..'",
-            mount.container
         ));
     }
     let root = std::fs::canonicalize(state)
@@ -1123,6 +1248,11 @@ mod tests {
             vendor,
             uv: Ok(()),
             runner: Ok(()),
+            env: TrainerEnv {
+                torch: Some("cuda"),
+                matches: true,
+                detail: String::new(),
+            },
             sandbox: Ok("landlock"),
             grant: Ok(()),
         }
@@ -1318,7 +1448,6 @@ mod tests {
         let mut missing = request("m");
         missing.mounts.push(Mount {
             host: "/nonexistent/x".into(),
-            container: "/data".into(),
             ro: true,
         });
         assert!(ok(missing, "native-cpu", &[]).is_err());
@@ -1327,7 +1456,6 @@ mod tests {
         let mut writable_file = request("f");
         writable_file.mounts.push(Mount {
             host: file.display().to_string(),
-            container: "/data".into(),
             ro: false,
         });
         assert!(
@@ -1337,7 +1465,6 @@ mod tests {
         let mut mounted = request("mps");
         mounted.mounts.push(Mount {
             host: state.display().to_string(),
-            container: "/data".into(),
             ro: true,
         });
         assert!(ok(mounted, "native-mps", &[0]).is_ok());
@@ -1508,31 +1635,26 @@ mod tests {
         std::fs::create_dir_all(&outside).expect("outside");
         let inside = Mount {
             host: state.join("data").display().to_string(),
-            container: "/data".into(),
             ro: true,
         };
         assert!(check_mount(&inside, &state).is_ok());
         let escape = Mount {
             host: outside.display().to_string(),
-            container: "/data".into(),
             ro: true,
         };
         assert!(check_mount(&escape, &state).is_err());
         let dotdot = Mount {
             host: format!("{}/../outside", state.display()),
-            container: "/data".into(),
             ro: true,
         };
         assert!(check_mount(&dotdot, &state).is_err());
         let comma = Mount {
             host: format!("{},x", state.join("data").display()),
-            container: "/data".into(),
             ro: true,
         };
         assert!(check_mount(&comma, &state).is_err());
         let relative = Mount {
             host: "state/data".into(),
-            container: "/data".into(),
             ro: true,
         };
         assert!(check_mount(&relative, &state).is_err());
@@ -1564,6 +1686,147 @@ mod tests {
         assert!(!valid_job_id(""));
         assert!(!valid_job_id("a/b"));
         assert!(!valid_job_id(&"x".repeat(64)));
+    }
+
+    /// A loose job reaches its hub on loopback only: the sandbox grants the port its `--hub` argument names, and a
+    /// hub named anywhere else, or none, is refused before anything starts.
+    #[test]
+    fn a_loose_job_reaches_only_the_hub_port_its_args_name() {
+        let state = scratch("hub-port");
+        let hub = |args: &[&str]| {
+            let mut req = request("hub-1");
+            req.network = "hub".into();
+            req.args = args.iter().map(|arg| (*arg).to_string()).collect();
+            validate(req, "native-cpu", &[], &state)
+        };
+        let launch = hub(&[
+            "--job",
+            "job.json",
+            "--hub",
+            "http://127.0.0.1:7700/v1/foundry/jobs/tj-1/hub",
+        ])
+        .expect("valid");
+        assert_eq!(launch.network, Network::LoopbackPort(7700));
+        let job = state.join("train").join("hub-1");
+        let spec = job_spec(
+            &launch,
+            &state.join("uv"),
+            &state.join("trainer"),
+            &job,
+            &UvDirs::default(),
+            Vec::new(),
+        );
+        assert_eq!(spec.network, Network::LoopbackPort(7700));
+        assert_eq!(
+            hub_port(&["--hub".to_string(), "http://127.0.0.1:65535/".to_string()]),
+            Ok(65535)
+        );
+        assert!(
+            hub(&["--hub", "http://10.0.0.5:7700/x"]).is_err(),
+            "loopback only"
+        );
+        assert!(
+            hub(&["--hub", "http://localhost:7700/x"]).is_err(),
+            "the loopback address, spelled out"
+        );
+        assert!(
+            hub(&["--hub", "http://127.0.0.1:0/x"]).is_err(),
+            "port 0 is no port"
+        );
+        assert!(
+            hub(&["--hub", "http://127.0.0.1:70000/x"]).is_err(),
+            "a port fits in 16 bits"
+        );
+        assert!(
+            hub(&["--hub", "http://127.0.0.1:7700x/y"]).is_err(),
+            "a port, then a path"
+        );
+        assert!(
+            hub(&["--job", "job.json"]).is_err(),
+            "a loose job names its hub"
+        );
+        assert!(
+            hub(&["--hub=http://127.0.0.1:7700/x"]).is_err(),
+            "--hub takes its value as the next argument"
+        );
+        let mut bridge = request("hub-2");
+        bridge.network = "bridge".into();
+        assert!(validate(bridge, "native-cpu", &[], &state).is_err());
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// The torch build a `torch/version.py` names: its local version label, or the attribute that is set.
+    #[test]
+    fn torch_build_is_read_from_the_version_file_of_each_wheel() {
+        let version_py = |label: &str, cuda: &str, hip: &str| {
+            format!("__version__ = '2.5.1{label}'\ndebug = False\ncuda = {cuda}\nhip = {hip}\n")
+        };
+        assert_eq!(torch_build(&version_py("+cu124", "'12.4'", "None")), "cuda");
+        assert_eq!(
+            torch_build(&version_py("+rocm6.2", "None", "'6.2'")),
+            "rocm"
+        );
+        assert_eq!(torch_build(&version_py("+xpu", "None", "None")), "xpu");
+        assert_eq!(torch_build(&version_py("+cpu", "None", "None")), "cpu");
+        assert_eq!(torch_build(&version_py("", "None", "None")), "default");
+    }
+
+    /// The trainer's environment reports the torch build it holds, and names the `uv sync --extra` that installs
+    /// the build an accelerator needs. A machine with no accelerator takes any build; no torch does not match.
+    #[test]
+    fn the_trainer_env_names_the_extra_when_its_torch_serves_no_accelerator() {
+        let root = scratch("trainer-env");
+        let runner = root.join("trainer");
+        let version = runner.join(".venv/lib/python3.12/site-packages/torch/version.py");
+        std::fs::create_dir_all(version.parent().expect("site-packages")).expect("site-packages");
+        std::fs::write(
+            &version,
+            "__version__ = '2.5.1+cpu'\ncuda = None\nhip = None\n",
+        )
+        .expect("version.py");
+        let cpu_build = trainer_env(&runner, Some("nvidia"));
+        assert_eq!(cpu_build.torch, Some("cpu"));
+        assert!(!cpu_build.matches, "{}", cpu_build.detail);
+        assert!(
+            cpu_build.detail.contains("run uv sync --project"),
+            "{}",
+            cpu_build.detail
+        );
+        assert!(
+            cpu_build.detail.ends_with("--extra cuda"),
+            "{}",
+            cpu_build.detail
+        );
+        let on_mac = trainer_env(&runner, Some("apple"));
+        assert!(
+            !on_mac.matches && on_mac.detail.ends_with("--extra cpu"),
+            "{}",
+            on_mac.detail
+        );
+        assert!(
+            trainer_env(&runner, None).matches,
+            "a machine with no accelerator takes any build"
+        );
+        std::fs::write(
+            &version,
+            "__version__ = '2.5.1+cu124'\ncuda = '12.4'\nhip = None\n",
+        )
+        .expect("version.py");
+        let cuda = trainer_env(&runner, Some("nvidia"));
+        assert_eq!(
+            (cuda.torch, cuda.matches),
+            (Some("cuda"), true),
+            "{}",
+            cuda.detail
+        );
+        let missing = trainer_env(&root.join("none"), Some("nvidia"));
+        assert_eq!(missing.torch, None);
+        assert!(
+            !missing.matches && missing.detail.contains("--extra cuda"),
+            "{}",
+            missing.detail
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A stand-in trainer project: `apz_train.run` prints two events; `--sleep` waits, and

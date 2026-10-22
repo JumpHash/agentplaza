@@ -365,7 +365,7 @@ scripts/test-db.sh db                        # apid's database tests, against a 
 scripts/test-db.sh all                       # every apid test with the database set
 cd apps/web && npm run check                 # typecheck, build and the console's tests
 python3 -I tests/acceptance/run.py all       # the acceptance matrix (hosts its own stacks; see --help)
-cd trainer && uv sync --locked && uv run pytest -q
+cd trainer && uv sync --locked --extra cpu && uv run --extra cpu pytest -q
 ```
 
 `scripts/test-db.sh` needs the `postgres:17` image already present locally; it never pulls.
