@@ -42,6 +42,9 @@ struct Live {
     token: String,
     mode: &'static str,
     child: Option<std::process::Child>,
+    /// The child's stdin, held open for as long as apid runs: `weft serve --exit-with-stdin` exits when it closes,
+    /// so the child never outlives apid, even one killed without running Drop.
+    _stdin: Option<std::process::ChildStdin>,
     _inproc: Option<(Arc<weft::server::Hub>, apz_http::Handle)>,
 }
 
@@ -242,6 +245,7 @@ fn boot(app: &Arc<App>) -> Result<(), String> {
                 token: app.token.clone(),
                 mode: "in-process",
                 child: None,
+                _stdin: None,
                 _inproc: Some((h, handle)),
             }
         }
@@ -295,6 +299,7 @@ fn spawn_process(
         .arg(token)
         .arg("--port-file")
         .arg(&port_file)
+        .arg("--exit-with-stdin")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null());
     #[cfg(target_os = "linux")]
@@ -318,7 +323,6 @@ fn spawn_process(
     // The keys go over stdin, never on the command line or in a file.
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     writeln!(stdin, "{}\n{}", hub.seed_hex(), signing.seed_hex()).map_err(|e| e.to_string())?;
-    drop(stdin);
     for _ in 0..200 {
         if let Some(port) = std::fs::read_to_string(&port_file)
             .ok()
@@ -329,6 +333,7 @@ fn spawn_process(
                 token: app.token.clone(),
                 mode: "process",
                 child: Some(child),
+                _stdin: Some(stdin),
                 _inproc: None,
             });
         }
