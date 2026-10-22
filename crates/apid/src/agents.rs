@@ -359,6 +359,8 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
     let project_rules = crate::projects::project_of(app, agent.cid)
         .and_then(|pid| app.prompts.bound_body(&format!("project:{pid}")))
         .map(|rules| render_vars(&rules, agent));
+    // The tools and the skills section come from the session's cached section (tools.rs).
+    let section = crate::tools::section(app, agent);
     AgentProfile {
         name: format!("{} #{}", agent.role, agent.cid),
         role: agent.role.clone(),
@@ -374,15 +376,11 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
                     ),
                     project_rules,
                 ),
-                crate::skills::agent_tools::prompt_section(
-                    app,
-                    &agent.role,
-                    crate::projects::project_of(app, agent.cid).as_deref(),
-                ),
+                section.skills.clone(),
             ),
             crate::projects::prompt_section(app, agent.cid, &agent.role),
         ),
-        tools: crate::tools::specs_for_agent(app, agent),
+        tools: crate::tools::with_library(app, agent, &section),
         max_turns: limits
             .max_turns
             .or(project.max_turns)

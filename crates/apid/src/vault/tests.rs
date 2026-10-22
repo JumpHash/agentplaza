@@ -1425,3 +1425,26 @@ fn a_scope_row_missing_from_the_database_is_tampered() {
         "a scope that is gone fails the index MAC, and is not read as the plaza"
     );
 }
+
+#[test]
+fn a_saved_secret_moves_the_vault_source() {
+    let (store, _dir) = fresh("vault-gens");
+    let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+    let store = store.with_generations(std::sync::Arc::clone(&gens));
+    let key = crate::sources::VAULT.to_string();
+    assert_eq!(gens.get(&key), 0);
+    store
+        .put_plaza(
+            "GITHUB_TOKEN",
+            "connector:github",
+            "GitHub: token",
+            &SecretString::from("value".to_string()),
+            "owner",
+            NOW,
+        )
+        .expect("put");
+    assert!(
+        gens.get(&key) > 0,
+        "a write of the document moves the vault"
+    );
+}
