@@ -1,0 +1,27 @@
+meta {
+  name: Say something in the project chat
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/chats/{{we_chat}}/messages
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"text": "  start the work  "}
+}
+
+assert {
+  res.status: eq 201
+  res.body.author: eq "owner"
+  res.body.kind: eq "message"
+  res.body.text: eq "start the work"
+  res.responseTime: lt {{budgetMs}}
+}

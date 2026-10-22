@@ -1,0 +1,22 @@
+meta {
+  name: List the messages of the project chat after the start
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/chats/{{we_chat}}/messages?after=0&limit=10
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the messages are a list", function () {
+    expect(res.getBody()).to.be.an("array");
+  });
+}

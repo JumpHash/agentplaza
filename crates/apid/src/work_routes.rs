@@ -8,8 +8,8 @@
 //! GET   /v1/tasks/{id}/seats                                → [Seat]
 //! GET   /v1/tasks/{id}/threads                              → [Thread]
 //! GET   /v1/threads/{id}                                    → Thread
-//! GET   /v1/projects/{id}/budget                            → BudgetView, with `tasks`: its tasks' budgets
-//! PUT   /v1/projects/{id}/budget {unit, cap?, warn_at_pct?, monthly_cap?} → BudgetView
+//! GET   /v1/projects/{id}/budget                            → BudgetView, with `tasks`: its tasks' budgets, `disk`: {used_bytes, quota_bytes}
+//! PUT   /v1/projects/{id}/budget {unit, cap?, warn_at_pct?, monthly_cap?, disk_quota_bytes?} → BudgetView
 //! GET   /v1/projects/{id}/budget/ledger[?limit=]            → [Entry], newest first
 //! GET   /v1/tasks/{id}/budget                               → BudgetView
 //! PUT   /v1/tasks/{id}/budget {unit, cap?}                  → BudgetView
@@ -24,7 +24,7 @@
 //! POST  /v1/chats/{id}/messages {text}                      → 201 Message (the owner's; delivered to the chat's session)
 //! PATCH /v1/chats/{id} {title?, archived?}                  → Chat
 //!
-//! Amounts are micro-dollars for a `usd` budget and tokens for a `tokens` one.
+//! Amounts are micro-dollars for a `usd` budget and tokens for a `tokens` one; a disk quota is bytes.
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::Deserialize;
@@ -232,9 +232,11 @@ fn budget_view(app: &App, kind: OwnerKind, id: &str) -> Response {
     }
 }
 
-/// A project's budget, with its tasks' budgets.
+/// A project's budget, with its tasks' budgets and its disk.
 fn project_budget_view(app: &App, id: &str) -> Response {
-    let mut view = match app.budgets.get(OwnerKind::Project, id) {
+    let budget = app.budgets.get(OwnerKind::Project, id);
+    let quota = budget.as_ref().and_then(|b| b.disk_quota_bytes);
+    let mut view = match budget {
         Some(b) => budget_json(&b),
         None => json!({ "owner": id, "cap": null, "spent": 0, "unit": null }),
     };
@@ -245,6 +247,7 @@ fn project_budget_view(app: &App, id: &str) -> Response {
         .filter(|b| b.owner_kind == OwnerKind::Task)
         .map(budget_json)
         .collect();
+    view["disk"] = crate::disk::view(app, id, quota);
     Response::json(200, &view)
 }
 
@@ -276,6 +279,19 @@ struct BudgetBody {
     warn_at_pct: Option<u8>,
     #[serde(default)]
     monthly_cap: Option<u64>,
+    /// A project's disk quota in bytes (`disk.rs`); a task has none.
+    #[serde(default)]
+    disk_quota_bytes: Option<u64>,
+}
+
+/// What a budget body may not say: a disk quota of zero bytes (null is no quota), and a disk quota on a task (its
+/// project has the quota).
+fn budget_refusal(body: &BudgetBody, task: bool) -> Option<&'static str> {
+    match body.disk_quota_bytes {
+        Some(0) => Some("a disk quota is more than zero bytes: send null for none"),
+        Some(_) if task => Some("a task has no disk quota: its project does"),
+        _ => None,
+    }
 }
 
 fn put_project_budget(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -288,15 +304,26 @@ fn put_project_budget(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(b) => b,
         Err(e) => return Response::error(400, &format!("bad budget: {e}")),
     };
+    if let Some(refusal) = budget_refusal(&body, false) {
+        return Response::error(400, refusal);
+    }
+    let quota_before = app
+        .budgets
+        .get(OwnerKind::Project, id)
+        .and_then(|b| b.disk_quota_bytes);
     match app.budgets.set_project(
         id,
         body.unit,
         body.cap,
         body.warn_at_pct.unwrap_or(80),
         body.monthly_cap,
+        body.disk_quota_bytes,
         now(),
     ) {
         Ok(b) => {
+            if b.disk_quota_bytes != quota_before {
+                crate::disk::quota_changed(app, id, now());
+            }
             crate::work_loop::resume_budget(app, OwnerKind::Project, id);
             app.bus.publish("budget", &budget_json(&b));
             Response::json(200, &budget_json(&b))
@@ -317,6 +344,9 @@ fn put_task_budget(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(b) => b,
         Err(e) => return Response::error(400, &format!("bad budget: {e}")),
     };
+    if let Some(refusal) = budget_refusal(&body, true) {
+        return Response::error(400, refusal);
+    }
     match app
         .budgets
         .set_task(id, &project, body.unit, body.cap, now())
@@ -471,5 +501,29 @@ fn edit_chat(app: &App, req: &Request, p: &Params<'_>) -> Response {
     match chat {
         Some(chat) => Response::json(200, &chat),
         None => Response::error(404, &format!("no chat {id}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(disk_quota_bytes: Option<u64>) -> BudgetBody {
+        BudgetBody {
+            unit: Unit::Usd,
+            cap: None,
+            warn_at_pct: None,
+            monthly_cap: None,
+            disk_quota_bytes,
+        }
+    }
+
+    #[test]
+    fn a_disk_quota_is_more_than_zero_bytes_and_a_task_has_none() {
+        assert!(budget_refusal(&body(Some(0)), false).is_some());
+        assert_eq!(budget_refusal(&body(Some(1 << 30)), false), None);
+        assert_eq!(budget_refusal(&body(None), false), None);
+        assert!(budget_refusal(&body(Some(1 << 30)), true).is_some());
+        assert_eq!(budget_refusal(&body(None), true), None);
     }
 }

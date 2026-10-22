@@ -155,6 +155,8 @@ pub struct App {
     pub seats: crate::seats::Seats,
     pub budgets: crate::budgets::Budgets,
     pub cards: crate::cards::Cards,
+    /// The VMs' workspace reports and the disk quotas' check (disk.rs).
+    pub disk: crate::disk::Disk,
     pub chats: crate::chats::Chats,
     pub threads: crate::threads::Threads,
     /// The unfurl answers for the references clients show as chips (unfurl/mod.rs); the memory fallback when there is no Postgres.
@@ -291,6 +293,7 @@ impl App {
             seats: Default::default(),
             budgets: Default::default(),
             cards: Default::default(),
+            disk: Default::default(),
             chats: Default::default(),
             threads: Default::default(),
             unfurl: crate::unfurl::Cache::default(),

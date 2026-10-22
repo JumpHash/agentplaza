@@ -1,0 +1,23 @@
+meta {
+  name: List the archived chats: the project chat is among them
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/v1/chats?archived=true
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the archived chat is listed", function () {
+    const chats = res.getBody();
+    expect(chats.map((c) => c.id)).to.include(bru.getVar("we_chat"));
+  });
+}

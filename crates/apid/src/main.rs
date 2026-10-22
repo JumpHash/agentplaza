@@ -36,6 +36,7 @@ mod conversations;
 mod db;
 mod decisions;
 mod deliverables;
+mod disk;
 mod drafts;
 mod e2b;
 mod e2b_net;

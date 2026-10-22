@@ -2,7 +2,8 @@
 //! message with its options as buttons. Only the decisions an earlier decision of the owner's says are his become
 //! cards: starting a project's plan (W10), a budget, allowance or disk limit reached (W13–W15), an agent-built
 //! connector or a tool that uses a secret (W21), promoting a tool to every project (W37), a tool call the project's
-//! permission mode sends to him; everything else is decided by the AIs and reported as a notice.
+//! permission mode sends to him, a review ruling, an agent proposal (`approvals.rs`, `agent_proposals.rs`); everything
+//! else is decided by the AIs and reported as a notice.
 //!
 //! The records live in memory; the hub's saver keeps them in `plaza.db` (tables `card`, `card_options`).
 
@@ -34,6 +35,8 @@ pub enum Kind {
     Deploy,
     ToolCall,
     Incident,
+    /// An agent proposal the owner approves or rejects (`agent_proposals.rs`).
+    Proposal,
 }
 
 /// Where a card is.

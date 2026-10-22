@@ -1563,7 +1563,7 @@ fn ask_owner(app: &App, run: &Run) {
         &format!("review of task {}", run.task),
         detail,
     );
-    app.bus.publish("approval", &item);
+    crate::approvals::announce(app, &item);
 }
 
 /// The owner's ruling on a review card: pass, send back, or fail. Signed for the owner from the console.

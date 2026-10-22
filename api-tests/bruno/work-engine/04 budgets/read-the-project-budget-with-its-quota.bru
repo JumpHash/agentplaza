@@ -1,0 +1,25 @@
+meta {
+  name: Read the project's budget with its quota and what its disk holds
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{we_pid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.cap: eq 5000000
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the quota is the one set, and the disk is measured against it", function () {
+    const disk = res.getBody().disk;
+    expect(disk.quota_bytes).to.equal(1073741824);
+    expect(disk.used_bytes).to.be.a("number");
+  });
+}

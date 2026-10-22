@@ -2227,6 +2227,7 @@ CREATE TABLE "budget" (
     "cap" INTEGER CHECK ("cap" >= 0),
     "warn_at_pct" INTEGER NOT NULL CHECK ("warn_at_pct" >= 0),
     "monthly_cap" INTEGER CHECK ("monthly_cap" >= 0),
+    "disk_quota_bytes" INTEGER CHECK ("disk_quota_bytes" >= 0),
     "month" INTEGER NOT NULL CHECK ("month" >= 0),
     "month_spent" INTEGER NOT NULL CHECK ("month_spent" >= 0),
     "reserved" INTEGER NOT NULL CHECK ("reserved" >= 0),
@@ -2243,7 +2244,7 @@ CREATE TABLE "budget" (
 CREATE TABLE "card" (
     "id" TEXT NOT NULL,
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
-    "kind" TEXT NOT NULL CHECK ("kind" IN ('start', 'budget', 'allowance', 'disk', 'connector', 'tool', 'engine', 'recipe', 'promote', 'memory', 'review', 'land', 'adopt', 'yank', 'seat', 'release', 'deploy', 'tool_call', 'incident')),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('start', 'budget', 'allowance', 'disk', 'connector', 'tool', 'engine', 'recipe', 'promote', 'memory', 'review', 'land', 'adopt', 'yank', 'seat', 'release', 'deploy', 'tool_call', 'incident', 'proposal')),
     "chat" TEXT,
     "project" TEXT,
     "task" TEXT,

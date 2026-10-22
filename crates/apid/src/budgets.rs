@@ -78,6 +78,8 @@ pub struct Budget {
     pub warn_at_pct: u8,
     /// A project's cap per month for its long-lived sessions; none means no cap.
     pub monthly_cap: Option<u64>,
+    /// A project's disk quota in bytes (`disk.rs`); none means no quota.
+    pub disk_quota_bytes: Option<u64>,
     /// The month (`yyyymm`) `month_spent` counts.
     pub month: u32,
     pub month_spent: u64,
@@ -300,8 +302,8 @@ impl Budgets {
             .collect()
     }
 
-    /// Sets a project's budget (unit, cap, warning share, monthly cap). Its spending so far is kept; a unit change
-    /// starts its count again in the new unit.
+    /// Sets a project's budget (unit, cap, warning share, monthly cap, disk quota). Its spending so far is kept; a unit
+    /// change starts its count again in the new unit.
     pub fn set_project(
         &self,
         project: &str,
@@ -309,6 +311,7 @@ impl Budgets {
         cap: Option<u64>,
         warn_at_pct: u8,
         monthly_cap: Option<u64>,
+        disk_quota_bytes: Option<u64>,
         now_ms: u64,
     ) -> Result<Budget, String> {
         let budget = {
@@ -324,6 +327,7 @@ impl Budgets {
             b.cap = cap;
             b.warn_at_pct = warn_at_pct.clamp(1, 100);
             b.monthly_cap = monthly_cap;
+            b.disk_quota_bytes = disk_quota_bytes;
             b.warned = b.warn_due() && false;
             b.paused = b.left() == Some(0) && cap.is_some();
             b.updated_ms = now_ms;
@@ -800,6 +804,7 @@ fn empty(owner_kind: OwnerKind, owner: &str, project: &str, unit: Unit, now_ms: 
         cap: None,
         warn_at_pct: 80,
         monthly_cap: None,
+        disk_quota_bytes: None,
         month: month_of(now_ms),
         month_spent: 0,
         reserved: 0,
@@ -865,7 +870,7 @@ mod tests {
 
     fn budgets() -> Budgets {
         let b = Budgets::default();
-        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1)
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 1)
             .unwrap();
         b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1)
             .unwrap();
@@ -970,7 +975,7 @@ mod tests {
     #[test]
     fn a_token_task_is_checked_in_tokens_and_charged_to_its_dollar_project_in_dollars() {
         let b = Budgets::default();
-        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1)
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 1)
             .unwrap();
         b.set_task("t1", "pr1", Unit::Tokens, Some(2_000_000), 1)
             .unwrap();
@@ -1007,7 +1012,7 @@ mod tests {
     #[test]
     fn a_long_lived_session_charges_its_project_under_the_monthly_cap() {
         let b = Budgets::default();
-        b.set_project("pr1", Unit::Usd, None, 80, Some(usd(1.0)), 1)
+        b.set_project("pr1", Unit::Usd, None, 80, Some(usd(1.0)), None, 1)
             .unwrap();
         let hold = b
             .hold(None, "pr1", Amount::of(usd(0.8), 0), None, None, 2)
@@ -1023,6 +1028,33 @@ mod tests {
             b.hold(None, "pr1", Amount::of(usd(0.5), 0), None, None, next_month)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn a_disk_quota_is_set_beside_the_spending_and_can_be_cleared() {
+        let b = budgets();
+        b.start_task("t1", usd(4.0), 2).unwrap();
+        let hold = b
+            .hold(Some("t1"), "pr1", Amount::of(usd(1.0), 0), None, None, 3)
+            .unwrap();
+        b.settle(&hold, Amount::of(usd(1.0), 0), None, None, 4);
+        let set = b
+            .set_project(
+                "pr1",
+                Unit::Usd,
+                Some(usd(10.0)),
+                80,
+                None,
+                Some(5 << 30),
+                5,
+            )
+            .unwrap();
+        assert_eq!(set.disk_quota_bytes, Some(5 << 30));
+        assert_eq!(set.spent, usd(1.0), "a quota does not touch the spending");
+        let cleared = b
+            .set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 6)
+            .unwrap();
+        assert_eq!((cleared.disk_quota_bytes, cleared.spent), (None, usd(1.0)));
     }
 
     #[test]
@@ -1051,7 +1083,7 @@ mod tests {
         let db = Arc::clone(store.db("plaza"));
         let b = budgets();
         b.attach(Arc::clone(&db));
-        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1)
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 1)
             .unwrap();
         b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1)
             .unwrap();
