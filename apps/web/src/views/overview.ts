@@ -349,7 +349,8 @@ function composerBox(): Composer {
     if (!maySend(text, ids, sending || bar.busy() || bar.failed())) return;
     sending = true;
     syncSend();
-    const ok = await attempt(() => api.chat(cid, text, ids), 'Sent to the orchestrator');
+    // The owner's line to the orchestrator is the main chat: what is said here is read there too.
+    const ok = await attempt(() => workApi.say('main', text, ids), 'Sent to the orchestrator');
     sending = false;
     syncSend();
     if (ok) {
