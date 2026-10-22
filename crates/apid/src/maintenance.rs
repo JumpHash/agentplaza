@@ -19,14 +19,15 @@
 //! - `POST …/proposals/{pid}/approve {note?, budget?, role?}`, `…/decline {reason?}`, `…/later {note?}`
 //!
 //! Public: `POST /v1/ingest/{token}` takes one signal (JSON as above, or plain text), for an app's feedback form, an
-//! error tracker's webhook or a support inbox. Saved in `<state>/maintenance.json` (and Postgres, "maintenance").
+//! error tracker's webhook or a support inbox. Kept in plaza.db (table `maintenance_book`, one row per project).
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_proto::wire::WorkKind;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -75,13 +76,14 @@ const DEFAULT_EVERY_HOURS: u32 = 24;
 // ---- Data ----------------------------------------------------------------------------------------------------------
 
 /// The owner's settings for a project's maintenance.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Config {
     /// Hours between scheduled sweeps; 0 sweeps only when the owner asks (or new signals come and none ran today).
     #[serde(default = "default_every")]
     pub every_hours: u32,
     /// The agents who sweep, in turn; empty: the project's members, planners and researchers first.
     #[serde(default)]
+    #[table(list)]
     pub watchers: Vec<u64>,
     /// What matters to the owner now ("checkout conversion", "the mobile app's crashes"): every sweep reads it.
     #[serde(default)]
@@ -103,7 +105,7 @@ impl Default for Config {
 }
 
 /// One thing heard about the project.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Signal {
     /// `s<n>`.
     pub id: String,
@@ -125,7 +127,7 @@ pub struct Signal {
 }
 
 /// One part of the product on the map.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Area {
     /// A slug, unique in the map.
     pub id: String,
@@ -134,6 +136,7 @@ pub struct Area {
     pub summary: String,
     /// Where it lives in the repository.
     #[serde(default)]
+    #[table(list)]
     pub paths: Vec<String>,
     /// One of [`HEALTH`].
     #[serde(default = "unknown")]
@@ -142,6 +145,7 @@ pub struct Area {
     pub notes: String,
     /// The areas it depends on or talks to.
     #[serde(default)]
+    #[table(list)]
     pub links: Vec<String>,
     #[serde(default)]
     pub updated_ms: u64,
@@ -154,12 +158,13 @@ fn unknown() -> String {
 }
 
 /// The watchers' map of the product.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Map {
     /// What the product is and how it stands, in a paragraph.
     #[serde(default)]
     pub summary: String,
     #[serde(default)]
+    #[table(child)]
     pub areas: Vec<Area>,
     #[serde(default)]
     pub updated_ms: u64,
@@ -168,7 +173,7 @@ pub struct Map {
 }
 
 /// What a proposal would change.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Impact {
     /// What would be different, for the users and in the code.
     #[serde(default)]
@@ -178,6 +183,7 @@ pub struct Impact {
     pub users: String,
     /// The map's areas it touches.
     #[serde(default)]
+    #[table(list)]
     pub areas: Vec<String>,
     /// One of [`RISKS`].
     #[serde(default = "medium")]
@@ -191,7 +197,7 @@ fn medium() -> String {
 }
 
 /// What a proposal is worth: 1 (little) to 5 (a lot), and why.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Worth {
     pub score: u8,
     #[serde(default)]
@@ -199,7 +205,7 @@ pub struct Worth {
 }
 
 /// What a proposal would cost.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Effort {
     /// One of [`SIZES`].
     #[serde(default = "m")]
@@ -216,7 +222,7 @@ fn m() -> String {
 }
 
 /// Why the watchers think so: a signal, or a note (a file, a figure).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Evidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal: Option<String>,
@@ -225,7 +231,7 @@ pub struct Evidence {
 }
 
 /// Data the watchers lack, and what would give it to them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Instrument {
     /// One of [`INSTRUMENT_KINDS`].
     pub kind: String,
@@ -294,7 +300,7 @@ impl Proposal {
 }
 
 /// A sweep under way.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Running {
     pub work: u64,
     pub cid: u64,
@@ -304,7 +310,7 @@ pub struct Running {
 }
 
 /// The sweeps' record.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Sweep {
     #[serde(default)]
     pub runs: u64,
@@ -314,6 +320,7 @@ pub struct Sweep {
     #[serde(default)]
     pub next_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(flatten)]
     pub running: Option<Running>,
     /// The watcher's last summary.
     #[serde(default)]
@@ -396,6 +403,148 @@ impl Book {
 
 // ---- Store ---------------------------------------------------------------------------------------------------------
 
+// ---- Storage -------------------------------------------------------------------------------------------------------
+
+// A book is one row of `maintenance_book`, its signals and proposals child rows. The settings and the map are
+// optional children, and a proposal's impact too, because a struct that holds a list cannot be flattened into its
+// parent's row: the mirrors below hold the same fields in that shape, and convert at the boundary.
+
+/// A book as a row of `maintenance_book`.
+#[derive(Debug, Clone, PartialEq, Eq, apz_store::Table)]
+#[table(name = "maintenance_book")]
+struct BookRow {
+    #[table(key)]
+    project: String,
+    #[table(child)]
+    config: Option<Config>,
+    #[table(child)]
+    map: Option<Map>,
+    #[table(child)]
+    signals: Vec<Signal>,
+    #[table(child)]
+    proposals: Vec<ProposalRow>,
+    #[table(flatten)]
+    sweep: Sweep,
+    seq: u64,
+    ingest: Option<String>,
+}
+
+/// A proposal as a child row of a book.
+#[derive(Debug, Clone, PartialEq, Eq, apz_store::Table)]
+struct ProposalRow {
+    id: String,
+    kind: String,
+    title: String,
+    summary: String,
+    area: Option<String>,
+    #[table(child)]
+    impact: Option<Impact>,
+    #[table(flatten)]
+    worth: Worth,
+    #[table(flatten)]
+    effort: Effort,
+    #[table(child)]
+    evidence: Vec<Evidence>,
+    #[table(flatten)]
+    instrument: Option<Instrument>,
+    role: String,
+    acceptance: String,
+    state: String,
+    by_cid: u64,
+    by: String,
+    created_ms: u64,
+    decided_ms: u64,
+    note: String,
+    task: Option<String>,
+}
+
+impl From<&Book> for BookRow {
+    fn from(book: &Book) -> Self {
+        BookRow {
+            project: book.project.clone(),
+            config: Some(book.config.clone()),
+            map: Some(book.map.clone()),
+            signals: book.signals.clone(),
+            proposals: book.proposals.iter().map(ProposalRow::from).collect(),
+            sweep: book.sweep.clone(),
+            seq: book.seq,
+            ingest: book.ingest.clone(),
+        }
+    }
+}
+
+impl From<BookRow> for Book {
+    fn from(row: BookRow) -> Self {
+        Book {
+            project: row.project,
+            config: row.config.unwrap_or_default(),
+            map: row.map.unwrap_or_default(),
+            signals: row.signals,
+            proposals: row.proposals.into_iter().map(Proposal::from).collect(),
+            sweep: row.sweep,
+            seq: row.seq,
+            ingest: row.ingest,
+        }
+    }
+}
+
+impl From<&Proposal> for ProposalRow {
+    fn from(p: &Proposal) -> Self {
+        ProposalRow {
+            id: p.id.clone(),
+            kind: p.kind.clone(),
+            title: p.title.clone(),
+            summary: p.summary.clone(),
+            area: p.area.clone(),
+            impact: Some(p.impact.clone()),
+            worth: p.worth.clone(),
+            effort: p.effort.clone(),
+            evidence: p.evidence.clone(),
+            instrument: p.instrument.clone(),
+            role: p.role.clone(),
+            acceptance: p.acceptance.clone(),
+            state: p.state.clone(),
+            by_cid: p.by_cid,
+            by: p.by.clone(),
+            created_ms: p.created_ms,
+            decided_ms: p.decided_ms,
+            note: p.note.clone(),
+            task: p.task.clone(),
+        }
+    }
+}
+
+impl From<ProposalRow> for Proposal {
+    fn from(row: ProposalRow) -> Self {
+        Proposal {
+            id: row.id,
+            kind: row.kind,
+            title: row.title,
+            summary: row.summary,
+            area: row.area,
+            impact: row.impact.unwrap_or_default(),
+            worth: row.worth,
+            effort: row.effort,
+            evidence: row.evidence,
+            instrument: row.instrument,
+            role: row.role,
+            acceptance: row.acceptance,
+            state: row.state,
+            by_cid: row.by_cid,
+            by: row.by,
+            created_ms: row.created_ms,
+            decided_ms: row.decided_ms,
+            note: row.note,
+            task: row.task,
+        }
+    }
+}
+
+/// The table of the maintenance books: `maintenance_book`, one row per project.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(BookRow)
+}
+
 /// The ingest posts a project may take a minute: the rest are refused until its first post ages out.
 const INGEST_PER_MINUTE: usize = 30;
 const INGEST_WINDOW_MS: u64 = 60 * 1000;
@@ -425,8 +574,8 @@ impl IngestLimit {
     }
 }
 
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     books: Mutex<Vec<Book>>,
     /// The ingest posts each project made lately, for the limit on the public address.
     ingest_posts: IngestLimit,
@@ -437,29 +586,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Store {
-    pub fn load(state_dir: &Path) -> Self {
-        let path = state_dir.join("maintenance.json");
-        let books: Vec<Book> = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            books: Mutex::new(books),
-            ingest_posts: IngestLimit::default(),
-        }
-    }
-
-    fn save(&self, books: &[Book]) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(books).map_err(|e| e.to_string())?;
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| e.to_string())
-    }
-
     /// The book of `project` (an empty one when it has none yet).
     pub fn get(&self, project: &str) -> Book {
         lock(&self.books)
@@ -469,8 +595,8 @@ impl Store {
             .unwrap_or_else(|| Book::new(project))
     }
 
-    /// Runs `change` on a copy of `project`'s book (made when missing) and saves it; a refusal or a failed save
-    /// leaves the store as it was.
+    /// Runs `change` on a copy of `project`'s book (made when missing) and keeps the copy when it succeeds; a refusal
+    /// leaves the store as it was. The saver writes the change to plaza.db.
     pub fn mutate<T>(
         &self,
         project: &str,
@@ -486,7 +612,6 @@ impl Store {
             }
         };
         let out = change(&mut next[at])?;
-        self.save(&next)?;
         *books = next;
         Ok(out)
     }
@@ -499,17 +624,16 @@ impl Store {
             .map(|b| b.project.clone())
     }
 
-    /// The whole state as JSON, for Postgres (`crate::db`).
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&*lock(&self.books)).unwrap_or_default()
+    /// The books' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let rows: Vec<BookRow> = lock(&self.books).iter().map(BookRow::from).collect();
+        RowSet::list(def(), &rows)
     }
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let next: Vec<Book> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut books = lock(&self.books);
-        self.save(&next)?;
-        *books = next;
+    /// Replaces the books with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<BookRow> = apz_store::table::load_list(conn, def())?;
+        *lock(&self.books) = stored.into_iter().map(Book::from).collect();
         Ok(())
     }
 }
@@ -1893,16 +2017,23 @@ fn ingest_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> Store {
-        let dir =
-            std::env::temp_dir().join(format!("apid-maintenance-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        Store::load(&dir)
+    fn scratch() -> Store {
+        Store::default()
+    }
+
+    /// The store's rows written to an in-memory plaza.db and loaded into a fresh store, as a restart does.
+    fn restarted(store: &Store) -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let loaded = scratch();
+        loaded.load(&conn).unwrap();
+        loaded
     }
 
     #[test]
     fn signals_get_ids_in_order_and_the_oldest_go_past_the_cap() {
-        let store = scratch("cap");
+        let store = scratch();
         for i in 0..(MAX_SIGNALS + 5) {
             let signal = SignalIn {
                 text: format!("report {i}"),
@@ -1920,9 +2051,8 @@ mod tests {
             format!("s{}", MAX_SIGNALS + 5)
         );
         assert_eq!(book.unseen(), MAX_SIGNALS);
-        // Saved: a fresh load reads the same book.
-        let again = Store::load(store.path.parent().unwrap());
-        assert_eq!(again.get("pr1"), book);
+        // Stored: a restart reads the same book.
+        assert_eq!(restarted(&store).get("pr1"), book);
     }
 
     #[test]
@@ -1967,7 +2097,7 @@ mod tests {
 
     #[test]
     fn an_ingest_post_is_from_ingest_and_only_takes_outside_kinds() {
-        let store = scratch("ingest-from");
+        let store = scratch();
         let body = SignalIn {
             text: "The export button does nothing".into(),
             kind: Some("report".into()),
@@ -1997,7 +2127,7 @@ mod tests {
 
     #[test]
     fn a_project_takes_thirty_ingest_posts_a_minute() {
-        let store = scratch("limit");
+        let store = scratch();
         for i in 0..INGEST_PER_MINUTE as u64 {
             assert!(store.ingest_posts.admit_at("pr4", i));
         }
@@ -2082,7 +2212,7 @@ mod tests {
 
     #[test]
     fn the_ingest_token_is_kept_only_as_its_hash() {
-        let store = scratch("ingest");
+        let store = scratch();
         let token = "apzi_0123";
         store
             .mutate("pr2", |b| {
@@ -2092,7 +2222,7 @@ mod tests {
             .unwrap();
         assert_eq!(store.by_ingest(&sha256_hex(token)).as_deref(), Some("pr2"));
         assert_eq!(store.by_ingest(&sha256_hex("apzi_other")), None);
-        assert!(!store.snapshot().contains(token));
+        assert!(!format!("{:?}", store.rows().unwrap()).contains(token));
     }
 
     #[test]
@@ -2115,7 +2245,7 @@ mod tests {
 
     #[test]
     fn a_failed_change_leaves_the_book_as_it_was() {
-        let store = scratch("atomic");
+        let store = scratch();
         store
             .mutate("pr3", |b| {
                 b.config.focus = "checkout".into();
@@ -2128,5 +2258,108 @@ mod tests {
         });
         assert!(refused.is_err());
         assert_eq!(store.get("pr3").config.focus, "checkout");
+    }
+
+    #[test]
+    fn a_book_with_every_part_comes_back_whole_from_its_tables() {
+        let store = scratch();
+        let signal = SignalIn {
+            text: "The export button does nothing".into(),
+            ..SignalIn::default()
+        }
+        .into_signal("owner")
+        .unwrap();
+        let proposal = Proposal {
+            id: "mp1".into(),
+            kind: "fix".into(),
+            title: "Fix the export button".into(),
+            summary: "It does nothing on Safari".into(),
+            area: Some("export".into()),
+            impact: Impact {
+                changes: "the button works".into(),
+                users: "all Safari users".into(),
+                areas: vec!["export".into()],
+                risk: "low".into(),
+                risk_note: "small".into(),
+            },
+            worth: Worth {
+                score: 4,
+                why: "many reports".into(),
+            },
+            effort: Effort {
+                size: "s".into(),
+                budget: Some(300),
+                note: "a day".into(),
+            },
+            evidence: vec![Evidence {
+                signal: Some("s1".into()),
+                note: "three reports".into(),
+            }],
+            instrument: Some(Instrument {
+                kind: "analytics".into(),
+                name: "PostHog".into(),
+                catalog: Some("posthog".into()),
+                data: "clicks".into(),
+            }),
+            role: "builder".into(),
+            acceptance: "the button exports on Safari".into(),
+            state: "proposed".into(),
+            by_cid: 4,
+            by: "scout".into(),
+            created_ms: 11,
+            decided_ms: 0,
+            note: String::new(),
+            task: None,
+        };
+        let book = Book {
+            project: "pr4".into(),
+            config: Config {
+                every_hours: 6,
+                watchers: vec![4, 5],
+                focus: "exports".into(),
+            },
+            map: Map {
+                summary: "A reporting tool".into(),
+                areas: vec![Area {
+                    id: "export".into(),
+                    name: "Export".into(),
+                    summary: "Writes the files".into(),
+                    paths: vec!["src/export.rs".into()],
+                    health: "watch".into(),
+                    notes: "slow on big sets".into(),
+                    links: vec!["storage".into()],
+                    updated_ms: 7,
+                    by: "scout".into(),
+                }],
+                updated_ms: 9,
+                by: "scout".into(),
+            },
+            signals: vec![signal],
+            proposals: vec![proposal],
+            sweep: Sweep {
+                runs: 2,
+                last_ms: 3,
+                next_ms: 4,
+                running: Some(Running {
+                    work: 8,
+                    cid: 4,
+                    started_ms: 5,
+                    why: "owner".into(),
+                }),
+                last_summary: "two reports".into(),
+                last_cid: 4,
+                seen_seq: 1,
+            },
+            seq: 3,
+            ingest: Some(sha256_hex("apzi_token")),
+        };
+        let expected = book.clone();
+        store
+            .mutate("pr4", |b| {
+                *b = expected.clone();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(restarted(&store).get("pr4"), book);
     }
 }

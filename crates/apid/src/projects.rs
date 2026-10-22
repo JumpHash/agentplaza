@@ -13,10 +13,11 @@
 //!
 //! Documents are files in the plaza's file store (by id) or paths in the project's repo.
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -57,7 +58,7 @@ pub const DOC_KINDS: &[(&str, &str)] = &[
     ("deliverable", "review"),
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Doc {
     /// One of DOC_KINDS' names.
     pub kind: String,
@@ -77,7 +78,7 @@ pub struct Doc {
     pub at_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Critique {
     pub by_cid: u64,
     pub by: String,
@@ -89,7 +90,7 @@ pub struct Critique {
     pub at_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Event {
     pub at_ms: u64,
     /// cid, or 0 for the owner.
@@ -100,9 +101,11 @@ pub struct Event {
     pub note: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "project")]
 pub struct Project {
     /// `pr<seq>`.
+    #[table(key)]
     pub id: String,
     pub title: String,
     /// The operator's goal, verbatim.
@@ -120,8 +123,10 @@ pub struct Project {
     #[serde(default)]
     pub repo: Option<String>,
     #[serde(default)]
+    #[table(child)]
     pub docs: Vec<Doc>,
     #[serde(default)]
+    #[table(child)]
     pub critiques: Vec<Critique>,
     /// Bumped each time a proposal/design/spec/tasks/revision doc is attached at or after `proposal`.
     #[serde(default)]
@@ -131,8 +136,10 @@ pub struct Project {
     pub approved_by: Option<String>,
     /// Tasks posted for it (ids in the task ledger).
     #[serde(default)]
+    #[table(list)]
     pub tasks: Vec<String>,
     #[serde(default)]
+    #[table(child)]
     pub history: Vec<Event>,
     pub created_ms: u64,
     pub updated_ms: u64,
@@ -204,9 +211,9 @@ impl Actor {
     }
 }
 
-/// The projects, kept in `<state-dir>/projects.json`.
+/// The projects, kept in plaza.db (table `project`).
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     items: Mutex<Vec<Project>>,
 }
 
@@ -276,30 +283,8 @@ fn plan_author(project: &Project) -> Option<u64> {
 }
 
 impl Store {
-    pub fn load(state_dir: &Path) -> Self {
-        let path = state_dir.join("projects.json");
-        let items: Vec<Project> = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            items: Mutex::new(items),
-        }
-    }
-
-    fn save(&self, items: &[Project]) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(items).map_err(|e| e.to_string())?;
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| e.to_string())
-    }
-
-    /// Runs `change` on a copy of the projects and saves it; only then is the copy kept. A refusal
-    /// or a failed save leaves the store as it was.
+    /// Runs `change` on a copy of the projects and keeps the copy once it succeeds; a refusal leaves the store as it
+    /// was. The saver writes the change to plaza.db.
     fn mutate<T>(
         &self,
         change: impl FnOnce(&mut Vec<Project>) -> Result<T, String>,
@@ -310,7 +295,6 @@ impl Store {
             .map_err(|_| "projects are unavailable".to_string())?;
         let mut next: Vec<Project> = items.clone();
         let out = change(&mut next)?;
-        self.save(&next)?;
         *items = next;
         Ok(out)
     }
@@ -1299,25 +1283,23 @@ fn reply(app: &App, result: Result<Project, String>) -> Response {
 }
 
 impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let Ok(items) = self.items.lock() else {
-            return String::new();
-        };
-        serde_json::to_string_pretty(&*items).unwrap_or_default()
+    /// The projects' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
+        RowSet::list(def(), items.iter())
     }
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let next: Vec<Project> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut items = self
-            .items
-            .lock()
-            .map_err(|_| "projects are unavailable".to_string())?;
-        self.save(&next)?;
-        *items = next;
+    /// Replaces the projects with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<Project> = apz_store::table::load_list(conn, def())?;
+        *self.items.lock().unwrap_or_else(PoisonError::into_inner) = stored;
         Ok(())
     }
+}
+
+/// The projects' table: `project`, with its documents, critiques, history and task ids as child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Project)
 }
 
 #[cfg(test)]
@@ -1325,8 +1307,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_restores_into_a_fresh_store() {
-        let (_dir, a) = fresh("snapshot");
+    fn the_projects_come_back_whole_from_their_table() {
+        let a = fresh();
         a.open(
             &lead(),
             "Ship the thing",
@@ -1335,16 +1317,12 @@ mod tests {
             false,
         )
         .unwrap();
-        let (_dir2, b) = fresh("snapshot-restored");
-        b.restore(&a.snapshot()).unwrap();
-        assert_eq!(b.list(), a.list());
-        assert!(b.restore("not json").is_err());
-        assert_eq!(b.list(), a.list(), "a refused restore changes nothing");
+        assert_eq!(restarted(&a).list(), a.list());
     }
 
     #[test]
     fn with_reads_a_field_of_a_known_project_and_none_for_an_unknown_one() {
-        let (_dir, store) = fresh("with");
+        let store = fresh();
         let project = store
             .open(
                 &lead(),
@@ -1361,15 +1339,18 @@ mod tests {
         assert_eq!(store.with("pr999", |p| p.title.clone()), None);
     }
 
-    fn fresh(tag: &str) -> (PathBuf, Store) {
-        let dir = std::env::temp_dir().join(format!(
-            "apid-projects-{tag}-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::load(&dir);
-        (dir, store)
+    fn fresh() -> Store {
+        Store::default()
+    }
+
+    /// The store's rows written to an in-memory plaza.db and loaded into a fresh store, as a restart does.
+    fn restarted(store: &Store) -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let loaded = fresh();
+        loaded.load(&conn).unwrap();
+        loaded
     }
 
     fn who(cid: u64, name: &str, role: &str) -> Actor {
@@ -1444,7 +1425,7 @@ mod tests {
 
     #[test]
     fn open_attach_and_advance_to_research() {
-        let (_dir, store) = fresh("open");
+        let store = fresh();
         let p = store
             .open(
                 &lead(),
@@ -1468,7 +1449,7 @@ mod tests {
     fn advance_gates_hold_a_project_until_its_documents_are_in() {
         // Advance refused without research.
         {
-            let (_dir, store) = fresh("gate");
+            let store = fresh();
             let p = store.open(&lead(), "Ship", "Goal", "other", false).unwrap();
             store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
             store.advance(&p.id, &lead(), "").unwrap();
@@ -1479,7 +1460,7 @@ mod tests {
 
         // Revise blocks until revision is approved.
         {
-            let (_dir, store) = fresh("revise");
+            let store = fresh();
             let id = to_critique(&store, "other", false);
             store
                 .critique(&id, &critic(), "revise", "The tasks miss the tests.")
@@ -1500,7 +1481,7 @@ mod tests {
 
         // Code needs a spec to leave proposal.
         {
-            let (_dir, store) = fresh("code");
+            let store = fresh();
             let p = store
                 .open(&lead(), "Code thing", "Goal", "code", false)
                 .unwrap();
@@ -1527,7 +1508,7 @@ mod tests {
 
     #[test]
     fn other_project_runs_to_implementation() {
-        let (_dir, store) = fresh("full");
+        let store = fresh();
         let id = to_critique(&store, "other", false);
         store
             .critique(&id, &critic(), "approve", "Good to go.")
@@ -1542,7 +1523,7 @@ mod tests {
 
     #[test]
     fn author_cannot_critique_own_revision() {
-        let (_dir, store) = fresh("author");
+        let store = fresh();
         let id = to_critique(&store, "other", false);
         let err = store
             .critique(&id, &planner(), "approve", "I like it")
@@ -1552,7 +1533,7 @@ mod tests {
 
     #[test]
     fn owner_approval_refuses_the_orchestrator() {
-        let (_dir, store) = fresh("owner");
+        let store = fresh();
         let id = to_critique(&store, "other", true);
         store.critique(&id, &critic(), "approve", "Fine.").unwrap();
         store.advance(&id, &lead(), "").unwrap();
@@ -1565,14 +1546,13 @@ mod tests {
     }
 
     #[test]
-    fn projects_persist_across_load() {
-        let (dir, store) = fresh("persist");
+    fn projects_persist_across_a_restart() {
+        let store = fresh();
         let p = store
             .open(&lead(), "Keep me", "Goal", "other", false)
             .unwrap();
         store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
-        drop(store);
-        let reloaded = Store::load(&dir);
+        let reloaded = restarted(&store);
         let all = reloaded.list();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].title, "Keep me");

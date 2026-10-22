@@ -430,7 +430,10 @@ impl Store {
                 self.listings.changed(&p.id);
             }
         }
-        for o in old.iter().filter(|o| !providers.iter().any(|p| p.id == o.id)) {
+        for o in old
+            .iter()
+            .filter(|o| !providers.iter().any(|p| p.id == o.id))
+        {
             self.listings.removed(&o.id);
         }
         self.gateway.set_providers(providers);
@@ -644,7 +647,8 @@ impl Store {
     /// the result.
     pub fn check(&self, id: &str) -> Result<Value, Failure> {
         let p = self.find(id)?;
-        let health = crate::provider_health::check(&self.listings, &self.gateway, &p, self.credential(&p));
+        let health =
+            crate::provider_health::check(&self.listings, &self.gateway, &p, self.credential(&p));
         lock(&self.health).insert(p.id.clone(), health.clone());
         Ok(json!({ "id": p.id, "health": health }))
     }
@@ -659,7 +663,12 @@ impl Store {
                 .map(|p| {
                     scope.spawn(move || {
                         let health = if p.enabled {
-                            crate::provider_health::check(&self.listings, &self.gateway, p, self.credential(p))
+                            crate::provider_health::check(
+                                &self.listings,
+                                &self.gateway,
+                                p,
+                                self.credential(p),
+                            )
                         } else {
                             self.health_of(p)
                         };
@@ -851,7 +860,9 @@ fn provider_models_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(config) => config,
         Err(f) => return failure(f),
     };
-    let force = req.query_param("refresh").is_some_and(|v| v == "1" || v == "true");
+    let force = req
+        .query_param("refresh")
+        .is_some_and(|v| v == "1" || v == "true");
     let listing = match app.providers.listings.peek(id) {
         Some(listing) if !force => Ok(listing),
         _ => app

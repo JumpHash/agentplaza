@@ -200,7 +200,9 @@ impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Refused::NotFound(id) => write!(f, "no session {id}"),
-            Refused::Move { id, from, to } => write!(f, "session {id} cannot move from {from:?} to {to:?}"),
+            Refused::Move { id, from, to } => {
+                write!(f, "session {id} cannot move from {from:?} to {to:?}")
+            }
         }
     }
 }
@@ -255,7 +257,11 @@ impl Sessions {
     /// The live session whose fork is VM `cid`.
     pub fn by_cid(&self, cid: u64) -> Option<Session> {
         let inner = self.lock();
-        inner.by_cid.get(&cid).and_then(|id| inner.by_id.get(id)).cloned()
+        inner
+            .by_cid
+            .get(&cid)
+            .and_then(|id| inner.by_id.get(id))
+            .cloned()
     }
 
     /// The sessions `filter` selects, newest first.
@@ -265,7 +271,12 @@ impl Sessions {
             .by_id
             .values()
             .filter(|s| filter.project.as_ref().is_none_or(|p| &s.project == p))
-            .filter(|s| filter.task.as_ref().is_none_or(|t| s.task.as_ref() == Some(t)))
+            .filter(|s| {
+                filter
+                    .task
+                    .as_ref()
+                    .is_none_or(|t| s.task.as_ref() == Some(t))
+            })
             .filter(|s| filter.state.is_none_or(|st| s.state == st))
             .filter(|s| !filter.live || !s.state.is_final())
             .cloned()
@@ -284,7 +295,11 @@ impl Sessions {
             .ok_or_else(|| Refused::NotFound(id.to_string()))?;
         let before = session.cid;
         f(session);
-        let after = if session.state.is_final() { None } else { session.cid };
+        let after = if session.state.is_final() {
+            None
+        } else {
+            session.cid
+        };
         let id = session.id.clone();
         let changed = session.clone();
         if before != after {
@@ -302,7 +317,9 @@ impl Sessions {
 
     /// Moves a session to `to` (refused when 5.1 does not allow it), stamping when it started or ended.
     pub fn set_state(&self, id: &str, to: State, now_ms: u64) -> Result<Session, Refused> {
-        let current = self.get(id).ok_or_else(|| Refused::NotFound(id.to_string()))?;
+        let current = self
+            .get(id)
+            .ok_or_else(|| Refused::NotFound(id.to_string()))?;
         if current.state == to {
             return Ok(current);
         }
@@ -335,9 +352,17 @@ impl Sessions {
     }
 
     /// Ends a session (from any live state) with its outcome; `failed` marks it failed.
-    pub fn finish(&self, id: &str, outcome: &str, failed: bool, now_ms: u64) -> Result<Session, Refused> {
+    pub fn finish(
+        &self,
+        id: &str,
+        outcome: &str,
+        failed: bool,
+        now_ms: u64,
+    ) -> Result<Session, Refused> {
         let to = if failed { State::Failed } else { State::Ended };
-        let current = self.get(id).ok_or_else(|| Refused::NotFound(id.to_string()))?;
+        let current = self
+            .get(id)
+            .ok_or_else(|| Refused::NotFound(id.to_string()))?;
         if current.state.is_final() {
             return Ok(current);
         }
@@ -366,7 +391,10 @@ impl Sessions {
 
     /// Replaces the sessions with what the store holds (at start). Sessions that were live when the hub stopped are
     /// failed: their forks did not survive the hub (no respawn at boot; the seats they filled start again).
-    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), apz_store::StoreError> {
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
         let stored: Vec<Session> = apz_store::table::load_list(conn, def())?;
         let now = apz_plaza::now_ms();
         let mut inner = Inner::default();
@@ -424,13 +452,26 @@ mod tests {
         assert_eq!(sessions.by_cid(300).unwrap().id, "s1");
         let running = sessions.set_state("s1", State::Running, 4).unwrap();
         assert_eq!(running.started_ms, Some(4));
-        assert!(sessions.set_state("s1", State::Queued, 5).is_err(), "no way back to queued");
-        sessions.add_usage(300, &Usage { tokens_in: 10, model_calls: 1, ..Usage::default() });
+        assert!(
+            sessions.set_state("s1", State::Queued, 5).is_err(),
+            "no way back to queued"
+        );
+        sessions.add_usage(
+            300,
+            &Usage {
+                tokens_in: 10,
+                model_calls: 1,
+                ..Usage::default()
+            },
+        );
         sessions.set_state("s1", State::HandingOver, 6).unwrap();
         sessions.set_state("s1", State::Ending, 7).unwrap();
         let ended = sessions.set_state("s1", State::Ended, 8).unwrap();
         assert_eq!((ended.usage.tokens_in, ended.ended_ms), (10, Some(8)));
-        assert!(sessions.by_cid(300).is_none(), "an ended session leaves the CID index");
+        assert!(
+            sessions.by_cid(300).is_none(),
+            "an ended session leaves the CID index"
+        );
     }
 
     #[test]
@@ -462,9 +503,19 @@ mod tests {
         loaded.load(&conn).unwrap();
         assert_eq!(loaded.get("s1"), sessions.get("s1"));
         let s2 = loaded.get("s2").unwrap();
-        assert_eq!((s2.state, s2.outcome.as_deref()), (State::Failed, Some("the hub restarted")));
-        assert_eq!(loaded.create(step("t3"), 5).id, "s3", "ids continue after the stored ones");
-        let live = loaded.list(&Filter { live: true, ..Filter::default() });
+        assert_eq!(
+            (s2.state, s2.outcome.as_deref()),
+            (State::Failed, Some("the hub restarted"))
+        );
+        assert_eq!(
+            loaded.create(step("t3"), 5).id,
+            "s3",
+            "ids continue after the stored ones"
+        );
+        let live = loaded.list(&Filter {
+            live: true,
+            ..Filter::default()
+        });
         assert_eq!(live.len(), 1);
     }
 }

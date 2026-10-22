@@ -22,6 +22,36 @@ pub struct Component {
 pub fn all() -> Vec<Component> {
     vec![
         // batch C1
+        Component {
+            name: "tasks",
+            def: apz_plaza::tasks::def,
+            rows: |app| app.plaza.tasks.rows(),
+            load: |app, conn| app.plaza.tasks.load(conn),
+        },
+        Component {
+            name: "projects",
+            def: crate::projects::def,
+            rows: |app| app.projects.rows(),
+            load: |app, conn| app.projects.load(conn),
+        },
+        Component {
+            name: "project_settings",
+            def: crate::project_settings::def,
+            rows: |app| app.project_settings.rows(),
+            load: |app, conn| app.project_settings.load(conn),
+        },
+        Component {
+            name: "maintenance",
+            def: crate::maintenance::def,
+            rows: |app| app.maintenance.rows(),
+            load: |app, conn| app.maintenance.load(conn),
+        },
+        Component {
+            name: "environments",
+            def: crate::environments::def,
+            rows: |app| app.environments.rows(),
+            load: |app, conn| app.environments.load(conn),
+        },
         // batch C2
         // batch C3
         // batch C4
@@ -66,7 +96,11 @@ pub fn all() -> Vec<Component> {
         Component {
             name: "provider_listings",
             def: crate::provider_listings::def,
-            rows: |app| app.providers.listings.rows(&app.providers.gateway().providers()),
+            rows: |app| {
+                app.providers
+                    .listings
+                    .rows(&app.providers.gateway().providers())
+            },
             load: |app, conn| app.providers.listings.load(conn),
         },
     ]

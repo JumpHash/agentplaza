@@ -141,7 +141,10 @@ mod tests {
         let p = ProviderConfig::new("openai", ProviderKind::OpenAi);
         let listings = crate::provider_listings::Listings::new();
         let h = check(&listings, &gw, &p, "missing");
-        assert!(listings.attempt("openai").is_none(), "no listing was attempted");
+        assert!(
+            listings.attempt("openai").is_none(),
+            "no listing was attempted"
+        );
         assert_eq!(h["status"], "crit");
         assert!(
             h["message"]
