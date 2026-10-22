@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::http::Req;
 use crate::openai::{authorize, base};
-use crate::{Ctx, GatewayError, own_meta, parse_tool_input, replayable};
+use crate::{Ctx, GatewayError, own_meta, parse_tool_input, prompt_cache_key, replayable};
 
 const TAG: &str = "openai-responses";
 /// A socket is replaced once it is this old; the server closes at 60 minutes.
@@ -358,8 +358,11 @@ fn body(req: &ChatRequest, model: &str) -> Value {
         "store": false,
         "include": ["reasoning.encrypted_content"],
     });
-    if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(system) = req.system_text() {
         body["instructions"] = json!(system);
+    }
+    if let Some(key) = prompt_cache_key(req) {
+        body["prompt_cache_key"] = json!(key);
     }
     if !req.tools.is_empty() {
         let tools: Vec<Value> = req
@@ -603,9 +606,12 @@ mod tests {
         p.options = Some(serde_json::from_value(json!({"websocket": false})).unwrap());
         let gw = gateway(vec![p]);
         let mut req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "r/gpt-5.6-terra@max".into(),
             system: Some("sys".into()),
             tools: vec![ToolSpec {
+                deferred: false,
                 name: "bash".into(),
                 description: "d".into(),
                 input_schema: json!({"type": "object"}),
@@ -798,6 +804,28 @@ mod tests {
             .expect("spawn")
     }
 
+    #[test]
+    fn the_parts_are_the_instructions_and_the_cached_ones_the_key() {
+        let req = ChatRequest {
+            system_parts: vec![
+                apz_proto::chat::SystemPart {
+                    text: "plaza".into(),
+                    cache: true,
+                },
+                apz_proto::chat::SystemPart {
+                    text: "ada".into(),
+                    cache: false,
+                },
+            ],
+            ..request("hi")
+        };
+        let b = body(&req, "gpt-x");
+        assert_eq!(b["instructions"], "plaza\n\nada");
+        assert_eq!(b["prompt_cache_key"].as_str().map(str::len), Some(16));
+        let plain = body(&request("hi"), "gpt-x");
+        assert!(plain.get("prompt_cache_key").is_none());
+    }
+
     fn at(port: u16) -> ProviderConfig {
         ProviderConfig {
             base_url: Some(format!("http://127.0.0.1:{port}/v1")),
@@ -808,6 +836,8 @@ mod tests {
 
     fn call(gw: &crate::Gateway, deltas: &mut Vec<Delta>) -> ChatResponse {
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "r/gpt-5.6-terra".into(),
             ..request("hi")
         };

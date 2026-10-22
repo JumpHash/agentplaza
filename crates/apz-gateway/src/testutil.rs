@@ -183,6 +183,8 @@ pub fn gateway_with_env(providers: Vec<ProviderConfig>, env: &[(&str, &str)]) ->
 /// A request with one user message and no model.
 pub fn request(text: &str) -> ChatRequest {
     ChatRequest {
+        system_parts: Vec::new(),
+        cache_last_message: false,
         model: String::new(),
         system: None,
         messages: vec![Message::user_text(text)],

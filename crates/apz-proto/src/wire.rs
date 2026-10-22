@@ -42,7 +42,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::chat::{ChatRequest, ChatResponse, Delta, ToolSpec};
+use crate::chat::{ChatRequest, ChatResponse, Delta, SystemPart, ToolSpec};
 
 /// `welcome.echo`.
 pub const WELCOME_ECHO: &str = "plaza-orchestrator";
@@ -379,7 +379,9 @@ pub struct AgentProfile {
     /// The display name of the model (`provider/model`); informational, the
     /// host picks the model for every call.
     pub model: String,
-    pub system: String,
+    /// The system prompt in parts, most stable first.
+    #[serde(default)]
+    pub system_parts: Vec<SystemPart>,
     /// Every tool offered to the model (guest-run and host-run alike).
     pub tools: Vec<ToolSpec>,
     /// Model calls per work item before the agent stops as over budget.

@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
-use apz_proto::chat::Usage;
+use apz_proto::chat::{SystemPart, Usage};
 use apz_proto::wire::{AgentProfile, HostMessage, WorkKind};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -413,33 +413,12 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
     // The agent's own limits, over the project's, over the plaza's defaults.
     let limits = app.harness.limits(agent.cid);
     let project = crate::project_settings::of_agent(app, agent.cid).unwrap_or_default();
-    let project_rules = crate::projects::project_of(app, agent.cid)
-        .and_then(|pid| app.prompts.bound_body(&format!("project:{pid}")))
-        .map(|rules| render_vars(&rules, agent));
     AgentProfile {
         name: format!("{} #{}", agent.role, agent.cid),
         role: agent.role.clone(),
         model: model_of(app, agent),
-        system: with_project(
-            with_skills(
-                with_project_rules(
-                    with_house_rules(
-                        render_vars(&system_prompt(agent, role_prompt), agent),
-                        app.prompts
-                            .bound_body("plaza")
-                            .map(|rules| render_vars(&rules, agent)),
-                    ),
-                    project_rules,
-                ),
-                crate::skills::agent_tools::prompt_section(
-                    app,
-                    &agent.role,
-                    crate::projects::project_of(app, agent.cid).as_deref(),
-                ),
-            ),
-            crate::projects::prompt_section(app, agent.cid, &agent.role),
-        ),
-        tools: crate::tools::specs_for_agent(app, agent),
+        system_parts: system_parts(app, agent, role_prompt),
+        tools: crate::tools::offered_to(app, agent),
         max_turns: limits
             .max_turns
             .or(project.max_turns)
@@ -480,57 +459,68 @@ fn render_vars(text: &str, agent: &Agent) -> String {
     apz_prompt::render(text, &vars)
 }
 
-/// The plaza's AGENTS.md (the library prompt bound to `plaza`), appended to every agent's system prompt.
-fn with_house_rules(system: String, rules: Option<String>) -> String {
-    match rules {
-        Some(rules) if !rules.trim().is_empty() => {
-            format!("{system}\n\n## House rules (AGENTS.md)\n\n{}", rules.trim())
-        }
-        _ => system,
-    }
+/// The system prompt in four parts, most stable first (PLAN 13.3). Parts 1 to 3 say nothing about the seat itself, so
+/// the sessions of one project share them; the first three are cache breakpoints. Part 5, the work item's prompt, is
+/// the first message of the conversation.
+fn system_parts(app: &App, agent: &Agent, role_prompt: &str) -> Vec<SystemPart> {
+    let project = crate::projects::project_of(app, agent.cid);
+    // The harness's prompt, and the tools are offered beside it (the tool index).
+    let harness = render_vars(&harness_prompt(), agent);
+    // The owner's standing rules, and the skills index.
+    let standing = join_sections([
+        section(
+            "House rules (AGENTS.md)",
+            app.prompts
+                .bound_body("plaza")
+                .map(|rules| render_vars(&rules, agent)),
+        ),
+        crate::skills::agent_tools::prompt_section(app, &agent.role, project.as_deref()),
+    ]);
+    // The project's rules, and the paragraph about its project.
+    let project_part = join_sections([
+        section(
+            "Project rules (AGENTS.md)",
+            project
+                .as_deref()
+                .and_then(|pid| app.prompts.bound_body(&format!("project:{pid}")))
+                .map(|rules| render_vars(&rules, agent)),
+        ),
+        crate::projects::prompt_section(app, agent.cid, &agent.role)
+            .map(|paragraph| format!("## Your project\n\n{paragraph}")),
+    ]);
+    // The seat's role and its step's instructions.
+    let seat = render_vars(&seat_prompt(agent, role_prompt), agent);
+    [
+        (harness, true),
+        (standing, true),
+        (project_part, true),
+        (seat, false),
+    ]
+    .into_iter()
+    .map(|(text, cache)| SystemPart { text, cache })
+    .collect()
 }
 
-/// Appends the AGENTS.md bound to the agent's project (`project:<id>`), when there is one.
-fn with_project_rules(system: String, rules: Option<String>) -> String {
-    match rules {
-        Some(rules) if !rules.trim().is_empty() => {
-            format!(
-                "{system}\n\n## Project rules (AGENTS.md)\n\n{}",
-                rules.trim()
-            )
-        }
-        _ => system,
-    }
+/// A `## heading` section with the body's text, when there is any.
+fn section(heading: &str, body: Option<String>) -> Option<String> {
+    body.filter(|body| !body.trim().is_empty())
+        .map(|body| format!("## {heading}\n\n{}", body.trim()))
 }
 
-/// Appends the agent's `## Skills` section (`agent_tools::prompt_section`), when it has skills.
-fn with_skills(system: String, section: Option<String>) -> String {
-    match section {
-        Some(section) => format!("{system}\n\n{section}"),
-        None => system,
-    }
+/// The sections that are there, one after another with a blank line between.
+fn join_sections(sections: impl IntoIterator<Item = Option<String>>) -> String {
+    sections
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
-/// Appends the agent's `## Your project` section (`projects::prompt_section`): the project it works on, or that it has
-/// none yet. The orchestrator, which works on every project, has none.
-fn with_project(system: String, section: Option<String>) -> String {
-    match section {
-        Some(section) => format!("{system}\n\n## Your project\n\n{section}"),
-        None => system,
-    }
-}
-
-/// The system prompt: the plaza preamble, then the role's own prompt.
-fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
-    let orchestrator = tier_of(&agent.role) == Tier::Orchestrator;
-    let label = role_label(&agent.role);
-    let who = format!(
-        "You are the {label} agent of an AgentPlaza (CID {}).",
-        agent.cid
-    );
-    let mut text = format!(
-        "{who}\n\n\
-         You work in your own virtual machine, and inside it you may do anything: you are root, and you can \
+/// Part 1 of the system prompt (PLAN 13.3): the harness's prompt, the same for every agent: the plaza, how to work, how
+/// to write and how money works.
+fn harness_prompt() -> String {
+    let mut text = String::from(
+        "You work in your own virtual machine, and inside it you may do anything: you are root, and you can \
          install and run any software (system packages, language runtimes, CLIs, libraries) from the internet, \
          which you reach through the plaza's proxy. Guest tools (bash, file tools) act on that VM. Host tools \
          (names starting with plaza_, and the connectors to outside services) act on the shared plaza that \
@@ -548,6 +538,38 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
          Plaza laws: never seek, copy or reveal credentials, keys or tokens. Never impersonate another \
          agent or the operator. Never try to reach the host, the hub or another agent's machine except through \
          plaza tools. Report honestly; never claim work you did not do.",
+    );
+    text.push_str(
+        "\n\nHow to write: people read what you write — the operator and other agents. Write plain, complete \
+         sentences, the way a capable colleague explains something: lead with what matters, then the detail. Use \
+         markdown for structure (short headings, lists, tables, code blocks) — the console renders it. Do not write \
+         in private shorthand: no strings of ids, hashes or byte counts in place of meaning; name \
+         people, files and tasks so a reader can follow (\"Marlow's render script\", not \"202 f14ff615e383d \
+         13431 B\"), and give an id or hash only where someone needs it to act. Do not repeat what was already \
+         said, re-verify what is settled, or file status notes that change nothing; if there is nothing new, say \
+         nothing. Keep board posts and messages short; put long material in a shared file and link it.",
+    );
+    text.push_str(
+        "\n\nHow money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
+         it is posted (plaza_post_task) — no wallet is debited and no transfer cap applies. The \
+         worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
+         work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
+         at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
+         nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. Your wallet \
+         is only debited by what you send yourself (plaza_pay), up to 1000 credits a day. plaza_money shows your wallet \
+         and any task's escrow, spend and payouts.",
+    );
+    text
+}
+
+/// Part 4 of the system prompt (PLAN 13.3): the seat's own: who it is, what its tier and role add to the plaza's
+/// prompt, and its role's prompt.
+fn seat_prompt(agent: &Agent, role_prompt: &str) -> String {
+    let orchestrator = tier_of(&agent.role) == Tier::Orchestrator;
+    let label = role_label(&agent.role);
+    let mut text = format!(
+        "You are the {label} agent of an AgentPlaza (CID {}).",
+        agent.cid
     );
     if orchestrator {
         text.push_str(
@@ -599,26 +621,6 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              task waiting on itself through others. Revise after critique and attach a revision.",
         );
     }
-    text.push_str(
-        "\n\nHow to write: people read what you write — the operator and other agents. Write plain, complete \
-         sentences, the way a capable colleague explains something: lead with what matters, then the detail. Use \
-         markdown for structure (short headings, lists, tables, code blocks) — the console renders it. Do not write \
-         in private shorthand: no strings of ids, hashes or byte counts in place of meaning; name \
-         people, files and tasks so a reader can follow (\"Marlow's render script\", not \"202 f14ff615e383d \
-         13431 B\"), and give an id or hash only where someone needs it to act. Do not repeat what was already \
-         said, re-verify what is settled, or file status notes that change nothing; if there is nothing new, say \
-         nothing. Keep board posts and messages short; put long material in a shared file and link it.",
-    );
-    text.push_str(
-        "\n\nHow money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
-         it is posted (plaza_post_task) — no wallet is debited and no transfer cap applies. The \
-         worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
-         work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
-         at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
-         nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. Your wallet \
-         is only debited by what you send yourself (plaza_pay), up to 1000 credits a day. plaza_money shows your wallet \
-         and any task's escrow, spend and payouts.",
-    );
     let role_prompt = role_prompt.trim();
     if !role_prompt.is_empty() {
         text.push_str("\n\n");
@@ -1493,8 +1495,8 @@ mod route_tests {
 
     #[test]
     fn orchestrator_prompt_delegates_and_worker_does_not() {
-        let orchestrator = system_prompt(&agent("orchestrator"), "");
-        let worker = system_prompt(&agent("builder"), "Write the code.");
+        let orchestrator = seat_prompt(&agent("orchestrator"), "");
+        let worker = seat_prompt(&agent("builder"), "Write the code.");
         assert!(orchestrator.contains("You plan and delegate"));
         assert!(orchestrator.contains("plaza_assign"));
         assert!(!worker.contains("delegate"));
