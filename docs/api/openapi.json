@@ -1820,7 +1820,7 @@
         "tags": [
           "chats"
         ],
-        "summary": "Rename or archive a chat",
+        "summary": "Rename, archive or set the model of a chat",
         "parameters": [
           {
             "name": "id",
@@ -1863,6 +1863,16 @@
           },
           "401": {
             "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the current state",
             "content": {
               "application/json": {
                 "schema": {
@@ -1939,6 +1949,76 @@
           "chats"
         ],
         "summary": "Say something in a chat",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "A path parameter is not valid UTF-8",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/chats/{id}/transcript": {
+      "get": {
+        "operationId": "get_v1_chats_id_transcript",
+        "tags": [
+          "chats"
+        ],
+        "summary": "Read the turns a chat's session took on its thread",
         "parameters": [
           {
             "name": "id",
@@ -3214,13 +3294,13 @@
         }
       }
     },
-    "/v1/owner/conversations/{id}/context": {
+    "/v1/chats/{id}/context": {
       "get": {
-        "operationId": "get_v1_owner_conversations_id_context",
+        "operationId": "get_v1_chats_id_context",
         "tags": [
-          "owner"
+          "chats"
         ],
-        "summary": "An owner conversation's context: the orchestrator's, for that conversation",
+        "summary": "A chat's context: the orchestrator's (or its planner's) turns on it",
         "parameters": [
           {
             "name": "id",
@@ -12271,111 +12351,13 @@
         }
       }
     },
-    "/v1/owner/conversations": {
+    "/v1/chats/{id}/draft": {
       "get": {
-        "operationId": "get_v1_owner_conversations",
+        "operationId": "get_v1_chats_id_draft",
         "tags": [
-          "owner"
+          "chats"
         ],
-        "summary": "List the owner's conversations with the orchestrator",
-        "security": [
-          {
-            "owner": []
-          },
-          {}
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          },
-          "401": {
-            "description": "No owner token or session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "post_v1_owner_conversations",
-        "tags": [
-          "owner"
-        ],
-        "summary": "Start a conversation with the orchestrator",
-        "security": [
-          {
-            "owner": []
-          },
-          {}
-        ],
-        "responses": {
-          "201": {
-            "description": "Created"
-          },
-          "401": {
-            "description": "No owner token or session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The request is not valid",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Conflicts with the current state",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "The hub failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Not available now",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/owner/conversations/{id}": {
-      "get": {
-        "operationId": "get_v1_owner_conversations_id",
-        "tags": [
-          "owner"
-        ],
-        "summary": "Read a conversation",
+        "summary": "Read a project chat's draft",
         "parameters": [
           {
             "name": "id",
@@ -12429,11 +12411,11 @@
         }
       },
       "patch": {
-        "operationId": "patch_v1_owner_conversations_id",
+        "operationId": "patch_v1_chats_id_draft",
         "tags": [
-          "owner"
+          "chats"
         ],
-        "summary": "Rename or archive a conversation",
+        "summary": "Edit a project chat's draft",
         "parameters": [
           {
             "name": "id",
@@ -12484,6 +12466,16 @@
               }
             }
           },
+          "409": {
+            "description": "Conflicts with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The hub failed",
             "content": {
@@ -12497,13 +12489,13 @@
         }
       }
     },
-    "/v1/owner/conversations/{id}/messages": {
+    "/v1/chats/{id}/start": {
       "post": {
-        "operationId": "post_v1_owner_conversations_id_messages",
+        "operationId": "post_v1_chats_id_start",
         "tags": [
-          "owner"
+          "chats"
         ],
-        "summary": "Send the orchestrator a message in a conversation",
+        "summary": "Start the project a chat's draft describes",
         "parameters": [
           {
             "name": "id",
@@ -12566,304 +12558,6 @@
           },
           "500": {
             "description": "The hub failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Not available now",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/owner/conversations/{id}/transcript": {
-      "get": {
-        "operationId": "get_v1_owner_conversations_id_transcript",
-        "tags": [
-          "owner"
-        ],
-        "summary": "Read the orchestrator's turns in a conversation",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "owner": []
-          },
-          {}
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          },
-          "400": {
-            "description": "A path parameter is not valid UTF-8",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "No owner token or session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/owner/conversations/{id}/draft": {
-      "get": {
-        "operationId": "get_v1_owner_conversations_id_draft",
-        "tags": [
-          "owner"
-        ],
-        "summary": "Read a conversation's project draft",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "owner": []
-          },
-          {}
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          },
-          "400": {
-            "description": "A path parameter is not valid UTF-8",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "No owner token or session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "operationId": "patch_v1_owner_conversations_id_draft",
-        "tags": [
-          "owner"
-        ],
-        "summary": "Edit a conversation's project draft",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "owner": []
-          },
-          {}
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          },
-          "400": {
-            "description": "A path parameter is not valid UTF-8",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "No owner token or session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Conflicts with the current state",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "The hub failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/owner/conversations/{id}/start": {
-      "post": {
-        "operationId": "post_v1_owner_conversations_id_start",
-        "tags": [
-          "owner"
-        ],
-        "summary": "Start the project a conversation drafted",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "owner": []
-          },
-          {}
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          },
-          "400": {
-            "description": "A path parameter is not valid UTF-8",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "No owner token or session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Conflicts with the current state",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "The hub failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "An upstream failed",
             "content": {
               "application/json": {
                 "schema": {

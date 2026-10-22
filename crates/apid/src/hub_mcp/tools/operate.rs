@@ -219,7 +219,7 @@ impl Tool for MessageOrchestrator {
     }
 
     fn description(&self) -> &'static str {
-        "Sends the owner's message to the orchestrator: in one of the owner's conversations when `conversation` names it (conv-<n>; the answer is added to it), else as a chat in the owner's thread."
+        "Sends the owner's message to the orchestrator, in one of the owner's chats: `chat` names it (ch<n>, or main, the default), and the orchestrator's answer is posted in that chat."
     }
 
     fn input_schema(&self) -> Value {
@@ -227,7 +227,7 @@ impl Tool for MessageOrchestrator {
             "type": "object",
             "properties": {
                 "text": { "type": "string", "minLength": 1 },
-                "conversation": { "type": "string", "description": "the owner's conversation to send it in (conv-<n>)" },
+                "chat": { "type": "string", "description": "the owner's chat to send it in (ch<n>, or main)" },
             },
             "required": ["text"],
             "additionalProperties": false,
@@ -237,25 +237,22 @@ impl Tool for MessageOrchestrator {
     fn output_schema(&self) -> Value {
         json!({
             "type": "object",
-            "properties": { "work": { "type": "integer" }, "cid": { "type": "integer" } },
-            "required": ["work", "cid"],
+            "properties": { "chat": { "type": "string" }, "message": { "type": "integer" } },
+            "required": ["chat", "message"],
         })
     }
 
     fn call(&self, ctx: &Ctx<'_>, args: &Value) -> Result<Value, String> {
-        let conversation = args
-            .get("conversation")
+        let chat = args
+            .get("chat")
             .and_then(Value::as_str)
             .filter(|c| !c.is_empty());
         ctx.plaza
-            .message_orchestrator(text_arg(args, "text")?, conversation)
+            .message_orchestrator(text_arg(args, "text")?, chat)
     }
 
     fn summary(&self, out: &Value) -> String {
-        format!(
-            "Message queued for the orchestrator as work {}.",
-            out["work"]
-        )
+        format!("Message {} is in chat {}.", out["message"], out["chat"])
     }
 }
 

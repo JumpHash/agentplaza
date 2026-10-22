@@ -239,12 +239,8 @@ impl Plaza for FakePlaza {
         vec![json!({ "id": "L1", "tier": "A" })]
     }
 
-    fn message_orchestrator(
-        &self,
-        text: &str,
-        conversation: Option<&str>,
-    ) -> Result<Value, String> {
-        Ok(json!({ "work": 7, "cid": 1, "text": text, "conversation": conversation }))
+    fn message_orchestrator(&self, text: &str, chat: Option<&str>) -> Result<Value, String> {
+        Ok(json!({ "chat": chat.unwrap_or("main"), "message": 7, "text": text }))
     }
 
     fn tell_agent(&self, cid: u64, text: &str) -> Result<Value, String> {

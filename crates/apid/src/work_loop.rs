@@ -743,6 +743,7 @@ pub fn notice(app: &App, chat: &str, text: &str, now: u64) {
             kind: MessageKind::Notice,
             text: text.to_string(),
             card: None,
+            attachments: Vec::new(),
         },
         now,
     );
@@ -776,6 +777,7 @@ pub fn open_card(app: &App, new: NewCard, now: u64) {
                 kind: MessageKind::Question,
                 text,
                 card: Some(card.id.clone()),
+                attachments: Vec::new(),
             },
             now,
         )
@@ -859,6 +861,7 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
                 kind: MessageKind::Question,
                 text: format!("{title}. {body}"),
                 card: Some(card.id.clone()),
+                attachments: Vec::new(),
             },
             now,
         );
@@ -916,6 +919,7 @@ fn ask_seat(app: &App, seat: &Seat, project: &str, now: u64) {
                 kind: MessageKind::Question,
                 text: card.title.clone(),
                 card: Some(card.id.clone()),
+                attachments: Vec::new(),
             },
             now,
         );
@@ -940,7 +944,7 @@ pub fn budget_of_subject(subject: &str) -> Option<(OwnerKind, &str)> {
     }
 }
 
-fn amount(value: u64, unit: Unit) -> String {
+pub fn amount(value: u64, unit: Unit) -> String {
     match unit {
         Unit::Usd => format!("${:.2}", value as f64 / 1_000_000.0),
         Unit::Tokens => format!("{value} tokens"),
@@ -1068,6 +1072,7 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
         cards::Kind::ToolCall | cards::Kind::Review => crate::approvals::card_answered(app, card),
         cards::Kind::Proposal => crate::agent_proposals::card_answered(app, card),
         cards::Kind::Disk => crate::disk::card_answered(app, card),
+        cards::Kind::Start => crate::drafts::answered(app, card),
         _ => "recorded".into(),
     }
 }
@@ -1152,7 +1157,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
     match c.kind {
         crate::chats::Kind::Main => {
             if let Some(cid) = orchestrator_cid(app) {
-                app.work.enqueue(
+                let work = app.work.enqueue(
                     app,
                     cid,
                     WorkKind::Chat,
@@ -1163,6 +1168,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
                         ..Origin::default()
                     },
                 );
+                record_work(app, chat, work);
             } else {
                 notice(
                     app,
@@ -1183,7 +1189,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
             };
             match cid {
                 Some(cid) => {
-                    app.work.enqueue(
+                    let work = app.work.enqueue(
                         app,
                         cid,
                         WorkKind::Chat,
@@ -1194,6 +1200,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
                             ..Origin::default()
                         },
                     );
+                    record_work(app, chat, work);
                 }
                 None => notice(
                     app,
@@ -1253,6 +1260,53 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
     }
 }
 
+/// The VM a chat's owner messages are with now: the main chat's orchestrator, a project chat's planner (else the
+/// orchestrator, until the project has one). None for a task's chat, whose messages go to the seat that fills its task.
+pub fn chat_cid(app: &App, chat: &crate::chats::Chat) -> Option<u64> {
+    match chat.kind {
+        crate::chats::Kind::Main => orchestrator_cid(app),
+        crate::chats::Kind::Project => chat
+            .project
+            .as_deref()
+            .and_then(|project| planner_of(app, project))
+            .and_then(|s| s.cid)
+            .or_else(|| orchestrator_cid(app)),
+        crate::chats::Kind::Task => None,
+    }
+}
+
+/// Records that work item `work` answers chat `chat`'s owner message (the chat's turns, for its context).
+fn record_work(app: &App, chat: &str, work: u64) {
+    let _ = app.chats.update(chat, |c| {
+        c.works.push(work);
+        Ok(())
+    });
+}
+
+/// Tells the session of `cid` a plaza notice on chat `chat`'s thread (a project started, a task ended): the chat shows
+/// `shown`, and the answer the session gives is posted there ([`on_chat_work_end`]).
+pub fn tell_chat(app: &App, chat: &str, cid: u64, shown: &str, prompt: &str) {
+    notice(app, chat, shown, now());
+    if app.agents.get(cid).is_none() {
+        eprintln!("apid: a notice for {chat} dropped: agent {cid} is gone");
+        return;
+    }
+    app.work.enqueue(
+        app,
+        cid,
+        WorkKind::Chat,
+        format!("chat:{chat}"),
+        prompt.to_string(),
+        Origin::default(),
+    );
+}
+
+/// What a chat shows of a plaza notice's prompt: its first line, without the `[plaza]` mark.
+pub fn shown_line(prompt: &str) -> &str {
+    let first = prompt.lines().next().unwrap_or_default();
+    first.strip_prefix("[plaza] ").unwrap_or(first)
+}
+
 /// A chat work item (thread `chat:<id>`) ended: its answer goes into the chat. Returns whether it was one.
 pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> bool {
     let Some(chat) = thread.strip_prefix("chat:") else {
@@ -1284,6 +1338,7 @@ pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> boo
             kind: MessageKind::Message,
             text: summary.to_string(),
             card: None,
+            attachments: Vec::new(),
         },
         now(),
     );

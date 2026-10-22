@@ -124,8 +124,6 @@ pub struct App {
     pub toolbox: crate::toolbox::Store,
     /// Projects: every goal's flow from brief to delivery.
     pub projects: crate::projects::Store,
-    /// The owner's conversations with the orchestrator, each its own thread (`conversations`).
-    pub conversations: crate::conversations::Store,
     /// Each chat's context and tool calls, and one-message model choices (`context_track.rs`).
     pub context: crate::context_track::Tracker,
     /// Each project's overrides of the plaza's settings (`project_settings`).
@@ -282,7 +280,6 @@ impl App {
             toolbox: crate::toolbox::Store::default(),
             projects: Default::default(),
             context: Default::default(),
-            conversations: crate::conversations::Store::default(),
             project_settings: Default::default(),
             harness: crate::harness_control::Store::default(),
             weft: crate::weft_hub::Weft::default(),

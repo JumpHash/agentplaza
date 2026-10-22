@@ -55,6 +55,7 @@ CREATE TABLE "project" (
     "paused" INTEGER NOT NULL CHECK ("paused" IN (0, 1)),
     "archived" INTEGER NOT NULL CHECK ("archived" IN (0, 1)),
     "mode" TEXT NOT NULL,
+    "github" TEXT NOT NULL,
     PRIMARY KEY ("id")
 ) STRICT;
 CREATE TABLE "project_docs" (
@@ -313,119 +314,6 @@ CREATE TABLE "deploy" (
     "approval" TEXT,
     PRIMARY KEY ("project_environment_project", "environments_pos", "deploys_pos"),
     FOREIGN KEY ("project_environment_project", "environments_pos") REFERENCES "environment" ("project_environment_project", "environments_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-
--- component conversations
-CREATE TABLE "conversation_store" (
-    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
-    "next" INTEGER NOT NULL CHECK ("next" >= 0),
-    PRIMARY KEY ("pos")
-) STRICT;
-CREATE TABLE "conversation_store_items" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "id" TEXT NOT NULL,
-    "title" TEXT NOT NULL,
-    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
-    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
-    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
-    "archived" INTEGER NOT NULL CHECK ("archived" IN (0, 1)),
-    "model" TEXT,
-    "project" TEXT,
-    "draft_seen" INTEGER NOT NULL CHECK ("draft_seen" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos"),
-    FOREIGN KEY ("conversation_store_pos") REFERENCES "conversation_store" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_messages" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "messages_pos" INTEGER NOT NULL CHECK ("messages_pos" >= 0),
-    "from" TEXT NOT NULL,
-    "text" TEXT NOT NULL,
-    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
-    "work" INTEGER NOT NULL CHECK ("work" >= 0),
-    "status" TEXT,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "messages_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_messages_attachments" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "messages_pos" INTEGER NOT NULL CHECK ("messages_pos" >= 0),
-    "attachments_pos" INTEGER NOT NULL CHECK ("attachments_pos" >= 0),
-    "id" TEXT NOT NULL,
-    "name" TEXT NOT NULL,
-    "size" INTEGER NOT NULL CHECK ("size" >= 0),
-    "mime" TEXT NOT NULL,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "messages_pos", "attachments_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos", "messages_pos") REFERENCES "conversation_store_items_messages" ("conversation_store_pos", "items_pos", "messages_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_works" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "works_pos" INTEGER NOT NULL CHECK ("works_pos" >= 0),
-    "value" INTEGER NOT NULL CHECK ("value" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "works_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "revision" INTEGER NOT NULL CHECK ("revision" >= 0),
-    "title" TEXT NOT NULL,
-    "goal" TEXT NOT NULL,
-    "kind" TEXT NOT NULL,
-    "repo" TEXT,
-    "budget" INTEGER CHECK ("budget" >= 0),
-    "updated_by" TEXT NOT NULL,
-    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
-    "started_ms" INTEGER CHECK ("started_ms" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_tasks" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
-    "key" TEXT NOT NULL,
-    "goal" TEXT NOT NULL,
-    "acceptance" TEXT,
-    "role" TEXT,
-    "budget" INTEGER CHECK ("budget" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "tasks_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items_draft" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_tasks_after" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
-    "after_pos" INTEGER NOT NULL CHECK ("after_pos" >= 0),
-    "value" TEXT NOT NULL,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "tasks_pos", "after_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos", "tasks_pos") REFERENCES "conversation_store_items_draft_tasks" ("conversation_store_pos", "items_pos", "tasks_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_settings" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "default_model" TEXT,
-    "effort" TEXT,
-    "max_tokens" INTEGER CHECK ("max_tokens" >= 0),
-    "max_turns" INTEGER CHECK ("max_turns" >= 0),
-    "compress_at" INTEGER CHECK ("compress_at" >= 0),
-    "keep_recent" INTEGER CHECK ("keep_recent" >= 0),
-    "task_budget" INTEGER CHECK ("task_budget" >= 0),
-    "permission_mode" TEXT CHECK ("permission_mode" IN ('autonomous', 'ask', 'read_only')),
-    "review_timeout_minutes" INTEGER CHECK ("review_timeout_minutes" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items_draft" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_settings_role_models" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "role_models_key" TEXT NOT NULL,
-    "value" TEXT NOT NULL,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "role_models_key"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items_draft_settings" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component toolbox
@@ -1156,7 +1044,6 @@ CREATE TABLE "work_lane_queue" (
     "origin_owner" INTEGER NOT NULL CHECK ("origin_owner" IN (0, 1)),
     "origin_mcp" INTEGER NOT NULL CHECK ("origin_mcp" IN (0, 1)),
     "origin_acp" INTEGER NOT NULL CHECK ("origin_acp" IN (0, 1)),
-    "origin_conversation" TEXT,
     "origin_lane_present" INTEGER NOT NULL CHECK ("origin_lane_present" IN (0, 1)),
     "origin_lane_change" TEXT,
     "origin_lane_repo" TEXT,
@@ -1178,7 +1065,6 @@ CREATE TABLE "work_lane_current" (
     "origin_owner" INTEGER NOT NULL CHECK ("origin_owner" IN (0, 1)),
     "origin_mcp" INTEGER NOT NULL CHECK ("origin_mcp" IN (0, 1)),
     "origin_acp" INTEGER NOT NULL CHECK ("origin_acp" IN (0, 1)),
-    "origin_conversation" TEXT,
     "origin_lane_present" INTEGER NOT NULL CHECK ("origin_lane_present" IN (0, 1)),
     "origin_lane_change" TEXT,
     "origin_lane_repo" TEXT,
@@ -2282,10 +2168,82 @@ CREATE TABLE "chat" (
     "next_seq" INTEGER NOT NULL CHECK ("next_seq" >= 0),
     "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
     "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "model" TEXT,
+    "draft_seen" INTEGER NOT NULL CHECK ("draft_seen" >= 0),
     PRIMARY KEY ("id")
 ) STRICT;
 CREATE INDEX "chat_project" ON "chat" ("project");
 CREATE INDEX "chat_task" ON "chat" ("task");
+CREATE TABLE "chat_draft" (
+    "chat_id" TEXT NOT NULL,
+    "revision" INTEGER NOT NULL CHECK ("revision" >= 0),
+    "title" TEXT NOT NULL,
+    "goal" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "repo" TEXT,
+    "github" TEXT NOT NULL,
+    "disk_quota_bytes" INTEGER CHECK ("disk_quota_bytes" >= 0),
+    "updated_by" TEXT NOT NULL,
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "started_ms" INTEGER CHECK ("started_ms" >= 0),
+    PRIMARY KEY ("chat_id"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_tasks" (
+    "chat_id" TEXT NOT NULL,
+    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
+    "key" TEXT NOT NULL,
+    "goal" TEXT NOT NULL,
+    "acceptance" TEXT,
+    "role" TEXT,
+    "budget" INTEGER CHECK ("budget" >= 0),
+    PRIMARY KEY ("chat_id", "tasks_pos"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_tasks_after" (
+    "chat_id" TEXT NOT NULL,
+    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
+    "after_pos" INTEGER NOT NULL CHECK ("after_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("chat_id", "tasks_pos", "after_pos"),
+    FOREIGN KEY ("chat_id", "tasks_pos") REFERENCES "chat_draft_tasks" ("chat_id", "tasks_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_budget" (
+    "chat_id" TEXT NOT NULL,
+    "unit" TEXT NOT NULL CHECK ("unit" IN ('usd', 'tokens')),
+    "cap" INTEGER NOT NULL CHECK ("cap" >= 0),
+    "monthly_cap" INTEGER CHECK ("monthly_cap" >= 0),
+    PRIMARY KEY ("chat_id"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_settings" (
+    "chat_id" TEXT NOT NULL,
+    "default_model" TEXT,
+    "effort" TEXT,
+    "max_tokens" INTEGER CHECK ("max_tokens" >= 0),
+    "max_turns" INTEGER CHECK ("max_turns" >= 0),
+    "compress_at" INTEGER CHECK ("compress_at" >= 0),
+    "keep_recent" INTEGER CHECK ("keep_recent" >= 0),
+    "task_budget" INTEGER CHECK ("task_budget" >= 0),
+    "permission_mode" TEXT CHECK ("permission_mode" IN ('autonomous', 'ask', 'read_only')),
+    "review_timeout_minutes" INTEGER CHECK ("review_timeout_minutes" >= 0),
+    PRIMARY KEY ("chat_id"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_settings_role_models" (
+    "chat_id" TEXT NOT NULL,
+    "role_models_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("chat_id", "role_models_key"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft_settings" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_works" (
+    "chat_id" TEXT NOT NULL,
+    "works_pos" INTEGER NOT NULL CHECK ("works_pos" >= 0),
+    "value" INTEGER NOT NULL CHECK ("value" >= 0),
+    PRIMARY KEY ("chat_id", "works_pos"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
 CREATE TABLE "chat_messages" (
     "chat_id" TEXT NOT NULL,
     "messages_pos" INTEGER NOT NULL CHECK ("messages_pos" >= 0),
@@ -2299,6 +2257,17 @@ CREATE TABLE "chat_messages" (
     "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
     PRIMARY KEY ("chat_id", "messages_pos"),
     FOREIGN KEY ("chat_id") REFERENCES "chat" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_messages_attachments" (
+    "chat_id" TEXT NOT NULL,
+    "messages_pos" INTEGER NOT NULL CHECK ("messages_pos" >= 0),
+    "attachments_pos" INTEGER NOT NULL CHECK ("attachments_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "size" INTEGER NOT NULL CHECK ("size" >= 0),
+    "mime" TEXT NOT NULL,
+    PRIMARY KEY ("chat_id", "messages_pos", "attachments_pos"),
+    FOREIGN KEY ("chat_id", "messages_pos") REFERENCES "chat_messages" ("chat_id", "messages_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component threads
