@@ -42,9 +42,6 @@ pub struct Origin {
     /// True when the owner's message came from an editor over ACP (`/v1/acp`).
     #[serde(default)]
     pub acp: bool,
-    /// The owner's conversation with the orchestrator this message is in (`conversations`): its answer goes there.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conversation: Option<String>,
     /// The task's lane in Weft, for a worker's task item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[table(flatten)]
@@ -323,7 +320,6 @@ impl Queues {
             "work",
             &json!({ "cid": cid, "work": work, "state": "ended", "status": state }),
         );
-        crate::conversations::work_ended(app, &item, state, summary);
         // A chat item (thread `chat:<id>`): its answer goes into the chat; a seat message it carried was read.
         crate::work_loop::on_chat_work_end(app, cid, &item.thread, summary);
         crate::work_loop::on_item_done(app, work);
@@ -432,7 +428,7 @@ impl Queues {
     }
 
     /// Tells a task's poster (the orchestrator) that it ended, continuing the
-    /// poster's conversation with the operator so it keeps its plan.
+    /// poster's chat with the operator so it keeps its plan.
     fn tell_poster(&self, app: &App, task: &str, worker: u64, state: &str, summary: &str) {
         let poster = self
             .posters
@@ -443,7 +439,7 @@ impl Queues {
             return;
         };
         // A poster that may not work now (it left the project) is not told: its queue would only hold it.
-        if crate::membership::held_cid(app, poster).is_some() {
+        if crate::projects::held_cid(app, poster).is_some() {
             return;
         }
         let worker_name = app
@@ -454,12 +450,13 @@ impl Queues {
             "[plaza] Task {task}, worked by {worker_name}, ended: {state}.\nSummary: {summary}\n\n\
              Review it (plaza_task_result), continue your plan, and tell the operator when the goal is complete."
         );
-        // A project started from a conversation hears of its tasks there.
-        if let Some(conversation) = project_conversation(app, task, poster) {
-            crate::conversations::notify(
+        // A project whose draft started hears of its tasks in its chat.
+        if let Some(chat) = project_chat(app, task, poster) {
+            crate::work_loop::tell_chat(
                 app,
-                &conversation,
-                crate::conversations::shown_line(&prompt),
+                &chat,
+                poster,
+                crate::work_loop::shown_line(&prompt),
                 &prompt,
             );
             return;
@@ -510,7 +507,6 @@ impl Queues {
             "work",
             &json!({ "cid": cid, "work": work, "state": "ended", "status": "stopped" }),
         );
-        crate::conversations::work_ended(app, &item, "stopped", reason);
         if let Some(task) = item.origin.task.as_deref() {
             settle_task(app, task, WorkStatus::Stopped, reason);
         }
@@ -557,7 +553,6 @@ impl Queues {
                 "work",
                 &json!({ "cid": cid, "work": item.id, "state": "ended", "status": "failed" }),
             );
-            crate::conversations::work_ended(app, &item, "failed", "agent went offline");
             if let Some(task) = item.origin.task.as_deref()
                 && !crate::work_loop::owns(app, task)
             {
@@ -642,7 +637,7 @@ impl Queues {
                     waited,
                 );
                 if let Some(item) = escalation {
-                    app.bus.publish("approval", &item);
+                    crate::approvals::announce(app, &item);
                 }
             }
         }
@@ -663,14 +658,12 @@ impl Queues {
         let Some(project) = record.project().map(str::to_string) else {
             return false;
         };
-        if crate::membership::project_state(app, &project)
-            != crate::membership::ProjectState::Active
-        {
+        if crate::projects::state(app, &project) != crate::projects::ProjectState::Active {
             return false;
         }
-        let members = app.members.members(&project);
+        let on_project = crate::projects::agents_of(app, &project);
         let reviewers = app.agents.select(|a| {
-            (a.role == REVIEWER_ROLE && a.status == Status::Idle && members.contains(&a.cid))
+            (a.role == REVIEWER_ROLE && a.status == Status::Idle && on_project.contains(&a.cid))
                 .then(|| a.clone())
         });
         let Some(reviewer) = next_reviewer(&reviewers, worker) else {
@@ -893,10 +886,10 @@ impl Queues {
     fn dispatch(&self, app: &App, cid: u64) {
         let agent = app.agents.get(cid);
         let status = agent.as_ref().map(|a| a.status);
-        // An agent on the bench, or on a paused project, keeps its work queued and is not woken for it.
+        // An agent whose project is paused or over keeps its work queued and is not woken for it.
         let held = agent
             .as_ref()
-            .is_some_and(|a| crate::membership::held(app, a).is_some());
+            .is_some_and(|a| crate::projects::held(app, a).is_some());
         match dispatch_step(
             status,
             app.control.paused() || held,
@@ -953,20 +946,20 @@ impl Queues {
     }
 }
 
-/// The conversation task `task`'s project was started from, when agent `cid` is the orchestrator it talks to: where
-/// that orchestrator hears of the project's tasks.
-pub(crate) fn project_conversation(app: &App, task: &str, cid: u64) -> Option<String> {
+/// The chat of task `task`'s project, when agent `cid` leads the project: where the lead hears of the project's tasks.
+pub(crate) fn project_chat(app: &App, task: &str, cid: u64) -> Option<String> {
     let pid = app.plaza.tasks.find(task)?.project()?.to_string();
-    crate::conversations::of_project(app, &pid)
-        .filter(|conversation| conversation.cid == cid)
-        .map(|conversation| conversation.id)
+    if app.projects.get(&pid)?.lead_cid != cid {
+        return None;
+    }
+    crate::drafts::chat_of(app, &pid).map(|chat| chat.id)
 }
 
 /// What `dispatch` does with an agent's waiting work, decided before anything moves.
 #[derive(Debug, PartialEq, Eq)]
 enum DispatchStep {
-    /// Keep it queued: STOP ALL holds the plaza, the agent may not work now (on the bench, or its project
-    /// paused, see `membership`), it is away (moving, or on a stopped node it leaves first:
+    /// Keep it queued: STOP ALL holds the plaza, the agent may not work now (its project is paused or over, see
+    /// `projects::held`), it is away (moving, or on a stopped node it leaves first:
     /// `mover::holds`), or it is gone (or unknown).
     Hold,
     /// Keep it queued and wake the agent: it is asleep (`crate::sleep`).
@@ -975,7 +968,7 @@ enum DispatchStep {
     Send,
 }
 
-/// `held`: STOP ALL holds the plaza, or the agent may not work now (`membership`); `away`: it is moving,
+/// `held`: STOP ALL holds the plaza, or the agent may not work now (`projects::held`); `away`: it is moving,
 /// or on a stopped node (`mover::holds`).
 fn dispatch_step(status: Option<Status>, held: bool, away: bool) -> DispatchStep {
     match status {
@@ -1033,7 +1026,7 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
     }
     // A task of a project that is over refunded its project's budget: that goes back to the plaza too.
     if let Some(pid) = task.project()
-        && crate::membership::project_state(app, pid) == crate::membership::ProjectState::Over
+        && crate::projects::state(app, pid) == crate::projects::ProjectState::Over
     {
         crate::project_settings::return_rest(app, pid);
     }
@@ -1153,11 +1146,12 @@ fn withdraw_orphaned_reviews(
         .collect()
 }
 
-/// Publishes the approvals that were withdrawn, so the owner's view drops them.
+/// Publishes the approvals that were withdrawn, so the owner's view drops them, and withdraws their cards.
 fn publish_withdrawn(app: &App, withdrawn: &[Approval]) {
     for item in withdrawn {
         app.bus.publish("approval", item);
     }
+    crate::approvals::withdraw_cards(app, withdrawn);
 }
 
 /// Withdraws the pending review cards whose task no longer awaits review, whichever path ended it.
@@ -1540,7 +1534,7 @@ mod tests {
         assert_eq!(
             dispatch_step(Some(Status::Idle), true, false),
             DispatchStep::Hold,
-            "an agent on the bench (or STOP ALL) keeps its work queued, and an asleep one is not woken for it"
+            "an agent whose project is held (or STOP ALL) keeps its work queued, and an asleep one is not woken for it"
         );
         assert_eq!(
             dispatch_step(Some(Status::Idle), false, true),
@@ -1721,7 +1715,6 @@ mod tests {
             owner: true,
             mcp: true,
             acp: false,
-            conversation: Some("conv-3".into()),
             lane: Some(apz_proto::wire::WorkLane {
                 change: "c-4".into(),
                 repo: "weft".into(),

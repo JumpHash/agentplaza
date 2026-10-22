@@ -574,9 +574,9 @@ fn sweep_once(app: &App) {
         status: Status,
         connected_at_ms: u64,
         role: String,
-        /// It may not work now (on the bench, or its project paused): its held work keeps it neither awake
-        /// nor woken, and it sleeps after a minute (`membership`).
-        benched: bool,
+        /// It does no work now (no project, or its project holds it): its held work keeps it neither awake nor
+        /// woken, and it sleeps after a minute.
+        nothing_to_do: bool,
     }
     let roster = app.agents.select(|a| {
         Some(Row {
@@ -584,15 +584,15 @@ fn sweep_once(app: &App) {
             status: a.status,
             connected_at_ms: a.connected_at_ms,
             role: a.role.clone(),
-            benched: crate::membership::held(app, a).is_some(),
+            nothing_to_do: nothing_to_do(app, a),
         })
     });
     for agent in roster {
         let cid = agent.cid;
         on_roster.insert(cid);
         // Held work does not count: it waits for the agent's project, not for the agent.
-        let busy =
-            app.work.current(cid).is_some() || (!agent.benched && !app.work.queued(cid).is_empty());
+        let busy = app.work.current(cid).is_some()
+            || (!agent.nothing_to_do && !app.work.queued(cid).is_empty());
         match agent.status {
             Status::Asleep | Status::Dozing if busy => {
                 // Queued work for a napping agent (a failed wake, or work restored after a restart) gets
@@ -621,7 +621,7 @@ fn sweep_once(app: &App) {
                     stop_all,
                     // Only an agent that passes the cheap checks asks noded for its VM.
                     placed: true,
-                    benched: agent.benched,
+                    nothing_to_do: agent.nothing_to_do,
                 };
                 if should_sleep(&check) {
                     check.placed = place(app, cid).is_ok();
@@ -702,20 +702,28 @@ pub struct SleepCheck<'a> {
     pub stop_all: bool,
     /// Its VM is placed on this node (`lifecycle::place` succeeds).
     pub placed: bool,
-    /// It may not work now: it is on the bench, or its project is paused (`membership`).
-    pub benched: bool,
+    /// It does no work now: it has no project, or its project holds it (`projects::held`).
+    pub nothing_to_do: bool,
 }
 
-/// How long an agent on the bench stays awake before it sleeps.
-pub const BENCH_GRACE_MS: u64 = 60_000;
+/// How long an agent that does no work stays awake before it sleeps.
+pub const NOTHING_TO_DO_GRACE_MS: u64 = 60_000;
+
+/// Whether `agent` does no work now: it works on no project (the orchestrator, which works on every project, never
+/// does), or its project holds its work.
+fn nothing_to_do(app: &App, agent: &crate::agents::Agent) -> bool {
+    !crate::settings::plaza_wide(&agent.role)
+        && (crate::projects::project_of(app, agent.cid).is_none()
+            || crate::projects::held(app, agent).is_some())
+}
 
 /// Whether the sweeper puts this agent to sleep: idle or dozing, with nothing to do, nothing waiting on
 /// the owner, its idle time at least `idle_sleep_min` minutes (0 never), its role not one that never
 /// sleeps, the plaza not held, and a VM to snapshot.
 pub fn should_sleep(check: &SleepCheck) -> bool {
-    // An agent on the bench does nothing, so it sleeps after a minute rather than its idle minutes.
-    let idle_enough = if check.benched {
-        check.idle_ms >= BENCH_GRACE_MS
+    // An agent that does no work sleeps after a minute rather than its idle minutes.
+    let idle_enough = if check.nothing_to_do {
+        check.idle_ms >= NOTHING_TO_DO_GRACE_MS
     } else {
         check.idle_ms >= u64::from(check.idle_sleep_min) * 60_000
     };
@@ -1051,7 +1059,7 @@ mod tests {
             never_roles: never,
             stop_all: false,
             placed: true,
-            benched: false,
+            nothing_to_do: false,
         }
     }
 
@@ -1160,20 +1168,23 @@ mod tests {
             assert!(!should_sleep(&c), "0 means agents never sleep on their own");
         }
 
-        // an_agent_on_the_bench_sleeps_after_a_minute: it does nothing, so it does not wait its idle minutes.
+        // an_agent_that_does_no_work_sleeps_after_a_minute: it does nothing, so it does not wait its idle minutes.
         {
             let never = vec!["orchestrator".to_string()];
             let mut c = check(&never);
-            c.benched = true;
-            c.idle_ms = BENCH_GRACE_MS;
-            assert!(should_sleep(&c), "a bench agent sleeps after a minute");
-            c.idle_ms = BENCH_GRACE_MS - 1;
+            c.nothing_to_do = true;
+            c.idle_ms = NOTHING_TO_DO_GRACE_MS;
+            assert!(
+                should_sleep(&c),
+                "an agent that does no work sleeps after a minute"
+            );
+            c.idle_ms = NOTHING_TO_DO_GRACE_MS - 1;
             assert!(!should_sleep(&c), "not before its minute");
-            c.idle_ms = BENCH_GRACE_MS;
+            c.idle_ms = NOTHING_TO_DO_GRACE_MS;
             c.idle_sleep_min = 0;
             assert!(
                 !should_sleep(&c),
-                "the owner's 0 (never sleep) still holds on the bench"
+                "the owner's 0 (never sleep) still holds for an agent that does no work"
             );
         }
 

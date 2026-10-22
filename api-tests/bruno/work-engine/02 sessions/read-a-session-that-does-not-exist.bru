@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 to a session that does not exist
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/sessions/s999999
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

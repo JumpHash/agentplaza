@@ -15,8 +15,6 @@ use crate::foundry::store::{Foundry, Job, Point, Run, SERIES_CAP};
 
 /// The most GPU-hours one job may spend (no grant mechanism yet).
 pub const MAX_BUDGET_GPU_HOURS: f64 = 8.0;
-/// The image's name prefix; the backend follows it.
-const IMAGE: &str = "apz-trainer";
 /// The keys a job document may carry (the codex schema, plus the Foundry's extras).
 const KEYS: [&str; 10] = [
     "job_id",
@@ -270,16 +268,23 @@ pub fn place(machines: &[Machine], reach: &Reach, spec: &Spec) -> Result<Plan, R
     plan::plan(machines, reach, &spec.request).map_err(|e| (422, e.to_string()))
 }
 
-/// The plan document the trainer reads: the planner's plan with the container paths, the dataset
-/// refs mapped to `/job/data`, the frozen set of the first dataset and the recipe's train overrides.
-pub fn plan_document(plan: &Plan, spec: &Spec, datasets: &[Dataset]) -> Value {
+/// The plan document the trainer reads: the planner's plan with the host paths of the job directory `dir`
+/// (the trainer opens the dataset and frozen paths it names as they are), the frozen set of the first dataset,
+/// and the recipe's train overrides.
+pub fn plan_document(plan: &Plan, spec: &Spec, datasets: &[Dataset], dir: &Path) -> Value {
+    let data = dir.join("data");
     let mut map = serde_json::Map::new();
     for ds in datasets {
-        map.insert(ds.id.clone(), json!(format!("/job/data/{}.jsonl", ds.id)));
+        map.insert(
+            ds.id.clone(),
+            json!(data.join(format!("{}.jsonl", ds.id)).display().to_string()),
+        );
     }
-    let frozen = datasets
-        .first()
-        .map(|ds| format!("/job/data/{}.frozen.jsonl", ds.id));
+    let frozen = datasets.first().map(|ds| {
+        data.join(format!("{}.frozen.jsonl", ds.id))
+            .display()
+            .to_string()
+    });
     let steps = spec.train.get("steps").and_then(Value::as_u64);
     let mut doc = json!({
         "mode": plan.mode.to_string(),
@@ -289,7 +294,7 @@ pub fn plan_document(plan: &Plan, spec: &Spec, datasets: &[Dataset]) -> Value {
         "devices_total": plan.devices_total,
         "datasets": map,
         "frozen": frozen,
-        "output_dir": "/job/out",
+        "output_dir": dir.join("out").display().to_string(),
         "train": spec.train,
     });
     if plan.mode == Mode::Loose
@@ -298,18 +303,6 @@ pub fn plan_document(plan: &Plan, spec: &Spec, datasets: &[Dataset]) -> Value {
         doc["rounds"] = json!((steps / u64::from(plan.inner_steps)).max(1));
     }
     doc
-}
-
-/// The container image for a backend: `apz-trainer:<backend>`. The native mps runner has no
-/// mounts, so it cannot take a job yet.
-pub fn image_for(backend: &str) -> Result<String, String> {
-    match backend {
-        "cuda" | "rocm" | "xpu" | "cpu" => Ok(format!("{IMAGE}:{backend}")),
-        "mps" => Err(
-            "mps islands run the native runner, which takes no mounts: not supported yet".into(),
-        ),
-        other => Err(format!("unknown backend {other:?}")),
-    }
 }
 
 /// Writes the job directory: `job.json`, `plan.json`, `data/` (the datasets' files) and `out/`.
@@ -343,9 +336,16 @@ fn link_or_copy(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::hard_link(from, to).or_else(|_| std::fs::copy(from, to).map(|_| ()))
 }
 
-/// Starts every island's run on its machine's noded. Multi-machine islands are refused: the
-/// torchrun launch across machines is not wired yet. A failed start stops and deletes the runs
-/// already begun, so nothing is left running for a job that failed.
+/// The refusal for a loose job placed on a node other than the hub's own machine: a loose job's hub is the
+/// hub's loopback port, which only a node on the hub's machine can reach.
+const LOOSE_NEEDS_HUB: &str =
+    "a loose job needs the hub on its node's machine until nodes have an egress for jobs";
+
+/// Starts every island's run on its machine's noded, with the host paths of the job directory `dir` and
+/// the recipes directory `recipe_host`. A loose job's run is on the hub's own machine (`fleet::LOCAL`):
+/// it gets `network` `hub` and the hub's loopback URL as `--hub`. Multi-machine islands are refused: the
+/// torchrun launch across machines is not wired yet. A failed start stops and deletes the runs already
+/// begun, so nothing is left running for a job that failed.
 pub fn dispatch(
     calls: &dyn NodeCalls,
     job: &str,
@@ -369,14 +369,11 @@ pub fn dispatch(
             ));
         }
         let placement = &island.machines[0];
-        let image = match image_for(&island.backend) {
-            Ok(image) => image,
-            Err(reason) => {
-                rollback(calls, &started);
-                return Err((422, reason));
-            }
-        };
         let loose = plan.mode == Mode::Loose;
+        if loose && placement.id != crate::fleet::LOCAL {
+            rollback(calls, &started);
+            return Err((422, LOOSE_NEEDS_HUB.into()));
+        }
         let node_job = format!("{job}-{}", island.id);
         let devices: Vec<u32> = if island.backend == "cpu" {
             Vec::new()
@@ -384,37 +381,36 @@ pub fn dispatch(
             placement.devices.clone()
         };
         let mut args = vec![
-            "--job",
-            "/job/job.json",
-            "--plan",
-            "/job/plan.json",
-            "--island",
-            island.id.as_str(),
-            "--out",
-            "/job/out",
-            "--recipes",
-            "/recipes",
-            "--data-dir",
-            "/job/data",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect::<Vec<String>>();
-        if loose {
+            "--job".to_string(),
+            dir.join("job.json").display().to_string(),
+            "--plan".to_string(),
+            dir.join("plan.json").display().to_string(),
+            "--island".to_string(),
+            island.id.clone(),
+            "--out".to_string(),
+            dir.join("out").display().to_string(),
+            "--recipes".to_string(),
+            recipe_host.display().to_string(),
+            "--data-dir".to_string(),
+            dir.join("data").display().to_string(),
+        ];
+        let network = if loose {
             args.push("--hub".into());
             args.push(format!("{hub_base}/v1/foundry/jobs/{job}/hub"));
-        }
+            "hub"
+        } else {
+            "none"
+        };
         let body = json!({
             "job_id": node_job,
-            "image": image,
             "devices": devices,
             "env": {"PYTHONUNBUFFERED": "1"},
             "args": args,
             "mounts": [
-                {"host": dir.display().to_string(), "container": "/job", "ro": false},
-                {"host": recipe_host.display().to_string(), "container": "/recipes", "ro": true},
+                {"host": dir.display().to_string(), "ro": false},
+                {"host": recipe_host.display().to_string(), "ro": true},
             ],
-            "network": if loose { "host" } else { "none" },
+            "network": network,
         });
         match calls.call(&placement.id, "POST", "/v1/train", Some(&body)) {
             Ok((201, _)) => started.push(Run {
@@ -921,17 +917,19 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_document_points_at_the_container_paths() {
+    fn the_plan_document_names_the_job_directory_on_the_host() {
         let ds = Dataset {
             id: "ds-1".into(),
             file: "datasets/ds-1.jsonl".into(),
             frozen_file: "datasets/ds-1.frozen.jsonl".into(),
             ..Dataset::default()
         };
-        let doc = plan_document(&gpu_plan(Mode::Loose, 2), &spec(1.0), &[ds]);
-        assert_eq!(doc["datasets"]["ds-1"], "/job/data/ds-1.jsonl");
-        assert_eq!(doc["frozen"], "/job/data/ds-1.frozen.jsonl");
-        assert_eq!(doc["output_dir"], "/job/out");
+        let dir = Path::new("/state/foundry/jobs/tj-test");
+        let doc = plan_document(&gpu_plan(Mode::Loose, 2), &spec(1.0), &[ds], dir);
+        let on = |path: &str| json!(dir.join(path).display().to_string());
+        assert_eq!(doc["datasets"]["ds-1"], on("data/ds-1.jsonl"));
+        assert_eq!(doc["frozen"], on("data/ds-1.frozen.jsonl"));
+        assert_eq!(doc["output_dir"], on("out"));
         assert_eq!(doc["rounds"], 2);
     }
 
@@ -940,7 +938,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("foundry-dispatch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let fake = Fake::new(usize::MAX, json!({}));
-        let plan = gpu_plan(Mode::Loose, 1);
+        // A loose island runs on the hub's own machine.
+        let mut plan = gpu_plan(Mode::Loose, 1);
+        plan.islands[0].machines[0].id = crate::fleet::LOCAL.into();
         let runs = dispatch(
             &fake,
             "tj-test",
@@ -970,6 +970,122 @@ mod tests {
                 .any(|(_, m, p)| m == "DELETE" && p == "/v1/train/tj-test-i1")
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A noded that records the body of each start.
+    struct Bodies(RefCell<Vec<Value>>);
+
+    impl NodeCalls for Bodies {
+        fn call(
+            &self,
+            _node: &str,
+            method: &str,
+            _path: &str,
+            body: Option<&Value>,
+        ) -> Result<(u16, Value), String> {
+            if method == "POST" {
+                self.0
+                    .borrow_mut()
+                    .push(body.cloned().unwrap_or(Value::Null));
+            }
+            Ok((201, json!({})))
+        }
+    }
+
+    /// A loose run on the hub's own machine: `network` is `hub`, `--hub` is the hub's loopback URL for the job,
+    /// and the run names host paths (no image, no container path).
+    #[test]
+    fn a_loose_run_on_the_hub_machine_reaches_its_hub_by_loopback_only() {
+        let dir = Path::new("/state/foundry/jobs/tj-test");
+        let recipes = Path::new("/state/foundry/recipes");
+        let bodies = Bodies(RefCell::new(Vec::new()));
+        let mut plan = gpu_plan(Mode::Loose, 1);
+        plan.islands[0].machines[0].id = crate::fleet::LOCAL.into();
+        dispatch(
+            &bodies,
+            "tj-test",
+            &plan,
+            dir,
+            recipes,
+            "http://127.0.0.1:7700",
+            5,
+        )
+        .expect("starts");
+        let sent = bodies.0.borrow();
+        let body = &sent[0];
+        assert_eq!(body["network"], "hub");
+        assert!(body.get("image").is_none(), "{body}");
+        let args: Vec<&str> = body["args"]
+            .as_array()
+            .expect("args")
+            .iter()
+            .map(|arg| arg.as_str().expect("a string"))
+            .collect();
+        let after = |flag: &str| args[args.iter().position(|arg| *arg == flag).expect(flag) + 1];
+        assert_eq!(
+            after("--hub"),
+            "http://127.0.0.1:7700/v1/foundry/jobs/tj-test/hub"
+        );
+        assert_eq!(after("--job"), dir.join("job.json").display().to_string());
+        assert_eq!(after("--recipes"), recipes.display().to_string());
+        assert_eq!(
+            body["mounts"],
+            json!([
+                {"host": dir.display().to_string(), "ro": false},
+                {"host": recipes.display().to_string(), "ro": true},
+            ])
+        );
+    }
+
+    /// A loose job placed on another node is refused before any start: the hub's loopback port is reachable only
+    /// from the hub's own machine.
+    #[test]
+    fn a_loose_job_on_another_node_is_refused_before_any_start() {
+        let bodies = Bodies(RefCell::new(Vec::new()));
+        let plan = gpu_plan(Mode::Loose, 1);
+        let (status, reason) = dispatch(
+            &bodies,
+            "tj-test",
+            &plan,
+            Path::new("/state/foundry/jobs/tj-test"),
+            Path::new("/state/foundry/recipes"),
+            "http://127.0.0.1:7700",
+            5,
+        )
+        .unwrap_err();
+        assert_eq!(status, 422);
+        assert_eq!(
+            reason,
+            "a loose job needs the hub on its node's machine until nodes have an egress for jobs"
+        );
+        assert!(bodies.0.borrow().is_empty(), "nothing started");
+    }
+
+    /// Every backend dispatches to its native runner, mps included, and a tight run names no hub and no network.
+    #[test]
+    fn every_backend_dispatches_on_its_native_runner_without_an_image() {
+        for backend in ["cuda", "rocm", "xpu", "mps", "cpu"] {
+            let bodies = Bodies(RefCell::new(Vec::new()));
+            let mut plan = gpu_plan(Mode::Tight, 1);
+            plan.islands[0].backend = backend.into();
+            let started = dispatch(
+                &bodies,
+                "tj-test",
+                &plan,
+                Path::new("/state/foundry/jobs/tj-test"),
+                Path::new("/state/foundry/recipes"),
+                "http://127.0.0.1:7700",
+                5,
+            );
+            assert!(started.is_ok(), "{backend}: {:?}", started.err());
+            let sent = bodies.0.borrow();
+            assert!(sent[0].get("image").is_none(), "{backend}");
+            assert_eq!(sent[0]["network"], "none", "{backend}");
+            assert!(
+                !sent[0]["args"].to_string().contains("--hub"),
+                "{backend}: a tight run has no hub"
+            );
+        }
     }
 
     #[test]

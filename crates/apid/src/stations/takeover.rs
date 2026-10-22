@@ -29,6 +29,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use apz_station::{SessionId, Takeover};
 use serde_json::{Value, json};
 
+use super::audit::StationAudit;
 use super::ops;
 use crate::state::App;
 
@@ -55,14 +56,8 @@ impl Taken {
 
 /// What a takeover does outside the table: the station audit, the bus, and the leases.
 pub trait Effects {
-    /// Writes one audit row for `session`. An error refuses the change the row records.
-    fn audit(
-        &self,
-        station: &str,
-        session: SessionId,
-        kind: &str,
-        data: Value,
-    ) -> Result<(), String>;
+    /// Writes one audit entry about `station`. An error refuses the change the entry records.
+    fn audit(&self, station: &str, event: StationAudit) -> Result<(), String>;
     fn publish(&self, kind: &str, data: Value);
     /// Marks the lease holding `session` paused (or not).
     fn set_paused(&self, station: &str, session: SessionId, paused: bool);
@@ -126,9 +121,12 @@ impl Sessions {
         }
         fx.audit(
             station,
-            session,
-            "takeover",
-            json!({"by": "owner", "source": "control", "policy": policy}),
+            StationAudit::Takeover {
+                by: "owner".into(),
+                source: "control".into(),
+                policy,
+                session,
+            },
         )?;
         start(fx, station, session, policy)?;
         taken.insert(
@@ -160,9 +158,11 @@ impl Sessions {
         };
         fx.audit(
             station,
-            session,
-            "give_back",
-            json!({"by": "owner", "reason": "owner"}),
+            StationAudit::GiveBack {
+                by: "owner".into(),
+                reason: "owner".into(),
+                session,
+            },
         )?;
         taken.remove(&key);
         finish(fx, station, session, current.policy, "owner", "owner");
@@ -199,9 +199,12 @@ impl Sessions {
         }
         if let Err(reason) = fx.audit(
             station,
-            session,
-            "takeover",
-            json!({"by": "owner", "source": "input", "policy": policy}),
+            StationAudit::Takeover {
+                by: "owner".into(),
+                source: "input".into(),
+                policy,
+                session,
+            },
         ) {
             eprintln!(
                 "apid: workstation {station}: the takeover of session {session} is not in the audit: {reason}"
@@ -235,12 +238,12 @@ impl Sessions {
         let mut ended_on = Vec::new();
         for key in quiet {
             if let Some(ended) = taken.remove(&key) {
-                if let Err(reason) = fx.audit(
-                    &key.0,
-                    key.1,
-                    "give_back",
-                    json!({"by": "owner", "reason": "quiet"}),
-                ) {
+                let event = StationAudit::GiveBack {
+                    by: "owner".into(),
+                    reason: "quiet".into(),
+                    session: key.1,
+                };
+                if let Err(reason) = fx.audit(&key.0, event) {
                     eprintln!(
                         "apid: workstation {}: the give back of session {} is not in the audit: {reason}",
                         key.0, key.1
@@ -333,17 +336,8 @@ fn finish(
 pub struct Hub<'a>(pub &'a App);
 
 impl Effects for Hub<'_> {
-    fn audit(
-        &self,
-        station: &str,
-        session: SessionId,
-        kind: &str,
-        mut data: Value,
-    ) -> Result<(), String> {
-        if let Value::Object(map) = &mut data {
-            map.insert("session".into(), json!(session));
-        }
-        ops::audit(self.0, Some(station), None, kind, "owner", data)
+    fn audit(&self, station: &str, event: StationAudit) -> Result<(), String> {
+        ops::audit(self.0, Some(station), None, "owner", event)
     }
 
     fn publish(&self, kind: &str, data: Value) {
@@ -485,16 +479,11 @@ mod tests {
     }
 
     impl Effects for Fake {
-        fn audit(
-            &self,
-            station: &str,
-            session: SessionId,
-            kind: &str,
-            _data: Value,
-        ) -> Result<(), String> {
+        fn audit(&self, station: &str, event: StationAudit) -> Result<(), String> {
+            let kind = serde_json::to_value(&event).unwrap_or(Value::Null)["kind"].clone();
             self.log
                 .borrow_mut()
-                .push(format!("audit {kind} {station}/{session}"));
+                .push(format!("audit {kind} {station}"));
             if self.refuse_audit {
                 Err("the station audit cannot be written".into())
             } else {

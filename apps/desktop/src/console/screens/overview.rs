@@ -111,7 +111,7 @@ struct Agent {
     /// What it is doing now: a step waiting on an approval makes its task the owner's square.
     #[serde(default)]
     step: Option<model::Step>,
-    /// The project it works on (None: the bench, or the orchestrator).
+    /// The project its live session is on (None: no live session, or the orchestrator).
     #[serde(default)]
     project: Option<String>,
     #[serde(default)]
@@ -119,13 +119,13 @@ struct Agent {
 }
 
 impl Agent {
-    /// Shown under `project` (None: All projects): its member, or the orchestrator.
+    /// Shown under `project` (None: All projects): one working on it, or the orchestrator.
     fn in_scope(&self, project: Option<&str>) -> bool {
         project.is_none_or(|p| self.project.as_deref() == Some(p) || self.tier == "orchestrator")
     }
 
-    /// On no project, and neither the orchestrator nor a model-only agent.
-    fn on_bench(&self) -> bool {
+    /// On no project, and neither the orchestrator (it works on every project) nor a model-only agent.
+    fn no_project(&self) -> bool {
         self.project.as_deref().is_none_or(str::is_empty)
             && self.tier != "orchestrator"
             && self.kind != "model"
@@ -395,7 +395,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
 
     let stats = match (&state.overview, scope) {
         (Some(_), Some(s)) => project_stats(state, s),
-        (Some(o), None) => stat_row(o, state.agents.iter().filter(|a| a.on_bench()).count()),
+        (Some(o), None) => stat_row(o, state.agents.iter().filter(|a| a.no_project()).count()),
         (None, _) => boxed_card(ui::empty(
             "alert",
             "apid is unreachable",
@@ -460,12 +460,12 @@ fn read_projects(
 
 /// Under a project, its figures: its agents, its open tasks, its stage, its budget.
 fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
-    let team: Vec<&Agent> = state
+    let agents: Vec<&Agent> = state
         .agents
         .iter()
         .filter(|a| a.project.as_deref() == Some(project))
         .collect();
-    let working = team.iter().filter(|a| a.status == "working").count();
+    let working = agents.iter().filter(|a| a.status == "working").count();
     let (tasks, p) = match &state.projects {
         Some((list, tasks)) => (tasks.as_slice(), list.iter().find(|x| x.id == project)),
         None => (&[][..], None),
@@ -495,7 +495,7 @@ fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
     row![
         stat(
             "Agents",
-            figure(team.len().to_string()),
+            figure(agents.len().to_string()),
             format!("{working} working")
         ),
         stat(
@@ -510,7 +510,7 @@ fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
     .into()
 }
 
-fn stat_row<'a>(o: &Overview, bench: usize) -> Element<'a, Msg> {
+fn stat_row<'a>(o: &Overview, no_project: usize) -> Element<'a, Msg> {
     let open =
         o.tasks.get("open").copied().unwrap_or(0) + o.tasks.get("claimed").copied().unwrap_or(0);
     let done = o.tasks.get("done").copied().unwrap_or(0);
@@ -518,7 +518,10 @@ fn stat_row<'a>(o: &Overview, bench: usize) -> Element<'a, Msg> {
         stat(
             "Agents",
             figure(o.agents.total.to_string()),
-            format!("{} working · {bench} on the bench", o.agents.working)
+            format!(
+                "{} working · {no_project} with no project",
+                o.agents.working
+            )
         ),
         stat(
             "Open tasks",

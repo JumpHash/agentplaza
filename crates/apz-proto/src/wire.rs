@@ -355,7 +355,7 @@ pub enum HostMessage {
     Cancel { work: u64, reason: String },
     /// v3: replace the agent's profile (model, tools, limits).
     Profile { profile: AgentProfile },
-    /// v3: steer the running work item `work` (the orchestrator, the mayor or the owner).
+    /// v3: steer the running work item `work` (the orchestrator or the owner).
     Control { work: u64, control: Control },
 }
 

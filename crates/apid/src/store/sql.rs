@@ -71,6 +71,49 @@ pub const METRIC_TRACE_PUT: &str = include_str!("../../sql/queries/metric_trace_
 pub const METRIC_TRACE_SPAN_PUT: &str = include_str!("../../sql/queries/metric_trace_span_put.sql");
 pub const METRIC_TRACE_SPANS: &str = include_str!("../../sql/queries/metric_trace_spans.sql");
 
+// The IDE audit (`ide_audit`: ide.rs writes each owner action, the audit route reads them).
+pub const IDE_AUDIT_LAST_SEQ: &str = include_str!("../../sql/queries/ide_audit_last_seq.sql");
+pub const IDE_AUDIT_PAGE: &str = include_str!("../../sql/queries/ide_audit_page.sql");
+pub const IDE_AUDIT_PAGE_BY_WORKSPACE: &str =
+    include_str!("../../sql/queries/ide_audit_page_by_workspace.sql");
+
+// The station audit (`station_audit`: stations/audit.rs).
+pub const STATION_AUDIT_LAST_SEQ: &str =
+    include_str!("../../sql/queries/station_audit_last_seq.sql");
+pub const STATION_AUDIT_PAGE: &str = include_str!("../../sql/queries/station_audit_page.sql");
+pub const STATION_AUDIT_PAGE_BY_STATION: &str =
+    include_str!("../../sql/queries/station_audit_page_by_station.sql");
+
+// The workstation recordings (`station_recording`, `station_recording_event` and
+// `station_recording_frame`: stations/recordings.rs).
+pub const STATION_RECORDING_GET: &str = include_str!("../../sql/queries/station_recording_get.sql");
+pub const STATION_RECORDING_PAGE: &str =
+    include_str!("../../sql/queries/station_recording_page.sql");
+pub const STATION_RECORDING_EXPIRED: &str =
+    include_str!("../../sql/queries/station_recording_expired.sql");
+pub const STATION_RECORDING_DELETE: &str =
+    include_str!("../../sql/queries/station_recording_delete.sql");
+pub const STATION_RECORDING_EVENT_LAST_SEQ: &str =
+    include_str!("../../sql/queries/station_recording_event_last_seq.sql");
+pub const STATION_RECORDING_EVENT_PAGE: &str =
+    include_str!("../../sql/queries/station_recording_event_page.sql");
+pub const STATION_RECORDING_EVENT_DELETE: &str =
+    include_str!("../../sql/queries/station_recording_event_delete.sql");
+pub const STATION_RECORDING_FRAME_PAGE: &str =
+    include_str!("../../sql/queries/station_recording_frame_page.sql");
+pub const STATION_RECORDING_FRAME_DELETE: &str =
+    include_str!("../../sql/queries/station_recording_frame_delete.sql");
+pub const STATION_RECORDING_FRAME_GET: &str =
+    include_str!("../../sql/queries/station_recording_frame_get.sql");
+pub const STATION_RECORDING_FRAME_HASHES: &str =
+    include_str!("../../sql/queries/station_recording_frame_hashes.sql");
+
+// The work-folder sync's mirror (`station_sync_file`: stations/sync.rs).
+pub const STATION_SYNC_FILE_ROWS: &str =
+    include_str!("../../sql/queries/station_sync_file_rows.sql");
+pub const STATION_SYNC_CONTENT_HASHES: &str =
+    include_str!("../../sql/queries/station_sync_content_hashes.sql");
+
 // The transcripts (`entry` in transcripts.db; transcript.rs).
 pub const TRANSCRIPT_PAGE: &str = include_str!("../../sql/queries/transcript_page.sql");
 pub const TRANSCRIPT_CIDS: &str = include_str!("../../sql/queries/transcript_cids.sql");
@@ -94,6 +137,73 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "usage_work_totals", USAGE_WORK_TOTALS),
     ("plaza", "usage_works_prune", USAGE_WORKS_PRUNE),
     ("plaza", "vault_audit_page", VAULT_AUDIT_PAGE),
+    ("plaza", "ide_audit_last_seq", IDE_AUDIT_LAST_SEQ),
+    ("plaza", "ide_audit_page", IDE_AUDIT_PAGE),
+    (
+        "plaza",
+        "ide_audit_page_by_workspace",
+        IDE_AUDIT_PAGE_BY_WORKSPACE,
+    ),
+    ("plaza", "station_audit_last_seq", STATION_AUDIT_LAST_SEQ),
+    ("plaza", "station_audit_page", STATION_AUDIT_PAGE),
+    (
+        "plaza",
+        "station_audit_page_by_station",
+        STATION_AUDIT_PAGE_BY_STATION,
+    ),
+    ("plaza", "station_recording_get", STATION_RECORDING_GET),
+    ("plaza", "station_recording_page", STATION_RECORDING_PAGE),
+    (
+        "plaza",
+        "station_recording_expired",
+        STATION_RECORDING_EXPIRED,
+    ),
+    (
+        "plaza",
+        "station_recording_delete",
+        STATION_RECORDING_DELETE,
+    ),
+    (
+        "plaza",
+        "station_recording_event_last_seq",
+        STATION_RECORDING_EVENT_LAST_SEQ,
+    ),
+    (
+        "plaza",
+        "station_recording_event_page",
+        STATION_RECORDING_EVENT_PAGE,
+    ),
+    (
+        "plaza",
+        "station_recording_event_delete",
+        STATION_RECORDING_EVENT_DELETE,
+    ),
+    (
+        "plaza",
+        "station_recording_frame_page",
+        STATION_RECORDING_FRAME_PAGE,
+    ),
+    (
+        "plaza",
+        "station_recording_frame_delete",
+        STATION_RECORDING_FRAME_DELETE,
+    ),
+    (
+        "plaza",
+        "station_recording_frame_get",
+        STATION_RECORDING_FRAME_GET,
+    ),
+    (
+        "plaza",
+        "station_recording_frame_hashes",
+        STATION_RECORDING_FRAME_HASHES,
+    ),
+    ("plaza", "station_sync_file_rows", STATION_SYNC_FILE_ROWS),
+    (
+        "plaza",
+        "station_sync_content_hashes",
+        STATION_SYNC_CONTENT_HASHES,
+    ),
     (
         "metrics",
         "metric_agg_1h_bucket_clear",

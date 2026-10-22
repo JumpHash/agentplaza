@@ -1,0 +1,25 @@
+meta {
+  name: Read the project budget's ledger, newest first
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{we_pid}}/budget/ledger?limit=5
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the last change of the budget is the first entry", function () {
+    const entries = res.getBody();
+    expect(entries).to.be.an("array");
+    expect(entries.length).to.be.at.most(5);
+    expect(entries[0].kind).to.equal("set");
+  });
+}

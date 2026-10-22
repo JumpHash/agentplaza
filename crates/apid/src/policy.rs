@@ -39,7 +39,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// The tools an agent of `role` (CID `cid`, granted `granted`) runs without asking the hub: the guest's own tools its
 /// grant covers, which the laws permit for this agent and no law reads the input of. Nothing while the agent's mode
-/// is not autonomous (ask and read-only decide each call) or while it is held (STOP ALL, or on the bench).
+/// is not autonomous (ask and read-only decide each call) or while it is held (STOP ALL, or its project paused or
+/// over).
 pub(crate) fn allowed(
     laws: &Laws,
     cid: u64,
@@ -128,7 +129,7 @@ fn current(app: &App, agent: &Agent) -> Vec<String> {
         .collect();
     let fallback = crate::project_settings::permission_mode(app, agent.cid);
     let (mode, _) = app.approvals.effective(agent.cid, Some(fallback));
-    let held = app.control.paused() || crate::membership::held(app, agent).is_some();
+    let held = app.control.paused() || crate::projects::held(app, agent).is_some();
     allowed(app.laws, agent.cid, &agent.role, &granted, mode, held)
 }
 
@@ -299,7 +300,7 @@ mod tests {
         let laws = laws();
         let granted = granted_to_builder();
         assert!(!allowed(&laws, 7, "builder", &granted, Mode::Autonomous, false).is_empty());
-        // Ask and read-only decide each call; a held agent (STOP ALL, or on the bench) runs nothing.
+        // Ask and read-only decide each call; a held agent (STOP ALL, or its project paused or over) runs nothing.
         assert!(allowed(&laws, 7, "builder", &granted, Mode::Ask, false).is_empty());
         assert!(allowed(&laws, 7, "builder", &granted, Mode::ReadOnly, false).is_empty());
         assert!(allowed(&laws, 7, "builder", &granted, Mode::Autonomous, true).is_empty());

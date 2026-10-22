@@ -1,0 +1,22 @@
+meta {
+  name: List the threads of a task that does not exist: none
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/t999999/threads
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("no thread is open on it", function () {
+    expect(res.getBody()).to.deep.equal([]);
+  });
+}

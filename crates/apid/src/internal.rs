@@ -148,6 +148,8 @@ fn record_compaction(app: &App, cid: u64, before: u64, after: u64) {
 /// Records one stats report of agent `cid`'s VM: its `/workspace` use and size as gauges, and its busiest
 /// processes as rows of the node's `top_processes` report, in place of the VM's previous rows.
 fn record_stats(app: &App, cid: u64, used_mib: u64, size_mib: u64, top: Vec<(String, f64, f64)>) {
+    // The project's disk counts this VM's workspace (disk.rs).
+    app.disk.report(cid, used_mib);
     let Some(agent) = app.agents.get(cid) else {
         return;
     };
@@ -499,11 +501,11 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
             "intercept": false,
         });
     }
-    // An agent the owner holds (on the bench, or on a paused project) does not reach the internet either.
+    // An agent the owner holds (its project is paused or over) does not reach the internet either.
     let held = app
         .agents
         .get(cid)
-        .and_then(|agent| crate::membership::held(app, &agent));
+        .and_then(|agent| crate::projects::held(app, &agent));
     if let Some(why) = held {
         return json!({
             "allow": false,
@@ -761,8 +763,8 @@ fn model_call(
     work: u64,
     mut request: ChatRequest,
 ) -> HostMessage {
-    // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent on the bench, or on
-    // a paused project, does not think either (see `membership`).
+    // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent whose project is
+    // paused or over does not think either (see `projects::held`).
     // A held call answers `paused:`, so the harness's turn waits and asks again instead of failing.
     let held = if app.control.paused() {
         Some(format!(
@@ -770,7 +772,7 @@ fn model_call(
             apz_proto::wire::MODEL_PAUSED
         ))
     } else {
-        crate::membership::held(app, agent)
+        crate::projects::held(app, agent)
             .map(|why| format!("{}{why}", apz_proto::wire::MODEL_PAUSED))
     };
     if let Some(e) = held {
@@ -787,7 +789,7 @@ fn model_call(
             error: Some(e),
         };
     }
-    // A chat's own choice (one message's, or its owner conversation's) before the agent's model.
+    // The model of the chat the call is for (one message's choice, else the chat's own) before the agent's model.
     let model =
         crate::context_track::chat_model(app, cid, work).unwrap_or_else(|| model_of(app, agent));
     let settings = app.settings.get();
@@ -1174,12 +1176,12 @@ fn decide_call(
         .map(|t| t.name)
         .collect();
     // STOP ALL holds every tool call, also one that was on its way when the owner stopped the plaza (its work's
-    // cancel may not have reached the VM yet). An agent on the bench, or on a paused project, runs no tool either
-    // (see `membership`). Then the plaza's laws and the grant (see `gate_call`).
+    // cancel may not have reached the VM yet). An agent whose project is paused or over runs no tool either
+    // (see `projects::held`). Then the plaza's laws and the grant (see `gate_call`).
     let hold = if app.control.paused() {
         Some("the plaza is held (STOP ALL); waiting for the owner to resume".to_string())
     } else {
-        crate::membership::held(app, agent)
+        crate::projects::held(app, agent)
     };
     let verdict = match hold {
         Some(why) => Err(why),

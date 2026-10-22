@@ -117,7 +117,7 @@ pub struct Job {
     /// The job document as submitted (kept as written).
     #[table(content)]
     pub doc: Value,
-    /// The plan with the container paths the trainer reads (shown verbatim).
+    /// The plan with the host paths of the job directory the trainer reads (shown verbatim).
     #[table(content)]
     pub plan: Value,
     #[table(child)]

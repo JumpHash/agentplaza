@@ -1,0 +1,22 @@
+meta {
+  name: List the seats of a task that does not exist: none
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/t999999/seats
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("no seat is filled for it", function () {
+    expect(res.getBody()).to.deep.equal([]);
+  });
+}

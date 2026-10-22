@@ -36,13 +36,16 @@ struct Cli {
 enum Command {
     /// The plaza at a glance: hub, nodes, agents, work, spend.
     Overview,
-    /// Talk to the orchestrator: a conversation drafts a project (its tasks, team, budget and settings), and /start
-    /// opens, staffs and plans it at once. `--list` lists your conversations.
+    /// Talk to the orchestrator: a conversation drafts a project (its tasks, budget and settings), and /start opens
+    /// it and posts its tasks at once. `--list` lists your conversations.
     Chat(cmd::chat::Args),
-    /// Agents: list (all, a project's, or the bench), inspect, create, talk to, stop, restart, set models.
+    /// Agents: list (all, or a project's), inspect, create, talk to, stop, restart, set models.
     #[command(subcommand)]
     Agents(cmd::agents::Cmd),
-    /// Projects: open one, put agents on it, pause, resume or archive it, its settings and budget, its plan's stages.
+    /// Seat templates: the roles a task's seats are filled from, built in and custom. `roles` lists them; `save` and
+    /// `delete` change the custom ones.
+    Roles(cmd::roles::Args),
+    /// Projects: open one, pause, resume or archive it, its settings and budget, its plan's stages.
     #[command(subcommand)]
     Projects(cmd::projects::Cmd),
     /// Tasks: the work queue, each task in a project.
@@ -202,6 +205,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Overview => cmd::overview::run(&ctx),
         Command::Chat(a) => cmd::chat::run(&ctx, a),
         Command::Agents(c) => cmd::agents::run(&ctx, c),
+        Command::Roles(args) => cmd::roles::run(&ctx, args),
         Command::Projects(c) => cmd::projects::run(&ctx, c),
         Command::Tasks(c) => cmd::tasks::run(&ctx, c),
         Command::Weft(args) => cmd::weft::run(&ctx, args),
@@ -303,16 +307,14 @@ mod tests {
             super::Cli::try_parse_from(all).is_ok()
         };
         assert!(ok(&["agents", "list", "--project", "pr3"]));
-        assert!(ok(&["agents", "list", "--bench"]));
-        assert!(!ok(&["agents", "list", "--bench", "--project", "pr3"]));
+        assert!(!ok(&["agents", "list", "--bench"]), "no such option");
         assert!(ok(&[
-            "agents",
-            "create",
-            "--role",
-            "builder",
-            "--project",
-            "pr3"
+            "agents", "create", "--role", "builder", "--count", "2"
         ]));
+        assert!(
+            !ok(&["agents", "create", "--role", "builder", "--project", "pr3"]),
+            "a spawn names no project"
+        );
         assert!(ok(&["tasks", "list", "--project", "pr3"]));
         assert!(ok(&["tasks", "create", "Fix it", "--project", "pr3"]));
         assert!(ok(&["tasks", "move", "t4", "--project", "pr3"]));
@@ -334,10 +336,7 @@ mod tests {
             "--kind",
             "film"
         ]));
-        assert!(ok(&["projects", "members", "pr3"]));
-        assert!(ok(&["projects", "members", "pr3", "add", "7"]));
-        assert!(ok(&["projects", "members", "pr3", "remove", "7", "--yes"]));
-        assert!(ok(&["projects", "members", "pr3", "suggested"]));
+        assert!(!ok(&["projects", "members", "pr3"]), "no such command");
         assert!(ok(&["projects", "pause", "pr3"]));
         assert!(ok(&["projects", "resume", "pr3"]));
         assert!(ok(&["projects", "archive", "pr3", "--yes"]));

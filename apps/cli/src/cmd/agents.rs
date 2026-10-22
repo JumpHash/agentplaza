@@ -1,4 +1,4 @@
-//! `agentplaza agents`: Agents: list (all, a project's, or the bench), inspect, create, talk to,
+//! `agentplaza agents`: Agents: list (all, or a project's), inspect, create, talk to,
 //! stop, restart, set models; cancel their work, retire or wipe them, put them to sleep or wake
 //! them, checkpoint, roll back and fork their VMs, drive their harness and loops, set permissions,
 //! and decide the proposals they make. The submodules hold the larger areas: `lifecycle`,
@@ -31,20 +31,17 @@ pub enum Cmd {
         /// Only agents in this status: working, idle, offline or asleep.
         #[arg(long)]
         status: Option<String>,
-        /// Only the agents on this project (its id, such as `pr3`).
-        #[arg(long, conflicts_with = "bench")]
-        project: Option<String>,
-        /// Only the agents on the bench: on no project, so they do nothing until the owner puts them on one.
+        /// Only the agents whose live session is on this project (its id, such as `pr3`).
         #[arg(long)]
-        bench: bool,
+        project: Option<String>,
     },
     /// One agent: its model, queue, current work and record.
     Show {
         /// The agent's cid (see `agents list`).
         cid: u64,
     },
-    /// Create agents of a role (the wizard's spawn). Without --project they wait on the bench until the owner puts
-    /// them on one.
+    /// Create agents of a role (the wizard's spawn). An agent works on a project only through a live session, so a new
+    /// one has none until a task's session takes it on.
     Create {
         /// The role id.
         #[arg(long)]
@@ -52,12 +49,9 @@ pub enum Cmd {
         /// How many to create.
         #[arg(long, default_value_t = 1)]
         count: u32,
-        /// The model to run them on, provider/model (default: the project's, the role's or the plaza's).
+        /// The model to run them on, provider/model (default: the role's, else the plaza's).
         #[arg(long)]
         model: Option<String>,
-        /// The project they join when they first connect (its id, such as `pr3`).
-        #[arg(long)]
-        project: Option<String>,
     },
     /// Send an agent a message (its chat).
     Tell {
@@ -270,20 +264,14 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             role,
             status,
             project,
-            bench,
         } => list(
             ctx,
             role.as_deref(),
             status.as_deref(),
-            &list_path(project.as_deref(), bench),
+            &list_path(project.as_deref()),
         ),
         Cmd::Show { cid } => show(ctx, cid),
-        Cmd::Create {
-            role,
-            count,
-            model,
-            project,
-        } => create(ctx, &role, count, model.as_deref(), project.as_deref()),
+        Cmd::Create { role, count, model } => create(ctx, &role, count, model.as_deref()),
         Cmd::Tell { cid, text } => tell(ctx, cid, &text),
         Cmd::Stop { cid, yes } => {
             if !confirm(yes, &format!("Stop agent {cid}?"))? {
@@ -373,8 +361,8 @@ fn work_of(a: &Value) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-/// Where an agent works: its project's id; `all` for the orchestrator, which works on every project; `bench` for one
-/// on none, which does nothing until the owner puts it on one; `-` for a model agent, which takes no work.
+/// Where an agent works: the project of its live session; `all` for the orchestrator, which works on every project;
+/// `none` for one with no live session, which has no project; `-` for a model agent, which takes no work.
 pub(crate) fn place_of(a: &Value) -> String {
     match a.get("project").and_then(Value::as_str) {
         Some(project) => project.to_string(),
@@ -382,11 +370,11 @@ pub(crate) fn place_of(a: &Value) -> String {
             "all".to_string()
         }
         None if ctx::s(a, "kind") == "model" => "-".to_string(),
-        None => "bench".to_string(),
+        None => "none".to_string(),
     }
 }
 
-/// Why an agent waits (on the bench, or on a paused project), or "-" when it may work.
+/// Why an agent waits (its project is paused or over), or "-" when it may work.
 pub(crate) fn held_of(a: &Value) -> String {
     match ctx::s(a, "held") {
         "" => "-".to_string(),
@@ -394,12 +382,11 @@ pub(crate) fn held_of(a: &Value) -> String {
     }
 }
 
-/// The roster's path: every agent, a project's (`?project=<id>`), or the bench's (`?project=bench`).
-fn list_path(project: Option<&str>, bench: bool) -> String {
-    match (project, bench) {
-        (_, true) => "/v1/agents?project=bench".to_string(),
-        (Some(id), false) => format!("/v1/agents?project={}", ctx::seg(id)),
-        (None, false) => "/v1/agents".to_string(),
+/// The roster's path: every agent, or a project's (`?project=<id>`): the agents whose live session is on it.
+fn list_path(project: Option<&str>) -> String {
+    match project {
+        Some(id) => format!("/v1/agents?project={}", ctx::seg(id)),
+        None => "/v1/agents".to_string(),
     }
 }
 
@@ -470,55 +457,35 @@ fn show(ctx: &Ctx, cid: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// Where an agent works, as `agents show` says it: its project and since when, the bench, or every project.
+/// Where an agent works, as `agents show` says it: its project, every project for the orchestrator, or none when it has
+/// no live session.
 fn project_of(a: &Value) -> String {
     match place_of(a).as_str() {
         "all" => "every project (the orchestrator works on all of them)".to_string(),
-        "bench" => "none: on the bench".to_string(),
-        project => match a.get("joined_ms").filter(|ms| !ms.is_null()) {
-            Some(ms) => format!("{project} since {}", ctx::when(ms)),
-            None => project.to_string(),
-        },
+        "none" => "none: no live session".to_string(),
+        project => project.to_string(),
     }
 }
 
-/// The `POST /v1/agents` body: the role and count, and the model and project only when they are given.
-fn create_body(role: &str, count: u32, model: Option<&str>, project: Option<&str>) -> Value {
+/// The `POST /v1/agents` body: the role and count, and the model only when it is given.
+fn create_body(role: &str, count: u32, model: Option<&str>) -> Value {
     let mut body = json!({ "role": role, "count": count });
     if let Some(m) = model {
         body["model"] = json!(m);
     }
-    if let Some(p) = project {
-        body["project"] = json!(p);
-    }
     body
 }
 
-fn create(
-    ctx: &Ctx,
-    role: &str,
-    count: u32,
-    model: Option<&str>,
-    project: Option<&str>,
-) -> Result<(), String> {
+fn create(ctx: &Ctx, role: &str, count: u32, model: Option<&str>) -> Result<(), String> {
     if count == 0 {
         return Err("--count is at least 1".into());
     }
     let v = ctx
         .client
-        .post("/v1/agents", &create_body(role, count, model, project))?;
+        .post("/v1/agents", &create_body(role, count, model))?;
     ctx.out(&v, |_| {
-        let (plural, they, them) = if count == 1 {
-            ("", "it waits", "it")
-        } else {
-            ("s", "they wait", "them")
-        };
-        match project {
-            Some(p) => println!("created {count} {role} agent{plural} for project {p}"),
-            None => println!(
-                "created {count} {role} agent{plural}; {they} on the bench until you put {them} on a project"
-            ),
-        }
+        let plural = if count == 1 { "" } else { "s" };
+        println!("created {count} {role} agent{plural}");
     });
     Ok(())
 }
@@ -709,7 +676,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_agent_works_on_its_project_on_every_one_or_on_none() {
+    fn an_agent_works_on_the_project_of_its_live_session_or_on_none() {
         let on = json!({ "cid": 7, "role": "builder", "tier": "worker", "kind": "llm", "project": "pr3" });
         assert_eq!(place_of(&on), "pr3");
         let lead =
@@ -717,28 +684,34 @@ mod tests {
         assert_eq!(place_of(&lead), "all");
         let model = json!({ "cid": 12, "role": "builder", "kind": "model", "project": null });
         assert_eq!(place_of(&model), "-");
-        let bench = json!({ "cid": 8, "role": "qa", "kind": "llm", "project": null,
-            "held": "agent 8 is on the bench: it works only on a project, so the owner has to add it to one first" });
-        assert_eq!(place_of(&bench), "bench");
-        assert!(held_of(&bench).starts_with("agent 8 is on the bench"));
+        let idle = json!({ "cid": 8, "role": "qa", "kind": "llm", "project": null, "held": null });
+        assert_eq!(place_of(&idle), "none", "no live session, so no project");
+        assert_eq!(held_of(&idle), "-");
+        assert_eq!(project_of(&idle), "none: no live session");
+        let paused = json!({ "cid": 9, "role": "qa", "kind": "llm", "project": "pr3",
+            "held": "project pr3 is paused: its agents wait until the owner resumes it" });
+        assert_eq!(
+            held_of(&paused),
+            "project pr3 is paused: its agents wait until the owner resumes it"
+        );
         assert_eq!(held_of(&on), "-");
-        assert_eq!(project_of(&bench), "none: on the bench");
         assert_eq!(project_of(&on), "pr3");
     }
 
     #[test]
-    fn the_list_asks_for_a_project_the_bench_or_everyone() {
-        assert_eq!(list_path(None, false), "/v1/agents");
-        assert_eq!(list_path(Some("pr3"), false), "/v1/agents?project=pr3");
-        assert_eq!(list_path(None, true), "/v1/agents?project=bench");
+    fn the_list_asks_for_a_project_or_everyone() {
+        assert_eq!(list_path(None), "/v1/agents");
+        assert_eq!(list_path(Some("pr3")), "/v1/agents?project=pr3");
     }
 
     #[test]
-    fn create_names_the_project_only_when_one_is_given() {
-        let bare = create_body("builder", 2, None, None);
+    fn create_sends_the_role_and_count_and_a_model_only_when_given() {
+        let bare = create_body("builder", 2, None);
         assert_eq!(bare, json!({ "role": "builder", "count": 2 }));
-        let staffed = create_body("builder", 1, Some("openai/gpt-6"), Some("pr3"));
-        assert_eq!(staffed["project"], "pr3");
-        assert_eq!(staffed["model"], "openai/gpt-6");
+        let modeled = create_body("builder", 1, Some("openai/gpt-6"));
+        assert_eq!(
+            modeled,
+            json!({ "role": "builder", "count": 1, "model": "openai/gpt-6" })
+        );
     }
 }

@@ -1148,7 +1148,6 @@ pub fn outside() -> Vec<(String, bool, Option<f64>, String)> {
             Some(610.0),
             "—".to_string(),
         ),
-        ("garage S3".to_string(), true, Some(9.0), "—".to_string()),
     ]
 }
 

@@ -1,0 +1,25 @@
+meta {
+  name: Read the project's budget with its disk
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{we_pid}}/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the disk is measured, and no quota is set yet", function () {
+    const b = res.getBody();
+    expect(b.disk.quota_bytes).to.equal(null);
+    expect(b.disk.used_bytes).to.be.a("number");
+    expect(b.tasks).to.deep.equal([]);
+  });
+}

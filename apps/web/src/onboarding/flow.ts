@@ -13,7 +13,11 @@ export const WIZARD_STEPS = copy.wizard.steps;
  * The tour's steps, in order: each is a callout next to a sidebar screen. The Society and Conversations stop has no
  * screen any more (agents do not talk to each other in the console), so the console leaves it out.
  */
-export const TOUR_STEPS = copy.tour.steps.filter((step) => step.screen !== 'conversations');
+// The agent screens are the sessions screens here (Engine 0.6): the tour's agents step points at Sessions. The shared
+// words still name the desktop's Agents screen, so the step's screen is mapped here and not in apps/shared.
+export const TOUR_STEPS = copy.tour.steps
+  .filter((step) => step.screen !== 'conversations')
+  .map((step) => (step.screen === 'agents' ? { ...step, screen: 'sessions' } : step));
 
 /** localStorage keys for the two flags. The desktop app keeps the same flags under `setup_done` and `tour_done`. */
 export const FLAGS = { setup: 'apz.setup.done', tour: 'apz.tour.done' } as const;

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a project budget field the hub does not know
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{baseUrl}}/v1/projects/{{we_pid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"unit": "usd", "quota": 5}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

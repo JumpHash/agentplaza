@@ -14,6 +14,7 @@ use apz_http::ws::Socket;
 use apz_station::{Event, Facts, Notice, Op, SessionKind, StationSettings};
 use serde_json::{Value, json};
 
+use super::audit::StationAudit;
 use super::hooks;
 use super::leases::{self, Kind, Lease, LeaseView, State};
 use super::link::{self, Hooks, StationLink};
@@ -42,34 +43,23 @@ fn server_error(message: impl ToString) -> Failure {
     (500, message.to_string())
 }
 
-/// Writes one row to the station audit: `kind` by `actor`, on `station` (None: the registry as a whole) and
-/// for `agent` (a CID) when one is involved. `data` is merged into the row.
+/// Writes one entry to the station audit: `event` by `actor`, on `station` (None: the registry as a whole) and for
+/// `agent` (a CID) when one is involved. The entry is committed before this returns (see `stations::audit`).
 pub fn audit(
     app: &App,
     station: Option<&str>,
     agent: Option<u64>,
-    kind: &str,
     actor: &str,
-    data: Value,
+    event: StationAudit,
 ) -> Result<(), String> {
-    app.db
-        .append_station_audit(&audit_row(station, agent, kind, actor, data))
-}
-
-/// The station audit row [`audit`] writes, for a caller that writes it to its own database handle.
-pub fn audit_row(
-    station: Option<&str>,
-    agent: Option<u64>,
-    kind: &str,
-    actor: &str,
-    data: Value,
-) -> Value {
-    let mut row =
-        json!({"at_ms": now(), "actor": actor, "station": station, "agent": agent, "kind": kind});
-    if let (Some(map), Value::Object(extra)) = (row.as_object_mut(), data) {
-        map.extend(extra);
-    }
-    row
+    super::audit::write(
+        app.store.db(crate::store::PLAZA),
+        station,
+        agent,
+        actor,
+        event,
+    )
+    .map_err(|err| err.to_string())
 }
 
 fn announce(app: &App, id: &str, action: &str) {
@@ -118,21 +108,21 @@ pub fn issue_code(
         .stations
         .issue_code(&url, cert, label, ttl_minutes, now())
         .map_err(|e| (400, e))?;
-    audit(
-        app,
-        None,
-        None,
-        "code_issue",
-        actor,
-        json!({"code": id, "label": label, "expires_ms": expires_ms}),
-    )
-    .map_err(server_error)?;
+    let event = StationAudit::CodeIssue {
+        code: id.clone(),
+        label: label.to_string(),
+        expires_ms,
+    };
+    audit(app, None, None, actor, event).map_err(server_error)?;
     Ok((id, text, expires_ms))
 }
 
 pub fn revoke_code(app: &App, id: &str, actor: &str) -> Result<(), Failure> {
     app.stations.revoke_code(id).map_err(|e| (404, e))?;
-    audit(app, None, None, "code_revoke", actor, json!({"code": id})).map_err(server_error)
+    let event = StationAudit::CodeRevoke {
+        code: id.to_string(),
+    };
+    audit(app, None, None, actor, event).map_err(server_error)
 }
 
 /// Enrolls a workstation with a join code: its id and its token (shown once). The caller has checked the
@@ -158,8 +148,13 @@ pub fn join(
                 app.stations.undo_join(&station.id);
                 return Err(server_error(reason));
             }
-            let row = json!({"name": station.name, "code": station.code, "address": source, "hostname": station.facts.hostname});
-            if let Err(e) = audit(app, Some(&station.id), None, "join", "station", row) {
+            let event = StationAudit::Join {
+                name: station.name.clone(),
+                code: station.code.clone(),
+                address: source.to_string(),
+                hostname: station.facts.hostname.clone(),
+            };
+            if let Err(e) = audit(app, Some(&station.id), None, "station", event) {
                 app.stations.undo_join(&station.id);
                 return Err(server_error(format!(
                     "the workstation was not enrolled: its record cannot be written ({e})"
@@ -171,14 +166,10 @@ pub fn join(
         Err(Refusal::RateLimited) => Err((429, crate::nodes::RATE_LIMITED.into())),
         Err(Refusal::Invalid(message)) => Err((403, message)),
         Err(Refusal::OwnHost(message)) => {
-            let _ = audit(
-                app,
-                None,
-                None,
-                "join_refused",
-                "station",
-                json!({"address": source}),
-            );
+            let event = StationAudit::JoinRefused {
+                address: source.to_string(),
+            };
+            let _ = audit(app, None, None, "station", event);
             Err((403, message))
         }
     }
@@ -194,25 +185,18 @@ pub fn revoke(app: &App, id: &str, actor: &str) -> Result<Station, Failure> {
     for lease in app.stations.leases.drop_station(id) {
         recordings::end(app, id, &lease.id);
         hooks::lease_ended(app, id, &lease, now());
-        let _ = audit(
-            app,
-            Some(id),
-            Some(lease.agent),
-            "lease_ended",
-            actor,
-            json!({"lease": lease.id, "reason": "revoked"}),
-        );
+        let event = StationAudit::LeaseEnded {
+            lease: lease.id.clone(),
+            session: None,
+            reason: "revoked".into(),
+        };
+        let _ = audit(app, Some(id), Some(lease.agent), actor, event);
         app.bus.publish("lease_ended", &lease);
     }
-    audit(
-        app,
-        Some(id),
-        None,
-        "revoke",
-        actor,
-        json!({"name": station.name}),
-    )
-    .map_err(server_error)?;
+    let event = StationAudit::Revoke {
+        name: station.name.clone(),
+    };
+    audit(app, Some(id), None, actor, event).map_err(server_error)?;
     announce(app, id, "revoked");
     Ok(station)
 }
@@ -227,8 +211,12 @@ pub fn drain(app: &App, id: &str, on: bool, actor: &str) -> Result<Station, Fail
             link.notify(Notice::Drain);
         }
     }
-    let action = if on { "drain" } else { "undrain" };
-    audit(app, Some(id), None, action, actor, json!({})).map_err(server_error)?;
+    let (action, event) = if on {
+        ("drain", StationAudit::Drain)
+    } else {
+        ("undrain", StationAudit::Undrain)
+    };
+    audit(app, Some(id), None, actor, event).map_err(server_error)?;
     announce(app, id, action);
     Ok(station)
 }
@@ -241,15 +229,10 @@ pub fn rename(app: &App, id: &str, name: &str, actor: &str) -> Result<Station, F
         return Err((400, "the name must be 1 to 64 printable characters".into()));
     }
     let station = app.stations.rename(id, name).map_err(|e| (404, e))?;
-    audit(
-        app,
-        Some(id),
-        None,
-        "rename",
-        actor,
-        json!({"name": station.name}),
-    )
-    .map_err(server_error)?;
+    let event = StationAudit::Rename {
+        name: station.name.clone(),
+    };
+    audit(app, Some(id), None, actor, event).map_err(server_error)?;
     Ok(station)
 }
 
@@ -266,15 +249,10 @@ pub fn put_settings(
         .set_settings(id, settings.clone())
         .map_err(|e| (404, e))?;
     let (pushed, push_error) = push_settings(app, id, &settings);
-    audit(
-        app,
-        Some(id),
-        None,
-        "settings",
-        actor,
-        json!({"settings": settings}),
-    )
-    .map_err(server_error)?;
+    let event = StationAudit::Settings {
+        settings: settings.clone(),
+    };
+    audit(app, Some(id), None, actor, event).map_err(server_error)?;
     announce(app, id, "settings");
     Ok(json!({"settings": settings, "pushed": pushed, "push_error": push_error}))
 }
@@ -327,14 +305,12 @@ pub fn open_lease(
         .leases
         .open(station_id, agent, task.clone(), kind, now())
         .map_err(|e| (409, e))?;
-    if let Err(e) = audit(
-        app,
-        Some(station_id),
-        Some(agent),
-        "lease_open",
-        actor,
-        json!({"lease": lease.id, "kind": kind, "task": task}),
-    ) {
+    let event = StationAudit::LeaseOpen {
+        lease: lease.id.clone(),
+        lease_kind: kind,
+        task: task.clone(),
+    };
+    if let Err(e) = audit(app, Some(station_id), Some(agent), actor, event) {
         app.stations.leases.remove(&lease.id);
         return Err(server_error(e));
     }
@@ -415,8 +391,13 @@ fn release_with(
             .err(),
         _ => None,
     };
-    audit(app, Some(station_id), Some(lease.agent), "lease_released", actor, json!({"lease": lease.id, "session": lease.session, "close_error": close_error, "reason": reason}))
-        .map_err(server_error)?;
+    let event = StationAudit::LeaseReleased {
+        lease: lease.id.clone(),
+        session: lease.session,
+        close_error,
+        reason: reason.to_string(),
+    };
+    audit(app, Some(station_id), Some(lease.agent), actor, event).map_err(server_error)?;
     let mut data = serde_json::to_value(&lease).unwrap_or(Value::Null);
     if let Value::Object(map) = &mut data {
         map.insert("reason".into(), json!(reason));
@@ -467,14 +448,11 @@ pub fn grant_next(app: &App, station_id: &str) {
         match opened {
             Ok(session) => {
                 if app.stations.leases.granted(&lease.id, session, now()) {
-                    let _ = audit(
-                        app,
-                        Some(station_id),
-                        Some(lease.agent),
-                        "lease_granted",
-                        "station",
-                        json!({"lease": lease.id, "session": session}),
-                    );
+                    let event = StationAudit::LeaseGranted {
+                        lease: lease.id.clone(),
+                        session,
+                    };
+                    let _ = audit(app, Some(station_id), Some(lease.agent), "station", event);
                     if let Some(view) = lease_view(app, &lease.id) {
                         recordings::begin(app, station_id, &view);
                         app.bus.publish("lease_granted", &view);
@@ -486,14 +464,11 @@ pub fn grant_next(app: &App, station_id: &str) {
             }
             Err(reason) => {
                 app.stations.leases.remove(&lease.id);
-                let _ = audit(
-                    app,
-                    Some(station_id),
-                    Some(lease.agent),
-                    "lease_failed",
-                    "station",
-                    json!({"lease": lease.id, "reason": reason}),
-                );
+                let event = StationAudit::LeaseFailed {
+                    lease: lease.id.clone(),
+                    reason: reason.clone(),
+                };
+                let _ = audit(app, Some(station_id), Some(lease.agent), "station", event);
                 app.bus.publish(
                     "lease_failed",
                     &json!({"lease": lease.id, "station": station_id, "reason": reason}),
@@ -524,11 +499,14 @@ pub fn freeze_all(app: &App, on: bool, actor: &str) {
             let station = link.station().to_string();
             let answer = link.request(Op::Freeze { on }, RPC_TIMEOUT);
             let Some(app) = weak.upgrade() else { return };
-            let (kind, data) = match &answer {
-                Ok(_) => (if on { "freeze" } else { "unfreeze" }, json!({})),
-                Err(reason) => ("freeze_failed", json!({"reason": reason})),
+            let event = match &answer {
+                Ok(_) if on => StationAudit::Freeze,
+                Ok(_) => StationAudit::Unfreeze,
+                Err(reason) => StationAudit::FreezeFailed {
+                    reason: reason.clone(),
+                },
             };
-            let _ = audit(&app, Some(&station), None, kind, &actor, data);
+            let _ = audit(&app, Some(&station), None, &actor, event);
             if !on {
                 grant_next(&app, &station);
             }
@@ -651,14 +629,12 @@ impl Hooks for Live<'_> {
                     app.stations.leases.remove(&lease.id);
                     recordings::end(app, id, &lease.id);
                     hooks::lease_ended(app, id, &lease, now());
-                    let _ = audit(
-                        app,
-                        Some(id),
-                        Some(lease.agent),
-                        "lease_ended",
-                        "station",
-                        json!({"lease": lease.id, "session": session, "reason": reason}),
-                    );
+                    let event = StationAudit::LeaseEnded {
+                        lease: lease.id.clone(),
+                        session: Some(session),
+                        reason,
+                    };
+                    let _ = audit(app, Some(id), Some(lease.agent), "station", event);
                     app.bus.publish("lease_ended", &lease);
                     schedule_grant(app, id);
                 }
@@ -670,14 +646,13 @@ impl Hooks for Live<'_> {
                 };
                 recordings::on_owner_input(app, &lease.id);
                 if app.stations.takeover_due(session, now(), TAKEOVER_AUDIT_MS) {
-                    let _ = audit(
-                        app,
-                        Some(id),
-                        Some(lease.agent),
-                        "owner_input",
-                        "owner",
-                        json!({"lease": lease.id, "session": session}),
-                    );
+                    let event = StationAudit::OwnerInput {
+                        lease: Some(lease.id.clone()),
+                        session,
+                        source: None,
+                        action: None,
+                    };
+                    let _ = audit(app, Some(id), Some(lease.agent), "owner", event);
                 }
                 app.bus.publish("lease_owner_input", &lease);
             }

@@ -1,28 +1,28 @@
 //! Artifacts (docs/design/artifacts.md): what agents show of their work — charts, tables, graphs, dashboards,
 //! images, datasets, documents, code and live HTML — as `apz_view` panels, versioned, with their data blobs in the
-//! deliverables store (Garage or the hub's disk).
+//! hub's object store (`apz_blobs`, by BLAKE3 hash).
 //!
-//! The index (each artifact's versions, its author and its blob references, and each blob's owner) is held in
-//! memory and saved atomically to `<state-dir>/artifacts.json`. Each version's spec is an object at
-//! `artifacts/<id>/v<n>.json` and each blob an object at `artifacts/blobs/<blob id>`, both in the deliverables
-//! store's objects.
+//! The index (each artifact's versions, its author and its blob references, and each blob's owner and hash) is held
+//! in memory and saved atomically to `<state-dir>/artifacts.json`. Each version's spec and each compiled script are
+//! objects in the store too, and the index records their hashes. Removing an artifact drops its references only: the
+//! store's sweep frees the bytes that nothing references any more (see [`Store::hashes`]).
 
 pub mod gateway;
 pub mod routes;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use apz_blobs::Hash;
 use apz_view::artifact::{Artifact, Caps, Spec, Summary, kind_of, libs_used, validate};
 use apz_view::{BlobRef, Body, ColumnKind, DatasetColumn, Panel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::deliverables;
 use crate::providers::write_atomic;
 
 /// The index file under the state directory.
@@ -138,9 +138,22 @@ struct Version {
     bytes: u64,
     /// The ids of the blobs it references.
     blobs: Vec<String>,
+    /// The hash of the spec's JSON in the object store.
+    spec_hash: String,
+    /// Its compiled scripts: one for each script file of its panels.
+    scripts: Vec<CompiledScript>,
 }
 
-/// One blob in the index: whose it is, and what it holds.
+/// One compiled script of a version: the panel and the path of the file it was compiled from, and the hash of its
+/// JavaScript in the object store.
+#[derive(Clone, Serialize, Deserialize)]
+struct CompiledScript {
+    panel: String,
+    path: String,
+    hash: String,
+}
+
+/// One blob in the index: whose it is, what it holds, and the hash of its bytes in the object store.
 #[derive(Clone, Serialize, Deserialize)]
 struct Blob {
     /// The agent that attached it; `None` for the owner.
@@ -148,6 +161,8 @@ struct Blob {
     content_type: String,
     bytes: u64,
     created_ms: u64,
+    /// The hash of its bytes in the object store.
+    hash: String,
 }
 
 /// A blob's rows, parsed once: CSV records (the first is the header row) as text fields, or JSON Lines values.
@@ -160,17 +175,18 @@ enum Parsed {
 pub struct Store {
     /// `<state-dir>/artifacts.json`.
     path: PathBuf,
-    /// Where the version specs and the blobs are kept.
-    objects: Arc<deliverables::Store>,
+    /// The hub's object store: the version specs, the compiled scripts and the data blobs, each by its hash.
+    blobs: Arc<apz_blobs::Blobs>,
     index: Mutex<Index>,
     /// The parsed rows of recent dataset blobs, the most recent first (at most [`PARSED_BLOBS`]).
     recent: Mutex<Vec<(String, Arc<Parsed>)>>,
 }
 
 impl Store {
-    /// Loads `<state-dir>/artifacts.json` (a missing file is an empty store). An index that cannot be read is set
-    /// aside as `artifacts.json.corrupt-<unix ms>` and logged, never overwritten.
-    pub fn load(state_dir: &Path, objects: Arc<deliverables::Store>) -> Store {
+    /// Loads `<state-dir>/artifacts.json` (a missing file is an empty store), over the object store `blobs` that holds
+    /// the bytes the index refers to. An index that cannot be read is set aside as `artifacts.json.corrupt-<unix ms>`
+    /// and logged, never overwritten.
+    pub fn load(state_dir: &Path, blobs: Arc<apz_blobs::Blobs>) -> Store {
         let _ = std::fs::create_dir_all(state_dir);
         let path = state_dir.join(INDEX);
         let index = match std::fs::read(&path) {
@@ -189,7 +205,7 @@ impl Store {
         };
         Store {
             path,
-            objects,
+            blobs,
             index: Mutex::new(index),
             recent: Mutex::new(Vec::new()),
         }
@@ -225,13 +241,8 @@ impl Store {
         }
         let mut spec = spec;
         let now = now_ms();
-        let (json, meta) = prepare(&mut spec, 1, cid, &index, now).map_err(Refusal::Problems)?;
-        let scripts = compile_scripts(&spec).map_err(Refusal::Problems)?;
-        self.objects
-            .put_object(&spec_key(id, 1), &json)
-            .map_err(|e| Refusal::Problems(vec![format!("cannot store the spec: {e}")]))?;
-        self.store_scripts(id, 1, &scripts)
-            .map_err(Refusal::Problems)?;
+        let meta =
+            prepare(&mut spec, 1, cid, &index, now, &self.blobs).map_err(Refusal::Problems)?;
         let entry = Entry {
             id: id.to_string(),
             author_cid: cid,
@@ -293,13 +304,7 @@ impl Store {
         }
         let mut spec = spec;
         let now = now_ms();
-        let (json, meta) =
-            prepare(&mut spec, version, cid, &index, now).map_err(Refusal::Problems)?;
-        let scripts = compile_scripts(&spec).map_err(Refusal::Problems)?;
-        self.objects
-            .put_object(&spec_key(id, version), &json)
-            .map_err(|e| Refusal::Problems(vec![format!("cannot store the spec: {e}")]))?;
-        self.store_scripts(id, version, &scripts)
+        let meta = prepare(&mut spec, version, cid, &index, now, &self.blobs)
             .map_err(Refusal::Problems)?;
         let mut next = (*index).clone();
         next.artifacts[pos].versions.push(meta.clone());
@@ -317,7 +322,7 @@ impl Store {
             .map_err(Refusal::into_problems)
     }
 
-    /// Artifact `id` at `version` (its newest when `None`), with its spec.
+    /// Artifact `id` at `version` (its newest when `None`), with its spec read from the object store.
     pub fn get(&self, id: &str, version: Option<u32>) -> Option<Artifact> {
         let entry = lock(&self.index)
             .artifacts
@@ -327,8 +332,7 @@ impl Store {
         let latest = entry.versions.last()?.version;
         let wanted = version.unwrap_or(latest);
         let meta = entry.versions.iter().find(|v| v.version == wanted)?;
-        let bytes = self.objects.get_object(&spec_key(id, wanted)).ok()?;
-        let spec: Spec = serde_json::from_slice(&bytes).ok()?;
+        let spec: Spec = serde_json::from_slice(&self.stored(&meta.spec_hash)?).ok()?;
         Some(assemble(&entry, latest, meta, spec))
     }
 
@@ -397,19 +401,10 @@ impl Store {
             })
     }
 
-    /// Deletes artifact `id`, its specs, and the blobs no other artifact still uses. False when it did not exist.
+    /// Removes artifact `id` and the references its versions hold: their specs and scripts, and each data blob that no
+    /// other artifact still uses. The bytes stay in the object store, whose sweep frees what [`Store::hashes`] does not
+    /// name. False when it did not exist.
     pub fn delete(&self, id: &str) -> bool {
-        // The compiled scripts of every version go with the artifact; they are listed before the lock is taken.
-        let mut stale: Vec<String> = vec![];
-        for v in self.versions(id) {
-            if let Some(artifact) = self.get(id, Some(v.version)) {
-                stale.extend(
-                    script_files(&artifact.panels)
-                        .into_iter()
-                        .map(|(panel, path, _)| compiled_key(id, v.version, panel, path)),
-                );
-            }
-        }
         let mut index = lock(&self.index);
         let Some(pos) = index.artifacts.iter().position(|e| e.id == id) else {
             return false;
@@ -433,17 +428,26 @@ impl Store {
             return false;
         }
         *index = next;
-        // The objects go after the index: a leftover object is harmless, a missing one would break a live artifact.
-        for v in &gone.versions {
-            let _ = self.objects.delete_object(&spec_key(id, v.version));
-        }
-        for blob in &orphans {
-            let _ = self.objects.delete_object(&blob_key(blob));
-        }
-        for key in &stale {
-            let _ = self.objects.delete_object(key);
-        }
         true
+    }
+
+    /// Every hash the index references: each version's spec and compiled scripts, and each data blob. These are the
+    /// artifacts' roots for the object store's sweep (`crate::storage::roots`): a hash not listed here names nothing an
+    /// artifact needs. Sorted, each once.
+    pub fn hashes(&self) -> Vec<Hash> {
+        let index = lock(&self.index);
+        let mut texts: BTreeSet<&str> = BTreeSet::new();
+        for entry in &index.artifacts {
+            for version in &entry.versions {
+                texts.insert(version.spec_hash.as_str());
+                texts.extend(version.scripts.iter().map(|s| s.hash.as_str()));
+            }
+        }
+        texts.extend(index.blobs.values().map(|b| b.hash.as_str()));
+        texts
+            .into_iter()
+            .filter_map(|text| text.parse::<Hash>().ok())
+            .collect()
     }
 
     /// The agent that made artifact `id`; `None` for the owner or when it does not exist.
@@ -457,7 +461,8 @@ impl Store {
 
     /// Stores a data blob (CSV, JSON Lines, an image, an HTML file) that a spec can then reference by its id, checked
     /// against `budget` under the store's lock. `cid` is the agent that attaches it; `None` for the owner. The content
-    /// type is kept only in the form [`safe_content_type`] allows.
+    /// type is kept only in the form [`safe_content_type`] allows. The bytes go to the object store, and the index
+    /// keeps their hash.
     pub fn put_blob_within(
         &self,
         cid: Option<u64>,
@@ -482,9 +487,10 @@ impl Store {
             return Err(Refusal::Budget(why));
         }
         let id = format!("b{}", hex(&random_bytes(8)));
-        self.objects
-            .put_object(&blob_key(&id), bytes)
-            .map_err(|e| Refusal::Problems(vec![e.to_string()]))?;
+        let hash = self
+            .blobs
+            .put(bytes)
+            .map_err(|e| Refusal::Problems(vec![e]))?;
         let size = bytes.len() as u64;
         let mut next = (*index).clone();
         next.blobs.insert(
@@ -494,6 +500,7 @@ impl Store {
                 content_type: content_type.clone(),
                 bytes: size,
                 created_ms: now_ms(),
+                hash: hash.hex(),
             },
         );
         self.save(&next).map_err(|e| Refusal::Problems(vec![e]))?;
@@ -519,14 +526,48 @@ impl Store {
 
     /// The content type and bytes of blob `blob_id`.
     pub fn blob(&self, blob_id: &str) -> Option<(String, Vec<u8>)> {
-        let content_type = lock(&self.index).blobs.get(blob_id)?.content_type.clone();
-        let bytes = self.objects.get_object(&blob_key(blob_id)).ok()?;
-        Some((content_type, bytes))
+        let (content_type, hash) = self.indexed_blob(blob_id)?;
+        Some((content_type, self.stored(&hash)?))
     }
 
-    /// Blob `blob_id`, when some version of artifact `id` references it.
+    /// The content type and bytes of blob `blob_id`, when some version of artifact `id` references it.
     pub fn artifact_blob(&self, id: &str, blob_id: &str) -> Option<(String, Vec<u8>)> {
-        let referenced = lock(&self.index)
+        if !self.references(id, blob_id) {
+            return None;
+        }
+        self.blob(blob_id)
+    }
+
+    /// The content type and hash of blob `blob_id`, when some version of artifact `id` references it. The blob route
+    /// serves the bytes from the hash (`crate::storage::blob_response`), so they are not read here.
+    pub fn artifact_blob_hash(&self, id: &str, blob_id: &str) -> Option<(String, String)> {
+        if !self.references(id, blob_id) {
+            return None;
+        }
+        self.indexed_blob(blob_id)
+    }
+
+    /// The compiled JavaScript of script `path` of panel `panel` at `version` of artifact `id`, or `None` when that
+    /// version has no such compiled script (the path is not a script of that panel, or the version does not exist).
+    pub fn compiled(&self, id: &str, version: u32, panel: &str, path: &str) -> Option<String> {
+        let hash = lock(&self.index)
+            .artifacts
+            .iter()
+            .find(|e| e.id == id)?
+            .versions
+            .iter()
+            .find(|v| v.version == version)?
+            .scripts
+            .iter()
+            .find(|s| s.panel == panel && s.path == path)?
+            .hash
+            .clone();
+        String::from_utf8(self.stored(&hash)?).ok()
+    }
+
+    /// Whether some version of artifact `id` references blob `blob_id`.
+    fn references(&self, id: &str, blob_id: &str) -> bool {
+        lock(&self.index)
             .artifacts
             .iter()
             .find(|e| e.id == id)
@@ -534,36 +575,19 @@ impl Store {
                 e.versions
                     .iter()
                     .any(|v| v.blobs.iter().any(|b| b == blob_id))
-            });
-        if !referenced {
-            return None;
-        }
-        self.blob(blob_id)
+            })
     }
 
-    /// The compiled JavaScript of script `path` of panel `panel` at `version` of artifact `id`, or `None` when that
-    /// version has no such compiled script (the path is not a script of that panel, or the version does not exist).
-    pub fn compiled(&self, id: &str, version: u32, panel: &str, path: &str) -> Option<String> {
-        let bytes = self
-            .objects
-            .get_object(&compiled_key(id, version, panel, path))
-            .ok()?;
-        String::from_utf8(bytes).ok()
+    /// The content type and hash of blob `blob_id`, as the index records them.
+    fn indexed_blob(&self, blob_id: &str) -> Option<(String, String)> {
+        let index = lock(&self.index);
+        let blob = index.blobs.get(blob_id)?;
+        Some((blob.content_type.clone(), blob.hash.clone()))
     }
 
-    /// Stores the compiled scripts of version `version` of artifact `id`, as `(panel, path, JavaScript)` triples.
-    fn store_scripts(
-        &self,
-        id: &str,
-        version: u32,
-        scripts: &[(String, String, String)],
-    ) -> Result<(), Vec<String>> {
-        for (panel, path, js) in scripts {
-            self.objects
-                .put_object(&compiled_key(id, version, panel, path), js.as_bytes())
-                .map_err(|e| vec![format!("cannot store the compiled script {path}: {e}")])?;
-        }
-        Ok(())
+    /// The bytes of the object `hash` (hex, as the index keeps it), or `None` when the store does not hold it.
+    fn stored(&self, hash: &str) -> Option<Vec<u8>> {
+        self.blobs.get(&hash.parse::<Hash>().ok()?).ok()
     }
 
     /// One page of the rows of dataset panel `panel` at `version` (the newest when `None`): filtered (a
@@ -796,15 +820,18 @@ pub fn safe_content_type(raw: &str) -> String {
     }
 }
 
-/// Checks a spec for a new version `version` by agent `cid` (`None` for the owner) and builds the version's record
-/// and its spec's JSON. Fills each HTML body's libraries from its files first.
+/// Checks a spec for a new version `version` by agent `cid` (`None` for the owner), compiles its scripts, and stores
+/// their bytes in the object store: the spec's JSON and each script's JavaScript. Returns the version's record, which
+/// names their hashes. Fills each HTML body's libraries from its files first. Nothing is stored when the spec does not
+/// check out or a script does not compile.
 fn prepare(
     spec: &mut Spec,
     version: u32,
     cid: Option<u64>,
     index: &Index,
     now: u64,
-) -> Result<(Vec<u8>, Version), Vec<String>> {
+    objects: &apz_blobs::Blobs,
+) -> Result<Version, Vec<String>> {
     for panel in &mut spec.panels {
         if let Body::Html(h) = &mut panel.body {
             let libs: Vec<String> = libs_used(h).into_iter().map(str::to_string).collect();
@@ -837,10 +864,18 @@ fn prepare(
     if !problems.is_empty() {
         return Err(problems);
     }
+    let scripts = compile_scripts(spec)?;
     let json =
         serde_json::to_vec(&*spec).map_err(|e| vec![format!("cannot serialize the spec: {e}")])?;
     let spec_bytes = json.len() as u64;
-    let meta = Version {
+    let spec_hash = store_bytes(objects, &json, "cannot store the spec")?;
+    let mut compiled = Vec::with_capacity(scripts.len());
+    for (panel, path, js) in scripts {
+        let what = format!("cannot store the compiled script {path}");
+        let hash = store_bytes(objects, js.as_bytes(), &what)?;
+        compiled.push(CompiledScript { panel, path, hash });
+    }
+    Ok(Version {
         version,
         created_ms: now,
         title: spec.title.clone(),
@@ -848,8 +883,22 @@ fn prepare(
         spec_bytes,
         bytes: spec_bytes + blob_bytes,
         blobs,
-    };
-    Ok((json, meta))
+        spec_hash,
+        scripts: compiled,
+    })
+}
+
+/// Stores `bytes` in the object store and returns their hash as text. A failed write is refused as `what` and the
+/// store's reason.
+fn store_bytes(
+    objects: &apz_blobs::Blobs,
+    bytes: &[u8],
+    what: &str,
+) -> Result<String, Vec<String>> {
+    objects
+        .put(bytes)
+        .map(|hash| hash.hex())
+        .map_err(|e| vec![format!("{what}: {e}")])
 }
 
 /// The blobs a spec references: image bodies, dataset rows, HTML files and stills.
@@ -1074,19 +1123,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn spec_key(id: &str, version: u32) -> String {
-    format!("artifacts/{id}/v{version}.json")
-}
-
-fn blob_key(blob_id: &str) -> String {
-    format!("artifacts/blobs/{blob_id}")
-}
-
-/// The key of script `path` of panel `panel`, compiled from version `version` of artifact `id`.
-fn compiled_key(id: &str, version: u32, panel: &str, path: &str) -> String {
-    format!("artifacts/{id}/v{version}/compiled/{panel}/{path}")
-}
-
 /// The extensions of the files the hub compiles.
 const SCRIPT_EXTENSIONS: [&str; 5] = [".ts", ".tsx", ".jsx", ".js", ".mjs"];
 
@@ -1146,6 +1182,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deliverables::served;
+    use apz_http::Request;
     use serde_json::json;
 
     const CSV: &str = "name,score\nada,9\n\"Grace, H\",12\nlin,10\n";
@@ -1158,13 +1196,9 @@ mod tests {
         dir
     }
 
-    /// A store in `dir` over a booted vault and a local-disk deliverables store, as the hub has them at start.
-    fn open(dir: &Path) -> (Store, Arc<deliverables::Store>) {
-        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
-        vault.boot(apz_plaza::now_ms()).expect("boot");
-        let objects = Arc::new(
-            deliverables::Store::open(dir, &BTreeMap::new(), Arc::new(vault)).expect("objects"),
-        );
+    /// A store in `dir` over the object store opened there, as the hub has them at start.
+    fn open(dir: &Path) -> (Store, Arc<apz_blobs::Blobs>) {
+        let objects = Arc::new(apz_blobs::Blobs::open(dir).expect("objects"));
         (Store::load(dir, objects.clone()), objects)
     }
 
@@ -1352,6 +1386,13 @@ mod tests {
             .put_blob(Some(1), "text/csv", b"x\n1\n")
             .expect("blob");
         assert!(store.artifact_blob(&made.id, &other.id).is_none());
+        // The route's form of the same rule: the content type and the hash its bytes are served from.
+        assert_eq!(
+            store.artifact_blob_hash(&made.id, &blob.id),
+            Some(("text/csv".to_string(), Hash::of(CSV.as_bytes()).hex()))
+        );
+        assert!(store.artifact_blob_hash("a00000000000", &blob.id).is_none());
+        assert!(store.artifact_blob_hash(&made.id, &other.id).is_none());
     }
 
     #[test]
@@ -1502,5 +1543,211 @@ mod tests {
         assert!(store.compiled(&made.id, 1, "app", "missing.tsx").is_none());
         assert!(store.delete(&made.id));
         assert!(store.compiled(&made.id, 1, "app", "App.tsx").is_none());
+    }
+
+    /// The bytes of a xorshift sequence of length `n`: no short period, so a blob this size is cut into chunks.
+    fn non_repeating(n: usize) -> Vec<u8> {
+        let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 32) as u8
+            })
+            .collect()
+    }
+
+    /// A spec with an HTML panel whose entry is `App.tsx` (a script the hub compiles), and a dataset over blob `blob`.
+    fn both_spec(blob: &BlobRef) -> Spec {
+        serde_json::from_value(json!({
+            "title": "Both",
+            "panels": [
+                {
+                    "id": "app",
+                    "title": "App",
+                    "span": 6,
+                    "body": {
+                        "type": "html",
+                        "entry": "App.tsx",
+                        "files": [{
+                            "path": "App.tsx",
+                            "text": "import React from \"react\";\nexport default () => <div>hi</div>;\n"
+                        }]
+                    }
+                },
+                {
+                    "id": "data",
+                    "title": "Scores",
+                    "span": 6,
+                    "body": {
+                        "type": "dataset",
+                        "columns": [
+                            {"key": "name", "label": "Name"},
+                            {"key": "score", "label": "Score", "kind": "number"}
+                        ],
+                        "blob": {"id": blob.id, "content_type": blob.content_type, "bytes": blob.bytes}
+                    }
+                }
+            ]
+        }))
+        .expect("spec")
+    }
+
+    /// Every hash the index records (its blobs, and each version's spec and scripts), sorted, each once.
+    fn recorded(store: &Store) -> Vec<Hash> {
+        let index = lock(&store.index);
+        let mut hashes: Vec<Hash> = index
+            .blobs
+            .values()
+            .map(|b| b.hash.parse::<Hash>().expect("a hash"))
+            .collect();
+        for entry in &index.artifacts {
+            for version in &entry.versions {
+                hashes.push(version.spec_hash.parse::<Hash>().expect("a hash"));
+                for script in &version.scripts {
+                    hashes.push(script.hash.parse::<Hash>().expect("a hash"));
+                }
+            }
+        }
+        hashes.sort();
+        hashes.dedup();
+        hashes
+    }
+
+    #[test]
+    fn a_blob_a_spec_and_a_script_are_stored_by_hash_and_read_back_after_a_reload() {
+        let dir = scratch("by-hash");
+        let (store, objects) = open(&dir);
+        let blob = store
+            .put_blob(Some(1), "text/csv", CSV.as_bytes())
+            .expect("blob");
+        let made = store
+            .create("a1", Some(1), None, both_spec(&blob))
+            .expect("create");
+        // The index records each hash, and the object store holds the bytes under it.
+        let (spec_hash, script_hash, blob_hash) = {
+            let index = lock(&store.index);
+            let version = &index.artifacts[0].versions[0];
+            (
+                version.spec_hash.clone(),
+                version.scripts[0].hash.clone(),
+                index.blobs[&blob.id].hash.clone(),
+            )
+        };
+        assert_eq!(blob_hash, Hash::of(CSV.as_bytes()).hex());
+        let spec_bytes = objects
+            .get(&spec_hash.parse::<Hash>().expect("a hash"))
+            .expect("the spec");
+        assert_eq!(Hash::of(&spec_bytes).hex(), spec_hash);
+        let spec: Spec = serde_json::from_slice(&spec_bytes).expect("a spec");
+        assert_eq!(spec.title, "Both");
+        let js = objects
+            .get(&script_hash.parse::<Hash>().expect("a hash"))
+            .expect("the script");
+        assert_eq!(Hash::of(&js).hex(), script_hash);
+        assert!(String::from_utf8_lossy(&js).contains("React.createElement"));
+        let read_back = |store: &Store| {
+            assert_eq!(
+                store.get(&made.id, None).map(|a| a.title),
+                Some("Both".to_string())
+            );
+            assert!(
+                store
+                    .compiled(&made.id, 1, "app", "App.tsx")
+                    .is_some_and(|js| js.contains("React.createElement"))
+            );
+            assert_eq!(
+                store.blob(&blob.id),
+                Some(("text/csv".to_string(), CSV.as_bytes().to_vec()))
+            );
+        };
+        read_back(&store);
+        read_back(&Store::load(&dir, objects.clone()));
+    }
+
+    #[test]
+    fn an_index_over_bytes_the_store_lacks_reads_as_missing() {
+        let dir = scratch("missing-bytes");
+        let (store, _) = open(&dir);
+        let blob = store
+            .put_blob(Some(1), "text/csv", CSV.as_bytes())
+            .expect("blob");
+        let made = store
+            .create("a1", Some(1), None, both_spec(&blob))
+            .expect("create");
+        let empty =
+            Arc::new(apz_blobs::Blobs::open(&scratch("missing-bytes-objects")).expect("objects"));
+        let reloaded = Store::load(&dir, empty);
+        assert!(reloaded.exists(&made.id));
+        assert!(reloaded.get(&made.id, None).is_none());
+        assert!(reloaded.compiled(&made.id, 1, "app", "App.tsx").is_none());
+        assert!(reloaded.blob(&blob.id).is_none());
+    }
+
+    #[test]
+    fn a_range_of_a_large_artifact_blob_reads_only_the_chunks_it_covers() {
+        let dir = scratch("range");
+        let (store, objects) = open(&dir);
+        let data = non_repeating(12 << 20);
+        let blob = store
+            .put_blob(Some(1), "application/octet-stream", &data)
+            .expect("blob");
+        let made = store
+            .create("a1", Some(1), None, dataset_spec("Large", &blob))
+            .expect("create");
+        let (content_type, hash) = store
+            .artifact_blob_hash(&made.id, &blob.id)
+            .expect("the artifact references the blob");
+        let chunks = objects
+            .chunks(&hash.parse::<Hash>().expect("a hash"))
+            .expect("the blob is stored")
+            .expect("a blob this large is chunked");
+        assert!(chunks.len() > 4, "{} chunks", chunks.len());
+        let (served_type, headers) = served(&content_type, &blob.id, false);
+        let req = Request {
+            method: "GET".into(),
+            headers: vec![("range".into(), "bytes=6000000-6000999".into())],
+            ..Request::default()
+        };
+        let before = objects.entry_reads();
+        let response = crate::storage::blob_response(&objects, &req, &hash, &served_type, headers);
+        let reads = objects.entry_reads() - before;
+        assert_eq!(response.status, 206);
+        assert_eq!(response.bytes(), &data[6_000_000..6_001_000]);
+        assert!(
+            reads <= 4,
+            "{reads} entries read for a 1000-byte range of a {}-chunk blob",
+            chunks.len()
+        );
+    }
+
+    #[test]
+    fn hashes_lists_what_the_index_references_and_nothing_else() {
+        let dir = scratch("hashes");
+        let (store, objects) = open(&dir);
+        let stray = objects
+            .put(b"nothing in the index refers to me")
+            .expect("stray");
+        assert!(store.hashes().is_empty());
+        let blob = store
+            .put_blob(Some(1), "text/csv", CSV.as_bytes())
+            .expect("blob");
+        let made = store
+            .create("a1", Some(1), None, both_spec(&blob))
+            .expect("create");
+        let script = store
+            .compiled(&made.id, 1, "app", "App.tsx")
+            .expect("the script");
+        let mut listed = store.hashes();
+        assert!(!listed.contains(&stray));
+        assert!(listed.contains(&Hash::of(CSV.as_bytes())));
+        assert!(listed.contains(&Hash::of(script.as_bytes())));
+        listed.sort();
+        assert_eq!(listed, recorded(&store));
+        // Deleting the artifact drops its references, its blob with them (no other artifact names it). The bytes stay.
+        assert!(store.delete(&made.id));
+        assert!(store.hashes().is_empty());
+        assert!(objects.has(&Hash::of(CSV.as_bytes())));
     }
 }

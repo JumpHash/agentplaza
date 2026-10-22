@@ -1,0 +1,25 @@
+meta {
+  name: Read the project chat with its messages
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/chats/{{we_chat}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.kind: eq "project"
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it is the chat opened, and its messages are a list", function () {
+    const chat = res.getBody();
+    expect(chat.id).to.equal(bru.getVar("we_chat"));
+    expect(chat.messages).to.be.an("array");
+  });
+}

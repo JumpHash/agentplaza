@@ -118,16 +118,12 @@ pub struct App {
     pub engine_feed: crate::engine_feed::Feed,
     /// Agent-made tools (the plaza's library).
     pub library: crate::library::Store,
-    /// The Library of deliverables: files agents handed in, in Garage or a local folder.
+    /// The Library of deliverables: files agents handed in, their bytes in the object store (`blobs`).
     pub deliverables: Arc<crate::deliverables::Store>,
     /// What agents found on the internet and judged, for every agent to use.
     pub toolbox: crate::toolbox::Store,
     /// Projects: every goal's flow from brief to delivery.
     pub projects: crate::projects::Store,
-    /// The project each agent works on; one with none is on the bench and does nothing (`membership`).
-    pub members: crate::membership::Members,
-    /// The owner's conversations with the orchestrator, each its own thread (`conversations`).
-    pub conversations: crate::conversations::Store,
     /// Each chat's context and tool calls, and one-message model choices (`context_track.rs`).
     pub context: crate::context_track::Tracker,
     /// Each project's overrides of the plaza's settings (`project_settings`).
@@ -149,6 +145,9 @@ pub struct App {
     /// The hub's store: SQLite in the state folder (store/mod.rs). Memory is the working copy; the saver keeps the
     /// components' tables equal to it.
     pub store: Arc<apz_store::Store>,
+    /// The object store (apz-blobs, `<state-dir>/blobs`): the bytes of the Library, the artifacts, the skill files and
+    /// the stations' frames and sync content, each by its BLAKE3 hash (storage.rs).
+    pub blobs: Arc<apz_blobs::Blobs>,
     /// What each component last saved (store/saver.rs).
     pub saved: crate::store::saver::Ledger,
     /// The work engine's sessions (sessions.rs), the seats of tasks (seats.rs), the budgets (budgets.rs), the cards
@@ -157,6 +156,8 @@ pub struct App {
     pub seats: crate::seats::Seats,
     pub budgets: crate::budgets::Budgets,
     pub cards: crate::cards::Cards,
+    /// The VMs' workspace reports and the disk quotas' check (disk.rs).
+    pub disk: crate::disk::Disk,
     pub chats: crate::chats::Chats,
     pub threads: crate::threads::Threads,
     /// The unfurl answers for the references clients show as chips (unfurl/mod.rs); the memory fallback when there is no Postgres.
@@ -243,6 +244,11 @@ impl App {
         let foundry_dir = config.state_dir.join("foundry");
         // The store first: it takes the folder's lock, so a second hub on this folder stops here.
         let store = Arc::new(crate::store::open(&config.state_dir).map_err(std::io::Error::other)?);
+        // The object store (apz-blobs): the bytes the Library, the artifacts, the skills and the stations keep, by hash.
+        let blobs = Arc::new(
+            apz_blobs::Blobs::open(&config.state_dir.join("blobs"))
+                .map_err(std::io::Error::other)?,
+        );
         let db = Arc::new(crate::db::Db::connect(&env));
         let roster_db = db.enabled().then(|| Arc::clone(&db));
         let hub_mcp_db = db.enabled().then(|| Arc::clone(&db));
@@ -259,12 +265,8 @@ impl App {
         ));
         // The vendor bindings (Auggie's session) show in the console's vault screen from boot.
         crate::vendor_relay::register(&vault);
-        // The Library of deliverables, shared with the skill library's file store.
-        let library = Arc::new(crate::deliverables::Store::open(
-            &config.state_dir,
-            &env,
-            Arc::clone(&vault),
-        )?);
+        // The Library of deliverables, over the object store.
+        let library = Arc::new(crate::deliverables::Store::open(Arc::clone(&blobs)));
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
@@ -277,9 +279,7 @@ impl App {
             deliverables: Arc::clone(&library),
             toolbox: crate::toolbox::Store::default(),
             projects: Default::default(),
-            members: crate::membership::Members::load(config.state_dir.join("members.json")),
             context: Default::default(),
-            conversations: crate::conversations::Store::default(),
             project_settings: Default::default(),
             harness: crate::harness_control::Store::default(),
             weft: crate::weft_hub::Weft::default(),
@@ -289,11 +289,13 @@ impl App {
             reviews: crate::review_graph::Reviews::load(&config.state_dir),
             db: Arc::clone(&db),
             store: Arc::clone(&store),
+            blobs: Arc::clone(&blobs),
             saved: crate::store::saver::Ledger::default(),
             sessions: Default::default(),
             seats: Default::default(),
             budgets: Default::default(),
             cards: Default::default(),
+            disk: Default::default(),
             chats: Default::default(),
             threads: Default::default(),
             unfurl: crate::unfurl::Cache::default(),
@@ -323,14 +325,9 @@ impl App {
             ),
             prompts: crate::prompts::Prompts::new(prompt_store),
             skills: {
-                // Skill files go to the Library's object store (the same Store the App holds) when Garage is configured.
-                let blobs: Arc<dyn crate::skills::Blobs> = if library.has_garage() {
-                    Arc::new(crate::skills::blobs::LibraryBlobs::new(Arc::clone(
-                        &library,
-                    )))
-                } else {
-                    Arc::new(crate::skills::blobs::FsBlobs::open(&config.state_dir))
-                };
+                // Skill files are kept in the object store, by BLAKE3 hash.
+                let skill_blobs: Arc<dyn crate::skills::Blobs> =
+                    Arc::new(crate::skills::blobs::StoreBlobs::new(Arc::clone(&blobs)));
                 crate::skills::Skills::new(
                     if db.enabled() {
                         Arc::new(crate::skills::store_db::DbSkills::new(Arc::clone(&db)))
@@ -340,14 +337,14 @@ impl App {
                             &config.state_dir,
                         ))
                     },
-                    blobs,
+                    skill_blobs,
                 )
             },
             settings: settings::Store::new(config.dev_models),
             appearance: crate::appearance::Store::new(),
             artifacts: Arc::new(crate::artifacts::Store::load(
                 &config.state_dir,
-                Arc::clone(&library),
+                Arc::clone(&blobs),
             )),
             shares: Arc::new(crate::shares::Store::load(&config.state_dir)),
             providers: providers::Store::new(Arc::clone(&vault)),
@@ -378,6 +375,7 @@ impl App {
         crate::replan::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));
         crate::metrics::spawn(Arc::clone(&app));
+        crate::storage::spawn_sweeper(Arc::clone(&app));
         crate::foundry::routes::spawn_tracker(Arc::clone(&app));
         // Model prices: refreshed when stale (at start, then hourly; the catalog decides).
         let prices_app = Arc::clone(&app);

@@ -320,7 +320,8 @@ fn dry_run(app: &App, body: &[u8]) -> Response {
         .and_then(|found| {
             let (machines, reach) = machines(app);
             let plan = jobs::place(&machines, &reach, &spec)?;
-            Ok(jobs::plan_document(&plan, &spec, &found))
+            let job_dir = app.foundry.jobs_dir().join(&spec.job_id);
+            Ok(jobs::plan_document(&plan, &spec, &found, &job_dir))
         });
     match result {
         Ok(plan) => Response::json(200, &plan),
@@ -363,7 +364,8 @@ pub(crate) fn submit_job(app: &App, doc: Value) -> Result<Job, (u16, String)> {
         .and_then(|found| {
             let (machines, reach) = machines(app);
             let plan = jobs::place(&machines, &reach, &spec)?;
-            let plan_doc = jobs::plan_document(&plan, &spec, &found);
+            let job_dir = app.foundry.jobs_dir().join(&spec.job_id);
+            let plan_doc = jobs::plan_document(&plan, &spec, &found, &job_dir);
             let dir = jobs::write_job_dir(&app.foundry, &spec.job_id, &doc, &plan_doc, &found)?;
             Ok((plan, plan_doc, dir))
         });

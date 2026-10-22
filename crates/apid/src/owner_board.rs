@@ -70,8 +70,8 @@ impl ProjectIndex {
 
 /// `POST /v1/board/posts` `{subject?, body, project?, mentions?}`: the owner posts. A post for a
 /// project must name an existing one. Each agent the post mentions is sent a message through its
-/// work queue, unless the post's board is paused, or the agent does not work now (it is on the bench,
-/// or its project is paused): then the post is stored only, and the agent sees it through its unread
+/// work queue, unless the post's board is paused, or the agent does not work now (its project is paused
+/// or over): then the post is stored only, and the agent sees it through its unread
 /// cursor.
 fn owner_post(app: &App, body: &[u8]) -> Response {
     let request: OwnerPostRequest = match parse(body, "board post") {
@@ -96,10 +96,8 @@ fn owner_post(app: &App, body: &[u8]) -> Response {
         .into_iter()
         .map(|agent| (agent.cid, agent.label(), agent.role))
         .collect();
-    let members = project
-        .as_ref()
-        .map(|project| project_members(app, project));
-    let reached = match reach(&checked.mentions, members.as_deref(), &everyone, &roster) {
+    let on_project = project.as_ref().map(|project| project_agents(app, project));
+    let reached = match reach(&checked.mentions, on_project.as_deref(), &everyone, &roster) {
         Ok(reached) => reached,
         Err(reason) => return Response::error(400, &reason),
     };
@@ -122,7 +120,7 @@ fn owner_post(app: &App, body: &[u8]) -> Response {
     );
     for cid in reached
         .into_iter()
-        .filter(|&cid| crate::membership::held_cid(app, cid).is_none())
+        .filter(|&cid| crate::projects::held_cid(app, cid).is_none())
     {
         app.work.enqueue(
             app,
@@ -136,30 +134,30 @@ fn owner_post(app: &App, body: &[u8]) -> Response {
     Response::json(201, &post)
 }
 
-/// The agents on a project: its orchestrator (an owner-opened project has none) and its members.
-fn project_members(app: &App, project: &Project) -> Vec<u64> {
+/// The agents on a project: its orchestrator (an owner-opened project has none) and its agents.
+fn project_agents(app: &App, project: &Project) -> Vec<u64> {
     let lead = (project.lead_cid != 0).then_some(project.lead_cid);
     dedup(
         lead.into_iter()
-            .chain(app.members.members(&project.id))
+            .chain(crate::projects::agents_of(app, &project.id))
             .collect(),
     )
 }
 
-/// The guest CIDs a post's mentions reach. `all` is every member of the post's project (`members`,
+/// The guest CIDs a post's mentions reach. `all` is every agent of the post's project (`on_project`,
 /// `Some`), or every agent when the post has no project (`None`, with `everyone`). A role is every
 /// agent that holds it; a mention nobody matches is refused, so a typo is not a silent non-delivery.
 /// `roster` is `(cid, label, role)` for each agent.
 fn reach(
     mentions: &[String],
-    members: Option<&[u64]>,
+    on_project: Option<&[u64]>,
     everyone: &[u64],
     roster: &[(u64, String, String)],
 ) -> Result<Vec<u64>, String> {
     let mut cids = Vec::new();
     for name in mentions {
         if name.eq_ignore_ascii_case(EVERYONE) {
-            cids.extend_from_slice(members.unwrap_or(everyone));
+            cids.extend_from_slice(on_project.unwrap_or(everyone));
             continue;
         }
         let matched: Vec<u64> = roster
@@ -411,13 +409,13 @@ mod tests {
                 "an unknown name is refused"
             );
         }
-        // All is the project's members, or every agent without one; an empty project reaches nobody.
+        // All is the project's agents, or every agent without one; an empty project reaches nobody.
         {
             let everyone = [3, 4, 5];
             assert_eq!(
                 reach(&names(&["all"]), Some(&[4]), &everyone, &roster()),
                 Ok(vec![4]),
-                "all on a project is its members"
+                "all on a project is its agents"
             );
             assert_eq!(
                 reach(&names(&["ALL"]), None, &everyone, &roster()),

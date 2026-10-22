@@ -28,7 +28,7 @@
 //! | `POST stop {on}` | STOP ALL on or off (apid only) |
 //! | `wire/…` | objects in and out ([`crate::wire`]) |
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -575,6 +575,17 @@ fn repo_routes(router: Router<H>) -> Router<H> {
             let st = h.store.state();
             match st.repos.get(p.get("repo")) {
                 Some(r) if h.may_read(&st, &who, &r.name, "") => ok(repo_view(&st, r)),
+                _ => fail(404, "no such repo"),
+            }
+        })
+        .get("/v1/repos/{repo}/stats", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let st = h.store.state();
+            match st.repos.get(p.get("repo")) {
+                Some(r) if h.may_read(&st, &who, &r.name, "") => ok(repo_stats(h, &st, &r.name)),
                 _ => fail(404, "no such repo"),
             }
         })
@@ -1635,6 +1646,29 @@ pub fn repo_view(st: &State, r: &crate::state::Repo) -> Value {
     })
 }
 
+/// A repo's stored objects: the distinct blobs its revisions name, and their bytes in the blob store. The store is the
+/// plaza's, so this is what the repo references, not what the store holds beside it.
+fn repo_stats(h: &H, st: &State, repo: &str) -> Value {
+    let deltas = st
+        .revisions
+        .values()
+        .filter(|rev| st.changes.get(&rev.change).is_some_and(|c| c.repo == repo))
+        .flat_map(|rev| rev.deltas.iter());
+    let (blobs, bytes) = blob_bytes(deltas, |hash| h.store.blobs.size(hash));
+    json!({ "repo": repo, "blobs": blobs, "bytes": bytes })
+}
+
+/// The distinct blobs `deltas` name, and their bytes as `size_of` gives them (a blob the store no longer holds counts
+/// no bytes).
+fn blob_bytes<'a>(
+    deltas: impl IntoIterator<Item = &'a Delta>,
+    size_of: impl Fn(&Hash) -> Option<u64>,
+) -> (usize, u64) {
+    let distinct: HashSet<Hash> = deltas.into_iter().filter_map(|d| d.after).collect();
+    let bytes = distinct.iter().filter_map(&size_of).sum();
+    (distinct.len(), bytes)
+}
+
 pub fn change_summary(st: &State, c: &Change) -> Value {
     let latest = c
         .landed
@@ -1699,5 +1733,24 @@ mod tests {
         assert_eq!(refused("ci v2 exists".into()).status, 400);
         assert_eq!(refused("repo ci is frozen".into()).status, 409);
         assert_eq!(refused("bad repo name \"\"".into()).status, 400);
+    }
+
+    #[test]
+    fn a_repo_counts_each_blob_once_at_the_size_the_store_gives_it() {
+        let file = |path: &str, after: Option<u8>| Delta {
+            path: path.to_string(),
+            after: after.map(|byte| Hash([byte; 32])),
+            mode: 0o100644,
+        };
+        let deltas = [
+            file("a", Some(1)),
+            file("b", Some(2)),
+            file("a2", Some(1)),
+            file("c", Some(3)),
+            file("gone", None),
+        ];
+        // Blob 3 is no longer in the store: it is named, but takes no bytes.
+        let size_of = |hash: &Hash| (hash.0[0] != 3).then(|| u64::from(hash.0[0]) * 10);
+        assert_eq!(blob_bytes(&deltas, size_of), (3, 30));
     }
 }

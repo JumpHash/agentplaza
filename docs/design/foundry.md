@@ -1,6 +1,8 @@
 # The Foundry and the Lab: breeders, training on any GPUs, model agents
 
-Status: built (2026-10-14), with the Hugging Face and text-model parts (below) added after the design. The hub is
+Status: built (2026-10-14), with the Hugging Face and text-model parts (below) added after the design. The trainer
+runs natively on every OS now, with no containers (see The trainer runtime); the container text below is the
+2026-10-14 build. The hub is
 `crates/apid/src/foundry/` (jobs, devices, plan, recipes, datasets, the registry with shadow, promote and retire, model
 agents on tract), the trainer is `trainer/` (`apz_train`), the Lab is in both apps (`apps/web/src/views/lab*.ts`,
 `apps/desktop/src/console/screens/lab*.rs`), and the shadow runs are `crates/apid/src/usage.rs`. Builds on the codex draft (`docs/codex-draft/playbooks/breeding-guide.md`,
@@ -30,22 +32,23 @@ Every machine reports its accelerators in `/v1/machine` (and so in `/v1/fleet`) 
   "link": "pcie",                                                       // pcie | nvlink | xgmi | soc
   "busy": false, "util_pct": 3, "mem_used_mib": 512
 }],
-"trainer": { "runtime": "docker-nvidia", "ok": true, "detail": "nvidia-container-runtime 1.17" },
+"trainer": { "runtime": "native-nvidia", "ok": true, "detail": "native-nvidia runs trainers under the landlock sandbox",
+             "trainer_env": { "torch": "cuda", "matches": true, "detail": "torch is the cuda build, the one this machine's accelerators need" } },
 "fabric": ["192.168.1.20", "10.8.0.3"]                                  // addresses other machines may reach
 ```
 
 | vendor | backend | collective | how the trainer runs | where |
 |---|---|---|---|---|
-| NVIDIA | `cuda` | NCCL | container, `--gpus device=…` (NVIDIA Container Toolkit; on Windows through Docker Desktop's WSL2 GPU support) | Linux, Windows |
-| AMD | `rocm` | RCCL (torch's `nccl` backend on ROCm) | container with `--device /dev/kfd --device /dev/dri` | Linux |
-| Intel | `xpu` | XCCL / oneCCL | container with `--device /dev/dri` | Linux |
-| Apple | `mps` | gloo (no collective on MPS) | native sandboxed runner (no GPU in containers on macOS) | macOS |
-| none | `cpu` | gloo | container (or the native runner) | anywhere |
+| NVIDIA | `cuda` | NCCL | native runner under the OS sandbox, the GPU's device nodes granted; torch's `cuda` build | Linux (Windows: CPU only, the AppContainer grants no GPU device) |
+| AMD | `rocm` | RCCL (torch's `nccl` backend on ROCm) | native runner, `/dev/kfd` and `/dev/dri` granted; torch's `rocm` build | Linux |
+| Intel | `xpu` | XCCL / oneCCL | native runner, `/dev/dri` granted; torch's `xpu` build | Linux |
+| Apple | `mps` | gloo (no collective on MPS) | native runner under Seatbelt; torch's PyPI wheel (MPS) | macOS |
+| none | `cpu` | gloo | native runner; torch's `cpu` build | anywhere |
 
 Detection lives in noded (`nvidia-smi --query-gpu`, `rocm-smi --showproductname --json`, `/sys/class/drm`
-for Intel, `system_profiler SPDisplaysDataType` on macOS) and the runtime check (`docker info` runtimes,
-`/dev/kfd`, …). Desktop setup gains an optional **GPU training** requirement that installs what's missing
-after asking (NVIDIA Container Toolkit, ROCm container support, or nothing on macOS).
+for Intel, `system_profiler SPDisplaysDataType` on macOS). The runtime check is the node's probe: the OS
+sandbox, the device nodes it can grant (`/dev/nvidia*`, `/dev/kfd`, `/dev/dri`), `uv`, and the trainer's torch
+build (below).
 
 ## Coupling: how a job spreads over GPUs
 
@@ -86,9 +89,17 @@ The plan is shown before submission and recorded with the job:
 
 ## The trainer runtime
 
-`trainer/` in the repo: a Python package `apz_train` plus container images (`apz-trainer:cuda`,
-`:rocm`, `:xpu`, `:cpu`) built in CI and published with releases; the macOS native runner uses a pinned
-`uv` environment with the same package.
+`trainer/` in the repo: a Python package `apz_train`, run natively on every OS, with no container image. A node
+prepares its trainer once per accelerator, with uv from the trainer project: `uv sync --project trainer --extra
+cuda` (NVIDIA), `--extra rocm` (AMD), `--extra xpu` (Intel), or `--extra cpu` (no accelerator). On macOS every
+extra takes the PyPI wheel, which has MPS. The extras exclude each other, since one environment holds one torch
+build; a node with several vendors trains on NVIDIA first, then AMD, then Intel. uv installs the environment (it
+needs the network), never a job. After the extras change, `uv.lock` is refreshed with `uv lock`.
+noded's probe reads the environment's `torch/version.py` and reports the build as `trainer_env` in the node's
+facts; when the build does not serve the node's accelerators, its detail names the `uv sync --extra` that does.
+Each job runs `uv run --frozen --no-sync --project trainer python -m apz_train.run <args>` under the OS sandbox,
+in its own directory: the datasets and the recipes are host paths the sandbox grants read-only, and the job
+directory is read-write.
 - Entry: `python -m apz_train.run --job job.json --plan plan.json --role <island leader|worker>` (under
   `torchrun` for tight islands).
 - Recipes are Python modules from the owner-signed `foundry-recipes` repo (Forgejo), checked out at the
@@ -103,8 +114,12 @@ The plan is shown before submission and recorded with the job:
 - Progress: one JSON line per event on stdout (`{"ev":"step","step":120,"loss":0.41,"lr":…,"samples":…}`,
   `eval`, `checkpoint`, `trial`, `done`, `error`) — noded streams them to the hub, the hub publishes them on
   the bus (`training` events) and keeps the series for the Lab's charts.
-- Isolation: no network except the collective (tight islands) and the hub's node link (loose); datasets and
-  the recipe read-only; output to a job directory; GPU-hours metered from the device time actually used.
+- Isolation: no network except the collective (tight islands) and, for a loose island, the hub's port on
+  loopback: `network: hub` grants the one port the job's `--hub` URL names (on Linux Landlock filters the port,
+  not the address). A loose island runs on the hub's own machine until nodes have an egress for jobs; on another
+  node it is refused ("a loose job needs the hub on its node's machine until nodes have an egress for jobs").
+  Datasets and the recipe read-only; output to a job directory; GPU-hours metered from the device time actually
+  used.
 
 ## The hub: jobs, registry, model agents
 

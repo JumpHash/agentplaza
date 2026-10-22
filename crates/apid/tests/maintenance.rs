@@ -1,17 +1,20 @@
-//! A finished project looked after, end to end on a scratch hub with Weft. The owner brings in a project that exists
-//! (a git repository on this machine) with its environments; it opens delivered and in maintenance, and its planner
-//! sweeps it first. The watchers' tools map it, record what they read and propose work; the orchestrator cannot post
-//! a task there. The owner picks one proposal (a task of the project), declines another (the next sweep reads why),
-//! and makes an ingest address. A builder deploys to staging at once and to production only after the owner's
-//! approval, each through the environment's deploy hook. A chat carries the owner's file, which the agent may then
-//! read; files the owner drops land in the repository; and back in build the maintenance tools are no longer offered.
+//! A finished project looked after, end to end on a scratch hub with Weft. The owner brings in a project that exists (a git
+//! repository on this machine) with its environments; it opens delivered and in maintenance. The work loop starts the
+//! project's planner, a long-lived session, as it does for a project being built, and the planner sweeps first. The
+//! watchers' tools map it,
+//! record what they read and propose work; the orchestrator cannot post a task there. The owner picks one proposal (a task
+//! of the project), declines another (the next sweep reads why), and makes an ingest address. The picked task's builder
+//! seat starts a session, which deploys to staging at once and to production only after the owner's approval, each
+//! through the environment's deploy hook. A chat carries the owner's file, which the agent may then read; files the owner
+//! drops land in the repository; and back in build the maintenance tools are no longer offered.
 //!
-//! noded and the agent gateway are stood in for, and so is a deploy hook; the agents' calls are made as their VMs
-//! make them.
+//! noded and the agent gateway are stood in for, and so is a deploy hook; the agents' calls are made as their VMs make
+//! them.
 
 mod common;
 
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -19,8 +22,19 @@ use serde_json::{Value, json};
 use common::{FakeDaemon, Hub, Scratch, text};
 
 const ORCHESTRATOR: u64 = 109;
+/// The project's planner: noded starts it on this VM when the work loop starts the planner.
 const PLANNER: u64 = 300;
+/// A builder the fleet runs, with no session of its own: the owner's chat and file go to it.
 const BUILDER: u64 = 301;
+/// The VM the picked task's builder seat starts.
+const SEAT_BUILDER: u64 = 302;
+/// The VM a reviewer seat starts (none does in this test: the builder's work is never done here).
+const REVIEWER: u64 = 303;
+/// The first CID for any other VM noded starts.
+const SPARE: u64 = 310;
+
+/// The VMs noded runs, as (cid, role).
+type Vms = Arc<Mutex<Vec<(u64, String)>>>;
 
 /// Agent `cid`'s call of host tool `name` in work item `work`: the hub's decision and output.
 fn tool(hub: &Hub, cid: u64, work: u64, name: &str, input: Value) -> Value {
@@ -67,6 +81,57 @@ fn next_work(gateway: &FakeDaemon, cid: u64, thread: &str, seen: usize) -> (u64,
         std::thread::sleep(Duration::from_millis(100));
     }
     panic!("no work on {thread} for {cid}: {:?}", pushed(gateway, cid));
+}
+
+/// noded and the agent gateway, sharing the VMs noded runs: a run's VM gets its role's CID (the planner's, the builder
+/// seat's, a reviewer's), and any other the next CID from [`SPARE`].
+fn daemons(vms: &Vms) -> (FakeDaemon, FakeDaemon) {
+    let started = Arc::clone(vms);
+    let noded = FakeDaemon::serve(move |method, path, body| {
+        let mut vms = started.lock().unwrap_or_else(|p| p.into_inner());
+        if method == "GET" && path.starts_with("/v1/runs") {
+            let list: Vec<Value> = vms
+                .iter()
+                .enumerate()
+                .map(|(i, (cid, role))| json!({ "id": i, "guest_cid": cid, "role": role }))
+                .collect();
+            (
+                200,
+                json!({ "runs": [{ "id": "r1", "ended_at": null, "vms": list }] }).to_string(),
+            )
+        } else if method == "POST" && path == "/v1/runs" {
+            let role = serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|b| b["role"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            let cid = match role.as_str() {
+                "planner" => PLANNER,
+                "builder" => SEAT_BUILDER,
+                "reviewer" => REVIEWER,
+                _ => SPARE + vms.len() as u64,
+            };
+            vms.push((cid, role));
+            let id = vms.len() - 1;
+            let vm = json!({ "id": id, "guest_cid": cid, "state": "running" });
+            (200, json!({ "id": "r2", "vms": [vm] }).to_string())
+        } else {
+            (200, "{}".into())
+        }
+    });
+    let reported = Arc::clone(vms);
+    let gateway = FakeDaemon::serve(move |_, path, _| {
+        if path.starts_with("/v1/status") {
+            let vms = reported.lock().unwrap_or_else(|p| p.into_inner());
+            let agents: Vec<Value> = vms
+                .iter()
+                .map(|(cid, role)| json!({ "cid": cid, "role": role }))
+                .collect();
+            (200, json!({ "agents": agents }).to_string())
+        } else {
+            (200, r#"{"ok":true}"#.into())
+        }
+    });
+    (noded, gateway)
 }
 
 fn tool_names(profile: &Value) -> Vec<String> {
@@ -122,34 +187,11 @@ fn git_repo(dir: &std::path::Path) {
 
 #[test]
 fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
-    let noded = FakeDaemon::serve(|method, path, _| {
-        if method == "GET" && path.starts_with("/v1/runs") {
-            let runs = json!({ "runs": [{
-                "id": "r1",
-                "ended_at": null,
-                "vms": [
-                    { "id": 0, "guest_cid": ORCHESTRATOR, "role": "orchestrator" },
-                    { "id": 1, "guest_cid": PLANNER, "role": "planner" },
-                    { "id": 2, "guest_cid": BUILDER, "role": "builder" },
-                ],
-            }] });
-            (200, runs.to_string())
-        } else {
-            (200, "{}".into())
-        }
-    });
-    let gateway = FakeDaemon::serve(|_, path, _| {
-        if path.starts_with("/v1/status") {
-            let agents = json!({ "agents": [
-                { "cid": ORCHESTRATOR, "role": "orchestrator" },
-                { "cid": PLANNER, "role": "planner" },
-                { "cid": BUILDER, "role": "builder" },
-            ] });
-            (200, agents.to_string())
-        } else {
-            (200, r#"{"ok":true}"#.into())
-        }
-    });
+    let vms: Vms = Arc::new(Mutex::new(vec![
+        (ORCHESTRATOR, "orchestrator".to_string()),
+        (BUILDER, "builder".to_string()),
+    ]));
+    let (noded, gateway) = daemons(&vms);
     // The deploy hooks of the shop's environments (a CI's deploy URL, say).
     let hook = FakeDaemon::serve(|_, _, _| (200, r#"{"queued":true}"#.into()));
     let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
@@ -160,11 +202,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     } });
     let scratch = Scratch::new("maintenance");
     let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
-    for (cid, role) in [
-        (ORCHESTRATOR, "orchestrator"),
-        (PLANNER, "planner"),
-        (BUILDER, "builder"),
-    ] {
+    for (cid, role) in [(ORCHESTRATOR, "orchestrator"), (BUILDER, "builder")] {
         let agent = hub.wait_for(&format!("/v1/agents/{cid}"), Duration::from_secs(20), |a| {
             a["role"] == role && a["status"] == "idle"
         });
@@ -233,7 +271,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         "{refused}"
     );
 
-    // The owner adds what support heard, then puts the planner and the builder on it.
+    // The owner adds what support heard.
     let (status, signal) = hub.call(
         "POST",
         &format!("/v1/projects/{pid}/maintenance/signals"),
@@ -241,19 +279,26 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     );
     assert_eq!(status, 201, "{signal}");
     let report = text(&signal["id"]);
-    for cid in [PLANNER, BUILDER] {
-        let (status, member) = hub.call(
-            "POST",
-            &format!("/v1/projects/{pid}/members"),
-            Some(json!({ "cid": cid })),
-        );
-        assert_eq!(status, 200, "{member}");
-        assert_eq!(
-            member["held"],
-            Value::Null,
-            "a delivered project in maintenance is worked: {member}"
-        );
-    }
+
+    // The planner is the project's long-lived session: in maintenance too it starts on the next tick (it is the one who
+    // sweeps).
+    let planners = hub.wait_for(
+        &format!("/v1/sessions?project={pid}"),
+        Duration::from_secs(20),
+        |s| {
+            s.as_array().is_some_and(|s| {
+                s.iter()
+                    .any(|s| s["role"] == "planner" && s["cid"] == PLANNER)
+            })
+        },
+    );
+    assert!(
+        planners
+            .as_array()
+            .is_some_and(|s| s.iter().any(|s| s["role"] == "planner")),
+        "a planner session: {planners}\n{}",
+        hub.log()
+    );
 
     // Its watchers get the maintenance tools; the planner sweeps first, and the sweep asks for the map.
     let (_, hello) = hub.guest(PLANNER, "hello", json!({ "role": "planner", "vm": 1 }));
@@ -415,6 +460,27 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         id_of("See front-end errors"),
     );
 
+    // The owner declines Sentry, and the next sweep reads why.
+    let (status, declined) = hub.call(
+        "POST",
+        &format!("/v1/projects/{pid}/maintenance/proposals/{sentry_id}/decline"),
+        Some(json!({ "reason": "We use our own error log" })),
+    );
+    assert_eq!(status, 200, "{declined}");
+    let (status, _) = hub.call(
+        "POST",
+        &format!("/v1/projects/{pid}/maintenance/sweep"),
+        None,
+    );
+    assert_eq!(status, 202);
+    let (second, prompt) = next_work(&gateway, PLANNER, &thread, 1);
+    assert!(
+        prompt.contains("We use our own error log"),
+        "the decline's reason: {prompt}"
+    );
+    assert!(prompt.contains("The map (2 areas)"), "{prompt}");
+    hub.work_done(PLANNER, second, "done", "Nothing new.");
+
     // The owner picks the fix: it becomes a task of the project, for a builder, with its acceptance.
     let (status, picked) = hub.call(
         "POST",
@@ -443,26 +509,27 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     );
     assert_eq!(status, 409, "a proposal is picked once: {again}");
 
-    // The owner declines Sentry, and the next sweep reads why.
-    let (status, declined) = hub.call(
-        "POST",
-        &format!("/v1/projects/{pid}/maintenance/proposals/{sentry_id}/decline"),
-        Some(json!({ "reason": "We use our own error log" })),
+    // The pick's builder seat starts a session on a VM of its own: that session is the builder who deploys.
+    let seated = hub.wait_for(
+        &format!("/v1/sessions?task={task}"),
+        Duration::from_secs(20),
+        |s| {
+            s.as_array().is_some_and(|s| {
+                s.iter()
+                    .any(|s| s["seat"] == "builder" && s["cid"] == SEAT_BUILDER)
+            })
+        },
     );
-    assert_eq!(status, 200, "{declined}");
-    let (status, _) = hub.call(
-        "POST",
-        &format!("/v1/projects/{pid}/maintenance/sweep"),
-        None,
-    );
-    assert_eq!(status, 202);
-    let (second, prompt) = next_work(&gateway, BUILDER, &thread, 0);
     assert!(
-        prompt.contains("We use our own error log"),
-        "the decline's reason: {prompt}"
+        seated
+            .as_array()
+            .is_some_and(|s| s.iter().any(|s| s["seat"] == "builder")),
+        "a builder session for the pick: {seated}\n{}",
+        hub.log()
     );
-    assert!(prompt.contains("The map (2 areas)"), "{prompt}");
-    hub.work_done(BUILDER, second, "done", "Nothing new.");
+    let (status, hello) = hub.guest(SEAT_BUILDER, "hello", json!({ "role": "builder", "vm": 2 }));
+    assert_eq!(status, 200, "{hello}");
+    assert!(tool_names(&hello["profile"]).contains(&"plaza_deploy".to_string()));
 
     // An ingest address takes a report without the owner's token; a wrong address is unknown.
     let (status, ingest) = hub.call(
@@ -485,12 +552,10 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     );
     assert_eq!(status, 404);
 
-    // A builder deploys to staging at once, through its hook; production waits for the owner.
-    let (_, hello) = hub.guest(BUILDER, "hello", json!({ "role": "builder", "vm": 2 }));
-    assert!(tool_names(&hello["profile"]).contains(&"plaza_deploy".to_string()));
+    // The builder deploys to staging at once, through its hook; production waits for the owner.
     let staged = tool(
         &hub,
-        BUILDER,
+        SEAT_BUILDER,
         7,
         "plaza_deploy",
         json!({ "environment": "staging", "version": "w-3", "why": "the Safari fix" }),
@@ -501,7 +566,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     );
     let prod = tool(
         &hub,
-        BUILDER,
+        SEAT_BUILDER,
         7,
         "plaza_deploy",
         json!({ "environment": "production", "version": "v1.0.1", "why": "release" }),
@@ -568,48 +633,15 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     );
     assert_eq!(status, 201, "{file}");
     let fid = text(&file["id"]);
+    let (_, hello) = hub.guest(BUILDER, "hello", json!({ "role": "builder", "vm": 1 }));
+    assert!(hello["profile"].is_object(), "{hello}");
     let (status, chat) = hub.call(
         "POST",
         &format!("/v1/agents/{BUILDER}/chat"),
         Some(json!({ "text": "Here is what support saw", "attachments": [fid] })),
     );
     assert_eq!(status, 200, "{chat}\n{}", hub.log());
-    // The chat goes out on the builder's own thread. The scheduler may have handed the builder the picked task
-    // first (on its own pass, so on a slow runner it can come before the chat), and an agent works one item at a
-    // time: the test then ends the task's turn, as the builder would, and the chat goes out next.
-    let chat_thread = format!("op-{BUILDER}");
-    let mut ended = Vec::new();
-    // Up to 45 s, times the test slack: a busy runner took longer than 15 to deliver it.
-    let (_, _, prompt) = (0..(450.0 * common::slack()) as usize)
-        .find_map(|_| {
-            let list = pushed(&gateway, BUILDER);
-            if let Some(chat) = list.iter().find(|(_, thread, _)| *thread == chat_thread) {
-                return Some(chat.clone());
-            }
-            for (work, thread, _) in &list {
-                if thread.starts_with("task-") && !ended.contains(work) {
-                    hub.work_done(BUILDER, *work, "done", "Fixed the Safari checkout.");
-                    ended.push(*work);
-                }
-            }
-            std::thread::sleep(Duration::from_millis(100));
-            None
-        })
-        .unwrap_or_else(|| {
-            let (_, agent) = hub.call("GET", &format!("/v1/agents/{BUILDER}"), None);
-            let sent: Vec<_> = gateway
-                .seen()
-                .into_iter()
-                .filter(|(_, path, _)| path.contains(&format!("/agents/{BUILDER}/")))
-                .map(|(method, path, body)| {
-                    format!("{method} {path} {}", &body[..body.len().min(200)])
-                })
-                .collect();
-            panic!(
-                "the chat went out\nthe gateway was sent: {sent:#?}\nthe agent: {agent}\n{}",
-                hub.log()
-            )
-        });
+    let (_, prompt) = next_work(&gateway, BUILDER, &format!("op-{BUILDER}"), 0);
     assert!(
         prompt.contains("Attached files") && prompt.contains(&fid) && prompt.contains("safari.txt"),
         "{prompt}"

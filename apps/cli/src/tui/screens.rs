@@ -460,17 +460,6 @@ fn titled(name: &str, count: usize, app: &App) -> String {
     format!("{head}{} · {count}", chars.as_str())
 }
 
-/// Where an agent works and since when: its project, the bench, or every project for the orchestrator.
-fn place(agent: &Value) -> String {
-    let place = place_of(agent);
-    match agent.get("joined_ms").and_then(Value::as_i64) {
-        Some(ms) if place != "bench" && place != "all" => {
-            format!("{place} · since {}", local_time(ms))
-        }
-        _ => place,
-    }
-}
-
 /// The colour of a status word: working accent, idle and done ok, held or stopping warn, failed or
 /// revoked crit, anything else muted.
 fn status_colour(status: &str, p: &Palette) -> Color {
@@ -760,7 +749,7 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
                 app,
             ),
             kv("status", show(agent.get("status")), app),
-            kv("project", place(agent), app),
+            kv("project", place_of(agent), app),
             kv("held", held_of(agent), app),
             kv(
                 "run / vm",

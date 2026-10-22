@@ -394,12 +394,13 @@ impl Response {
 }
 
 fn reason(status: u16) -> &'static str {
-    const REASONS: [(u16, &str); 22] = [
+    const REASONS: [(u16, &str); 24] = [
         (101, "Switching Protocols"),
         (200, "OK"),
         (201, "Created"),
         (202, "Accepted"),
         (204, "No Content"),
+        (206, "Partial Content"),
         (304, "Not Modified"),
         (400, "Bad Request"),
         (401, "Unauthorized"),
@@ -409,6 +410,7 @@ fn reason(status: u16) -> &'static str {
         (408, "Request Timeout"),
         (409, "Conflict"),
         (413, "Content Too Large"),
+        (416, "Range Not Satisfiable"),
         (422, "Unprocessable Content"),
         (423, "Locked"),
         (426, "Upgrade Required"),

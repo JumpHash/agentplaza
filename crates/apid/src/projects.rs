@@ -143,20 +143,31 @@ pub struct Project {
     pub history: Vec<Event>,
     pub created_ms: u64,
     pub updated_ms: u64,
-    /// The owner paused it: its agents' work waits until it is resumed (`membership`).
+    /// The owner paused it: its agents' work waits until it is resumed (`held`).
     #[serde(default)]
     pub paused: bool,
-    /// The owner archived it: its agents went back to the bench, and nothing more is done for it.
+    /// The owner archived it: its agents' work ends, and nothing more is done for it.
     #[serde(default)]
     pub archived: bool,
     /// How the project is worked: one of [`MODES`] (`build` unless the owner changed it).
     #[serde(default = "build_mode")]
     pub mode: String,
+    /// How the project meets GitHub: one of [`GITHUB_MODES`] (`none` unless the owner chose one).
+    #[serde(default = "github_none")]
+    pub github: String,
 }
 
 fn build_mode() -> String {
     "build".into()
 }
+
+pub(crate) fn github_none() -> String {
+    "none".into()
+}
+
+/// How a project meets GitHub (PLAN 21.5): `mirror` exports Weft's landings to the repository, `ci` lands through
+/// GitHub, `none` is neither. The modes themselves are built in phase 4.7; a project only records its choice.
+pub const GITHUB_MODES: &[&str] = &["none", "mirror", "ci"];
 
 /// A way of working a project: its id, its name in the consoles, and what it means for the agents.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -358,9 +369,70 @@ impl Store {
                 paused: false,
                 archived: false,
                 mode: build_mode(),
+                github: github_none(),
             };
             items.push(project.clone());
             Ok(project)
+        })
+    }
+
+    /// Sets the fields of draft project `id` from its draft's revision: title, goal, kind, GitHub mode and disk quota.
+    /// Only a draft (at "brief", not archived) changes: a started project keeps what it started with.
+    pub fn set_draft(
+        &self,
+        id: &str,
+        title: &str,
+        goal: &str,
+        kind: &str,
+        github: &str,
+    ) -> Result<Project, String> {
+        let title = bounded("title", title, 1, 120)?;
+        let goal = bounded("goal", goal, 1, 8000)?;
+        if kind != "code" && kind != "other" {
+            return Err("kind must be code or other".into());
+        }
+        if !GITHUB_MODES.contains(&github) {
+            return Err(format!("github must be one of {}", GITHUB_MODES.join(", ")));
+        }
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if p.archived {
+                return Err(format!("project {id} is archived"));
+            }
+            if p.stage != "brief" {
+                return Err(format!("project {id} is at {}, not a draft", p.stage));
+            }
+            p.title = title.clone();
+            p.goal = goal.clone();
+            p.kind = kind.into();
+            p.github = github.into();
+            p.updated_ms = now_ms();
+            Ok(p.clone())
+        })
+    }
+
+    /// Starts draft project `id` for the owner: its plan is theirs, so it moves to "implementation" (the stage that runs
+    /// tasks), approved by the owner. Only a draft starts, and not an archived one.
+    pub fn start_draft(&self, id: &str) -> Result<Project, String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if p.archived {
+                return Err(format!("project {id} is archived"));
+            }
+            if p.stage != "brief" {
+                return Err(format!("project {id} is at {}, not a draft", p.stage));
+            }
+            let now = now_ms();
+            p.stage = "implementation".into();
+            p.approved_by = Some("owner".into());
+            p.history.push(event(
+                &Actor::owner(),
+                "approved",
+                "started by the owner from its draft",
+                now,
+            ));
+            p.updated_ms = now;
+            Ok(p.clone())
         })
     }
 
@@ -386,18 +458,7 @@ impl Store {
         })
     }
 
-    /// Makes agent `cid` project `id`'s lead: the orchestrator a conversation started it from, told of its tasks to
-    /// replan.
-    pub fn set_lead(&self, id: &str, cid: u64) -> Result<Project, String> {
-        self.mutate(|items| {
-            let p = find_mut(items, id)?;
-            p.lead_cid = cid;
-            p.updated_ms = now_ms();
-            Ok(p.clone())
-        })
-    }
-
-    /// Pauses or resumes a project: while paused, its agents' work waits (`membership`).
+    /// Pauses or resumes a project: while paused, its agents' work waits (`held`).
     pub fn set_paused(&self, id: &str, paused: bool) -> Result<Project, String> {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
@@ -458,7 +519,7 @@ impl Store {
         })
     }
 
-    /// Archives a project: nothing more is done for it (its agents are sent back to the bench by the caller).
+    /// Archives a project: nothing more is done for it (its agents' work is ended by the caller).
     pub fn archive(&self, id: &str) -> Result<Project, String> {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
@@ -844,16 +905,13 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
     };
     // A project's agent works on its own project only; the orchestrator runs them all.
     if let Some(id) = opt_str(input, "id")
-        && !crate::membership::plaza_wide(&agent.role)
-        && app.members.project_of(agent.cid).as_deref() != Some(id.as_str())
+        && !crate::settings::plaza_wide(&agent.role)
+        && project_of(app, agent.cid).as_deref() != Some(id.as_str())
     {
         return Err(format!(
             "you work on {}, not on project {id}",
-            app.members
-                .project_of(agent.cid)
-                .map_or("no project (the bench)".to_string(), |own| format!(
-                    "project {own}"
-                ))
+            project_of(app, agent.cid)
+                .map_or("no project".to_string(), |own| format!("project {own}"))
         ));
     }
     match name {
@@ -966,10 +1024,10 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             }
             let note = opt_str(input, "note").unwrap_or_default();
             let project = app.projects.advance(id, &actor, &note)?;
-            // Delivered: the project's agents go back to the bench, and the rest of its budget to the plaza (in
-            // maintenance they stay: the project is still looked after).
+            // Delivered: the project's agents' work ends, and the rest of its budget goes to the plaza (in maintenance
+            // they stay: the project is still looked after).
             if project.stage == "delivered" && !project.in_maintenance() {
-                crate::membership::release_project(app, &project.id);
+                crate::work_loop::end_project(app, &project.id, "the project was delivered");
                 crate::project_settings::return_rest(app, &project.id);
             }
             answer(app, &project, stage_hint(&project.stage))
@@ -1122,9 +1180,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/projects/{id}/archive", |app, _, p| {
             lifecycle(app, p.get("id"), Lifecycle::Archive)
         })
-        .doc(
-            RouteDoc::new("Archive a project: its agents go back to the bench").errors(&[404, 409]),
-        )
+        .doc(RouteDoc::new("Archive a project: its agents' work ends").errors(&[404, 409]))
         .get("/v1/project-modes", |_, _, _| Response::json(200, &MODES))
         .doc(RouteDoc::new("List the modes a project can be in"))
         .post("/v1/projects/{id}/mode", mode_route)
@@ -1188,7 +1244,7 @@ fn mode_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if project.in_maintenance() {
         crate::maintenance::entered(app, id);
     }
-    // A delivered project in maintenance, or one open again for build, has work for its members again.
+    // A delivered project in maintenance, or one open again for build, has work for its agents again.
     app.work.dispatch_idle(app);
     app.bus.publish("project", &project);
     Response::json(200, &project)
@@ -1201,7 +1257,7 @@ enum Lifecycle {
     Archive,
 }
 
-/// Pauses, resumes or archives project `id`; an archive sends its agents back to the bench.
+/// Pauses, resumes or archives project `id`; an archive ends its agents' work.
 fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
     if app.projects.get(id).is_none() {
         return Response::error(404, "no such project");
@@ -1218,11 +1274,11 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
     // A paused or archived project holds its members' calls (see `membership`): their policies follow.
     crate::policy::push_all(app);
     if project.archived {
-        // Nothing more is done for it: its agents go back to the bench (the tasks waiting in their queues open
-        // again), then its open tasks are withdrawn (their escrow back in its budget), and the rest of its budget
-        // goes to the plaza. A task an agent was working on is still claimed here, its work only cancelled (it ends
-        // when the agent answers): it is withdrawn too, or its escrow would stay out of both budgets.
-        crate::membership::release_project(app, id);
+        // Nothing more is done for it: its agents' work ends (their sessions end and their VMs stop), then its open
+        // tasks are withdrawn (their escrow back in its budget), and the rest of its budget goes to the plaza. A task
+        // an agent was working on is still claimed here, its work only cancelled (it ends when the agent answers): it
+        // is withdrawn too, or its escrow would stay out of both budgets.
+        crate::work_loop::end_project(app, id, "the project was archived");
         for task in &project.tasks {
             if let Some(task) = app.plaza.tasks.find(task)
                 && (task.is_open() || task.state() == "claimed")
@@ -1301,6 +1357,146 @@ impl Store {
     }
 }
 
+// ---- Which project an agent works on -------------------------------------------------------------------------------
+//
+// An agent works on the project of its live session: a task's seat fills it on its project, and a project's planner is
+// a long-lived session on it. The orchestrator works on every project and on none (its own session is the plaza's).
+// A project's state holds the work of its agents: paused waits, over (archived or delivered) and missing stop it.
+
+/// Where a project stands for the work of its agents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectState {
+    /// Its agents work.
+    Active,
+    /// The owner paused it: its agents' work waits until it is resumed.
+    Paused,
+    /// Archived or delivered: its agents take no more of its work.
+    Over,
+    /// No such project (it was removed): its agents take no more of its work.
+    Missing,
+}
+
+/// The state of project `id` on the hub.
+pub fn state(app: &App, id: &str) -> ProjectState {
+    app.projects
+        .with(id, |p| {
+            // A delivered project in maintenance is still worked: its watchers sweep and the owner's picks run.
+            if p.archived || (p.stage == "delivered" && !p.in_maintenance()) {
+                ProjectState::Over
+            } else if p.paused {
+                ProjectState::Paused
+            } else {
+                ProjectState::Active
+            }
+        })
+        .unwrap_or(ProjectState::Missing)
+}
+
+/// The project agent `cid` works on: its live session's, or `None` when it has no live session or is the
+/// orchestrator's own (the plaza's) session.
+pub fn project_of(app: &App, cid: u64) -> Option<String> {
+    let session = app.sessions.by_cid(cid)?;
+    (session.project != crate::work_loop::PLAZA).then_some(session.project)
+}
+
+/// The agents that work on `project`: those whose live session is on it, by CID.
+pub fn agents_of(app: &App, project: &str) -> Vec<u64> {
+    app.sessions
+        .list(&crate::sessions::Filter {
+            project: Some(project.to_string()),
+            live: true,
+            ..Default::default()
+        })
+        .into_iter()
+        .filter_map(|session| session.cid)
+        .collect()
+}
+
+/// Why `agent` may not work now, or `None` when it may. Only a session whose project is paused, over or gone holds
+/// it: an agent with no live session is not held by this (its calls and tools are then the plaza's rules alone).
+pub fn held(app: &App, agent: &Agent) -> Option<String> {
+    held_as(app, agent.cid, &agent.role)
+}
+
+/// Why agent `cid` of `role` may not work now, or `None` when it may (see [`held`]).
+pub fn held_as(app: &App, cid: u64, role: &str) -> Option<String> {
+    if crate::settings::plaza_wide(role) {
+        return None;
+    }
+    let session = app.sessions.by_cid(cid)?;
+    if session.project == crate::work_loop::PLAZA {
+        return None;
+    }
+    match state(app, &session.project) {
+        ProjectState::Active => None,
+        ProjectState::Paused => Some(format!(
+            "project {} is paused: its agents wait until the owner resumes it",
+            session.project
+        )),
+        ProjectState::Over => Some(format!(
+            "project {} is over (archived or delivered): agent {cid} takes no more of its work",
+            session.project
+        )),
+        ProjectState::Missing => Some(format!(
+            "project {} no longer exists: agent {cid} takes no more of its work",
+            session.project
+        )),
+    }
+}
+
+/// Why agent `cid` may not work now (looked up on the roster), or `None` when it may. An agent the roster does not
+/// know is held.
+pub fn held_cid(app: &App, cid: u64) -> Option<String> {
+    match app.agents.get(cid) {
+        Some(agent) => held(app, &agent),
+        None => Some(format!("no agent {cid}")),
+    }
+}
+
+/// Checks that `agent` may take a task of `project` (`None`: a task outside projects): the task must belong to a
+/// project, and the agent must work on it now. The orchestrator plans; it takes no task.
+pub fn may_take_task(app: &App, agent: &Agent, project: Option<&str>) -> Result<(), String> {
+    let Some(project) = project else {
+        return Err(
+            "the task belongs to no project: tasks run only inside a project (move it into one first)".into(),
+        );
+    };
+    if crate::settings::plaza_wide(&agent.role) {
+        return Err("the orchestrator plans work; give the task to an agent of its project".into());
+    }
+    if let Some(why) = held(app, agent) {
+        return Err(why);
+    }
+    match project_of(app, agent.cid) {
+        Some(own) if own == project => Ok(()),
+        Some(own) => Err(format!(
+            "agent {} works on project {own}, not on {project}",
+            agent.cid
+        )),
+        None => Err(format!(
+            "agent {} has no project: it takes a task only on a seat of the task's project",
+            agent.cid
+        )),
+    }
+}
+
+/// The paragraph an agent's system prompt carries about its project, or that it has none yet.
+pub fn prompt_section(app: &App, cid: u64, role: &str) -> Option<String> {
+    if crate::settings::plaza_wide(role) {
+        return None;
+    }
+    let Some(project) = project_of(app, cid).and_then(|id| app.projects.get(&id)) else {
+        return Some(
+            "You have no project: you do no work until a task gives you a seat on one.".into(),
+        );
+    };
+    let goal: String = project.goal.chars().take(600).collect();
+    Some(format!(
+        "You work on project {} \"{}\". Its goal: {goal}\nWork only on this project: its tasks, its board, and its agents.",
+        project.id, project.title
+    ))
+}
+
 /// The projects' table: `project`, with its documents, critiques, history and task ids as child tables.
 pub fn def() -> &'static TableDef {
     apz_store::root_def!(Project)
@@ -1345,6 +1541,40 @@ mod tests {
 
     fn fresh() -> Store {
         Store::default()
+    }
+
+    #[test]
+    fn a_draft_sets_its_fields_until_it_starts_and_starts_once() {
+        let store = fresh();
+        let p = store
+            .open(&lead(), "Release", "Goal", "code", true)
+            .unwrap();
+        assert_eq!((p.stage.as_str(), p.github.as_str()), ("brief", "none"));
+        let set = store
+            .set_draft(&p.id, "Release 0.9", "Goal, then tag", "code", "mirror")
+            .unwrap();
+        assert_eq!(
+            (set.title.as_str(), set.github.as_str()),
+            ("Release 0.9", "mirror")
+        );
+        let refused = store.set_draft(&p.id, "Title", "Goal", "code", "gitlab");
+        assert!(refused.unwrap_err().contains("github"));
+        let started = store.start_draft(&p.id).unwrap();
+        assert_eq!(
+            (started.stage.as_str(), started.approved_by.as_deref()),
+            ("implementation", Some("owner"))
+        );
+        assert!(
+            store
+                .start_draft(&p.id)
+                .unwrap_err()
+                .contains("not a draft")
+        );
+        let late = store.set_draft(&p.id, "Late", "Goal", "code", "none");
+        assert!(late.unwrap_err().contains("not a draft"));
+        let old = store.open(&lead(), "Old", "Goal", "other", false).unwrap();
+        store.archive(&old.id).unwrap();
+        assert!(store.start_draft(&old.id).unwrap_err().contains("archived"));
     }
 
     /// The store's rows written to an in-memory plaza.db and loaded into a fresh store, as a restart does.

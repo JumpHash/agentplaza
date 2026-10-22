@@ -61,19 +61,9 @@ APP="$DMG_SRC/AgentPlaza.app"
 MACOS="$APP/Contents/MacOS"
 mkdir -p "$MACOS" "$APP/Contents/Resources/share"
 
-# The binaries, each checked to be built for this DMG's architecture. The MCP relay binaries are Linux (musl)
-# programs that apid copies into Docker containers: they go into Resources/relay, since Contents/MacOS holds only
-# Mach-O code that gets signed.
-mkdir -p "$APP/Contents/Resources/relay"
+# The binaries, each checked to be built for this DMG's architecture.
 for bin in "$STAGE/bin"/*; do
   [ -f "$bin" ] || continue
-  case "$(basename "$bin")" in
-    mcp_relay-*)
-      cp "$bin" "$APP/Contents/Resources/relay/"
-      chmod 755 "$APP/Contents/Resources/relay/$(basename "$bin")"
-      continue
-      ;;
-  esac
   archs="$(lipo -archs "$bin")"
   [ "$archs" = "$ARCH" ] || die "$(basename "$bin") is built for $archs, not $ARCH"
   cp "$bin" "$MACOS/"

@@ -193,6 +193,11 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         "a builder and a reviewer: {seats}\n{}",
         hub.log()
     );
+    // The seat is filled when its session is made; the session has its VM once noded's start returns.
+    hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+        s.as_array()
+            .is_some_and(|s| s.iter().any(|s| s["cid"].as_u64().is_some()))
+    });
     let builder = sessions(&hub, &tid)
         .into_iter()
         .next()
@@ -522,5 +527,88 @@ fn the_main_orchestrator_and_a_projects_planner_are_long_sessions_their_chats_ta
         .as_array()
         .map(|s| s.iter().filter(|s| s["role"] == "planner").count());
     assert_eq!(planners, Some(1), "{sessions}");
+    every_save_succeeded(&hub);
+}
+
+/// A VM that runs no session (one the owner spawned) spends from the plaza's own budget: past its cap the call waits
+/// and the owner is asked in the main chat, as for a session's call; the owner's raise lets the call go out.
+#[test]
+fn a_vm_with_no_session_spends_from_the_plazas_own_budget() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let roles = json!({ "roles": {
+        "builder": { "role": "builder", "title": "Builder", "tools": ["bash", "read_file"] },
+    } });
+    let scratch = Scratch::new("work-engine-no-session");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+    let (status, budget) = hub.call(
+        "PUT",
+        "/v1/projects/plaza/budget",
+        Some(json!({ "unit": "tokens", "cap": 300 })),
+    );
+    assert_eq!(status, 200, "{budget}");
+
+    // The owner spawns a builder by hand: its VM runs no session.
+    let (status, spawned) = hub.call(
+        "POST",
+        "/v1/agents",
+        Some(json!({ "role": "builder", "model": "mock/agent" })),
+    );
+    assert_eq!(status, 200, "{spawned}\n{}", hub.log());
+    let cid = vms
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .find(|(_, role)| role == "builder")
+        .map(|(cid, _)| *cid)
+        .expect("noded started its VM");
+    let (status, hello) = hub.guest(cid, "hello", json!({ "role": "builder", "vm": 0 }));
+    assert_eq!(status, 200, "{hello}");
+    let (_, listed) = hub.call("GET", "/v1/sessions", None);
+    assert!(
+        listed
+            .as_array()
+            .is_some_and(|s| s.iter().all(|s| s["cid"].as_u64() != Some(cid))),
+        "no session runs in it: {listed}"
+    );
+
+    // Its first call does not fit the plaza's 300 tokens: it waits, and the owner is asked in the main chat.
+    let reply = model_call(&hub, cid, 1, 1);
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(text(&reply["error"]).starts_with("paused: "), "{reply}");
+    let (_, cards) = hub.call("GET", "/v1/cards?open=true", None);
+    let card = cards
+        .as_array()
+        .and_then(|c| c.iter().find(|c| c["kind"] == "budget").cloned())
+        .unwrap_or_else(|| panic!("a budget card: {cards}"));
+    assert_eq!(card["project"], "plaza", "{card}");
+    let (_, chats) = hub.call("GET", "/v1/chats", None);
+    let main = chats
+        .as_array()
+        .and_then(|c| c.iter().find(|c| c["kind"] == "main").cloned())
+        .unwrap_or_else(|| panic!("the main chat: {chats}"));
+    assert_eq!(card["chat"], main["id"], "{card}");
+
+    // The owner raises it: the call goes out and is charged to the plaza.
+    let (status, answered) = hub.call(
+        "POST",
+        &format!("/v1/cards/{}", text(&card["id"])),
+        Some(json!({ "choice": "raise_to", "amount": 1_000_000 })),
+    );
+    assert_eq!(status, 200, "{answered}");
+    let reply = model_call(&hub, cid, 1, 2);
+    assert_eq!(reply["ok"], true, "{reply}");
+    let (_, budget) = hub.call("GET", "/v1/projects/plaza/budget", None);
+    assert!(
+        budget["spent"].as_u64().unwrap_or(0) > 0,
+        "the call was charged to the plaza: {budget}"
+    );
     every_save_succeeded(&hub);
 }

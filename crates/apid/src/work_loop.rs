@@ -45,8 +45,8 @@ fn now() -> u64 {
     apz_plaza::now_ms()
 }
 
-/// Whether the work loop runs `task` (it has seats): the scheduler's old paths (the bench, the reviewer pool, the
-/// review graph) leave it alone.
+/// Whether the work loop runs `task` (it has seats): the scheduler's old paths (the reviewer pool, the review graph)
+/// leave it alone.
 pub fn owns(app: &App, task: &str) -> bool {
     !app.seats.of_task(task).is_empty()
 }
@@ -55,17 +55,21 @@ pub fn owns(app: &App, task: &str) -> bool {
 pub fn tick(app: &App) {
     let now = now();
     ensure_planners(app, now);
-    start_ready_tasks(app, now);
+    assign_tasks(app, now);
     for seat in app.seats.ready() {
         start_seat(app, &seat, now);
     }
     reap(app, now);
+    crate::disk::tick(app, now);
 }
 
-/// Whether project `id` takes work: it exists, is not paused or archived, and is in a stage that runs tasks.
+/// Whether project `id` takes work: it exists, is not paused or archived, and is in a stage that runs tasks, or in
+/// maintenance (its planner sweeps it, and the tasks the owner picks from its proposals run).
 fn project_active(app: &App, id: &str) -> bool {
     app.projects.get(id).is_some_and(|p| {
-        !p.paused && !p.archived && matches!(p.stage.as_str(), "implementation" | "review")
+        !p.paused
+            && !p.archived
+            && (p.in_maintenance() || matches!(p.stage.as_str(), "implementation" | "review"))
     })
 }
 
@@ -91,7 +95,9 @@ fn reserve_for(app: &App, task: &str, project: &str) -> u64 {
     }
 }
 
-fn start_ready_tasks(app: &App, now: u64) {
+/// Fills the seats of every ready task (PLAN 0.4: `assign_tasks` fills seats): a task that is ready to run gets its
+/// recipe's seats and reserves its budget; its seats get sessions on the loop's next steps.
+fn assign_tasks(app: &App, now: u64) {
     for task in app.plaza.tasks.list() {
         if !task.is_open() || !task.is_ready() {
             continue;
@@ -668,9 +674,41 @@ pub fn on_gone(app: &App, cid: u64) {
     }
 }
 
+/// A project is over (archived or delivered): its open and claimed tasks are withdrawn first (so the seats that end with
+/// them do not fail them), its tasks' seats close (their sessions end, their budgets are released), and whatever else
+/// still runs for it ends too, its planner included. Its work in flight is cancelled and its VMs stop.
+pub fn end_project(app: &App, project: &str, why: &str) {
+    let now = now();
+    if let Some(found) = app.projects.get(project) {
+        for task in &found.tasks {
+            if let Some(record) = app.plaza.tasks.find(task)
+                && (record.is_open() || record.state() == "claimed")
+            {
+                let _ = record.withdraw();
+            }
+        }
+        for task in &found.tasks {
+            if !app.seats.of_task(task).is_empty() {
+                close_task(app, task, now);
+            }
+        }
+    }
+    for session in app.sessions.list(&crate::sessions::Filter {
+        project: Some(project.to_string()),
+        live: true,
+        ..Default::default()
+    }) {
+        if let Some(cid) = session.cid {
+            app.work.cancel(app, cid, why);
+        }
+        end_session(app, &session, "", false, now);
+    }
+}
+
 /// Retires a session's VM: its lane is cleared and noded stops it.
 fn retire(app: &App, cid: u64) {
     app.work.clear(cid);
+    app.disk.forget(cid);
     unread_back_to_seats(app, cid);
     if let Some(agent) = app.agents.get(cid)
         && let (Some(run), Some(vm)) = (agent.run.clone(), agent.vm)
@@ -705,6 +743,7 @@ pub fn notice(app: &App, chat: &str, text: &str, now: u64) {
             kind: MessageKind::Notice,
             text: text.to_string(),
             card: None,
+            attachments: Vec::new(),
         },
         now,
     );
@@ -714,6 +753,41 @@ pub fn notice(app: &App, chat: &str, text: &str, now: u64) {
             &serde_json::json!({ "chat": chat, "message": message }),
         );
     }
+}
+
+/// Opens a card, and when it is new posts its question in its chat and publishes it. An open card of the same kind and
+/// subject is the one kept, and nothing more is posted for it.
+pub fn open_card(app: &App, new: NewCard, now: u64) {
+    let chat = new.chat.clone();
+    let (card, created) = app.cards.open(new, now);
+    if !created {
+        return;
+    }
+    let text = match &card.body {
+        Some(body) => format!("{}. {body}", card.title),
+        None => card.title.clone(),
+    };
+    if let Some(chat) = chat
+        && let Some(message) = app.chats.post(
+            &chat,
+            Post {
+                author: Author::System,
+                session: None,
+                seat: None,
+                kind: MessageKind::Question,
+                text,
+                card: Some(card.id.clone()),
+                attachments: Vec::new(),
+            },
+            now,
+        )
+    {
+        app.bus.publish(
+            "chat",
+            &serde_json::json!({ "chat": chat, "message": message }),
+        );
+    }
+    app.bus.publish("card", &card);
 }
 
 /// A budget limit reached: one card per subject, in the task's chat (or the project's when it is the project's).
@@ -729,6 +803,9 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
             subject_of(*owner_kind, owner),
             match owner_kind {
                 OwnerKind::Task => format!("Task {owner} reached its budget"),
+                OwnerKind::Project if owner == PLAZA => {
+                    "The plaza's own budget cannot fund more work".into()
+                }
                 OwnerKind::Project => format!("Project {owner} cannot fund more work"),
             },
             format!(
@@ -784,6 +861,7 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
                 kind: MessageKind::Question,
                 text: format!("{title}. {body}"),
                 card: Some(card.id.clone()),
+                attachments: Vec::new(),
             },
             now,
         );
@@ -841,6 +919,7 @@ fn ask_seat(app: &App, seat: &Seat, project: &str, now: u64) {
                 kind: MessageKind::Question,
                 text: card.title.clone(),
                 card: Some(card.id.clone()),
+                attachments: Vec::new(),
             },
             now,
         );
@@ -865,7 +944,7 @@ pub fn budget_of_subject(subject: &str) -> Option<(OwnerKind, &str)> {
     }
 }
 
-fn amount(value: u64, unit: Unit) -> String {
+pub fn amount(value: u64, unit: Unit) -> String {
     match unit {
         Unit::Usd => format!("${:.2}", value as f64 / 1_000_000.0),
         Unit::Tokens => format!("{value} tokens"),
@@ -918,6 +997,7 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
                                 b.cap,
                                 b.warn_at_pct,
                                 Some(to),
+                                b.disk_quota_bytes,
                                 now,
                             );
                             resume_budget(app, OwnerKind::Project, project);
@@ -989,6 +1069,10 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
             // The seat is still ready: the next tick looks for a model again (and asks again if it finds none).
             _ => "looking for a model again".into(),
         },
+        cards::Kind::ToolCall | cards::Kind::Review => crate::approvals::card_answered(app, card),
+        cards::Kind::Proposal => crate::agent_proposals::card_answered(app, card),
+        cards::Kind::Disk => crate::disk::card_answered(app, card),
+        cards::Kind::Start => crate::drafts::answered(app, card),
         _ => "recorded".into(),
     }
 }
@@ -1073,7 +1157,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
     match c.kind {
         crate::chats::Kind::Main => {
             if let Some(cid) = orchestrator_cid(app) {
-                app.work.enqueue(
+                let work = app.work.enqueue(
                     app,
                     cid,
                     WorkKind::Chat,
@@ -1084,6 +1168,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
                         ..Origin::default()
                     },
                 );
+                record_work(app, chat, work);
             } else {
                 notice(
                     app,
@@ -1104,7 +1189,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
             };
             match cid {
                 Some(cid) => {
-                    app.work.enqueue(
+                    let work = app.work.enqueue(
                         app,
                         cid,
                         WorkKind::Chat,
@@ -1115,6 +1200,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
                             ..Origin::default()
                         },
                     );
+                    record_work(app, chat, work);
                 }
                 None => notice(
                     app,
@@ -1174,6 +1260,53 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
     }
 }
 
+/// The VM a chat's owner messages are with now: the main chat's orchestrator, a project chat's planner (else the
+/// orchestrator, until the project has one). None for a task's chat, whose messages go to the seat that fills its task.
+pub fn chat_cid(app: &App, chat: &crate::chats::Chat) -> Option<u64> {
+    match chat.kind {
+        crate::chats::Kind::Main => orchestrator_cid(app),
+        crate::chats::Kind::Project => chat
+            .project
+            .as_deref()
+            .and_then(|project| planner_of(app, project))
+            .and_then(|s| s.cid)
+            .or_else(|| orchestrator_cid(app)),
+        crate::chats::Kind::Task => None,
+    }
+}
+
+/// Records that work item `work` answers chat `chat`'s owner message (the chat's turns, for its context).
+fn record_work(app: &App, chat: &str, work: u64) {
+    let _ = app.chats.update(chat, |c| {
+        c.works.push(work);
+        Ok(())
+    });
+}
+
+/// Tells the session of `cid` a plaza notice on chat `chat`'s thread (a project started, a task ended): the chat shows
+/// `shown`, and the answer the session gives is posted there ([`on_chat_work_end`]).
+pub fn tell_chat(app: &App, chat: &str, cid: u64, shown: &str, prompt: &str) {
+    notice(app, chat, shown, now());
+    if app.agents.get(cid).is_none() {
+        eprintln!("apid: a notice for {chat} dropped: agent {cid} is gone");
+        return;
+    }
+    app.work.enqueue(
+        app,
+        cid,
+        WorkKind::Chat,
+        format!("chat:{chat}"),
+        prompt.to_string(),
+        Origin::default(),
+    );
+}
+
+/// What a chat shows of a plaza notice's prompt: its first line, without the `[plaza]` mark.
+pub fn shown_line(prompt: &str) -> &str {
+    let first = prompt.lines().next().unwrap_or_default();
+    first.strip_prefix("[plaza] ").unwrap_or(first)
+}
+
 /// A chat work item (thread `chat:<id>`) ended: its answer goes into the chat. Returns whether it was one.
 pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> bool {
     let Some(chat) = thread.strip_prefix("chat:") else {
@@ -1205,6 +1338,7 @@ pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> boo
             kind: MessageKind::Message,
             text: summary.to_string(),
             card: None,
+            attachments: Vec::new(),
         },
         now(),
     );
@@ -1219,10 +1353,11 @@ pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> boo
 
 // ── model calls against budgets (Engine 0.5) ─────────────────────────────────────────────────────────────────────
 
-/// A session's model call held on its budget: given by [`before_call`], returned to [`after_call`].
+/// A model call held on its budget: given by [`before_call`], returned to [`after_call`]. `session` is `None` for a VM
+/// that runs no session, whose calls are held on the plaza's own budget.
 pub struct CallHold {
     hold: crate::budgets::Hold,
-    session: String,
+    session: Option<String>,
     model: String,
 }
 
@@ -1240,20 +1375,18 @@ fn call_cost(app: &App, model: &str, tokens: crate::prices::Tokens) -> Amount {
     )
 }
 
-/// Before a model call of `cid`: when `cid` is a session's VM, the call's worst case (the request's size and its answer's
-/// cap, at the model's price) is held on the session's task, or on its project for a long-lived session. A budget that
-/// cannot take it pauses the session and asks the owner (one card per budget); the `Err` is the harness's
-/// `paused:` answer ([`apz_proto::wire::MODEL_PAUSED`]), which makes the turn wait and ask again. `Ok(None)`: not a
-/// session's call, nothing held.
+/// Before a model call of `cid`: the call's worst case (the request's size and its answer's cap, at the model's price)
+/// is held on the session's task, or on its project for a long-lived session; a VM that runs no session (one the owner
+/// spawned, a fork) spends from the plaza's own budget, so no call goes unmetered. A budget that cannot take it pauses
+/// the session and asks the owner (one card per budget); the `Err` is the harness's `paused:` answer
+/// ([`apz_proto::wire::MODEL_PAUSED`]), which makes the turn wait and ask again.
 pub fn before_call(
     app: &App,
     cid: u64,
     model: &str,
     request: &apz_proto::chat::ChatRequest,
 ) -> Result<Option<CallHold>, String> {
-    let Some(session) = app.sessions.by_cid(cid) else {
-        return Ok(None);
-    };
+    let session = app.sessions.by_cid(cid);
     let now = now();
     let size = serde_json::to_string(&request.messages).map_or(0, |t| t.len())
         + serde_json::to_string(&request.tools).map_or(0, |t| t.len());
@@ -1271,31 +1404,40 @@ pub fn before_call(
             cache_write: 0,
         },
     );
+    let (task, project) = match &session {
+        Some(session) => (session.task.as_deref(), session.project.as_str()),
+        None => (None, PLAZA),
+    };
     match app.budgets.hold(
-        session.task.as_deref(),
-        &session.project,
+        task,
+        project,
         worst,
-        Some(&session.id),
+        session.as_ref().map(|s| s.id.as_str()),
         Some(model),
         now,
     ) {
         Ok(hold) => {
-            if session.state == State::Paused && session.paused_by == Some(PausedBy::Budget) {
+            if let Some(session) = &session
+                && session.state == State::Paused
+                && session.paused_by == Some(PausedBy::Budget)
+            {
                 let _ = app.sessions.set_state(&session.id, State::Running, now);
                 app.bus.publish("session", &app.sessions.get(&session.id));
             }
             Ok(Some(CallHold {
                 hold,
-                session: session.id,
+                session: session.map(|s| s.id),
                 model: model.to_string(),
             }))
         }
         Err(short) => {
-            if session.state != State::Paused {
+            if let Some(session) = &session
+                && session.state != State::Paused
+            {
                 let _ = app.sessions.pause(&session.id, PausedBy::Budget, now);
                 app.bus.publish("session", &app.sessions.get(&session.id));
             }
-            ask_budget(app, &short, session.task.as_deref(), &session.project, now);
+            ask_budget(app, &short, task, project, now);
             Err(format!(
                 "{}{}",
                 apz_proto::wire::MODEL_PAUSED,
@@ -1334,7 +1476,7 @@ pub fn after_call(app: &App, cid: u64, held: CallHold, usage: Option<&apz_proto:
     let notices = app.budgets.settle(
         &held.hold,
         actual,
-        Some(&held.session),
+        held.session.as_deref(),
         Some(&held.model),
         now,
     );
@@ -1591,8 +1733,9 @@ fn live_long(app: &App, project: &str) -> Vec<Session> {
         .collect()
 }
 
-/// Every active project has its planner, a long-lived session, when the plaza has the planner role: one that has none
-/// gets one, unless its last one failed within [`PLANNER_BACKOFF_MS`].
+/// Every active project has its planner, a long-lived session, when the plaza has the planner role (in maintenance the
+/// planner is the one who sweeps it, `maintenance.rs`): one that has none gets one, unless its last one failed within
+/// [`PLANNER_BACKOFF_MS`].
 fn ensure_planners(app: &App, now: u64) {
     if !crate::roles_custom::exists(app, PLANNER_ROLE) {
         return;

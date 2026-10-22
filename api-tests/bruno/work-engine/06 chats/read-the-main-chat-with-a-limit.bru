@@ -1,0 +1,23 @@
+meta {
+  name: Read the main chat with the last five messages
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/chats/main?limit=5
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.kind: eq "main"
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("at most five messages come back", function () {
+    expect(res.getBody().messages.length).to.be.at.most(5);
+  });
+}

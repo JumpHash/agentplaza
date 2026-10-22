@@ -1,0 +1,24 @@
+meta {
+  name: List the open cards of the main chat
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/cards?open=1&chat=main
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("every card listed is in the main chat", function () {
+    const cards = res.getBody();
+    expect(cards).to.be.an("array");
+    cards.forEach((c) => expect(c.chat).to.equal("main"));
+  });
+}

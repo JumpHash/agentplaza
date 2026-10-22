@@ -2179,7 +2179,7 @@ fn wallet_options(d: Option<&Data>) -> Vec<WalletChoice> {
         label: "All agents".to_string(),
     }];
     if let Some(d) = d {
-        let mut roster: Vec<&Member> = d.roster.iter().collect();
+        let mut roster: Vec<&RosterAgent> = d.roster.iter().collect();
         roster.sort_by(|a, b| a.name.cmp(&b.name));
         options.extend(roster.into_iter().map(|m| WalletChoice {
             cid: Some(m.cid),
@@ -2461,7 +2461,7 @@ pub struct Data {
     escrow: f64,
     treasury: f64,
     wallets: Vec<Wallet>,
-    roster: Vec<Member>,
+    roster: Vec<RosterAgent>,
     points: Vec<Bucket>,
     /// The real model cost over the range, in dollars.
     cost: f64,
@@ -2528,7 +2528,7 @@ struct Wallet {
 }
 
 #[derive(Debug, Clone)]
-struct Member {
+struct RosterAgent {
     cid: u64,
     name: String,
     role_label: String,
@@ -2567,7 +2567,7 @@ impl Data {
                 .collect(),
             roster: list(roster, "agents")
                 .iter()
-                .map(|a| Member {
+                .map(|a| RosterAgent {
                     cid: uint(a, "cid"),
                     name: text(a, "name"),
                     role_label: text(a, "role_label"),

@@ -8,7 +8,7 @@ import { attempt, badge, button, dot, empty, field, input, select, textarea, toa
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { modelPicker } from '../ui/model-picker';
-import { tierChoices } from './agent-detail';
+import { tierChoices } from '../ui/tier-choices';
 import { CONTRIBUTOR_NOTE } from './models-providers';
 
 type Tier = 'orchestrator' | 'worker';

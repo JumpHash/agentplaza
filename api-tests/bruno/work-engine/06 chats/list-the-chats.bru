@@ -1,0 +1,26 @@
+meta {
+  name: List the chats: the main chat is there
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/chats
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the main chat is listed, without its messages", function () {
+    const chats = res.getBody();
+    expect(chats).to.be.an("array");
+    const main = chats.find((c) => c.id === "main");
+    expect(main.kind).to.equal("main");
+    expect(main.messages).to.deep.equal([]);
+  });
+}

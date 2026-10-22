@@ -1,6 +1,7 @@
 //! Code shared by the macOS and Linux backends: the child handle and the rlimits.
 
 use std::io::{self, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
 use crate::{Limits, SandboxError};
@@ -44,8 +45,23 @@ impl Process {
         self.child.try_wait()
     }
 
+    /// Kills the child's whole process group (`run` makes the child its leader), so what it started (a `uv tool run`'s
+    /// Python, an npm wrapper's node) goes with it instead of living on, still confined, with no one to stop it.
     pub(crate) fn kill(&mut self) -> io::Result<()> {
-        self.child.kill()
+        let group = libc::pid_t::try_from(self.child.id()).unwrap_or(libc::pid_t::MAX);
+        // SAFETY: killpg takes two plain integers and touches no memory. ESRCH (the group is gone) is not an error.
+        let rc = unsafe { libc::killpg(group, libc::SIGKILL) };
+        if rc != 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                return Err(err);
+            }
+        }
+        // The leader itself (already killed with its group; this also covers a child that left the group).
+        match self.child.kill() {
+            Err(err) if err.kind() == io::ErrorKind::InvalidInput => Ok(()),
+            other => other,
+        }
     }
 }
 
@@ -57,6 +73,8 @@ pub(crate) fn run(
     stderr: Stdio,
 ) -> Result<Process, SandboxError> {
     command.stdin(stdin).stdout(stdout).stderr(stderr);
+    // Its own process group, which `kill` takes down whole.
+    command.process_group(0);
     Ok(Process {
         child: command.spawn()?,
     })

@@ -174,7 +174,7 @@ fn profile(p: &Prepared) -> Result<String, SandboxError> {
     sb.push_str("(allow ipc-posix-sem)\n(allow ipc-posix-shm)\n");
     if let Network::LoopbackPort(port) = p.network {
         sb.push_str(&format!(
-            "(allow network-outbound (remote ip \"localhost:{port}\"))\n"
+            "(allow network-outbound (remote tcp \"localhost:{port}\"))\n"
         ));
     }
     Ok(sb)
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn loopback_profile_allows_only_that_port() {
         let sb = profile(&prepared(Network::LoopbackPort(4242), vec![], vec![])).unwrap();
-        assert!(sb.contains("(allow network-outbound (remote ip \"localhost:4242\"))"));
+        assert!(sb.contains("(allow network-outbound (remote tcp \"localhost:4242\"))"));
         assert_eq!(sb.matches("network-outbound").count(), 1);
     }
 
