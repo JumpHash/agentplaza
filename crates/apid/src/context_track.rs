@@ -250,6 +250,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("An owner conversation's context: the orchestrator's, for that conversation").errors(&[404]))
 }
 
+/// The context of VM `cid` (its last call's, or of the work item `work`), as the consoles read it.
+pub fn of_cid(app: &App, cid: u64, work: Option<u64>) -> Value {
+    view(
+        &app.context
+            .get(cid, work)
+            .unwrap_or_else(|| empty(app, cid)),
+    )
+}
+
 fn agent_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let Ok(cid) = p.get("cid").parse::<u64>() else {
         return Response::error(400, "cid must be a number");

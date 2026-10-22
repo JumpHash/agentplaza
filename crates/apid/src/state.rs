@@ -402,6 +402,11 @@ impl App {
         for problem in crate::store::saver::load(&app) {
             eprintln!("apid: store: {problem}");
         }
+        // A VM's transcript entries are keyed by the session it works in.
+        let sessions_of = Arc::downgrade(&app);
+        app.transcripts.key_by_session(Box::new(move |cid| {
+            sessions_of.upgrade()?.sessions.by_cid(cid).map(|s| s.id)
+        }));
         // A budget hold is written through to plaza.db, acknowledged before its call is sent (budgets.rs).
         app.budgets
             .attach(Arc::clone(app.store.db(crate::store::PLAZA)));

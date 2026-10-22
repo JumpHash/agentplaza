@@ -2,6 +2,8 @@
 //!
 //! GET   /v1/sessions[?project=&task=&state=&live=true]     → [Session], newest first
 //! GET   /v1/sessions/{id}                                   → Session
+//! GET   /v1/sessions/{id}/transcript[?after=&limit=]        → [Entry] of the session, oldest first
+//! GET   /v1/sessions/{id}/context[?work=]                   → the session's context (its last call's, or work's)
 //! POST  /v1/sessions/{id}/stop                              → Session (ended; its seat goes again)
 //! GET   /v1/tasks/{id}/seats                                → [Seat]
 //! GET   /v1/tasks/{id}/threads                              → [Thread]
@@ -48,6 +50,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
             }
         })
         .doc(RouteDoc::new("Read a session").errors(&[404]))
+        .get("/v1/sessions/{id}/transcript", session_transcript)
+        .doc(RouteDoc::new("Read a session's transcript").errors(&[404]))
+        .get("/v1/sessions/{id}/context", session_context)
+        .doc(RouteDoc::new("Read a session's context").errors(&[400, 404]))
         .post(
             "/v1/sessions/{id}/stop",
             |app, _, p| match crate::work_loop::stop(app, p.get("id")) {
@@ -163,6 +169,45 @@ fn list_sessions(app: &App, req: &Request, _: &Params<'_>) -> Response {
             .is_some_and(|v| v == "true" || v == "1"),
     };
     Response::json(200, &app.sessions.list(&filter))
+}
+
+fn session_transcript(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let id = p.get("id");
+    let Some(session) = app.sessions.get(id) else {
+        return Response::error(404, &format!("no session {id}"));
+    };
+    let Some(cid) = session.cid else {
+        return Response::json(200, &json!([]));
+    };
+    let number = |key: &str, default: u64| {
+        req.query_param(key)
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(default)
+    };
+    let limit = usize::try_from(number("limit", 200).min(1000)).unwrap_or(1000);
+    Response::json(
+        200,
+        &app.transcripts
+            .of_session(cid, id, number("after", 0), limit),
+    )
+}
+
+fn session_context(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let id = p.get("id");
+    let Some(session) = app.sessions.get(id) else {
+        return Response::error(404, &format!("no session {id}"));
+    };
+    let work = match req.query_param("work").map(str::parse::<u64>) {
+        None => None,
+        Some(Ok(w)) => Some(w),
+        Some(Err(_)) => return Response::error(400, "work must be a number"),
+    };
+    let Some(cid) = session.cid else {
+        return Response::json(200, &json!({ "session": id, "used": 0, "parts": [] }));
+    };
+    let mut view = crate::context_track::of_cid(app, cid, work);
+    view["session"] = json!(id);
+    Response::json(200, &view)
 }
 
 /// A budget as the consoles read it: the record, what is left, and the share spent.

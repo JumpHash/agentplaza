@@ -54,6 +54,7 @@ pub fn owns(app: &App, task: &str) -> bool {
 /// One tick of the loop.
 pub fn tick(app: &App) {
     let now = now();
+    ensure_planners(app, now);
     start_ready_tasks(app, now);
     for seat in app.seats.ready() {
         start_seat(app, &seat, now);
@@ -313,14 +314,21 @@ fn step_prompt(app: &App, session: &Session) -> String {
 /// The VM of a session said hello: the session runs, and its step's work goes out. Returns whether `cid` was a
 /// session's.
 pub fn on_hello(app: &App, cid: u64) -> bool {
-    let Some(session) = app.sessions.by_cid(cid) else {
+    let now = now();
+    let Some(session) = app
+        .sessions
+        .by_cid(cid)
+        .filter(|s| !s.state.is_final())
+        .or_else(|| adopt_orchestrator(app, cid, now))
+    else {
         return false;
     };
     if session.state != State::Forking {
         return true;
     }
-    let now = now();
     let _ = app.sessions.set_state(&session.id, State::Running, now);
+    app.bus.publish("session", &app.sessions.get(&session.id));
+    // A long-lived session (a planner) waits for its chats' messages and the loop's reports.
     let Some(task_id) = session.task.clone() else {
         return true;
     };
@@ -487,6 +495,13 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
                 &format!("Task {task_id} failed: {why}. The planner decides what follows."),
                 now,
             );
+            to_planner(
+                app,
+                &project,
+                &format!(
+                    "Task {task_id} failed: {why}. Decide what follows: post it again changed, split it, or leave it."
+                ),
+            );
         }
     }
     app.bus
@@ -534,7 +549,35 @@ pub fn landed(app: &App, task: &str, change: &str) {
         &format!("Task {task} is done: {change} landed."),
         now,
     );
+    // The landing is the project's news too.
+    if !project.is_empty() {
+        notice(
+            app,
+            &project_chat(app, &project, now),
+            &format!("{change} landed: task {task} is done."),
+            now,
+        );
+    }
     app.bus.publish("task", &serde_json::json!({ "id": task }));
+}
+
+/// The project's chat for the loop's notices: its newest, or one made for it.
+pub fn project_chat(app: &App, project: &str, now: u64) -> String {
+    match app
+        .chats
+        .list(Some(project), false)
+        .into_iter()
+        .find(|c| c.kind == crate::chats::Kind::Project)
+    {
+        Some(c) => c.id,
+        None => {
+            let title = app
+                .projects
+                .get(project)
+                .map_or_else(|| format!("Project {project}"), |p| p.title);
+            app.chats.open_project(project, &title, now).id
+        }
+    }
 }
 
 /// `task`'s change clashed with main on landing: the builder seat goes again with what `prompt` says, as a review that
@@ -1486,5 +1529,123 @@ fn unread_back_to_seats(app: &App, cid: u64) {
     });
     for (_, thread, seq, _) in unread {
         app.threads.unpend(&thread, seq);
+    }
+}
+
+// ── long-lived sessions: the main orchestrator and the projects' planners (Engine 0.3, 0.10) ─────────────────────
+
+/// The "project" of the main orchestrator's long-lived session: the plaza as a whole.
+pub const PLAZA: &str = "plaza";
+/// The role of a project's planner, when the plaza has it.
+pub const PLANNER_ROLE: &str = "planner";
+/// How long a project waits after its planner's session failed before it starts another.
+pub const PLANNER_BACKOFF_MS: u64 = 10 * 60_000;
+
+/// An orchestrator VM that says hello with no session becomes the main orchestrator's long-lived session (the plaza's
+/// fleet starts it, and starts it again after a crash): the main chat is with it, and its calls are the plaza's. A
+/// session the previous VM left live ends. None for any other VM.
+fn adopt_orchestrator(app: &App, cid: u64, now: u64) -> Option<Session> {
+    let agent = app.agents.get(cid)?;
+    if agent.role != crate::settings::ORCHESTRATOR_ROLE {
+        return None;
+    }
+    for stale in live_long(app, PLAZA) {
+        let _ = app
+            .sessions
+            .finish(&stale.id, "another orchestrator VM took over", false, now);
+    }
+    let session = app.sessions.create(
+        NewSession {
+            project: PLAZA.into(),
+            task: None,
+            seat: None,
+            kind: Kind::Long,
+            parent: None,
+            role: agent.role.clone(),
+            engine: ENGINE.into(),
+            model: Some(crate::agents::resolved_model(app, &agent).0),
+            attempt: 1,
+        },
+        now,
+    );
+    let _ = app.sessions.update(&session.id, |s| s.cid = Some(cid));
+    let _ = app.sessions.set_state(&session.id, State::Placing, now);
+    let _ = app.sessions.set_state(&session.id, State::Forking, now);
+    app.sessions.get(&session.id)
+}
+
+/// The live long-lived sessions of `project`.
+fn live_long(app: &App, project: &str) -> Vec<Session> {
+    app.sessions
+        .list(&crate::sessions::Filter {
+            project: Some(project.to_string()),
+            live: true,
+            ..Default::default()
+        })
+        .into_iter()
+        .filter(|s| s.kind == Kind::Long)
+        .collect()
+}
+
+/// Every active project has its planner, a long-lived session, when the plaza has the planner role: one that has none
+/// gets one, unless its last one failed within [`PLANNER_BACKOFF_MS`].
+fn ensure_planners(app: &App, now: u64) {
+    if !crate::roles_custom::exists(app, PLANNER_ROLE) {
+        return;
+    }
+    for project in app.projects.list() {
+        if !project_active(app, &project.id) || !live_long(app, &project.id).is_empty() {
+            continue;
+        }
+        let failed_lately = app
+            .sessions
+            .list(&crate::sessions::Filter {
+                project: Some(project.id.clone()),
+                state: Some(State::Failed),
+                ..Default::default()
+            })
+            .into_iter()
+            .any(|s| {
+                s.kind == Kind::Long
+                    && now.saturating_sub(s.ended_ms.unwrap_or(0)) < PLANNER_BACKOFF_MS
+            });
+        if !failed_lately {
+            start_planner(app, &project.id, now);
+        }
+    }
+}
+
+/// Starts `project`'s planner: a long-lived session on a VM of its own, on the project's model for the role.
+fn start_planner(app: &App, project: &str, now: u64) {
+    let model = candidates(app, project, PLANNER_ROLE).into_iter().next();
+    let session = app.sessions.create(
+        NewSession {
+            project: project.to_string(),
+            task: None,
+            seat: None,
+            kind: Kind::Long,
+            parent: None,
+            role: PLANNER_ROLE.into(),
+            engine: ENGINE.into(),
+            model: model.clone(),
+            attempt: 1,
+        },
+        now,
+    );
+    let _ = app.sessions.set_state(&session.id, State::Placing, now);
+    match crate::agents::spawn_agents(app, PLANNER_ROLE, 1, model.as_deref(), None, Some(project)) {
+        Ok(started) => match started["cids"].get(0).and_then(serde_json::Value::as_u64) {
+            Some(cid) => {
+                let node = started["node"].as_str().map(str::to_string);
+                let _ = app.sessions.update(&session.id, |s| {
+                    s.cid = Some(cid);
+                    s.node = node;
+                });
+                let _ = app.sessions.set_state(&session.id, State::Forking, now);
+                app.bus.publish("session", &app.sessions.get(&session.id));
+            }
+            None => fail_session(app, &session, "the node started no VM", now),
+        },
+        Err(why) => fail_session(app, &session, &why, now),
     }
 }

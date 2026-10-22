@@ -32,7 +32,8 @@ fn daemons(vms: &Vms) -> (FakeDaemon, FakeDaemon) {
         if method == "GET" && path.starts_with("/v1/runs") {
             let list: Vec<Value> = vms
                 .iter()
-                .map(|(cid, role)| json!({ "id": cid - FIRST_CID, "guest_cid": cid, "role": role }))
+                .enumerate()
+                .map(|(i, (cid, role))| json!({ "id": i, "guest_cid": cid, "role": role }))
                 .collect();
             (
                 200,
@@ -43,9 +44,9 @@ fn daemons(vms: &Vms) -> (FakeDaemon, FakeDaemon) {
                 .ok()
                 .and_then(|b| b["role"].as_str().map(str::to_string))
                 .unwrap_or_default();
-            let cid = FIRST_CID + vms.len() as u64;
+            let cid = FIRST_CID + vms.iter().filter(|(cid, _)| *cid >= FIRST_CID).count() as u64;
             vms.push((cid, role));
-            let vm = json!({ "id": cid - FIRST_CID, "guest_cid": cid, "state": "running" });
+            let vm = json!({ "id": vms.len() - 1, "guest_cid": cid, "state": "running" });
             (200, json!({ "id": "r1", "vms": [vm] }).to_string())
         } else {
             (200, "{}".into())
@@ -258,6 +259,24 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
     assert_eq!(running["state"], "running", "{running}");
     let reply = model_call(&hub, builder_cid, work, 3);
     assert_eq!(reply["ok"], true, "{reply}");
+    // Its transcript and its context are the session's.
+    let builder_id = text(&builder["id"]);
+    let (_, transcript) = hub.call(
+        "GET",
+        &format!("/v1/sessions/{builder_id}/transcript"),
+        None,
+    );
+    let entries = transcript.as_array().cloned().unwrap_or_default();
+    assert!(
+        entries.iter().any(|e| e["kind"] == "model_response"),
+        "{transcript}"
+    );
+    assert!(
+        entries.iter().all(|e| e["session"] == builder_id.as_str()),
+        "{transcript}"
+    );
+    let (_, context) = hub.call("GET", &format!("/v1/sessions/{builder_id}/context"), None);
+    assert!(context["used"].as_u64().unwrap_or(0) > 0, "{context}");
     let (_, budget) = hub.call("GET", &format!("/v1/tasks/{tid}/budget"), None);
     assert!(
         budget["spent"].as_u64().unwrap_or(0) > 0,
@@ -368,4 +387,131 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
             .is_some_and(|m| m.iter().any(|m| text(&m["text"]).contains("is done"))),
         "the task's chat says it is done: {messages}"
     );
+}
+
+/// The fleet's orchestrator VM.
+const ORCHESTRATOR: u64 = 109;
+
+#[test]
+fn the_main_orchestrator_and_a_projects_planner_are_long_sessions_their_chats_talk_to() {
+    let vms: Vms = Arc::new(Mutex::new(vec![(ORCHESTRATOR, "orchestrator".to_string())]));
+    let (noded, gateway) = daemons(&vms);
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "planner": role("planner", "Planner"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } });
+    let scratch = Scratch::new("work-engine-long");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+
+    // The fleet's orchestrator says hello: it is the main orchestrator's long-lived session, and the main chat is with it.
+    let (status, _) = hub.guest(
+        ORCHESTRATOR,
+        "hello",
+        json!({ "role": "orchestrator", "vm": 0 }),
+    );
+    assert_eq!(status, 200);
+    let (_, plaza) = hub.call("GET", "/v1/sessions?project=plaza", None);
+    let main = plaza
+        .as_array()
+        .and_then(|s| s.first().cloned())
+        .unwrap_or_else(|| panic!("the main orchestrator's session: {plaza}\n{}", hub.log()));
+    assert_eq!(main["kind"], "long", "{main}");
+    assert_eq!(main["state"], "running", "{main}");
+    assert_eq!(main["cid"], ORCHESTRATOR, "{main}");
+    let (status, _) = hub.call(
+        "POST",
+        "/v1/chats/main/messages",
+        Some(json!({ "text": "What runs now?" })),
+    );
+    assert_eq!(status, 201);
+    let (work, prompt) = first_work(&gateway, ORCHESTRATOR);
+    assert!(prompt.contains("What runs now?"), "{prompt}");
+    hub.work_done(
+        ORCHESTRATOR,
+        work,
+        "done",
+        "Nothing yet: no project is open.",
+    );
+    let main_chat = hub.wait_for("/v1/chats/main/messages?after=0&limit=50", WAIT, |m| {
+        m.as_array()
+            .is_some_and(|m| m.iter().any(|m| m["author"] == "session"))
+    });
+    assert!(
+        main_chat.as_array().is_some_and(|m| m
+            .iter()
+            .any(|m| text(&m["text"]).contains("no project is open"))),
+        "the answer is in the main chat: {main_chat}"
+    );
+
+    // A project opens: it gets its planner, a long-lived session on a VM of its own.
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Docs", "goal": "Write the guide.", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let planners = hub.wait_for(&format!("/v1/sessions?project={pid}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["role"] == "planner" && s["cid"].is_u64())
+        })
+    });
+    let planner = planners
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["role"] == "planner").cloned())
+        .unwrap_or_else(|| panic!("a planner session: {planners}\n{}", hub.log()));
+    assert_eq!(planner["kind"], "long", "{planner}");
+    let planner_cid = planner["cid"].as_u64().expect("its VM");
+    let (status, _) = hub.guest(planner_cid, "hello", json!({ "role": "planner", "vm": 1 }));
+    assert_eq!(status, 200);
+
+    // The owner's message in a project chat goes to the planner, and its answer comes back there.
+    let (status, chat) = hub.call(
+        "POST",
+        "/v1/chats",
+        Some(json!({ "project": pid, "title": "Scope" })),
+    );
+    assert_eq!(status, 201, "{chat}");
+    let chat = text(&chat["id"]);
+    let (status, _) = hub.call(
+        "POST",
+        &format!("/v1/chats/{chat}/messages"),
+        Some(json!({ "text": "Keep it short." })),
+    );
+    assert_eq!(status, 201);
+    let (work, prompt) = first_work(&gateway, planner_cid);
+    assert!(prompt.contains("Keep it short."), "{prompt}");
+    hub.work_done(planner_cid, work, "done", "Two pages, then.");
+    let answered = hub.wait_for(
+        &format!("/v1/chats/{chat}/messages?after=0&limit=50"),
+        WAIT,
+        |m| {
+            m.as_array()
+                .is_some_and(|m| m.iter().any(|m| text(&m["text"]).contains("Two pages")))
+        },
+    );
+    assert!(
+        answered
+            .as_array()
+            .is_some_and(|m| m.iter().any(|m| text(&m["text"]).contains("Two pages"))),
+        "{answered}"
+    );
+    // One planner per project: the next ticks start no second one.
+    std::thread::sleep(Duration::from_secs(5));
+    let (_, sessions) = hub.call("GET", &format!("/v1/sessions?project={pid}"), None);
+    let planners = sessions
+        .as_array()
+        .map(|s| s.iter().filter(|s| s["role"] == "planner").count());
+    assert_eq!(planners, Some(1), "{sessions}");
 }

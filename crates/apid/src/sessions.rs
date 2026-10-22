@@ -104,6 +104,9 @@ impl Usage {
     }
 }
 
+/// The outcome of a session that was live when the hub stopped (its VM did not survive the hub).
+pub const RESTARTED: &str = "the hub restarted";
+
 /// One session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 #[table(name = "session")]
@@ -405,7 +408,7 @@ impl Sessions {
             inner.next = inner.next.max(seq_of(&s.id).unwrap_or(0));
             if !s.state.is_final() && s.kind != Kind::Long {
                 s.state = State::Failed;
-                s.outcome = Some("the hub restarted".into());
+                s.outcome = Some(RESTARTED.into());
                 s.ended_ms = Some(now);
                 s.work = None;
             }
@@ -508,7 +511,7 @@ mod tests {
         let s2 = loaded.get("s2").unwrap();
         assert_eq!(
             (s2.state, s2.outcome.as_deref()),
-            (State::Failed, Some("the hub restarted"))
+            (State::Failed, Some(RESTARTED))
         );
         assert_eq!(
             loaded.create(step("t3"), 5).id,

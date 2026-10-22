@@ -440,12 +440,17 @@ fn data_of(entry: &Entry) -> Value {
     serde_json::to_value(entry).map_or(Value::Null, |mut value| value["data"].take())
 }
 
+/// The session a VM works in, by its CID (`crate::sessions`), for keying entries by session.
+pub type SessionOf = Box<dyn Fn(u64) -> Option<String> + Send + Sync>;
+
 #[derive(Default)]
 pub struct Store {
     seq: AtomicU64,
     agents: Mutex<HashMap<u64, Window>>,
     /// The transcripts file, once `attach` has set it: entries are written through it as they are recorded.
     db: OnceLock<Arc<Db>>,
+    /// Names the session of a VM's entries, once `key_by_session` has set it.
+    session_of: OnceLock<SessionOf>,
 }
 
 impl Store {
@@ -478,6 +483,11 @@ impl Store {
         let _ = self.db.set(db);
     }
 
+    /// Keys every entry recorded from now on by the session its VM works in, as `session_of` names it.
+    pub fn key_by_session(&self, session_of: SessionOf) {
+        let _ = self.session_of.set(session_of);
+    }
+
     /// Loads stored entries back (oldest first) at start, and moves `seq` past the largest.
     pub fn preload(&self, cid: u64, entries: Vec<StoredEntry>) {
         let largest = entries.iter().map(|e| e.seq).max();
@@ -500,7 +510,7 @@ impl Store {
         let stored = StoredEntry {
             cid,
             seq,
-            session: None,
+            session: self.session_of.get().and_then(|of| of(cid)),
             work,
             at_ms: apz_plaza::now_ms(),
             entry,
@@ -522,6 +532,26 @@ impl Store {
         self.windows()
             .get(&cid)
             .map(|log| log.after_seq(after).take(limit).cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// The entries of `session` (whose VM is `cid`) with `seq > after`, oldest first, at most `limit`.
+    pub fn of_session(
+        &self,
+        cid: u64,
+        session: &str,
+        after: u64,
+        limit: usize,
+    ) -> Vec<StoredEntry> {
+        self.windows()
+            .get(&cid)
+            .map(|log| {
+                log.after_seq(after)
+                    .filter(|e| e.session.as_deref() == Some(session))
+                    .take(limit)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
