@@ -343,31 +343,6 @@ export interface EffectiveValue { value: unknown; source: 'project' | 'plaza' }
 /** The credits view of a project's budget (the settings answer keeps it): its own account once credits are set aside, and the plaza's. */
 export interface CreditsBudget { project: string; own: boolean; balance: number; plaza: number }
 export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue>; budget: CreditsBudget }
-/** A message of the owner's conversation with the orchestrator: the owner's, the orchestrator's answer (with how its
- * work ended), or a plaza notice (a project started, a task ended). */
-export interface OwnerMessage {
-  from: 'owner' | 'orchestrator' | 'plaza'; text: string; at_ms: number; work: number; status?: 'done' | 'failed' | 'stopped';
-  /** The files the owner attached (api-projects.ts `attach`). */
-  attachments?: { id: string; name: string; size: number; type: string }[];
-}
-export interface DraftTask { key: string; goal: string; acceptance?: string; role?: string; budget?: number; after?: string[] }
-export interface ProjectDraft {
-  revision: number; title: string; goal: string; kind: 'code' | 'other'; repo?: string; tasks: DraftTask[];
-  budget?: number; settings?: ProjectSettings; updated_by: 'owner' | 'orchestrator'; updated_ms: number; started_ms?: number;
-  /** What still stops Start. */
-  problems: string[];
-}
-export interface OwnerConversation {
-  id: string; title: string; cid: number; messages: OwnerMessage[]; works: number[]; created_ms: number; updated_ms: number;
-  archived: boolean; project?: string; draft?: ProjectDraft; draft_seen: number; thread: string;
-  /** The owner's messages still waiting for an answer, by work item. */
-  pending: number[];
-}
-export interface OwnerConversationSummary {
-  id: string; title: string; cid: number; created_ms: number; updated_ms: number; archived: boolean; project: string | null;
-  draft: { revision: number; title: string } | null; messages: number; pending: number; last: { from: string; text: string; at_ms: number } | null;
-}
-export interface StartedProject { project: string; tasks: { key: string; id: string; after: string[]; ready: boolean }[] }
 export interface HarnessLimits { max_turns: number | null; compress_at: number | null; keep_recent: number | null }
 export interface HarnessLoop { id: string; cid: number; prompt: string; every_secs: number; max_runs: number; runs: number; next_at_ms: number; state: 'running' | 'done' | 'stopped'; by: string; by_cid: number; created_ms: number; last_work: number | null; last_summary: string | null }
 export interface LawInfo {
@@ -737,18 +712,6 @@ export const api = {
   /** A field set to `null` goes back to the plaza's; `role_models` merge role by role. */
   patchProjectSettings: (id: string, change: Record<string, unknown>) => patch<ProjectSettings>(`/v1/projects/${id}/settings`, change),
   effectiveSettings: (id: string) => get<EffectiveSettings>(`/v1/projects/${id}/settings/effective`),
-  ownerConversations: (archived = false) => get<OwnerConversationSummary[]>(`/v1/owner/conversations${archived ? '?archived=true' : ''}`),
-  ownerConversation: (id: string) => get<OwnerConversation>(`/v1/owner/conversations/${id}`),
-  /** Starts a conversation with the orchestrator, `text` its first message. */
-  openConversation: (text: string, attachments: string[] = []) => post<OwnerConversation>('/v1/owner/conversations', attachments.length ? { text, attachments } : { text }),
-  sayInConversation: (id: string, text: string, attachments: string[] = []) => post<OwnerConversation>(`/v1/owner/conversations/${id}/messages`, attachments.length ? { text, attachments } : { text }),
-  patchConversation: (id: string, change: { title?: string; archived?: boolean }) => patch<OwnerConversation>(`/v1/owner/conversations/${id}`, change),
-  conversationTranscript: (id: string, after = 0, limit = 1000) => get<Entry[]>(`/v1/owner/conversations/${id}/transcript${query({ after, limit })}`),
-  conversationDraft: (id: string) => get<ProjectDraft>(`/v1/owner/conversations/${id}/draft`),
-  editDraft: (id: string, edit: Partial<Omit<ProjectDraft, 'problems' | 'updated_by' | 'updated_ms' | 'started_ms'>> & { revision: number }) =>
-    patch<OwnerConversation>(`/v1/owner/conversations/${id}/draft`, edit),
-  /** Starts the drafted project at `revision`, the one the owner looked at. */
-  startDraft: (id: string, revision: number) => post<OwnerConversation & { started: StartedProject }>(`/v1/owner/conversations/${id}/start`, { revision }),
   vetoProject: (id: string, stage: ProjectStage, reason: string) => post<Project>(`/v1/projects/${id}/veto`, { stage, reason }),
   loops: () => get<HarnessLoop[]>('/v1/loops'),
   startLoop: (cid: number, prompt: string, every_minutes: number, max_runs: number) => post<HarnessLoop>('/v1/loops', { cid, prompt, every_minutes, max_runs }),
