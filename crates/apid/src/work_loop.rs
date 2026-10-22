@@ -705,6 +705,39 @@ pub fn on_gone(app: &App, cid: u64) {
     }
 }
 
+/// Whether a step session in `state` hands over when its machine has no other machine in its pool with room
+/// (pure, plan 17.2): a step that is placed, running or paused does; one that is already handing over or
+/// ending is left to end on its own.
+pub fn hands_over_for_pool(state: &State) -> bool {
+    matches!(
+        state,
+        State::Placing | State::Forking | State::Running | State::Paused | State::Compacting
+    )
+}
+
+/// The step session of agent `cid` hands over when its node is stopping and no machine in its pool has room
+/// (plan 17.2): it ends with a handover that the next session of its seat starts from, its VM is retired, and
+/// its seat goes again in a new session, which is placed on any machine with room. True when it did; an agent
+/// that runs no step is left to the mover to wait.
+pub fn hand_over_for_pool(app: &App, cid: u64) -> bool {
+    let Some(session) = app.sessions.by_cid(cid) else {
+        return false;
+    };
+    let (Some(task), Some(seat)) = (session.task.clone(), session.seat.clone()) else {
+        return false;
+    };
+    if !hands_over_for_pool(&session.state) {
+        return false;
+    }
+    let now = now();
+    let why = "its machine is stopping and no other machine in its pool has room; the step starts again in a new session";
+    end_session(app, &session, why, false, now);
+    if let Some(next) = app.seats.ended(&task, &seat, false, true, why, now) {
+        apply(app, &task, next, now);
+    }
+    true
+}
+
 /// A project is over (archived or delivered): its open and claimed tasks are withdrawn first (so the seats that end with
 /// them do not fail them), its tasks' seats close (their sessions end, their budgets are released), and whatever else
 /// still runs for it ends too, its planner included. Its work in flight is cancelled and its VMs stop.
@@ -1825,5 +1858,35 @@ fn start_planner(app: &App, project: &str, now: u64) {
             None => fail_session(app, &session, "the node started no VM", now),
         },
         Err(why) => fail_session(app, &session, &why, now),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_step_in_flight_hands_over_when_its_pool_has_no_room() {
+        for state in [
+            State::Placing,
+            State::Forking,
+            State::Running,
+            State::Paused,
+            State::Compacting,
+        ] {
+            assert!(hands_over_for_pool(&state), "{state:?} is in flight");
+        }
+        for state in [
+            State::Queued,
+            State::HandingOver,
+            State::Ending,
+            State::Ended,
+            State::Failed,
+        ] {
+            assert!(
+                !hands_over_for_pool(&state),
+                "{state:?} is not left to hand over"
+            );
+        }
     }
 }

@@ -121,6 +121,23 @@ pub struct Machine {
     pub os: Option<String>,
     #[serde(default)]
     pub backend: Option<String>,
+    /// The CPU baseline (noded's `cpu_baseline`): the features a snapshot depends on, which a pool shares
+    /// (`Pool`). Not stored: each heartbeat sends it again, and a node with none is in no pool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(skip)]
+    pub cpu_baseline: Option<String>,
+    /// Whether the node's state filesystem clones files (plan 16.2). Not stored: each heartbeat sends it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(skip)]
+    pub clones: Option<bool>,
+    /// The free space on the node's state filesystem now, in GiB (`storage_gib` is the total). Not stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(skip)]
+    pub storage_free_gib: Option<u64>,
+    /// The warm templates (the bases of plan 16.1) the node holds, by key. Not stored: each heartbeat sends them again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(skip)]
+    pub bases: Vec<String>,
     /// Sent by the hub's own machine only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub irqchip: Option<String>,
@@ -227,7 +244,43 @@ pub struct MachineStats {
     pub mem_used_mib: Option<u64>,
 }
 
+/// A pool (plan 17.2): the machines that share an architecture, a hypervisor and a CPU baseline, so a live VM can
+/// move between them. A machine that reports no baseline is in no pool.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pool {
+    /// `x86_64` or `aarch64`.
+    pub arch: String,
+    /// The VMM backend: `kvm`, `hvf` or `whp`.
+    pub hypervisor: String,
+    /// The CPU baseline text noded reports.
+    pub cpu_baseline: String,
+}
+
+impl Pool {
+    /// The pool of a machine with these three reports; None when any is missing.
+    pub fn of(
+        arch: Option<&str>,
+        hypervisor: Option<&str>,
+        cpu_baseline: Option<&str>,
+    ) -> Option<Pool> {
+        Some(Pool {
+            arch: arch?.to_string(),
+            hypervisor: hypervisor?.to_string(),
+            cpu_baseline: cpu_baseline?.to_string(),
+        })
+    }
+}
+
 impl Machine {
+    /// The pool this machine is in (see [`Pool`]).
+    pub fn pool(&self) -> Option<Pool> {
+        Pool::of(
+            self.arch.as_deref(),
+            self.backend.as_deref(),
+            self.cpu_baseline.as_deref(),
+        )
+    }
+
     /// Lays noded's facts under this summary: a field the summary sets (`cpus`, `memory_mib`, `host`, `version`)
     /// stays, and every other field comes from the facts.
     fn overlay(&mut self, facts: Machine) {
