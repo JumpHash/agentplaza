@@ -148,8 +148,13 @@ pub fn owner_key_path(_app: &App) -> PathBuf {
     apz_os::dirs::config().join("owner.key")
 }
 
+/// Serialises the making of keys: two callers that both find a key missing must not each make one (Weft's boot and the
+/// first policy the hub issues can ask for the hub's key at the same moment).
+static KEY_MAKING: Mutex<()> = Mutex::new(());
+
 /// A key the vault keeps (made on first use); a file in the state folder while the vault is sealed or absent.
 fn key(app: &App, name: &str, label: &str) -> Result<KeyPair, String> {
+    let _making = KEY_MAKING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(hex) = app
         .vault
         .value_for(name, BINDING, &crate::vault::OnBehalf::Hub)
@@ -178,6 +183,12 @@ fn key(app: &App, name: &str, label: &str) -> Result<KeyPair, String> {
             Ok(k)
         }
     }
+}
+
+/// The hub's own Weft key (`WEFT_HUB_KEY`, the key Weft's boot uses): the hub signs what it issues as itself, such as an
+/// agent's policy snapshot. Made on first use, as boot makes it.
+pub fn hub_key(app: &App) -> Result<KeyPair, String> {
+    key(app, "WEFT_HUB_KEY", "Weft's hub key")
 }
 
 /// Starts Weft on a thread: a new store on first run (its genesis signed by the owner's key), then `weft serve`,

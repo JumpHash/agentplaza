@@ -21,7 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use apz_proto::line::{Lines, ReadTimeout, Recv};
-use apz_proto::wire::{AgentProfile, GuestMessage, HostFacts, HostMessage};
+use apz_proto::wire::{AgentProfile, GuestMessage, HostFacts, HostMessage, PolicySnapshot};
 
 use crate::apid::{self, Apid};
 use crate::hub::{Command, Hub, ToolReply};
@@ -306,12 +306,12 @@ impl Session<'_> {
         // the profile names the role the agent is registered under, and with no profile there
         // is no role to register it with, so the session is refused rather than registered
         // with an empty one.
-        let (token, steering, waker, role, profile, mut next_hello) = match role
+        let (token, steering, waker, role, profile, policy, mut next_hello) = match role
             .filter(|r| !r.is_empty())
         {
             Some(role) => {
                 let (token, steering, waker) = hub.connect(cid, role, last_heartbeat)?;
-                let (profile, next_hello) = self.ask_apid(&apid, role, caps, clock);
+                let (profile, policy, next_hello) = self.ask_apid(&apid, role, caps, clock);
                 if let Some(found) = &profile {
                     hub.set_role(cid, token, &found.role);
                 }
@@ -321,11 +321,12 @@ impl Session<'_> {
                     waker,
                     role.to_string(),
                     profile,
+                    policy,
                     next_hello,
                 )
             }
             None => {
-                let (profile, _) = self.ask_apid(&apid, "", caps, clock);
+                let (profile, policy, _) = self.ask_apid(&apid, "", caps, clock);
                 let role = match &profile {
                     Some(found) if !found.role.is_empty() => found.role.clone(),
                     _ => {
@@ -336,7 +337,7 @@ impl Session<'_> {
                 };
                 let (token, steering, waker) = hub.connect(cid, "", last_heartbeat)?;
                 hub.set_role(cid, token, &role);
-                (token, steering, waker, role, profile, None)
+                (token, steering, waker, role, profile, policy, None)
             }
         };
         // Registered before the welcome; the guard unregisters on every exit.
@@ -356,6 +357,10 @@ impl Session<'_> {
             &HostMessage::welcome(Some(role.clone()), Some(true), profile)
                 .with_host(HostFacts::now()),
         )?;
+        // The session's policy follows its welcome (none while apid has not answered: the retried hello brings it).
+        if let Some(policy) = policy {
+            self.send(lines, &HostMessage::Policy { policy })?;
+        }
 
         let mut calls = 0u64;
         // Dispatched tool calls not yet answered, and who waits on each.
@@ -385,6 +390,9 @@ impl Session<'_> {
                         hub.set_role(cid, token, &found.role);
                     }
                     self.send(lines, &line)?;
+                }
+                if let Some(policy) = done.policy {
+                    self.send(lines, &HostMessage::Policy { policy })?;
                 }
             }
             if next_hello.is_some_and(|due| clock.now() >= due) {
@@ -500,6 +508,7 @@ impl Session<'_> {
                 }
                 message @ (GuestMessage::ModelCall { .. }
                 | GuestMessage::ToolRequest { .. }
+                | GuestMessage::ToolBatch { .. }
                 | GuestMessage::EngineUpdate { .. }
                 | GuestMessage::ToolReport { .. }
                 | GuestMessage::WorkDone { .. }
@@ -517,22 +526,26 @@ impl Session<'_> {
         role: &str,
         caps: &[String],
         clock: &dyn Clock,
-    ) -> (Option<AgentProfile>, Option<Instant>) {
+    ) -> (
+        Option<AgentProfile>,
+        Option<PolicySnapshot>,
+        Option<Instant>,
+    ) {
         if !apid.enabled() {
-            return (None, None);
+            return (None, None, None);
         }
-        let profile = match apid.hello(self.cid, role, self.vm, caps) {
-            Ok(found) => found,
+        let (profile, policy) = match apid.hello(self.cid, role, self.vm, caps) {
+            Ok(reply) => (reply.profile, reply.policy),
             Err(err) => {
                 self.log.line(&format!(
                     "vsockd: agent {} hello to apid failed: {err}",
                     self.cid
                 ));
-                None
+                (None, None)
             }
         };
         let next_hello = profile.is_none().then(|| clock.now() + HELLO_RETRY);
-        (profile, next_hello)
+        (profile, policy, next_hello)
     }
 
     /// Hands one v3 line to apid on a thread, so the session keeps reading. Over
@@ -568,14 +581,17 @@ impl Session<'_> {
                 Ok(Some(reply)) => Settled {
                     note: format!("apid answered {kind}"),
                     line: Some(reply),
+                    policy: None,
                 },
                 Ok(None) => Settled {
                     note: format!("apid sent no reply to {kind}"),
                     line: apid::refusal(&message, "apid sent no reply"),
+                    policy: None,
                 },
                 Err(err) => Settled {
                     note: format!("apid failed {kind}: {err}"),
                     line: apid::refusal(&message, &err),
+                    policy: None,
                 },
             };
             in_flight.fetch_sub(1, Ordering::SeqCst);
@@ -660,6 +676,8 @@ struct Bridge {
 struct Settled {
     note: String,
     line: Option<HostMessage>,
+    /// A policy apid's hello answered with, sent after `line`.
+    policy: Option<PolicySnapshot>,
 }
 
 impl Bridge {
@@ -674,17 +692,23 @@ impl Bridge {
         );
         thread::spawn(move || {
             let done = match apid.hello(cid, &role, vm, &caps) {
-                Ok(Some(profile)) => Settled {
-                    note: "got its profile from apid".to_string(),
-                    line: Some(HostMessage::Profile { profile }),
-                },
-                Ok(None) => Settled {
-                    note: "has no profile from apid yet".to_string(),
-                    line: None,
-                },
+                Ok(reply) => {
+                    let note = match reply.profile {
+                        Some(_) => "got its profile from apid",
+                        None => "has no profile from apid yet",
+                    };
+                    Settled {
+                        note: note.to_string(),
+                        line: reply
+                            .profile
+                            .map(|profile| HostMessage::Profile { profile }),
+                        policy: reply.policy,
+                    }
+                }
                 Err(err) => Settled {
                     note: format!("hello to apid failed, retrying: {err}"),
                     line: None,
+                    policy: None,
                 },
             };
             let _ = tx.send(done);
@@ -716,6 +740,7 @@ fn guest_kind(message: &GuestMessage) -> &'static str {
         GuestMessage::Bye { .. } => "bye",
         GuestMessage::ModelCall { .. } => "model_call",
         GuestMessage::ToolRequest { .. } => "tool_request",
+        GuestMessage::ToolBatch { .. } => "tool_batch",
         GuestMessage::ToolReport { .. } => "tool_report",
         GuestMessage::WorkDone { .. } => "work_done",
         GuestMessage::Compressed { .. } => "compressed",

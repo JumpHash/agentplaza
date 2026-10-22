@@ -684,6 +684,8 @@ fn put_mode(app: &App, req: &Request, p: &Params<'_>) -> Response {
         return Response::error(404, "no such agent");
     }
     app.approvals.set_mode(cid, body.mode);
+    // The agent's policy follows its mode: only an autonomous agent's VM runs calls on its own.
+    crate::policy::push(app, cid);
     // The owner's change is written before the answer.
     let saved = crate::store::saver::save_now(app, "approvals");
     Response::json(200, &mode_change_body(&app.approvals, body.mode, saved))

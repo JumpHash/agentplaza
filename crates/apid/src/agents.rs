@@ -302,6 +302,8 @@ pub fn push_profiles(app: &App) {
 pub fn push_profile(app: &App, agent: &Agent) {
     let push = json!({"message": HostMessage::Profile { profile: profile(app, agent) }});
     let _ = crate::fleet::send(app, agent.cid, &push);
+    // What the profile grants, and the agent's mode and hold, decide its policy too.
+    crate::policy::push(app, agent.cid);
 }
 
 /// The human label of a role, or the raw name when it is not a known role.

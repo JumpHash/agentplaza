@@ -3,9 +3,11 @@
 //! A welcome carrying a `profile` (or a later `profile` line) makes the session
 //! model-backed. `work` items queue FIFO and run one at a time. A work item is a
 //! loop of model calls: the guest sends `model_call` with the conversation, the
-//! host answers `model_result`, and each tool the model asks for goes through
-//! `tool_request` and `tool_decision` (allowed and run here, decided by the host,
-//! or denied). The conversation only grows. A chat thread keeps its conversation
+//! host answers `model_result`, and each turn's tools are settled together: the
+//! ones the host's signed `policy` allows run here and are reported under that
+//! policy, and the rest go to the host in one `tool_batch`, answered once by
+//! `tool_batch_decision` (allowed and run here, decided by the host, or denied).
+//! The conversation only grows. A chat thread keeps its conversation
 //! across work items until it passes [`THREAD_CLOSE_BYTES`].
 //!
 //! Every wait is one loop ([`Agent::await_message`]) that keeps beating, queues
@@ -27,8 +29,8 @@ use std::time::{Duration, Instant};
 use apz_proto::chat::{Block, ChatRequest, ChatResponse, Message, Role, StopReason, blocks_text};
 use apz_proto::line::Lines;
 use apz_proto::wire::{
-    AgentProfile, Control, Decision, GuestMessage, HostMessage, MAX_TOOL_OUTPUT, WorkKind,
-    WorkStatus, cap_output,
+    AgentProfile, BatchCall, BatchDecision, Control, Decision, EngineSpec, GuestMessage,
+    HostMessage, MAX_TOOL_OUTPUT, PolicySnapshot, Program, WorkKind, WorkStatus, cap_output,
 };
 use serde_json::{Value, json};
 
@@ -55,6 +57,53 @@ const PROFILE_WAIT: Duration = Duration::from_secs(60);
 
 /// A local tool's result: its output, or why it failed.
 type Outcome = Result<String, String>;
+
+/// How the policy and the hub settle one of a model turn's tool calls.
+enum Route {
+    /// Refused for its input: the text the model sees, without asking the hub.
+    Refused(String),
+    /// Allowed by the policy with this id: it runs here.
+    Local(String),
+    /// Left to the hub, in the turn's batch.
+    Hub,
+}
+
+/// How an allowed call runs: the program or the engine's launch spec its decision carries, and the policy the
+/// harness decided it under (None for a call the hub decided).
+#[derive(Default)]
+struct Allowance {
+    program: Option<Program>,
+    engine: Option<EngineSpec>,
+    policy: Option<String>,
+}
+
+/// The report a guest sends once it has run a call. A call the policy decided carries its record: its tool, its
+/// input and the policy it was decided under.
+fn tool_report(
+    work: u64,
+    call: &str,
+    ok: bool,
+    output: String,
+    record: Option<&(String, String, Value)>,
+) -> GuestMessage {
+    let (policy, name, input) = match record {
+        Some((policy, name, input)) => (
+            Some(policy.clone()),
+            Some(name.clone()),
+            Some(input.clone()),
+        ),
+        None => (None, None, None),
+    };
+    GuestMessage::ToolReport {
+        work,
+        call: call.to_string(),
+        ok,
+        output,
+        policy,
+        name,
+        input,
+    }
+}
 
 /// A queued work item.
 struct Job {
@@ -112,6 +161,9 @@ struct Agent<'a, 'l, S, W> {
     /// The last model call's request id.
     req: u64,
     profile: Option<AgentProfile>,
+    /// The hub's signed policy: the tools this agent runs without asking. None until the hub sends one, and then
+    /// every call goes to the hub.
+    policy: Option<PolicySnapshot>,
     queue: VecDeque<Job>,
     threads: HashMap<String, Thread>,
     /// Orders the stored threads: the next value a stored thread takes.
@@ -282,6 +334,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
             seq: 0,
             req: 0,
             profile,
+            policy: None,
             queue: VecDeque::new(),
             threads: load_threads(workspace),
             clock: 0,
@@ -476,6 +529,10 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                 // A changed profile can add or drop the egress CA (the owner edited a rule).
                 crate::trust::install(self.workspace, profile.egress_ca.as_deref());
                 self.profile = Some(profile);
+                Incoming::Handled
+            }
+            HostMessage::Policy { policy } => {
+                self.policy = Some(policy);
                 Incoming::Handled
             }
             HostMessage::Control { work, control } => {
@@ -793,8 +850,8 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             let ran_tools = !uses.is_empty();
             let mut results = Vec::new();
             let mut stuck = None;
-            for (id, name, input, meta) in uses {
-                let (text, is_error) = self.tool_step(work, &id, &name, &input, meta.as_ref())?;
+            let outcomes = self.tool_turn(work, &uses)?;
+            for ((id, name, input, _), (text, is_error)) in uses.into_iter().zip(outcomes) {
                 let key = format!("{name} {input}");
                 failing = match (is_error, failing.take()) {
                     (false, _) => None,
@@ -1002,91 +1059,105 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         })
     }
 
-    /// One tool the model asked for. Returns the result's text and whether it is
-    /// an error. Malformed input is refused without asking the host; otherwise the
-    /// host decides, and an allowed tool runs here.
-    fn tool_step(
+    /// The turn's tool calls, in the model's order, each as its result text and whether it is an error. A call with
+    /// invalid input is refused without asking the host. A call the policy allows runs here, reported under the policy
+    /// it was decided by. The others go to the host in one batch, which answers once; then the calls run in order,
+    /// one at a time, each as its decision says.
+    fn tool_turn(
+        &mut self,
+        work: u64,
+        uses: &[(String, String, Value, Option<Value>)],
+    ) -> Result<Vec<(String, bool)>, Halt> {
+        let policy = self.policy.clone();
+        let routes: Vec<Route> = uses
+            .iter()
+            .map(|(_, name, input, meta)| {
+                if let Some(reason) = invalid_input(input, meta.as_ref()) {
+                    return Route::Refused(format!("INVALID_INPUT: {reason}"));
+                }
+                match &policy {
+                    Some(policy) if policy.allow.iter().any(|tool| tool == name) => {
+                        Route::Local(policy.id.clone())
+                    }
+                    _ => Route::Hub,
+                }
+            })
+            .collect();
+        let calls: Vec<BatchCall> = uses
+            .iter()
+            .zip(&routes)
+            .filter(|(_, route)| matches!(route, Route::Hub))
+            .map(|((id, name, input, _), _)| BatchCall {
+                call: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            })
+            .collect();
+        let mut decided: HashMap<String, BatchDecision> = HashMap::new();
+        if !calls.is_empty() {
+            self.say(&GuestMessage::ToolBatch { work, calls })?;
+            let answers = self.await_message("tool_batch_decision", |message| match message {
+                HostMessage::ToolBatchDecision {
+                    work: got,
+                    decisions,
+                } if got == work => Ok(decisions),
+                other => Err(other),
+            })?;
+            decided = answers
+                .into_iter()
+                .map(|decision| (decision.call.clone(), decision))
+                .collect();
+        }
+        let mut outcomes = Vec::with_capacity(uses.len());
+        for ((id, name, input, _), route) in uses.iter().zip(routes) {
+            let outcome = match route {
+                Route::Refused(text) => (text, true),
+                Route::Local(policy) => {
+                    let allowance = Allowance {
+                        policy: Some(policy),
+                        ..Allowance::default()
+                    };
+                    self.run_allowed(work, id, name, input, allowance)?
+                }
+                Route::Hub => match decided.remove(id) {
+                    Some(decision) => self.apply_decision(work, id, name, input, decision)?,
+                    None => (
+                        "the host sent no decision for this tool call".to_string(),
+                        true,
+                    ),
+                },
+            };
+            outcomes.push(outcome);
+        }
+        Ok(outcomes)
+    }
+
+    /// The hub's decision on one call of the turn: an allowed call runs here and is reported; a done, pending or
+    /// denied call is its result.
+    fn apply_decision(
         &mut self,
         work: u64,
         id: &str,
         name: &str,
         input: &Value,
-        meta: Option<&Value>,
+        decided: BatchDecision,
     ) -> Result<(String, bool), Halt> {
-        if let Some(reason) = invalid_input(input, meta) {
-            return Ok((format!("INVALID_INPUT: {reason}"), true));
-        }
-        self.say(&GuestMessage::ToolRequest {
-            work,
-            call: id.to_string(),
-            name: name.to_string(),
-            input: input.clone(),
-        })?;
-        let (decision, output, is_error, program, engine) =
-            self.await_message("tool_decision", |message| match message {
-                HostMessage::ToolDecision {
-                    call,
-                    decision,
-                    output,
-                    is_error,
-                    program,
-                    engine,
-                    ..
-                } if call == id => Ok((decision, output, is_error, program, engine)),
-                other => Err(other),
-            })?;
+        let BatchDecision {
+            decision,
+            output,
+            is_error,
+            program,
+            engine,
+            ..
+        } = decided;
         match decision {
             Decision::Allow => {
-                let workspace = self.workspace;
-                // A library tool comes with its program; built-in tools run from this harness.
-                let outcome = match program {
-                    Some(program) => {
-                        self.run_local(move || library::run(workspace, &program, input))?
-                    }
-                    // An engine runs as an ACP session whose every action the hub checks. The hub's
-                    // launch spec, for an engine instance the owner configured, comes with the decision.
-                    None if name == "code_engine" => {
-                        let shared = self.shared;
-                        let cancel = Arc::clone(&self.tool_cancel);
-                        let call = id.to_string();
-                        // The engine's MCP server offers the profile's plaza tools, through the hub.
-                        let tools = self
-                            .profile
-                            .as_ref()
-                            .map_or_else(Vec::new, |profile| profile.tools.clone());
-                        let protocol = self.profile.as_ref().map_or(1, |profile| {
-                            crate::acp::run::protocol_offer(&profile.engine_transport)
-                        });
-                        self.run_local(move || {
-                            let link = HubLink::new(shared, work, call, &cancel, tools);
-                            crate::acp::run::run(workspace, input, &link, protocol, engine.as_ref())
-                        })?
-                    }
-                    None => self.run_local(move || run_guest_tool(workspace, name, input))?,
+                let allowance = Allowance {
+                    program,
+                    engine,
+                    policy: None,
                 };
-                let (ok, output) = match outcome {
-                    Ok(output) => (true, output),
-                    Err(err) => (false, err),
-                };
-                // A packaged tool travels to the host whole (the library files it from the report);
-                // the model only needs to hear what was packaged.
-                if name == "tool_package" && ok {
-                    self.say(&GuestMessage::ToolReport {
-                        work,
-                        call: id.to_string(),
-                        ok,
-                        output: output.clone(),
-                    })?;
-                    return Ok((library::summary(&output), false));
-                }
-                let output = cap_output(&output, MAX_TOOL_OUTPUT);
-                self.say(&GuestMessage::ToolReport {
-                    work,
-                    call: id.to_string(),
-                    ok,
-                    output: output.clone(),
-                })?;
-                Ok((output, !ok))
+                self.run_allowed(work, id, name, input, allowance)
             }
             Decision::Done => Ok((cap_output(&output, MAX_TOOL_OUTPUT), is_error)),
             // Held for the owner (only an ACP engine's requests are held, and those wait on their own
@@ -1100,6 +1171,62 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             }
             Decision::Deny => Ok((output, true)),
         }
+    }
+
+    /// Runs one call the host allowed, or the policy did, and reports it. A call the policy decided carries its
+    /// record in the report: its tool, its input and the policy it was decided under.
+    fn run_allowed(
+        &mut self,
+        work: u64,
+        id: &str,
+        name: &str,
+        input: &Value,
+        allowance: Allowance,
+    ) -> Result<(String, bool), Halt> {
+        let Allowance {
+            program,
+            engine,
+            policy,
+        } = allowance;
+        let workspace = self.workspace;
+        // A library tool comes with its program; built-in tools run from this harness.
+        let outcome = match program {
+            Some(program) => self.run_local(move || library::run(workspace, &program, input))?,
+            // An engine runs as an ACP session whose every action the hub checks. The hub's
+            // launch spec, for an engine instance the owner configured, comes with the decision.
+            None if name == "code_engine" => {
+                let shared = self.shared;
+                let cancel = Arc::clone(&self.tool_cancel);
+                let call = id.to_string();
+                // The engine's MCP server offers the profile's plaza tools, through the hub.
+                let tools = self
+                    .profile
+                    .as_ref()
+                    .map_or_else(Vec::new, |profile| profile.tools.clone());
+                let protocol = self.profile.as_ref().map_or(1, |profile| {
+                    crate::acp::run::protocol_offer(&profile.engine_transport)
+                });
+                self.run_local(move || {
+                    let link = HubLink::new(shared, work, call, &cancel, tools);
+                    crate::acp::run::run(workspace, input, &link, protocol, engine.as_ref())
+                })?
+            }
+            None => self.run_local(move || run_guest_tool(workspace, name, input))?,
+        };
+        let (ok, output) = match outcome {
+            Ok(output) => (true, output),
+            Err(err) => (false, err),
+        };
+        let record = policy.map(|policy| (policy, name.to_string(), input.clone()));
+        // A packaged tool travels to the host whole (the library files it from the report);
+        // the model only needs to hear what was packaged.
+        if name == "tool_package" && ok {
+            self.say(&tool_report(work, id, ok, output.clone(), record.as_ref()))?;
+            return Ok((library::summary(&output), false));
+        }
+        let output = cap_output(&output, MAX_TOOL_OUTPUT);
+        self.say(&tool_report(work, id, ok, output.clone(), record.as_ref()))?;
+        Ok((output, !ok))
     }
 }
 
@@ -1446,8 +1573,25 @@ mod tests {
         json!({"type": "tool_use", "id": id, "name": name, "input": input})
     }
 
+    /// One call's decision, as an entry of a `tool_batch_decision`.
+    fn entry(call: &str, decision: &str, output: &str, is_error: bool) -> Value {
+        json!({"call": call, "decision": decision, "output": output, "is_error": is_error})
+    }
+
+    /// The hub's answer to the `tool_batch` of work `work`: `entries` in the calls' order.
+    fn batch_answer(work: u64, entries: Vec<Value>) -> String {
+        json!({"type": "tool_batch_decision", "work": work, "decisions": entries}).to_string()
+    }
+
+    /// The answer to a `tool_batch` of one call, for work 1 (the work item these tests run).
     fn decision(call: &str, decision: &str, output: &str, is_error: bool) -> String {
-        json!({"type": "tool_decision", "call": call, "decision": decision, "output": output, "is_error": is_error})
+        batch_answer(1, vec![entry(call, decision, output, is_error)])
+    }
+
+    /// The hub's policy, as the line it pushes: the tools the harness may run without asking. The signature is the
+    /// hub's; the harness keeps it as it came.
+    fn policy_line(id: &str, allow: &[&str]) -> String {
+        json!({"type": "policy", "policy": {"id": id, "issued_ms": 1, "allow": allow, "signature": "sig"}})
             .to_string()
     }
 
@@ -1521,9 +1665,12 @@ mod tests {
                     "tool_use",
                 ))
                 .unwrap();
-                let request = expect_type(host, "tool_request");
+                let batch = expect_type(host, "tool_batch");
                 assert_eq!(
-                    (request["call"].clone(), request["name"].clone()),
+                    (
+                        batch["calls"][0]["call"].clone(),
+                        batch["calls"][0]["name"].clone()
+                    ),
                     (json!("t1"), json!("bash"))
                 );
                 host.send(&decision("t1", "allow", "", false)).unwrap();
@@ -1564,7 +1711,7 @@ mod tests {
                     "tool_use",
                 ))
                 .unwrap();
-                expect_type(host, "tool_request");
+                expect_type(host, "tool_batch");
                 host.send(&decision("s1", "done", "3 hits", false)).unwrap();
                 let next = expect_type(host, "model_call");
                 assert_eq!(
@@ -1590,7 +1737,7 @@ mod tests {
                     "tool_use",
                 ))
                 .unwrap();
-                expect_type(host, "tool_request");
+                expect_type(host, "tool_batch");
                 host.send(&decision("d1", "deny", "not allowed here", true))
                     .unwrap();
                 let next = expect_type(host, "model_call");
@@ -1605,6 +1752,194 @@ mod tests {
                 stop(host);
             });
         }
+    }
+
+    #[test]
+    fn a_turn_of_five_calls_makes_one_tool_batch_for_the_hub() {
+        let workspace = scratch("five");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "five things")).unwrap();
+            expect_type(host, "model_call");
+            let calls: Vec<Value> = (1..=5)
+                .map(|n| {
+                    tool_use(
+                        &format!("f{n}"),
+                        "bash",
+                        json!({"command": format!("echo {n}")}),
+                    )
+                })
+                .collect();
+            host.send(&answer(1, json!(calls), "tool_use")).unwrap();
+            // One round trip for the turn: all five calls in one batch, in the model's order.
+            let batch = expect_type(host, "tool_batch");
+            let sent: Vec<Value> = batch["calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|call| call["call"].clone())
+                .collect();
+            let expected: Vec<Value> = (1..=5).map(|n| json!(format!("f{n}"))).collect();
+            assert_eq!(sent, expected, "{batch}");
+            let answers: Vec<Value> = (1..=5)
+                .map(|n| entry(&format!("f{n}"), "allow", "", false))
+                .collect();
+            host.send(&batch_answer(1, answers)).unwrap();
+            // Each allowed call runs here and is reported, in order; the hub's own calls carry no policy.
+            for n in 1..=5 {
+                let report = expect_type(host, "tool_report");
+                assert_eq!(
+                    (report["call"].clone(), report["output"].clone()),
+                    (json!(format!("f{n}")), json!(format!("{n}\nexit 0"))),
+                    "{report}"
+                );
+                assert!(report.get("policy").is_none(), "{report}");
+            }
+            let next = expect_type(host, "model_call");
+            assert_eq!(
+                next["request"]["messages"][2]["content"]
+                    .as_array()
+                    .map(Vec::len),
+                Some(5)
+            );
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_turn_the_policy_allows_makes_no_round_trip() {
+        let workspace = scratch("local");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("p1", &["bash"])).unwrap();
+            host.send(&work(1, "task", "t", "five things")).unwrap();
+            expect_type(host, "model_call");
+            let calls: Vec<Value> = (1..=5)
+                .map(|n| {
+                    tool_use(
+                        &format!("l{n}"),
+                        "bash",
+                        json!({"command": format!("echo {n}")}),
+                    )
+                })
+                .collect();
+            host.send(&answer(1, json!(calls), "tool_use")).unwrap();
+            // The policy allows all five: they run here with no batch sent first, and each report carries its
+            // record and the policy it was decided under.
+            for n in 1..=5 {
+                let report = expect_type(host, "tool_report");
+                assert_eq!(
+                    (
+                        report["call"].clone(),
+                        report["output"].clone(),
+                        report["policy"].clone(),
+                        report["name"].clone(),
+                        report["input"].clone(),
+                    ),
+                    (
+                        json!(format!("l{n}")),
+                        json!(format!("{n}\nexit 0")),
+                        json!("p1"),
+                        json!("bash"),
+                        json!({"command": format!("echo {n}")}),
+                    ),
+                    "{report}"
+                );
+            }
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_turn_split_between_the_policy_and_the_hub_sends_the_hub_one_batch() {
+        let workspace = scratch("mixed");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("p2", &["bash"])).unwrap();
+            host.send(&work(1, "task", "t", "mixed")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(
+                1,
+                json!([
+                    tool_use("m1", "bash", json!({"command": "echo 1"})),
+                    tool_use("m2", "search", json!({"pattern": "x"})),
+                    tool_use("m3", "bash", json!({"command": "echo 3"})),
+                ]),
+                "tool_use",
+            ))
+            .unwrap();
+            // Only the search call is the hub's to decide.
+            let batch = expect_type(host, "tool_batch");
+            assert_eq!(batch["calls"].as_array().map(Vec::len), Some(1), "{batch}");
+            assert_eq!(batch["calls"][0]["call"], "m2");
+            host.send(&batch_answer(1, vec![entry("m2", "done", "3 hits", false)]))
+                .unwrap();
+            // The two bash calls run after the answer, in order, each reported under the policy.
+            for (call, output) in [("m1", "1\nexit 0"), ("m3", "3\nexit 0")] {
+                let report = expect_type(host, "tool_report");
+                assert_eq!(
+                    (
+                        report["call"].clone(),
+                        report["policy"].clone(),
+                        report["output"].clone()
+                    ),
+                    (json!(call), json!("p2"), json!(output)),
+                    "{report}"
+                );
+            }
+            let next = expect_type(host, "model_call");
+            let results = &next["request"]["messages"][2]["content"];
+            let contents: Vec<Value> = results
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|result| result["content"].clone())
+                .collect();
+            assert_eq!(
+                contents,
+                vec![json!("1\nexit 0"), json!("3 hits"), json!("3\nexit 0")],
+                "{results}"
+            );
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn an_empty_policy_holds_every_call_to_the_hub() {
+        let workspace = scratch("held");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            // STOP ALL sends an empty snapshot: nothing runs here until the hub sends one that allows it.
+            host.send(&policy_line("held", &[])).unwrap();
+            host.send(&work(1, "task", "t", "held")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(
+                1,
+                json!([tool_use("h1", "bash", json!({"command": "echo 1"}))]),
+                "tool_use",
+            ))
+            .unwrap();
+            let batch = expect_type(host, "tool_batch");
+            assert_eq!(batch["calls"][0]["call"], "h1");
+            host.send(&decision("h1", "allow", "", false)).unwrap();
+            let report = expect_type(host, "tool_report");
+            assert!(report.get("policy").is_none(), "{report}");
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
     }
 
     #[test]
@@ -1674,7 +2009,7 @@ mod tests {
                 "tool_use",
             ))
             .unwrap();
-            expect_type(host, "tool_request");
+            expect_type(host, "tool_batch");
             host.send(&decision("s1", "done", "3 hits", false)).unwrap();
             let next = expect_type(host, "model_call");
             let results = &next["request"]["messages"][2]["content"];
@@ -1703,7 +2038,7 @@ mod tests {
                     "tool_use",
                 ))
                 .unwrap();
-                expect_type(host, "tool_request");
+                expect_type(host, "tool_batch");
                 host.send(&decision(id, "done", "hits", false)).unwrap();
             }
             let summary_call = expect_type(host, "model_call");
@@ -1831,7 +2166,7 @@ mod tests {
                     "tool_use",
                 ))
                 .unwrap();
-                expect_type(host, "tool_request");
+                expect_type(host, "tool_batch");
                 host.send(&decision("b1", "done", "[]", false)).unwrap();
                 expect_type(host, "model_call");
                 host.send(&answer(
@@ -1840,7 +2175,7 @@ mod tests {
                     "tool_use",
                 ))
                 .unwrap();
-                expect_type(host, "tool_request");
+                expect_type(host, "tool_batch");
                 host.send(&decision("b2", "done", "[]", false)).unwrap();
                 let done = expect_type(host, "work_done");
                 assert_eq!(
@@ -1865,7 +2200,7 @@ mod tests {
                         "tool_use",
                     ))
                     .unwrap();
-                    expect_type(host, "tool_request");
+                    expect_type(host, "tool_batch");
                     host.send(&decision(&call, "deny", "no", true)).unwrap();
                 }
                 let done = expect_type(host, "work_done");
@@ -1898,7 +2233,7 @@ mod tests {
                     "tool_use",
                 ))
                 .unwrap();
-                expect_type(host, "tool_request");
+                expect_type(host, "tool_batch");
                 host.send(&decision("c1", "allow", "", false)).unwrap();
                 expect_type(host, "tool_report");
                 let done = expect_type(host, "work_done");
@@ -1922,7 +2257,7 @@ mod tests {
                     "tool_use",
                 ))
                 .unwrap();
-                expect_type(host, "tool_request");
+                expect_type(host, "tool_batch");
                 host.send(&decision("c1", "allow", "", false)).unwrap();
                 // Sent while the tool runs: the loop takes it beside the tool, not after it.
                 host.send(r#"{"type":"cancel","work":1,"reason":"operator stop"}"#)
@@ -2080,7 +2415,7 @@ mod tests {
                 "tool_use",
             ))
             .unwrap();
-            expect_type(host, "tool_request");
+            expect_type(host, "tool_batch");
             host.send(&decision("slow", "allow", "", false)).unwrap();
             // The local tool is sleeping now; the owner's call must not wait for it.
             host.send(r#"{"type":"tool_call","call":77,"name":"echo","args":{"text":"owner"}}"#)

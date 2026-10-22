@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use apz_http::client::{Reply, send_with};
-use apz_proto::wire::{AgentProfile, Decision, GuestMessage, HostMessage};
+use apz_proto::wire::{
+    AgentProfile, BatchDecision, Decision, GuestMessage, HostMessage, PolicySnapshot,
+};
 use serde_json::json;
 
 /// The header that carries the internal token.
@@ -117,23 +119,28 @@ impl Apid {
         self.token_file.is_some()
     }
 
-    /// The agent's profile from apid (`None` when apid has none for it). `caps` are the harness's
-    /// features from its hello; apid keeps them on the agent.
+    /// The agent's profile from apid (`None` when apid has none for it), and the policy its session starts with.
+    /// `caps` are the harness's features from its hello; apid keeps them on the agent.
     pub fn hello(
         &self,
         cid: u32,
         role: &str,
         vm: u32,
         caps: &[String],
-    ) -> Result<Option<AgentProfile>, String> {
+    ) -> Result<HelloReply, String> {
         let body = hello_body(role, vm, caps);
         let reply = self.post(
             &format!("/internal/v1/agents/{cid}/hello"),
             &body,
             HELLO_TIMEOUT,
         )?;
-        serde_json::from_value(reply.get("profile").cloned().unwrap_or_default())
-            .map_err(|err| format!("apid's profile is malformed: {err}"))
+        let profile: Option<AgentProfile> =
+            serde_json::from_value(reply.get("profile").cloned().unwrap_or_default())
+                .map_err(|err| format!("apid's profile is malformed: {err}"))?;
+        let policy: Option<PolicySnapshot> =
+            serde_json::from_value(reply.get("policy").cloned().unwrap_or_default())
+                .map_err(|err| format!("apid's policy is malformed: {err}"))?;
+        Ok(HelloReply { profile, policy })
     }
 
     /// Forwards one guest line (`line`, the message's JSON) and returns apid's reply, if any.
@@ -445,6 +452,12 @@ fn port_of(url: &str) -> Result<u16, String> {
         .map_err(|err| format!("{url:?}: invalid port: {err}"))
 }
 
+/// What apid answers an agent's hello with: its profile, and the policy the session starts with.
+pub struct HelloReply {
+    pub profile: Option<AgentProfile>,
+    pub policy: Option<PolicySnapshot>,
+}
+
 /// The body of an agent's hello to apid. `caps` are added only when the harness sent some, so a
 /// harness from before v4 produces the body it always did.
 fn hello_body(role: &str, vm: u32, caps: &[String]) -> String {
@@ -474,6 +487,21 @@ pub fn refusal(message: &GuestMessage, reason: &str) -> Option<HostMessage> {
             program: None,
             engine: None,
             approval: None,
+        }),
+        GuestMessage::ToolBatch { work, calls } => Some(HostMessage::ToolBatchDecision {
+            work: *work,
+            decisions: calls
+                .iter()
+                .map(|call| BatchDecision {
+                    call: call.call.clone(),
+                    decision: Decision::Deny,
+                    output: reason.to_string(),
+                    is_error: true,
+                    program: None,
+                    engine: None,
+                    approval: None,
+                })
+                .collect(),
         }),
         _ => None,
     }
@@ -557,16 +585,16 @@ mod tests {
         .unwrap();
 
         // The file is read on the first call only: with it gone, the kept token is still sent.
-        assert!(apid.hello(1, "builder", 0, &[]).unwrap().is_none());
+        assert!(apid.hello(1, "builder", 0, &[]).unwrap().profile.is_none());
         std::fs::remove_file(&path).unwrap();
-        assert!(apid.hello(1, "builder", 0, &[]).unwrap().is_none());
+        assert!(apid.hello(1, "builder", 0, &[]).unwrap().profile.is_none());
         assert_eq!(*seen.lock().unwrap(), ["tok-a", "tok-a"]);
 
         // apid rotates its token and the file holds the new one: the old one is refused, so the
         // request goes out once more with the new one.
         *accepts.lock().unwrap() = "tok-b".to_string();
         std::fs::write(&path, "tok-b\n").unwrap();
-        assert!(apid.hello(1, "builder", 0, &[]).unwrap().is_none());
+        assert!(apid.hello(1, "builder", 0, &[]).unwrap().profile.is_none());
         assert_eq!(*seen.lock().unwrap(), ["tok-a", "tok-a", "tok-a", "tok-b"]);
         assert_eq!(apid.token().unwrap(), "tok-b");
         let _ = std::fs::remove_file(&path);

@@ -72,6 +72,7 @@ mod payments;
 mod placement;
 mod platforms;
 mod plaza;
+mod policy;
 mod prices;
 mod probes;
 mod project_files;

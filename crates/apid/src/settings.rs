@@ -1139,7 +1139,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 }
             };
             match app.settings.put(new) {
-                Ok(saved) => Response::json(200, &saved),
+                Ok(saved) => {
+                    // The owner's strict permits may have changed what the laws allow: the agents' policies follow.
+                    crate::policy::push_all(app);
+                    Response::json(200, &saved)
+                }
                 Err(msg) => Response::json(400, &json!({ "error": msg })),
             }
         })

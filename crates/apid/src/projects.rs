@@ -1183,6 +1183,8 @@ fn mode_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(project) => project,
         Err(e) => return Response::error(409, &e),
     };
+    // A project's mode can hold its members (a delivered project is over, unless it is in maintenance): their policies follow.
+    crate::policy::push_all(app);
     if project.in_maintenance() {
         crate::maintenance::entered(app, id);
     }
@@ -1213,6 +1215,8 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
         Ok(project) => project,
         Err(e) => return Response::error(409, &e),
     };
+    // A paused or archived project holds its members' calls (see `membership`): their policies follow.
+    crate::policy::push_all(app);
     if project.archived {
         // Nothing more is done for it: its agents go back to the bench (the tasks waiting in their queues open
         // again), then its open tasks are withdrawn (their escrow back in its budget), and the rest of its budget
