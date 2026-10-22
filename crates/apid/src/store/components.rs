@@ -152,6 +152,18 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.agent_proposals.load(conn),
         },
         Component {
+            name: "memory_entries",
+            def: crate::project_memory::entry_def,
+            rows: |app| app.project_memory.entry_rows(),
+            load: |app, conn| app.project_memory.load_entries(conn),
+        },
+        Component {
+            name: "memory_proposals",
+            def: crate::project_memory::proposal_def,
+            rows: |app| app.project_memory.proposal_rows(),
+            load: |app, conn| app.project_memory.load_proposals(conn),
+        },
+        Component {
             name: "nodes",
             def: crate::nodes::def,
             rows: |app| app.nodes.rows(),

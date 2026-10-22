@@ -77,6 +77,7 @@ mod policy;
 mod prices;
 mod probes;
 mod project_files;
+mod project_memory;
 mod project_settings;
 mod projects;
 mod prompts;

@@ -1426,5 +1426,94 @@
       ],
       "additionalProperties": false
     }
+  },
+  "memory_search": {
+    "description": "Search your project's memory: its entries (decisions with their reasons, conventions, pitfalls, how-tos, maps, the glossary, facts the code does not show). Give words (`text`), a `type`, or an `anchor` (a Weft symbol id such as sym:apid::placement::move_claimed, or a path) to find the entries about it. Hits come one line each; read one with memory_get.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "words every hit's title or text contains"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "decision",
+            "convention",
+            "pitfall",
+            "howto",
+            "map",
+            "glossary",
+            "fact",
+            "reference"
+          ]
+        },
+        "anchor": {
+          "type": "string",
+          "description": "a symbol id or a path an entry is anchored to"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "memory_get": {
+    "description": "Read one entry of your project's memory in full: its type, status, anchors, links, when it was last verified, and its text.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "the entry's id, e.g. P-0017"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "memory_propose": {
+    "description": "Propose an entry for your project's memory: a decision and its reason, a convention, a pitfall you hit, a how-to, a map of the code, a glossary term, or a fact the code does not show. Write one fact per entry, so a session with no context can use it. The proposal is stored for the project's curator; nothing lands in the memory from it by itself. Do not propose what the code, its history or Weft already records.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "decision",
+            "convention",
+            "pitfall",
+            "howto",
+            "map",
+            "glossary",
+            "fact",
+            "reference"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "description": "the entry: one fact, in a few sentences"
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "description": "the symbol ids or paths it is about"
+        },
+        "why": {
+          "type": "string",
+          "description": "why it is worth keeping, and what you saw"
+        }
+      },
+      "required": [
+        "type",
+        "text",
+        "why"
+      ],
+      "additionalProperties": false
+    }
   }
 }

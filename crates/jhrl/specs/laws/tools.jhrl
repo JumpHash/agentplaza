@@ -245,3 +245,15 @@ law "T-027" "Agents keep their task's journal" {
   resource is Tool
   when resource.name in ["journal_note", "journal_read", "handover_write", "brief"]
 }
+
+law "T-028" "Agents read and propose project memory" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent on a project may search and read its memory, and propose an entry for it. A proposal is stored for the project's curator and goes nowhere by itself."
+  rationale "Memory is what the project's sessions learn from: reading it is free, and a proposal is cheap, so any agent may offer what it found. Only an entry that lands reaches the index, and the owner can edit or retire any entry."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name in ["memory_search", "memory_get", "memory_propose"]
+}
