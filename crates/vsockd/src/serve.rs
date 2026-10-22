@@ -774,8 +774,18 @@ fn host_uptime() -> io::Result<String> {
     crate::sys::host_uptime()
 }
 
+/// macOS has no `/proc`, and its idle time needs a Mach call this daemon does not make: the uptime tool
+/// refuses there and says so.
+#[cfg(target_os = "macos")]
+fn host_uptime() -> io::Result<String> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "macOS has no /proc/uptime",
+    ))
+}
+
 /// The first two fields of `/proc/uptime`.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn host_uptime() -> io::Result<String> {
     let text = std::fs::read_to_string("/proc/uptime")?;
     match text.split_whitespace().take(2).collect::<Vec<_>>()[..] {
@@ -1291,15 +1301,19 @@ mod tests {
             r#"{"type":"tool_result","call":1,"ok":true,"output":"plaza-guest-3-hello"}"#
         );
         let uptime: serde_json::Value = serde_json::from_str(&sent[2]).unwrap();
-        assert_eq!(
-            uptime["output"]
-                .as_str()
-                .unwrap()
-                .split_whitespace()
-                .count(),
-            2,
-            "{uptime}"
-        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(uptime["ok"], false, "{uptime}");
+        } else {
+            assert_eq!(
+                uptime["output"]
+                    .as_str()
+                    .unwrap()
+                    .split_whitespace()
+                    .count(),
+                2,
+                "{uptime}"
+            );
+        }
         assert_eq!(
             sent[3],
             r#"{"type":"tool_result","call":3,"ok":false,"output":"unknown tool: rm_rf"}"#

@@ -60,12 +60,20 @@
 //!   fresh VM that resumes and powers off; the same in per-VM `apz-vmm`
 //!   processes, the snapshot restored in a second process (a fork); and the arm64
 //!   guest kernel of `target/guest/aarch64` boots, prints its banner and first
-//!   heartbeat on the serial console, and powers off through PSCI.
+//!   heartbeat on the serial console, and powers off through PSCI;
+//! - `tests/hvf.rs`, the vsock and workspace devices: the guest's harness says
+//!   hello over vsock to a host listener at `{uds_path}_5000` (the test is the
+//!   listener) and keeps its session with a heartbeat; `wspace` writes a line to
+//!   the workspace volume, a 64 MiB ext4 image made with the host's e2fsprogs,
+//!   and after the guest powers off the line is in the image file;
+//! - `tests/hvf_node.rs` (`noded`): a node's registry runs one VM of the guest in
+//!   its own `apz-vmm` process, and the guest's first heartbeat appears.
 //!
-//! Not run on hardware yet: the virtio devices of this backend (the vsock
-//! device, the workspace and the data volumes). Their wiring builds and the
-//! shared device code is tested on Linux, but no test here boots a guest with
-//! them, so the vsock path to a Mac node is unverified.
+//! Not run on hardware yet: the data volumes (the read-only `/data/<name>`
+//! mounts; they share the workspace's block device code, which the test above
+//! runs), and a snapshot and restore of the booted arm64 guest (the payload's
+//! snapshot is tested above; the Linux suite's guest snapshot test has no HVF
+//! twin yet).
 //!
 //! # One VM per process
 //!

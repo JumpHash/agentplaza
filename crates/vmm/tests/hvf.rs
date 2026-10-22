@@ -22,12 +22,15 @@
 mod common;
 
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use common::{Watchdog, note};
-use vmm::spawner::{SnapshotKind, VmExit, VmHandle, VmSpec, spawn};
+use vmm::spawner::{SnapshotKind, VmExit, VmHandle, VmSpec, VsockConfig, spawn};
 
 /// The process's one VM at a time: the framework allows one VM per process.
 static ONE_VM: Mutex<()> = Mutex::new(());
@@ -211,20 +214,9 @@ fn the_guest_kernel_boots_prints_its_heartbeat_and_powers_off_on_the_console() {
     if !entitled() {
         return;
     }
-    let guest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/guest/aarch64");
-    let missing: Vec<&str> = ["vmlinux", "initrd.gz", "guest.json"]
-        .into_iter()
-        .filter(|file| !guest.join(file).is_file())
-        .collect();
-    if !missing.is_empty() {
-        note(format_args!(
-            "skipped: the arm64 guest is not built ({} missing in {}); build it with \
-             scripts/mk-guest.sh aarch64",
-            missing.join(", "),
-            guest.display()
-        ));
+    let Some(guest) = guest_files() else {
         return;
-    }
+    };
     let _one = one_vm();
     // The three waits below (banner, heartbeat, power-off) each have their own limit: the watchdog
     // covers all of them.
@@ -352,6 +344,174 @@ fn a_payload_is_snapshotted_in_a_per_vm_process_and_restored_in_another() {
         restored.serial(),
         "B",
         "the restored payload resumes in its own process"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The arm64 guest in `target/guest/aarch64`, or `None` after saying which of its files is missing.
+fn guest_files() -> Option<PathBuf> {
+    let guest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/guest/aarch64");
+    let missing: Vec<&str> = ["vmlinux", "initrd.gz", "guest.json"]
+        .into_iter()
+        .filter(|file| !guest.join(file).is_file())
+        .collect();
+    if !missing.is_empty() {
+        note(format_args!(
+            "skipped: the arm64 guest is not built ({} missing in {}); build it with \
+             scripts/mk-guest.sh aarch64",
+            missing.join(", "),
+            guest.display()
+        ));
+        return None;
+    }
+    Some(guest)
+}
+
+/// Whether `tool` runs from PATH.
+fn on_path(tool: &str) -> bool {
+    Command::new(tool)
+        .arg("-V")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+}
+
+/// Makes a sparse ext4 image of `mib` MiB with the host's e2fsprogs: `mkfs.ext4`, or `mke2fs -t ext4`
+/// where only that name exists (the Homebrew and Android build of e2fsprogs ships it so). `None`
+/// when neither runs, and the caller says so.
+fn workspace_image(dir: &Path, mib: u64) -> Option<PathBuf> {
+    let (tool, extra): (&str, &[&str]) = if on_path("mkfs.ext4") {
+        ("mkfs.ext4", &[])
+    } else if on_path("mke2fs") {
+        ("mke2fs", &["-t", "ext4"])
+    } else {
+        return None;
+    };
+    let image = dir.join("workspace.ext4");
+    fs::File::create(&image)
+        .and_then(|file| file.set_len(mib << 20))
+        .expect("the workspace image is created");
+    let status = Command::new(tool)
+        .args(["-q", "-F"])
+        .args(extra)
+        .arg(&image)
+        .status()
+        .expect("the e2fsprogs tool runs");
+    assert!(status.success(), "{tool} made the workspace image");
+    Some(image)
+}
+
+/// Accepts the guest's connection on `listener`, or `None` when none comes within `limit`.
+fn accept_within(listener: &UnixListener, limit: Duration) -> Option<UnixStream> {
+    listener
+        .set_nonblocking(true)
+        .expect("the listener is nonblocking");
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("the connection blocks");
+                return Some(stream);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("accept on the vsock listener failed: {err}"),
+        }
+    }
+    None
+}
+
+#[test]
+fn the_guest_reaches_a_host_listener_over_vsock_and_writes_its_workspace() {
+    if !entitled() {
+        return;
+    }
+    let Some(guest) = guest_files() else {
+        return;
+    };
+    let _one = one_vm();
+    let _watchdog = Watchdog::new("the guest's vsock and workspace", GUEST_WATCHDOG);
+    let dir = scratch("vsock-workspace");
+    let Some(workspace) = workspace_image(&dir, 64) else {
+        note("skipped: no mkfs.ext4 or mke2fs on PATH to make the workspace image");
+        return;
+    };
+
+    // The guest's connect to CID 2, port 5000, reaches `{uds_path}_5000`: the test is the host
+    // listener there, the orchestrator the harness says hello to.
+    let listener = UnixListener::bind(dir.join("vm3_5000")).expect("the host listener binds");
+    let mut vm = spawn(VmSpec {
+        kernel: guest.join("vmlinux"),
+        initrd: Some(guest.join("initrd.gz")),
+        cmdline: "console=ttyS0 panic=-1 plaza.keepalive=1 plaza.vm=0".to_string(),
+        memory_mib: 256,
+        vsock: Some(VsockConfig {
+            guest_cid: 3,
+            uds_path: dir.join("vm3"),
+        }),
+        workspace: Some(workspace.clone()),
+        ..VmSpec::default()
+    })
+    .expect("the guest boots with its vsock and workspace devices");
+    let Some(mut stream) = accept_within(&listener, GUEST_LIMIT) else {
+        let _ = vm.kill();
+        panic!(
+            "the guest did not connect to the host listener; serial tail: {:?}",
+            serial_tail(&vm.serial())
+        );
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("the read timeout is set");
+    let mut lines = BufReader::new(stream.try_clone().expect("the stream clones"));
+    let mut hello = String::new();
+    lines.read_line(&mut hello).expect("the guest says hello");
+    assert!(
+        hello.contains(r#""type":"hello""#) && hello.contains(r#""guest_cid":3"#),
+        "the harness says hello with its CID: {hello:?}"
+    );
+    stream
+        .write_all(b"{\"type\":\"welcome\",\"echo\":\"plaza-orchestrator\",\"keepalive\":true}\n")
+        .expect("the welcome is sent");
+    let mut heartbeat = String::new();
+    lines
+        .read_line(&mut heartbeat)
+        .expect("the guest keeps its session: a heartbeat arrives");
+    assert!(
+        heartbeat.contains(r#""type":"heartbeat""#),
+        "a heartbeat over vsock: {heartbeat:?}"
+    );
+
+    // The workspace: the guest writes a line to the volume, prints it back, and syncs it to the image
+    // before the guest powers off.
+    vm.serial_input(b"wspace hello-from-hvf\n")
+        .expect("the console takes the command");
+    assert!(
+        wait_for_serial(&vm, "hello-from-hvf", GUEST_LIMIT),
+        "the workspace answers; serial tail: {:?}",
+        serial_tail(&vm.serial())
+    );
+    vm.serial_input(b"sync\npoweroff\n")
+        .expect("the console takes the power-off");
+    let exit = vm.wait().expect("the guest powers off");
+    assert_eq!(
+        exit,
+        VmExit::GuestExited { reset: false },
+        "the guest powers off through PSCI SYSTEM_OFF; serial tail: {:?}",
+        serial_tail(&vm.serial())
+    );
+
+    // The bytes are in the image: the volume is a file the host reads after the VM is gone.
+    let image = fs::read(&workspace).expect("the workspace image is read");
+    assert!(
+        image
+            .windows(b"hello-from-hvf".len())
+            .any(|window| window == b"hello-from-hvf"),
+        "the line the guest wrote is in the workspace image"
     );
     let _ = fs::remove_dir_all(&dir);
 }
