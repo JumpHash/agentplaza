@@ -8,7 +8,7 @@ import { api, type Delta, type OwnerConversation, type OwnerConversationSummary,
 import { afterText, budgetText, settingsLine, startBlock, streamed, teamLine } from '../ide/conversation-model';
 import { consoleOrigin } from '../ide/open';
 import { hrefIn } from '../router';
-import { roleLabel } from '../roles';
+import { agentName, roleLabel } from '../roles';
 import { projectTitle, refreshProjects } from '../scope';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, field, input, modal, textarea, toast } from '../ui/components';
@@ -24,7 +24,7 @@ import type { Cleanup } from './index';
 /** The orchestrator's name, from the roster. */
 function orchestratorName(cid: number): string {
   const agent = agents.get().find((a) => a.cid === cid);
-  return agent?.name || 'The orchestrator';
+  return agent ? agentName(agent) : 'The orchestrator';
 }
 
 /** The files a message carries: each a link to its bytes, opened in a new tab. */

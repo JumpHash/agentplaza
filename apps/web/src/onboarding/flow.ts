@@ -9,8 +9,11 @@ export const COPY = copy;
 /** The wizard's steps, in order (at most five, one screen each). */
 export const WIZARD_STEPS = copy.wizard.steps;
 
-/** The tour's steps, in order: each is a callout next to a sidebar screen. */
-export const TOUR_STEPS = copy.tour.steps;
+/**
+ * The tour's steps, in order: each is a callout next to a sidebar screen. The Society and Conversations stop has no
+ * screen any more (agents do not talk to each other in the console), so the console leaves it out.
+ */
+export const TOUR_STEPS = copy.tour.steps.filter((step) => step.screen !== 'conversations');
 
 /** localStorage keys for the two flags. The desktop app keeps the same flags under `setup_done` and `tour_done`. */
 export const FLAGS = { setup: 'apz.setup.done', tour: 'apz.tour.done' } as const;

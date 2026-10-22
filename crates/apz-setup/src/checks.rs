@@ -1,74 +1,82 @@
-//! What a local plaza needs, checked (see `lib.rs`).
+//! What a plaza needs on this machine, checked for its [`Mode`](crate::Mode) (see `lib.rs`).
 
-use crate::provision::{GARAGE, GARAGE_KEYS, keys_set};
+use crate::node;
 use crate::runner::Output;
 use crate::{Check, Env, Mode, Need, State};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
-const SERVICES: [&str; 3] = ["apid", "vsockd", "noded"];
-const PORTS: [u16; 3] = [7700, 8899, 19080];
-const POSTGRES: &str = "agentplaza-postgres";
-const POSTGRES_CREATE: &str = "Create the container agentplaza-postgres (Postgres 17, data in the volume agentplaza-postgres, on 127.0.0.1:5434) and record its address in ~/.config/agentplaza/keys.env";
-const GARAGE_CREATE: &str = "Create the container agentplaza-garage (Garage 1.0, the S3 object store, on 127.0.0.1:3900; data in the volumes agentplaza-garage-meta and agentplaza-garage-data), the bucket agentplaza and a key for it, and record the endpoint and the key in ~/.config/agentplaza/keys.env";
 const WHP_QUERY: &str =
     "(Get-CimInstance Win32_OptionalFeature -Filter \"Name='HypervisorPlatform'\").InstallState";
 
+/// The services `mode` runs on this machine, in start order. A node's are apz-link (it forwards to the
+/// hub), vsockd and noded: the node's plan ([`node::NAMES`]).
+fn services_for(mode: Mode) -> &'static [&'static str] {
+    match mode {
+        Mode::Local => &["apid", "vsockd", "noded"],
+        Mode::Hub => &["apid"],
+        Mode::Node => &node::NAMES,
+    }
+}
+
+/// The ports `mode`'s services listen on: apid's 7700 for a hub; noded's 8899 and vsockd's HTTP 19080
+/// for a node, and apz-link's forwarder on 7701 (vsockd reaches apid through it).
+fn ports_for(mode: Mode) -> &'static [u16] {
+    match mode {
+        Mode::Local => &[7700, 8899, 19080],
+        Mode::Hub => &[7700],
+        Mode::Node => &[7701, 8899, 19080],
+    }
+}
+
 /// Every requirement for `mode` on this machine, in the order the checklist shows them.
-pub fn check_all(_mode: Mode) -> Vec<Check> {
+pub fn check_all(mode: Mode) -> Vec<Check> {
     let env = Env::system();
-    check_with(&env, &search_dirs(), hypervisor(&env), ports())
+    check_with(
+        mode,
+        &search_dirs(),
+        || hypervisor(&env),
+        |wanted| ports(mode, wanted),
+    )
 }
 
-/// The rows for `env`, with the plaza's binaries searched for in `dirs`. `hypervisor` and `ports`
-/// are this machine's own rows, passed in: a test does not probe the machine it runs on.
-pub fn check_with(env: &Env, dirs: &[PathBuf], hypervisor: Check, ports: Check) -> Vec<Check> {
-    let version = docker_version(env);
-    let daemon = if version.is_some() {
-        docker_daemon(env)
-    } else {
-        Daemon::NotAnswering
-    };
-    let docker_up = matches!(daemon, Daemon::Running(_));
-    vec![
-        services(dirs),
-        docker(version.as_deref()),
-        docker_running(version.is_some(), &daemon),
-        container_check(
-            env,
-            Need::Postgres,
-            "Postgres",
-            POSTGRES,
-            docker_up,
-            POSTGRES_CREATE,
-        ),
-        garage(env, docker_up),
-        hypervisor,
-        ports,
-    ]
+/// The rows for `mode`, with the plaza's binaries searched for in `dirs`. The hypervisor row comes from
+/// `probe_hypervisor`, and only for a mode that runs a node: a hub-only check never asks. The ports row
+/// comes from `probe_ports`, given the ports of the mode (see `ports_for`). Both are passed in, so a
+/// test does not probe the machine it runs on.
+pub fn check_with(
+    mode: Mode,
+    dirs: &[PathBuf],
+    probe_hypervisor: impl FnOnce() -> Check,
+    probe_ports: impl FnOnce(&[u16]) -> Check,
+) -> Vec<Check> {
+    let mut rows = vec![services(mode, dirs)];
+    if mode.runs_node() {
+        rows.push(probe_hypervisor());
+    }
+    rows.push(probe_ports(ports_for(mode)));
+    rows
 }
 
-/// Builds a row. `fix` is kept only when the state is `Missing`.
+/// Builds a row. The setup installs nothing, so no row carries a fix.
 fn check(
     need: Need,
     label: &'static str,
     state: State,
     detail: impl Into<String>,
-    fix: Option<String>,
     required: bool,
 ) -> Check {
-    let fix = if state == State::Missing { fix } else { None };
     Check {
         need,
         label,
         state,
         detail: detail.into(),
-        fix,
+        fix: None,
         required,
     }
 }
 
-/// Runs `program args` through the runner; `None` if it cannot run at all.
+/// The output of `program args` through the runner; `None` if it cannot run at all.
 fn probe(env: &Env, program: &str, args: &[&str]) -> Option<Output> {
     env.runner.output(program, args).ok()
 }
@@ -104,13 +112,15 @@ fn locate(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn services(dirs: &[PathBuf]) -> Check {
-    // Only apid ships for macOS x86_64: noded and vsockd are Apple silicon builds.
-    let needed: &[&str] = if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        &SERVICES[..1]
-    } else {
-        &SERVICES
-    };
+/// The services of `mode`, looked for in `dirs`: all of them there, or the missing ones named.
+fn services(mode: Mode, dirs: &[PathBuf]) -> Check {
+    // Only apid and apz-link ship for macOS x86_64: noded and vsockd are Apple silicon builds.
+    let intel_mac = cfg!(all(target_os = "macos", target_arch = "x86_64"));
+    let needed: Vec<&str> = services_for(mode)
+        .iter()
+        .copied()
+        .filter(|name| !intel_mac || matches!(*name, "apid" | "apz-link"))
+        .collect();
     let found: Vec<(&str, Option<PathBuf>)> = needed
         .iter()
         .map(|name| (*name, locate(name, dirs)))
@@ -120,250 +130,38 @@ fn services(dirs: &[PathBuf]) -> Check {
         .filter(|(_, path)| path.is_none())
         .map(|(name, _)| *name)
         .collect();
-    if missing.is_empty() {
-        let dir = found
-            .first()
-            .and_then(|(_, path)| path.as_ref())
-            .and_then(|path| path.parent())
-            .map(|dir| dir.display().to_string())
-            .unwrap_or_default();
-        check(
-            Need::Services,
-            "AgentPlaza services",
-            State::Ok,
-            dir,
-            None,
-            true,
-        )
-    } else {
-        check(
+    if !missing.is_empty() {
+        return check(
             Need::Services,
             "AgentPlaza services",
             State::Blocked,
             format!("missing: {}; reinstall AgentPlaza", missing.join(", ")),
-            None,
-            true,
-        )
-    }
-}
-
-fn docker_install_fix() -> &'static str {
-    if cfg!(target_os = "linux") {
-        "Install Docker Engine with your package manager (asks for your password), start it, and let your user run it"
-    } else if cfg!(target_os = "macos") {
-        "Install Docker Desktop (with Homebrew if you have it, else from docker.com), then open it"
-    } else {
-        "Install Docker Desktop with winget (Windows asks for permission), then open it"
-    }
-}
-
-/// The installed `docker` version (its first line), or `None` if the command is absent.
-fn docker_version(env: &Env) -> Option<String> {
-    let out = probe(env, "docker", &["--version"])?;
-    out.success.then(|| first_line(&out.stdout))
-}
-
-fn docker(version: Option<&str>) -> Check {
-    match version {
-        Some(version) => check(Need::Docker, "Docker", State::Ok, version, None, true),
-        None => check(
-            Need::Docker,
-            "Docker",
-            State::Missing,
-            "not installed",
-            Some(docker_install_fix().to_string()),
-            true,
-        ),
-    }
-}
-
-enum Daemon {
-    Running(String),
-    /// Linux: the user may not reach the daemon's socket yet (docker group).
-    Denied,
-    NotAnswering,
-}
-
-fn docker_daemon(env: &Env) -> Daemon {
-    let Some(out) = probe(env, "docker", &["info", "--format", "{{.ServerVersion}}"]) else {
-        return Daemon::NotAnswering;
-    };
-    if out.success {
-        return Daemon::Running(first_line(&out.stdout));
-    }
-    let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
-    if cfg!(target_os = "linux") && stderr.contains("permission denied") {
-        Daemon::Denied
-    } else {
-        Daemon::NotAnswering
-    }
-}
-
-fn docker_running(installed: bool, daemon: &Daemon) -> Check {
-    if !installed {
-        return check(
-            Need::DockerRunning,
-            "Docker running",
-            State::Missing,
-            "install Docker first",
-            None,
             true,
         );
     }
-    match daemon {
-        Daemon::Running(version) => check(
-            Need::DockerRunning,
-            "Docker running",
-            State::Ok,
-            format!("Docker {version} running"),
-            None,
-            true,
+    let dir = found
+        .first()
+        .and_then(|(_, path)| path.as_ref())
+        .and_then(|path| path.parent())
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default();
+    check(
+        Need::Services,
+        "AgentPlaza services",
+        State::Ok,
+        format!(
+            "{} in {dir}; no Docker or database needed",
+            needed.join(", ")
         ),
-        Daemon::Denied => check(
-            Need::DockerRunning,
-            "Docker running",
-            State::Blocked,
-            "your user cannot use Docker yet: log out and back in (you were added to the docker group)",
-            None,
-            true,
-        ),
-        Daemon::NotAnswering => check(
-            Need::DockerRunning,
-            "Docker running",
-            State::Missing,
-            "Docker is installed but not answering",
-            Some("Start Docker and wait until it answers".to_string()),
-            true,
-        ),
-    }
+        true,
+    )
 }
 
-enum Container {
-    Running,
-    Stopped,
-    Absent,
-}
-
-fn container_state(env: &Env, name: &str) -> Container {
-    match probe(
-        env,
-        "docker",
-        &["inspect", "-f", "{{.State.Running}}", name],
-    ) {
-        Some(out) if out.success => {
-            if first_line(&out.stdout) == "true" {
-                Container::Running
-            } else {
-                Container::Stopped
-            }
-        }
-        _ => Container::Absent,
-    }
-}
-
-fn container_check(
-    env: &Env,
-    need: Need,
-    label: &'static str,
-    name: &str,
-    docker_up: bool,
-    create: &str,
-) -> Check {
-    if !docker_up {
-        return check(
-            need,
-            label,
-            State::Missing,
-            "needs Docker running",
-            None,
-            true,
-        );
-    }
-    match container_state(env, name) {
-        Container::Running => check(
-            need,
-            label,
-            State::Ok,
-            format!("container {name} running"),
-            None,
-            true,
-        ),
-        Container::Stopped => check(
-            need,
-            label,
-            State::Missing,
-            format!("container {name} stopped"),
-            Some(format!("Start the container {name}")),
-            true,
-        ),
-        Container::Absent => check(
-            need,
-            label,
-            State::Missing,
-            format!("container {name} not found"),
-            Some(create.to_string()),
-            true,
-        ),
-    }
-}
-
-/// Garage (optional: apid keeps the library's files locally without it). Its container, and its
-/// address and keys in keys.env, which is where apid reads them.
-fn garage(env: &Env, docker_up: bool) -> Check {
-    let (need, label) = (Need::Garage, "Garage");
-    if !docker_up {
-        return check(
-            need,
-            label,
-            State::Missing,
-            "needs Docker running",
-            None,
-            false,
-        );
-    }
-    let keys = keys_set(env, &GARAGE_KEYS);
-    match (container_state(env, GARAGE), keys) {
-        (Container::Absent, _) => check(
-            need,
-            label,
-            State::Missing,
-            format!("container {GARAGE} not found"),
-            Some(GARAGE_CREATE.to_string()),
-            false,
-        ),
-        (_, false) => check(
-            need,
-            label,
-            State::Blocked,
-            format!(
-                "container {GARAGE} exists but its keys are not in keys.env: remove the container \
-                 (docker rm -f {GARAGE}) and set it up again"
-            ),
-            None,
-            false,
-        ),
-        (Container::Running, true) => check(
-            need,
-            label,
-            State::Ok,
-            format!("container {GARAGE} running, keys in keys.env"),
-            None,
-            false,
-        ),
-        (Container::Stopped, true) => check(
-            need,
-            label,
-            State::Missing,
-            format!("container {GARAGE} stopped"),
-            Some(format!("Start the container {GARAGE}")),
-            false,
-        ),
-    }
-}
-
+/// This machine's hypervisor for the agents' VMs. Optional: never required, so a missing one is only
+/// reported.
 fn hypervisor(env: &Env) -> Check {
     let (state, detail) = hypervisor_state(env);
-    check(Need::Hypervisor, "Hypervisor", state, detail, None, false)
+    check(Need::Hypervisor, "Hypervisor", state, detail, false)
 }
 
 fn hypervisor_state(env: &Env) -> (State, String) {
@@ -418,6 +216,41 @@ fn hypervisor_state(env: &Env) -> (State, String) {
     )
 }
 
+/// The ports row for `wanted`, the ports of `mode`: free; held by AgentPlaza itself (see
+/// `running_here`); or held by something else, which blocks the start.
+fn ports(mode: Mode, wanted: &[u16]) -> Check {
+    let (state, detail) = match busy_port(wanted) {
+        None => (State::Ok, format!("{} free", port_list(wanted))),
+        Some(_) if running_here(mode) => {
+            (State::Ok, "AgentPlaza is already running here".to_string())
+        }
+        Some(port) => (
+            State::Blocked,
+            format!("port {port} is in use: stop what holds it"),
+        ),
+    };
+    check(Need::Ports, "Ports", state, detail, true)
+}
+
+/// Whether AgentPlaza's own services answer here, which makes a busy port its own: the hub's overview
+/// for a hub, the node's processes for a node, either for a local plaza.
+fn running_here(mode: Mode) -> bool {
+    match mode {
+        Mode::Local => plaza_running() || node_running(),
+        Mode::Hub => plaza_running(),
+        Mode::Node => node_running(),
+    }
+}
+
+/// The ports as a comma list: `7700, 8899, 19080`.
+fn port_list(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The first port of `ports` another process holds on 127.0.0.1.
 fn busy_port(ports: &[u16]) -> Option<u16> {
     ports
@@ -426,8 +259,8 @@ fn busy_port(ports: &[u16]) -> Option<u16> {
         .find(|port| TcpListener::bind(("127.0.0.1", *port)).is_err())
 }
 
-/// Whether AgentPlaza's own hub answers on 127.0.0.1:7700 (its overview names the agents): then
-/// the plaza is already running and its ports are held by it, not by something in the way.
+/// Whether AgentPlaza's own hub answers on 127.0.0.1:7700 (its overview names the agents): then the
+/// plaza is already running and its ports are held by it, not by something in the way.
 fn plaza_running() -> bool {
     use std::io::{Read, Write};
     use std::time::Duration;
@@ -450,96 +283,63 @@ fn plaza_running() -> bool {
     answer.starts_with("HTTP/1.") && answer.contains(" 200 ") && answer.contains("\"agents\"")
 }
 
-fn ports() -> Check {
-    if busy_port(&PORTS).is_some() && plaza_running() {
-        return check(
-            Need::Ports,
-            "Ports",
-            State::Ok,
-            "AgentPlaza is already running here",
-            None,
-            true,
-        );
-    }
-    match busy_port(&PORTS) {
-        Some(port) => check(
-            Need::Ports,
-            "Ports",
-            State::Blocked,
-            format!("port {port} is in use: stop what holds it"),
-            None,
-            true,
-        ),
-        None => check(
-            Need::Ports,
-            "Ports",
-            State::Ok,
-            "7700, 8899, 19080 free",
-            None,
-            true,
-        ),
-    }
+/// Whether this machine's node runs: one of the processes its plan names (`node::find_plan_pids`). A
+/// machine that has not joined a hub has no node.
+fn node_running() -> bool {
+    let Some((base, count)) = node::identity() else {
+        return false;
+    };
+    node::plan(base, count, &node::Layout::current())
+        .iter()
+        .any(|process| !node::find_plan_pids(process).is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::mock::{Mock, scratch};
     use std::fs;
 
-    /// Hypervisor and ports rows for the tests: fixed, so no test probes this machine.
-    fn fixed_rows() -> (Check, Check) {
-        (
-            check(
-                Need::Hypervisor,
-                "Hypervisor",
-                State::Warning,
-                "fixed for the test",
-                None,
-                false,
-            ),
-            check(
-                Need::Ports,
-                "Ports",
-                State::Ok,
-                "fixed for the test",
-                None,
-                true,
-            ),
+    /// An empty directory for a test's files: `apz-setup-<tag>` under the system's temp dir (each test
+    /// has its own tag).
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("apz-setup-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A directory holding the binaries `names`, as the plaza ships them.
+    fn shipped(tag: &str, names: &[&str]) -> PathBuf {
+        let dir = scratch(tag);
+        for name in names {
+            fs::write(dir.join(apz_os::process::exe(name)), b"").unwrap();
+        }
+        dir
+    }
+
+    /// A ports row that does not probe the machine.
+    fn fixed_ports(_wanted: &[u16]) -> Check {
+        check(Need::Ports, "Ports", State::Ok, "fixed for the test", true)
+    }
+
+    /// A hypervisor row that does not probe the machine.
+    fn fixed_hypervisor() -> Check {
+        check(
+            Need::Hypervisor,
+            "Hypervisor",
+            State::Warning,
+            "fixed for the test",
+            false,
         )
     }
 
-    /// Runs the checks against `runner` with keys.env in `dir` (`keys` is its text, if any).
-    fn rows(runner: &Mock, dir: &Path, keys: Option<&str>) -> Vec<Check> {
-        if let Some(keys) = keys {
-            fs::write(dir.join("keys.env"), keys).unwrap();
-        }
-        let env = Env {
-            runner,
-            keys: Some(dir.join("keys.env")),
-            user: Some("tester".into()),
-        };
-        let (hypervisor, ports) = fixed_rows();
-        check_with(&env, &[], hypervisor, ports)
+    fn needs(checks: &[Check]) -> Vec<Need> {
+        checks.iter().map(|check| check.need).collect()
     }
 
     fn row(checks: &[Check], need: Need) -> &Check {
-        checks.iter().find(|c| c.need == need).unwrap()
+        checks.iter().find(|check| check.need == need).unwrap()
     }
-
-    /// A Docker that is installed and answers, with `inspect` answering `inspect`.
-    fn docker_up(inspect: Option<Output>) -> Mock {
-        Mock::new(move |_, args| match args.first() {
-            Some(&"--version") => Output::ok("Docker version 27.1.1, build abc\n"),
-            Some(&"info") => Output::ok("27.1.1\n"),
-            Some(&"inspect") => inspect
-                .clone()
-                .unwrap_or_else(|| Output::failed("No such object")),
-            _ => Output::ok(""),
-        })
-    }
-
-    const ALL_GARAGE_KEYS: &str = "APZ_S3_ENDPOINT=http://127.0.0.1:3900\nAPZ_S3_BUCKET=agentplaza\nAPZ_S3_REGION=garage\nAPZ_S3_ACCESS_KEY=GK1\nAPZ_S3_SECRET_KEY=s1\n";
 
     #[test]
     fn a_bound_port_counts_as_busy() {
@@ -550,8 +350,106 @@ mod tests {
     }
 
     #[test]
-    fn services_are_blocked_when_a_binary_is_missing() {
-        let check = services(&[]);
+    fn each_mode_asks_for_its_own_services_and_ports() {
+        assert_eq!(services_for(Mode::Hub), &["apid"]);
+        assert_eq!(services_for(Mode::Local), &["apid", "vsockd", "noded"]);
+        assert_eq!(services_for(Mode::Node), &["apz-link", "vsockd", "noded"]);
+        assert_eq!(ports_for(Mode::Hub), &[7700u16]);
+        assert_eq!(ports_for(Mode::Local), &[7700u16, 8899, 19080]);
+        assert_eq!(ports_for(Mode::Node), &[7701u16, 8899, 19080]);
+    }
+
+    #[test]
+    fn a_hub_only_check_has_no_node_daemon_no_hypervisor_and_no_node_port() {
+        let dir = shipped("checks-hub", &["apid", "vsockd", "noded"]);
+        let checks = check_with(
+            Mode::Hub,
+            std::slice::from_ref(&dir),
+            || panic!("a hub-only check must not probe the hypervisor"),
+            |wanted| {
+                assert_eq!(wanted, &[7700u16], "a hub asks for its own port only");
+                fixed_ports(wanted)
+            },
+        );
+        assert_eq!(needs(&checks), [Need::Services, Need::Ports]);
+        let services = row(&checks, Need::Services);
+        assert_eq!(services.state, State::Ok, "{}", services.detail);
+        assert!(services.detail.starts_with("apid"), "{}", services.detail);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_local_check_has_the_services_the_hypervisor_and_both_ports() {
+        let dir = shipped("checks-local", &["apid", "vsockd", "noded"]);
+        let checks = check_with(
+            Mode::Local,
+            std::slice::from_ref(&dir),
+            fixed_hypervisor,
+            |wanted| {
+                assert_eq!(wanted, &[7700u16, 8899, 19080]);
+                fixed_ports(wanted)
+            },
+        );
+        assert_eq!(
+            needs(&checks),
+            [Need::Services, Need::Hypervisor, Need::Ports]
+        );
+        assert_eq!(row(&checks, Need::Services).state, State::Ok);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_node_check_has_no_hub_port_and_no_apid() {
+        let dir = shipped("checks-node", &["apz-link", "vsockd", "noded"]);
+        let checks = check_with(
+            Mode::Node,
+            std::slice::from_ref(&dir),
+            fixed_hypervisor,
+            |wanted| {
+                assert!(
+                    !wanted.contains(&7700),
+                    "a node-only check does not ask for the hub's port: {wanted:?}"
+                );
+                fixed_ports(wanted)
+            },
+        );
+        assert_eq!(
+            needs(&checks),
+            [Need::Services, Need::Hypervisor, Need::Ports]
+        );
+        let services = row(&checks, Need::Services);
+        assert_eq!(services.state, State::Ok, "{}", services.detail);
+        assert!(!services.detail.contains("apid"), "{}", services.detail);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn each_mode_looks_for_its_own_services_only() {
+        let hub = shipped("checks-services-hub", &["apid"]);
+        assert_eq!(
+            services(Mode::Hub, std::slice::from_ref(&hub)).state,
+            State::Ok
+        );
+        // A node also needs apz-link: apid alone does not make one.
+        let node = services(Mode::Node, std::slice::from_ref(&hub));
+        assert_eq!(node.state, State::Blocked, "{}", node.detail);
+        assert!(node.detail.contains("apz-link"), "{}", node.detail);
+        let _ = fs::remove_dir_all(&hub);
+
+        let plaza = shipped("checks-services-plaza", &["apid", "vsockd", "noded"]);
+        assert_eq!(
+            services(Mode::Local, std::slice::from_ref(&plaza)).state,
+            State::Ok
+        );
+        let node = services(Mode::Node, std::slice::from_ref(&plaza));
+        assert_eq!(node.state, State::Blocked, "{}", node.detail);
+        assert!(node.detail.contains("apz-link"), "{}", node.detail);
+        let _ = fs::remove_dir_all(&plaza);
+    }
+
+    #[test]
+    fn a_missing_service_blocks_with_no_fix_and_names_it() {
+        let check = services(Mode::Local, &[]);
         assert_eq!(check.state, State::Blocked);
         assert!(check.detail.starts_with("missing: "), "{}", check.detail);
         assert!(check.detail.contains("apid"), "{}", check.detail);
@@ -559,172 +457,76 @@ mod tests {
     }
 
     #[test]
-    fn check_with_lists_every_need_in_order() {
-        let dir = scratch("checks-order");
-        let needs: Vec<Need> = rows(&docker_up(None), &dir, None)
-            .iter()
-            .map(|c| c.need)
-            .collect();
-        assert_eq!(
-            needs,
-            vec![
-                Need::Services,
-                Need::Docker,
-                Need::DockerRunning,
-                Need::Postgres,
-                Need::Garage,
-                Need::Hypervisor,
-                Need::Ports,
-            ]
-        );
-        let _ = fs::remove_dir_all(&dir);
+    fn the_hypervisor_row_is_never_required() {
+        let env = Env::system();
+        let checks = check_with(Mode::Local, &[], || hypervisor(&env), fixed_ports);
+        assert!(!row(&checks, Need::Hypervisor).required);
     }
 
     #[test]
-    fn without_docker_the_install_comes_first_and_the_containers_wait_for_it() {
-        let dir = scratch("checks-nodocker");
-        let mock = Mock::new(|_, _| Output::failed("not found"));
-        let checks = rows(&mock, &dir, None);
-        assert_eq!(row(&checks, Need::Docker).state, State::Missing);
-        assert!(row(&checks, Need::Docker).fix.is_some());
-        assert_eq!(
-            row(&checks, Need::DockerRunning).detail,
-            "install Docker first"
-        );
-        for need in [Need::Postgres, Need::Garage] {
-            let check = row(&checks, need);
-            assert_eq!(check.detail, "needs Docker running", "{need:?}");
-            assert!(
-                check.fix.is_none(),
-                "{need:?}: nothing to run until Docker answers"
-            );
-        }
-        assert_eq!(
-            mock.calls(),
-            vec!["docker --version"],
-            "no daemon or container probe without Docker"
-        );
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn garage_check_follows_its_container_and_its_keys() {
-        // garage_is_ok_when_its_container_runs_and_its_keys_are_in_keys_env: a running
-        // container with its keys in keys.env is ok, optional, and needs no fix.
-        {
-            let dir = scratch("checks-garage-ok");
-            let mock = docker_up(Some(Output::ok("true\n")));
-            let checks = rows(&mock, &dir, Some(ALL_GARAGE_KEYS));
-            let garage = row(&checks, Need::Garage);
-            assert_eq!(garage.state, State::Ok);
-            assert!(!garage.required, "apid keeps files locally without Garage");
-            assert!(garage.fix.is_none());
-            let _ = fs::remove_dir_all(&dir);
-        }
-        // a_missing_garage_container_is_missing_with_its_fix: with no container the check is
-        // Missing, and its detail and fix name agentplaza-garage.
-        {
-            let dir = scratch("checks-garage-absent");
-            let checks = rows(&docker_up(None), &dir, None);
-            let garage = row(&checks, Need::Garage);
-            assert_eq!(garage.state, State::Missing);
-            assert!(
-                garage.detail.contains("agentplaza-garage not found"),
-                "{}",
-                garage.detail
-            );
-            assert!(garage.fix.as_deref().unwrap().contains("agentplaza-garage"));
-            let _ = fs::remove_dir_all(&dir);
-        }
-        // a_stopped_garage_is_started_and_a_running_one_without_its_keys_is_blocked: a stopped
-        // container is Missing with a start fix; a running one without its keys is Blocked.
-        {
-            let dir = scratch("checks-garage-stopped");
-            let stopped = rows(
-                &docker_up(Some(Output::ok("false\n"))),
-                &dir,
-                Some(ALL_GARAGE_KEYS),
-            );
-            assert_eq!(row(&stopped, Need::Garage).state, State::Missing);
-            assert_eq!(
-                row(&stopped, Need::Garage).fix.as_deref(),
-                Some("Start the container agentplaza-garage")
-            );
-
-            let running_no_keys = rows(
-                &docker_up(Some(Output::ok("true\n"))),
-                &dir,
-                Some("OTHER=1\n"),
-            );
-            let garage = row(&running_no_keys, Need::Garage);
-            assert_eq!(garage.state, State::Blocked);
-            assert!(
-                garage.detail.contains("docker rm -f agentplaza-garage"),
-                "{}",
-                garage.detail
-            );
-            assert!(garage.fix.is_none());
-            let _ = fs::remove_dir_all(&dir);
-        }
-    }
-
-    #[test]
-    fn postgres_reports_its_container() {
-        let dir = scratch("checks-containers");
-        let mock = docker_up(Some(Output::ok("true\n")));
-        let checks = rows(&mock, &dir, None);
-        assert_eq!(row(&checks, Need::Postgres).state, State::Ok);
-        let calls = mock.calls();
+    fn check_all_for_a_hub_asks_for_no_node_and_no_hypervisor() {
+        let checks = check_all(Mode::Hub);
+        assert_eq!(needs(&checks), [Need::Services, Need::Ports]);
+        let ports = row(&checks, Need::Ports);
         assert!(
-            calls.contains(&"docker inspect -f {{.State.Running}} agentplaza-postgres".to_string())
+            !ports.detail.contains("8899") && !ports.detail.contains("19080"),
+            "{}",
+            ports.detail
         );
-        assert!(calls.contains(&"docker info --format {{.ServerVersion}}".to_string()));
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_denied_daemon_is_blocked_on_linux_only() {
-        let daemon = Daemon::Denied;
-        let check = docker_running(true, &daemon);
-        if cfg!(target_os = "linux") {
-            assert_eq!(check.state, State::Blocked);
-        }
+    fn check_all_for_a_node_asks_for_no_hub_port() {
+        let checks = check_all(Mode::Node);
         assert_eq!(
-            docker_running(false, &Daemon::NotAnswering).detail,
-            "install Docker first"
+            needs(&checks),
+            [Need::Services, Need::Hypervisor, Need::Ports]
         );
+        let ports = row(&checks, Need::Ports);
+        assert!(!ports.detail.contains("7700"), "{}", ports.detail);
     }
 
     #[test]
-    fn fixable_lists_only_the_missing_rows_with_a_fix() {
-        let checks = vec![
-            check(Need::Docker, "Docker", State::Ok, "27", None, true),
-            check(
-                Need::Postgres,
-                "Postgres",
-                State::Missing,
-                "not found",
-                Some("Create it".into()),
-                true,
-            ),
-            check(
-                Need::Services,
-                "AgentPlaza services",
-                State::Blocked,
-                "missing",
-                None,
-                true,
-            ),
-            check(
-                Need::Garage,
-                "Garage",
-                State::Missing,
-                "stopped",
-                Some("Start it".into()),
-                false,
-            ),
-        ];
-        let fixable: Vec<Need> = crate::fixable(&checks).iter().map(|c| c.need).collect();
-        assert_eq!(fixable, vec![Need::Postgres, Need::Garage]);
+    fn the_setup_names_no_docker_database_or_object_store_setting() {
+        // Every row of every mode, and every answer of fix, with the plaza's binaries present. (The
+        // scratch directory's name must not contain a banned word: its path can show in a row.)
+        let dir = shipped("checks-scan", &["apid", "vsockd", "noded", "apz-link"]);
+        let env = Env::system();
+        let mut said = Vec::new();
+        for mode in [Mode::Local, Mode::Hub, Mode::Node] {
+            let checks = check_with(
+                mode,
+                std::slice::from_ref(&dir),
+                || hypervisor(&env),
+                |wanted| ports(mode, wanted),
+            );
+            for check in checks {
+                said.push(check.detail);
+                said.extend(check.fix);
+            }
+        }
+        for need in Need::ALL {
+            let mut logged = Vec::new();
+            if let Err(err) = crate::fix(need, &mut |line| logged.push(line)) {
+                said.push(err);
+            }
+            said.extend(logged);
+        }
+        for text in &said {
+            // The one place Docker may be named is the statement that it is not needed.
+            let lower = text
+                .to_ascii_lowercase()
+                .replace("no docker or database needed", "");
+            for banned in [
+                "docker",
+                "postgres",
+                "garage",
+                "apz_database_url",
+                "apz_s3_",
+            ] {
+                assert!(!lower.contains(banned), "{text:?} names {banned}");
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 }

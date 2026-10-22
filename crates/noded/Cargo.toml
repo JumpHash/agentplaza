@@ -12,6 +12,8 @@ apz-http.workspace = true
 # metrics and timing lines (apz_metrics::prom).
 apz-metrics.workspace = true
 apz-os = { path = "../apz-os" }
+# The OS sandbox a trainer job runs in (`train`): Seatbelt, Landlock or an AppContainer.
+apz-sandbox = { path = "../apz-sandbox" }
 apz-station = { path = "../apz-station" }
 apz-uds = { path = "../apz-uds" }
 # Transfers carry their chunks as base64 in JSON (`migrate`).

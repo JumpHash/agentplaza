@@ -15,7 +15,6 @@
 //!               updated_at timestamptz not null default now())
 //!   transcript(cid bigint, seq bigint, work bigint, kind text, at_ms bigint, data jsonb,
 //!              primary key (cid, seq))
-//!   infraction(id bigserial, cid bigint, law text, at_ms bigint, tool text, detail text)
 //!   ide_audit(seq bigserial, at_ms bigint, workspace text, kind text, data jsonb)
 //!              (append-only: the owner's IDE actions, migration 0008)
 //!   station_audit(seq bigserial, at_ms bigint, station text, agent bigint, kind text, data jsonb)
@@ -35,10 +34,7 @@ use crate::state::App;
 pub const COMPONENTS: &[&str] = &[
     "treasury",
     "tasks",
-    "agora",
     "social",
-    "council",
-    "bonds",
     "projects",
     "maintenance",
     "environments",
@@ -52,14 +48,11 @@ pub const COMPONENTS: &[&str] = &[
     "library",
     "deliverables",
     "connectors",
-    "names",
     "settings",
     "appearance",
     "providers",
     "spawned",
-    "laws",
     "rules",
-    "society",
     "work",
     "control",
     "custom_roles",
@@ -68,10 +61,8 @@ pub const COMPONENTS: &[&str] = &[
     "stations",
     "prices",
     "usage",
-    "looks",
     "foundry",
     "models",
-    "sanctions",
     "vault",
     "mcp",
 ];
@@ -92,10 +83,7 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
     match component {
         "treasury" => app.plaza.treasury.snapshot(),
         "tasks" => app.plaza.tasks.snapshot(),
-        "agora" => app.plaza.agora.snapshot(),
         "social" => app.plaza.social.snapshot(),
-        "council" => app.plaza.council.snapshot(),
-        "bonds" => app.bonds.snapshot(),
         "projects" => app.projects.snapshot(),
         "members" => app.members.snapshot(),
         "conversations" => app.conversations.snapshot(),
@@ -107,14 +95,11 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "library" => app.library.snapshot(),
         "deliverables" => app.deliverables.snapshot(),
         "connectors" => app.connectors.snapshot(),
-        "names" => app.names.snapshot(),
         "settings" => app.settings.snapshot(),
         "appearance" => app.appearance.snapshot(),
         "providers" => app.providers.snapshot(),
         "spawned" => app.spawned.snapshot(),
-        "laws" => app.laws.snapshot(),
         "rules" => app.laws.rules_snapshot(),
-        "society" => app.society.snapshot(),
         "work" => app.work.snapshot(),
         "control" => app.control.snapshot(),
         "custom_roles" => app.custom_roles.snapshot(),
@@ -125,10 +110,8 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "stations" => app.stations.snapshot(),
         "prices" => app.prices.snapshot(),
         "usage" => app.usage.snapshot(),
-        "looks" => app.looks.snapshot(),
         "foundry" => app.foundry.snapshot(),
         "models" => app.models.snapshot(),
-        "sanctions" => crate::sanctions::snapshot(app),
         "vault" => app.vault.snapshot(),
         "mcp" => app.mcp.store.snapshot(),
         _ => String::new(),
@@ -140,10 +123,7 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
     match component {
         "treasury" => app.plaza.treasury.restore(json),
         "tasks" => app.plaza.tasks.restore(json),
-        "agora" => app.plaza.agora.restore(json),
         "social" => app.plaza.social.restore(json),
-        "council" => app.plaza.council.restore(json),
-        "bonds" => app.bonds.restore(json),
         "projects" => app.projects.restore(json),
         "members" => app.members.restore(json),
         "conversations" => app.conversations.restore(json),
@@ -155,14 +135,11 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "library" => app.library.restore(json),
         "deliverables" => app.deliverables.restore(json),
         "connectors" => app.connectors.restore(json),
-        "names" => app.names.restore(json),
         "settings" => app.settings.restore(json),
         "appearance" => app.appearance.restore(json),
         "providers" => app.providers.restore(json),
         "spawned" => app.spawned.restore(json),
-        "laws" => app.laws.restore(json),
         "rules" => app.laws.rules_restore(json),
-        "society" => app.society.restore(json),
         "work" => app.work.restore(json),
         "control" => app.control.restore(json),
         "custom_roles" => app.custom_roles.restore(json),
@@ -173,10 +150,8 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "stations" => app.stations.restore(json),
         "prices" => app.prices.restore(json),
         "usage" => app.usage.restore(json),
-        "looks" => app.looks.restore(json),
         "foundry" => app.foundry.restore(json),
         "models" => app.models.restore(json),
-        "sanctions" => crate::sanctions::restore(app, json),
         "vault" => app.vault.restore(json),
         "mcp" => app.mcp.store.restore(json),
         other => Err(format!("unknown component {other}")),
@@ -547,10 +522,9 @@ pub struct Db {
     held: Mutex<BTreeSet<String>>,
     /// Shared with the transcript writer, which logs through it too.
     append_logged: Arc<Mutex<Option<Instant>>>,
-    infraction_logged: Mutex<Option<Instant>>,
     ide_audit_logged: Mutex<Option<Instant>>,
     station_audit_logged: Mutex<Option<Instant>>,
-    /// The file fallback for transcripts, infractions and the IDE audit (see `attach_files`).
+    /// The file fallback for transcripts and the IDE audit (see `attach_files`).
     files: std::sync::OnceLock<files::Files>,
     /// Transcript records Postgres has not taken yet, written again oldest first (see `hold_row`). Shared with the
     /// transcript writer, which drains it.
@@ -569,7 +543,6 @@ impl Db {
             stored: Mutex::new(BTreeMap::new()),
             held: Mutex::new(BTreeSet::new()),
             append_logged: Arc::new(Mutex::new(None)),
-            infraction_logged: Mutex::new(None),
             ide_audit_logged: Mutex::new(None),
             station_audit_logged: Mutex::new(None),
             files: std::sync::OnceLock::new(),
@@ -641,9 +614,8 @@ impl Db {
         self.client.is_some()
     }
 
-    /// Makes `state_dir` the home of the file fallback: with no Postgres this run, transcripts,
-    /// infractions and the IDE audit are written to `transcripts/`, `infractions.jsonl` and
-    /// `ide-audit.jsonl` there (see `db::files`).
+    /// Makes `state_dir` the home of the file fallback: with no Postgres this run, transcripts and
+    /// the IDE audit are written to `transcripts/` and `ide-audit.jsonl` there (see `db::files`).
     pub fn attach_files(&self, state_dir: &std::path::Path) {
         let _ = self.files.set(files::Files::open(state_dir));
     }
@@ -726,7 +698,7 @@ impl Db {
         }
     }
 
-    /// A database with no Postgres whose transcripts, infractions and IDE audit live under `state_dir`.
+    /// A database with no Postgres whose transcripts and IDE audit live under `state_dir`.
     #[cfg(test)]
     pub fn files_only(state_dir: &std::path::Path) -> Db {
         let db = Db::with(String::new(), None);
@@ -1029,100 +1001,8 @@ impl Db {
     }
 }
 
-/// One infraction (a law refused an agent's act), as stored and as the console shows it.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct Infraction {
-    pub cid: u64,
-    pub law: String,
-    pub at_ms: u64,
-    pub tool: String,
-    pub detail: String,
-}
-
-impl Db {
-    /// Appends one infraction (table `infraction`, created with the schema). A failed append is
-    /// dropped; the failure is logged at most once a minute.
-    pub fn append_infraction(&self, infraction: &Infraction) {
-        if let Some(files) = self.file_store() {
-            if let Err(e) = files.append_infraction(infraction) {
-                let mut logged = self
-                    .infraction_logged
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                if due(*logged) {
-                    *logged = Some(Instant::now());
-                    eprintln!(
-                        "db: infraction append to files failed: {e} (dropped; logged once a minute)"
-                    );
-                }
-            }
-            return;
-        }
-        if !self.enabled() {
-            return;
-        }
-        let (cid, at_ms) = (infraction.cid as i64, infraction.at_ms as i64);
-        let law = &infraction.law;
-        let tool = &infraction.tool;
-        let detail = &infraction.detail;
-        if let Err(e) =
-            self.run(|c| c.execute(sql::INFRACTION_APPEND, &[&cid, law, &at_ms, tool, detail]))
-        {
-            let mut logged = self
-                .infraction_logged
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if due(*logged) {
-                *logged = Some(Instant::now());
-                eprintln!("db: infraction append failed: {e} (dropped; logged once a minute)");
-            }
-        }
-    }
-
-    /// Infractions, newest first: one agent's (`Some(cid)`) or the plaza's.
-    pub fn infractions(&self, cid: Option<u64>, limit: i64) -> Vec<Infraction> {
-        if let Some(files) = self.file_store() {
-            return files.infractions(cid, limit).unwrap_or_else(|e| {
-                eprintln!("db: infraction read from files failed: {e}");
-                Vec::new()
-            });
-        }
-        if !self.enabled() {
-            return Vec::new();
-        }
-        let rows = match cid {
-            Some(cid) => {
-                let cid = cid as i64;
-                self.run(|c| c.query(sql::INFRACTION_PAGE_BY_CID, &[&cid, &limit]))
-            }
-            None => self.run(|c| c.query(sql::INFRACTION_PAGE, &[&limit])),
-        };
-        match rows {
-            Ok(rows) => rows
-                .iter()
-                .map(|r| Infraction {
-                    cid: r.get::<_, i64>(0) as u64,
-                    law: r.get(1),
-                    at_ms: r.get::<_, i64>(2) as u64,
-                    tool: r.get(3),
-                    detail: r.get(4),
-                })
-                .collect(),
-            Err(e) => {
-                eprintln!("db: infraction read failed: {e}");
-                Vec::new()
-            }
-        }
-    }
-
-    /// Whether Postgres holds no infraction at all (the one-time import of the files' violations).
-    fn no_infractions(&self) -> bool {
-        self.infractions(None, 1).is_empty()
-    }
-}
-
 /// The IDE audit: one owner action on an agent workspace (`ide.rs` builds the row). The row is the table's
-/// data and its `at_ms`, `workspace` and `kind` are its columns. Unlike the infractions, a failed append is
+/// data and its `at_ms`, `workspace` and `kind` are its columns. A failed append is
 /// an error: the owner's action has happened, so the route answers with it (see `append_ide_audit`).
 impl Db {
     /// Appends one owner action to the IDE audit (table `ide_audit`, or the file fallback). A failed
@@ -1280,22 +1160,20 @@ impl Db {
 /// At start: restore every component that Postgres holds; a component Postgres does not
 /// hold yet keeps what its own files loaded (the first run imports them). Logs each outcome.
 pub fn restore_all(app: &App) {
-    wire_violations(app);
     if app.db.enabled() {
         restore_components(app);
         import_ide_audit(app);
     } else {
         eprintln!(
-            "db: no APZ_DATABASE_URL; components stay in their files; transcripts, infractions and the IDE audit go to files under the state dir"
+            "db: no APZ_DATABASE_URL; components stay in their files; transcripts and the IDE audit go to files under the state dir"
         );
         app.db.attach_files(&app.config.state_dir);
-        crate::sanctions::migrate(app);
     }
-    restore_transcripts_and_infractions(app);
+    restore_transcripts(app);
 }
 
 /// The IDE audit rows the state directory's file kept before Postgres held any: imported once, oldest
-/// first, as the infractions are (a Postgres run whose `ide_audit` is empty and whose file has rows).
+/// first (a Postgres run whose `ide_audit` is empty and whose file has rows).
 fn import_ide_audit(app: &App) {
     match app.db.ide_audit(None, 1) {
         Ok(rows) if rows.is_empty() => {}
@@ -1338,9 +1216,6 @@ fn restore_components(app: &App) {
             // A failed read holds the component; its files stay the copy, not overwritten.
             None if app.db.is_held(name) => {}
             None => {
-                if name == "sanctions" {
-                    crate::sanctions::migrate(app);
-                }
                 eprintln!("db: {name} not in Postgres yet; importing");
                 if let Err(e) = app.db.store(name, &snapshot_of(app, name)) {
                     eprintln!("db: import of {name} failed: {e}");
@@ -1393,9 +1268,9 @@ fn reconcile_escrows(app: &App) -> usize {
     stranded.len()
 }
 
-/// Loads the stored transcripts and infractions (from Postgres, or the files when there is none),
-/// then writes every record from now on to the same place.
-fn restore_transcripts_and_infractions(app: &App) {
+/// Loads the stored transcripts (from Postgres, or the files when there is none), then writes every
+/// record from now on to the same place.
+fn restore_transcripts(app: &App) {
     for cid in app.db.transcript_cids() {
         app.transcripts.preload(cid, app.db.transcript(cid, 500));
     }
@@ -1403,41 +1278,6 @@ fn restore_transcripts_and_infractions(app: &App) {
     app.transcripts.set_sink(Box::new(
         move |cid: u64, seq: u64, work: u64, kind: &str, at_ms: u64, data: &Value| {
             db.append_transcript(cid, seq, work, kind, at_ms, data)
-        },
-    ));
-    // Infractions recorded before Postgres held any (from the laws' own file) are imported once.
-    if app.db.no_infractions() {
-        for (cid, v) in app.laws.all_violations() {
-            let tool = String::new();
-            app.db.append_infraction(&Infraction {
-                cid,
-                law: v.law,
-                at_ms: v.at_ms,
-                tool,
-                detail: v.detail,
-            });
-        }
-    }
-}
-
-/// Every recorded violation goes to Postgres (when enabled) and to the sanctions. Wired with or
-/// without a database, so a violation is sanctioned whether or not the state lives in Postgres.
-fn wire_violations(app: &App) {
-    let db = Arc::clone(&app.db);
-    let me = app.handle();
-    app.laws.set_sink(Box::new(
-        move |cid: u64, v: &crate::laws::Violation, tool: &str| {
-            db.append_infraction(&Infraction {
-                cid,
-                law: v.law.clone(),
-                at_ms: v.at_ms,
-                tool: tool.to_string(),
-                detail: v.detail.clone(),
-            });
-            if let Some(app) = me.upgrade() {
-                crate::laws::count_infraction(&app.metrics.registry, cid, &v.law);
-                crate::sanctions::on_violation(&app, cid, v, tool);
-            }
         },
     ));
 }
@@ -1449,9 +1289,9 @@ fn write_pass_with(app: &App, mut on_error: impl FnMut(&str, &str)) {
     app.db.flush_transcripts();
     // A run without Postgres has no component stores to write; its files are only synced.
     let components: &[&str] = if app.db.enabled() { COMPONENTS } else { &[] };
-    // The ledgers name each other (a task names its escrow, the agora names tasks), so they are snapshotted back to
+    // The ledgers name each other (a task names its escrow in the treasury), so they are snapshotted back to
     // back, before any store, and stored in one transaction: a stop cannot persist them from different instants.
-    const LEDGERS: &[&str] = &["treasury", "tasks", "agora"];
+    const LEDGERS: &[&str] = &["treasury", "tasks"];
     let ledgers: Vec<(&str, String)> = components
         .iter()
         .copied()
@@ -1576,7 +1416,6 @@ mod tests {
         let items = [
             ("treasury", r#"{"entries":[1]}"#.to_string()),
             ("tasks", r#"{"tasks":[]}"#.to_string()),
-            ("agora", r#"{"calls":[]}"#.to_string()),
         ];
         db.store_many(&items).expect("one transaction");
         for (name, json) in &items {
@@ -1742,26 +1581,6 @@ mod tests {
         assert_eq!(rows[1].2, "test");
         assert_eq!(rows[1].4, data);
 
-        let infraction = Infraction {
-            cid,
-            law: "law.test".into(),
-            at_ms: 10,
-            tool: "tool.test".into(),
-            detail: "first".into(),
-        };
-        let newer = Infraction {
-            at_ms: 11,
-            detail: "second".into(),
-            ..infraction.clone()
-        };
-        db.append_infraction(&infraction);
-        db.append_infraction(&newer);
-        assert_eq!(
-            db.infractions(Some(cid), 10),
-            vec![newer.clone(), infraction.clone()]
-        );
-        assert_eq!(db.infractions(None, 1), vec![newer]);
-
         db.delete_transcript(cid);
         assert!(db.transcript(cid, 500).is_empty());
         assert!(!db.transcript_cids().contains(&cid));
@@ -1811,33 +1630,6 @@ mod tests {
         );
         assert!(db.transcript(cid, 0).is_empty());
         assert!(db.transcript_cids().contains(&cid));
-
-        let first = Infraction {
-            cid,
-            law: "law.test".into(),
-            at_ms: 50,
-            tool: "tool.test".into(),
-            detail: "first".into(),
-        };
-        let second = Infraction {
-            at_ms: 60,
-            detail: "second".into(),
-            ..first.clone()
-        };
-        // Same at_ms as `second`: the later record (higher id) comes first.
-        let third = Infraction {
-            detail: "third".into(),
-            ..second.clone()
-        };
-        for row in [&first, &second, &third] {
-            db.append_infraction(row);
-        }
-        assert_eq!(
-            db.infractions(Some(cid), 10),
-            vec![third.clone(), second.clone(), first.clone()]
-        );
-        assert_eq!(db.infractions(Some(cid), 1), vec![third.clone()]);
-        assert_eq!(db.infractions(None, 10), vec![third, second, first]);
 
         // The IDE audit: newest first by at_ms (a tie goes to the later row), filtered by workspace.
         let (ws, other) = (format!("agent:{cid}"), format!("agent:{}", cid + 1));

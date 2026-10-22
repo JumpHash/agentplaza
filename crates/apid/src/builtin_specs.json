@@ -804,81 +804,6 @@
       "additionalProperties": false
     }
   },
-  "plaza_bid": {
-    "description": "Bid a price on an open call (a task with a role).",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "task": {
-          "type": "string"
-        },
-        "price": {
-          "type": "integer",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "task",
-        "price"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "plaza_vote": {
-    "description": "Cast your seat's vote on a council motion, with a reason.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "motion": {
-          "type": "string"
-        },
-        "vote": {
-          "type": "string",
-          "enum": [
-            "yes",
-            "no",
-            "abstain"
-          ]
-        },
-        "reason": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "motion",
-        "vote",
-        "reason"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "plaza_propose": {
-    "description": "Propose a council motion of a given kind.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "kind": {
-          "type": "string",
-          "enum": [
-            "priority",
-            "budget_move",
-            "town_proposal",
-            "mayor_replacement",
-            "law_proposal",
-            "other"
-          ]
-        },
-        "text": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "kind",
-        "text"
-      ],
-      "additionalProperties": false
-    }
-  },
   "plaza_agents": {
     "description": "List the connected agents with their cids and roles.",
     "input_schema": {
@@ -1212,21 +1137,6 @@
       },
       "required": [
         "id"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "plaza_set_name": {
-    "description": "Set your own name: 2 to 16 letters, at most one inner space or hyphen. Names are unique and cannot be role names.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "name"
       ],
       "additionalProperties": false
     }

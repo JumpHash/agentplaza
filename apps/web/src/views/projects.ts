@@ -7,7 +7,7 @@ import '../styles/proto/projects.css';
 import { api, PROJECT_STAGES, type Agent, type Project, type ProjectCritique, type ProjectDoc, type ProjectStage, type Task } from '../api';
 import { href, hrefIn } from '../router';
 import { openIde } from '../ide/open';
-import { on } from '../store';
+import { on, RESYNC } from '../store';
 import { ago, attempt, badge, button, card, field, modal, select, textarea, toast, type Tone } from '../ui/components';
 import { openNewProject } from '../ui/new-project';
 import { isLive, refreshProjects } from '../scope';
@@ -574,7 +574,23 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   };
 
   // Project and task events bring new documents, critiques and stages; the redraw is a fresh read.
-  const offs: (() => void)[] = [on('project', schedule), on('task', schedule)];
+  const offs: (() => void)[] = [on('project', schedule), on('task', schedule), on(RESYNC, schedule)];
+  // The last read paints at once; the fresh one (asked just below) replaces it.
+  if (id) {
+    const kept = api.project.cached(id);
+    if (kept) {
+      current = kept;
+      loaded = true;
+      draw();
+    }
+  } else {
+    const kept = api.projects.cached();
+    if (kept) {
+      list = kept;
+      loaded = true;
+      draw();
+    }
+  }
   void reload();
 
   return () => {

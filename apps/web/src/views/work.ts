@@ -9,7 +9,7 @@ import '../styles/proto/work.css';
 import { scope } from '../scope';
 import { api, PROJECT_STAGES, type AgentStep, type GraphTask, type Project, type ProjectGraph, type Task } from '../api';
 import { loadGraph, type GraphLayout, type Layout } from '../graph/wasm';
-import { agentName, roleLabel } from '../roles';
+import { agentLabel, agentName, roleLabel } from '../roles';
 import { go, href } from '../router';
 import { agents, on } from '../store';
 import { attempt, badge, button, type Tone } from '../ui/components';
@@ -156,7 +156,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   const nameOf = (cid: number): string => {
     const a = agents.get().find((x) => x.cid === cid);
-    return a ? agentName(a) : `agent ${cid}`;
+    return a ? agentName(a) : agentLabel(cid);
   };
   const stepOf = (cid: number): AgentStep | null | undefined =>
     steps.has(cid) ? steps.get(cid) : agents.get().find((a) => a.cid === cid)?.step;

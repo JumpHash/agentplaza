@@ -4,6 +4,7 @@
 // those times (a takeover's gap shows); a recording kept before frames had times spreads them evenly (frameTimes in
 // workstations-model.ts).
 
+import { agentLabel, agentName } from '../roles';
 import { api, ApiError, type Agent, type RecordingDefaults, type StationRecording, type StationRecordingDetail, type StationRecordingEvent, type StationView } from '../api';
 import { go, href } from '../router';
 import { attempt, badge, card, field, input, select, toast } from '../ui/components';
@@ -483,7 +484,7 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
       detailsBody,
       kv([
         ['Workstation', station ? h('a', { href: href('workstations', stationId) }, station.name) : stationId],
-        ['Agent', names.get(detail.agent) ?? `agent ${detail.agent}`],
+        ['Agent', names.get(detail.agent) ?? agentLabel(detail.agent)],
         ['Task', detail.task ?? '—'],
         ['Lease', detail.lease],
         ['Started', ago(detail.started_ms)],
@@ -541,7 +542,7 @@ export function playbackScreen(root: HTMLElement, stationId: string, recordingId
     const [s, ag] = await Promise.all([api.station(stationId).catch((): null => null), api.agents().catch((): Agent[] => [])]);
     if (!alive) return;
     station = s;
-    names = new Map((ag ?? []).map((a): [number, string] => [a.cid, a.name]));
+    names = new Map((ag ?? []).map((a): [number, string] => [a.cid, agentName(a)]));
     renderHeader();
     renderDetails();
   };

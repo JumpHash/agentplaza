@@ -1,6 +1,6 @@
-//! The screens around the floor: the header, the tab bar, each tab's body, the event log and the
-//! footer. Every value is shown as the hub sent it. The Agents and Tasks tabs list the project the
-//! switcher shows (`scope`), which the header names.
+//! The screens around the tabs: the header, the tab bar, each tab's body and the footer. Every value
+//! is shown as the hub sent it. The Agents and Tasks tabs list the project the switcher shows
+//! (`scope`), which the header names.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -16,7 +16,7 @@ use super::onboarding::Stage;
 use super::scope;
 use super::style::{chip, dot, hints, key_hint, mix, panel, pulse, spinner};
 use super::workspace_view::tail;
-use crate::cmd::agents::{held_of, place_of};
+use crate::cmd::agents::{held_of, label_of, place_of};
 use crate::rich;
 
 /// A value as text: strings bare, missing or null as "-", anything else as its JSON.
@@ -267,33 +267,6 @@ pub fn tab_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// The last events the floor's log holds, as many as the area has lines for: the newest in ink2,
-/// the older ones muted.
-pub fn event_log(frame: &mut Frame, area: Rect, app: &App) {
-    let p = app.palette;
-    let rows = usize::from(area.height.saturating_sub(2));
-    let width = usize::from(area.width.saturating_sub(4));
-    let skip = app.log.len().saturating_sub(rows);
-    let shown = app.log.len() - skip;
-    let lines: Vec<Line> = app
-        .log
-        .iter()
-        .skip(skip)
-        .enumerate()
-        .map(|(i, line)| {
-            let colour = if i + 1 == shown { p.ink2() } else { p.muted };
-            Line::from(vec![
-                Span::styled("· ", Style::new().fg(p.rule_strong())),
-                Span::styled(clip(line, width), Style::new().fg(colour)),
-            ])
-        })
-        .collect();
-    frame.render_widget(
-        Paragraph::new(lines).block(panel(" events ", &p, false)),
-        area,
-    );
-}
-
 /// The keys a tab's status line shows, in the order they drop out when the row is narrow.
 fn tab_keys(tab: Tab) -> &'static [(&'static str, &'static str)] {
     match tab {
@@ -310,12 +283,12 @@ fn tab_keys(tab: Tab) -> &'static [(&'static str, &'static str)] {
             ("E", "export"),
             ("o", "IDE"),
             ("Enter", "expand"),
-            ("0-9", "tabs"),
+            ("1-8,w,c,m", "tabs"),
             ("q", "quit"),
         ],
         Tab::Workstations => &[
             ("^K", "commands"),
-            ("1-9,0,w,c", "tabs"),
+            ("1-8,w,c,m", "tabs"),
             ("Tab", "next"),
             ("↑↓", "move"),
             ("T", "take over"),
@@ -325,7 +298,7 @@ fn tab_keys(tab: Tab) -> &'static [(&'static str, &'static str)] {
         ],
         Tab::Chat => &[
             ("^K", "commands"),
-            ("1-9,0,w,c", "tabs"),
+            ("1-8,w,c,m", "tabs"),
             ("↑↓", "conversation"),
             ("t", "message"),
             ("i", "context"),
@@ -337,7 +310,7 @@ fn tab_keys(tab: Tab) -> &'static [(&'static str, &'static str)] {
         ],
         _ => &[
             ("^K", "commands"),
-            ("1-9,0,w,c", "tabs"),
+            ("1-8,w,c,m", "tabs"),
             ("Tab", "next"),
             ("↑↓", "move"),
             ("Enter", "details"),
@@ -731,7 +704,7 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
             let status = show(a.get("status"));
             vec![
                 Cell::from(show(a.get("cid"))),
-                Cell::from(show(a.get("name"))),
+                Cell::from(label_of(a)),
                 Cell::from(show(a.get("role_label"))),
                 Cell::from(place_of(a)),
                 state_cell(&status, &status, status_colour(&status, p), app),
@@ -748,11 +721,11 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
             title: titled("agents", list.len(), app),
             empty: "No agents here yet",
             header: &[
-                "CID", "NAME", "ROLE", "PROJECT", "STATUS", "MODEL", "QUEUE", "DOING",
+                "CID", "AGENT", "ROLE", "PROJECT", "STATUS", "MODEL", "QUEUE", "DOING",
             ],
             widths: &[
                 Constraint::Length(6),
-                Constraint::Length(14),
+                Constraint::Length(18),
                 Constraint::Length(16),
                 Constraint::Length(8),
                 Constraint::Length(11),
@@ -767,7 +740,7 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
     );
     if let (Some(detail), Some(agent)) = (detail_area, list.get(app.selected).copied()) {
         let lines = vec![
-            kv("name", show(agent.get("name")), app),
+            kv("agent", label_of(agent), app),
             kv(
                 "role",
                 format!(
@@ -817,7 +790,7 @@ pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
 
 pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
     let p = &app.palette;
-    let rich_ctx = app.rich_ctx();
+    let rich_ctx = apz_rich::Ctx::default();
     let shown = app.shown_tasks();
     let rows: Vec<Vec<Cell<'static>>> = shown
         .iter()
@@ -946,7 +919,7 @@ pub fn approvals(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 pub fn board(frame: &mut Frame, area: Rect, app: &App) {
-    let rich_ctx = app.rich_ctx();
+    let rich_ctx = apz_rich::Ctx::default();
     let posts = app.wrapped("/v1/board", "posts");
     let rows: Vec<Vec<Cell<'static>>> = posts
         .iter()
@@ -976,53 +949,6 @@ pub fn board(frame: &mut Frame, area: Rect, app: &App) {
             widths: &[
                 Constraint::Length(20),
                 Constraint::Length(9),
-                Constraint::Fill(1),
-            ],
-            rows,
-            hint: None,
-        },
-        app,
-    );
-}
-
-pub fn conversations(frame: &mut Frame, area: Rect, app: &App) {
-    let p = &app.palette;
-    let rich_ctx = app.rich_ctx();
-    let items = app.wrapped("/v1/conversations", "conversations");
-    let rows: Vec<Vec<Cell<'static>>> = items
-        .iter()
-        .map(|c| {
-            let delivered = flag(c.get("delivered"));
-            vec![
-                Cell::from(format!(
-                    "{} #{}",
-                    show(c.get("from_role")),
-                    show(c.get("from_cid"))
-                )),
-                Cell::from(format!(
-                    "{} #{}",
-                    show(c.get("to_role")),
-                    show(c.get("to_cid"))
-                )),
-                Cell::from(Line::from(Span::styled(
-                    if delivered { "yes" } else { "no" },
-                    Style::new().fg(if delivered { p.ok } else { p.muted }),
-                ))),
-                Cell::from(Line::from(rich::spans(&show(c.get("text")), &rich_ctx))),
-            ]
-        })
-        .collect();
-    grid(
-        frame,
-        area,
-        Grid {
-            title: titled("conversations", items.len(), app),
-            empty: "No conversations yet",
-            header: &["FROM", "TO", "DELIVERED", "TEXT"],
-            widths: &[
-                Constraint::Length(20),
-                Constraint::Length(20),
-                Constraint::Length(10),
                 Constraint::Fill(1),
             ],
             rows,

@@ -464,7 +464,7 @@ pub(crate) fn unknown_agent_verdict() -> EgressVerdict {
 }
 
 /// The answer to the egress proxy for agent `cid` connecting to `host`. The laws are asked for
-/// every host, so a forbidden attempt is recorded as a violation even when the blocklist would
+/// every host, so a forbidden attempt is refused even when the blocklist would
 /// refuse it too. The laws only forbid here: a permit is not required (see the report on
 /// `Laws::refuse_op`).
 fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
@@ -652,29 +652,11 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             status,
             summary,
         } => {
-            // The agent's journal: one line per finished piece of work (episodic memory, AP-062).
             if let Some(item) = app.work.current(cid).filter(|item| item.id == work) {
                 let ms = item.started_ms.map_or(0.0, |started| {
                     apz_plaza::now_ms().saturating_sub(started) as f64
                 });
                 collect::turn_end(app, cid, ms, matches!(status, WorkStatus::Done));
-                let clip = |text: &str, n: usize| -> String {
-                    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if one.chars().count() > n {
-                        format!("{}…", one.chars().take(n).collect::<String>())
-                    } else {
-                        one
-                    }
-                };
-                let line = format!(
-                    "- {:?} {:?}: {} → {}",
-                    item.kind,
-                    status,
-                    clip(&item.prompt, 100),
-                    clip(&summary, 160)
-                )
-                .to_lowercase();
-                let _ = app.memory.journal(cid, &line, apz_plaza::now_ms());
             }
             // The engine calls under this work item end with it: their buffered text, plan and usage.
             for entry in app.engine_feed.finish(cid, work) {
@@ -899,8 +881,8 @@ fn model_call(
 
 /// Charges `credits` of a model call to the work's task, through the shared charge
 /// ([`crate::payments::charge_model_call`]), which honours `payments.charge_models`.
-/// Only hired work (a task) is charged: agents talking, reaching out, naming
-/// themselves or debating motions cost the plaza's budget nothing (their tokens are
+/// Only work (a task) is charged: agents talking or naming themselves cost the plaza's
+/// budget nothing (their tokens are
 /// still counted in their usage). A shortfall is recorded and the task's work is
 /// cancelled.
 pub(crate) fn meter(
@@ -968,8 +950,7 @@ fn tool_request(
     };
     let verdict = match hold {
         Some(why) => Err(why),
-        None => gate_call(app.laws, cid, &agent.role, &granted, name, input)
-            .and_then(|runs| crate::sanctions::suspended(app, cid, name).map_or(Ok(runs), Err)),
+        None => gate_call(app.laws, cid, &agent.role, &granted, name, input),
     };
     // The owner's permission mode next — only for calls that would otherwise run, so a refused
     // or ungranted call never waits in the approvals queue. An ACP engine's own request may wait
@@ -1398,10 +1379,9 @@ mod egress_check_tests {
     }
 
     #[test]
-    fn a_researcher_at_the_hub_git_is_refused_by_the_real_law_and_recorded() {
+    fn a_researcher_at_the_hub_git_is_refused_by_the_real_law() {
         let dir = std::env::temp_dir().join(format!("apid-egress-check-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let _ = std::fs::remove_file(dir.join("violations.json"));
         let files: Vec<(String, String)> = LAW_FILES
             .iter()
             .map(|(name, text)| (name.to_string(), text.to_string()))
@@ -1433,11 +1413,6 @@ mod egress_check_tests {
                     .contains("S-013d"),
             "{verdict:?}"
         );
-        assert!(
-            laws.all_violations()
-                .iter()
-                .any(|(cid, violation)| *cid == 7 && violation.law == "S-013d")
-        );
     }
 }
 
@@ -1465,7 +1440,6 @@ mod law_gate_tests {
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("apid-gate-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let _ = std::fs::remove_file(dir.join("violations.json"));
         dir
     }
 
@@ -1479,8 +1453,7 @@ mod law_gate_tests {
     #[test]
     fn gate_call_follows_the_laws_for_each_kind_of_call() {
         {
-            // a_forbidden_call_is_refused_with_its_law_and_recorded: a forbidden call is refused
-            // with its law, and the refusal is recorded.
+            // a_forbidden_call_is_refused_with_its_law: a forbidden call is refused with its law.
             let laws = Laws::load(&scratch("forbidden"));
             let granted = crate::tools::offered_names("builder");
             let input = json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
@@ -1489,16 +1462,10 @@ mod law_gate_tests {
                 reason.starts_with("refused by law ") && reason.contains("C-002b"),
                 "{reason}"
             );
-            assert!(
-                laws.all_violations()
-                    .iter()
-                    .any(|(cid, v)| *cid == 7 && v.law == "C-002b")
-            );
-            assert!(!laws.recent(7, apz_plaza::now_ms()).is_empty());
         }
         {
             // a_permitted_call_runs_where_its_tool_runs: a permitted call runs where its tool runs
-            // (guest or host) and records no violation.
+            // (guest or host).
             let laws = Laws::load(&scratch("permitted"));
             let granted = crate::tools::offered_names("builder");
             assert_eq!(
@@ -1516,11 +1483,9 @@ mod law_gate_tests {
                 gate_call(&laws, 7, "builder", &granted, "plaza_tasks", &json!({})),
                 Ok(Runs::Host)
             );
-            assert!(laws.all_violations().is_empty());
         }
         {
-            // an_unknown_tool_is_denied_by_default_and_not_recorded: an unknown tool is denied by
-            // default, and the denial is not recorded.
+            // an_unknown_tool_is_denied_by_default: an unknown tool is denied by default.
             let laws = Laws::load(&scratch("unknown"));
             let granted = vec!["launch_missiles".to_string()];
             let reason = gate_call(&laws, 7, "builder", &granted, "launch_missiles", &json!({}))
@@ -1529,7 +1494,6 @@ mod law_gate_tests {
                 reason,
                 "refused: no law permits launch_missiles for the builder role"
             );
-            assert!(laws.all_violations().is_empty());
         }
         {
             // a_tool_the_laws_withhold_is_neither_offered_nor_run_even_if_granted: a tool the laws
@@ -1541,7 +1505,7 @@ mod law_gate_tests {
                     .iter()
                     .any(|name| name == "plaza_post_task")
             );
-            // The model may still call it by name; the gate refuses it by default and does not record it.
+            // The model may still call it by name; the gate refuses it by default.
             let granted = vec!["plaza_post_task".to_string()];
             let reason = gate_call(&laws, 7, "builder", &granted, "plaza_post_task", &json!({}))
                 .unwrap_err();
@@ -1549,7 +1513,6 @@ mod law_gate_tests {
                 reason.contains("no law permits plaza_post_task"),
                 "{reason}"
             );
-            assert!(laws.all_violations().is_empty());
         }
         {
             // a_rule_added_takes_effect_and_a_rule_removed_stops_applying: a rule added to the laws

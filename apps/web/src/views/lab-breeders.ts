@@ -4,6 +4,7 @@
 // read as the agent's page reads it, and kept to the foundry_* tools and invoke_model. A job belongs
 // to a breeder when its `agent` is the breeder's CID (the hub's job summary carries it).
 
+import { agentName } from '../roles';
 import { api, listJobs, type Agent, type Entry, type JobSummary } from '../api';
 import { href } from '../router';
 import { badge, card, clip, table as dataTable, type Column, type Tone } from '../ui/components';
@@ -175,7 +176,7 @@ export function render(root: HTMLElement, _params: string[]): Cleanup {
 /** One breeder's card: its name and status, its role and CID, then the GPU-hours used, the jobs and the per-job cap. */
 function breederCard(b: Breeder): HTMLElement {
   const a = b.agent;
-  const name = a.name.trim() === '' ? `agent ${a.cid}` : a.name;
+  const name = agentName(a);
   const body = h(
     'div',
     null,

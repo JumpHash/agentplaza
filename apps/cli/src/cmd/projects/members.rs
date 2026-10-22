@@ -5,7 +5,7 @@
 use clap::Subcommand;
 use serde_json::{Value, json};
 
-use crate::cmd::agents::name_of;
+use crate::cmd::agents::label_of;
 use crate::ctx::{self, Ctx, confirm};
 
 #[derive(Subcommand, Debug)]
@@ -43,7 +43,7 @@ fn held_text(agent: &Value) -> String {
     }
 }
 
-/// The members as rows: cid, name, role, status, when they joined, and why they wait when they do (a paused
+/// The members as rows: cid, label, role, status, when they joined, and why they wait when they do (a paused
 /// project holds its agents).
 fn member_rows(members: &Value) -> Vec<Vec<String>> {
     items(members)
@@ -51,7 +51,7 @@ fn member_rows(members: &Value) -> Vec<Vec<String>> {
         .map(|a| {
             vec![
                 ctx::text(a, "cid"),
-                name_of(a),
+                label_of(a),
                 ctx::s(a, "role").to_string(),
                 ctx::s(a, "status").to_string(),
                 ctx::ago(&a["joined_ms"]),
@@ -61,7 +61,7 @@ fn member_rows(members: &Value) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// The suggested members as rows: cid, name, role, status, and the project's tasks they hold or held.
+/// The suggested members as rows: cid, label, role, status, and the project's tasks they hold or held.
 fn suggested_rows(agents: &Value) -> Vec<Vec<String>> {
     items(agents)
         .iter()
@@ -75,7 +75,7 @@ fn suggested_rows(agents: &Value) -> Vec<Vec<String>> {
                 .collect();
             vec![
                 ctx::text(a, "cid"),
-                name_of(a),
+                label_of(a),
                 ctx::s(a, "role").to_string(),
                 ctx::s(a, "status").to_string(),
                 tasks.join(", "),
@@ -92,7 +92,7 @@ pub fn members(ctx: &Ctx, id: &str, action: Option<Action>) -> Result<(), String
             let members = ctx.client.get(&base)?;
             ctx.out(&members, |v| {
                 ctx::table(
-                    &["cid", "name", "role", "status", "joined", "held"],
+                    &["cid", "agent", "role", "status", "joined", "held"],
                     &member_rows(v),
                 );
             });
@@ -100,7 +100,7 @@ pub fn members(ctx: &Ctx, id: &str, action: Option<Action>) -> Result<(), String
         Action::Add { cid } => {
             let agent = ctx.client.post(&base, &json!({ "cid": cid }))?;
             ctx.out(&agent, |a| {
-                println!("{} (agent {cid}) works on project {id} now", name_of(a))
+                println!("{} (agent {cid}) works on project {id} now", label_of(a))
             });
         }
         Action::Remove { cid, yes } => {
@@ -118,7 +118,7 @@ pub fn members(ctx: &Ctx, id: &str, action: Option<Action>) -> Result<(), String
             let agents = ctx.client.get(&path)?;
             ctx.out(&agents, |v| {
                 let rows = suggested_rows(v);
-                ctx::table(&["cid", "name", "role", "status", "tasks"], &rows);
+                ctx::table(&["cid", "agent", "role", "status", "tasks"], &rows);
                 if !rows.is_empty() {
                     println!("\nput one on it: agentplaza projects members {id} add <cid>");
                 }
@@ -135,19 +135,19 @@ mod tests {
     #[test]
     fn members_show_when_they_joined_and_why_they_wait() {
         let members = json!([
-            { "cid": 7, "name": "Ada", "role": "builder", "status": "idle", "project": "pr3", "joined_ms": null, "held": null },
-            { "cid": 9, "name": "", "role": "qa", "status": "asleep", "project": "pr3", "joined_ms": null,
+            { "cid": 7, "role": "builder", "status": "idle", "project": "pr3", "joined_ms": null, "held": null },
+            { "cid": 9, "role": "qa", "status": "asleep", "project": "pr3", "joined_ms": null,
               "held": "project pr3 is paused: its agents wait until the owner resumes it" }
         ]);
         assert_eq!(
             member_rows(&members),
             [
-                ["7", "Ada", "builder", "idle", "—", "-"]
+                ["7", "builder #7", "builder", "idle", "—", "-"]
                     .map(String::from)
                     .to_vec(),
                 [
                     "9",
-                    "agent 9",
+                    "qa #9",
                     "qa",
                     "asleep",
                     "—",
@@ -162,10 +162,11 @@ mod tests {
 
     #[test]
     fn a_suggested_member_lists_the_tasks_it_holds() {
-        let agents = json!([{ "cid": 4, "name": "Ben", "role": "builder", "status": "idle", "tasks": ["t2", "t5"] }]);
+        let agents =
+            json!([{ "cid": 4, "role": "builder", "status": "idle", "tasks": ["t2", "t5"] }]);
         assert_eq!(
             suggested_rows(&agents),
-            [["4", "Ben", "builder", "idle", "t2, t5"]
+            [["4", "builder #4", "builder", "idle", "t2, t5"]
                 .map(String::from)
                 .to_vec()]
         );

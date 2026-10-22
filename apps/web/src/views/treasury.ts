@@ -3,11 +3,11 @@
 // the rest is read. Balances and flows chart over a range (or table the same series), the money flow runs in
 // proportion to the range's flows, wallets sort, and the journal pages through every entry and takes new ones live.
 
+import { agentLabelIn, agentName } from '../roles';
 import '../styles/proto/social.css';
 import {
   api,
   type Agent,
-  type AgentProfile,
   type JournalEntry,
   type JournalQuery,
   type Posting,
@@ -175,7 +175,7 @@ export function sortRows<T>(rows: T[], key: (r: T) => number | string, dir: 1 | 
   });
 }
 
-/** Who a posting touches: an agent's name for its cid, else the account's role in words. */
+/** Who a posting touches: an agent's label (its role and CID) for its cid, else the account's role in words. */
 export function partyOf(p: Posting, names: ReadonlyMap<number, string>): string {
   const cid = Number(p.owner_ref);
   if (p.owner_ref !== '' && Number.isInteger(cid) && names.has(cid)) return names.get(cid) ?? '';
@@ -429,7 +429,7 @@ function diagramSvg(budget: number, escrow: number, wallets: number, f: Flows): 
 // ---- The view ---------------------------------------------------------------
 
 interface Tile { el: HTMLElement; fig: HTMLElement; note: HTMLElement }
-interface WalletRow { cid: number; name: string; role: string; balance: number; earned: number | null; spent: number | null; share: number }
+interface WalletRow { cid: number; name: string; role: string; balance: number; share: number }
 
 const tile = (label: string): Tile => {
   const fig = h('b.num');
@@ -458,7 +458,6 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   let names = new Map<number, string>();
   let roles = new Map<number, string>();
   let wallets: Wallet[] = [];
-  let profiles = new Map<number, AgentProfile>();
   let entries: JournalEntry[] = [];
   let total = 0;
   let nextBefore: number | null = null;
@@ -560,7 +559,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       toast('There are no agents to fine.', 'error');
       return;
     }
-    const who = select([...roster].sort((a, b) => a.name.localeCompare(b.name)).map((a) => ({ value: String(a.cid), label: a.name })));
+    const who = select([...roster].sort((a, b) => agentName(a).localeCompare(agentName(b))).map((a) => ({ value: String(a.cid), label: agentName(a) })));
     who.setAttribute('aria-label', 'Agent');
     const amount = input({ type: 'number', min: 1, step: 1, required: true, 'aria-label': 'Amount' });
     const memo = input({ type: 'text', required: true, placeholder: 'What for', 'aria-label': 'Memo' });
@@ -768,28 +767,21 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       return;
     }
     const posTotal = wallets.reduce((s, w) => s + Math.max(0, w.balance), 0);
-    const rows: WalletRow[] = wallets.map((w) => {
-      const p = profiles.get(w.cid);
-      return {
-        cid: w.cid,
-        name: w.name,
-        role: roles.get(w.cid) ?? '',
-        balance: w.balance,
-        earned: p ? p.earned : null,
-        spent: p ? p.spent : null,
-        share: shareOf(w.balance, posTotal),
-      };
-    });
+    const rows: WalletRow[] = wallets.map((w) => ({
+      cid: w.cid,
+      name: agentLabelIn(roster, w.cid),
+      role: roles.get(w.cid) ?? '',
+      balance: w.balance,
+      share: shareOf(w.balance, posTotal),
+    }));
     const cols: Col<WalletRow>[] = [
       { key: 'name', label: 'Agent', value: (r) => r.name, cell: (r) => h('a', { href: href('agents', r.cid) }, r.name) },
       { key: 'role', label: 'Role', value: (r) => r.role, cell: (r) => r.role },
       { key: 'balance', label: 'Balance', num: true, value: (r) => r.balance, cell: (r) => money(r.balance) },
-      { key: 'earned', label: 'Earned', num: true, value: (r) => r.earned ?? 0, cell: (r) => (r.earned === null ? '—' : money(r.earned)) },
-      { key: 'spent', label: 'Spent', num: true, value: (r) => r.spent ?? 0, cell: (r) => (r.spent === null ? '—' : money(r.spent)) },
       { key: 'share', label: 'Share', num: true, cellNum: false, value: (r) => r.share, cell: (r) => shareBar(r.share) },
     ];
     const sum = (f: (r: WalletRow) => number): number => rows.reduce((s, r) => s + f(r), 0);
-    const foot = ['Total', '', money(sum((r) => r.balance)), money(sum((r) => r.earned ?? 0)), money(sum((r) => r.spent ?? 0)), ''];
+    const foot = ['Total', '', money(sum((r) => r.balance)), ''];
     replace(
       walletsBody,
       sortable(cols, rows, wallSort, (next) => {
@@ -800,11 +792,11 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   };
 
   const renderFilters = (): void => {
-    const sorted = [...roster].sort((a, b) => a.name.localeCompare(b.name));
-    const key = sorted.map((a) => `${a.cid}:${a.name}`).join('|');
+    const sorted = [...roster].sort((a, b) => agentName(a).localeCompare(agentName(b)));
+    const key = sorted.map((a) => `${a.cid}:${agentName(a)}`).join('|');
     if (key === rosterKey) return;
     rosterKey = key;
-    agentSel.replaceChildren(new Option('All agents', '0'), ...sorted.map((a) => new Option(a.name, String(a.cid))));
+    agentSel.replaceChildren(new Option('All agents', '0'), ...sorted.map((a) => new Option(agentName(a), String(a.cid))));
     agentSel.value = String(filters.wallet);
   };
 
@@ -854,10 +846,9 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       ]);
       const firstAt = overview.accounts.length ? Math.min(...overview.accounts.map((a) => a.created_at)) : now;
       const win = windowOf(range, now, firstAt);
-      const [s, u, profs] = await Promise.all([
+      const [s, u] = await Promise.all([
         api.treasurySeries(win.from, win.to, win.bucket),
         api.usageSummary(win.from, win.to).catch(() => null),
-        Promise.all(ws.map((w) => api.profile(w.cid).catch(() => null))),
       ]);
       if (!alive || mine !== gen) return;
       t = overview;
@@ -867,13 +858,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       usage = u;
       wallets = ws;
       roster = ros;
-      names = new Map(ros.map((a) => [a.cid, a.name]));
+      names = new Map(ros.map((a) => [a.cid, agentName(a)]));
       roles = new Map(ros.map((a) => [a.cid, a.role_label]));
-      profiles = new Map();
-      ws.forEach((w, i) => {
-        const p = profs[i];
-        if (p) profiles.set(w.cid, p);
-      });
       entries = mergeJournal(entries, page.entries);
       total = page.total;
       if (!olderLoaded) nextBefore = page.next_before;

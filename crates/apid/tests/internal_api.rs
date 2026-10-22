@@ -156,7 +156,6 @@ fn stats_are_accepted_on_a_running_vm() {
         }
     });
     let scratch = Scratch::new("internal-stats");
-    scratch.name_agents(&[(300, "Kofi")]);
     let hub = Hub::start(&scratch, Some(gateway.port), Some(noded.port));
     let agent = hub.wait_for("/v1/agents/300", Duration::from_secs(20), |a| {
         a["run"] == "r1"

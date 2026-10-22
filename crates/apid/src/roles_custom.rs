@@ -268,6 +268,12 @@ fn agent_count(app: &App, role: &str) -> u32 {
 }
 
 fn list_route(app: &App, _req: &Request, _: &Params<'_>) -> Response {
+    // One snapshot of the roster for every role's count (PLAN 30.4), not one clone per role.
+    let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for agent in app.agents.list().into_iter().filter(|a| a.status != Status::Offline) {
+        *counts.entry(agent.role).or_default() += 1;
+    }
+    let agent_count = |_: &App, role: &str| counts.get(role).copied().unwrap_or(0);
     let mut builtin: Vec<RoleView> = app
         .roles
         .tools

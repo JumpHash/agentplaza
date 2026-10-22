@@ -6,7 +6,6 @@ import { empty } from '../ui/components';
 import { href } from '../router';
 import type { Cleanup } from './index';
 
-export { agentHue, roleHue } from './floor-common';
 export { agentTally, gibText, gpuLines, machineFacts, machineSubtitle } from './floor-popup';
 
 /** The Grid view of the Machines screen (machines.ts). `bindReset` gets the engine's reset, or null when there is none. */

@@ -164,12 +164,6 @@ pub fn decided(app: &App, item: &Approval, approve: bool) -> Result<(), String> 
     }
     match execute(&app.plaza.treasury, item.cid, &payment) {
         Ok(entry) => {
-            crate::society::interact(
-                app,
-                item.cid,
-                payment.to,
-                apz_plaza::bonds::Interaction::Credit,
-            );
             tell(
                 app,
                 item.cid,

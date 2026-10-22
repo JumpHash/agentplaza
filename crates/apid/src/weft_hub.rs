@@ -553,7 +553,7 @@ fn certify(
     agent: &crate::agents::Agent,
     project: Option<&str>,
 ) -> Result<(), String> {
-    app.weft.hub("cert.issue", json!({ "key": k.public(), "holder": { "actor": actor, "name": agent.name, "role": agent.role, "project": project } })).map(|_| ())
+    app.weft.hub("cert.issue", json!({ "key": k.public(), "holder": { "actor": actor, "name": agent.label(), "role": agent.role, "project": project } })).map(|_| ())
 }
 
 /// The kinds an agent's own call may have the hub sign with the agent's key.

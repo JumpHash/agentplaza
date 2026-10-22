@@ -7,6 +7,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+apz-egress-rules = { path = "../apz-egress-rules" }
 apz-http.workspace = true
 apz-metrics.workspace = true
 apz-os = { path = "../apz-os" }

@@ -4,7 +4,7 @@
 //! the guest ask for them, because the point of that session was the wire
 //! rather than the work. In the agent fleet the direction is the other way
 //! round: the hub asks, the agent serves, and these are the tools it serves
-//! today — `echo` and `uptime`, the social channel (`conversation`, which
+//! today — `echo` and `uptime`, the message channel (`conversation`, which
 //! writes the message to the agent's own `/workspace/messages.log`), and the
 //! file tools that work on the guest's writable `/workspace` volume (see
 //! [`crate::files`]).

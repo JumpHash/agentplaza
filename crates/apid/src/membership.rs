@@ -1,7 +1,7 @@
 //! Project membership: the project each agent works on. An agent is on at most one project. One with none is on
 //! the **bench** and does nothing:
 //! - its work is held (`scheduler::dispatch`);
-//! - new work is refused at the source (chat, messages, hires, assignment);
+//! - new work is refused at the source (chat, messages, task posts, assignment);
 //! - its model and tool calls are refused even mid-turn (`internal`, the engine relays);
 //! - it sleeps after a minute (`sleep`).
 //!

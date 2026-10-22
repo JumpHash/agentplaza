@@ -331,6 +331,8 @@ version = "0.1.0"
 dependencies = [
  "apz-acp",
  "apz-artifact",
+ "apz-cache",
+ "apz-egress-rules",
  "apz-gateway",
  "apz-http",
  "apz-ide",
@@ -343,6 +345,7 @@ dependencies = [
  "apz-rich",
  "apz-skill",
  "apz-station",
+ "apz-store",
  "apz-theme",
  "apz-trust",
  "apz-view",
@@ -365,6 +368,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sysinfo",
+ "tempfile",
  "tokenizers",
  "toml 1.1.8+spec-1.1.0",
  "tract-onnx",
@@ -406,6 +410,26 @@ dependencies = [
  "oxc_semantic",
  "oxc_span",
  "oxc_transformer",
+]
+
+[[package]]
+name = "apz-blobs"
+version = "0.1.0"
+dependencies = [
+ "apz-store",
+ "blake3",
+ "fastcdc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zstd",
+]
+
+[[package]]
+name = "apz-cache"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -470,6 +494,10 @@ dependencies = [
  "libc",
  "x11rb",
 ]
+
+[[package]]
+name = "apz-egress-rules"
+version = "0.1.0"
 
 [[package]]
 name = "apz-engine"
@@ -542,6 +570,7 @@ dependencies = [
 name = "apz-http"
 version = "0.1.0"
 dependencies = [
+ "apz-cache",
  "apz-trust",
  "base64 0.22.1",
  "rcgen",
@@ -690,6 +719,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-sandbox"
+version = "0.1.0"
+dependencies = [
+ "landlock",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "apz-setup"
 version = "0.1.0"
 dependencies = [
@@ -713,6 +751,26 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "apz-store"
+version = "0.1.0"
+dependencies = [
+ "apz-store-derive",
+ "rusqlite",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "apz-store-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2925,7 +2983,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3182,7 +3240,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3270,6 +3328,12 @@ name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+
+[[package]]
+name = "fallible-streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fancy-regex"
@@ -4184,6 +4248,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashlink"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "heapless"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4304,7 +4377,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -5192,6 +5265,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf36173d4167ed999940f804952e6b08197cae5ad5d572eb4db150ce8ad5d58f"
 
 [[package]]
+name = "landlock"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cca98e95f35b29d469dade6724c6f96cec9236640f745a0e99b0334ec320ab1"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5284,6 +5368,17 @@ dependencies = [
  "bindgen",
  "cc",
  "system-deps 7.0.8",
+]
+
+[[package]]
+name = "libsqlite3-sys"
+version = "0.38.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+dependencies = [
+ "cc",
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]
@@ -5830,6 +5925,7 @@ dependencies = [
  "apz-http",
  "apz-metrics",
  "apz-os",
+ "apz-sandbox",
  "apz-station",
  "apz-uds",
  "base64 0.22.1",
@@ -7541,7 +7637,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -8208,6 +8304,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
+name = "rusqlite"
+version = "0.40.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+dependencies = [
+ "bitflags 2.13.2",
+ "fallible-iterator 0.3.0",
+ "fallible-streaming-iterator",
+ "hashlink",
+ "libsqlite3-sys",
+ "smallvec",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8271,7 +8381,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9326,10 +9436,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9370,7 +9480,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10355,6 +10465,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
 name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10439,6 +10555,7 @@ checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 name = "vsockd"
 version = "0.1.0"
 dependencies = [
+ "apz-egress-rules",
  "apz-http",
  "apz-metrics",
  "apz-os",
@@ -11186,6 +11303,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 name = "weft"
 version = "0.1.0"
 dependencies = [
+ "apz-blobs",
  "apz-http",
  "base64 0.22.1",
  "blake3",
@@ -11473,7 +11591,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

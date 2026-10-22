@@ -225,16 +225,11 @@ pub struct HubReport {
 /// The fleet for the Machines view (`GET /v1/fleet`): the hub's own machine (`n0`, from its
 /// noded) and every joined node (from its last heartbeat), each with the agents it runs.
 pub fn fleet(app: &App) -> Value {
-    let answered = |path: &str| {
-        app.noded
-            .get(path)
-            .ok()
-            .filter(|(code, _)| *code == 200)
-            .map(|(_, body)| body)
-    };
+    // The latest probe round (probes.rs), not a live call per request.
+    let probed = crate::probes::latest(app);
     let hub = HubReport {
-        machine: answered("/v1/machine"),
-        stats: answered("/v1/machine/stats"),
+        machine: probed.machine,
+        stats: probed.stats,
         stopped: app.nodes.is_stopped(LOCAL),
     };
     // Agents that are offline are not running anywhere, so they are not placed.

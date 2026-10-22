@@ -1,9 +1,9 @@
 import '../styles/proto/overview.css';
-import { agentName, roleLabel } from '../roles';
+import { agentLabelIn, agentName, roleLabel } from '../roles';
 import { api, type Agent, type AgentProposal, type AgentStep, type Approval, type Entry, type Project, type Task } from '../api';
 import { go, href } from '../router';
 import { inScope, isLive, onBench, projectTitle, scope } from '../scope';
-import { agents, on, overview } from '../store';
+import { agents, on, overview, RESYNC } from '../store';
 import { ago, attempt, clip, dot, empty, stat, type Tone } from '../ui/components';
 import { attachBar, maySend } from '../ui/attach-bar';
 import { contextBar, loadModelChoices, modelChip } from '../ui/chat-tools';
@@ -26,7 +26,7 @@ const ORCH: Record<string, [string, Tone]> = {
   asleep: ['Asleep', 'muted'],
   dozing: ['Asleep (light)', 'muted'],
 };
-const KIND_ICON: Record<string, LucideName> = { review: 'git-pull-request', tool: 'terminal', deploy: 'rocket', payment: 'credit-card', sanction: 'gavel' };
+const KIND_ICON: Record<string, LucideName> = { review: 'git-pull-request', tool: 'terminal', deploy: 'rocket', payment: 'credit-card' };
 
 /** A card with the prototype's head and body: `.ov-cardh` over `.ov-body`, flush when the body is a list. */
 function sectionCard(cls: string, head: Node[], body: Node, flush = false): HTMLElement {
@@ -84,13 +84,16 @@ export function mount(root: HTMLElement): Cleanup {
   let drawn: { ps: Project[]; ts: Task[] } | null = null;
   const steps = new Map<number, AgentStep | null>();
   const stepOf: StepOf = (cid) => (steps.has(cid) ? steps.get(cid) : agents.get().find((a) => a.cid === cid)?.step);
+  const paintProjects = (all: Project[], ts: Task[]): void => {
+    const ps = inProject ? all.filter((p) => p.id === inProject) : all;
+    drawn = { ps, ts };
+    renderProjects(projects, ps, ts, stepOf);
+    drawStats();
+  };
   const loadProjects = async (): Promise<void> => {
     try {
       const [all, ts] = await Promise.all([api.projects(), inProject ? api.tasksWhere({ project: inProject }) : api.tasks()]);
-      const ps = inProject ? all.filter((p) => p.id === inProject) : all;
-      drawn = { ps, ts };
-      renderProjects(projects, ps, ts, stepOf);
-      drawStats();
+      paintProjects(all, ts);
     } catch {
       replace(projects, empty('alert', 'Projects are unavailable', 'apid did not answer; they come back with it.'));
     }
@@ -173,10 +176,7 @@ export function mount(root: HTMLElement): Cleanup {
       .catch(() => undefined);
 
   // The waiting card: the approvals and proposals the owner has yet to decide, under a project only its own.
-  const nameOf = (cid: number): string => {
-    const a = agents.get().find((x) => x.cid === cid);
-    return a ? agentName(a) : `agent ${cid}`;
-  };
+  const nameOf = (cid: number): string => agentLabelIn(agents.get(), cid);
   const shownAp = (a: Approval): boolean => {
     if (!inProject || a.cid === 0) return true;
     const agent = agents.get().find((x) => x.cid === a.cid);
@@ -250,6 +250,16 @@ export function mount(root: HTMLElement): Cleanup {
   renderOrchestrator(agents.get().find((a) => a.tier === 'orchestrator'));
   drawStats();
   drawWaiting();
+  // The projects and tasks as they were last read paint at once; the fresh read (already asked) replaces them.
+  const keptProjects = api.projects.cached();
+  const keptTasks = inProject ? api.tasksWhere.cached({ project: inProject }) : api.tasks.cached();
+  if (keptProjects && keptTasks) paintProjects(keptProjects, keptTasks);
+  offs.push(
+    on(RESYNC, () => {
+      scheduleProjects();
+      scheduleWaiting();
+    }),
+  );
 
   return () => {
     alive = false;
@@ -375,12 +385,11 @@ function composerBox(): Composer {
   };
 }
 
-/** What the waiting card says of an approval: its goal, its escalation, its payment, or the tool call. */
+/** What the waiting card says of an approval: its goal, its payment, or the tool call. */
 export function waitTitle(a: Approval): string {
   const d = (a.detail ?? {}) as { goal?: string; task?: string };
   const inp = (a.input ?? {}) as { command?: unknown };
   if (a.kind === 'review') return d.goal || `Review of ${d.task}`;
-  if (a.kind === 'sanction') return `Escalation: ${a.subject}`;
   if (a.kind === 'payment') return `Payment awaiting approval: ${a.subject}`;
   if (a.kind === 'deploy') return a.subject;
   if (a.kind === 'artifact.share') return `Share ${a.subject}`;
@@ -416,8 +425,7 @@ function pushFeed(feed: HTMLElement, wait: HTMLElement, e: Entry): void {
   const line = describe(e);
   if (!line) return;
   wait.remove();
-  const found = agents.get().find((a) => a.cid === e.cid);
-  const name = found ? agentName(found) : `agent ${e.cid}`;
+  const name = agentLabelIn(agents.get(), e.cid);
   const item = h(
     'li',
     null,

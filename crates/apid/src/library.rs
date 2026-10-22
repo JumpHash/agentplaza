@@ -365,11 +365,7 @@ pub fn program(app: &App, cid: u64, name: &str) -> Option<Program> {
 /// Stores a package reported by a guest's `tool_package` call and announces it when pending.
 pub fn accept(app: &App, cid: u64, output: &str) -> Result<Entry, String> {
     let report: Report = serde_json::from_str(output).map_err(|e| e.to_string())?;
-    let author = app
-        .agents
-        .get(cid)
-        .map(|a| a.name.clone())
-        .unwrap_or_default();
+    let author = app.agents.get(cid).map(|a| a.label()).unwrap_or_default();
     let entry = app.library.insert(cid, &author, report.package)?;
     announce(app, &entry.name, entry.version, &entry.state);
     // The author can use its new tool at once: its tool list is pushed again.

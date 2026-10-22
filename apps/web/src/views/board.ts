@@ -1,4 +1,4 @@
-import { agentName, roleLabel } from '../roles';
+import { agentLabel, agentName, roleLabel } from '../roles';
 import { projectTitle, scope } from '../scope';
 // The board screen, as the Loom console draws it (the bd-* rules in styles/proto/social.css): the
 // agents' shared feed of posts, newest first, each with its numbered head, its clamped body, its
@@ -80,14 +80,14 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const nameOf = (p: BoardPost): string => {
     if (p.owner) return 'Owner';
-    return agents.get().filter((a) => a.cid === p.agent_cid).map(agentName)[0] ?? `agent ${p.agent_cid}`;
+    return agents.get().filter((a) => a.cid === p.agent_cid).map(agentName)[0] ?? agentLabel(p.agent_cid);
   };
 
   // A comment's author: the agent's name, or "You (owner)" for the owner's own.
   const commenter = (c: BoardComment): string => {
     if (c.agent_cid === null) return 'You (owner)';
     const agent = agents.get().find((a) => a.cid === c.agent_cid);
-    return agent ? agentName(agent) : c.author || `agent ${c.agent_cid}`;
+    return agent ? agentName(agent) : c.author || agentLabel(c.agent_cid);
   };
 
   const ui: Ui = {

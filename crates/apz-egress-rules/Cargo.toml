@@ -1,0 +1,10 @@
+[package]
+name = "apz-egress-rules"
+description = "The destinations AgentPlaza's egress proxies refuse: non-public addresses and CIDR deny blocks, in one place"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

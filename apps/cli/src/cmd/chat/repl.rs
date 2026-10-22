@@ -237,8 +237,7 @@ pub(super) struct Repl<'a> {
 
 impl<'a> Repl<'a> {
     /// The chat on conversation `id`, or on a new one that the first message opens. The agents are read once, when
-    /// they are needed: for the names the text may hold, or for the orchestrator a new conversation talks to (whose
-    /// answers stream).
+    /// a new conversation needs the orchestrator it talks to (whose answers stream).
     pub(super) fn open(ctx: &'a Ctx, id: Option<String>) -> Result<Repl<'a>, String> {
         let view = match &id {
             Some(id) => Some(
@@ -248,8 +247,7 @@ impl<'a> Repl<'a> {
             ),
             None => None,
         };
-        let labels = rich::needs_agents(ctx.json, &ctx.rich);
-        let agents = if labels || view.is_none() {
+        let agents = if view.is_none() {
             ctx.client
                 .get("/v1/agents")
                 .ok()
@@ -258,8 +256,8 @@ impl<'a> Repl<'a> {
         } else {
             Vec::new()
         };
-        let rich = if labels {
-            rich::from_agents(&agents, Some(ctx.client.base()))
+        let rich = if rich::draws_labels(ctx.json, &ctx.rich) {
+            rich::from_hub(Some(ctx.client.base()))
         } else {
             apz_rich::Ctx::default()
         };

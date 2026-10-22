@@ -246,7 +246,7 @@ pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
                 }
                 Some(agent) if agent.role != seat.role => found.push(format!(
                     "{} (agent {cid}) is a {}, not a {}",
-                    name_of(&agent),
+                    agent.label(),
                     agent.role,
                     seat.role
                 )),
@@ -254,7 +254,7 @@ pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
                     if let Some(project) = app.members.project_of(*cid) {
                         found.push(format!(
                             "{} (agent {cid}) works on project {project}, not on the bench",
-                            name_of(&agent)
+                            agent.label()
                         ));
                     }
                 }
@@ -312,14 +312,6 @@ fn settings_of(draft: &Draft) -> Result<crate::project_settings::ProjectSettings
         &crate::project_settings::ProjectSettings::default(),
         &draft.settings,
     )
-}
-
-fn name_of(agent: &Agent) -> String {
-    if agent.name.is_empty() {
-        format!("agent {}", agent.cid)
-    } else {
-        agent.name.clone()
-    }
 }
 
 /// The draft as the API shows it: its fields, and what still stops Start.
@@ -420,7 +412,7 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
                         && !crate::membership::plaza_wide(&a.role)
                         && app.members.project_of(a.cid).is_none()
                 })
-                .map(|a| json!({"cid": a.cid, "name": a.name, "role": a.role, "status": a.status}))
+                .map(|a| json!({"cid": a.cid, "name": a.label(), "role": a.role, "status": a.status}))
                 .collect();
             Ok(json!({
                 "conversation": id,

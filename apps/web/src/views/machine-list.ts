@@ -6,7 +6,7 @@
 // prototype's (styles/proto/machines.css): `.mlist` rows, `.mt-*` tallies, bars, tables and chips.
 
 import { api, type Agent, type FleetApple, type MachineNode, type ProcessUsage, type Run, type StationView, type Vm, type VmUsage } from '../api';
-import { agentName, roleLabel } from '../roles';
+import { agentLabel, agentName, roleLabel } from '../roles';
 import { ago, badge, button, type Tone } from '../ui/components';
 import { deviceVisual } from '../ui/devices';
 import { h, icon, replace } from '../ui/dom';
@@ -553,7 +553,7 @@ function stationDetail(s: StationView): HTMLElement {
           h(
             'li',
             null,
-            [`Agent ${l.agent}`, l.state, l.task, l.state === 'queued' && l.position !== null ? `queue position ${l.position}` : null].filter(Boolean).join(' · '),
+            [agentLabel(l.agent), l.state, l.task, l.state === 'queued' && l.position !== null ? `queue position ${l.position}` : null].filter(Boolean).join(' · '),
           ),
         ),
       )

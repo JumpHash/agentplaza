@@ -7,7 +7,7 @@
 //! for code an OpenSpec change (proposal, design, spec deltas, tasks) in the project's repo,
 //! validated; for anything else the same shape without spec deltas: proposal (directions),
 //! design (the chosen direction in detail), tasks. Agents other than the author critique it and
-//! the planner revises. The mayor approves (the owner can approve or veto at any stage, and a
+//! the planner revises. The orchestrator approves (the owner can approve or veto at any stage, and a
 //! project marked `owner_approval` waits for the owner). Only then does the orchestrator post
 //! tasks, each linked to the project and carrying its acceptance from the plan.
 //!
@@ -126,7 +126,7 @@ pub struct Project {
     /// Bumped each time a proposal/design/spec/tasks/revision doc is attached at or after `proposal`.
     #[serde(default)]
     pub revision: u32,
-    /// Who approved the plan ("owner" or the mayor's name), once approved.
+    /// Who approved the plan ("owner" or the orchestrator's name), once approved.
     #[serde(default)]
     pub approved_by: Option<String>,
     /// Tasks posted for it (ids in the task ledger).
@@ -608,13 +608,13 @@ impl Store {
         })
     }
 
-    /// Approves the plan (stage "approval" → "implementation"): the mayor or the owner, or only
+    /// Approves the plan (stage "approval" → "implementation"): the orchestrator or the owner, or only
     /// the owner when `owner_approval`. The owner may also approve from "critique".
     pub fn approve(&self, id: &str, by: &Actor, note: &str) -> Result<Project, String> {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
             let owner = by.role == "owner";
-            // The mayor decides once the plan has been critiqued: approval does not wait for every
+            // The orchestrator decides once the plan has been critiqued: approval does not wait for every
             // reviewer to agree. Open "revise" items are recorded with the approval and carried
             // into the tasks' acceptance.
             let awaiting = matches!(p.stage.as_str(), "approval" | "critique");
@@ -624,8 +624,8 @@ impl Store {
             if p.owner_approval && !owner {
                 return Err("this project waits for the owner's approval".into());
             }
-            if !owner && by.role != "mayor" && by.role != "mayor-office" {
-                return Err("only the mayor or the owner can approve a plan".into());
+            if !owner && by.role != "orchestrator" {
+                return Err("only the orchestrator or the owner can approve a plan".into());
             }
             let author = p
                 .docs
@@ -777,7 +777,7 @@ pub fn gate(project: &Project, tasks_done: bool) -> Result<(), String> {
     }
 }
 
-/// The tools' specs, in the same shape as `society::spec`.
+/// The tools' specs, in the same shape as `toolbox::spec`.
 pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     let obj = |properties: Value, required: &[&str]| json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false});
     Some(match name {
@@ -814,7 +814,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             ),
         ),
         "plaza_project_approve" => (
-            "Approve a project's plan so implementation can start (the mayor; the owner can too).",
+            "Approve a project's plan so implementation can start (the orchestrator; the owner can too).",
             obj(
                 json!({"id": {"type": "string"}, "note": {"type": "string"}}),
                 &["id"],
@@ -855,11 +855,7 @@ fn repo_for(app: &App, project: &Project) -> Option<String> {
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     let actor = Actor {
         cid: agent.cid,
-        name: if agent.name.is_empty() {
-            agent.role.clone()
-        } else {
-            agent.name.clone()
-        },
+        name: agent.label(),
         role: agent.role.clone(),
     };
     // A project's agent works on its own project only; the orchestrator runs them all.
@@ -1089,7 +1085,7 @@ fn stage_hint(stage: &str) -> &'static str {
             "the planner writes proposal, design, tasks (and for code an OpenSpec change: openspec/changes/<id>/ with proposal.md, design.md, tasks.md, specs/; validate it with the openspec CLI in your VM). In the tasks list, end a task that needs others' results with (after: 1.1, 1.2); tasks without it run side by side"
         }
         "critique" => "agents other than the author critique with plaza_project_critique",
-        "approval" => "the mayor approves with plaza_project_approve",
+        "approval" => "the orchestrator approves with plaza_project_approve",
         "implementation" => {
             "the orchestrator posts the tasks list whole with plaza_tasks_post (each task's key, goal, acceptance and after): each task goes to a worker as soon as everything it runs after is done"
         }
@@ -1400,10 +1396,6 @@ mod tests {
         who(4, "critic", "critic")
     }
 
-    fn mayor() -> Actor {
-        who(5, "mayor", "mayor")
-    }
-
     fn doc(kind: &str, title: &str) -> Doc {
         Doc {
             kind: kind.into(),
@@ -1543,9 +1535,9 @@ mod tests {
         assert_eq!(store.advance(&id, &lead(), "").unwrap().stage, "approval");
         let err = store.advance(&id, &lead(), "").unwrap_err();
         assert!(err.contains("plaza_project_approve"), "{err}");
-        let p = store.approve(&id, &mayor(), "").unwrap();
+        let p = store.approve(&id, &lead(), "").unwrap();
         assert_eq!(p.stage, "implementation");
-        assert_eq!(p.approved_by.as_deref(), Some("mayor"));
+        assert_eq!(p.approved_by.as_deref(), Some("lead"));
     }
 
     #[test]
@@ -1559,12 +1551,12 @@ mod tests {
     }
 
     #[test]
-    fn owner_approval_refuses_a_mayor() {
+    fn owner_approval_refuses_the_orchestrator() {
         let (_dir, store) = fresh("owner");
         let id = to_critique(&store, "other", true);
         store.critique(&id, &critic(), "approve", "Fine.").unwrap();
         store.advance(&id, &lead(), "").unwrap();
-        let err = store.approve(&id, &mayor(), "").unwrap_err();
+        let err = store.approve(&id, &lead(), "").unwrap_err();
         assert!(err.contains("owner's approval"), "{err}");
         assert_eq!(
             store.approve(&id, &Actor::owner(), "").unwrap().stage,

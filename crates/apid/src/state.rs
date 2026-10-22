@@ -107,11 +107,7 @@ pub struct App {
     pub config: Config,
     /// The event bus every module publishes on (the sockets at `/v1/ws` subscribe to it).
     pub bus: events::Bus,
-    /// Linked-note memory libraries, under <state-dir>/memory.
-    pub memory: crate::memory::Memory,
-    /// Contacts and opinions between agents (AP-071/AP-072), at `<state-dir>/bonds.json`.
-    pub bonds: apz_plaza::bonds::Bonds,
-    /// The plaza's laws (JHRL), enforced on every tool call, and the violations on record.
+    /// The plaza's laws (JHRL), enforced on every tool call.
     pub laws: &'static crate::laws::Laws,
     /// External-tool connectors (AP-063): settings and vaulted keys.
     pub connectors: crate::connectors::Store,
@@ -124,8 +120,6 @@ pub struct App {
     pub library: crate::library::Store,
     /// The Library of deliverables: files agents handed in, in Garage or a local folder.
     pub deliverables: Arc<crate::deliverables::Store>,
-    /// Hire bonuses and posting counts.
-    pub society: crate::society::Society,
     /// What agents found on the internet and judged, for every agent to use.
     pub toolbox: crate::toolbox::Store,
     /// Projects: every goal's flow from brief to delivery.
@@ -152,6 +146,19 @@ pub struct App {
     pub reviews: crate::review_graph::Reviews,
     /// Postgres, the plaza's state of record (memory is the working copy).
     pub db: Arc<crate::db::Db>,
+    /// The hub's store: SQLite in the state folder (store/mod.rs). Memory is the working copy; the saver keeps the
+    /// components' tables equal to it.
+    pub store: Arc<apz_store::Store>,
+    /// What each component last saved (store/saver.rs).
+    pub saved: crate::store::saver::Ledger,
+    /// The work engine's sessions (sessions.rs), the seats of tasks (seats.rs), the budgets (budgets.rs), the cards
+    /// waiting for the owner (cards.rs), the chats (chats.rs) and the seats' threads (threads.rs).
+    pub sessions: crate::sessions::Sessions,
+    pub seats: crate::seats::Seats,
+    pub budgets: crate::budgets::Budgets,
+    pub cards: crate::cards::Cards,
+    pub chats: crate::chats::Chats,
+    pub threads: crate::threads::Threads,
     /// The unfurl answers for the references clients show as chips (unfurl/mod.rs); the memory fallback when there is no Postgres.
     pub unfurl: crate::unfurl::Cache,
     /// STOP ALL / resume.
@@ -170,8 +177,6 @@ pub struct App {
     pub usage: crate::usage::Ledger,
     /// Metrics: what the hub records, what nodes send, the store, alerts and the `/v1/metrics` routes.
     pub metrics: crate::metrics::Metrics,
-    /// Each agent's robot species (dealt on its first hello, or set by the owner).
-    pub looks: crate::looks::Looks,
     /// The Foundry: recipes, datasets, training jobs and their series (`<state>/foundry`).
     pub foundry: crate::foundry::store::Foundry,
     /// MCP servers the owner added: their config, their tool listings and their running instances.
@@ -203,8 +208,6 @@ pub struct App {
     pub models: crate::foundry::registry::Models,
     /// The Hugging Face import queue and the owner's token (foundry/hf_import.rs).
     pub hf: crate::foundry::hf_import::Imports,
-    /// Agent names by CID, persisted at `<state-dir>/names.json`.
-    pub names: agents::Names,
     /// Operator-spawned agents and model overrides, at `<state-dir>/spawned.json`.
     pub spawned: spawned::Store,
     pub transcripts: transcript::Store,
@@ -221,8 +224,6 @@ pub struct App {
 impl App {
     /// Loads the state, starts the background threads and serves.
     pub fn start(config: Config) -> std::io::Result<apz_http::Handle> {
-        // Parse the species index now: a broken index stops the hub here, not at the first hello.
-        crate::looks::catalog();
         let env = config
             .env_file
             .as_deref()
@@ -240,6 +241,8 @@ impl App {
             crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
                 .map_err(std::io::Error::other)?;
         let foundry_dir = config.state_dir.join("foundry");
+        // The store first: it takes the folder's lock, so a second hub on this folder stops here.
+        let store = Arc::new(crate::store::open(&config.state_dir).map_err(std::io::Error::other)?);
         let db = Arc::new(crate::db::Db::connect(&env));
         let vault_db = db.enabled().then(|| Arc::clone(&db));
         let roster_db = db.enabled().then(|| Arc::clone(&db));
@@ -267,8 +270,6 @@ impl App {
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
-            memory: crate::memory::Memory::new(config.state_dir.join("memory")),
-            bonds: apz_plaza::bonds::Bonds::load(Some(config.state_dir.join("bonds.json"))),
             laws: attached_laws(&config.state_dir),
             connectors: crate::connectors::Store::load(&config.state_dir, Arc::clone(&vault))?,
             approvals: crate::approvals::Store::load(&config.state_dir),
@@ -276,7 +277,6 @@ impl App {
             engine_feed: crate::engine_feed::Feed::default(),
             library: crate::library::Store::load(&config.state_dir),
             deliverables: Arc::clone(&library),
-            society: crate::society::Society::default(),
             toolbox: crate::toolbox::Store::load(&config.state_dir),
             projects: crate::projects::Store::load(&config.state_dir),
             members: crate::membership::Members::load(config.state_dir.join("members.json")),
@@ -294,6 +294,14 @@ impl App {
             environments: crate::environments::Store::load(&config.state_dir),
             reviews: crate::review_graph::Reviews::load(&config.state_dir),
             db: Arc::clone(&db),
+            store: Arc::clone(&store),
+            saved: crate::store::saver::Ledger::default(),
+            sessions: Default::default(),
+            seats: Default::default(),
+            budgets: Default::default(),
+            cards: Default::default(),
+            chats: Default::default(),
+            threads: Default::default(),
             unfurl: crate::unfurl::Cache::default(),
             vault: Arc::clone(&vault),
             control: crate::control::Control::default(),
@@ -310,7 +318,6 @@ impl App {
                     .filter(|u| !u.trim().is_empty()),
                 apz_plaza::now_ms(),
             ),
-            looks: crate::looks::Looks::open(config.state_dir.join("looks.json")),
             foundry: crate::foundry::store::Foundry::open(foundry_dir, apz_plaza::now_ms()),
             mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port),
             hub_auth,
@@ -356,7 +363,6 @@ impl App {
             engines: crate::engine_instances::Store::load(&config.state_dir)?,
             usage_providers: crate::usage_providers::Store::load(&config.state_dir)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
-            names: agents::Names::load(config.state_dir.join("names.json")),
             spawned: spawned::Store::load(config.state_dir.join("spawned.json")),
             agents: agents::Roster::with_db(roster_db),
             models: crate::foundry::registry::Models::open(&config.state_dir),
@@ -391,20 +397,19 @@ impl App {
                 std::thread::sleep(std::time::Duration::from_secs(60 * 60));
             }
         });
-        // Every note an agent writes is a live `memory` event for the console.
-        let weak = Arc::downgrade(&app);
         let _ = app.me.set(Arc::downgrade(&app));
-        app.memory.set_listener(move |cid, meta| {
-            if let Some(app) = weak.upgrade() {
-                app.bus.publish("memory", &serde_json::json!({ "cid": cid, "slug": meta.slug, "title": meta.title, "kind": meta.kind }));
-            }
-        });
         // A treasury.json that was refused is kept aside, not overwritten by the next save.
         if snapshot.is_some() && !app.plaza.restored {
             let path = app.config.state_dir.join("treasury.json");
             let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
         }
-        // Postgres is the state of record: restore from it, then keep it current.
+        // The store is the state of record: every converted component loads from it.
+        for problem in crate::store::saver::load(&app) {
+            eprintln!("apid: store: {problem}");
+        }
+        // A budget hold is written through to plaza.db, acknowledged before its call is sent (budgets.rs).
+        app.budgets.attach(Arc::clone(app.store.db(crate::store::PLAZA)));
+        // Postgres, for the components not yet in the store.
         crate::db::restore_all(&app);
         // The built-in skills join the skill library (one the library already holds is left alone).
         if let Err(why) = crate::skills::seed_builtins(&app.skills, "owner", apz_plaza::now_ms()) {
@@ -432,8 +437,9 @@ impl App {
         crate::weft_hub::start(Arc::clone(&app));
         crate::shares::relay::start(Arc::clone(&app));
         // Promoted models come back on the roster with their CIDs.
-        app.models.revive(&app.agents, &app.looks);
+        app.models.revive(&app.agents);
         crate::db::spawn_writer(Arc::clone(&app));
+        crate::store::saver::spawn(Arc::clone(&app));
         spawn_treasury_saver(Arc::clone(&app));
         spawn_component_savers(Arc::clone(&app));
         // A stop signal (SIGTERM, Ctrl-C) writes the state once more, in order, then exits (shutdown.rs).
@@ -447,10 +453,13 @@ impl App {
             save_archives(&app);
             save_treasury(&app);
             save_components(&app);
+            crate::store::saver::pass(&app);
             crate::db::write_pass(&app);
+            app.store.close();
             crate::weft_hub::stop(&app);
         });
         crate::provider_health::spawn(Arc::clone(&app));
+        crate::providers::spawn_refresher(Arc::clone(&app));
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
         crate::maintenance::spawn_ticker(Arc::clone(&app));
@@ -550,9 +559,9 @@ fn read_env_file(path: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Saves the Foundry (`<state>/foundry/state.json`) and the looks (`<state>/looks.json`) every three
-/// seconds whenever they changed. Their files are the copy at start when Postgres does not hold them
-/// yet; a component whose load failed is not written (db::Db::is_held).
+/// Saves the Foundry (`<state>/foundry/state.json`) every three seconds whenever it changed. Its file is
+/// the copy at start when Postgres does not hold it yet; a component whose load failed is not written
+/// (db::Db::is_held).
 fn spawn_component_savers(app: Arc<App>) {
     std::thread::spawn(move || {
         loop {
@@ -605,11 +614,6 @@ fn save_components(app: &App) {
         && let Err(err) = app.foundry.save()
     {
         eprintln!("apid: cannot save the foundry: {err}");
-    }
-    if !app.db.is_held("looks")
-        && let Err(err) = app.looks.save()
-    {
-        eprintln!("apid: cannot save the looks: {err}");
     }
 }
 

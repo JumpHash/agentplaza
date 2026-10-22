@@ -551,7 +551,7 @@ pub fn workspaces(agents: &[Agent], stations: &[StationSpace], repos: &[RepoSpac
                 "owner": agent.cid.to_string(),
                 "ref": null,
                 "root": "/workspace",
-                "name": agent.name,
+                "name": agent.label(),
                 "writable": true,
                 "status": status_name(agent.status),
             })
@@ -2023,7 +2023,6 @@ mod tests {
     fn agent(cid: u64, run: Option<&str>, vm: Option<u32>, status: Status) -> Agent {
         Agent {
             cid,
-            name: format!("agent-{cid}"),
             role: "worker".into(),
             model_override: None,
             status,
@@ -2032,7 +2031,6 @@ mod tests {
             run: run.map(str::to_string),
             vm,
             usage: Usage::default(),
-            species: String::new(),
             kind: "llm".into(),
             caps: Vec::new(),
         }

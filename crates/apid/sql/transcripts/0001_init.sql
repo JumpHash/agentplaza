@@ -1,0 +1,2 @@
+-- transcripts.db, schema 1 (the clean break, W3): every session's transcript, appended as it happens. STRICT, typed,
+-- no JSON (W69): each entry's kind has its own columns; what a model or a tool wrote is kept as written in *_content.

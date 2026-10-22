@@ -7,6 +7,7 @@
 // data: the agents from the store, projects, tasks, IDE workspaces, the workstations, the conversations and the pending
 // approvals, polled every 20 s. Nothing here is shared with the shell.
 
+import { agentName } from '../roles';
 import { api, ideApi, type Agent, type IdeWorkspaceInfo, type OwnerConversationSummary, type Project, type StationView, type Task } from '../api';
 import { openConversation } from '../ide/open';
 import { hrefIn } from '../router';
@@ -16,7 +17,7 @@ import { openNewProject } from '../ui/new-project';
 import { brandMark } from '../ui/brand';
 import { ago } from '../ui/components';
 import { h, lu } from '../ui/dom';
-import { matchingRows, NONE_GID, sharedNames, sidebarGroups, type SidebarGroup } from '../ide/groups';
+import { matchingRows, NONE_GID, sidebarGroups, type SidebarGroup } from '../ide/groups';
 import { osLabel } from '../ide/model';
 import { currentTask, rowStatus, type RowStatus } from '../ide/view';
 import { stationBadge } from './station-machine';
@@ -87,7 +88,7 @@ function cardLine(label: string, value: string): HTMLElement {
 
 function fillCard(el: HTMLElement, a: Agent): void {
   el.replaceChildren(
-    h('div.ide-card-n', null, a.name || `Agent ${a.cid}`),
+    h('div.ide-card-n', null, agentName(a)),
     h('dl.ide-card-l', null,
       cardLine('Role', a.role_label || a.role || '—'),
       cardLine('Model', a.model || '—'),
@@ -358,12 +359,12 @@ export function sidebar(opts: SidebarOpts): Sidebar {
       h('span.ide-grp-n', null, String(g.count)));
   }
 
-  /** An agent's row: its status dot, its name (the cid when another agent in the group has the same name), its task. */
-  function agentRow(a: Agent, shared: Set<number>): HTMLElement {
+  /** An agent's row: its status dot, its label (role and CID), its task. */
+  function agentRow(a: Agent): HTMLElement {
     const key = `agent:${a.cid}`;
     const st = rowStatus(a, null);
     const task = currentTask(a);
-    const name = a.name || `Agent ${a.cid}`;
+    const name = agentName(a);
     return h('button.ide-row.ide-agent', {
       type: 'button',
       'data-key': key,
@@ -379,14 +380,14 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     },
       h('span.ide-dot', { 'data-status': st, 'aria-label': STATUS_WORD[st], title: STATUS_WORD[st] }),
       h('span.ide-row-txt', null,
-        h('span.ide-row-name', null, name, shared.has(a.cid) ? h('span.ide-cid', { title: `Agent ${a.cid}` }, `#${a.cid}`) : null),
+        h('span.ide-row-name', null, name),
         task ? h('span.ide-row-task', { title: task }, task) : null));
   }
 
   /** The agent's terminal row, under the agent: shown only while a terminal exists for its workspace. */
   function termRow(a: Agent, count: number): HTMLElement {
     const key = `term:${a.cid}`;
-    const name = a.name || `Agent ${a.cid}`;
+    const name = agentName(a);
     return h('button.ide-row.ide-term', {
       type: 'button',
       'data-key': key,
@@ -502,9 +503,8 @@ export function sidebar(opts: SidebarOpts): Sidebar {
       const open = needsOnly || isOpen(g, q, hasProjects);
       nodes.push(groupHead(g, open));
       if (!open) continue;
-      const shared = sharedNames(g.agents);
       for (const a of agentsShown) {
-        nodes.push(agentRow(a, shared));
+        nodes.push(agentRow(a));
         const terminals = needsOnly ? 0 : storedTerminalCount(browserSession(), `agent:${a.cid}`);
         if (terminals > 0) nodes.push(termRow(a, terminals));
       }

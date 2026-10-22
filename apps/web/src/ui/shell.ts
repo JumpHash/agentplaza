@@ -7,6 +7,7 @@ import { api, type Approval, type OwnerConversationSummary, type Project, type T
 import { hrefIn, type Route } from '../router';
 import { isLive, projects, scope, switchTo } from '../scope';
 import { agents, overview } from '../store';
+import { agentName } from '../roles';
 import { openIde } from '../ide/open';
 import { openNewProject } from './new-project';
 import { stopAll } from './plaza-control';
@@ -31,10 +32,7 @@ export const MORE: [string, LucideName, string][] = [
   ['tasks', 'list-checks', 'Tasks'],
   ['metrics', 'chart-column', 'Metrics'],
   ['library', 'library', 'Library'],
-  ['society', 'network', 'Society'],
-  ['conversations', 'messages-square', 'Conversations'],
   ['board', 'pin', 'Board'],
-  ['council', 'landmark', 'Council'],
   ['treasury', 'coins', 'Treasury'],
   ['rules', 'scale', 'Rules'],
   ['lab', 'flask-conical', 'Lab'],
@@ -191,7 +189,7 @@ export function openPalette(): void {
   const items: Item[] = [
     ...[...NAV, ...MORE].map(([k, ic, l]) => ({ group: 'Go to', icon: ic, label: l, hint: 'Screen', to: `#/${k}` })),
     ...projects.get().filter(isLive).map((p) => ({ group: 'Projects', icon: 'folder' as LucideName, label: p.title, hint: STAGE[p.stage] ?? p.stage, to: `#/projects/${encodeURIComponent(p.id)}/plan` })),
-    ...agents.get().map((a) => ({ group: 'Agents', icon: 'bot' as LucideName, label: a.name, hint: a.role ?? '', to: `#/agents/${a.cid}` })),
+    ...agents.get().map((a) => ({ group: 'Agents', icon: 'bot' as LucideName, label: agentName(a), hint: a.role ?? '', to: `#/agents/${a.cid}` })),
     ...SETTINGS.flatMap(([g, gl, list]) =>
       list.map(([k, l]) => ({ group: 'Settings', icon: GROUP_ICON[g] ?? 'settings', label: l === gl ? l : `${gl}: ${l}`, hint: 'Settings', to: `#/settings/${g}/${k}` })),
     ),
@@ -384,7 +382,7 @@ function sidebarBody(route: Route): HTMLElement[] {
             'a.thread',
             { href: to, 'aria-current': hash === to ? 'page' : null },
             h('div.t1', null, h('span.tt', null, (t as { goal?: string }).goal ?? t.id), h('span.ago', null, shortAgo((t as { updated_at?: number; updated_ms?: number }).updated_ms ?? (t as { updated_at?: number }).updated_at))),
-            h('div.t2', null, h('span.mono', null, t.id), who ? h('span', null, who.name) : null, h('span.sp'), taskChip(t)),
+            h('div.t2', null, h('span.mono', null, t.id), who ? h('span', null, agentName(who)) : null, h('span.sp'), taskChip(t)),
           ),
         );
       }
@@ -493,7 +491,7 @@ function liveItems(): { text: string; tone: string; to: string }[] {
       const work = (a as { work?: { origin?: { task?: string } } | null }).work;
       const step = (a as { step?: { stage?: string; tool?: string } | null }).step;
       const verb = step?.stage === 'approval' ? 'waits on you' : step?.stage === 'tool' ? `runs ${step.tool ?? 'a tool'}` : step?.stage === 'streaming' ? 'is writing' : 'is thinking';
-      return { text: `${a.name} ${verb} · ${work?.origin?.task ?? 'chat'}`, tone: step?.stage === 'approval' ? 'needs' : 'live', to: step?.stage === 'approval' ? '#/approvals' : `#/agents/${a.cid}` };
+      return { text: `${agentName(a)} ${verb} · ${work?.origin?.task ?? 'chat'}`, tone: step?.stage === 'approval' ? 'needs' : 'live', to: step?.stage === 'approval' ? '#/approvals' : `#/agents/${a.cid}` };
     });
 }
 function drawLive(): void {

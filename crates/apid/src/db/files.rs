@@ -1,9 +1,8 @@
-//! The file fallback for transcripts, infractions and the IDE audit: used when apid runs without Postgres
+//! The file fallback for transcripts and the IDE audit: used when apid runs without Postgres
 //! (`APZ_DATABASE_URL` unset), with the same operations and orders as the Postgres queries in
 //! `sql`. Append-only JSON lines, one record per line:
 //!
 //!   <state_dir>/transcripts/<cid>.jsonl        (newest) and <cid>.1.jsonl, <cid>.2.jsonl
-//!   <state_dir>/infractions.jsonl              (newest) and infractions.1.jsonl, infractions.2.jsonl
 //!   <state_dir>/ide-audit.jsonl                (newest) and ide-audit.1.jsonl, ide-audit.2.jsonl
 //!   <state_dir>/station-audit.jsonl            (newest) and station-audit.1.jsonl, station-audit.2.jsonl
 //!   <state_dir>/station-recordings.jsonl       (newest) and .1, .2: the recordings' index, a put or a delete per line
@@ -37,7 +36,6 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::Infraction;
 use crate::stations::recordings::{Event, FrameTime, Recording};
 use crate::stations::sync::Row;
 
@@ -116,40 +114,17 @@ struct FrameIn {
     ts_ms: u64,
 }
 
-#[derive(Serialize)]
-struct InfractionOut<'a> {
-    id: u64,
-    cid: u64,
-    law: &'a str,
-    at_ms: u64,
-    tool: &'a str,
-    detail: &'a str,
-}
-
-#[derive(Deserialize)]
-struct InfractionIn {
-    id: u64,
-    cid: u64,
-    law: String,
-    at_ms: u64,
-    tool: String,
-    detail: String,
-}
-
 /// The open files and the per-cid bookkeeping, under one lock.
 #[derive(Default)]
 struct Open {
     transcripts: HashMap<u64, Option<File>>,
     /// The highest seq stored per cid (None: nothing stored), read lazily from the tail.
     high: HashMap<u64, Option<u64>>,
-    infractions: Option<File>,
     ide_audit: Option<File>,
     station_audit: Option<File>,
     station_recordings: Option<File>,
     recording_events: Option<File>,
     recording_frames: Option<File>,
-    /// The next infraction id (read lazily from the tail; ids start at 1, as a bigserial does).
-    next_id: Option<u64>,
     /// Appended since the last `sync`.
     dirty: bool,
 }
@@ -183,10 +158,6 @@ impl Files {
 
     fn transcript_path(&self, cid: u64) -> PathBuf {
         self.dir.join("transcripts").join(format!("{cid}.jsonl"))
-    }
-
-    fn infraction_path(&self) -> PathBuf {
-        self.dir.join("infractions.jsonl")
     }
 
     fn ide_audit_path(&self) -> PathBuf {
@@ -308,65 +279,6 @@ impl Files {
             remove_if_exists(&file).map_err(text)?;
         }
         Ok(())
-    }
-
-    /// Appends one infraction, with the next id.
-    pub fn append_infraction(&self, infraction: &Infraction) -> Result<(), String> {
-        let mut guard = self.lock();
-        let open = &mut *guard;
-        let id = match open.next_id {
-            Some(id) => id,
-            None => self
-                .newest(&self.infraction_path(), |r: &InfractionIn| r.id)
-                .map_err(text)?
-                .map_or(1, |last| last + 1),
-        };
-        let line = to_line(&InfractionOut {
-            id,
-            cid: infraction.cid,
-            law: &infraction.law,
-            at_ms: infraction.at_ms,
-            tool: &infraction.tool,
-            detail: &infraction.detail,
-        })?;
-        self.append_line(&mut open.infractions, &self.infraction_path(), &line, false)
-            .map_err(text)?;
-        open.next_id = Some(id + 1);
-        open.dirty = true;
-        Ok(())
-    }
-
-    /// Infractions, newest first (by `at_ms`, then id): one agent's (`Some(cid)`) or the plaza's.
-    pub fn infractions(&self, cid: Option<u64>, limit: i64) -> Result<Vec<Infraction>, String> {
-        let limit = limit.max(0) as usize;
-        let _guard = self.lock();
-        let mut rows: Vec<InfractionIn> = Vec::new();
-        for file in generations(&self.infraction_path()) {
-            if rows.len() >= limit {
-                break;
-            }
-            for_each_line_rev(&file, self.chunk, |line| {
-                if let Ok(row) = serde_json::from_slice::<InfractionIn>(line)
-                    && cid.is_none_or(|wanted| wanted == row.cid)
-                {
-                    rows.push(row);
-                }
-                rows.len() < limit
-            })
-            .map_err(text)?;
-        }
-        rows.sort_by_key(|r| std::cmp::Reverse((r.at_ms, r.id)));
-        rows.truncate(limit);
-        Ok(rows
-            .into_iter()
-            .map(|r| Infraction {
-                cid: r.cid,
-                law: r.law,
-                at_ms: r.at_ms,
-                tool: r.tool,
-                detail: r.detail,
-            })
-            .collect())
     }
 
     /// Appends one IDE audit row and fsyncs it before returning: an owner action is on disk when its answer is.
@@ -641,12 +553,7 @@ impl Files {
         if !open.dirty {
             return Ok(());
         }
-        for file in open
-            .transcripts
-            .values()
-            .flatten()
-            .chain(open.infractions.iter())
-        {
+        for file in open.transcripts.values().flatten() {
             file.sync_all().map_err(text)?;
         }
         open.dirty = false;
@@ -1057,48 +964,6 @@ mod tests {
         );
         assert!(rows[0] > 1, "the oldest generation was dropped");
         assert_eq!(seqs(&files.transcript(5, 3).unwrap()), vec![28, 29, 30]);
-    }
-
-    #[test]
-    fn infractions_page_newest_first_and_keep_their_ids_across_a_restart() {
-        let dir = state("infractions");
-        let infraction = |cid, at_ms, detail: &str| Infraction {
-            cid,
-            law: "law.test".into(),
-            at_ms,
-            tool: "tool.test".into(),
-            detail: detail.into(),
-        };
-        let files = Files::open(&dir);
-        files.append_infraction(&infraction(1, 10, "a")).unwrap();
-        files.append_infraction(&infraction(2, 20, "b")).unwrap();
-        files.append_infraction(&infraction(1, 20, "c")).unwrap();
-        drop(files);
-
-        let files = Files::open(&dir);
-        files.append_infraction(&infraction(1, 30, "d")).unwrap();
-        let details =
-            |rows: Vec<Infraction>| rows.into_iter().map(|r| r.detail).collect::<Vec<_>>();
-        assert_eq!(
-            details(files.infractions(None, 10).unwrap()),
-            vec!["d", "c", "b", "a"]
-        );
-        assert_eq!(
-            details(files.infractions(Some(1), 10).unwrap()),
-            vec!["d", "c", "a"]
-        );
-        assert_eq!(details(files.infractions(Some(1), 1).unwrap()), vec!["d"]);
-        let ids: Vec<u64> = {
-            let text = fs::read_to_string(dir.join("infractions.jsonl")).unwrap();
-            text.lines()
-                .map(|l| {
-                    serde_json::from_str::<Value>(l).unwrap()["id"]
-                        .as_u64()
-                        .unwrap()
-                })
-                .collect()
-        };
-        assert_eq!(ids, vec![1, 2, 3, 4], "ids continue after the restart");
     }
 
     /// The IDE audit: rows come back newest first (by at_ms, then the later row first), filtered by

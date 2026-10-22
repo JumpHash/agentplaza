@@ -327,8 +327,7 @@ pub fn agent_deliver(app: &App, cid: u64, station: &str, path: &str) -> Result<V
         _ => app
             .agents
             .get(cid)
-            .map(|agent| agent.name)
-            .filter(|name| !name.is_empty())
+            .map(|agent| agent.label())
             .unwrap_or_else(|| format!("agent {cid}")),
     };
     let task = app

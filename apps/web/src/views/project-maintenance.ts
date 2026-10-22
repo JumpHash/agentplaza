@@ -7,6 +7,7 @@
 // what the watchers read and the settings sit below. Expert shows every field and the decided proposals. The markup is
 // the prototype's Maintenance tab (styles/proto/projects.css); the rules are in maintenance-model.ts.
 
+import { agentLabel, agentName } from '../roles';
 import { api, type Agent, type Project } from '../api';
 import { projectsApi, SIGNAL_KINDS, type Area, type Maintenance, type Proposal, type Signal, type SignalKind } from '../api-projects';
 import { on } from '../store';
@@ -86,7 +87,7 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
   let names = new Map<number, string>();
   let timer = 0;
 
-  const nameOf = (cid: number): string => names.get(cid) ?? `agent ${cid}`;
+  const nameOf = (cid: number): string => names.get(cid) ?? agentLabel(cid);
 
   const load = async (): Promise<void> => {
     const [m, agents] = await Promise.all([
@@ -95,7 +96,7 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
     ]);
     if (shown && !root.isConnected) return;
     if (m) data = m;
-    names = new Map(agents.map((a) => [a.cid, a.name || `agent ${a.cid}`]));
+    names = new Map(agents.map((a) => [a.cid, agentName(a)]));
     draw();
   };
   const schedule = (): void => {

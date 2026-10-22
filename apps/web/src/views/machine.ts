@@ -4,7 +4,7 @@
 // details. The topology's machine blocks open their row.
 
 import { api, type Agent, type MachineNode, type Overview, type StationView } from '../api';
-import { on } from '../store';
+import { on, RESYNC } from '../store';
 import { attempt, badge, empty } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { agentCount, isLive, KIND_LABEL, machineList, machineRow, machineVms, newRunState, normalizeMachines } from './machine-list';
@@ -88,6 +88,24 @@ export function mountList(root: HTMLElement): Cleanup {
     list.open(id);
   };
 
+  /** Draws the control plane and the rows from what the hub answered (the copy first, then each fresh read). */
+  const paint = (o: Overview | null, fetched: MachineNode[], agentList: Agent[], stations: StationView[]): void => {
+    // A partial reply (a machine without its gpus, runs or vms) renders as empty, never as an error.
+    // The workstations follow the nodes, in the order the hub returned them.
+    const nodes = [...normalizeMachines(fetched), ...(stations ?? []).map(stationMachine)];
+    overview = o;
+    machines = nodes;
+    agentsByCid = new Map<number, Agent>((agentList ?? []).map((a): [number, Agent] => [a.cid, a]));
+    if (!nodes.some((m) => m.id === selectedId)) selectedId = nodes[0]?.id ?? null;
+    const runIds = new Set(nodes.flatMap((m) => (m.runs ?? []).map((r) => r.id)));
+    for (const id of Array.from(rs.expanded)) if (!runIds.has(id)) rs.expanded.delete(id);
+    replace(topoBox, topology(o, nodes, selectedId, pick));
+    list.setRows(
+      nodes.map((m) => machineRow(m, agentsByCid, rs)),
+      nodes.length ? null : empty('machine', 'No machines.'),
+    );
+  };
+
   const refresh = async (): Promise<void> => {
     try {
       const [o, fetched, agentList, stations] = await Promise.all([
@@ -97,20 +115,7 @@ export function mountList(root: HTMLElement): Cleanup {
         api.stations().catch((): StationView[] => []),
       ]);
       if (!alive) return;
-      // A partial reply (a machine without its gpus, runs or vms) renders as empty, never as an error.
-      // The workstations follow the nodes, in the order the hub returned them.
-      const nodes = [...normalizeMachines(fetched), ...(stations ?? []).map(stationMachine)];
-      overview = o;
-      machines = nodes;
-      agentsByCid = new Map<number, Agent>((agentList ?? []).map((a): [number, Agent] => [a.cid, a]));
-      if (!nodes.some((m) => m.id === selectedId)) selectedId = nodes[0]?.id ?? null;
-      const runIds = new Set(nodes.flatMap((m) => (m.runs ?? []).map((r) => r.id)));
-      for (const id of Array.from(rs.expanded)) if (!runIds.has(id)) rs.expanded.delete(id);
-      replace(topoBox, topology(o, nodes, selectedId, pick));
-      list.setRows(
-        nodes.map((m) => machineRow(m, agentsByCid, rs)),
-        nodes.length ? null : empty('machine', 'No machines.'),
-      );
+      paint(o, fetched, agentList, stations);
     } catch (err) {
       if (!alive) return;
       replace(topoBox);
@@ -127,7 +132,10 @@ export function mountList(root: HTMLElement): Cleanup {
       void refresh();
     }, 500);
   };
-  const offs = [on('run', schedule), on('vm', schedule)];
+  // The last read paints at once; the poll's reads (each a 304 when nothing changed) follow.
+  const kept = api.machines.cached();
+  if (kept) paint(api.overview.cached() ?? null, kept, api.agents.cached() ?? [], api.stations.cached() ?? []);
+  const offs = [on('run', schedule), on('vm', schedule), on(RESYNC, schedule)];
   const poll = setInterval(() => void refresh(), POLL_MS);
   void refresh();
   return () => {

@@ -1,5 +1,6 @@
 // The console: the shell (sidebar, top bar, banners) and the screen mount.
 
+import { agentLabel, agentName } from './roles';
 import { api, ApiError } from './api';
 // The plaza control's styles load with the console (the IDE's held strip uses them too), so the CSS is imported here, not
 // in the module: a lazy screen that imports the module would otherwise split the styles into a stylesheet of its own.
@@ -64,7 +65,7 @@ function crumbsOf(route: Route, screenLabel: string): Crumbs {
   }
   if (route.screen === 'agents' && a) {
     const ag = agents.get().find((x) => String(x.cid) === a);
-    return { parts: ['Agents', ag ? ag.name : `agent ${a}`] };
+    return { parts: ['Agents', ag ? agentName(ag) : agentLabel(a)] };
   }
   if (a && ['machines', 'history', 'tasks'].includes(route.screen)) return { parts: [label, a] };
   return { parts: [label] };

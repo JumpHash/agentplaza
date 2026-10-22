@@ -761,10 +761,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
 /// its noded answers. Its `machine` is its noded's view (`workstation_backends` among the facts)
 /// over the hub's own summary.
 pub(crate) fn local_node(app: &App) -> Node {
-    let noded = app.noded.get("/v1/machine");
-    let local_up = matches!(noded, Ok((200, _)));
+    let noded = crate::probes::latest(app).machine;
+    let local_up = noded.is_some();
     let mut node = local_record(app, local_up);
-    if let (Ok((200, serde_json::Value::Object(facts))), serde_json::Value::Object(summary)) =
+    if let (Some(serde_json::Value::Object(facts)), serde_json::Value::Object(summary)) =
         (noded, &mut node.machine)
     {
         for (key, value) in facts {
@@ -776,7 +776,7 @@ pub(crate) fn local_node(app: &App) -> Node {
 
 /// Whether `n0`'s noded answers.
 fn local_up(app: &App) -> bool {
-    matches!(app.noded.get("/v1/machine"), Ok((200, _)))
+    crate::probes::latest(app).noded_up()
 }
 
 /// `n0`'s record with the hub's own summary as its machine: seen now while its noded answers

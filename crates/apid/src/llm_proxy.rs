@@ -2233,7 +2233,7 @@ data: [DONE]\n\n";
     const PAYER: u64 = 7;
 
     /// A treasury where agent `PAYER` has `wallet` credits (paid from the task "job", whose
-    /// escrow keeps 1000 credits), built as the sanctions tests build one.
+    /// escrow keeps 1000 credits).
     fn funded(wallet: i64) -> Treasury {
         let treasury = Treasury::new(apz_plaza::events::EventBus::new());
         if wallet > 0 {

@@ -437,7 +437,7 @@ mod tests {
         palette.on_key(key(KeyCode::Down));
         assert_eq!(
             palette.on_key(key(KeyCode::Enter)),
-            Step::Run(Action::GoTo(Tab::Agents))
+            Step::Run(Action::GoTo(Tab::Tasks))
         );
     }
 
@@ -499,7 +499,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(screen.contains("Type a command"));
-        assert!(screen.contains("Go to Floor"));
+        assert!(screen.contains("Go to Overview"));
         assert!(screen.contains("Esc"));
     }
 }

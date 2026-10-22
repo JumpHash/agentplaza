@@ -1,10 +1,9 @@
-//! `agentplaza tui`: the terminal UI — the plaza drawn live on the floor, and every console area as
-//! a tab, fed by the hub's endpoints and its live events. `p` switches the project the Agents and
-//! Tasks tabs show (see `scope`), and the Chat tab talks to the orchestrator. The first start shows
-//! a short setup and a tour (see `onboarding`); `--setup` and `--tour` show them again.
+//! `agentplaza tui`: the terminal UI — every console area as a tab, fed by the hub's endpoints and
+//! its live events. `p` switches the project the Agents and Tasks tabs show (see `scope`), and the
+//! Chat tab talks to the orchestrator. The first start shows a short setup and a tour (see
+//! `onboarding`); `--setup` and `--tour` show them again.
 
 pub mod context_bar;
-pub mod floor;
 
 mod app;
 mod cmdk;

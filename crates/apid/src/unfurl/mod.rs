@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use apz_http::{Request, Response, RouteDoc, Router};
-use apz_rich::{AgentName, Ctx, Ref, Span};
+use apz_rich::{Ctx, Ref, Span};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -346,7 +346,7 @@ fn segment_ok(text: &str) -> bool {
 /// The answer for a reference the hub reads itself: agents, tasks, deliverables and library tools. None for the rest.
 fn local(app: &App, r: &Ref) -> Option<Value> {
     let found = match r {
-        Ref::Agent { name, cid } => agent_card(app, name.as_deref(), *cid),
+        Ref::Agent { cid, .. } => agent_card(app, *cid),
         Ref::Task { number } => task_card(app, *number),
         Ref::Library { id } => deliverable_card(app, id),
         Ref::LibraryTool { name, version } => tool_card(app, name, *version),
@@ -361,15 +361,10 @@ fn local(app: &App, r: &Ref) -> Option<Value> {
     })
 }
 
-fn agent_card(app: &App, name: Option<&str>, cid: Option<u64>) -> Result<Value, &'static str> {
-    let agent = match (name, cid) {
-        (Some(name), _) => app.agents.list().into_iter().find(|a| a.name == name),
-        (None, Some(cid)) => app.agents.get(cid),
-        (None, None) => None,
-    }
-    .ok_or("not_found")?;
+fn agent_card(app: &App, cid: Option<u64>) -> Result<Value, &'static str> {
+    let agent = cid.and_then(|cid| app.agents.get(cid)).ok_or("not_found")?;
     Ok(json!({
-        "name": agent.name,
+        "name": agent.label(),
         "cid": agent.cid,
         "role": agent.role,
         "model": agent.model_override,
@@ -464,16 +459,7 @@ fn now() -> u64 {
 fn server_ctx(app: &App) -> Ctx {
     Ctx {
         hub_host: Some(app.config.public_url.clone()),
-        agents: app
-            .agents
-            .list()
-            .into_iter()
-            .filter(|a| !a.name.is_empty())
-            .map(|a| AgentName {
-                name: a.name,
-                cid: a.cid,
-            })
-            .collect(),
+        agents: Vec::new(),
         ..Ctx::default()
     }
 }

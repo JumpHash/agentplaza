@@ -1,19 +1,16 @@
-fixture "town" "One town with agents of several roles, tools of each risk class, hosts in each group" {
-  Town("t1") { name: "t1" }
-  Town("t2") { name: "t2" }
-  Agent("builder") { kind: "llm", role: "builder", town: Town("t1") }
-  Agent("planner") { kind: "llm", role: "planner", town: Town("t1") }
-  Agent("architect") { kind: "llm", role: "architect", town: Town("t1") }
-  Agent("qa") { kind: "llm", role: "qa", town: Town("t1") }
-  Agent("other") { kind: "llm", role: "builder", town: Town("t2") }
-  Agent("reviewer") { kind: "llm", role: "reviewer", town: Town("t1") }
-  Agent("mayor") { kind: "llm", role: "mayor", town: Town("t1") }
-  Agent("researcher") { kind: "llm", role: "researcher", town: Town("t1") }
-  Agent("finance") { kind: "llm", role: "finance", town: Town("t1") }
-  Agent("librarian") { kind: "llm", role: "librarian", town: Town("t1") }
-  Agent("auditor") { kind: "llm", role: "auditor", town: Town("t1") }
-  Agent("edge") { kind: "llm", role: "edge-operator", town: Town("t1") }
-  Agent("release") { kind: "llm", role: "release", town: Town("t1") }
+fixture "plaza" "One plaza with agents of several roles, tools of each risk class, hosts in each group" {
+  Town("plaza") { name: "plaza" }
+  Agent("builder") { kind: "llm", role: "builder" }
+  Agent("planner") { kind: "llm", role: "planner" }
+  Agent("architect") { kind: "llm", role: "architect" }
+  Agent("qa") { kind: "llm", role: "qa" }
+  Agent("reviewer") { kind: "llm", role: "reviewer" }
+  Agent("orchestrator") { kind: "llm", role: "orchestrator" }
+  Agent("researcher") { kind: "llm", role: "researcher" }
+  Agent("finance") { kind: "llm", role: "finance" }
+  Agent("auditor") { kind: "llm", role: "auditor" }
+  Agent("edge") { kind: "llm", role: "edge-operator" }
+  Agent("release") { kind: "llm", role: "release" }
   Sandbox("sb-builder") { agent: Agent("builder") }
   Sandbox("sb-reviewer") { agent: Agent("reviewer") }
   Tool("read-file") { risk_class: "read", group: "files" }
@@ -25,8 +22,8 @@ fixture "town" "One town with agents of several roles, tools of each risk class,
   Host("advisories") { group: "advisories" }
   Host("news") { group: "open-web" }
   Host("evil") { group: "blocked" }
-  Artifact("spec") { town: Town("t1"), hidden_from: {} }
-  Artifact("accept-tests") { town: Town("t1"), hidden_from: {"builder"} }
+  Artifact("spec") { hidden_from: {} }
+  Artifact("accept-tests") { hidden_from: {"builder"} }
   Approval("ap-owner")
   Registry("registry")
   AuditLog("log")
@@ -34,13 +31,12 @@ fixture "town" "One town with agents of several roles, tools of each risk class,
   PolicySet("policy")
   Vault("vault")
   UsageLedger("ledger")
-  Task("task1") { town: Town("t1") }
+  Task("task1")
   Report("rep1")
-  MemoryStore("org")
   Device("arm") { node: "node-1" }
 }
 
-authz "constitution" using "town" {
+authz "constitution" using "plaza" {
   deny "builder edits the audit log" Agent("builder") audit.modify AuditLog("log") {} by "C-001a"
   deny "reviewer reconfigures the gateway" Agent("reviewer") gateway.configure Gateway("gateway") {} by "C-001a"
   deny "builder rewrites the policy set" Agent("builder") policy.modify PolicySet("policy") {} by "C-001a"
@@ -58,53 +54,43 @@ authz "constitution" using "town" {
   allow "reviewer runs an ordinary command" Agent("reviewer") tool.exec Sandbox("sb-reviewer") {flags: {}}
 
   deny "builder reads the vault" Agent("builder") vault.read Vault("vault") {} by "C-002a"
-  deny "mayor lists the vault" Agent("mayor") vault.list Vault("vault") {} by "C-002a"
+  deny "orchestrator lists the vault" Agent("orchestrator") vault.list Vault("vault") {} by "C-002a"
   allow "auditor reads the usage ledger" Agent("auditor") usage.read UsageLedger("ledger") {}
   allow "finance reads the audit log" Agent("finance") audit.read AuditLog("log") {}
 
   deny "builder asks a peer for a token" Agent("builder") message.send Agent("reviewer") {flags: {"credential_seeking"}} by "C-002b"
   deny "researcher fetches a credential over the network" Agent("researcher") egress.connect Host("news") {flags: {"credential_seeking"}} by "C-002b"
-  allow "builder messages a peer in its town" Agent("builder") message.send Agent("reviewer") {flags: {}}
+  allow "builder messages a peer" Agent("builder") message.send Agent("reviewer") {flags: {}}
   allow "researcher reads the open web" Agent("researcher") egress.connect Host("news") {flags: {}}
 
   deny "agent takes a reserved name" Agent("builder") registry.set_name Registry("registry") {name_reserved: true, name_confusable: false} by "C-003a"
   deny "agent takes a confusable name" Agent("reviewer") registry.set_name Registry("registry") {name_reserved: false, name_confusable: true} by "C-003a"
-  allow "builder picks a plain name" Agent("builder") registry.set_name Registry("registry") {name_reserved: false, name_confusable: false}
-  allow "reviewer picks a plain name" Agent("reviewer") registry.set_name Registry("registry") {name_reserved: false, name_confusable: false}
 
-  deny "builder poses as the mayor" Agent("builder") message.send Agent("mayor") {flags: {"impersonation"}} by "C-003b"
+  deny "builder poses as the orchestrator" Agent("builder") message.send Agent("orchestrator") {flags: {"impersonation"}} by "C-003b"
   deny "reviewer publishes as the owner" Agent("reviewer") artifact.publish Artifact("spec") {flags: {"impersonation"}} by "C-003b"
-  allow "builder publishes a spec in its town" Agent("builder") artifact.publish Artifact("spec") {flags: {}}
-  allow "mayor messages a builder" Agent("mayor") message.send Agent("builder") {flags: {}}
+  allow "builder publishes a spec" Agent("builder") artifact.publish Artifact("spec") {flags: {}}
 
   deny "release deploys without owner approval" Agent("release") tool.call Tool("deploy-prod") {flags: {}} by "C-004a"
-  deny "mayor calls the irreversible deploy tool" Agent("mayor") tool.call Tool("deploy-prod") {flags: {}} by "C-004a"
+  deny "orchestrator calls the irreversible deploy tool" Agent("orchestrator") tool.call Tool("deploy-prod") {flags: {}} by "C-004a"
   allow "release deploys with owner approval" Agent("release") tool.call Tool("deploy-prod") {flags: {}, owner_approval: Approval("ap-owner")}
   allow "researcher runs a web search" Agent("researcher") tool.call Tool("web-search") {flags: {}}
 
   deny "builder pressures the owner for approval" Agent("builder") approval.request Approval("ap-owner") {flags: {"pressure_or_misleading"}} by "C-004b"
   deny "reviewer misleads the approver" Agent("reviewer") approval.request Approval("ap-owner") {flags: {"pressure_or_misleading"}} by "C-004b"
   allow "builder asks for approval plainly" Agent("builder") approval.request Approval("ap-owner") {flags: {}}
-  allow "mayor asks for approval plainly" Agent("mayor") approval.request Approval("ap-owner") {flags: {}}
+  allow "orchestrator asks for approval plainly" Agent("orchestrator") approval.request Approval("ap-owner") {flags: {}}
 }
 
-authz "statutes" using "town" {
+authz "statutes" using "plaza" {
   deny "builder reaches a blocked host" Agent("builder") egress.connect Host("evil") {flags: {}}
-  deny "builder messages an agent in another town" Agent("other") message.send Agent("builder") {flags: {}}
   deny "builder calls a write tool" Agent("builder") tool.call Tool("edit-code") {flags: {}}
-  allow "planner submits a plan for its own town" Agent("planner") plan.submit Town("t1") {}
-  deny "planner submits a plan for another town" Agent("planner") plan.submit Town("t2") {}
-  allow "mayor spawns an agent in its own town" Agent("mayor") agent.spawn Town("t1") {}
-  deny "mayor spawns an agent in another town" Agent("mayor") agent.spawn Town("t2") {}
-  allow "architect submits design notes for its own town" Agent("architect") design.submit Town("t1") {}
-  deny "architect submits design notes for another town" Agent("architect") design.submit Town("t2") {}
-  allow "qa submits a test suite for its own town" Agent("qa") testsuite.submit Town("t1") {}
-  deny "qa submits a test suite for another town" Agent("qa") testsuite.submit Town("t2") {}
-  allow "researcher submits a brief for its own town" Agent("researcher") research.submit Town("t1") {}
-  deny "researcher submits a brief for another town" Agent("researcher") research.submit Town("t2") {}
-  allow "mayor approves a merge under threshold" Agent("mayor") merge.approve Task("task1") {budget: 5, threshold: 10, ambiguous: false}
-  deny "mayor approves a merge over threshold" Agent("mayor") merge.approve Task("task1") {budget: 50, threshold: 10, ambiguous: false}
-  deny "mayor approves an ambiguous plan" Agent("mayor") plan.approve Task("task1") {budget: 5, threshold: 10, ambiguous: true}
+  allow "planner submits a plan" Agent("planner") plan.submit Town("plaza") {}
+  allow "architect submits design notes" Agent("architect") design.submit Town("plaza") {}
+  allow "qa submits a test suite" Agent("qa") testsuite.submit Town("plaza") {}
+  allow "researcher submits a brief" Agent("researcher") research.submit Town("plaza") {}
+  allow "orchestrator approves a merge under threshold" Agent("orchestrator") merge.approve Task("task1") {budget: 5, threshold: 10, ambiguous: false}
+  deny "orchestrator approves a merge over threshold" Agent("orchestrator") merge.approve Task("task1") {budget: 50, threshold: 10, ambiguous: false}
+  deny "orchestrator approves an ambiguous plan" Agent("orchestrator") plan.approve Task("task1") {budget: 5, threshold: 10, ambiguous: true}
   deny "builder reads hidden acceptance tests" Agent("builder") artifact.read Artifact("accept-tests") {} by "S-010d"
   allow "reviewer reads the same artifact" Agent("reviewer") artifact.read Artifact("accept-tests") {}
   deny "researcher connects to the hub git" Agent("researcher") egress.connect Host("git") {flags: {}} by "S-013d"
@@ -113,6 +99,4 @@ authz "statutes" using "town" {
   deny "edge operator actuates outside its envelope" Agent("edge") device.actuate Device("arm") {within_envelope: false, on_node: "node-1"}
   allow "finance submits a finance report" Agent("finance") report.submit Report("rep1") {kind: "finance", flags: {}}
   deny "finance submits an incident report" Agent("finance") report.submit Report("rep1") {kind: "incident", flags: {}}
-  allow "librarian promotes an owner-reviewed memory" Agent("librarian") memory.change MemoryStore("org") {to_scope: "org", verified: true, tainted: true, owner_reviewed: true}
-  deny "librarian promotes tainted memory without review" Agent("librarian") memory.change MemoryStore("org") {to_scope: "org", verified: true, tainted: true, owner_reviewed: false}
 }

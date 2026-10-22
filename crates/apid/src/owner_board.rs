@@ -94,7 +94,7 @@ fn owner_post(app: &App, body: &[u8]) -> Response {
         .agents
         .list()
         .into_iter()
-        .map(|agent| (agent.cid, agent.name, agent.role))
+        .map(|agent| (agent.cid, agent.label(), agent.role))
         .collect();
     let members = project
         .as_ref()
@@ -147,9 +147,9 @@ fn project_members(app: &App, project: &Project) -> Vec<u64> {
 }
 
 /// The guest CIDs a post's mentions reach. `all` is every member of the post's project (`members`,
-/// `Some`), or every agent when the post has no project (`None`, with `everyone`). A name, or a role,
-/// is every agent that carries it; a name nobody carries is refused, so a typo is not a silent
-/// non-delivery. `roster` is `(cid, name, role)` for each agent.
+/// `Some`), or every agent when the post has no project (`None`, with `everyone`). A role is every
+/// agent that holds it; a mention nobody matches is refused, so a typo is not a silent non-delivery.
+/// `roster` is `(cid, label, role)` for each agent.
 fn reach(
     mentions: &[String],
     members: Option<&[u64]>,
@@ -171,7 +171,7 @@ fn reach(
             .collect();
         if matched.is_empty() {
             return Err(format!(
-                "no agent is named {name}: mention an agent's name or role, or {EVERYONE}"
+                "no agent has the role {name}: mention an agent's role, or {EVERYONE}"
             ));
         }
         cids.extend(matched);

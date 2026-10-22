@@ -1,5 +1,6 @@
 // The machine view's pure helpers: the VM rows of a machine, the reference-card line of a GPU, and the
 // series a metrics view carries. No DOM here, so the tests read them directly.
+import { agentLabel, agentName } from '../roles';
 import type { Agent, MachineNode } from '../api';
 import type { View } from '../metrics/model';
 
@@ -91,6 +92,6 @@ export interface AgentLine {
 export function agentLines(cids: number[], byCid: Map<number, Agent>): AgentLine[] {
   return cids.map((cid) => {
     const a = byCid.get(cid);
-    return { cid, name: a?.name ?? `cid ${cid}`, status: a?.status ?? 'unknown' };
+    return { cid, name: a ? agentName(a) : agentLabel(cid), status: a?.status ?? 'unknown' };
   });
 }

@@ -1,6 +1,6 @@
 //! Operator-spawned agents and every agent's model override, kept at
 //! `<state-dir>/spawned.json` (written atomically). A restart respawns each
-//! spawned agent under its old CID, so its name, wallet and workspace line up.
+//! spawned agent under its old CID, so its wallet and workspace line up.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -20,8 +20,6 @@ pub struct Entry {
     pub role: String,
     #[serde(default)]
     pub model: Option<String>,
-    #[serde(default)]
-    pub name: String,
 }
 
 /// The file: the spawned agents, and the model overrides keyed by CID.
@@ -154,7 +152,6 @@ impl Store {
                     cid,
                     role: spawned_role,
                     model: model.clone(),
-                    name: String::new(),
                 };
                 let saved = self.mutate(|registry| {
                     registry.spawned.push(entry);
@@ -182,15 +179,6 @@ impl Store {
             };
             for entry in registry.spawned.iter_mut().filter(|entry| entry.cid == cid) {
                 entry.model = model.map(str::to_owned);
-            }
-        })
-    }
-
-    /// Sets the name of spawned agent `cid`.
-    pub fn set_name(&self, cid: u64, name: &str) -> std::io::Result<()> {
-        self.mutate(|registry| {
-            for entry in registry.spawned.iter_mut().filter(|entry| entry.cid == cid) {
-                entry.name = name.to_owned();
             }
         })
     }
@@ -282,14 +270,12 @@ mod snapshot_tests {
         let store = Store::load(dir.join("spawned.json"));
         store.expect_cid(42, "worker", Some("model-a".into()), None);
         store.hello(42, "worker");
-        store.set_name(42, "Ada").unwrap();
         let json = store.snapshot();
 
         let other = Store::load(dir.join("other.json"));
         other.restore(&json).unwrap();
         assert_eq!(other.snapshot(), json);
         assert_eq!(other.model_for(42).as_deref(), Some("model-a"));
-        assert_eq!(other.entries()[0].name, "Ada");
         assert!(other.restore("not json").is_err());
     }
 }
@@ -381,7 +367,6 @@ mod tests {
         let store = Store::load(path.clone());
         store.expect_cid(42, "worker", Some("model-a".into()), None);
         assert_eq!(store.hello(42, "worker").model.as_deref(), Some("model-a"));
-        store.set_name(42, "Ada").unwrap();
         store.set_model(7, Some("model-b")).unwrap();
 
         let reloaded = Store::load(path.clone());
@@ -391,7 +376,6 @@ mod tests {
                 cid: 42,
                 role: "worker".into(),
                 model: Some("model-a".into()),
-                name: "Ada".into()
             }]
         );
         assert_eq!(reloaded.model_for(7).as_deref(), Some("model-b"));

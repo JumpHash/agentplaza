@@ -4,7 +4,7 @@
 
 import { api, type Agent, type Project } from './api';
 import { hrefIn, parse, setLinkScope } from './router';
-import { Cell, on } from './store';
+import { Cell, on, RESYNC } from './store';
 
 const KEY = 'apz.scope';
 
@@ -88,8 +88,11 @@ export function refreshProjects(): Promise<void> {
   return loading;
 }
 
-/** Loads the projects and keeps them current. */
+/** Loads the projects and keeps them current. The last read paints first; the fresh one follows. */
 export function startScope(): void {
+  const kept = api.projects.cached();
+  if (kept) projects.set(kept);
   void refreshProjects();
   on('project', () => void refreshProjects());
+  on(RESYNC, () => void refreshProjects());
 }

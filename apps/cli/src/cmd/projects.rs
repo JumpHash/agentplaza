@@ -433,7 +433,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     println!(
                         "  {}  {}  {}  {}{held}",
                         ctx::text(a, "cid"),
-                        super::agents::name_of(a),
+                        super::agents::label_of(a),
                         ctx::s(a, "role"),
                         ctx::s(a, "status")
                     );

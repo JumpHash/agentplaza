@@ -114,7 +114,7 @@ pub struct Signal {
     #[serde(default)]
     pub title: String,
     pub text: String,
-    /// Who or what sent it: "owner", "ingest", an agent's name, a source's.
+    /// Who or what sent it: "owner", "ingest", an agent's label, a source's.
     pub from: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -1382,7 +1382,7 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
         "plaza_maintenance_signal" => {
             let input: SignalIn =
                 serde_json::from_value(input.clone()).map_err(|e| format!("bad input: {e}"))?;
-            let signal = add_signal(app, pid, input, &agent.name)?;
+            let signal = add_signal(app, pid, input, &agent.label())?;
             Ok(format!("recorded {}", signal.id))
         }
         other => Err(format!("unknown tool {other}")),
@@ -1477,7 +1477,7 @@ fn update_map(app: &App, pid: &str, agent: &Agent, input: &Value) -> Result<Map,
             notes: bounded("an area's notes", str_of(&a, "notes"), 2000, false)?,
             links: strings(&a, "links", 48).iter().map(|l| slug(l)).collect(),
             updated_ms: now_ms(),
-            by: agent.name.clone(),
+            by: agent.label(),
         });
     }
     let remove: BTreeSet<String> = strings(input, "remove", 48)
@@ -1507,7 +1507,7 @@ fn update_map(app: &App, pid: &str, agent: &Agent, input: &Value) -> Result<Map,
             area.links.retain(|l| ids.contains(l) && *l != area.id);
         }
         map.updated_ms = now_ms();
-        map.by = agent.name.clone();
+        map.by = agent.label();
         Ok(map.clone())
     })
 }
@@ -1587,7 +1587,7 @@ fn propose(app: &App, pid: &str, agent: &Agent, input: &Value) -> Result<Proposa
     let area = Some(slug(str_of(input, "area"))).filter(|a| !a.is_empty());
     let acceptance = bounded("acceptance", str_of(input, "acceptance"), 3000, false)?;
     let replaces = str_of(input, "replaces").trim().to_string();
-    let by = agent.name.clone();
+    let by = agent.label();
     let by_cid = agent.cid;
     app.maintenance.mutate(pid, |book| {
         let known: BTreeSet<&str> = book.signals.iter().map(|s| s.id.as_str()).collect();

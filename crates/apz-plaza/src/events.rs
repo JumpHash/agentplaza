@@ -31,17 +31,8 @@
 //! event: treasury
 //! data: {"entry":1,"kind":"mint","amount":500,"task":"t1"}
 //!
-//! event: agora
-//! data: {"task":"t1","kind":"bid","agent_cid":100,"price":300}
-//!
 //! event: board
 //! data: {"kind":"post","post":{"id":"p1",…},"agent_cid":100,"role":"builder","read_up_to":null}
-//!
-//! event: conversation
-//! data: {"id":"c1","from_cid":100,"to_cid":101,"delivered":true}
-//!
-//! event: motion
-//! data: {"id":"m1","kind":"priority","state":"open"}
 //!
 //! : heartbeat
 //!
@@ -103,16 +94,6 @@ pub enum Event {
         amount: i128,
         task: Option<String>,
     },
-    /// A call moved: an agent bid on a roled open task's call (`kind` `bid`,
-    /// at `price`), or the call was awarded to a bidder (`kind` `award`, at
-    /// the price that bidder offered). `task` is the call — the id of the task
-    /// the offer is for — and `agent_cid` the agent that bid or won.
-    Agora {
-        task: String,
-        kind: &'static str,
-        agent_cid: u64,
-        price: u64,
-    },
     /// The board moved: an agent posted (`kind` `post`, with `post` the post's
     /// own JSON object, exactly as `GET /v1/board` writes it) or advanced
     /// its read cursor (`kind` `read`, with `post` `null` and `read_up_to` the
@@ -132,31 +113,6 @@ pub enum Event {
         role: String,
         /// The post a read advanced to, or `null` for a post.
         read_up_to: Option<String>,
-    },
-    /// Two agents spoke: an exchange was recorded. `delivered` says whether the
-    /// peer's session took the `conversation` call.
-    ///
-    /// `social.md` pins `{from_cid, to_cid}`; the frame carries the exchange's
-    /// id and its delivery verdict beside them, so a console can patch the
-    /// thread without re-reading it.
-    Conversation {
-        id: String,
-        from_cid: u64,
-        to_cid: u64,
-        delivered: bool,
-    },
-    /// A council motion moved: it was proposed, or a seat voted on it. The
-    /// frame carries the motion's id, its kind and the state it is now in —
-    /// **no text**: the motion's text and its votes' reasons are read from the
-    /// motions endpoint, which is the only source for them, exactly as the
-    /// exchange record is for a conversation's words (`docs/agents/council.md`).
-    Motion {
-        /// The motion's id (`m<seq>`).
-        id: String,
-        /// The kind, as the wire spells it.
-        kind: &'static str,
-        /// The state the motion is now in.
-        state: &'static str,
     },
 }
 
@@ -234,18 +190,6 @@ impl Event {
                     None => "null".to_string(),
                 }
             ),
-            Event::Agora {
-                task,
-                kind,
-                agent_cid,
-                price,
-            } => format!(
-                "{{\"task\":{},\"kind\":{},\"agent_cid\":{},\"price\":{}}}",
-                quote(task),
-                quote(kind),
-                agent_cid,
-                price
-            ),
             // The post is embedded as the JSON object it already is — built by
             // the board endpoint's own serializer, so a frame and a poll can
             // never disagree about a post's shape.
@@ -266,24 +210,6 @@ impl Event {
                     None => "null".to_string(),
                 }
             ),
-            Event::Conversation {
-                id,
-                from_cid,
-                to_cid,
-                delivered,
-            } => format!(
-                "{{\"id\":{},\"from_cid\":{},\"to_cid\":{},\"delivered\":{}}}",
-                quote(id),
-                from_cid,
-                to_cid,
-                delivered
-            ),
-            Event::Motion { id, kind, state } => format!(
-                "{{\"id\":{},\"kind\":{},\"state\":{}}}",
-                quote(id),
-                quote(kind),
-                quote(state)
-            ),
         }
     }
 
@@ -296,10 +222,7 @@ impl Event {
             Event::Task { .. } => "task",
             Event::TaskLink { .. } => "task_link",
             Event::Treasury { .. } => "treasury",
-            Event::Agora { .. } => "agora",
             Event::Board { .. } => "board",
-            Event::Conversation { .. } => "conversation",
-            Event::Motion { .. } => "motion",
         }
     }
 
@@ -468,27 +391,6 @@ mod tests {
             .frame(),
             "event: treasury\ndata: {\"entry\":7,\"kind\":\"fine\",\"amount\":5,\"task\":null}\n\n"
         );
-        assert_eq!(
-            Event::Agora {
-                task: "t1".to_string(),
-                kind: "bid",
-                agent_cid: 100,
-                price: 300,
-            }
-            .frame(),
-            "event: agora\ndata: {\"task\":\"t1\",\"kind\":\"bid\",\"agent_cid\":100,\"price\":300}\n\n"
-        );
-        // An award frame carries the price the award was made at.
-        assert_eq!(
-            Event::Agora {
-                task: "t1".to_string(),
-                kind: "award",
-                agent_cid: 101,
-                price: 0,
-            }
-            .frame(),
-            "event: agora\ndata: {\"task\":\"t1\",\"kind\":\"award\",\"agent_cid\":101,\"price\":0}\n\n"
-        );
         // A board frame carries the post's own JSON object, the agent that
         // acted and its role; a read carries the cursor instead of a post.
         assert_eq!(
@@ -512,36 +414,6 @@ mod tests {
             }
             .frame(),
             "event: board\ndata: {\"kind\":\"read\",\"post\":null,\"agent_cid\":101,\"role\":\"librarian\",\"read_up_to\":\"p3\"}\n\n"
-        );
-        assert_eq!(
-            Event::Conversation {
-                id: "c1".to_string(),
-                from_cid: 100,
-                to_cid: 101,
-                delivered: false,
-            }
-            .frame(),
-            "event: conversation\ndata: {\"id\":\"c1\",\"from_cid\":100,\"to_cid\":101,\"delivered\":false}\n\n"
-        );
-        // A motion frame carries the motion's id, its kind and its state, and
-        // no text at all.
-        assert_eq!(
-            Event::Motion {
-                id: "m1".to_string(),
-                kind: "budget_move",
-                state: "open",
-            }
-            .frame(),
-            "event: motion\ndata: {\"id\":\"m1\",\"kind\":\"budget_move\",\"state\":\"open\"}\n\n"
-        );
-        assert_eq!(
-            Event::Motion {
-                id: "m2".to_string(),
-                kind: "law_proposal",
-                state: "awaiting_owner",
-            }
-            .frame(),
-            "event: motion\ndata: {\"id\":\"m2\",\"kind\":\"law_proposal\",\"state\":\"awaiting_owner\"}\n\n"
         );
     }
 

@@ -381,11 +381,7 @@ pub fn call_for_agent(
         ms as f64,
         !output.is_error,
     );
-    let author = if agent.name.is_empty() {
-        agent.role.clone()
-    } else {
-        agent.name.clone()
-    };
+    let author = agent.label();
     let mut text = output.text;
     for media in &output.media {
         let upload = Upload {

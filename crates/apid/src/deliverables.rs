@@ -575,7 +575,7 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
         author: app
             .agents
             .get(cid)
-            .map(|a| a.name)
+            .map(|a| a.label())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| format!("agent {cid}")),
         author_cid: cid,

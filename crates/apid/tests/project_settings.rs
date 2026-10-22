@@ -54,7 +54,6 @@ fn a_projects_settings_reach_its_agents_and_its_budget_funds_its_tasks() {
         "builder": { "role": "builder", "title": "Builder", "tools": ["bash", "read_file"] },
     } });
     let scratch = Scratch::new("project-settings");
-    scratch.name_agents(&[(BUILDER, "Kofi")]);
     let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
     let agent = hub.wait_for(
         &format!("/v1/agents/{BUILDER}"),

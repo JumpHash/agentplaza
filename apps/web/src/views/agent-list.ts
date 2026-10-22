@@ -8,12 +8,11 @@ import { inScope, liveProjects, onBench, projects, projectTitle, scope } from '.
 import { agents, refreshAgents } from '../store';
 import { attempt, badge, button, card, clip, compact, dot, empty, select, table, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
-import { avatar } from './agent-profile';
 import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 
 const STATUS_TONE: Record<AgentStatus, Tone> = { working: 'info', idle: 'ok', offline: 'muted', asleep: 'muted', dozing: 'muted' };
-const WORK_TONE: Record<WorkKind, Tone> = { task: 'accent', chat: 'info', message: 'muted', motion: 'warn' };
+const WORK_TONE: Record<WorkKind, Tone> = { task: 'accent', chat: 'info', message: 'muted' };
 /** The badge a model's source earns on the roster: the agent's own, its project's, or its role's. */
 const SOURCE: Partial<Record<Agent['model_source'], [string, Tone]>> = { agent: ['own', 'info'], project: ['project', 'accent'], role: ['role', 'muted'] };
 
@@ -46,12 +45,11 @@ export function projectCell(a: Agent): HTMLElement {
   return h('span.muted', null, '—');
 }
 
-/** The agent's name, role and robot: its status dot and word on the name line. */
-function agentCell(a: Agent, size: number): HTMLElement {
+/** The agent's label and role: its status dot and word on the label line. */
+function agentCell(a: Agent): HTMLElement {
   return h(
     'div.ag-agent',
     null,
-    avatar(a, size),
     h('div.ag-who', null, h('div.ag-name', null, dot(statusPill(a.status).tone), ' ', agentName(a), ' ', pillWord(a)), h('div.ag-role', null, roleLabel(a.role))),
   );
 }
@@ -97,7 +95,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
   });
 
   const columns: Column<Agent>[] = [
-    { label: 'Agent', cell: (a) => agentCell(a, 30) },
+    { label: 'Agent', cell: (a) => agentCell(a) },
     // Under All projects, where each agent works; under a project, all of them work on it.
     ...(inProject ? [] : [{ label: 'Project', cell: (a: Agent) => projectCell(a) }]),
     { label: 'Model', cell: modelCell },
@@ -192,7 +190,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
     if (!inProject) return;
     const waiting = list.filter(onBench);
     const benchCols: Column<Agent>[] = [
-      { label: 'Agent', cell: (a) => agentCell(a, 28) },
+      { label: 'Agent', cell: (a) => agentCell(a) },
       { label: 'Model', cell: modelCell },
       {
         label: '',

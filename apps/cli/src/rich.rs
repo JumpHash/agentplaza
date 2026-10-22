@@ -1,18 +1,16 @@
 //! Rich text for the terminal (docs/design/workspace.md, section 3.4). The references in agent-written text
-//! (GitHub links, `@Name`, `#528`, `src/main.rs:42`, library files) become their short labels
-//! (`GH o/r #12`, `@Name`, `task #528` shown as `#528`), styled per kind and, where the terminal supports them,
+//! (GitHub links, `agent:<cid>`, `#528`, `src/main.rs:42`, library files) become their short labels
+//! (`GH o/r #12`, `agent:7`, `task #528` shown as `#528`), styled per kind and, where the terminal supports them,
 //! wrapped in OSC 8 hyperlinks. Labels, colour and links are for a terminal only: when stdout is piped or
 //! redirected, or `--plain` is given, the text prints unchanged, so a script gets the URLs and names as the agent
 //! wrote them. JSON output never passes through here.
 //!
-//! The classifier is `apz-rich`; the same vectors run in the web and the desktop app. Agent names come from the
-//! hub, so `@Name` is recognised; without the hub's list the names stay text. Raw text needs no names, so the
-//! printers skip the `GET /v1/agents` call unless they will draw labels.
+//! The classifier is `apz-rich`; the same vectors run in the web and the desktop app. Agents have no names: an
+//! agent is `agent:<cid>`, which needs no lookup, so no printer asks the hub for the agents to draw labels.
 
-use apz_rich::{AgentName, Ctx as RichCtx, Ref, Span, classify, label};
+use apz_rich::{Ctx as RichCtx, Ref, Span, classify, label};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span as UiSpan;
-use serde_json::Value;
 
 use crate::ctx::{Client, Ctx};
 
@@ -90,43 +88,28 @@ impl Mode {
     }
 }
 
-/// The classifier's context from the hub: the agents `@Name` may name, and the hub's own host. Empty when the
-/// hub cannot answer (the names then stay text).
+/// The classifier's context for the hub: its own host, so its `/v1/files` and `/v1/library` links are recognised.
 pub fn context(client: &Client) -> RichCtx {
-    let agents = client
-        .get("/v1/agents")
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default();
-    from_agents(&agents, Some(client.base()))
+    from_hub(Some(client.base()))
 }
 
-/// The classifier's context from the agents list (`GET /v1/agents`) and the hub's base URL.
-pub fn from_agents(agents: &[Value], hub: Option<&str>) -> RichCtx {
-    let agents = agents
-        .iter()
-        .filter_map(|a| {
-            let name = a.get("name")?.as_str()?.to_string();
-            let cid = a.get("cid")?.as_u64()?;
-            Some(AgentName { name, cid })
-        })
-        .collect();
+/// The classifier's context for a hub's base URL (none: no host is known).
+pub fn from_hub(hub: Option<&str>) -> RichCtx {
     RichCtx {
-        agents,
         hub_host: hub.map(apz_rich::host_of).filter(|h| !h.is_empty()),
         ..RichCtx::default()
     }
 }
 
-/// Whether a printer draws labels, and so needs the hub's agents to resolve `@Name`. `--json` prints the hub's text
-/// as it is, and raw text (a pipe, a file, `--plain`) is printed as written: neither needs the call.
-pub fn needs_agents(json: bool, mode: &Mode) -> bool {
+/// Whether a printer draws labels. `--json` prints the hub's text as it is, and raw text (a pipe, a file, `--plain`)
+/// is printed as written: neither needs the classifier's context.
+pub fn draws_labels(json: bool, mode: &Mode) -> bool {
     !json && !mode.plain
 }
 
-/// The context for a printer: the hub's agents when labels are drawn, else nothing (no request is made).
+/// The context for a printer: the hub's host when labels are drawn, else nothing.
 pub fn context_for(ctx: &Ctx) -> RichCtx {
-    if needs_agents(ctx.json, &ctx.rich) {
+    if draws_labels(ctx.json, &ctx.rich) {
         context(&ctx.client)
     } else {
         RichCtx::default()
@@ -142,21 +125,21 @@ pub fn render(text: &str, ctx: &RichCtx, mode: &Mode) -> String {
     for span in classify(text, ctx) {
         match span {
             Span::Text(s) | Span::Code(s) => out.push_str(&s),
-            Span::Ref { raw, r, .. } => out.push_str(&chip(&raw, &r, ctx, mode)),
+            Span::Ref { raw, r, .. } => out.push_str(&chip(&raw, &r, mode)),
         }
     }
     out
 }
 
 /// One reference drawn for the terminal: its label, styled, and linked when there is a URL.
-fn chip(raw: &str, r: &Ref, ctx: &RichCtx, mode: &Mode) -> String {
+fn chip(raw: &str, r: &Ref, mode: &Mode) -> String {
     let shown = display(r);
     let styled = if mode.colour {
         format!("\x1b[4;{}m{shown}\x1b[0m", sgr_colour(r))
     } else {
         shown
     };
-    match link_of(raw, r, ctx, mode).filter(|_| mode.hyperlinks) {
+    match link_of(raw, r, mode).filter(|_| mode.hyperlinks) {
         Some(url) => format!("\x1b]8;;{url}\x1b\\{styled}\x1b]8;;\x1b\\"),
         None => styled,
     }
@@ -211,7 +194,7 @@ fn ui_colour(r: &Ref) -> Color {
 
 /// The URL a reference links to: the URL it was written as (a bare link or a markdown link's target), else the
 /// page it names on the web (GitHub, an agent or a task on the hub). None when no page is known.
-fn link_of(raw: &str, r: &Ref, ctx: &RichCtx, mode: &Mode) -> Option<String> {
+fn link_of(raw: &str, r: &Ref, mode: &Mode) -> Option<String> {
     if let Some(url) = written_url(raw) {
         return safe(url);
     }
@@ -250,14 +233,7 @@ fn link_of(raw: &str, r: &Ref, ctx: &RichCtx, mode: &Mode) -> Option<String> {
             format!("https://github.com/{owner}/{repo}/actions/runs/{id}")
         }
         Ref::Gist { id } => format!("https://gist.github.com/{id}"),
-        Ref::Agent { cid, name } => {
-            let cid = cid.or_else(|| {
-                name.as_deref()
-                    .and_then(|n| ctx.agents.iter().find(|a| a.name == n))
-                    .map(|a| a.cid)
-            })?;
-            format!("{}/#/agents/{cid}", hub?)
-        }
+        Ref::Agent { cid, .. } => format!("{}/#/agents/{}", hub?, (*cid)?),
         Ref::Task { number } => format!("{}/#/tasks/{number}", hub?),
         Ref::Link { url } | Ref::Image { url } | Ref::Video { url } | Ref::Html { url } => {
             url.clone()
@@ -383,9 +359,9 @@ mod tests {
                 None,
             ),
             (
-                "agent_known",
+                "agent_cid",
                 "\x1b]8;;https://hub.test/#/agents/",
-                Some("@Ada"),
+                Some("agent:42"),
             ),
         ] {
             let (text, ctx) = vector(name);

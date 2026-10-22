@@ -15,12 +15,6 @@ pub const TRANSCRIPT_PAGE: &str = include_str!("../../sql/queries/transcript_pag
 pub const TRANSCRIPT_CIDS: &str = include_str!("../../sql/queries/transcript_cids.sql");
 pub const TRANSCRIPT_DELETE: &str = include_str!("../../sql/queries/transcript_delete.sql");
 
-// The infractions (`infraction`).
-pub const INFRACTION_APPEND: &str = include_str!("../../sql/queries/infraction_append.sql");
-pub const INFRACTION_PAGE_BY_CID: &str =
-    include_str!("../../sql/queries/infraction_page_by_cid.sql");
-pub const INFRACTION_PAGE: &str = include_str!("../../sql/queries/infraction_page.sql");
-
 // The IDE audit (`ide_audit`, migration 0008; ide.rs owner actions).
 pub const IDE_AUDIT_APPEND: &str = include_str!("../../sql/queries/ide_audit_append.sql");
 pub const IDE_AUDIT_PAGE: &str = include_str!("../../sql/queries/ide_audit_page.sql");
@@ -200,6 +194,12 @@ mod tests {
             );
         }
 
+        // The SQLite queries (store/sql.rs) share the folder while Postgres is replaced: they are not orphans here.
+        let sqlite = include_str!("../store/sql.rs");
+        let files: BTreeSet<String> = files
+            .into_iter()
+            .filter(|f| !sqlite.contains(&format!("sql/queries/{f}")))
+            .collect();
         let orphans: Vec<&String> = files.difference(&included).collect();
         let missing: Vec<&String> = included.difference(&files).collect();
         assert!(

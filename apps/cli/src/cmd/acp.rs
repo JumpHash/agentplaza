@@ -40,7 +40,7 @@ const HINT: &str = "(turn on Editors (ACP) in the console: Setup › MCP › Thi
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// The agent the editor's sessions are made on: its name or CID (default: the orchestrator).
+    /// The agent the editor's sessions are made on: its CID (default: the orchestrator).
     #[arg(long)]
     pub agent: Option<String>,
     /// Mirrors the editor's project to this plaza repository (created if missing) before each

@@ -310,7 +310,7 @@ fn conversation(frame: &mut Frame, area: Rect, app: &App) {
             width,
             height,
             palette,
-            &app.rich_ctx(),
+            &apz_rich::Ctx::default(),
             app.clock,
         ),
         None => vec![Line::from(Span::styled("reading…", muted))],

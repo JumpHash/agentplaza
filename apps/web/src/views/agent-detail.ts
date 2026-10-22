@@ -1,18 +1,16 @@
-// Agent detail: one agent's transcript, its composer, and its model, harness, permissions, conduct,
-// checkpoints, details and queue, under its profile. The markup is the prototype's agent page.
+// Agent detail: one agent's transcript, its composer, and its model, harness, permissions, checkpoints, details
+// and queue. The markup is the prototype's agent page.
 
-import { api, ApiError, isContributor, type Agent, type AgentStatus, type Block, type Delta, type Entry, type ModelInfo, type MoveResult, type NodeView, type Sanction, type SanctionsView, type Settings, type Suspension, type VmCheckpoint } from '../api';
+import { api, ApiError, isContributor, type Agent, type AgentStatus, type Block, type Delta, type Entry, type ModelInfo, type MoveResult, type NodeView, type Settings, type VmCheckpoint } from '../api';
 import { go, href } from '../router';
 import { openIde } from '../ide/open';
 import { prewake } from '../prewake';
 import { agentName } from '../roles';
 import { liveProjects, onBench, projects, projectTitle } from '../scope';
 import { agents, on, refreshAgents } from '../store';
-import { ago, attempt, badge, button, card, clip, compact, empty, field, input, modal, tabs, textarea, toast, type Tone } from '../ui/components';
+import { ago, attempt, badge, button, card, clip, compact, empty, field, input, modal, textarea } from '../ui/components';
 import { h, icon, lu, replace } from '../ui/dom';
 import type { Cleanup } from './index';
-import { mountMemory } from './memory';
-import { profileCard } from './agent-profile';
 import { harnessCard } from './agent-harness';
 import { bytesText } from './workstations-model';
 import { choicesFrom, modelPicker, type ModelChoice } from '../ui/model-picker';
@@ -80,7 +78,6 @@ export function tierChoices(
 
 type Section = { root: HTMLElement; head: HTMLElement };
 type LiveTurn = { work: number; el: HTMLElement; text: Text; caret: HTMLElement };
-type Tab = 'transcript' | 'memory';
 type PermissionMode = 'autonomous' | 'ask' | 'read_only';
 
 /** The nodes an agent's VM can move to: those in service, so not stopped and not revoked. */
@@ -174,8 +171,6 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const details = h('dl.ag-kv');
   const queue = h('div');
 
-  // The transcript and the memory library share one space; a tab picks which shows.
-  const memoryHost = h('div', { style: 'display:none' });
   const transcriptCard = card(null, transcript, { flush: true });
   // The model chip sits in a tool row under the composer; the context line sits above it; a save error shows under the row.
   const chip = modelChip({ label: 'Model', save: (value) => contextApi.setAgentModel(cid, value || null) });
@@ -191,28 +186,6 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     chip.note,
   );
   const unbindAttach = attach.bind(composerRow);
-  const tabLabels: Record<Tab, string> = { transcript: 'Transcript', memory: 'Memory' };
-  let tab: Tab = 'transcript';
-  let unmountMemory: (() => void) | null = null;
-  const showTab = (next: Tab): void => {
-    if (next === tab) return;
-    tab = next;
-    const memory = next === 'memory';
-    transcriptCard.style.display = memory ? 'none' : '';
-    composerRow.style.display = memory ? 'none' : '';
-    memoryHost.style.display = memory ? '' : 'none';
-    unmountMemory?.();
-    unmountMemory = memory ? mountMemory(memoryHost, cid) : null;
-    tabBar.querySelectorAll('button').forEach((b) => b.setAttribute('aria-selected', String(b.textContent === tabLabels[next])));
-  };
-  const tabBar = tabs(
-    [
-      { key: 'transcript', label: tabLabels.transcript },
-      { key: 'memory', label: tabLabels.memory },
-    ],
-    tab,
-    (key) => showTab(key as Tab),
-  );
 
   const sections = new Map<number, Section>();
   const live = new Map<string, LiveTurn>();
@@ -220,10 +193,6 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const toolRows = new Map<number, HTMLElement>();
   const pending: (() => void)[] = [];
   let agent: Agent | undefined;
-  // The profile card (portrait, money, standing, conduct), made once the agent is known.
-  const profileHost = h('div');
-  let profile: ReturnType<typeof profileCard> | null = null;
-  const profileTimer = window.setInterval(() => void profile?.refresh(), 15_000);
   let alive = true;
   let loaded = false;
   let sending = false;
@@ -406,15 +375,13 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   };
   const wipe = (a: Agent): void => {
     const [, workspaceRow] = checkRow('Workspace (always)', true, true);
-    const [memoryBox, memoryRow] = checkRow('Memory notes', false);
     const [transcriptBox, transcriptRow] = checkRow('Conversation transcript', false);
-    const [identityBox, identityRow] = checkRow('Name and reputation', false);
     let close: () => void = () => {};
     const confirmBtn = button('Wipe', () => void run(), { kind: 'danger' });
     const run = async (): Promise<void> => {
       confirmBtn.disabled = true;
       const ok = await attempt(async () => {
-        await api.wipeAgent(cid, { memory: memoryBox.checked, transcript: transcriptBox.checked, identity: identityBox.checked });
+        await api.wipeAgent(cid, { transcript: transcriptBox.checked });
         return true;
       }, 'Wiped');
       confirmBtn.disabled = false;
@@ -427,9 +394,7 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
         null,
         h('p.muted', null, "The agent's VM restarts with a fresh workspace. This cannot be undone."),
         workspaceRow,
-        memoryRow,
         transcriptRow,
-        identityRow,
         h('div.cluster', { style: 'justify-content:flex-end' }, confirmBtn),
       ),
     );
@@ -624,7 +589,8 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
       void refreshAgents();
       void loadCheckpoints();
       const links = made.forks.map((f) => {
-        const link = h('a', { href: href('agents', f.cid) }, f.name || `agent ${f.cid}`);
+        // A fork starts from the same role, so its label is that role and its own CID.
+        const link = h('a', { href: href('agents', f.cid) }, agentName({ cid: f.cid, role: a.role }));
         // The link opens the new agent's page, so the dialog closes with it.
         link.addEventListener('click', () => close());
         return h('li', null, link);
@@ -724,10 +690,6 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   const renderAgent = (): void => {
     const a = agent;
     if (!a) return;
-    if (!profile) {
-      profile = profileCard(a);
-      profileHost.replaceChildren(profile.el);
-    } else profile.update(a);
     const offline = a.status === 'offline';
     harness.update(a.status === 'working');
     const asleep = a.status === 'asleep' || a.status === 'dozing';
@@ -824,7 +786,6 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
   ];
   const permissionHost = h('div.ag-stack');
   const harness = harnessCard(cid);
-  const conduct = conductCard(cid);
   let permission: PermissionMode | null = null;
   let permissionFailed = false;
   const renderPermission = (): void => {
@@ -892,18 +853,16 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
 
   root.append(
     head,
-    profileHost,
     h(
       'div.ag-page',
       null,
-      h('div.ag-main', null, tabBar, transcriptCard, memoryHost, composerRow),
+      h('div.ag-main', null, transcriptCard, composerRow),
       h(
         'aside.ag-side',
         null,
         card('Model', h('div.ag-stack', null, modelLine, field('Change model', picker.el), field('Reasoning effort', effortSel))),
         card('Harness', harness.el),
         card('Permissions', permissionHost),
-        card('Conduct', conduct.el),
         checkpointCard,
         card('Details', details),
         card('Queue', queue),
@@ -942,133 +901,8 @@ export function mountAgentDetail(root: HTMLElement, cid: number): Cleanup {
     chip.dispose();
     unfollow();
     harness.destroy();
-    conduct.destroy();
-    window.clearInterval(profileTimer);
     offs.forEach((off) => off());
     live.clear();
-    unmountMemory?.();
-    unmountMemory = null;
-  };
-}
-
-/**
- * The Conduct section: the agent's suspensions in force, each with a Lift, then its sanctions on the
- * register, newest first. Read from the sanctions register; refreshed every 15 s and after a lift.
- */
-function conductCard(cid: number): { el: HTMLElement; destroy: () => void } {
-  const body = h('div.ag-stack');
-  let view: SanctionsView | null = null;
-  let failed = false;
-  let error: string | null = null;
-  let busy = false;
-  let alive = true;
-
-  const sanctionRow = (r: Sanction): HTMLElement =>
-    h(
-      'div.ag-row',
-      { title: r.title },
-      h(
-        'div',
-        { style: 'min-width:0' },
-        h('strong', null, r.sanction),
-        ' ',
-        h('code', null, r.law),
-        ' ',
-        badge(r.severity, severityTone(r.severity)),
-        h('div.ag-row-sub', null, `offence ${r.count} · ${r.outcome} · ${r.fine > 0 ? `fined ${compact(r.fine)} cr` : 'no fine'} · ${ago(r.at_ms)}`),
-        r.lifted ? h('div.ag-row-sub', null, `lifted by owner: ${r.lifted.why}`) : null,
-        r.owner_action
-          ? h('div.ag-row-sub', null, `${r.owner_action.action === 'retire' ? 'Retired' : 'Acknowledged'} by the owner, ${ago(r.owner_action.at_ms)}`)
-          : null,
-      ),
-    );
-
-  const suspensionRow = (s: Suspension, now: number): HTMLElement =>
-    h(
-      'div.ag-row',
-      null,
-      h('div', { style: 'min-width:0' }, h('code', null, s.tool), ' ', h('span.muted', null, s.law), h('div.ag-row-sub', null, timeLeft(s.until_ms, now))),
-      button('Lift', () => liftSuspension(s), { size: 'sm', disabled: busy }),
-    );
-
-  const render = (): void => {
-    if (!view) {
-      replace(body, failed ? h('p.danger', null, 'Could not load conduct.') : h('p.muted', null, 'Loading…'));
-      return;
-    }
-    const now = Date.now();
-    const suspensions = view.suspensions.filter((s) => s.cid === cid && s.active).sort((x, y) => x.until_ms - y.until_ms);
-    const sanctions = view.sanctions.filter((r) => r.cid === cid).sort((x, y) => y.at_ms - x.at_ms);
-    replace(
-      body,
-      h('h4', null, 'Suspended now'),
-      suspensions.length ? suspensions.map((s) => suspensionRow(s, now)) : h('p.muted', null, 'Not suspended.'),
-      error ? h('p.danger', null, error) : null,
-      h('h4', null, 'Sanctions'),
-      sanctions.length ? sanctions.map((r) => sanctionRow(r)) : h('p.muted', null, 'No sanctions on record.'),
-    );
-  };
-
-  const refresh = async (): Promise<void> => {
-    try {
-      view = await api.sanctions({ cid });
-      failed = false;
-    } catch {
-      failed = true;
-    }
-    if (alive) render();
-  };
-
-  /** The lift dialog: the suspension named, a reason box, then Cancel and Lift. An empty reason is refused and the box stays open. */
-  const liftSuspension = (s: Suspension): void => {
-    const reason = input({ placeholder: 'Why it can be lifted', 'aria-label': 'Reason' });
-    let close: () => void = () => {};
-    const lift = async (): Promise<void> => {
-      const text = reason.value.trim();
-      if (!text) {
-        toast('Give a reason to lift a suspension.', 'error');
-        reason.focus();
-        return;
-      }
-      close();
-      error = null;
-      busy = true;
-      render();
-      try {
-        await api.liftSanction(s.id, text);
-        toast('Suspension lifted');
-      } catch (err) {
-        error = err instanceof Error ? err.message : String(err);
-      }
-      busy = false;
-      await refresh();
-    };
-    close = modal(
-      'Lift suspension',
-      h(
-        'div.ag-stack',
-        null,
-        h('p', null, `Lift the suspension of ${s.tool} (${s.law})? Give a reason.`),
-        reason,
-        h(
-          'div.cluster',
-          { style: 'justify-content:flex-end' },
-          button('Cancel', () => close(), { kind: 'ghost' }),
-          button('Lift', () => void lift(), { kind: 'primary' }),
-        ),
-      ),
-    );
-  };
-
-  render();
-  void refresh();
-  const timer = window.setInterval(() => void refresh(), 15_000);
-  return {
-    el: body,
-    destroy: () => {
-      alive = false;
-      window.clearInterval(timer);
-    },
   };
 }
 
@@ -1082,22 +916,6 @@ function statusBadge(status: AgentStatus): HTMLElement {
   if (status === 'asleep') return badge('Asleep', 'muted', true);
   if (status === 'dozing') return badge('Asleep (light)', 'muted', true);
   return badge('Offline', 'muted', true);
-}
-
-/** Time left until `untilMs`, as "2h 5m left". */
-function timeLeft(untilMs: number, now = Date.now()): string {
-  const s = Math.max(0, Math.round((untilMs - now) / 1000));
-  if (s < 60) return `${s}s left`;
-  if (s < 3600) return `${Math.floor(s / 60)}m left`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m left`;
-  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h left`;
-}
-
-/** A sanction's severity as a badge tone: the serious ones red, the middling ones amber. */
-function severityTone(severity: string): Tone {
-  if (/crit|high|severe/i.test(severity)) return 'danger';
-  if (/med|moderate/i.test(severity)) return 'warn';
-  return 'muted';
 }
 
 /**

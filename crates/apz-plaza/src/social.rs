@@ -1,20 +1,8 @@
 // This crate is safe Rust only: `forbid(unsafe_code)` makes any future
 // `unsafe` block a compile error (enforced at the crate root in lib.rs).
 
-//! The social layer v0: the public board with its per-agent read cursors, the
-//! contact lists, and the conversations between agents — `docs/agents/social.md`
-//! over what a node of tool-server agents can honestly hold.
-//!
-//! # The honest constraint
-//!
-//! The port's agents are tool-servers, not minds: the harness serves the tool
-//! calls the hub drives, and nothing sits behind an agent yet. So v0 implements
-//! the plaza's social **state** faithfully — who posted what, who has read it,
-//! who knows whom, who is talking to whom, and how recently — and names the
-//! driver that acted for the agent in [`PostView::posted_by`]. Nothing here
-//! invents an agent's opinion: a post's subject and body are the caller's own
-//! words, and an award's hiring note is a template over the task's own fields.
-//! When a cognition layer lands, these surfaces carry it unchanged.
+//! The board: the public posts that agents and the owner write, the comments on them,
+//! and each connected agent's read cursor over it.
 //!
 //! # The board
 //!
@@ -23,10 +11,10 @@
 //! (the agent speaks; the caller is the driver acting for it), the author's
 //! `role` is its identity in the ledger's own terms ([`ConnectedAgent::
 //! assignee_id`] — its role, or `cid:<n>` for a VM the node booted without
-//! one), and a post may name a `task` so the board is where discovery happens.
-//! The board keeps the owner's retention of posts ([`Prune`]), dropping the
-//! oldest, newest first in the response and bounded to [`BOARD_LIMIT`] there,
-//! with a per-agent unread count beside it ([`BoardView::unread`]).
+//! one), and a post may name a `task`, linking the board into the ledger. The
+//! board keeps the owner's retention of posts ([`Prune`]), dropping the oldest,
+//! newest first in the response and bounded to [`BOARD_LIMIT`] there, with a
+//! per-agent unread count beside it ([`BoardView::unread`]).
 //!
 //! # The read cursors
 //!
@@ -38,41 +26,8 @@
 //! against the board, never stored, so "who has read what" is observable and
 //! can never disagree with the posts.
 //!
-//! # The contacts
-//!
-//! [`ContactView`] is `{peer_cid, role, since, kind}`. The list is the agent's
-//! own; an explicit add ([`Social::add_contact`]) records `met` and is
-//! idempotent — a peer already on the list keeps the kind it was first recorded
-//! with, so an award's `hired` is never downgraded by a later handshake. An
-//! agent is never its own contact, and the list is bounded per agent to
-//! [`MAX_CONTACTS_PER_AGENT`].
-//!
-//! # The conversations
-//!
-//! [`ConversationView`] is one exchange: `{id: c<seq>, from_cid, to_cid,
-//! from_role, to_role, text, created_at}` plus the delivery line, which v0
-//! **decides and states**: `delivered: bool` and `delivery: Option<String>` —
-//! `null` when the peer's session took the call, and otherwise the reason, in
-//! the hub's own words (a refusal, a timeout, an unreachable admin) or this
-//! daemon's honest statement that there is nowhere to send it. A failed
-//! delivery is recorded, never hidden, and never fails the exchange: the record
-//! is the point, the delivery is the attempt.
-//!
-//! The delivery itself is the contract's: the `conversation` tool call, with
-//! `{from_role, from_cid, text}`, driven to the peer's session through the
-//! hub ([`crate::hub::tell`]) — the same client the artifact
-//! read-through and the operator's tool drive use. **The hub is where the
-//! policy is**: a role the manifest does not grant `conversation` is the hub's
-//! own 403, surfaced verbatim as the row's reason. The tool is asked for under
-//! its contract name; whether the fleet serves it yet is the fleet's answer to
-//! give, and it is recorded, not assumed.
-//!
-//! # Active pairs (the floor's proximity)
-//!
-//! A pair is **active** while it has an exchange within [`ACTIVE_SECS`]: the
-//! front end draws two robots adjacent on exactly that, and derives it from
-//! [`ConversationsView::pairs`] rather than from N² requests. The window is
-//! exported in the view (`active_secs`) so nothing has to hard-code it.
+//! Direct messages between agents are not recorded here: they are delivered as
+//! work items, and nothing about them is kept on the board.
 //!
 //! # Bounds (each stated, none silent)
 //!
@@ -83,36 +38,14 @@
 //! | a post's `body` | [`MAX_BODY`] (4096 bytes) — 400 |
 //! | a post's `posted_by` | [`MAX_POSTED_BY`] (64 bytes) — 400 |
 //! | the board response | [`BOARD_LIMIT`] (256) newest posts, `truncated` says so |
-//! | contacts one agent holds | [`MAX_CONTACTS_PER_AGENT`] (256) — a fresh contact past it is refused, 409 |
-//! | a conversation's `text` | [`MAX_SAY_TEXT`] (2048 bytes) — 400 |
-//! | exchanges the record holds | the owner's retention ([`Prune`]: a count and an age), the oldest dropped; [`MAX_CONVERSATIONS`] is the absolute ceiling, also oldest-first |
-//! | a conversations response | a page of at most [`CONVERSATIONS_LIMIT`] (256) newest, `next_before` names the next older page |
-//! | pair summaries | [`MAX_PAIRS`] (256) with the newest activity, `pairs_truncated` says so |
 //!
 //! # What v0 narrows (stated, not hidden)
 //!
-//! * **The list is in this process.** Like the ledger, the treasury and the
-//!   agora, the social state is held in memory and apid snapshots it, so it
-//!   survives a restart; the schema's tables are a later slice. The posts, cursors, contacts and
-//!   conversations are all *derived* views over it — nothing here is a second
-//!   copy of a fact held elsewhere.
-//! * **A contact is readable while the daemon knows the agent.** `GET
-//!   /v1/agents/{cid}/contacts` answers for any CID whose list this store
-//!   holds (§ the record is not thrown away when an agent stops), and for a
-//!   connected agent whose list is empty; a CID the store has never heard of
-//!   *and* the register does not show is the endpoint's 404.
-//! * **An agent does not speak to itself.** `say` refuses `from == to`, as the
-//!   contact list refuses a self-contact: a conversation is between two agents,
-//!   and a pair of one would make the floor's adjacency meaningless.
-//! * **A post's `task` link is checked against the ledger** at the endpoint: the
-//!   board is where discovery happens, so it must not carry a link to work that
-//!   does not exist.
-//! * **The drivers are not here.** `social.md`'s social pass (the dispatcher
-//!   reading the board, posting interest notes) is `dispatchd`'s; this module
-//!   is the state and the view the drivers act on, and the award integration
-//!   ([`Social::seed_award`]) is noded's own, because the award is noded's.
-//! * **`since` is when the daemon recorded the link**, not a fact about the two
-//!   agents' history: v0 has no history to record.
+//! * **The board is in this process.** Like the ledger and the treasury, the
+//!   board is held in memory and apid snapshots it, so it survives a restart;
+//!   the schema's tables are a later slice.
+//! * **The drivers are not here.** The board is the state and the view the
+//!   drivers act on; who posts for an agent is the caller's to say.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -120,7 +53,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::tasks::{self, Task};
+use crate::tasks;
 use crate::{ConnectedAgent, now_ms};
 
 /// The absolute ceiling on posts the board holds. The owner's retention
@@ -145,59 +78,9 @@ pub const MAX_POSTED_BY: usize = 64;
 /// journal, with the same `total`/`limit`/`truncated` line beside it.
 pub const BOARD_LIMIT: usize = 256;
 
-/// The most contacts one agent holds. The list is the agent's own and small by
-/// nature (a plaza of peers, not a directory), so v0 caps it and refuses a
-/// fresh contact past the cap rather than growing without bound.
-pub const MAX_CONTACTS_PER_AGENT: usize = 256;
-
-/// The most a conversation's `text` may occupy, in bytes. This is the
-/// contract's 2 KiB text cap.
-pub const MAX_SAY_TEXT: usize = 2048;
-
-/// The absolute ceiling on exchanges the record holds. The owner's retention
-/// ([`Prune::conversations_max`]) is the working cap; past the ceiling the
-/// oldest exchange is dropped, never the new one refused.
-pub const MAX_CONVERSATIONS: usize = 100_000;
-
-/// The most conversations a page carries (the record may hold
-/// [`MAX_CONVERSATIONS`]).
-pub const CONVERSATIONS_LIMIT: usize = 256;
-
-/// The page a conversations read carries when its caller names no limit.
-pub const CONVERSATIONS_PAGE: usize = 50;
-
-/// The most bytes of a search (`q`) a conversations read takes.
-pub const MAX_QUERY: usize = 200;
-
-/// The most pair summaries a conversations response carries. Pairs are folded
-/// from the record, so there are at most `MAX_CONVERSATIONS` of them; the
-/// response keeps the [`MAX_PAIRS`] most recently active and says so
-/// ([`ConversationsView::pairs_truncated`]).
-pub const MAX_PAIRS: usize = 256;
-
-/// How long a pair's conversation stays **active** after its last exchange, in
-/// seconds. The floor's proximity derives from exactly this (the front end
-/// draws two robots close while their pair is active), and it is exported in
-/// every view that reports activity so no client hard-codes it.
-pub const ACTIVE_SECS: u64 = 120;
-
 /// The `posted_by` a post gets when its caller names no driver: the contract's
 /// own word for the caller that acts for an agent.
 pub const DEFAULT_POSTED_BY: &str = "driver";
-
-/// The tool a conversation is delivered as, through the hub —
-/// the contract's name (`conversation` with `{from_role, from_cid, text}`).
-pub const CONVERSATION_TOOL: &str = "conversation";
-
-/// The kind an agent's own handshake records.
-pub const MET: &str = "met";
-
-/// The kind the *awarder* records when it hires: the schema's `hired`.
-pub const HIRED: &str = "hired";
-
-/// The kind the *contractor* records when it is hired: the schema's
-/// `was-hired`.
-pub const WAS_HIRED: &str = "was-hired";
 
 /// The `POST /v1/board` body.
 #[derive(Debug, Clone, Deserialize)]
@@ -209,7 +92,7 @@ pub struct PostRequest {
     /// The post itself.
     pub body: String,
     /// The task the post is about, when it names one: the board's link into
-    /// the ledger, and what a hiring note carries.
+    /// the ledger.
     #[serde(default)]
     pub task: Option<String>,
     /// The driver that acted for the agent. Absent is [`DEFAULT_POSTED_BY`]:
@@ -220,9 +103,8 @@ pub struct PostRequest {
 
 /// A post request's fields, checked, with the driver resolved.
 ///
-/// Built only by [`PostRequest::checked`] (or by this module's own note
-/// template, through it), so the caps hold for every post the board takes —
-/// whether it came off the wire or from an award.
+/// Built only by [`PostRequest::checked`] (or by the owner's post path, through
+/// its own checks), so the caps hold for every post the board takes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedPost {
     /// What the post is about.
@@ -234,7 +116,7 @@ pub struct CheckedPost {
     /// The driver that acted for the agent.
     pub posted_by: String,
     /// The project the post belongs to, or `None` for the whole board. It is not on the wire: the
-    /// hub sets it to the author's project, and an award's note carries its task's.
+    /// hub sets it to the author's project.
     pub project: Option<String>,
 }
 
@@ -337,43 +219,6 @@ pub struct ReadRequest {
     pub up_to: String,
 }
 
-/// The `POST /v1/agents/{cid}/contacts` body.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ContactRequest {
-    /// The guest CID of the peer to add.
-    pub peer_cid: u64,
-}
-
-/// The `POST /v1/agents/{cid}/say` body.
-#[derive(Debug, Clone, Deserialize)]
-pub struct SayRequest {
-    /// The guest CID of the agent spoken to.
-    pub to_cid: u64,
-    /// What is said.
-    pub text: String,
-}
-
-impl SayRequest {
-    /// Checks the text against the contract's cap and its floor, or says why
-    /// the request is outside the endpoint's contract.
-    pub fn checked(&self) -> Result<(), String> {
-        tasks::required_text("text", &self.text, MAX_SAY_TEXT).map(|_| ())
-    }
-}
-
-/// Whether the register shows an agent with a CID right now.
-///
-/// Which CIDs are connected is the *register's* to say, so it says it, and the
-/// store is told: a store that guessed at liveness would be a second, weaker
-/// copy of the register's rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Presence {
-    /// The register shows a live agent with this CID.
-    Live,
-    /// The register shows none.
-    Absent,
-}
-
 /// Why the social layer refused a request.
 ///
 /// Three shapes, one per status: a request outside the endpoint's contract
@@ -436,8 +281,7 @@ pub struct PostView {
     pub body: String,
     /// The task the post is about, or `null`. Always present.
     pub task: Option<String>,
-    /// The driver that acted for the agent (the caller, or the award
-    /// workflow). Always present.
+    /// The driver that acted for the agent (the caller). Always present.
     pub posted_by: String,
     /// When the post was recorded, in milliseconds since the Unix epoch.
     pub created_at: u64,
@@ -526,202 +370,25 @@ pub struct ReadView {
     pub unread: usize,
 }
 
-/// One contact as the API reports it: the contract's `{peer_cid, role, since,
-/// kind}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ContactView {
-    /// The peer's guest CID.
-    pub peer_cid: u64,
-    /// The peer's identity in the ledger's own terms (its role, or `cid:<n>`),
-    /// as it was when the link was recorded.
-    pub role: String,
-    /// When the daemon recorded the link, in milliseconds since the Unix epoch.
-    pub since: u64,
-    /// `met`, `hired` or `was-hired`.
-    pub kind: &'static str,
-}
-
-/// The contacts endpoint's body: one agent's list, with the bounding line.
-#[derive(Debug, Serialize)]
-pub struct ContactsView {
-    /// The agent whose list this is.
-    pub agent_cid: u64,
-    /// The agent's contacts, in the order they were recorded.
-    pub contacts: Vec<ContactView>,
-    /// How many contacts the agent holds.
-    pub total: usize,
-    /// The limit the response was cut to — the store's own per-agent cap.
-    pub limit: usize,
-    /// Whether the list is longer than the response carries. The store caps a
-    /// list at its limit, so this is `false` for every list it holds: the
-    /// field says so rather than leaving a reader to infer it.
-    pub truncated: bool,
-}
-
-/// One exchange as the API reports it: the contract's `{id: c<seq>, from_cid,
-/// to_cid, text, created_at}`, plus the roles the pair spoke as and the
-/// delivery line.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConversationView {
-    /// The exchange's id (`c<seq>`), monotonic and never reused.
-    pub id: String,
-    /// The guest CID of the agent that spoke.
-    pub from_cid: u64,
-    /// The guest CID of the agent spoken to.
-    pub to_cid: u64,
-    /// The speaker's identity in the ledger's own terms.
-    pub from_role: String,
-    /// The listener's identity in the ledger's own terms.
-    pub to_role: String,
-    /// What was said.
-    pub text: String,
-    /// When the exchange was recorded, in milliseconds since the Unix epoch.
-    pub created_at: u64,
-    /// Whether the peer's session took the call.
-    pub delivered: bool,
-    /// Why it did not, when it did not: the hub's own words, or this daemon's
-    /// statement that there is nowhere to send the call. `null` when delivered.
-    pub delivery: Option<String>,
-    /// Ids of the files sent with the message. Always present.
-    #[serde(default)]
-    pub attachments: Vec<String>,
-}
-
-/// One pair's conversation as the view folds it: who, how many exchanges, how
-/// recently, and whether that recency makes them active.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PairView {
-    /// The lower of the pair's two guest CIDs.
-    pub a: u64,
-    /// The higher of the pair's two guest CIDs.
-    pub b: u64,
-    /// Whether the pair has an exchange within [`ACTIVE_SECS`] — the floor's
-    /// adjacency.
-    pub active: bool,
-    /// How many exchanges the pair has had (in the bounded record).
-    pub count: usize,
-    /// When the pair last spoke, in milliseconds since the Unix epoch.
-    pub last_at: u64,
-}
-
-/// The conversations endpoint's body: the exchange record, newest first,
-/// bounded, with the pair summaries the floor derives proximity from.
-#[derive(Debug, Serialize)]
-pub struct ConversationsView {
-    /// Up to the endpoint's limit of exchanges, newest first.
-    pub conversations: Vec<ConversationView>,
-    /// One row per pair that has spoken, most recently active first.
-    pub pairs: Vec<PairView>,
-    /// The window [`PairView::active`] is measured over, in seconds.
-    pub active_secs: u64,
-    /// How many exchanges the record holds.
-    pub total: usize,
-    /// The limit the page was cut to.
-    pub limit: usize,
-    /// Whether older exchanges matching the query remain beyond this page
-    /// (`next_before` is then set).
-    pub truncated: bool,
-    /// The `before` to pass for the next older page, or `None` when this page
-    /// is the last. It is the id of the oldest exchange on this page, numbered.
-    pub next_before: Option<u64>,
-    /// How many pairs have spoken.
-    pub pairs_total: usize,
-    /// Whether more pairs have spoken than the response carries.
-    pub pairs_truncated: bool,
-}
-
-/// One pair's thread: the exchanges between two agents, oldest first.
-#[derive(Debug, Serialize)]
-pub struct ThreadView {
-    /// The first guest CID of the pair, as the path named it.
-    pub a: u64,
-    /// The second guest CID of the pair, as the path named it.
-    pub b: u64,
-    /// Whether the pair has an exchange within [`ACTIVE_SECS`].
-    pub active: bool,
-    /// The window [`ThreadView::active`] is measured over, in seconds.
-    pub active_secs: u64,
-    /// The page's exchanges, oldest first.
-    pub messages: Vec<ConversationView>,
-    /// How many exchanges the pair has had (in the retained record).
-    pub total: usize,
-    /// The limit the page was cut to.
-    pub limit: usize,
-    /// Whether older exchanges matching the query remain beyond this page.
-    pub truncated: bool,
-    /// The `before` for the next older page, or `None` when this page is the last.
-    pub next_before: Option<u64>,
-}
-
-/// The owner's retention, as the store applies it: how many exchanges and
-/// posts to keep, and how old one may be before it goes. Ages are in
-/// milliseconds; `None` is no age limit.
+/// The owner's retention, as the store applies it: how many posts to keep, and how old one may
+/// be before it goes. Ages are in milliseconds; `None` is no age limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prune {
-    /// The most exchanges to keep (the oldest go first).
-    pub conversations_max: usize,
-    /// Exchanges older than this many milliseconds go, or `None` to keep them
-    /// whatever their age.
-    pub conversations_older_than_ms: Option<u64>,
     /// The most posts to keep (the oldest go first).
     pub posts_max: usize,
-    /// Posts older than this many milliseconds go, or `None` to keep them
-    /// whatever their age.
+    /// Posts older than this many milliseconds go, or `None` to keep them whatever their age.
     pub posts_older_than_ms: Option<u64>,
 }
 
 /// What a [`Social::prune`] removed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Pruned {
-    /// Exchanges removed from the record.
-    pub conversations: usize,
     /// Posts removed from the board.
     pub posts: usize,
 }
 
-/// A conversations read's paging and search. The default is the first page of
-/// [`CONVERSATIONS_PAGE`] with no search; apid fills it from the query string.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConversationQuery {
-    /// The search, matched case-insensitively against each exchange's text and
-    /// its two roles. `None` is no filter.
-    pub text: Option<String>,
-    /// Guest CIDs whose exchanges match the search whatever they said (the
-    /// caller maps agent names to CIDs). Only read when `text` is set.
-    pub cids: Vec<u64>,
-    /// Only exchanges with a numbered id below this (the `before` cursor).
-    pub before: Option<u64>,
-    /// The most exchanges the page carries, clamped to [`CONVERSATIONS_LIMIT`].
-    pub limit: usize,
-}
-
-impl Default for ConversationQuery {
-    fn default() -> Self {
-        Self {
-            text: None,
-            cids: Vec::new(),
-            before: None,
-            limit: CONVERSATIONS_PAGE,
-        }
-    }
-}
-
-/// What an award's social seeding did.
-///
-/// Both halves are **best-effort**: an award stands whatever the board or a
-/// contact list makes of it, so the caller reports what happened rather than
-/// failing the award (see [`Social::seed_award`]).
-#[derive(Debug)]
-pub struct AwardSeed {
-    /// The hiring note the award posted, or why it could not be posted.
-    pub note: Result<PostView, SocialError>,
-    /// Whether both contact links (`hired` for the awarder, `was-hired` for the
-    /// contractor) were recorded.
-    pub linked: bool,
-}
-
-/// The social layer's state: the board, the cursors, the contacts and the
-/// conversations, and the bus every change is published to.
+/// The board's state: the posts, their comments and the read cursors, and the bus every change
+/// is published to.
 pub struct Social {
     events: Arc<EventBus>,
     inner: Mutex<SocialInner>,
@@ -736,20 +403,12 @@ struct SocialInner {
     posts_seq: u64,
     /// Each agent's read cursor: the number of the last post it has read.
     cursors: BTreeMap<u64, u64>,
-    /// Each agent's contact list, in the order its links were recorded.
-    contacts: BTreeMap<u64, Vec<ContactView>>,
-    /// The exchange record, oldest first. An id is assigned under the same
-    /// lock as the row is filed, so the record is always in id order.
-    conversations: Vec<ConversationView>,
-    /// The number of the newest exchange (`0` while none has been recorded).
-    conv_seq: u64,
     /// The number of the newest comment (`0` while none has been recorded).
     comment_seq: u64,
 }
 
 impl Social {
-    /// A social layer holding no posts, cursors, contacts or conversations,
-    /// that publishes every change it takes to `events`.
+    /// A board holding no posts or cursors, that publishes every change it takes to `events`.
     pub fn new(events: Arc<EventBus>) -> Self {
         Self {
             events,
@@ -849,7 +508,7 @@ impl Social {
         };
         inner.posts.push(post.clone());
         // Published under the lock, so a stream sees the board in post order —
-        // the ledger and the agora publish their transitions the same way.
+        // the ledger publishes its transitions the same way.
         self.publish_board("post", Some(&post), author, None);
         Ok(post)
     }
@@ -969,17 +628,8 @@ impl Social {
         Ok(comment)
     }
 
-    /// Advances `agent`'s read cursor to `up_to`, or says why it will not.
-    ///
-    /// The rules, each with its own refusal: `up_to` must name a post
-    /// ([`SocialError::Invalid`]); it must be at or before the newest post on
-    /// the board, and at or after the agent's own cursor — a cursor is
-    /// monotonic, so it never rolls back ([`SocialError::Conflict`]). Replaying
-    /// the cursor it already sits at is **idempotent**: the answer is the same
-    /// and nothing is published, because nothing changed.
-    /// Sets the files shown with a post (`p<seq>`), a comment (`c<seq>` on
-    /// some post's thread) or a message (`c<seq>` in the exchange record).
-    /// `on` picks which: "post", "comment" or "message".
+    /// Sets the files shown with a post (`p<seq>`) or a comment (`c<seq>` on some post's thread).
+    /// `on` picks which: "post" or "comment".
     pub fn attach(&self, on: &str, id: &str, files: &[String]) -> Result<(), SocialError> {
         let mut inner = self.lock();
         let slot = match on {
@@ -994,11 +644,6 @@ impl Social {
                 .flat_map(|p| p.comments.iter_mut())
                 .find(|c| c.id == id)
                 .map(|c| &mut c.attachments),
-            "message" => inner
-                .conversations
-                .iter_mut()
-                .find(|c| c.id == id)
-                .map(|c| &mut c.attachments),
             _ => {
                 return Err(SocialError::Invalid(format!(
                     "cannot attach files to a {on}"
@@ -1007,19 +652,25 @@ impl Social {
         };
         let slot = slot.ok_or_else(|| SocialError::Unknown(format!("no {on} {id}")))?;
         *slot = files.to_vec();
-        if on != "message" {
-            // A board view refetches on any board frame, so the files show without a reload.
-            self.events.publish(Event::Board {
-                kind: "attach",
-                post: None,
-                agent_cid: 0,
-                role: String::new(),
-                read_up_to: None,
-            });
-        }
+        // A board view refetches on any board frame, so the files show without a reload.
+        self.events.publish(Event::Board {
+            kind: "attach",
+            post: None,
+            agent_cid: 0,
+            role: String::new(),
+            read_up_to: None,
+        });
         Ok(())
     }
 
+    /// Advances `agent`'s read cursor to `up_to`, or says why it will not.
+    ///
+    /// The rules, each with its own refusal: `up_to` must name a post
+    /// ([`SocialError::Invalid`]); it must be at or before the newest post on
+    /// the board, and at or after the agent's own cursor — a cursor is
+    /// monotonic, so it never rolls back ([`SocialError::Conflict`]). Replaying
+    /// the cursor it already sits at is **idempotent**: the answer is the same
+    /// and nothing is published, because nothing changed.
     pub fn read(&self, agent: &ConnectedAgent, up_to: &str) -> Result<ReadView, SocialError> {
         let seq = post_seq(up_to).ok_or_else(|| {
             SocialError::Invalid(format!("up_to must name a post (p<seq>), not {up_to}"))
@@ -1058,148 +709,14 @@ impl Social {
         })
     }
 
-    /// `agent`'s contact list, or the refusal that this daemon knows no such
-    /// agent.
+    /// Drops the oldest posts past the owner's retention: the count cap first, then anything older
+    /// than the age limit. Ids are never reused, so a dropped row's number is simply gone. Returns
+    /// what it removed.
     ///
-    /// A list this store holds is answered whatever the agent's liveness — the
-    /// record is not thrown away when a VM stops — and a connected agent with
-    /// no contacts yet is answered with an empty list. Only a CID the store has
-    /// never heard of *and* the register does not show is unknown.
-    pub fn contacts(&self, cid: u64, presence: Presence) -> Result<ContactsView, SocialError> {
-        let inner = self.lock();
-        let Some(contacts) = inner.contacts.get(&cid) else {
-            if presence == Presence::Live {
-                return Ok(ContactsView {
-                    agent_cid: cid,
-                    contacts: Vec::new(),
-                    total: 0,
-                    limit: MAX_CONTACTS_PER_AGENT,
-                    truncated: false,
-                });
-            }
-            return Err(SocialError::Unknown(format!(
-                "no agent with guest CID {cid}"
-            )));
-        };
-        Ok(ContactsView {
-            agent_cid: cid,
-            contacts: contacts.clone(),
-            total: contacts.len(),
-            limit: MAX_CONTACTS_PER_AGENT,
-            truncated: contacts.len() > MAX_CONTACTS_PER_AGENT,
-        })
-    }
-
-    /// Adds `peer` to `agent`'s contacts as a handshake ([`MET`]), or returns
-    /// the link the pair already has.
-    ///
-    /// Idempotent, and deliberately conservative: the *kind* a link was first
-    /// recorded with is kept, so an award's `hired` survives a later handshake,
-    /// and a second identical add is not a second link. An agent is never its
-    /// own contact, and a list at its cap refuses a fresh contact.
-    pub fn add_contact(
-        &self,
-        agent: &ConnectedAgent,
-        peer: &ConnectedAgent,
-    ) -> Result<ContactView, SocialError> {
-        self.link(agent, peer, MET)
-    }
-
-    /// Records one exchange: `from` speaks `text` to `to`; `deliver` hands it
-    /// to `to` (apid queues it as work) and says whether it was taken and, if
-    /// not, why.
-    ///
-    /// The row is written **after** the delivery attempt, so it is never a
-    /// placeholder: one lock checks the record's room, the delivery runs
-    /// outside the lock (a hub that answers slowly must not hold the board for
-    /// every other reader), and a second lock files the row with its outcome.
-    /// A refused delivery is a recorded fact, not an error: the exchange is the
-    /// record of what an agent said, and it exists whether or not the peer's
-    /// session was there to hear it.
-    pub fn say(
-        &self,
-        from: &ConnectedAgent,
-        to: &ConnectedAgent,
-        text: &str,
-        deliver: &dyn Fn(&ConnectedAgent, &ConnectedAgent, &str) -> (bool, Option<String>),
-    ) -> Result<ConversationView, SocialError> {
-        if from.cid == to.cid {
-            return Err(SocialError::Conflict(format!(
-                "guest CID {} cannot speak to itself",
-                from.cid
-            )));
-        }
-        let (delivered, delivery) = deliver(from, to, text);
-        let mut inner = self.lock();
-        // Past the ceiling the oldest exchange is dropped to make room, under
-        // the same lock the row is filed in, so the record never refuses one.
-        drop_oldest(&mut inner.conversations, MAX_CONVERSATIONS - 1, None, |_| 0);
-        inner.conv_seq += 1;
-        let row = ConversationView {
-            id: format!("c{}", inner.conv_seq),
-            from_cid: from.cid,
-            to_cid: to.cid,
-            from_role: from.assignee_id(),
-            to_role: to.assignee_id(),
-            text: text.to_string(),
-            created_at: now_ms(),
-            delivered,
-            delivery,
-            attachments: Vec::new(),
-        };
-        inner.conversations.push(row.clone());
-        self.events.publish(Event::Conversation {
-            id: row.id.clone(),
-            from_cid: row.from_cid,
-            to_cid: row.to_cid,
-            delivered: row.delivered,
-        });
-        Ok(row)
-    }
-
-    /// The exchange record, newest first and bounded, with the pair summaries
-    /// the floor derives proximity from.
-    pub fn conversations(&self, query: &ConversationQuery) -> ConversationsView {
-        let inner = self.lock();
-        let limit = query.limit.clamp(1, CONVERSATIONS_LIMIT);
-        let needle = search_needle(query);
-        let (page, next_before) = page_of(
-            inner.conversations.iter().rev(),
-            query,
-            needle.as_deref(),
-            limit,
-        );
-        let (pairs, pairs_total) = pairs_of(&inner.conversations, now_ms());
-        ConversationsView {
-            conversations: page,
-            pairs,
-            active_secs: ACTIVE_SECS,
-            total: inner.conversations.len(),
-            limit,
-            truncated: next_before.is_some(),
-            next_before,
-            pairs_total,
-            pairs_truncated: pairs_total > MAX_PAIRS,
-        }
-    }
-
-    /// Drops the oldest exchanges and posts past the owner's retention: the
-    /// count caps first, then anything older than the age limits. Ids are never
-    /// reused, so a dropped row's number is simply gone. Returns what it removed.
-    ///
-    /// Pair summaries and unread counts are derived from what remains, so they
-    /// follow the prune without further work.
+    /// Unread counts are derived from what remains, so they follow the prune without further work.
     pub fn prune(&self, policy: Prune) -> Pruned {
         let now = now_ms();
         let mut inner = self.lock();
-        let conversations = drop_oldest(
-            &mut inner.conversations,
-            policy.conversations_max,
-            policy
-                .conversations_older_than_ms
-                .map(|age| now.saturating_sub(age)),
-            |row| row.created_at,
-        );
         let posts = drop_oldest(
             &mut inner.posts,
             policy.posts_max,
@@ -1208,154 +725,7 @@ impl Social {
                 .map(|age| now.saturating_sub(age)),
             |post| post.created_at,
         );
-        Pruned {
-            conversations,
-            posts,
-        }
-    }
-
-    /// One pair's thread: every exchange between the two CIDs, oldest first and
-    /// bounded to the newest `limit` of them.
-    ///
-    /// The pair is derived from the record, never stored: `a` and `b` are read
-    /// as the unordered pair the path named, so a thread is the same whichever
-    /// order it is asked in, and a pair that has never spoken is an empty
-    /// thread rather than a refusal.
-    pub fn thread(&self, a: u64, b: u64, query: &ConversationQuery) -> ThreadView {
-        let inner = self.lock();
-        let now = now_ms();
-        let limit = query.limit.clamp(1, CONVERSATIONS_LIMIT);
-        let needle = search_needle(query);
-        let rows: Vec<&ConversationView> = inner
-            .conversations
-            .iter()
-            .filter(|row| {
-                (row.from_cid == a && row.to_cid == b) || (row.from_cid == b && row.to_cid == a)
-            })
-            .collect();
-        let total = rows.len();
-        // The newest matching page, put back in oldest-first order for the reader.
-        let (mut messages, next_before) =
-            page_of(rows.iter().rev().copied(), query, needle.as_deref(), limit);
-        messages.reverse();
-        let active = rows
-            .last()
-            .is_some_and(|row| is_active(row.created_at, now));
-        ThreadView {
-            a,
-            b,
-            active,
-            active_secs: ACTIVE_SECS,
-            messages,
-            total,
-            limit,
-            truncated: next_before.is_some(),
-            next_before,
-        }
-    }
-
-    /// An award's social seeding: the hiring note the award posts, and the two
-    /// contact links it records.
-    ///
-    /// This is `social.md`'s integration — "an award posts the hiring note
-    /// automatically, so the board is where discovery happens and the agora is
-    /// where it concludes" — and it is deliberately **incapable of failing the
-    /// award**: both halves are best-effort and reported ([`AwardSeed`]), so an
-    /// award binds its task whether or not the board had room for a note. An
-    /// award an agent makes to itself posts the note and links nothing, because
-    /// an agent is never its own contact.
-    pub fn seed_award(
-        &self,
-        task: &Task,
-        awarder: &ConnectedAgent,
-        contractor: &ConnectedAgent,
-    ) -> AwardSeed {
-        let note = PostRequest {
-            agent_cid: awarder.cid,
-            subject: clamp(&format!("hiring for {}", task.id()), MAX_SUBJECT),
-            body: note_body(task),
-            task: Some(task.id().to_string()),
-            posted_by: Some(clamp(&awarder.assignee_id(), MAX_POSTED_BY)),
-        }
-        .checked()
-        .map(|post| CheckedPost {
-            project: task.project().map(str::to_string),
-            ..post
-        })
-        .map_err(SocialError::Invalid)
-        .and_then(|post| self.post(awarder, post));
-        if let Err(refused) = &note {
-            eprintln!(
-                "noded: the award on {} posted no hiring note: {refused}",
-                task.id()
-            );
-        }
-        let mut linked = true;
-        if awarder.cid == contractor.cid {
-            eprintln!(
-                "noded: the award on {} is to guest CID {} itself; contacts not linked",
-                task.id(),
-                awarder.cid
-            );
-            linked = false;
-        } else {
-            for (one, other, kind) in [
-                (awarder, contractor, HIRED),
-                (contractor, awarder, WAS_HIRED),
-            ] {
-                if let Err(refused) = self.link(one, other, kind) {
-                    eprintln!(
-                        "noded: the award on {} recorded no {kind} contact: {refused}",
-                        task.id()
-                    );
-                    linked = false;
-                }
-            }
-        }
-        AwardSeed { note, linked }
-    }
-
-    /// Records `peer` on `agent`'s list with `kind`, or returns the link the
-    /// pair already has (whatever kind it was recorded with).
-    fn link(
-        &self,
-        agent: &ConnectedAgent,
-        peer: &ConnectedAgent,
-        kind: &'static str,
-    ) -> Result<ContactView, SocialError> {
-        if agent.cid == peer.cid {
-            return Err(SocialError::Conflict(format!(
-                "guest CID {} cannot be its own contact",
-                agent.cid
-            )));
-        }
-        let mut inner = self.lock();
-        if let Some(held) = inner
-            .contacts
-            .get(&agent.cid)
-            .and_then(|list| list.iter().find(|contact| contact.peer_cid == peer.cid))
-        {
-            return Ok(held.clone());
-        }
-        let held = inner.contacts.get(&agent.cid).map_or(0, Vec::len);
-        if held >= MAX_CONTACTS_PER_AGENT {
-            return Err(SocialError::Conflict(format!(
-                "agent {} holds its cap of {MAX_CONTACTS_PER_AGENT} contacts",
-                agent.cid
-            )));
-        }
-        let contact = ContactView {
-            peer_cid: peer.cid,
-            role: peer.assignee_id(),
-            since: now_ms(),
-            kind,
-        };
-        inner
-            .contacts
-            .entry(agent.cid)
-            .or_default()
-            .push(contact.clone());
-        Ok(contact)
+        Pruned { posts }
     }
 
     /// Publishes one `board` event: a post, or a cursor's advance. The post is
@@ -1406,130 +776,6 @@ fn unread_of(inner: &SocialInner, cursor: u64) -> usize {
     to_usize(inner.posts_seq.saturating_sub(cursor)).min(inner.posts.len())
 }
 
-/// A conversation's numbered id (`c<seq>`), or `0` for one that is not.
-fn conv_seq(row: &ConversationView) -> u64 {
-    row.id
-        .strip_prefix('c')
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(0)
-}
-
-/// The search as the matcher reads it: lowercased, or `None` for no filter.
-fn search_needle(query: &ConversationQuery) -> Option<String> {
-    query.text.as_deref().map(str::to_lowercase)
-}
-
-/// Whether an exchange matches the search: its text or either role contains the
-/// lowercased `needle`, or either party is one of `cids` (the names the caller
-/// matched). No needle matches everything.
-fn matches(row: &ConversationView, needle: Option<&str>, cids: &[u64]) -> bool {
-    let Some(needle) = needle else {
-        return true;
-    };
-    row.text.to_lowercase().contains(needle)
-        || row.from_role.to_lowercase().contains(needle)
-        || row.to_role.to_lowercase().contains(needle)
-        || cids.contains(&row.from_cid)
-        || cids.contains(&row.to_cid)
-}
-
-/// One page of `rows`, which arrive newest first: the matching rows below the
-/// query's `before`, at most `limit`, newest first. The second value is the
-/// `before` for the next older page (the page's oldest id) when older matches
-/// remain, and `None` when this page is the last.
-fn page_of<'a>(
-    rows: impl Iterator<Item = &'a ConversationView>,
-    query: &ConversationQuery,
-    needle: Option<&str>,
-    limit: usize,
-) -> (Vec<ConversationView>, Option<u64>) {
-    let mut page: Vec<ConversationView> = Vec::new();
-    for row in rows {
-        if query.before.is_some_and(|before| conv_seq(row) >= before) {
-            continue;
-        }
-        if !matches(row, needle, &query.cids) {
-            continue;
-        }
-        if page.len() == limit {
-            // A match past the page: the page is not the last one.
-            let next = page.last().map(conv_seq);
-            return (page, next);
-        }
-        page.push(row.clone());
-    }
-    (page, None)
-}
-
-/// The hiring note's body: a template over the task's own fields — what the
-/// call wants, and how it will be judged. Clamped to the board's cap, because
-/// a task's goal may be as long as the ledger allows.
-fn note_body(task: &Task) -> String {
-    let mut body = format!("{} — {}", task.role().unwrap_or("any role"), task.goal());
-    if let Some(acceptance) = task.acceptance() {
-        body.push_str(&format!(" (acceptance: {acceptance})"));
-    }
-    clamp(&body, MAX_BODY)
-}
-
-/// `value`, cut to at most `max` bytes on a character boundary. Only ever
-/// shrinks a template this module composes (see [`note_body`]).
-fn clamp(value: &str, max: usize) -> String {
-    if value.len() <= max {
-        return value.to_string();
-    }
-    let mut end = max;
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_string()
-}
-
-/// Whether a pair's last exchange at `last_at` is recent enough at `now` for
-/// the pair to be active: an exchange within [`ACTIVE_SECS`], inclusive of the
-/// boundary.
-fn is_active(last_at: u64, now: u64) -> bool {
-    now.saturating_sub(last_at) <= ACTIVE_SECS * 1000
-}
-
-/// The pair summaries over `rows`: one row per pair that has spoken, most
-/// recently active first, bounded to [`MAX_PAIRS`]. Returns the rows and how
-/// many pairs the record holds, so a reader can see a window was taken.
-fn pairs_of(rows: &[ConversationView], now: u64) -> (Vec<PairView>, usize) {
-    let mut folded: BTreeMap<(u64, u64), (usize, u64)> = BTreeMap::new();
-    for row in rows {
-        let key = if row.from_cid <= row.to_cid {
-            (row.from_cid, row.to_cid)
-        } else {
-            (row.to_cid, row.from_cid)
-        };
-        let entry = folded.entry(key).or_insert((0, 0));
-        entry.0 += 1;
-        entry.1 = entry.1.max(row.created_at);
-    }
-    let total = folded.len();
-    let mut pairs: Vec<PairView> = folded
-        .into_iter()
-        .map(|((a, b), (count, last_at))| PairView {
-            a,
-            b,
-            active: is_active(last_at, now),
-            count,
-            last_at,
-        })
-        .collect();
-    // Newest activity first, and the pair's own CIDs break a tie so the order
-    // is stable across reads of an unchanged record.
-    pairs.sort_by(|one, other| {
-        other
-            .last_at
-            .cmp(&one.last_at)
-            .then_with(|| (one.a, one.b).cmp(&(other.a, other.b)))
-    });
-    pairs.truncate(MAX_PAIRS);
-    (pairs, total)
-}
-
 /// The post number an id names, or `None` when the id is not `p<seq>`.
 fn post_seq(id: &str) -> Option<u64> {
     id.strip_prefix('p')?.parse().ok()
@@ -1541,15 +787,9 @@ fn to_usize(count: u64) -> usize {
     usize::try_from(count).unwrap_or(usize::MAX)
 }
 
-// The stub admin surface the delivery tests use is a plain `TcpListener`, the
-// same shape `tests/agent_tell.rs` drives the daemon against: the delivery is
-// asserted from both ends — what the daemon asked for, and what the row says
-// came back.
-
 impl Social {
-    /// The whole state as JSON, for Postgres: the board with its comments and
-    /// attachments, the cursors, the contacts and the exchange record. The event
-    /// bus is not part of it.
+    /// The whole state as JSON, for the store: the board with its comments and
+    /// attachments, and the read cursors. The event bus is not part of it.
     pub fn snapshot(&self) -> String {
         let inner = self.lock();
         serde_json::to_string(&*inner).expect("the social state serializes")
@@ -1568,8 +808,8 @@ impl Social {
 }
 
 /// Refuses a snapshot no sequence of live operations could have produced: the
-/// board's ids contiguous up to its counter, comment and
-/// exchange ids unique and within their counters, every comment filed under the
+/// board's ids contiguous up to its counter, comment ids unique and within
+/// their counter, every comment filed under the
 /// post it names, and no cursor past the board (its unread arithmetic would
 /// underflow).
 fn check_snapshot(state: &SocialInner) -> Result<(), String> {
@@ -1620,18 +860,6 @@ fn check_snapshot(state: &SocialInner) -> Result<(), String> {
             }
         }
     }
-    let mut last = 0;
-    for exchange in &state.conversations {
-        let seq = seq_of(&exchange.id, 'c')
-            .ok_or_else(|| format!("exchange id {:?} is malformed", exchange.id))?;
-        if seq <= last || seq > state.conv_seq {
-            return Err(format!(
-                "exchange {} is out of order or past the exchange counter {}",
-                exchange.id, state.conv_seq
-            ));
-        }
-        last = seq;
-    }
     if let Some((cid, cursor)) = state
         .cursors
         .iter()
@@ -1642,46 +870,9 @@ fn check_snapshot(state: &SocialInner) -> Result<(), String> {
     Ok(())
 }
 
-/// A contact as a snapshot carries it: its kind is text until it is checked
-/// against the three kinds a link can have (see [`ContactView`]).
-#[derive(Deserialize)]
-struct ContactRow {
-    peer_cid: u64,
-    role: String,
-    since: u64,
-    kind: String,
-}
-
-impl std::convert::TryFrom<ContactRow> for ContactView {
-    type Error = String;
-
-    fn try_from(row: ContactRow) -> Result<Self, String> {
-        let kind = match row.kind.as_str() {
-            MET => MET,
-            HIRED => HIRED,
-            WAS_HIRED => WAS_HIRED,
-            other => return Err(format!("unknown contact kind {other:?}")),
-        };
-        Ok(ContactView {
-            peer_cid: row.peer_cid,
-            role: row.role,
-            since: row.since,
-            kind,
-        })
-    }
-}
-
-impl<'de> Deserialize<'de> for ContactView {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let row = ContactRow::deserialize(deserializer)?;
-        ContactView::try_from(row).map_err(serde::de::Error::custom)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::{CreateTask, TaskLedger};
     use std::sync::mpsc::Receiver;
     use std::time::Duration;
 
@@ -1722,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_restores_the_board_the_record_and_the_contacts_and_refuses_garbage() {
+    fn a_snapshot_restores_the_board_and_refuses_garbage() {
         let (social, _notes) = lab();
         let builder = agent(100, "builder");
         let scout = agent(101, "scout");
@@ -1737,17 +928,6 @@ mod tests {
         social
             .attach("post", &first.id, &["f1".to_string()])
             .expect("a file on a post");
-        social
-            .say(&builder, &scout, "are you free?", &|_, _, _| (true, None))
-            .expect("an exchange");
-        social
-            .say(&scout, &builder, "yes", &|_, _, _| {
-                (false, Some("offline".to_string()))
-            })
-            .expect("a reply");
-        social
-            .add_contact(&builder, &scout)
-            .expect("a contact link");
         let json = social.snapshot();
 
         let (restored, notes) = lab();
@@ -1756,10 +936,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&restored.board(&[], 50)).unwrap(),
             serde_json::to_string(&social.board(&[], 50)).unwrap()
-        );
-        assert_eq!(
-            serde_json::to_string(&restored.conversations(&ConversationQuery::default())).unwrap(),
-            serde_json::to_string(&social.conversations(&ConversationQuery::default())).unwrap()
         );
         assert_eq!(restored.snapshot(), json, "the snapshot round-trips");
 
@@ -2139,555 +1315,53 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_contact_is_one_way_idempotent_and_never_itself() {
-        let (social, _notes) = lab();
-        let builder = agent(100, "builder");
-        let librarian = agent(101, "librarian");
-
-        let added = social.add_contact(&builder, &librarian).expect("a peer");
-        assert_eq!(added.peer_cid, 101);
-        assert_eq!(added.role, "librarian");
-        assert_eq!(added.kind, MET);
-        assert!(added.since > 0);
-
-        // The list is the agent's own: the peer's side is untouched.
-        let peer_side = social.contacts(101, Presence::Live).expect("a known agent");
-        assert_eq!(peer_side.total, 0);
-        let mine = social.contacts(100, Presence::Live).expect("a known agent");
-        assert_eq!(mine.total, 1);
-        assert_eq!(mine.limit, MAX_CONTACTS_PER_AGENT);
-        assert!(!mine.truncated);
-        assert_eq!(mine.contacts, vec![added.clone()]);
-
-        // Idempotent: the same add returns the same link, and the list does not
-        // grow.
-        assert_eq!(social.add_contact(&builder, &librarian), Ok(added.clone()));
-        assert_eq!(
-            social.contacts(100, Presence::Live).expect("known").total,
-            1
-        );
-        // The kind a link was first recorded with is kept, whatever a later
-        // handshake says: `hired` is not downgraded to `met`.
-        let hired = social
-            .link(&builder, &librarian, HIRED)
-            .expect("the link already held");
-        assert_eq!(hired.kind, MET, "the first kind stands");
-        social
-            .link(&builder, &librarian, HIRED)
-            .expect("the held link");
-
-        // An agent is never its own contact.
-        assert_eq!(
-            social.add_contact(&builder, &builder).unwrap_err(),
-            SocialError::Conflict("guest CID 100 cannot be its own contact".to_string())
-        );
-
-        // An unknown CID is the endpoint's 404, and a live one with no list is
-        // an empty list rather than not-found.
-        assert_eq!(
-            social.contacts(999, Presence::Absent).unwrap_err(),
-            SocialError::Unknown("no agent with guest CID 999".to_string())
-        );
-        assert_eq!(
-            social
-                .contacts(999, Presence::Live)
-                .expect("a live agent")
-                .total,
-            0
-        );
-        // A list this store holds outlives the agent's liveness: the record is
-        // not thrown away when a VM stops.
-        assert_eq!(
-            social.contacts(100, Presence::Absent).expect("held").total,
-            1
-        );
-    }
-
-    #[test]
-    fn a_contact_list_refuses_a_contact_past_its_cap() {
-        let (social, _notes) = lab();
-        let builder = agent(100, "builder");
-        {
-            let mut inner = social.lock();
-            // A list at its cap: the guard is the length, so this is the rule
-            // itself and not a loop of 256 adds.
-            inner.contacts.insert(
-                100,
-                (0..MAX_CONTACTS_PER_AGENT)
-                    .map(|index| ContactView {
-                        peer_cid: 1000 + index as u64,
-                        role: "peer".to_string(),
-                        since: 1,
-                        kind: MET,
-                    })
-                    .collect(),
-            );
-        }
-        assert_eq!(
-            social
-                .add_contact(&builder, &agent(101, "librarian"))
-                .unwrap_err(),
-            SocialError::Conflict(format!(
-                "agent 100 holds its cap of {MAX_CONTACTS_PER_AGENT} contacts"
-            ))
-        );
-        // A peer already on the list still answers with its link at the cap:
-        // the cap refuses a *fresh* contact, not a read of a held one.
-        assert_eq!(
-            social
-                .add_contact(&builder, &agent(1000, "peer"))
-                .expect("the held link")
-                .peer_cid,
-            1000
-        );
-    }
-
-    #[test]
-    fn an_award_posts_the_hiring_note_and_links_both_ways() {
-        let events = EventBus::new();
-        let notes = events.subscribe();
-        let ledger = TaskLedger::new(Arc::clone(&events));
-        let social = Social::new(Arc::clone(&events));
-        let task = ledger
-            .create(&CreateTask {
-                goal: "ship the social layer".to_string(),
-                acceptance: Some("the board shows the note".to_string()),
-                budget: Some(500),
-                role: Some("builder".to_string()),
-                after: Vec::new(),
-                project: None,
-            })
-            .expect("a roled task inside the contract");
-        let mayor = agent(100, "mayor");
-        let builder = agent(101, "builder");
-
-        let seed = social.seed_award(&task, &mayor, &builder);
-        let note = seed.note.expect("the board had room");
-        assert!(seed.linked);
-        assert_eq!(note.subject, "hiring for t1");
-        assert_eq!(note.task.as_deref(), Some("t1"));
-        assert_eq!(note.agent_cid, 100, "the awarder authors the note");
-        assert_eq!(note.role, "mayor");
-        assert_eq!(note.posted_by, "mayor");
-        assert_eq!(
-            note.body, "builder — ship the social layer (acceptance: the board shows the note)",
-            "the body is a template over the task's own fields"
-        );
-
-        // The links are both ways, with each side's own kind.
-        let awarder = social.contacts(100, Presence::Live).expect("known");
-        assert_eq!(awarder.contacts.len(), 1);
-        assert_eq!(awarder.contacts[0].peer_cid, 101);
-        assert_eq!(awarder.contacts[0].kind, HIRED);
-        let contractor = social.contacts(101, Presence::Live).expect("known");
-        assert_eq!(contractor.contacts.len(), 1);
-        assert_eq!(contractor.contacts[0].peer_cid, 100);
-        assert_eq!(contractor.contacts[0].kind, WAS_HIRED);
-        assert_eq!(contractor.contacts[0].role, "mayor");
-
-        // The note is a post like any other, and it is on the board's bus
-        // beside the task's own creation.
-        assert_eq!(social.board(&[100, 101], BOARD_LIMIT).posts[0].id, "p1");
-        let mut seen = Vec::new();
-        while let Ok(event) = notes.try_recv() {
-            seen.push(event);
-        }
-        assert!(
-            seen.iter().any(|event| matches!(
-                event,
-                Event::Board {
-                    kind: "post",
-                    post: Some(_),
-                    ..
-                }
-            )),
-            "the note is on the bus: {seen:?}"
-        );
-
-        // Seeding twice is idempotent: a second award of the same call cannot
-        // post a second note (the call has one award), but the links hold and
-        // the kinds do not flip.
-        let again = social.seed_award(&task, &mayor, &builder);
-        assert!(again.note.is_ok());
-        assert!(again.linked);
-        assert_eq!(
-            social
-                .contacts(100, Presence::Live)
-                .expect("known")
-                .contacts[0]
-                .kind,
-            HIRED
-        );
-        assert_eq!(
-            social
-                .contacts(101, Presence::Live)
-                .expect("known")
-                .contacts[0]
-                .kind,
-            WAS_HIRED
-        );
-    }
-
-    #[test]
-    fn an_award_an_agent_makes_to_itself_posts_a_note_and_links_nothing() {
-        let events = EventBus::new();
-        let ledger = TaskLedger::new(Arc::clone(&events));
-        let social = Social::new(Arc::clone(&events));
-        let task = ledger
-            .create(&CreateTask {
-                goal: "a solo job".to_string(),
-                acceptance: None,
-                budget: Some(1),
-                role: Some("builder".to_string()),
-                after: Vec::new(),
-                project: None,
-            })
-            .expect("a task");
-        let builder = agent(101, "builder");
-
-        let seed = social.seed_award(&task, &builder, &builder);
-        assert!(seed.note.is_ok(), "the note still posts");
-        assert!(!seed.linked, "an agent is never its own contact");
-        assert_eq!(seed.note.expect("posted").body, "builder — a solo job");
-        assert_eq!(
-            social.contacts(101, Presence::Live).expect("known").total,
-            0,
-            "no self-contact, in either direction"
-        );
-    }
-
-    #[test]
-    fn the_hiring_notes_body_is_a_template_clamped_to_the_boards_cap() {
-        let events = EventBus::new();
-        let ledger = TaskLedger::new(Arc::clone(&events));
-        let social = Social::new(Arc::clone(&events));
-        // A goal at the ledger's own cap, with an acceptance clause beside it:
-        // the composed note is longer than the board's body cap and must still
-        // post, clamped on a character boundary.
-        let task = ledger
-            .create(&CreateTask {
-                goal: "x".repeat(tasks::MAX_TEXT),
-                acceptance: Some("the suite is green".to_string()),
-                budget: Some(1),
-                role: Some("builder".to_string()),
-                after: Vec::new(),
-                project: None,
-            })
-            .expect("the ledger takes a goal at its cap");
-        let seed = social.seed_award(&task, &agent(100, "mayor"), &agent(101, "builder"));
-        let note = seed.note.expect("the note posts, clamped");
-        assert_eq!(note.body.len(), MAX_BODY);
-        assert!(
-            note.body.is_char_boundary(note.body.len()),
-            "the clamp cut on a character boundary"
-        );
-        assert_eq!(clamp("short", MAX_BODY), "short");
-        assert_eq!(
-            clamp(&"é".repeat(3), 3),
-            "é",
-            "a 2-byte char at 3 bytes cuts to one"
-        );
-    }
-
-    #[test]
-    fn a_conversation_is_recorded_and_the_pairs_thread_is_oldest_first() {
-        let (social, notes) = lab();
-        let builder = agent(100, "builder");
-        let librarian = agent(101, "librarian");
-        let reviewer = agent(102, "reviewer");
-
-        let first = social
-            .say(
-                &builder,
-                &librarian,
-                "do you have the plans?",
-                &|_, _, _| (true, None),
-            )
-            .expect("a room in the record");
-        assert_eq!(first.id, "c1");
-        assert_eq!(first.from_cid, 100);
-        assert_eq!(first.to_cid, 101);
-        assert_eq!(first.from_role, "builder");
-        assert_eq!(first.to_role, "librarian");
-        assert_eq!(first.text, "do you have the plans?");
-        assert!(first.delivered);
-        assert_eq!(first.delivery, None);
-        let second = social
-            .say(&librarian, &builder, "yes", &|_, _, _| (true, None))
-            .expect("a room in the record");
-        assert_eq!(second.id, "c2");
-        social
-            .say(&builder, &reviewer, "unrelated", &|_, _, _| (true, None))
-            .expect("a room in the record");
-
-        // The record is newest first, bounded.
-        let all = social.conversations(&page(CONVERSATIONS_LIMIT));
-        assert_eq!(all.total, 3);
-        assert!(!all.truncated);
-        assert_eq!(
-            all.conversations
-                .iter()
-                .map(|row| row.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c3", "c2", "c1"]
-        );
-        let window = social.conversations(&page(1));
-        assert!(window.truncated);
-        assert_eq!(window.conversations.len(), 1);
-        assert_eq!(window.conversations[0].id, "c3");
-        assert_eq!(window.active_secs, ACTIVE_SECS);
-
-        // A pair's thread is the pair's own, oldest first, whichever way the
-        // path names the pair.
-        let thread = social.thread(100, 101, &page(CONVERSATIONS_LIMIT));
-        assert_eq!(thread.total, 2);
-        assert_eq!(
-            thread
-                .messages
-                .iter()
-                .map(|row| row.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c1", "c2"]
-        );
-        assert!(thread.active, "an exchange just happened");
-        assert_eq!(thread.active_secs, ACTIVE_SECS);
-        assert!(!thread.truncated);
-        assert_eq!(
-            social.thread(101, 100, &page(CONVERSATIONS_LIMIT)).total,
-            2,
-            "the pair is unordered"
-        );
-        let bounded = social.thread(100, 101, &page(1));
-        assert!(bounded.truncated);
-        assert_eq!(
-            bounded
-                .messages
-                .iter()
-                .map(|row| row.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c2"],
-            "the newest exchange is what the window keeps",
-        );
-        // A pair that has never spoken is an empty thread, not a refusal.
-        let empty = social.thread(100, 999, &page(CONVERSATIONS_LIMIT));
-        assert_eq!(empty.total, 0);
-        assert!(!empty.active);
-        assert!(empty.messages.is_empty());
-
-        // Every exchange is on the bus.
-        assert_eq!(
-            notes.recv_timeout(Duration::from_secs(1)),
-            Ok(Event::Conversation {
-                id: "c1".to_string(),
-                from_cid: 100,
-                to_cid: 101,
-                delivered: true,
-            })
-        );
-        // And an agent does not speak to itself.
-        assert_eq!(
-            social
-                .say(&builder, &builder, "hello me", &|_, _, _| (true, None))
-                .unwrap_err(),
-            SocialError::Conflict("guest CID 100 cannot speak to itself".to_string())
-        );
-    }
-
-    #[test]
-    fn the_pair_rows_fold_the_record_and_the_active_window_is_inclusive() {
-        let row = |id: &str, from: u64, to: u64, at: u64| ConversationView {
-            id: id.to_string(),
-            from_cid: from,
-            to_cid: to,
-            from_role: "a".to_string(),
-            to_role: "b".to_string(),
-            text: "…".to_string(),
-            created_at: at,
-            delivered: false,
-            delivery: None,
-            attachments: Vec::new(),
-        };
-        // The window: an exchange within ACTIVE_SECS is active, and the
-        // boundary itself counts.
-        assert!(is_active(1_000_000, 1_000_000));
-        assert!(is_active(1_000_000, 1_000_000 + ACTIVE_SECS * 1000));
-        assert!(!is_active(1_000_000, 1_000_000 + ACTIVE_SECS * 1000 + 1));
-        assert!(
-            is_active(1_000_000, 999_000),
-            "a clock that went back is not a gap"
-        );
-
-        let rows = vec![
-            row("c1", 101, 100, 1000),
-            row("c2", 100, 101, 5000),
-            row("c3", 102, 100, 9000),
-            row("c4", 100, 102, 2000),
-        ];
-        let now = 10_000;
-        let (pairs, total) = pairs_of(&rows, now);
-        assert_eq!(total, 2, "two pairs, however many rows");
-        // The pair that spoke last is first, and the pair is canonical (a < b).
-        assert_eq!(
-            (pairs[0].a, pairs[0].b, pairs[0].count, pairs[0].last_at),
-            (100, 102, 2, 9000)
-        );
-        assert_eq!(
-            (pairs[1].a, pairs[1].b, pairs[1].count, pairs[1].last_at),
-            (100, 101, 2, 5000)
-        );
-        assert!(pairs.iter().all(|pair| pair.active));
-        // A pair whose last exchange is past the window is not active, but it
-        // is still a pair.
-        let stale = pairs_of(&rows, 9000 + ACTIVE_SECS * 1000 + 1).0;
-        assert_eq!(stale.len(), 2);
-        assert!(stale.iter().all(|pair| !pair.active));
-
-        // The window is bounded, and says how much it left out.
-        let many: Vec<ConversationView> = (0..MAX_PAIRS + 5)
-            .map(|index| row("c", 100, 200 + index as u64, index as u64))
-            .collect();
-        let (bounded, total) = pairs_of(&many, 0);
-        assert_eq!(bounded.len(), MAX_PAIRS);
-        assert_eq!(total, MAX_PAIRS + 5);
-    }
-
-    #[test]
-    fn a_conversation_past_the_ceiling_drops_the_oldest_and_is_never_refused() {
-        let (social, _notes) = lab();
-        let builder = agent(100, "builder");
-        let librarian = agent(101, "librarian");
-        {
-            let mut inner = social.lock();
-            let template = ConversationView {
-                id: String::new(),
-                from_cid: 100,
-                to_cid: 101,
-                from_role: "builder".to_string(),
-                to_role: "librarian".to_string(),
-                text: "…".to_string(),
-                created_at: 1,
-                delivered: false,
-                delivery: None,
-                attachments: Vec::new(),
-            };
-            inner.conversations = (1..=MAX_CONVERSATIONS as u64)
-                .map(|seq| ConversationView {
-                    id: format!("c{seq}"),
-                    ..template.clone()
-                })
-                .collect();
-            inner.conv_seq = MAX_CONVERSATIONS as u64;
-        }
-        let row = said(&social, &builder, &librarian, "one more");
-        assert_eq!(row.id, format!("c{}", MAX_CONVERSATIONS + 1));
-        let view = social.conversations(&page(1));
-        assert_eq!(view.total, MAX_CONVERSATIONS);
-        assert_eq!(view.conversations[0].id, row.id);
-        assert_eq!(
-            social.lock().conversations.first().map(|r| r.id.as_str()),
-            Some("c2")
-        );
-    }
-
-    /// A query for one page of `limit` exchanges, no search.
-    fn page(limit: usize) -> ConversationQuery {
-        ConversationQuery {
-            limit,
-            ..ConversationQuery::default()
-        }
-    }
-
-    /// Records one exchange from `from` to `to` that the peer took.
-    fn said(
-        social: &Social,
-        from: &ConnectedAgent,
-        to: &ConnectedAgent,
-        text: &str,
-    ) -> ConversationView {
-        social
-            .say(from, to, text, &|_, _, _| (true, None))
-            .expect("an exchange is recorded")
-    }
-
-    /// A retention that keeps `conversations_max` exchanges and `posts_max` posts, with no age limit.
-    fn keep(conversations_max: usize, posts_max: usize) -> Prune {
+    /// A retention that keeps `posts_max` posts, with no age limit.
+    fn keep(posts_max: usize) -> Prune {
         Prune {
-            conversations_max,
-            conversations_older_than_ms: None,
             posts_max,
             posts_older_than_ms: None,
         }
     }
 
     #[test]
-    fn prune_drops_by_count_and_by_age_and_keeps_ids_monotonic() {
-        // Was prune_drops_the_oldest_exchanges_past_the_count_and_keeps_ids_monotonic.
+    fn prune_drops_posts_by_count_and_by_age_and_keeps_ids_monotonic() {
         {
             let (social, _notes) = lab();
             let builder = agent(100, "builder");
-            let librarian = agent(101, "librarian");
             for index in 1..=5 {
-                said(&social, &builder, &librarian, &format!("message {index}"));
+                posted(&social, &builder, &format!("post {index}"));
             }
-            assert_eq!(
-                social.prune(keep(3, 1024)),
-                Pruned {
-                    conversations: 2,
-                    posts: 0
-                }
-            );
-            let view = social.conversations(&page(10));
+            assert_eq!(social.prune(keep(3)), Pruned { posts: 2 });
+            let view = social.board(&[], 10);
             assert_eq!(view.total, 3);
             assert_eq!(
-                view.conversations
+                view.posts
                     .iter()
                     .map(|row| row.id.as_str())
                     .collect::<Vec<_>>(),
-                ["c5", "c4", "c3"]
+                ["p5", "p4", "p3"]
             );
             // Pruning again with nothing to drop changes nothing.
-            assert_eq!(social.prune(keep(3, 1024)), Pruned::default());
-            // A fresh exchange takes the next number, never one a pruned row held.
-            assert_eq!(said(&social, &builder, &librarian, "after").id, "c6");
+            assert_eq!(social.prune(keep(3)), Pruned::default());
+            // A fresh post takes the next number, never one a pruned row held.
+            assert_eq!(posted(&social, &builder, "after").id, "p6");
         }
-        // Was prune_drops_exchanges_and_posts_older_than_the_age_limit.
         {
             let (social, _notes) = lab();
             let builder = agent(100, "builder");
-            let librarian = agent(101, "librarian");
-            said(&social, &builder, &librarian, "old");
-            said(&social, &builder, &librarian, "fresh");
             let posted_old = posted(&social, &builder, "old post");
             posted(&social, &builder, "fresh post");
             {
-                // The first exchange and the first post are a day old.
+                // The first post is a day old.
                 let mut inner = social.lock();
-                inner.conversations[0].created_at = now_ms() - 86_400_000;
                 inner.posts[0].created_at = now_ms() - 86_400_000;
                 assert_eq!(inner.posts[0].id, posted_old.id);
             }
             let hour = Prune {
-                conversations_max: 100,
-                conversations_older_than_ms: Some(3_600_000),
                 posts_max: 100,
                 posts_older_than_ms: Some(3_600_000),
             };
-            assert_eq!(
-                social.prune(hour),
-                Pruned {
-                    conversations: 1,
-                    posts: 1
-                }
-            );
-            let view = social.conversations(&page(10));
-            assert_eq!(
-                view.conversations
-                    .iter()
-                    .map(|row| row.text.as_str())
-                    .collect::<Vec<_>>(),
-                ["fresh"]
-            );
+            assert_eq!(social.prune(hour), Pruned { posts: 1 });
             assert_eq!(
                 social
                     .board(&[], 10)
@@ -2710,7 +1384,7 @@ mod tests {
         }
         // The reader has read p1 and nothing else.
         social.read(&reader, "p1").expect("p1 is readable");
-        assert_eq!(social.prune(keep(1024, 2)).posts, 3);
+        assert_eq!(social.prune(keep(2)).posts, 3);
         // p1 to p3 are gone and p4, p5 are held. The reader's cursor sits at p1,
         // so both held posts are unread: the count is clamped to what remains,
         // not the three posts the raw arithmetic would name.
@@ -2735,184 +1409,6 @@ mod tests {
         );
         let next = social.read(&reader, "p5").expect("p5 is readable");
         assert_eq!(next.unread, 0);
-    }
-
-    #[test]
-    fn a_conversations_page_walks_back_in_disjoint_consecutive_pages() {
-        let (social, _notes) = lab();
-        let builder = agent(100, "builder");
-        let librarian = agent(101, "librarian");
-        for index in 1..=5 {
-            said(&social, &builder, &librarian, &format!("message {index}"));
-        }
-        let first = social.conversations(&page(2));
-        assert_eq!(
-            first
-                .conversations
-                .iter()
-                .map(|r| r.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c5", "c4"]
-        );
-        assert_eq!(first.next_before, Some(4));
-        assert!(first.truncated);
-
-        let second = social.conversations(&ConversationQuery {
-            before: first.next_before,
-            ..page(2)
-        });
-        assert_eq!(
-            second
-                .conversations
-                .iter()
-                .map(|r| r.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c3", "c2"]
-        );
-        assert_eq!(second.next_before, Some(2));
-
-        let last = social.conversations(&ConversationQuery {
-            before: second.next_before,
-            ..page(2)
-        });
-        assert_eq!(
-            last.conversations
-                .iter()
-                .map(|r| r.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c1"]
-        );
-        assert_eq!(last.next_before, None);
-        assert!(!last.truncated);
-
-        // A thread pages the same way, each page oldest first.
-        let thread = social.thread(101, 100, &page(2));
-        assert_eq!(
-            thread
-                .messages
-                .iter()
-                .map(|r| r.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c4", "c5"]
-        );
-        assert_eq!(thread.next_before, Some(4));
-        let older = social.thread(
-            100,
-            101,
-            &ConversationQuery {
-                before: thread.next_before,
-                ..page(2)
-            },
-        );
-        assert_eq!(
-            older
-                .messages
-                .iter()
-                .map(|r| r.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c2", "c3"]
-        );
-        assert_eq!(older.total, 5);
-    }
-
-    #[test]
-    fn a_conversations_search_matches_text_roles_and_named_agents() {
-        let (social, _notes) = lab();
-        let builder = agent(100, "builder");
-        let librarian = agent(101, "librarian");
-        let reviewer = agent(102, "reviewer");
-        said(&social, &builder, &librarian, "The Budget report is ready");
-        said(&social, &builder, &librarian, "lunch?");
-        said(&social, &librarian, &reviewer, "nothing to see");
-
-        let by_text = ConversationQuery {
-            text: Some("budget".into()),
-            ..page(10)
-        };
-        assert_eq!(
-            social
-                .conversations(&by_text)
-                .conversations
-                .iter()
-                .map(|r| r.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c1"],
-            "the match is case-insensitive"
-        );
-        let by_role = ConversationQuery {
-            text: Some("reviewer".into()),
-            ..page(10)
-        };
-        assert_eq!(
-            social.conversations(&by_role).conversations.len(),
-            1,
-            "a role is searched too"
-        );
-        // A name the caller mapped to a CID matches every exchange that CID is in.
-        let by_name = ConversationQuery {
-            text: Some("zzz".into()),
-            cids: vec![102],
-            ..page(10)
-        };
-        assert_eq!(
-            social
-                .conversations(&by_name)
-                .conversations
-                .iter()
-                .map(|r| r.id.as_str())
-                .collect::<Vec<_>>(),
-            ["c3"]
-        );
-        // Search narrows the thread too; the pair's total is still the whole pair.
-        let thread = social.thread(
-            100,
-            101,
-            &ConversationQuery {
-                text: Some("lunch".into()),
-                ..page(10)
-            },
-        );
-        assert_eq!(
-            thread
-                .messages
-                .iter()
-                .map(|r| r.text.as_str())
-                .collect::<Vec<_>>(),
-            ["lunch?"]
-        );
-        assert_eq!(thread.total, 2);
-        assert!(thread.next_before.is_none());
-    }
-
-    #[test]
-    fn a_say_outside_the_contract_is_refused_before_anything_is_recorded() {
-        assert_eq!(
-            SayRequest {
-                to_cid: 101,
-                text: "  ".to_string()
-            }
-            .checked()
-            .unwrap_err(),
-            "text must not be empty"
-        );
-        assert_eq!(
-            SayRequest {
-                to_cid: 101,
-                text: "x".repeat(MAX_SAY_TEXT + 1)
-            }
-            .checked()
-            .unwrap_err(),
-            format!("text must be at most {MAX_SAY_TEXT} bytes")
-        );
-        assert!(
-            SayRequest {
-                to_cid: 101,
-                text: "x".repeat(MAX_SAY_TEXT)
-            }
-            .checked()
-            .is_ok(),
-            "the cap is inclusive"
-        );
     }
 
     #[test]

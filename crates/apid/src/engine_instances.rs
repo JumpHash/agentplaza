@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
@@ -255,14 +255,18 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// How long a looked-up newest version of an npm engine is kept before it is looked up again.
+const LATEST_FOR: Duration = Duration::from_secs(3600);
+
 /// The engines store: `engines.json`, the cached registry, and the last check of each instance.
 pub struct Store {
     path: PathBuf,
     registry_path: PathBuf,
     stored: Mutex<Vec<Stored>>,
     registry: Mutex<Option<(u64, Value)>>,
-    /// The newest version of each npm-installed instance, from the last check.
-    latest: Mutex<BTreeMap<String, String>>,
+    /// The newest version of each npm-installed instance and when it was looked up (PLAN 30.4: kept for
+    /// [`LATEST_FOR`]; dropped when the instance is installed, updated or removed).
+    latest: Mutex<BTreeMap<String, (String, Instant)>>,
     health: Mutex<BTreeMap<String, Value>>,
     write: Mutex<()>,
     fetch: Box<dyn Fetch>,
@@ -363,7 +367,7 @@ impl Store {
     fn view(&self, s: &Stored, enabled: bool) -> Value {
         let b = builtin(&s.engine);
         let version = installed_version(s);
-        let latest = lock(&self.latest).get(&s.id).cloned();
+        let latest = lock(&self.latest).get(&s.id).map(|(v, _)| v.clone());
         let health = if enabled {
             lock(&self.health)
                 .get(&s.id)
@@ -674,6 +678,7 @@ impl Store {
     /// Looks up the newest version of every npm instance and rebuilds each enabled instance's health from
     /// its version and its route's provider.
     fn check(&self, app: &App, enabled_builtins: &[String]) -> Value {
+        self.refresh_latest(enabled_builtins);
         let mut out = serde_json::Map::new();
         for view in self.views(enabled_builtins) {
             let id = view["id"].as_str().unwrap_or("").to_string();
@@ -686,18 +691,54 @@ impl Store {
                 engine: id.clone(),
                 ..Default::default()
             });
-            let mut latest = None;
-            if let Some(package) = self.npm_package(&s)
-                && let Ok(Install::Npm { version, .. }) = self.npm_pin(&package, "latest")
-            {
-                lock(&self.latest).insert(id.clone(), version.clone());
-                latest = Some(version);
-            }
+            let latest = self
+                .npm_package(&s)
+                .and_then(|_| lock(&self.latest).get(&id).map(|(v, _)| v.clone()));
             let health = engine_health(app, &view, latest.as_deref());
             lock(&self.health).insert(id.clone(), health.clone());
             out.insert(id, health);
         }
         Value::Object(out)
+    }
+
+    /// Looks up the newest version of every enabled npm instance whose last lookup is older than [`LATEST_FOR`],
+    /// all at once (one thread each).
+    fn refresh_latest(&self, enabled_builtins: &[String]) {
+        let due: Vec<(String, String)> = self
+            .views(enabled_builtins)
+            .into_iter()
+            .filter(|view| view["enabled"].as_bool().unwrap_or(false))
+            .filter_map(|view| {
+                let id = view["id"].as_str()?.to_string();
+                let s = self.stored(&id).unwrap_or_else(|| Stored {
+                    id: id.clone(),
+                    engine: id.clone(),
+                    ..Default::default()
+                });
+                let package = self.npm_package(&s)?;
+                let fresh = lock(&self.latest)
+                    .get(&id)
+                    .is_some_and(|(_, at)| at.elapsed() < LATEST_FOR);
+                (!fresh).then_some((id, package))
+            })
+            .collect();
+        let found: Vec<(String, String)> = std::thread::scope(|scope| {
+            let running: Vec<_> = due
+                .iter()
+                .map(|(id, package)| {
+                    scope.spawn(move || match self.npm_pin(package, "latest") {
+                        Ok(Install::Npm { version, .. }) => Some((id.clone(), version)),
+                        _ => None,
+                    })
+                })
+                .collect();
+            running.into_iter().filter_map(|t| t.join().ok().flatten()).collect()
+        });
+        let now = Instant::now();
+        let mut latest = lock(&self.latest);
+        for (id, version) in found {
+            latest.insert(id, (version, now));
+        }
     }
 
     /// The npm instances with a newer version than the one they install, and — unless `dry_run` — pins

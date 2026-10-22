@@ -1,6 +1,7 @@
 // The IDE sidebar's grouping and the start choice. Pure: no DOM, no fetch, no store. An agent belongs to the project it
 // works on (its membership), and the orchestrator to every project it leads; an agent from before membership, to the
 // projects holding a task it is an assignee of. The agents in none sit in "No project" (for a worker, the bench).
+import { agentName } from '../roles';
 import type { Agent, IdeWorkspaceInfo, Project, Task } from '../api';
 import { currentTask } from './view';
 
@@ -58,7 +59,7 @@ export function projectOf(agent: Pick<Agent, 'cid' | 'work' | 'project'>, projec
 
 /**
  * One group per project that holds an agent, most recently active first; the agents in no project go to NO_PROJECT,
- * last. An agent in several projects is listed in each. Agents are sorted by name within a group.
+ * last. An agent in several projects is listed in each. Agents are sorted by their labels within a group.
  */
 export function groupByProject(agents: Agent[], projects: Project[], tasks: Task[]): ProjectGroup[] {
   const sorted = byRecent(projects);
@@ -69,22 +70,14 @@ export function groupByProject(agents: Agent[], projects: Project[], tasks: Task
     if (mine.length === 0) none.push(agent);
     for (const p of mine) lists.set(p.id, [...(lists.get(p.id) ?? []), agent]);
   }
-  const byName = (xs: Agent[]): Agent[] => [...xs].sort((a, b) => a.name.localeCompare(b.name));
+  const byLabel = (xs: Agent[]): Agent[] => [...xs].sort((a, b) => agentName(a).localeCompare(agentName(b), undefined, { numeric: true }));
   const groups: ProjectGroup[] = [];
   for (const p of sorted) {
     const list = lists.get(p.id);
-    if (list) groups.push({ id: p.id, title: p.title, agents: byName(list) });
+    if (list) groups.push({ id: p.id, title: p.title, agents: byLabel(list) });
   }
-  if (none.length > 0) groups.push({ id: null, title: NO_PROJECT, agents: byName(none) });
+  if (none.length > 0) groups.push({ id: null, title: NO_PROJECT, agents: byLabel(none) });
   return groups;
-}
-
-/** The cids of the agents whose name another agent in the list shares (case-insensitive). Their rows show the cid. */
-export function sharedNames(agents: Agent[]): Set<number> {
-  const key = (a: Agent): string => a.name.trim().toLowerCase();
-  const count = new Map<string, number>();
-  for (const a of agents) count.set(key(a), (count.get(key(a)) ?? 0) + 1);
-  return new Set(agents.filter((a) => (count.get(key(a)) ?? 0) > 1).map((a) => a.cid));
 }
 
 /**
@@ -160,7 +153,7 @@ export function matchingRows(g: SidebarGroup, q: string): { agents: Agent[]; rep
   if (!q) return { agents: g.agents, repos: g.repos, stations: g.stations };
   const hit = (s: string | null | undefined) => (s ?? '').toLowerCase().includes(q);
   const whole = hit(g.title);
-  const agents = g.agents.filter((a) => whole || hit(a.name) || hit(currentTask(a)));
+  const agents = g.agents.filter((a) => whole || hit(agentName(a)) || hit(currentTask(a)));
   const repos = g.repos.filter((ws) => whole || hit(ws.name));
   const stations = g.stations.filter((ws) => whole || hit(ws.name));
   return agents.length || repos.length || stations.length ? { agents, repos, stations } : null;

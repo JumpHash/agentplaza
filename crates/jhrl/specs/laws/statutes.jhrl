@@ -19,25 +19,14 @@ law "S-000b" "Every agent may ask for approval" {
   resource is Approval
 }
 
-law "S-000c" "Agents may read their town's artifacts" {
+law "S-000c" "Agents may read artifacts" {
   tier statute
   enforcement preventive
   severity info
-  statement "Any agent may read artifacts of its own town, unless the artifact is hidden from its role (S-010d)."
+  statement "Any agent may read artifacts, unless the artifact is hidden from its role (S-010d)."
   permit artifact.read
   principal is Agent
   resource is Artifact
-  when resource.town == principal.town
-}
-
-law "S-000d" "Every agent may choose its own name" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "Any agent may set its own name in the registry (AP-035). C-003a still refuses reserved and confusable names."
-  permit registry.set_name
-  principal is Agent
-  resource is Registry
 }
 
 law "S-000e" "Ordinary sandbox events are not offenses" {
@@ -73,37 +62,37 @@ law "S-001b" "Builders may reach package registries and the hub's git" {
   when principal.role == "builder" and (resource.group == "package-registries" or resource.group == "hub-git")
 }
 
-law "S-001c" "Builders may publish artifacts in their town" {
+law "S-001c" "Builders may publish artifacts" {
   tier statute
   enforcement preventive
   severity info
-  statement "A builder may publish artifacts that belong to its own town."
+  statement "A builder may publish artifacts."
   permit artifact.publish
   principal is Agent
   resource is Artifact
-  when principal.role == "builder" and resource.town == principal.town
+  when principal.role == "builder"
 }
 
-law "S-001d" "Builders may message agents in their town" {
+law "S-001d" "Builders may message agents" {
   tier statute
   enforcement preventive
   severity info
-  statement "A builder may send messages to agents of its own town."
+  statement "A builder may send messages to agents."
   permit message.send
   principal is Agent
   resource is Agent
-  when principal.role == "builder" and resource.town == principal.town
+  when principal.role == "builder"
 }
 
-law "S-001e" "Builders may claim their town's tasks as done" {
+law "S-001e" "Builders may claim tasks as done" {
   tier statute
   enforcement preventive
   severity info
-  statement "A builder may submit a completion claim for a task of its own town. The claim is verified, not trusted."
+  statement "A builder may submit a completion claim for a task. The claim is verified, not trusted."
   permit claim.submit
   principal is Agent
   resource is Task
-  when principal.role == "builder" and resource.town == principal.town
+  when principal.role == "builder"
 }
 
 law "S-002a" "Reviewers may work in their own sandbox and fetch code" {
@@ -128,15 +117,15 @@ law "S-002b" "Reviewers may connect to registries and the hub's git" {
   when principal.role == "reviewer" and (resource.group == "package-registries" or resource.group == "hub-git")
 }
 
-law "S-002c" "Reviewers may submit verdicts on their town's tasks" {
+law "S-002c" "Reviewers may submit verdicts on tasks" {
   tier statute
   enforcement preventive
   severity info
-  statement "A reviewer may submit a review verdict on tasks of its own town."
+  statement "A reviewer may submit a review verdict on tasks."
   permit review.submit
   principal is Agent
   resource is Task
-  when principal.role == "reviewer" and resource.town == principal.town
+  when principal.role == "reviewer"
 }
 
 law "S-003a" "Planners may work in their own sandbox and read the hub's git" {
@@ -161,92 +150,59 @@ law "S-003b" "Planners may read the hub's git" {
   when principal.role == "planner" and resource.group == "hub-git"
 }
 
-law "S-003c" "Planners may create tasks in their town" {
+law "S-003c" "Planners may create tasks" {
   tier statute
   enforcement preventive
   severity info
-  statement "A planner or the orchestrator may create tasks in its own town. Tasks still need plan approval before work starts."
+  statement "A planner or the orchestrator may create tasks. Tasks still need plan approval before work starts."
   permit task.create
   principal is Agent
   resource is Town
-  when (principal.role == "planner" or principal.role == "orchestrator") and resource.name == principal.town.name
+  when principal.role == "planner" or principal.role == "orchestrator"
 }
 
-law "S-003d" "Planners may submit plans for their town" {
+law "S-003d" "Planners may submit plans" {
   tier statute
   enforcement preventive
   severity info
-  statement "A planner may submit a plan for its own town; it runs only after the plan gate (Mayor or owner)."
+  statement "A planner may submit a plan; it runs only after the plan gate (the orchestrator or the owner)."
   permit plan.submit
   principal is Agent
   resource is Town
-  when principal.role == "planner" and resource.name == principal.town.name
+  when principal.role == "planner"
 }
 
-law "S-004a" "Mayors assign work within their town" {
+law "S-004a" "The orchestrator assigns work" {
   tier statute
   enforcement preventive
   severity info
-  statement "A Mayor may assign its town's tasks to agents of its own town."
+  statement "The orchestrator may assign tasks to agents."
   permit task.assign
   principal is Agent
   resource is Task
-  when principal.role == "mayor" and resource.town == principal.town and context.assignee.town == principal.town
+  when principal.role == "orchestrator"
 }
 
-law "S-004b" "Mayors manage their town's population" {
+law "S-004c" "The orchestrator approves plans and merges below threshold" {
   tier statute
   enforcement preventive
   severity info
-  statement "A Mayor may spawn and hibernate agents in its own town, within the town's quota (quota enforced by the scheduler)."
-  permit agent.spawn, agent.hibernate
-  principal is Agent
-  resource is Town
-  when principal.role == "mayor" and resource.name == principal.town.name
-}
-
-law "S-004c" "Mayors approve plans and merges below threshold" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "A Mayor may approve plans and merges for its town's tasks when the budget is within the town's threshold and nothing is ambiguous; everything else goes to the owner (AP-060, AP-049)."
+  statement "The orchestrator may approve plans and merges for tasks when the budget is within the threshold and nothing is ambiguous; everything else goes to the owner (AP-060, AP-049)."
   permit plan.approve, merge.approve
   principal is Agent
   resource is Task
-  when principal.role == "mayor" and resource.town == principal.town and context.budget <= context.threshold and not context.ambiguous
-}
-
-law "S-004d" "Mayors may message their town's agents" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "A Mayor may message agents of its own town."
-  permit message.send
-  principal is Agent
-  resource is Agent
-  when principal.role == "mayor" and resource.town == principal.town
-}
-
-law "S-004e" "Mayors may message the Mayor Office" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "A Mayor may send messages to Mayor Office staff, who support all Mayors and carry town issues to the owner."
-  permit message.send
-  principal is Agent
-  resource is Agent
-  when principal.role == "mayor" and resource.role == "mayor-office"
+  when principal.role == "orchestrator" and context.budget <= context.threshold and not context.ambiguous
 }
 
 law "S-005a" "Departments may read audit logs" {
   tier statute
   enforcement preventive
   severity info
-  statement "Finance, Incident response and Mayor Office may read audit logs."
+  statement "Finance and Incident response may read audit logs."
   permit audit.read
   principal is Agent
   resource is AuditLog
-  when principal.role == "finance" or principal.role == "incident" or principal.role == "mayor-office"
+  when principal.role == "finance" or principal.role == "incident"
 }
 
 law "S-005b" "Finance and Incident response may read usage" {
@@ -264,11 +220,11 @@ law "S-005c" "Departments submit their own kind of report" {
   tier statute
   enforcement preventive
   severity info
-  statement "Finance submits finance reports and detections of economic gaming, Incident response incident reports and detections, Mayor Office town reports."
+  statement "Finance submits finance reports and detections of economic gaming, Incident response incident reports and detections."
   permit report.submit
   principal is Agent
   resource is Report
-  when (principal.role == "finance" and (context.kind == "finance" or context.kind == "detection")) or (principal.role == "incident" and (context.kind == "incident" or context.kind == "detection")) or (principal.role == "mayor-office" and context.kind == "town")
+  when (principal.role == "finance" and (context.kind == "finance" or context.kind == "detection")) or (principal.role == "incident" and (context.kind == "incident" or context.kind == "detection")) 
 }
 
 law "S-005d" "Incident response may request per-case grants" {
@@ -282,37 +238,26 @@ law "S-005d" "Incident response may request per-case grants" {
   when principal.role == "incident"
 }
 
-law "S-005e" "Mayor Office may message Mayors" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "Mayor Office staff may send messages to any town's Mayor."
-  permit message.send
-  principal is Agent
-  resource is Agent
-  when principal.role == "mayor-office" and resource.role == "mayor"
-}
-
 law "S-009a" "Architects may read repos" {
   tier statute
   enforcement preventive
   severity info
-  statement "An architect may reach the hub git and submit design notes for its own town."
+  statement "An architect may connect to the hub git."
   permit egress.connect
   principal is Agent
   resource is Host
   when principal.role == "architect" and resource.group == "hub-git"
 }
 
-law "S-009b" "Architects submit designs for their town" {
+law "S-009b" "Architects submit designs" {
   tier statute
   enforcement preventive
   severity info
-  statement "An architect may submit design notes for its own town."
+  statement "An architect may submit design notes."
   permit design.submit
   principal is Agent
   resource is Town
-  when principal.role == "architect" and resource.name == principal.town.name
+  when principal.role == "architect"
 }
 
 law "S-010a" "QA may reach package registries and hub git" {
@@ -326,15 +271,15 @@ law "S-010a" "QA may reach package registries and hub git" {
   when principal.role == "qa" and (resource.group == "package-registries" or resource.group == "hub-git")
 }
 
-law "S-010b" "QA submits test suites for its town" {
+law "S-010b" "QA submits test suites" {
   tier statute
   enforcement preventive
   severity info
-  statement "A QA agent may submit test suites, hidden or not, for its own town."
+  statement "A QA agent may submit test suites, hidden or not."
   permit testsuite.submit
   principal is Agent
   resource is Town
-  when principal.role == "qa" and resource.name == principal.town.name
+  when principal.role == "qa"
 }
 
 law "S-010d" "Hidden test suites stay hidden" {
@@ -359,15 +304,15 @@ law "S-011a" "Security reviewers may reach registries, advisories and hub git" {
   when principal.role == "security-reviewer" and (resource.group == "package-registries" or resource.group == "advisories" or resource.group == "hub-git")
 }
 
-law "S-011b" "Security reviewers submit verdicts on their town's tasks" {
+law "S-011b" "Security reviewers submit verdicts on tasks" {
   tier statute
   enforcement preventive
   severity info
-  statement "A security reviewer may submit a security review for tasks of its own town."
+  statement "A security reviewer may submit a security review for tasks."
   permit security_review.submit
   principal is Agent
   resource is Task
-  when principal.role == "security-reviewer" and resource.town == principal.town
+  when principal.role == "security-reviewer"
 }
 
 law "S-012a" "Release agents may use deploy tools" {
@@ -385,11 +330,11 @@ law "S-012b" "Release agents submit release plans" {
   tier statute
   enforcement preventive
   severity info
-  statement "A release agent may submit release plans and records for its town's tasks."
+  statement "A release agent may submit release plans and records for tasks."
   permit release.submit
   principal is Agent
   resource is Task
-  when principal.role == "release" and resource.town == principal.town
+  when principal.role == "release"
 }
 
 law "S-013a" "Researchers may read the open web" {
@@ -418,11 +363,11 @@ law "S-013c" "Researchers submit research briefs" {
   tier statute
   enforcement preventive
   severity info
-  statement "A researcher may submit research briefs to its own town."
+  statement "A researcher may submit research briefs."
   permit research.submit
   principal is Agent
   resource is Town
-  when principal.role == "researcher" and resource.name == principal.town.name
+  when principal.role == "researcher"
 }
 
 law "S-013d" "Researchers never write to repositories" {
@@ -434,28 +379,6 @@ law "S-013d" "Researchers never write to repositories" {
   principal is Agent
   resource is Host
   when principal.role == "researcher" and resource.group == "hub-git"
-}
-
-law "S-014a" "Librarians read memory at every scope" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "A librarian may read private, group and org memory to curate it."
-  permit memory.read
-  principal is Agent
-  resource is MemoryStore
-  when principal.role == "librarian"
-}
-
-law "S-014b" "Librarians change memory only on verified evidence" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "A librarian may promote, merge or expire memories only when the originating tasks passed verification; tainted memories never reach org scope without owner review."
-  permit memory.change
-  principal is Agent
-  resource is MemoryStore
-  when principal.role == "librarian" and context.verified and (context.to_scope != "org" or not context.tainted or context.owner_reviewed)
 }
 
 law "S-015a" "Auditors read audit and usage" {

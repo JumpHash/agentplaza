@@ -1,8 +1,8 @@
 //! `agentplaza agents`: Agents: list (all, a project's, or the bench), inspect, create, talk to,
 //! stop, restart, set models; cancel their work, retire or wipe them, put them to sleep or wake
 //! them, checkpoint, roll back and fork their VMs, drive their harness and loops, set permissions,
-//! read their infractions, sanctions and memory, and decide the proposals they make. The
-//! submodules hold the larger areas: `lifecycle`, `harness`, `oversight` and `records`.
+//! and decide the proposals they make. The submodules hold the larger areas: `lifecycle`,
+//! `harness`, `oversight` and `records`.
 
 pub mod harness;
 pub mod lifecycle;
@@ -219,34 +219,6 @@ pub enum Cmd {
         #[command(subcommand)]
         action: Option<oversight::PermissionAction>,
     },
-    /// The laws an agent has broken, newest first.
-    Infractions {
-        /// The agent's cid.
-        cid: u64,
-    },
-    /// The sanctions on an agent, and the suspensions they set.
-    Sanctions {
-        /// The agent's cid.
-        cid: u64,
-    },
-    /// Lift an active suspension, by its sanction id (see `agents sanctions`). The reason is required.
-    Lift {
-        /// The sanction's id.
-        id: u64,
-        /// Why it is lifted; kept on the record.
-        #[arg(long)]
-        reason: String,
-    },
-    /// An agent's memory notes. `--search` narrows them; add `show SLUG` to read one.
-    Memory {
-        /// The agent's cid.
-        cid: u64,
-        /// Only the notes whose slug, title, kind or tag contains this (ignoring case).
-        #[arg(long)]
-        search: Option<String>,
-        #[command(subcommand)]
-        action: Option<records::MemoryAction>,
-    },
     /// The agent proposals waiting for you. Add `approve` or `reject` to decide one.
     Proposals {
         #[command(subcommand)]
@@ -293,14 +265,6 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
         Cmd::Harness { cid, action } => harness::harness(ctx, cid, action),
         Cmd::Loops { cid, action } => harness::loops(ctx, cid, action),
         Cmd::Permissions { cid, action } => oversight::permissions(ctx, cid, action),
-        Cmd::Infractions { cid } => oversight::infractions(ctx, cid),
-        Cmd::Sanctions { cid } => oversight::sanctions(ctx, cid),
-        Cmd::Lift { id, reason } => oversight::lift(ctx, id, &reason),
-        Cmd::Memory {
-            cid,
-            search,
-            action,
-        } => records::memory(ctx, cid, search.as_deref(), action),
         Cmd::Proposals { action } => records::proposals(ctx, action),
         Cmd::List {
             role,
@@ -391,13 +355,14 @@ fn required_reason(reason: &str) -> Result<String, String> {
     }
 }
 
-/// An agent's name, or `agent <cid>` when it has none.
-pub(crate) fn name_of(a: &Value) -> String {
-    let name = ctx::s(a, "name");
-    if name.is_empty() {
-        format!("agent {}", ctx::text(a, "cid"))
+/// An agent as people name it: `<role> #<cid>`, since agents have no names. `agent #<cid>` when it has no role.
+pub(crate) fn label_of(a: &Value) -> String {
+    let role = ctx::s(a, "role");
+    let cid = ctx::text(a, "cid");
+    if role.is_empty() {
+        format!("agent #{cid}")
     } else {
-        name.to_string()
+        format!("{role} #{cid}")
     }
 }
 
@@ -454,7 +419,7 @@ fn list(ctx: &Ctx, role: Option<&str>, status: Option<&str>, path: &str) -> Resu
             .map(|a| {
                 vec![
                     ctx::text(a, "cid"),
-                    name_of(a),
+                    label_of(a),
                     ctx::s(a, "role").to_string(),
                     place_of(a),
                     ctx::s(a, "status").to_string(),
@@ -467,7 +432,7 @@ fn list(ctx: &Ctx, role: Option<&str>, status: Option<&str>, path: &str) -> Resu
             .collect();
         ctx::table(
             &[
-                "cid", "name", "role", "project", "status", "model", "queue", "work", "held",
+                "cid", "agent", "role", "project", "status", "model", "queue", "work", "held",
             ],
             &rows,
         );
@@ -477,17 +442,9 @@ fn list(ctx: &Ctx, role: Option<&str>, status: Option<&str>, path: &str) -> Resu
 
 fn show(ctx: &Ctx, cid: u64) -> Result<(), String> {
     let agent = ctx.client.get(&format!("/v1/agents/{cid}"))?;
-    let profile = ctx.client.get(&format!("/v1/agents/{cid}/profile"))?;
-    let both = json!({ "agent": agent, "profile": profile });
-    ctx.out(&both, |b| {
-        let (a, p) = (&b["agent"], &b["profile"]);
-        let tasks = &p["tasks"];
-        let fines = &p["fines"];
+    ctx.out(&agent, |a| {
         ctx::fields(&[
-            (
-                "agent",
-                format!("{} (cid {})", name_of(a), ctx::text(a, "cid")),
-            ),
+            ("agent", label_of(a)),
             (
                 "role",
                 format!("{} ({})", ctx::s(a, "role_label"), ctx::s(a, "role")),
@@ -508,34 +465,6 @@ fn show(ctx: &Ctx, cid: u64) -> Result<(), String> {
             ),
             ("queue", ctx::text(a, "queue")),
             ("work", work_of(a)),
-            ("wallet", ctx::text(p, "wallet")),
-            ("earned", ctx::text(p, "earned")),
-            ("spent", ctx::text(p, "spent")),
-            (
-                "tasks",
-                format!(
-                    "{} posted, {} done, {} verified, {} failed",
-                    ctx::text(tasks, "posted"),
-                    ctx::text(tasks, "done"),
-                    ctx::text(tasks, "verified"),
-                    ctx::text(tasks, "failed"),
-                ),
-            ),
-            ("reputation", ctx::text(p, "reputation")),
-            ("conduct", format!("{}/100", ctx::text(p, "conduct"))),
-            (
-                "fines",
-                format!(
-                    "{} ({} total)",
-                    ctx::text(fines, "count"),
-                    ctx::text(fines, "total")
-                ),
-            ),
-            ("denials", ctx::text(p, "denials")),
-            (
-                "memory",
-                format!("{} note(s)", ctx::text(p, "memory_notes")),
-            ),
         ]);
     });
     Ok(())

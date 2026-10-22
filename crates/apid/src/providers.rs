@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use apz_gateway::{
     Auth, Caller, Gateway, ModelInfo, ProviderConfig, ProviderKind, SecretRead, SecretReason,
@@ -48,8 +48,6 @@ const SEED_IDS: [&str; 16] = [
     "openrouter",
     "opencode",
 ];
-/// How long `GET /v1/models` answers from its cache.
-const MODEL_CACHE: Duration = Duration::from_secs(60);
 
 /// A failed mutation: the HTTP status and a message that never names a secret's value.
 pub(crate) type Failure = (u16, String);
@@ -185,8 +183,8 @@ pub struct Store {
     vault: Arc<crate::vault::Store>,
     /// Serializes every mutation of providers and their keys.
     write: Mutex<()>,
-    /// The last `GET /v1/models` answer and when it was computed.
-    models: Mutex<Option<(Instant, Value)>>,
+    /// Each provider's last good model listing, refreshed in the background (`provider_listings.rs`).
+    pub listings: Arc<crate::provider_listings::Listings>,
     /// The saved default decision model (`/v1/decisions/default`).
     pub decisions: crate::decisions::DefaultStore,
     /// The last check of each provider, by id (`provider_health.rs`). Kept in memory: the first check
@@ -246,7 +244,7 @@ impl Store {
             gateway,
             vault,
             write: Mutex::new(()),
-            models: Mutex::new(None),
+            listings: Arc::new(crate::provider_listings::Listings::new()),
             decisions: Default::default(),
             health: Mutex::new(BTreeMap::new()),
         };
@@ -422,10 +420,20 @@ impl Store {
         let saved = to_json(&providers)
             .and_then(|b| write_atomic(&self.dir.join("providers.json"), &b, 0o600));
         saved.map_err(io_failure)?;
-        self.unregister_changed(&self.gateway.providers(), &providers);
+        let old = self.gateway.providers();
+        self.unregister_changed(&old, &providers);
         self.register(&providers);
+        // A provider's listing follows its generation: bump the providers that changed, forget the removed ones.
+        for p in &providers {
+            let before = old.iter().find(|o| o.id == p.id);
+            if before.is_none_or(|o| serde_json::to_value(o).ok() != serde_json::to_value(p).ok()) {
+                self.listings.changed(&p.id);
+            }
+        }
+        for o in old.iter().filter(|o| !providers.iter().any(|p| p.id == o.id)) {
+            self.listings.removed(&o.id);
+        }
         self.gateway.set_providers(providers);
-        *lock(&self.models) = None;
         Ok(())
     }
 
@@ -554,37 +562,71 @@ impl Store {
         }
         let view = self.view(slot);
         self.commit(providers)?;
+        // A new key changes what the provider lists even when its config did not change.
+        self.listings.changed(id);
         Ok(view)
     }
 
-    /// The last `all_models` answer, however old, without asking any provider (None before the first).
-    fn cached_models(&self) -> Option<Value> {
-        lock(&self.models).as_ref().map(|(_, v)| v.clone())
-    }
-
-    /// `GET /v1/models`: every provider's models, cached for [`MODEL_CACHE`].
-    fn all_models(&self) -> Value {
-        let cached = lock(&self.models)
-            .as_ref()
-            .filter(|(at, _)| at.elapsed() < MODEL_CACHE)
-            .map(|(_, v)| v.clone());
-        if let Some(value) = cached {
-            return value;
-        }
+    /// Every enabled provider's last good listing, however old, without asking any provider, in the
+    /// `GET /v1/models` shape; `pending` names the providers never listed yet. Never waits.
+    fn cached_models(&self) -> Value {
         let mut models = Vec::new();
         let mut errors = Vec::new();
+        let mut pending = Vec::new();
         for p in self.gateway.providers().into_iter().filter(|p| p.enabled) {
-            match self
-                .gateway
-                .list_models_for(&p.id, &Caller::Owner { node: None })
-            {
-                Ok(list) => models.extend(list.into_iter().map(|m| model_entry(&p, m))),
-                Err(e) => errors.push(json!({ "provider": p.id, "error": e.to_string() })),
+            match self.listings.peek(&p.id) {
+                Some(listing) => models.extend(
+                    listing
+                        .models
+                        .iter()
+                        .map(|m| model_entry(&p, ModelInfo::from(m))),
+                ),
+                None => pending.push(p.id.clone()),
+            }
+            if let Some(error) = self.listings.attempt(&p.id).and_then(|a| a.error) {
+                errors.push(json!({ "provider": p.id, "error": error }));
             }
         }
-        let value = json!({ "models": models, "errors": errors });
-        *lock(&self.models) = Some((Instant::now(), value.clone()));
-        value
+        json!({ "models": models, "errors": errors, "pending": pending })
+    }
+
+    /// `GET /v1/models`: every enabled provider's models from the cache, at once. Providers never listed are
+    /// listed now, all together, and waited for at most [`crate::provider_listings::COLD_WAIT`] (a cold start);
+    /// one that takes longer lands in the cache later and is named in `pending` meanwhile.
+    fn all_models(&self) -> Value {
+        let providers: Vec<ProviderConfig> = self.gateway.providers();
+        let missing: Vec<&ProviderConfig> = providers
+            .iter()
+            .filter(|p| p.enabled && self.listings.peek(&p.id).is_none())
+            .collect();
+        if !missing.is_empty() {
+            self.listings.fetch_all(
+                &self.gateway,
+                &missing,
+                false,
+                crate::provider_listings::COLD_WAIT,
+            );
+        }
+        self.cached_models()
+    }
+
+    /// Lists every provider whose listing is due (missing, from an older generation, or past its interval), all at
+    /// once; returns whether any listing was fetched. The refresher thread calls it every
+    /// [`crate::provider_listings::TICK`].
+    pub fn refresh_due(&self) -> bool {
+        let providers = self.gateway.providers();
+        let due = self.listings.due(&providers);
+        if due.is_empty() {
+            return false;
+        }
+        // Each listing runs under the listing client's own deadline; this waits for all of them.
+        self.listings.fetch_all(
+            &self.gateway,
+            &due,
+            false,
+            apz_gateway::LISTING_DEADLINE + Duration::from_secs(1),
+        );
+        true
     }
 
     /// The last check of `p`, or `unknown` before its first.
@@ -598,31 +640,60 @@ impl Store {
             .unwrap_or_else(|| json!({ "status": "unknown", "message": "Not checked yet" }))
     }
 
-    /// Checks provider `id` now (see [`crate::provider_health::check`]) and keeps the result.
+    /// Checks provider `id` now (see [`crate::provider_health::check`]: a forced refresh of its listing) and keeps
+    /// the result.
     pub fn check(&self, id: &str) -> Result<Value, Failure> {
         let p = self.find(id)?;
-        let health = crate::provider_health::check(&self.gateway, &p, self.credential(&p));
+        let health = crate::provider_health::check(&self.listings, &self.gateway, &p, self.credential(&p));
         lock(&self.health).insert(p.id.clone(), health.clone());
         Ok(json!({ "id": p.id, "health": health }))
     }
 
-    /// Checks every enabled provider, one after another, and returns each one's result by id.
+    /// Checks every enabled provider at once (one thread each, each under the listing deadline) and returns each
+    /// one's result by id. A check refreshes the listing it probes; it clears nothing.
     pub fn check_all(&self) -> Value {
+        let providers = self.gateway.providers();
+        let checked: Vec<(String, Value)> = std::thread::scope(|scope| {
+            let running: Vec<_> = providers
+                .iter()
+                .map(|p| {
+                    scope.spawn(move || {
+                        let health = if p.enabled {
+                            crate::provider_health::check(&self.listings, &self.gateway, p, self.credential(p))
+                        } else {
+                            self.health_of(p)
+                        };
+                        (p.id.clone(), health)
+                    })
+                })
+                .collect();
+            running.into_iter().filter_map(|t| t.join().ok()).collect()
+        });
         let mut out = serde_json::Map::new();
-        for p in self.gateway.providers() {
-            let health = if p.enabled {
-                let health = crate::provider_health::check(&self.gateway, &p, self.credential(&p));
-                lock(&self.health).insert(p.id.clone(), health.clone());
-                health
-            } else {
-                self.health_of(&p)
-            };
-            out.insert(p.id.clone(), health);
+        for (id, health) in checked {
+            if providers.iter().any(|p| p.id == id && p.enabled) {
+                lock(&self.health).insert(id.clone(), health.clone());
+            }
+            out.insert(id, health);
         }
-        // A check can change what the listing would show (a key that now works).
-        *lock(&self.models) = None;
         Value::Object(out)
     }
+}
+
+/// Starts the listings' refresher: every [`crate::provider_listings::TICK`] it lists the providers whose listing is
+/// due, and tells the consoles when a listing changed (a `models` event: a hint to revalidate their list).
+pub fn spawn_refresher(app: Arc<App>) {
+    std::thread::Builder::new()
+        .name("model-listings".into())
+        .spawn(move || {
+            loop {
+                if app.providers.refresh_due() {
+                    app.bus.publish("models", &json!({ "refreshed": true }));
+                }
+                std::thread::sleep(crate::provider_listings::TICK);
+            }
+        })
+        .expect("spawn the model listings thread");
 }
 
 /// `/v1/provider-kinds`, `/v1/providers…`, `/v1/models`.
@@ -772,18 +843,28 @@ fn test_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
 }
 
-fn provider_models_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+/// `GET /v1/providers/{id}/models[?refresh=1]`: the provider's listing from the cache (listed now if it never was);
+/// `refresh=1` lists it again first.
+fn provider_models_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let id = p.get("id");
-    if let Err(f) = app.providers.find(id) {
-        return failure(f);
-    }
-    match app
-        .providers
-        .gateway()
-        .list_models_for(id, &Caller::Owner { node: None })
-    {
-        Ok(models) => Response::json(200, &models),
-        Err(e) => Response::json(502, &json!({ "error": e.to_string() })),
+    let config = match app.providers.find(id) {
+        Ok(config) => config,
+        Err(f) => return failure(f),
+    };
+    let force = req.query_param("refresh").is_some_and(|v| v == "1" || v == "true");
+    let listing = match app.providers.listings.peek(id) {
+        Some(listing) if !force => Ok(listing),
+        _ => app
+            .providers
+            .listings
+            .fetch(&app.providers.gateway, &config, force),
+    };
+    match listing {
+        Ok(listing) => {
+            let models: Vec<ModelInfo> = listing.models.iter().map(ModelInfo::from).collect();
+            Response::json(200, &models)
+        }
+        Err(e) => Response::json(502, &json!({ "error": e })),
     }
 }
 
@@ -816,10 +897,7 @@ fn model_entry(p: &ProviderConfig, m: ModelInfo) -> Value {
 /// None when neither knows it, as for a local model.
 /// Reads only the cached listing: metrics compose this every few seconds and must never wait on a provider.
 pub fn context_window(app: &App, model: &str) -> Option<u64> {
-    app.providers
-        .cached_models()
-        .and_then(|listed| listed_window(&listed["models"], model))
-        .or_else(|| known_window(model))
+    listed_window(&app.providers.cached_models()["models"], model).or_else(|| known_window(model))
 }
 
 /// The window the `/v1/models` entries (`models`, the array `all_models` answers with) state for

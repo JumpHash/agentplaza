@@ -204,9 +204,9 @@ impl GatewayBuilder {
                 secrets: self.secrets,
                 env: self.env,
                 http: Http::new(self.retries, self.retry_delay),
+                listing: Http::with_timeout(0, self.retry_delay, LISTING_DEADLINE),
                 tokens: Mutex::new(HashMap::new()),
                 no_stream_options: Mutex::new(HashSet::new()),
-                models_cache: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -224,13 +224,17 @@ pub(crate) struct Inner {
     secrets: Box<dyn SecretSource>,
     env: Box<EnvFn>,
     pub(crate) http: Http,
+    /// The client for model listings: no retries and one deadline for the whole listing, so a slow provider never
+    /// holds a listing for longer (the hub refreshes listings in the background and serves the last good one).
+    pub(crate) listing: Http,
     /// Command → (token, fetched at).
     tokens: Mutex<HashMap<String, (String, Instant)>>,
     /// Providers that rejected `stream_options`.
     pub(crate) no_stream_options: Mutex<HashSet<String>>,
-    /// Provider id → (listed at, raw listing), for providers with `options.models_cache_secs`.
-    models_cache: Mutex<HashMap<String, (Instant, Vec<ModelInfo>)>>,
 }
+
+/// How long one model listing may take, from the first byte sent to the last read.
+pub const LISTING_DEADLINE: Duration = Duration::from_secs(10);
 
 impl Gateway {
     pub fn builder() -> GatewayBuilder {
@@ -331,6 +335,7 @@ impl Gateway {
             gw: &self.inner,
             p: &p,
             caller,
+            listing: false,
         };
         let mut resp = match p.kind {
             ProviderKind::Anthropic | ProviderKind::VertexAnthropic => {
@@ -371,60 +376,28 @@ impl Gateway {
         caller: &Caller,
     ) -> Result<Vec<ModelInfo>, GatewayError> {
         let p = self.provider(provider_id)?;
-        // The live listing, fetched from the provider's API.
-        let fetch = || -> Result<Vec<ModelInfo>, GatewayError> {
-            let ctx = Ctx {
-                gw: &self.inner,
-                p: &p,
-                caller,
-            };
-            Ok(match p.kind {
-                ProviderKind::Anthropic => anthropic::list_models(&ctx)?,
-                ProviderKind::OpenAi
-                | ProviderKind::OpenAiCompatible
-                | ProviderKind::OpenAiResponses => openai::list_models(&ctx)?,
-                ProviderKind::Gemini => gemini::list_models(&ctx)?,
-                ProviderKind::Bedrock => bedrock::list_models(&ctx)?,
-                ProviderKind::Mock => mock::MODELS.iter().map(|m| ModelInfo::new(*m)).collect(),
-                ProviderKind::AzureOpenAi
-                | ProviderKind::VertexAnthropic
-                | ProviderKind::VertexGemini
-                | ProviderKind::OpenAiDecisions
-                | ProviderKind::SystemOne
-                | ProviderKind::AzureDecisions => Vec::new(),
-            })
+        // The live listing, fetched from the provider's API with the listing client (no retries, one deadline).
+        // Caching is the caller's: the hub keeps the last good listing per provider (providers.rs).
+        let ctx = Ctx {
+            gw: &self.inner,
+            p: &p,
+            caller,
+            listing: true,
         };
-        // `options.models_cache_secs` (a positive integer) keeps the live listing for that long.
-        let ttl = p
-            .options
-            .get("models_cache_secs")
-            .and_then(Value::as_u64)
-            .filter(|s| *s > 0)
-            .map(Duration::from_secs);
-        let mut models = match ttl {
-            None => fetch()?,
-            Some(ttl) => {
-                let cache = &self.inner.models_cache;
-                let hit = cache
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .get(provider_id)
-                    .filter(|(at, _)| at.elapsed() < ttl)
-                    .map(|(_, m)| m.clone());
-                match hit {
-                    Some(models) => models,
-                    None => {
-                        // A failed listing returns its error and is not cached.
-                        let models = fetch()?;
-                        let entry = (Instant::now(), models.clone());
-                        cache
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(provider_id.to_string(), entry);
-                        models
-                    }
-                }
-            }
+        let mut models = match p.kind {
+            ProviderKind::Anthropic => anthropic::list_models(&ctx)?,
+            ProviderKind::OpenAi
+            | ProviderKind::OpenAiCompatible
+            | ProviderKind::OpenAiResponses => openai::list_models(&ctx)?,
+            ProviderKind::Gemini => gemini::list_models(&ctx)?,
+            ProviderKind::Bedrock => bedrock::list_models(&ctx)?,
+            ProviderKind::Mock => mock::MODELS.iter().map(|m| ModelInfo::new(*m)).collect(),
+            ProviderKind::AzureOpenAi
+            | ProviderKind::VertexAnthropic
+            | ProviderKind::VertexGemini
+            | ProviderKind::OpenAiDecisions
+            | ProviderKind::SystemOne
+            | ProviderKind::AzureDecisions => Vec::new(),
         };
         for id in &p.models {
             if !models.iter().any(|m| &m.id == id) {
@@ -455,6 +428,7 @@ impl Gateway {
             gw: &self.inner,
             p: &p,
             caller: &Caller::Hub,
+            listing: false,
         };
         decisions::decide(&ctx, model, req)
     }
@@ -596,6 +570,8 @@ pub(crate) struct Ctx<'a> {
     pub p: &'a ProviderConfig,
     /// Whose call this is: the credential is read for it.
     pub caller: &'a Caller,
+    /// A model listing (the listing client), not a model call.
+    pub listing: bool,
 }
 
 impl Ctx<'_> {
@@ -604,7 +580,11 @@ impl Ctx<'_> {
     }
 
     pub fn http(&self) -> &Http {
-        &self.gw.http
+        if self.listing {
+            &self.gw.listing
+        } else {
+            &self.gw.http
+        }
     }
 
     /// The named credential for this provider and caller: the source's value, or why there is none.
@@ -1029,28 +1009,6 @@ mod tests {
                 pinned.base_name()
             );
             assert_eq!(pinned.to_string(), "openrouter/anthropic/claude-x@xhigh");
-        }
-    }
-
-    #[test]
-    fn models_cache_secs_keeps_the_live_listing_for_that_long() {
-        use testutil::{FakeServer, Reply, gateway, provider};
-        let listing = || Reply::json(200, &json!({"data": [{"id": "m1"}]}));
-        for (cache, upstream_calls) in [(Some(3600), 1), (None, 2)] {
-            let server = FakeServer::start(vec![listing(), listing()]);
-            let mut p = provider("o", ProviderKind::OpenAiCompatible, &server, Auth::None);
-            if let Some(secs) = cache {
-                p.options = json!({"models_cache_secs": secs});
-            }
-            let gw = gateway(vec![p]);
-            let first = gw.list_models("o").unwrap();
-            let second = gw.list_models("o").unwrap();
-            assert_eq!(first, second);
-            assert_eq!(
-                server.requests().len(),
-                upstream_calls,
-                "models_cache_secs {cache:?}"
-            );
         }
     }
 

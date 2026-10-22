@@ -32,21 +32,13 @@ pub struct TourStep {
     pub lines: &'static [&'static str],
 }
 
-pub const TOUR: [TourStep; 8] = [
+pub const TOUR: [TourStep; 6] = [
     TourStep {
         title: "Overview",
         tab: Some(Tab::Overview),
         lines: &[
             "The plaza at a glance: the hub, its nodes and agents, the work and the spend.",
             "Command: `agentplaza overview`.",
-        ],
-    },
-    TourStep {
-        title: "Floor",
-        tab: Some(Tab::Floor),
-        lines: &[
-            "The plaza drawn live: agents move between rooms as their work and messages flow.",
-            "The machines are the nodes (press 8); `agentplaza machines` lists them too.",
         ],
     },
     TourStep {
@@ -71,14 +63,6 @@ pub const TOUR: [TourStep; 8] = [
         lines: &[
             "Decisions the agents wait on for you: a approves the selected one, d denies it.",
             "Command: `agentplaza approvals`.",
-        ],
-    },
-    TourStep {
-        title: "Conversations",
-        tab: Some(Tab::Conversations),
-        lines: &[
-            "Talk between agents, and with you.",
-            "Command: `agentplaza conversations`.",
         ],
     },
     TourStep {

@@ -1195,7 +1195,7 @@ mod tests {
         store.write().datasets.insert(
             "ds-1".into(),
             Dataset {
-                taint: vec!["contains_violation".into()],
+                taint: vec!["unverified_upload".into()],
                 ..base.clone()
             },
         );

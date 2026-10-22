@@ -779,8 +779,7 @@ pub struct Task {
     /// outside projects moves into one ([`TaskLedger::adopt`]). A task never leaves its project.
     project: OnceLock<String>,
     /// The treasury entry that minted this task's budget into its escrow, when
-    /// it had one: set once, when the task was created, and never changed. The
-    /// agora reads it as a call's `escrow_entry`.
+    /// it had one: set once, when the task was created, and never changed.
     escrow_entry: Option<u64>,
     /// When the task was created, in milliseconds since the Unix epoch.
     created_at: u64,
@@ -914,9 +913,8 @@ impl Task {
     }
 
     /// The treasury entry that minted this task's budget into its escrow, when
-    /// it had a budget. The agora records it as a call's `escrow_entry`: at v0
-    /// a task's escrow is funded by its own mint, not by a parent task's
-    /// subcontract.
+    /// it had a budget. At v0 a task's escrow is funded by its own mint, not by
+    /// a parent task's subcontract.
     pub fn escrow_entry(&self) -> Option<u64> {
         self.escrow_entry
     }
@@ -1268,7 +1266,7 @@ impl TaskLedger {
         // is minted, so a refused mint hands out no id.
         let id = format!("t{}", inner.next_seq + 1);
         // The entry the budget was minted by, when there was one: the task
-        // keeps it, and the agora records it as a call's `escrow_entry`.
+        // keeps it.
         let mut entry = None;
         if checked.budget > 0 {
             // `checked` bounds the budget to `i64::MAX`.

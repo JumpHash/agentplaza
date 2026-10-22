@@ -186,7 +186,7 @@ pub fn agent(app: &App, cid: u64) -> Option<AgentInfo> {
     let model = agents::model_of(app, &agent);
     Some(AgentInfo {
         cid,
-        name: agent.name.clone(),
+        name: agent.label(),
         role: agent.role.clone(),
         run: agent.run.clone().unwrap_or_default(),
         node: fleet::node_of(app, cid),
@@ -264,7 +264,7 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
             .ok()
             .and_then(|cid| app.agents.get(cid).map(|a| (cid, a)))
         {
-            Some((cid, agent)) => agent_label(&agent.name, cid),
+            Some((cid, agent)) => agent_label(&agent.role, cid),
             None => entity.to_string(),
         },
         EntityKind::Model => model_name(entity).to_string(),

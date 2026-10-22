@@ -2,6 +2,7 @@
 // with its hardware and load beside it, the four flat views, its VM slots, its agents and its events. Every panel
 // reads its own source and shows a dash until that source answers; nothing waits on the metrics. The markup is the
 // prototype's (styles/proto/machines.css): the back link, the head, and the `.mt-cards` grid of cards.
+import { agentName } from '../roles';
 import { api, type Agent, type FleetMachine, type MachineNode } from '../api';
 import { localOffset } from '../metrics/format';
 import type { EventRow, View, ViewQuery } from '../metrics/model';
@@ -62,7 +63,7 @@ function vmList(node: MachineNode | null, byCid: Map<number, Agent>): Node[] {
     faint(`${rows.length} ${rows.length === 1 ? 'VM' : 'VMs'}`),
     ...rows.map((r) => {
       const agent = r.cid !== null ? byCid.get(r.cid) : undefined;
-      return h('div.mt-vrow', null, h('span.mt-mono', null, r.id), h('span.mt-grow', null, agent ? `· ${agent.name}` : ''), badge(r.state, stateTone(r.state)));
+      return h('div.mt-vrow', null, h('span.mt-mono', null, r.id), h('span.mt-grow', null, agent ? `· ${agentName(agent)}` : ''), badge(r.state, stateTone(r.state)));
     }),
   ];
 }

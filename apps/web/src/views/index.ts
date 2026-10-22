@@ -7,18 +7,15 @@ import { mount as appearance } from './appearance';
 import { mount as artifact } from './artifact';
 import { mount as approvals } from './approvals';
 import { mount as board } from './board';
-import { mount as conversations } from './conversations';
 import { mount as e2b } from './e2b';
 import { mount as volumes } from './volumes';
 import { mount as egressCredentials } from './egress-credentials';
-import { mount as council } from './council';
 import { mount as files } from './files';
 import { mount as machines } from './machines';
 import { mount as history } from './history';
 import { mount as recipes } from './recipes';
 import { mount as hardwareLab } from './hardware-lab';
 import { mount as lab } from './lab';
-import { mount as robotLab } from './robot-lab';
 import { mount as mcp } from './mcp';
 import { mount as models } from './models';
 import { mount as nodes } from './nodes';
@@ -28,7 +25,6 @@ import { mount as prompts } from './prompts';
 import { mount as skills } from './skills';
 import { mount as rules } from './rules';
 import { mount as setup } from './setup';
-import { mount as society } from './society';
 import { mount as tasks } from './tasks';
 import { mount as treasury } from './treasury';
 import { mount as tools } from './tools';
@@ -66,10 +62,7 @@ export const SCREENS: Screen[] = [
   { key: 'approvals', label: 'Approvals', icon: 'approval', section: 'Plaza', mount: approvals },
   { key: 'machines', label: 'Machines', icon: 'machine', section: 'Plaza', mount: machines },
   { key: 'metrics', label: 'Metrics', icon: 'zap', section: 'Plaza', mount: metrics },
-  { key: 'society', label: 'Society', icon: 'society', section: 'Social', mount: society },
-  { key: 'conversations', label: 'Conversations', icon: 'conversations', section: 'Social', mount: conversations },
   { key: 'board', label: 'Board', icon: 'boardpin', section: 'Social', mount: board },
-  { key: 'council', label: 'Council', icon: 'council', section: 'Social', mount: council },
   { key: 'treasury', label: 'Treasury', icon: 'treasury', section: 'Social', mount: treasury },
   { key: 'rules', label: 'Rules', icon: 'rules', section: 'Social', mount: rules },
   { key: 'lab', label: 'Lab', icon: 'brain', section: 'Lab', mount: lab },
@@ -86,7 +79,6 @@ export const SCREENS: Screen[] = [
   { key: 'appearance', label: 'Appearance', icon: 'sparkles', section: 'Setup', mount: appearance },
   { key: 'setup', label: 'Setup', icon: 'wrench', section: 'Setup', mount: setup },
   { key: 'hardware-lab', label: 'Hardware lab', icon: 'wrench', section: 'Setup', mount: hardwareLab, hidden: true },
-  { key: 'robot-lab', label: 'Robot lab', icon: 'wrench', section: 'Setup', mount: robotLab, hidden: true },
   { key: 'artifact', label: 'Artifact', icon: 'library', section: 'Plaza', mount: artifact, hidden: true },
   // The IDE is reached by its route and openIde (ide/open.ts), not the sidebar; its code loads on the first visit.
   { key: 'ide', label: 'IDE', icon: 'file', section: 'Plaza', mount: lazyMount(() => import('./ide'), (m) => m.mount), hidden: true },

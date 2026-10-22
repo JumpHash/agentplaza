@@ -2,16 +2,16 @@
 // Start can be pressed, and the text that streams in for a reply. Pure: no DOM, no fetch.
 
 import type { Agent, DraftSeat, DraftTask, OwnerConversation, ProjectDraft, ProjectSettings } from '../api';
-import { roleLabel } from '../roles';
+import { agentLabelIn, roleLabel } from '../roles';
 
 /** A workspace id the IDE opens as a conversation: `conv-<n>`. */
 export function isConversationId(id: string | null | undefined): id is string {
   return !!id && /^conv-\d+$/.test(id);
 }
 
-/** One role of the team as the draft shows it: `2 Builder (Ada from the bench, 1 new)`. */
-export function seatLine(seat: DraftSeat, roster: Pick<Agent, 'cid' | 'name'>[]): string {
-  const named = (seat.bench ?? []).map((cid) => roster.find((a) => a.cid === cid)?.name || `agent ${cid}`);
+/** One role of the team as the draft shows it: `2 Builder (Builder #300 from the bench, 1 new)`. */
+export function seatLine(seat: DraftSeat, roster: Pick<Agent, 'cid' | 'role'>[]): string {
+  const named = (seat.bench ?? []).map((cid) => agentLabelIn(roster, cid));
   const fresh = seat.count - named.length;
   const parts: string[] = [];
   if (named.length) parts.push(`${named.join(', ')} from the bench`);
@@ -20,7 +20,7 @@ export function seatLine(seat: DraftSeat, roster: Pick<Agent, 'cid' | 'name'>[])
 }
 
 /** The team in one line, roles joined by a dot. */
-export function teamLine(team: DraftSeat[], roster: Pick<Agent, 'cid' | 'name'>[]): string {
+export function teamLine(team: DraftSeat[], roster: Pick<Agent, 'cid' | 'role'>[]): string {
   return team.map((seat) => seatLine(seat, roster)).join(' · ');
 }
 

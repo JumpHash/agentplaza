@@ -1,0 +1,1 @@
+-- metrics.db, schema 1 (the clean break, W3): metric samples and their rollups. STRICT, typed, no JSON (W69).

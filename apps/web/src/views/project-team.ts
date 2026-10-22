@@ -9,7 +9,6 @@ import { isLive } from '../scope';
 import { refreshAgents } from '../store';
 import { attempt, badge, button, card } from '../ui/components';
 import { h, replace } from '../ui/dom';
-import { avatar } from './agent-profile';
 import { openAgentWizard } from './agent-wizard';
 import { statusPill } from './agent-list';
 
@@ -21,7 +20,6 @@ function row(a: Agent, action: HTMLElement | null, note?: string): HTMLElement {
   return h(
     'div.pj-mrow',
     null,
-    avatar(a, 28),
     h(
       'div.pj-mrow-main',
       null,

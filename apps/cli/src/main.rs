@@ -72,18 +72,9 @@ enum Command {
     /// Approvals waiting for the owner.
     #[command(subcommand)]
     Approvals(cmd::approvals::Cmd),
-    /// The society: roles, bonds, reputation.
-    #[command(subcommand)]
-    Society(cmd::society::Cmd),
-    /// Conversations between agents (yours with the orchestrator are `chat`).
-    #[command(subcommand)]
-    Conversations(cmd::conversations::Cmd),
     /// The board: posts and announcements.
     #[command(subcommand)]
     Board(cmd::board::Cmd),
-    /// The council: motions and votes.
-    #[command(subcommand)]
-    Council(cmd::council::Cmd),
     /// The treasury: budgets, balances, spend.
     #[command(subcommand)]
     Treasury(cmd::treasury::Cmd),
@@ -96,9 +87,6 @@ enum Command {
     /// The plaza's laws.
     #[command(subcommand)]
     Rules(cmd::rules::Cmd),
-    /// Sanctions: what the laws' violations drew, and lifting a tool suspension.
-    #[command(subcommand)]
-    Sanctions(cmd::sanctions::Cmd),
     /// The vault: the hub's encrypted secrets, scoped to nodes and bound to what uses them.
     #[command(subcommand)]
     Vault(cmd::vault::Cmd),
@@ -224,15 +212,11 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Prompts(c) => cmd::prompts::run(&ctx, c),
         Command::Skills(c) => cmd::skills::run(&ctx, c),
         Command::Approvals(c) => cmd::approvals::run(&ctx, c),
-        Command::Society(c) => cmd::society::run(&ctx, c),
-        Command::Conversations(c) => cmd::conversations::run(&ctx, c),
         Command::Board(c) => cmd::board::run(&ctx, c),
-        Command::Council(c) => cmd::council::run(&ctx, c),
         Command::Treasury(c) => cmd::treasury::run(&ctx, c),
         Command::Usage(c) => cmd::usage::run(&ctx, c),
         Command::Metrics(c) => cmd::metrics::run(&ctx, c),
         Command::Rules(c) => cmd::rules::run(&ctx, c),
-        Command::Sanctions(c) => cmd::sanctions::run(&ctx, c),
         Command::Vault(c) => cmd::vault::run(&ctx, c),
         Command::Models(c) => cmd::models::run(&ctx, c),
         Command::Lab(c) => cmd::lab::run(&ctx, c),

@@ -197,12 +197,15 @@ fn a_change_goes_from_lane_to_landed_with_signed_records() {
     // Everything verifies, and a reopen gives the same state.
     let report = s.verify_deep().unwrap();
     assert!(report.records > 10);
-    let reopened = Store::open(&p.dir, Some(KeyPair::from_hex(&p.hub_seed).unwrap())).unwrap();
+    // One process per store folder: the first copy closes before the reopen.
+    let Plaza { dir, store, hub_seed, .. } = p;
+    drop(store);
+    let reopened = Store::open(&dir, Some(KeyPair::from_hex(&hub_seed).unwrap())).unwrap();
     assert_eq!(
         reopened.state().repos["agentplaza"].head("main"),
         format!("{change}.l")
     );
-    std::fs::remove_dir_all(&p.dir).ok();
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

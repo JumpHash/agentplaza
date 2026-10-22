@@ -1,18 +1,17 @@
 //! Work items: per-agent FIFO queues (one item in flight per agent), sending
 //! them through the hub, closing them, and the scheduler that turns open
-//! tasks, done tasks awaiting review and open motions into work.
+//! tasks and done tasks awaiting review into work.
 //!
 //! OWNER: slice "scheduler". Signatures used by other modules are marked
 //! `// contract` — keep them.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use apz_metrics::{EntityKind, Registry, SeriesKey};
-use apz_plaza::council::is_seated;
 use apz_plaza::tasks::{FinishOutcome, TaskState};
 use apz_plaza::treasury::{MARGIN_CAP_PCT, PostError};
 use apz_proto::wire::{HostMessage, WorkKind, WorkStatus};
@@ -24,9 +23,6 @@ use crate::approvals::{Approval, State as ApprovalState, Store as ApprovalStore}
 use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
-/// How many council motions the scheduler looks at per tick.
-const MOTION_SCAN_LIMIT: usize = 50;
-
 /// The role that verifies done tasks before they pay.
 pub const REVIEWER_ROLE: &str = "reviewer";
 
@@ -34,7 +30,6 @@ pub const REVIEWER_ROLE: &str = "reviewer";
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Origin {
     pub task: Option<String>,
-    pub motion: Option<String>,
     /// For `message` work: the agent who wrote.
     pub from_cid: Option<u64>,
     /// True for the owner's own chat (the owner chat route sets it); automated chats leave it false.
@@ -439,7 +434,6 @@ impl Queues {
         let Some(poster) = poster.filter(|&p| p != worker) else {
             return;
         };
-        crate::society::task_ended(app, task, poster, worker, state == "done");
         // A poster that may not work now (it left the project) is not told: its queue would only hold it.
         if crate::membership::held_cid(app, poster).is_some() {
             return;
@@ -447,7 +441,7 @@ impl Queues {
         let worker_name = app
             .agents
             .get(worker)
-            .map_or_else(|| format!("agent {worker}"), |a| a.name);
+            .map_or_else(|| format!("agent {worker}"), |a| a.label());
         let prompt = format!(
             "[plaza] Task {task}, worked by {worker_name}, ended: {state}.\nSummary: {summary}\n\n\
              Review it (plaza_task_result), continue your plan, and tell the operator when the goal is complete."
@@ -619,7 +613,7 @@ impl Queues {
                 let worker_name = app
                     .agents
                     .get(worker)
-                    .map_or_else(|| format!("agent {worker}"), |a| a.name);
+                    .map_or_else(|| format!("agent {worker}"), |a| a.label());
                 let escalation = escalate_review(
                     &app.approvals,
                     &id,
@@ -667,7 +661,7 @@ impl Queues {
         let worker_name = app
             .agents
             .get(worker)
-            .map_or_else(|| format!("agent {worker}"), |a| a.name);
+            .map_or_else(|| format!("agent {worker}"), |a| a.label());
         let acceptance = record
             .acceptance()
             .map_or_else(|| "none stated".to_string(), |a| a.to_string());
@@ -1193,17 +1187,14 @@ pub fn spawn(app: Arc<App>) {
     let spawned = thread::Builder::new()
         .name("apid-scheduler".into())
         .spawn(move || {
-            let mut motions_seen: HashSet<(String, u64)> = HashSet::new();
             loop {
                 // While STOP ALL holds the plaza, nothing new starts; usage still drains.
                 if !app.control.paused() {
-                    ask_names(&app);
                     assign_tasks(&app);
                     app.work.assign_reviews(&app);
                     crate::review_graph::tick(&app);
                     crate::weft_hub::land_queues(&app);
                     withdraw_stale_reviews(&app);
-                    offer_motions(&app, &mut motions_seen);
                 }
                 crate::llm_proxy::drain_usage(&app);
                 crate::plaza::retain(&app);
@@ -1221,33 +1212,6 @@ pub fn spawn(app: Arc<App>) {
         });
     if let Err(err) = spawned {
         eprintln!("scheduler: cannot start: {err}");
-    }
-}
-
-/// Asks each unnamed agent, once and only after its session settled, to name itself.
-fn ask_names(app: &App) {
-    let now = apz_plaza::now_ms();
-    // An agent on the bench is asked once it joins a project: until then it does nothing, not even this.
-    let unnamed = app.agents.select(|agent| {
-        let settled = now.saturating_sub(agent.connected_at_ms) > 2_000;
-        (agent.name.is_empty()
-            && agent.status == Status::Idle
-            && settled
-            && crate::membership::held(app, agent).is_none())
-        .then_some(agent.cid)
-    });
-    for cid in unnamed {
-        if app.names.first_ask(cid) {
-            let prompt = "Choose a short first name for yourself (one word, letters only, 2–16 characters, not a job title) and set it with plaza_set_name. Then reply with just your name.";
-            app.work.enqueue(
-                app,
-                cid,
-                WorkKind::Chat,
-                format!("op-{cid}"),
-                prompt.to_owned(),
-                Origin::default(),
-            );
-        }
     }
 }
 
@@ -1308,49 +1272,6 @@ fn assign_tasks(app: &App) {
             prompt,
             origin,
         );
-    }
-}
-
-/// Asks each seated, connected agent that has not voted on an open motion
-/// to vote, once per (motion, agent).
-fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
-    let view = app.plaza.council.motions(MOTION_SCAN_LIMIT);
-    for motion in view.motions.iter().filter(|m| m.state == "open") {
-        // A motion is its proposer's project's: only the seated agents working on that project vote on it.
-        let Some(project) = app.members.project_of(motion.proposer_cid) else {
-            continue;
-        };
-        let members = app.members.members(&project);
-        let seated = app.agents.select(|a| {
-            (a.status != Status::Offline
-                && is_seated(&a.role)
-                && members.contains(&a.cid)
-                && crate::membership::held(app, a).is_none())
-            .then_some(a.cid)
-        });
-        // Voters are collected once per motion, so each seated agent's check is a set lookup.
-        let voted: HashSet<_> = motion.votes.iter().map(|v| v.agent_cid).collect();
-        for cid in not_yet_voted(seated, &voted) {
-            if !seen.insert((motion.id.clone(), cid)) {
-                continue;
-            }
-            let prompt = format!(
-                "Council motion {} ({}): {}",
-                motion.id, motion.kind, motion.text
-            );
-            let origin = Origin {
-                motion: Some(motion.id.clone()),
-                ..Origin::default()
-            };
-            app.work.enqueue(
-                app,
-                cid,
-                WorkKind::Motion,
-                format!("motion-{}", motion.id),
-                prompt,
-                origin,
-            );
-        }
     }
 }
 
@@ -1428,29 +1349,9 @@ impl Queues {
     }
 }
 
-/// The seated agents that have not voted on a motion, in seated order. `voters` are the agents that have.
-fn not_yet_voted<T: Copy + Eq + std::hash::Hash>(
-    seated: impl IntoIterator<Item = T>,
-    voters: &HashSet<T>,
-) -> Vec<T> {
-    seated
-        .into_iter()
-        .filter(|cid| !voters.contains(cid))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn not_yet_voted_keeps_the_seated_order() {
-        // The same as checking each seated agent against every vote, for a small input.
-        let voters: HashSet<u64> = [3, 1].into_iter().collect();
-        assert_eq!(not_yet_voted(vec![5, 1, 4, 3, 2], &voters), vec![5, 4, 2]);
-        assert!(not_yet_voted(vec![1, 3], &voters).is_empty());
-        assert!(not_yet_voted(Vec::<u64>::new(), &voters).is_empty());
-    }
 
     #[test]
     fn the_queued_gauge_follows_the_lane_as_items_are_queued_and_started() {
@@ -1494,7 +1395,6 @@ mod tests {
     fn agent(cid: u64, role: &str, status: Status) -> Agent {
         Agent {
             cid,
-            name: format!("agent{cid}"),
             role: role.to_string(),
             model_override: None,
             status,
@@ -1503,7 +1403,6 @@ mod tests {
             run: None,
             vm: None,
             usage: Default::default(),
-            species: String::new(),
             kind: "llm".to_string(),
             caps: Vec::new(),
         }

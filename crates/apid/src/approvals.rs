@@ -85,7 +85,7 @@ pub struct Approval {
     pub created_ms: u64,
     pub state: State,
     pub reason: Option<String>,
-    /// What the decision is: `tool` (a held tool call), `sanction`, `payment` or `review` (a done
+    /// What the decision is: `tool` (a held tool call), `payment` or `review` (a done
     /// task no reviewer took in time; the approval passes it and the denial fails it).
     #[serde(default = "tool_kind")]
     pub kind: String,
@@ -433,7 +433,7 @@ pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate
 
 /// Queues a decision of `kind` about `subject` for the owner, whatever the agent's mode,
 /// publishes it, and returns it. The agent is `detail["cid"]`, or 0 when there is none.
-// Used by the sanctions and payments work, which is not wired yet.
+// Used by the payments work, which is not wired yet.
 #[allow(dead_code)]
 pub fn submit(app: &App, kind: &str, subject: &str, detail: Value) -> Approval {
     let cid = detail_cid(&detail);
@@ -484,7 +484,7 @@ struct DecideBody {
     approve: bool,
     #[serde(default)]
     reason: Option<String>,
-    /// For a sanction decision: `acknowledge`, `lift` or `retire` (see `sanctions::decided`).
+    /// For a review decision: what the owner chose (see `review_graph::owner_ruled`).
     #[serde(default)]
     action: Option<String>,
 }
@@ -543,7 +543,6 @@ pub(crate) fn decide_approval(
     app.bus.publish("approval", &item);
     // The decision is recorded; each kind then does its own work with it.
     let applied = match item.kind.as_str() {
-        "sanction" => crate::sanctions::decided(app, &item, approve, action),
         "payment" => crate::payments::decided(app, &item, approve),
         "review" => crate::review_graph::owner_ruled(app, &item, approve, action),
         "deploy" => crate::environments::decided(app, &item, approve),

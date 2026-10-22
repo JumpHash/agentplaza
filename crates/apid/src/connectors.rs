@@ -2280,7 +2280,7 @@ pub fn propose(app: &App, agent: &crate::agents::Agent, input: &Value) -> Result
         serde_json::from_value(input.clone()).map_err(|e| format!("not a connector spec: {e}"))?;
     let proposal = app
         .connectors
-        .submit(agent.cid, &agent.name, spec)
+        .submit(agent.cid, &agent.label(), spec)
         .map_err(|(_, message)| message)?;
     app.bus.publish("connector", &proposal);
     let mut text = format!(

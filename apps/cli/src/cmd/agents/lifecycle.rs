@@ -242,14 +242,14 @@ pub fn fork_body(n: u64) -> Value {
     json!({ "n": n })
 }
 
-/// The forks as table rows: each new agent's cid, name and run.
+/// The forks as table rows: each new agent's cid, its label and run.
 pub fn fork_rows(forks: &Value) -> Vec<Vec<String>> {
     forks
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
-        .map(|f| vec![ctx::text(f, "cid"), super::name_of(f), ctx::text(f, "run")])
+        .map(|f| vec![ctx::text(f, "cid"), super::label_of(f), ctx::text(f, "run")])
         .collect()
 }
 
@@ -267,7 +267,7 @@ pub fn fork(ctx: &Ctx, cid: u64, n: u64) -> Result<(), String> {
             if rows.len() == 1 { "" } else { "s" },
             ctx::text(v, "checkpoint")
         );
-        ctx::table(&["cid", "name", "run"], &rows);
+        ctx::table(&["cid", "agent", "run"], &rows);
     });
     Ok(())
 }

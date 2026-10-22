@@ -1,0 +1,17 @@
+[package]
+name = "apz-blobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The plaza's object store: BLAKE3-addressed blobs in append-only packs, zstd, content-defined chunks, a SQLite index, streaming and ranges, mark-and-sweep."
+
+[dependencies]
+apz-store = { path = "../apz-store" }
+blake3 = "1.8"
+zstd = "0.13"
+fastcdc = "3"
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"

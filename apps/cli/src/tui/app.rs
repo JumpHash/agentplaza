@@ -3,8 +3,7 @@
 //! Both send to the UI thread, which owns all the state and draws about 20 times a second. The
 //! projects (for the switcher) are read at the start, on a `project` event and on a refresh.
 
-use std::collections::vec_deque;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -24,7 +23,6 @@ use serde_json::{Value, json};
 
 use super::cmdk;
 use super::context_bar;
-use super::floor::FloorView;
 use super::onboarding::{self, DepsKey, Facts, Onboarding, Stage, Step, TOUR};
 use super::scope;
 use super::screens;
@@ -49,39 +47,34 @@ use providers::Action as ProvidersAction;
 
 const FRAME: Duration = Duration::from_millis(50);
 const POLL_EVERY: Duration = Duration::from_secs(3);
-const EVENT_LOG_LINES: usize = 200;
 /// How many recent recordings the Workstations tab lists for the selected workstation.
 const RECENT_RECORDINGS: u32 = 5;
 /// How long Start may take: it opens the project, posts its tasks and asks the nodes for the new agents.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The tabs, in the order of their number keys.
+/// The tabs, in the order of the tab bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    Floor,
     Overview,
     Agents,
     Tasks,
     Approvals,
     Board,
-    Conversations,
     Nodes,
     Machines,
-    Workstations,
     Workspace,
+    Workstations,
     Chat,
     Providers,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 13] = [
-        Tab::Floor,
+    pub const ALL: [Tab; 11] = [
         Tab::Overview,
         Tab::Agents,
         Tab::Tasks,
         Tab::Approvals,
         Tab::Board,
-        Tab::Conversations,
         Tab::Nodes,
         Tab::Machines,
         Tab::Workspace,
@@ -90,12 +83,11 @@ impl Tab {
         Tab::Providers,
     ];
 
-    /// The tab a key shows: 1 to 9, then 0 for the tenth, `w` for the Workstations, `c` for the Chat and `m` for the
-    /// Providers (the models).
+    /// The tab a key shows: 1 to 8 for the first eight tabs, then `w` for the Workstations, `c` for the Chat and `m`
+    /// for the Providers (the models).
     pub fn from_key(key: char) -> Option<Tab> {
         match key {
-            '1'..='9' => Tab::ALL.get(usize::from(key as u8 - b'1')).copied(),
-            '0' => Tab::ALL.get(9).copied(),
+            '1'..='8' => Tab::ALL.get(usize::from(key as u8 - b'1')).copied(),
             'w' => Some(Tab::Workstations),
             'c' => Some(Tab::Chat),
             'm' => Some(Tab::Providers),
@@ -106,23 +98,20 @@ impl Tab {
     /// The key that shows this tab (see `from_key`).
     pub fn key(self) -> char {
         match self.index() {
-            i @ 0..=8 => char::from(b'1' + i as u8),
-            9 => '0',
-            10 => 'w',
-            11 => 'c',
+            i @ 0..=7 => char::from(b'1' + i as u8),
+            8 => 'w',
+            9 => 'c',
             _ => 'm',
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Tab::Floor => "Floor",
             Tab::Overview => "Overview",
             Tab::Agents => "Agents",
             Tab::Tasks => "Tasks",
             Tab::Approvals => "Approvals",
             Tab::Board => "Board",
-            Tab::Conversations => "Conversations",
             Tab::Nodes => "Nodes",
             Tab::Machines => "Machines",
             Tab::Workstations => "Workstations",
@@ -132,15 +121,14 @@ impl Tab {
         }
     }
 
-    /// The hub endpoint this tab reads (the floor reads the agents list too).
+    /// The hub endpoint this tab reads.
     pub fn path(self) -> &'static str {
         match self {
-            Tab::Floor | Tab::Agents => "/v1/agents",
+            Tab::Agents => "/v1/agents",
             Tab::Overview => "/v1/overview",
             Tab::Tasks => "/v1/tasks",
             Tab::Approvals => "/v1/approvals",
             Tab::Board => "/v1/board",
-            Tab::Conversations => "/v1/conversations",
             Tab::Nodes => "/v1/nodes",
             Tab::Machines => "/v1/machines",
             Tab::Workstations => "/v1/stations",
@@ -325,39 +313,6 @@ impl Confirm {
     }
 }
 
-/// The newest live events, oldest first; the oldest are dropped past the capacity.
-pub struct EventLog {
-    lines: VecDeque<String>,
-    cap: usize,
-}
-
-impl EventLog {
-    pub fn new(cap: usize) -> EventLog {
-        EventLog {
-            lines: VecDeque::new(),
-            cap,
-        }
-    }
-
-    pub fn push(&mut self, line: String) {
-        if self.cap == 0 {
-            return;
-        }
-        if self.lines.len() == self.cap {
-            self.lines.pop_front();
-        }
-        self.lines.push_back(line);
-    }
-
-    pub fn len(&self) -> usize {
-        self.lines.len()
-    }
-
-    pub fn iter(&self) -> vec_deque::Iter<'_, String> {
-        self.lines.iter()
-    }
-}
-
 /// What the background threads send the UI.
 enum Msg {
     Facts(Facts),
@@ -401,8 +356,6 @@ pub struct App {
     notice_seen: Option<String>,
     /// Whether the events socket is up.
     pub link: bool,
-    pub floor: FloorView,
-    pub log: EventLog,
     pub selected: usize,
     /// Agent details open under the table.
     pub detail: bool,
@@ -459,7 +412,7 @@ impl App {
         let mut app = App {
             client,
             palette: Palette::detect(),
-            tab: Tab::Floor,
+            tab: Tab::Overview,
             data: HashMap::new(),
             error: None,
             notice: None,
@@ -467,8 +420,6 @@ impl App {
             notice_at: 0.0,
             notice_seen: None,
             link: false,
-            floor: FloorView::new(),
-            log: EventLog::new(EVENT_LOG_LINES),
             selected: 0,
             detail: false,
             draft: None,
@@ -633,11 +584,6 @@ impl App {
             .unwrap_or(&[])
     }
 
-    /// The classifier's context for the agent text on screen: the agents the app has polled, so `@Name` is a chip.
-    pub fn rich_ctx(&self) -> apz_rich::Ctx {
-        crate::rich::from_agents(self.array("/v1/agents"), None)
-    }
-
     /// An endpoint's answer's array under `key` (`{"tasks": [...]}` and the like).
     pub fn wrapped(&self, path: &str, key: &str) -> &[Value] {
         self.data
@@ -659,12 +605,11 @@ impl App {
     /// The rows of the visible tab's list (0 for the tabs without one).
     fn rows(&self) -> usize {
         match self.tab {
-            Tab::Floor | Tab::Overview => 0,
+            Tab::Overview => 0,
             Tab::Agents => self.shown_agents().len(),
             Tab::Tasks => self.shown_tasks().len(),
             Tab::Approvals => self.array("/v1/approvals").len(),
             Tab::Board => self.wrapped("/v1/board", "posts").len(),
-            Tab::Conversations => self.wrapped("/v1/conversations", "conversations").len(),
             Tab::Nodes => self.array("/v1/nodes").len(),
             Tab::Machines => self.array("/v1/machines").len(),
             Tab::Workstations => self.array("/v1/stations").len(),
@@ -695,7 +640,6 @@ impl App {
                 }
                 Msg::Fetched(path, Ok(value)) => {
                     if path == "/v1/agents" {
-                        self.floor.on_agents(&value);
                         self.ws.set_agents(&value);
                         roster_changed = true;
                     }
@@ -749,10 +693,6 @@ impl App {
                     }
                 }
                 Msg::Event(kind, data) => {
-                    self.floor.on_event(&kind, &data);
-                    if kind != "serial" {
-                        self.log.push(event_line(&kind, &data));
-                    }
                     match kind.as_str() {
                         "project" => self.fetch_projects(),
                         "delta" => self.chat.on_delta(&data),
@@ -900,7 +840,6 @@ impl App {
 
     pub fn tick(&mut self, dt: f32) {
         self.clock += dt;
-        self.floor.tick(dt);
         let effects = self.ws.poll(dt, self.shown_owner());
         self.execute(effects);
         if self.notice != self.notice_seen {
@@ -941,18 +880,11 @@ impl App {
         screens::header(frame, header, self);
         screens::tab_bar(frame, tabs, self);
         match self.tab {
-            Tab::Floor => {
-                let [floor, events] =
-                    Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).areas(body);
-                self.floor.render(frame, floor, self.palette);
-                screens::event_log(frame, events, self);
-            }
             Tab::Overview => screens::overview(frame, body, self),
             Tab::Agents => screens::agents(frame, body, self),
             Tab::Tasks => screens::tasks(frame, body, self),
             Tab::Approvals => screens::approvals(frame, body, self),
             Tab::Board => screens::board(frame, body, self),
-            Tab::Conversations => screens::conversations(frame, body, self),
             Tab::Nodes => screens::nodes(frame, body, self),
             Tab::Machines => machines::render(frame, body, self),
             Tab::Workstations => workstations::render(frame, body, self),
@@ -1800,21 +1732,6 @@ fn parse_frame(text: &str) -> Option<(String, Value)> {
     Some((kind, frame.get("data").cloned().unwrap_or(Value::Null)))
 }
 
-/// One log line: the kind, then the data's top-level scalar fields as `key=value` (anything else as
-/// its one-line text), with line breaks collapsed to spaces.
-fn event_line(kind: &str, data: &Value) -> String {
-    let body = match data.as_object() {
-        Some(map) => map
-            .iter()
-            .filter(|(_, v)| !v.is_object() && !v.is_array())
-            .map(|(k, v)| format!("{k}={}", screens::show(Some(v))))
-            .collect::<Vec<_>>()
-            .join(" "),
-        None => screens::show(Some(data)),
-    };
-    format!("{kind}  {body}").replace(['\r', '\n'], " ")
-}
-
 fn short(id: &str) -> String {
     id.chars().take(8).collect()
 }
@@ -1928,17 +1845,17 @@ mod tests {
 
     #[test]
     fn tabs_cycle_both_ways() {
-        assert_eq!(Tab::ALL.len(), 13);
-        assert_eq!(Tab::Floor.prev(), Tab::Providers);
+        assert_eq!(Tab::ALL.len(), 11);
+        assert_eq!(Tab::Overview.prev(), Tab::Providers);
         assert_eq!(Tab::Workspace.next(), Tab::Workstations);
         assert_eq!(Tab::Workstations.next(), Tab::Chat);
         assert_eq!(Tab::Chat.next(), Tab::Providers);
-        assert_eq!(Tab::Providers.next(), Tab::Floor);
+        assert_eq!(Tab::Providers.next(), Tab::Overview);
         assert_eq!(Tab::Machines.next(), Tab::Workspace);
         assert_eq!(Tab::Nodes.next(), Tab::Machines);
         assert_eq!(Tab::Workstations.path(), "/v1/stations");
         assert_eq!(Tab::Overview.next().next(), Tab::Tasks);
-        assert_eq!(Tab::Floor.next().prev(), Tab::Floor);
+        assert_eq!(Tab::Overview.next().prev(), Tab::Overview);
     }
 
     /// An app whose hub never answers (nothing listens on the port): the tests feed it the hub's data themselves.

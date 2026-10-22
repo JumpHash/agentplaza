@@ -230,12 +230,11 @@ fn refused_by_law(app: &App, cid: u64, id: &str, input: &Value) -> Option<String
     )
 }
 
-/// The name the owner sees for agent `cid`: its name, or `a<cid>` for an unnamed agent.
+/// The label the owner sees for agent `cid`: its role and CID, or `a<cid>` for one not on the roster.
 fn agent_of(app: &App, cid: u64) -> String {
     app.agents
         .get(cid)
-        .map(|agent| agent.name)
-        .filter(|name| !name.is_empty())
+        .map(|agent| agent.label())
         .unwrap_or_else(|| format!("a{cid}"))
 }
 

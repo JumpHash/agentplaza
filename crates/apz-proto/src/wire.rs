@@ -374,8 +374,6 @@ pub enum WorkKind {
     Chat,
     /// A message from another agent.
     Message,
-    /// A council motion this agent's seat votes on.
-    Motion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

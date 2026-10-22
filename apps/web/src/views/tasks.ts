@@ -9,8 +9,8 @@ import { api, type Agent, type Entry, type Task } from '../api';
 import { openIde } from '../ide/open';
 import { go, href } from '../router';
 import { liveProjects, projects, projectTitle, scope } from '../scope';
-import { agents, on } from '../store';
-import { agentName, roleLabel } from '../roles';
+import { agents, on, RESYNC } from '../store';
+import { agentLabel, agentName, roleLabel } from '../roles';
 import { attempt, badge, button, field, input, select, textarea, toast, type Tone } from '../ui/components';
 import { embedContextFromStore } from '../ui/embeds';
 import { h, lu, replace } from '../ui/dom';
@@ -69,7 +69,7 @@ const titleOf = (goal: string): string => goal.split('\n').find((l) => l.trim())
 const labelOf = (state: string): string => STATE_LABELS[state] ?? state.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 const cidName = (cid: number): string => {
   const a = agents.get().find((x) => x.cid === cid);
-  return a ? agentName(a) : `agent ${cid}`;
+  return a ? agentName(a) : agentLabel(cid);
 };
 const idleWorkers = (): Agent[] => agents.get().filter((a) => a.status === 'idle' && a.tier === 'worker');
 /** The idle workers on `project`: a project's task goes only to its agents. */
@@ -979,6 +979,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const offs = [
     on('task', schedule),
     on('work', schedule),
+    on(RESYNC, schedule),
     on('transcript', (data) => {
       const e = data as Entry;
       if (id) {
@@ -1004,6 +1005,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   document.addEventListener('pointercancel', onPointerCancel);
   window.addEventListener('click', onClickCapture, true);
 
+  // The last read paints at once; the fresh read (asked below) replaces it.
+  if (id) {
+    current = api.task.cached(id) ?? null;
+  } else {
+    tasks = (inProject ? api.tasksWhere.cached({ project: inProject }) : api.tasks.cached()) ?? tasks;
+  }
   render();
   const clockTimer = setInterval(() => {
     for (const x of ticking) x.el.textContent = x.fn();

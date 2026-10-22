@@ -1,6 +1,7 @@
 // The IDE's selection: which agent, repository or workstation the centre shows, and which view the centre and the right panel
 // show. Choosing an agent shows its workspace (ide-data); the sidebar's keys and the palette come here. What a selection has
 // (its views, its tabs) is the kind's rule in ide/layout.
+import { agentLabel, agentName } from '../roles';
 import type { IdeWorkspaceInfo, Project } from '../api';
 import { groupByProject, startAgent, projectOf } from '../ide/groups';
 import { centreViewsFor, rightViewsFor } from '../ide/layout';
@@ -80,7 +81,7 @@ export function selectAgent(c: IdeCtx, next: number, view: CentreView): void {
     };
     c.chat = chatPane({
       cid: next,
-      agentName: agent?.name ?? `agent ${next}`,
+      agentName: agent ? agentName(agent) : agentLabel(next),
       project: project?.title ?? null,
       working: () => c.agentWorking,
       embeds: () => ideEmbeds(c, projectNow()),

@@ -36,7 +36,7 @@ impl Hub for AppHub<'_> {
                 .find(|a| tier_of(&a.role) == Tier::Orchestrator),
             Some(name) => match name.parse::<u64>() {
                 Ok(cid) => agents.iter().find(|a| a.cid == cid),
-                Err(_) => agents.iter().find(|a| a.name.eq_ignore_ascii_case(name)),
+                Err(_) => None,
             },
         };
         let Some(agent) = found else {

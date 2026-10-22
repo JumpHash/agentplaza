@@ -4,8 +4,8 @@
 //! (or the jobs agent's `register_from_job`) reads them, checks the inference contract and the
 //! bytes with tract (`inference::LoadedModel::load`), and records the model as `trained`. States
 //! go `trained -> shadow -> promoted -> retired`: only the owner promotes or retires. A promoted
-//! model gets a model agent on the roster: `kind: "model"`, a CID in the reserved range, species
-//! `oracle`, no VM, wallet, tools or chat. Retiring it removes the entry again.
+//! model gets a model agent on the roster: `kind: "model"`, a CID in the reserved range, no VM, wallet,
+//! tools or chat. Retiring it removes the entry again.
 //!
 //! The job's model card has no inference contract yet, so the registry reads an object `serving`
 //! from it: `input` and `output` (schemas), `features`, optional `labels` and `allowed_roles`.
@@ -24,7 +24,6 @@ use sha2::{Digest, Sha256};
 use super::text::{self, TextContract, TextModel};
 use crate::agents::{Agent, Roster, Status};
 use crate::inference::{FeatureSpec, LoadedModel, ModelCard, Registry as Loaded, Schema};
-use crate::looks::{Looks, ORACLE};
 use crate::state::App;
 
 /// The reserved CID range of model agents: `MODEL_CID_BASE ..= MODEL_CID_BASE + MODEL_CID_COUNT - 1`
@@ -219,7 +218,7 @@ impl Models {
 
     /// Compiles every model that is not retired and puts the promoted ones back on the roster, with
     /// the CIDs they had. Run once at startup.
-    pub fn revive(&self, roster: &Roster, looks: &Looks) {
+    pub fn revive(&self, roster: &Roster) {
         let records: Vec<ModelRecord> = self.records().values().cloned().collect();
         let now = apz_plaza::now_ms();
         for record in records {
@@ -251,8 +250,7 @@ impl Models {
             self.loaded.insert(compiled);
             remember(&record.card);
             if let (State::Promoted, Some(cid)) = (record.state, record.agent_cid) {
-                roster.upsert(model_agent(cid, &record.card, now));
-                looks.set(cid, ORACLE, now);
+                roster.upsert(model_agent(cid, now));
             }
         }
     }
@@ -590,7 +588,7 @@ impl Models {
     }
 
     /// `shadow -> promoted` (owner only, enforced by the route): the model agent appears on the roster.
-    pub fn promote(&self, roster: &Roster, looks: &Looks, id: &str) -> Result<ModelRecord, String> {
+    pub fn promote(&self, roster: &Roster, id: &str) -> Result<ModelRecord, String> {
         let mut records = self.records_mut();
         let current = records.get(id).ok_or_else(|| no_model(id))?;
         if current.state != State::Shadow {
@@ -602,8 +600,7 @@ impl Models {
         let cid = free_cid(roster, &records)?;
         let now = apz_plaza::now_ms();
         let mut record = current.clone();
-        roster.upsert(model_agent(cid, &record.card, now));
-        looks.set(cid, ORACLE, now);
+        roster.upsert(model_agent(cid, now));
         record.state = State::Promoted;
         record.agent_cid = Some(cid);
         record.state_changed_ms = now;
@@ -613,7 +610,7 @@ impl Models {
     }
 
     /// `trained | shadow | promoted -> retired` (owner only): the model agent leaves the roster.
-    pub fn retire(&self, roster: &Roster, looks: &Looks, id: &str) -> Result<ModelRecord, String> {
+    pub fn retire(&self, roster: &Roster, id: &str) -> Result<ModelRecord, String> {
         let mut records = self.records_mut();
         let current = records.get(id).ok_or_else(|| no_model(id))?;
         if current.state == State::Retired {
@@ -622,7 +619,6 @@ impl Models {
         let mut record = current.clone();
         if let Some(cid) = record.agent_cid {
             roster.remove(cid);
-            looks.forget(cid);
         }
         self.loaded.remove(id);
         record.state = State::Retired;
@@ -709,10 +705,9 @@ fn free_cid(roster: &Roster, records: &BTreeMap<String, ModelRecord>) -> Result<
 }
 
 /// The roster entry of a promoted model: no VM, no wallet, no tools, no chat.
-pub fn model_agent(cid: u64, card: &ModelCard, now_ms: u64) -> Agent {
+pub fn model_agent(cid: u64, now_ms: u64) -> Agent {
     Agent {
         cid,
-        name: card.name.clone(),
         role: MODEL_ROLE.into(),
         kind: MODEL_KIND.into(),
         caps: Vec::new(),
@@ -723,7 +718,6 @@ pub fn model_agent(cid: u64, card: &ModelCard, now_ms: u64) -> Agent {
         run: None,
         vm: None,
         usage: Usage::default(),
-        species: ORACLE.into(),
     }
 }
 
@@ -897,7 +891,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Move a model to shadow").errors(&[404, 409]))
         .post("/v1/foundry/models/{id}/promote", |app, _req, p| {
-            outcome(app.models.promote(&app.agents, &app.looks, p.get("id")))
+            outcome(app.models.promote(&app.agents, p.get("id")))
         })
         .doc(RouteDoc::new("Promote a model to a model agent").errors(&[404, 409]))
         .post("/v1/foundry/models/{id}/invoke", |app, req, p| {
@@ -909,7 +903,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Run a model on an input").errors(&[400, 404]))
         .post("/v1/foundry/models/{id}/retire", |app, _req, p| {
-            outcome(app.models.retire(&app.agents, &app.looks, p.get("id")))
+            outcome(app.models.retire(&app.agents, p.get("id")))
         })
         .doc(RouteDoc::new("Retire a model").errors(&[404, 409]))
 }
@@ -1013,37 +1007,31 @@ mod tests {
         })
     }
 
-    fn fresh_roster() -> (Roster, Looks) {
-        (Roster::default(), Looks::default())
+    fn fresh_roster() -> Roster {
+        Roster::default()
     }
 
     #[test]
     fn a_model_moves_trained_shadow_promoted_retired_and_no_other_way() {
         let root = scratch("states");
         let models = Models::open(&root);
-        let (roster, looks) = fresh_roster();
+        let roster = fresh_roster();
         let dir = job_dir(&root, "job-1", Some(serving()));
         let record = models.register_from_job(&dir, Some("job-1")).unwrap();
         let id = record.card.id.clone();
         assert_eq!(record.state, State::Trained);
         assert_eq!(record.source_job.as_deref(), Some("job-1"));
         assert!(
-            models.promote(&roster, &looks, &id).is_err(),
+            models.promote(&roster, &id).is_err(),
             "a trained model is not promoted"
         );
         assert_eq!(models.shadow(&id).unwrap().state, State::Shadow);
         assert!(models.shadow(&id).is_err(), "shadow is entered once");
-        let promoted = models.promote(&roster, &looks, &id).unwrap();
+        let promoted = models.promote(&roster, &id).unwrap();
         assert_eq!(promoted.state, State::Promoted);
         assert!(promoted.agent_cid.is_some());
-        assert_eq!(
-            models.retire(&roster, &looks, &id).unwrap().state,
-            State::Retired
-        );
-        assert!(
-            models.retire(&roster, &looks, &id).is_err(),
-            "retired is terminal"
-        );
+        assert_eq!(models.retire(&roster, &id).unwrap().state, State::Retired);
+        assert!(models.retire(&roster, &id).is_err(), "retired is terminal");
         assert!(models.shadow(&id).is_err());
         let _ = fs::remove_dir_all(&root);
     }
@@ -1100,34 +1088,24 @@ mod tests {
     fn a_model_agent_appears_on_promote_and_leaves_on_retire() {
         let root = scratch("agent");
         let models = Models::open(&root);
-        let (roster, looks) = fresh_roster();
+        let roster = fresh_roster();
         let id = models
             .register_from_job(&job_dir(&root, "job-3", Some(serving())), None)
             .unwrap()
             .card
             .id;
         models.shadow(&id).unwrap();
-        let cid = models
-            .promote(&roster, &looks, &id)
-            .unwrap()
-            .agent_cid
-            .unwrap();
+        let cid = models.promote(&roster, &id).unwrap().agent_cid.unwrap();
         assert!(is_model_cid(cid));
         let agent = roster.get(cid).expect("the model agent is on the roster");
         assert_eq!(agent.kind, "model");
         assert_eq!(agent.role, "model");
-        assert_eq!(agent.species, "oracle");
         assert!(agent.vm.is_none() && agent.run.is_none());
-        assert_eq!(
-            looks.all().get(&cid).map(|l| l.species.as_str()),
-            Some("oracle")
-        );
-        models.retire(&roster, &looks, &id).unwrap();
+        models.retire(&roster, &id).unwrap();
         assert!(
             roster.get(cid).is_none(),
             "retiring removes the model agent"
         );
-        assert!(!looks.all().contains_key(&cid));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1135,21 +1113,17 @@ mod tests {
     fn a_promoted_model_comes_back_on_the_roster_after_a_restart() {
         let root = scratch("revive");
         let models = Models::open(&root);
-        let (roster, looks) = fresh_roster();
+        let roster = fresh_roster();
         let id = models
             .register_from_job(&job_dir(&root, "job-4", Some(serving())), None)
             .unwrap()
             .card
             .id;
         models.shadow(&id).unwrap();
-        let cid = models
-            .promote(&roster, &looks, &id)
-            .unwrap()
-            .agent_cid
-            .unwrap();
+        let cid = models.promote(&roster, &id).unwrap().agent_cid.unwrap();
         let reopened = Models::open(&root);
-        let (roster2, looks2) = fresh_roster();
-        reopened.revive(&roster2, &looks2);
+        let roster2 = fresh_roster();
+        reopened.revive(&roster2);
         assert_eq!(roster2.get(cid).map(|a| a.kind), Some("model".to_string()));
         assert!(reopened.loaded(&id).is_some());
         let _ = fs::remove_dir_all(&root);
@@ -1159,7 +1133,7 @@ mod tests {
     fn the_snapshot_restores_cards_states_and_shadow_stats() {
         let root = scratch("snapshot");
         let models = Models::open(&root);
-        let (roster, looks) = fresh_roster();
+        let roster = fresh_roster();
         let dir = job_dir(&root, "job-s", Some(serving()));
         let id = models
             .register_from_job(&dir, Some("job-s"))
@@ -1169,7 +1143,7 @@ mod tests {
         models.shadow(&id).unwrap();
         models.record_shadow(&id, true, 0.5).unwrap();
         models.record_shadow(&id, false, 0.25).unwrap();
-        models.promote(&roster, &looks, &id).unwrap();
+        models.promote(&roster, &id).unwrap();
         let json = models.snapshot();
 
         let other_root = scratch("snapshot-other");
@@ -1193,7 +1167,7 @@ mod tests {
     fn the_model_list_survives_a_restart_without_the_database() {
         let root = scratch("list-restart");
         let models = Models::open(&root);
-        let (roster, looks) = fresh_roster();
+        let roster = fresh_roster();
         let id = models
             .register_from_job(&job_dir(&root, "job-r", Some(serving())), Some("job-r"))
             .unwrap()
@@ -1201,7 +1175,7 @@ mod tests {
             .id;
         models.shadow(&id).unwrap();
         models.record_shadow(&id, true, 0.5).unwrap();
-        models.promote(&roster, &looks, &id).unwrap();
+        models.promote(&roster, &id).unwrap();
         let before = models.list();
         drop(models);
         let reopened = Models::open(&root);

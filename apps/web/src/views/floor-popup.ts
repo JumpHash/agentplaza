@@ -3,17 +3,9 @@ import type { FleetMachine } from '../api';
 import { href } from '../router';
 import { ago } from '../ui/components';
 import { h } from '../ui/dom';
-import { roleLabel } from '../roles';
 
 /** How many agent names the popup lists before "+N more". */
 export const FLEET_CARD_AGENTS = 6;
-
-/** The name label's style (the engine paints its own labels; this is the DOM look they follow). */
-export const LABEL_CSS =
-  'position:absolute;left:0;top:0;display:none;align-items:center;gap:6px;max-width:200px;padding:3px 7px;' +
-  'background:var(--sheet);border:1px solid var(--ink);box-shadow:var(--shadow-card);color:var(--ink);' +
-  'font:600 11px/1.35 var(--font);white-space:nowrap;' +
-  'pointer-events:none;will-change:transform';
 
 /** A memory size in GiB: whole, or one decimal; a size the fleet does not know (null) reads as a dash. */
 export function gibText(mib: number | null | undefined): string {
@@ -102,14 +94,3 @@ export function machineCard(
   return { children, seen };
 }
 
-/** The role as a square tag, striped in the district's colour as on the robot's label. */
-export function roleTag(role: string, hue: number): HTMLElement {
-  const t = h('span.floor-tag', null, roleLabel(role));
-  t.style.borderLeftColor = `var(--hue-${Math.floor((((hue % 360) + 360) % 360) / 60)})`;
-  return t;
-}
-
-/** The robot's agent card: the name and role tag, then the activity line. */
-export function agentCardChildren(name: string, role: string, hue: number, line: string): HTMLElement[] {
-  return [h('header.floor-card-head', null, h('strong', null, name), roleTag(role, hue)), h('div.floor-card-activity', null, line)];
-}

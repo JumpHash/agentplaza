@@ -1701,6 +1701,7 @@ mod tests {
         Frame {
             kind: "transcript".to_string(),
             queued: std::time::Instant::now(),
+            seq: 0,
             data: json!({
                 "cid": 7,
                 "work": 42,
@@ -2518,6 +2519,7 @@ mod tests {
             .send(Frame {
                 kind: "transcript".to_string(),
                 queued: std::time::Instant::now(),
+                seq: 0,
                 data: json!({
                     "cid": 7,
                     "work": 42,
@@ -2996,6 +2998,7 @@ mod tests {
             .send(Frame {
                 kind: "transcript".to_string(),
                 queued: std::time::Instant::now(),
+                seq: 0,
                 data: json!({
                     "cid": 7,
                     "work": 42,
@@ -3052,6 +3055,7 @@ mod tests {
             .send(Frame {
                 kind: "transcript".to_string(),
                 queued: std::time::Instant::now(),
+                seq: 0,
                 data: json!({
                     "cid": 7,
                     "work": 42,

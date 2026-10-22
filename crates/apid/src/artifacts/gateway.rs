@@ -275,13 +275,8 @@ fn refused_by_law(app: &App, cid: u64, id: &str, spec: &Spec) -> Option<String> 
 
 /// The author an artifact of agent `cid` is recorded under: `a<cid> · <name>`, or `a<cid>` for an unnamed agent.
 fn author_of(app: &App, cid: u64) -> String {
-    match app
-        .agents
-        .get(cid)
-        .map(|agent| agent.name)
-        .filter(|name| !name.is_empty())
-    {
-        Some(name) => format!("a{cid} · {name}"),
+    match app.agents.get(cid).map(|agent| agent.role) {
+        Some(role) => format!("a{cid} · {role}"),
         None => format!("a{cid}"),
     }
 }

@@ -964,7 +964,7 @@ fn node_prompt(app: &App, run: &Run, n: &NodeRun) -> String {
     let worker = app
         .agents
         .get(run.worker)
-        .map(|a| a.name)
+        .map(|a| a.label())
         .unwrap_or_else(|| format!("agent {}", run.worker));
     let axes: Vec<String> = n
         .def
@@ -1541,7 +1541,7 @@ fn ask_owner(app: &App, run: &Run) {
     let worker = app
         .agents
         .get(run.worker)
-        .map(|a| a.name)
+        .map(|a| a.label())
         .unwrap_or_else(|| format!("agent {}", run.worker));
     let goal = app
         .plaza

@@ -9,10 +9,8 @@ use crate::db::sql;
 /// An active `agents` row: what the roster needs at start.
 pub struct StoredAgent {
     pub cid: u64,
-    pub name: String,
     pub role: String,
     pub model: Option<String>,
-    pub species: String,
 }
 
 impl StoredAgent {
@@ -21,7 +19,6 @@ impl StoredAgent {
     pub fn into_agent(self) -> Agent {
         Agent {
             cid: self.cid,
-            name: self.name,
             role: self.role,
             model_override: self.model,
             status: Status::Offline,
@@ -30,7 +27,6 @@ impl StoredAgent {
             run: None,
             vm: None,
             usage: Default::default(),
-            species: self.species,
             kind: "llm".into(),
             caps: Vec::new(),
         }
@@ -48,13 +44,7 @@ impl Db {
         let result = self.run(|c| {
             c.execute(
                 sql::AGENTS_UPSERT,
-                &[
-                    &cid,
-                    &agent.name,
-                    &agent.role,
-                    &agent.model_override,
-                    &agent.species,
-                ],
+                &[&cid, &agent.role, &agent.model_override],
             )
         });
         if let Err(e) = result {
@@ -83,10 +73,8 @@ impl Db {
                 .iter()
                 .map(|row| StoredAgent {
                     cid: row.get::<_, i64>(0) as u64,
-                    name: row.get(1),
-                    role: row.get(2),
-                    model: row.get(3),
-                    species: row.get(4),
+                    role: row.get(1),
+                    model: row.get(2),
                 })
                 .collect(),
             Err(e) => {
@@ -108,10 +96,9 @@ mod tests {
     const BY_ROLE: &str = include_str!("../../sql/test/agents_by_role.sql");
     const STATE_OF: &str = include_str!("../../sql/test/agents_state_of.sql");
 
-    fn agent(cid: u64, name: &str, role: &str) -> Agent {
+    fn agent(cid: u64, role: &str) -> Agent {
         Agent {
             cid,
-            name: name.into(),
             role: role.into(),
             model_override: None,
             status: Status::Idle,
@@ -120,7 +107,6 @@ mod tests {
             run: None,
             vm: Some(0),
             usage: Default::default(),
-            species: "owl".into(),
             kind: "llm".into(),
             caps: Vec::new(),
         }
@@ -143,11 +129,11 @@ mod tests {
             return;
         };
         let roster = Roster::with_db(Some(Arc::clone(&db)));
-        let mut marlow = agent(101, "Marlow", "builder");
-        marlow.model_override = Some("model-a".into());
-        roster.upsert(marlow);
-        roster.upsert(agent(102, "Iris", "builder"));
-        roster.upsert(agent(103, "Quill", "planner"));
+        let mut first = agent(101, "builder");
+        first.model_override = Some("model-a".into());
+        roster.upsert(first);
+        roster.upsert(agent(102, "builder"));
+        roster.upsert(agent(103, "planner"));
 
         let fresh = Roster::default();
         fresh.restore(
@@ -157,10 +143,8 @@ mod tests {
                 .collect(),
         );
         let loaded = fresh.get(101).expect("101 loaded from the table");
-        assert_eq!(loaded.name, "Marlow");
         assert_eq!(loaded.role, "builder");
         assert_eq!(loaded.model_override.as_deref(), Some("model-a"));
-        assert_eq!(loaded.species, "owl");
         assert_eq!(loaded.status, Status::Offline);
         assert_eq!(fresh.list().len(), 3);
 

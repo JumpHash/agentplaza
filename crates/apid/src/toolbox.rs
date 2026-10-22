@@ -289,7 +289,7 @@ fn now_ms() -> u64 {
     .unwrap_or(u64::MAX)
 }
 
-/// The tools' specs, in the same shape as `society::spec`.
+/// The tools' specs, in the same shape as `projects::spec`.
 pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     let obj = |properties: Value, required: &[&str]| json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false});
     Some(match name {
@@ -320,11 +320,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     match name {
         "plaza_toolbox_share" => {
-            let who = if agent.name.is_empty() {
-                agent.role.clone()
-            } else {
-                agent.name.clone()
-            };
+            let who = agent.label();
             let item = app.toolbox.share(agent.cid, &who, input)?;
             serde_json::to_string(&item).map_err(|e| e.to_string())
         }

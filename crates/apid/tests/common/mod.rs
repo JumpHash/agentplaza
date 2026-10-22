@@ -50,18 +50,6 @@ impl Scratch {
         std::fs::create_dir_all(&dir).expect("create the scratch directory");
         Scratch(dir)
     }
-
-    /// Names agents before their hub starts (its `names.json`), so the hub never asks them to choose one. The hub asks
-    /// an unnamed idle agent two seconds after it connects, and a fake agent never answers: on a slow build (coverage's
-    /// instrumented one) that ask goes out ahead of the work a test sends, and holds the agent.
-    pub fn name_agents(&self, names: &[(u64, &str)]) {
-        let map: serde_json::Map<String, Value> = names
-            .iter()
-            .map(|(cid, name)| (cid.to_string(), Value::from(*name)))
-            .collect();
-        std::fs::write(self.0.join("names.json"), Value::Object(map).to_string())
-            .expect("write the agents' names");
-    }
 }
 
 impl Drop for Scratch {
@@ -152,17 +140,6 @@ impl Hub {
             json!({ "type": "work_done", "work": work, "status": status, "summary": summary });
         let (code, body) = self.guest(cid, "message", message);
         assert_eq!(code, 200, "{body}");
-    }
-
-    /// Agent `cid` names itself with plaza_set_name, as an agent does when the hub asks. The hub asks an unnamed idle
-    /// agent two seconds after it connects, and a fake agent never answers: on a slow runner that ask is queued ahead
-    /// of the work a test waits for, so a test whose agents must take work names them first.
-    pub fn name_agent(&self, cid: u64, name: &str) {
-        let request = json!({ "type": "tool_request", "work": 0, "call": format!("toolu_name_{cid}"), "name": "plaza_set_name", "input": { "name": name } });
-        let (code, body) = self.guest(cid, "message", request);
-        assert_eq!(code, 200, "{body}");
-        let (_, agent) = self.call("GET", &format!("/v1/agents/{cid}"), None);
-        assert_eq!(agent["name"], name, "{body}\n{agent}");
     }
 
     /// Waits up to `timeout` (times [`slack`]) for `ready` to hold of the owner's `GET path`; the last answer
@@ -258,13 +235,6 @@ fn boot(
     let state = dir.join("state");
     let config = dir.join("config");
     std::fs::create_dir_all(&config).expect("create the config directory");
-    // The names the test gave its agents ([`Scratch::name_agents`]), in this attempt's state.
-    if let Some(names) = dir.parent().map(|scratch| scratch.join("names.json"))
-        && names.exists()
-    {
-        std::fs::create_dir_all(&state).expect("create the state directory");
-        std::fs::copy(&names, state.join("names.json")).expect("copy the agents' names");
-    }
     let env_file = dir.join("empty.env");
     std::fs::write(&env_file, "").expect("write the empty env file");
     let manifest = dir.join("roles.json");

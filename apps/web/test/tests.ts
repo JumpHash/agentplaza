@@ -11,13 +11,10 @@ import { monogramOf, personOf, toneOf } from '../src/ui/embed-model';
 import richVectors from '../../../crates/apz-rich/tests/vectors.json';
 import { TOUR_STEPS, WIZARD_STEPS, fill, keysSet, moveStep, readFlag, writeFlag } from '../src/onboarding/flow';
 import { ago, clip, compact, isTextValue } from '../src/ui/components';
-import { floorName, familyLabel, roleFamily } from '../src/roles';
+import { agentLabel, agentLabelIn, agentName } from '../src/roles';
 import { builtinLaws, diagnosticText, diagnosticsByLine, errorText, isBlank, isOwnerLaw, lawsOfRule, lineSpan, matchesFilter, tierKey, withStrictPermits, type LawFilter } from '../src/views/rules-model';
 import type { LawInfo, Settings } from '../src/api';
 import { approvalPath } from '../src/api';
-import { checkRetention, clampQuery, mergeNewest, mergeOlder, spanOf } from '../src/views/conversations';
-import { level, membersOf, parentOf, trailOf } from '../src/views/society';
-import type { Bond, Conversation, SocietyAgent } from '../src/api';
 import { easeOut, niceScale, resample, tweenArray } from '../src/ui/chart';
 import { balanceData, barData, creditsOf, creditsUsd, flowsOf, mergeJournal, movesOf, partyOf, sortRows, windowOf as treasuryWindow } from '../src/views/treasury';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -32,7 +29,7 @@ import { wrapGraph, type GraphGlue, type Layout } from '../src/graph/wasm';
 import { cardLine, compose, flowSegments, listed, looseGraph, needsMe, pathOf, planCards, shortSpan, stepText, waitsByRole, waitsForOwner, workState, type WorkState } from '../src/views/work-model';
 import type { GraphTask } from '../src/api';
 import { activitySplit, approvalIdIn, authorHue, buildChat, currentTask, filterPalette, formatMs, matchScore, mentionsOf, rowStatus, stepLabel, type PaletteItem } from '../src/ide/view';
-import { groupByProject, matchingRows, projectOf, sharedNames, sidebarGroups, startAgent } from '../src/ide/groups';
+import { groupByProject, matchingRows, projectOf, sidebarGroups, startAgent } from '../src/ide/groups';
 import type { Entry, Project, Task, StationFacts, StationLease, StationSettings, StationView, RecordingDefaults, MachineNode } from '../src/api';
 import { mentionAt, mentionOptions } from '../src/board/owner';
 import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageFor, lineCounts, onRemote, openBuffer, parentDir, parseViewed, rankPaths, stationBadgeOf, viewedKey, withViewed, groupWorkspaces, osLabel, pickerLabel, stationCrumb } from '../src/ide/model';
@@ -116,8 +113,11 @@ eq(isTextValue('claude-sonnet-5'), true, 'a model id is a text stat value');
 eq(isTextValue(12), false, 'a numeric stat value is a figure');
 eq(isTextValue('1,204'), false, 'a formatted figure is a figure');
 eq(isTextValue('—'), false, 'the dash placeholder keeps the figure size');
-eq(floorName({ cid: 7, name: '' }), 'agent 7', 'floor name falls back to the cid');
-eq(floorName({ cid: 7, name: '  ' }), 'agent 7', 'floor name: whitespace counts as empty');
+eq(agentName({ cid: 7, role: 'builder' }), 'Builder #7', 'an agent is shown by its role and its CID');
+eq(agentName({ cid: 7, role: 'my-custom-role' }), 'my-custom-role #7', 'a custom role is shown as it is');
+eq(agentLabel(7), 'Agent #7', 'an agent the console does not hold is shown by its CID');
+eq(agentLabelIn([{ cid: 7, role: 'qa' }], 7), 'QA #7', 'a label read from the roster');
+eq(agentLabelIn([], 7), 'Agent #7', 'a label for an agent the roster does not hold');
 
 // Rules: the screen's logic (the view itself is checked in the browser).
 {
@@ -158,87 +158,6 @@ eq(floorName({ cid: 7, name: '  ' }), 'agent 7', 'floor name: whitespace counts 
   eq(errorText(new Error('nope')), 'nope', 'rules: an error reads as its message');
   eq(errorText('plain'), 'plain', 'rules: a non-error reads as text');
 }
-eq(floorName({ cid: 7, name: 'Ada' }), 'Ada', 'floor name keeps a chosen name');
-
-// Conversations: paging keeps what was read, and retention and search are checked as typed.
-const exchange = (n: number): Conversation => ({ id: `c${n}`, from_cid: 1, to_cid: 2, from_role: 'a', to_role: 'b', text: `m${n}`, created_at: n, delivered: true });
-const ids = (s: { items: Conversation[] }): string[] => s.items.map((c) => c.id);
-const exchanges = (from: number, to: number): Conversation[] => Array.from({ length: to - from + 1 }, (_, i) => exchange(from + i));
-
-eq(ids(spanOf([exchange(3), exchange(1), exchange(2)], null)), ['c1', 'c2', 'c3'], 'spans sort oldest first');
-eq(
-  mergeNewest({ items: exchanges(1, 5), next: 0 }, spanOf(exchanges(4, 6), 3)),
-  { items: exchanges(1, 6), next: 0 },
-  'a refresh keeps the older pages already read',
-);
-eq(
-  mergeNewest({ items: exchanges(5, 6), next: 4 }, spanOf(exchanges(4, 6), 3)),
-  { items: exchanges(4, 6), next: 3 },
-  'a refresh with nothing older read takes the fresh cursor',
-);
-eq(
-  mergeOlder({ items: exchanges(4, 5), next: 3 }, spanOf(exchanges(2, 3), 1)),
-  { items: exchanges(2, 5), next: 1 },
-  'an older page is prepended',
-);
-eq(ids(mergeOlder({ items: exchanges(4, 5), next: 3 }, spanOf(exchanges(3, 4), 2))), ['c3', 'c4', 'c5'], 'an overlapping older page is not duplicated');
-eq(checkRetention('4096', '30').errors, {}, 'retention: the defaults are valid');
-eq(checkRetention(' 100 ', '0').errors, {}, 'retention: the lowest keep and forever are valid');
-eq(checkRetention('100000', '3650').errors, {}, 'retention: the highest limits are valid');
-eq(Object.keys(checkRetention('99', '30').errors), ['max'], 'retention: below the minimum keep');
-eq(Object.keys(checkRetention('100001', '30').errors), ['max'], 'retention: above the maximum keep');
-eq(Object.keys(checkRetention('1e3', '30').errors), ['max'], 'retention: not a whole number');
-eq(Object.keys(checkRetention('4096', '3651').errors), ['days'], 'retention: days above the maximum');
-eq(Object.keys(checkRetention('4096', '-1').errors), ['days'], 'retention: negative days');
-eq(clampQuery('  hi  '), 'hi', 'search is trimmed');
-eq(clampQuery('a'.repeat(300)).length, 200, 'search is capped at 200 bytes');
-eq(clampQuery('é'.repeat(150)).length, 100, 'the cap counts bytes, on whole characters');
-
-// Society: families, groups and their levels.
-const ag = (cid: number, role: string): SocietyAgent => ({ cid, name: `a${cid}`, role, reputation: 50, confidence: 0.5, wallet: 0 });
-const bond = (from: number, to: number, strength: number, e: number): Bond => ({
-  from, to, kind: 'met', since_ms: 0, strength, interactions: 0, last_ms: 0, note: null, blocked: false,
-  opinion: { r: 0, s: 0, b: 0, d: 0, u: 0, e, updated_ms: 0 },
-});
-eq(roleFamily('builder'), 'build', 'family: builder is build');
-eq(roleFamily('mayor-office'), 'command', 'family: mayor office is command');
-eq(roleFamily('security-reviewer'), 'operations', 'family: security reviewer is operations');
-eq(roleFamily('planner'), 'knowledge', 'family: planner is knowledge');
-eq(roleFamily('auditor'), 'money', 'family: auditor is money');
-eq(roleFamily('my-custom-role'), 'other', 'family: a custom role is other');
-eq(roleFamily('breeder'), 'other', 'family: a role outside the list is other');
-eq(roleFamily('constructor'), 'other', 'family: an Object.prototype name is other');
-eq(roleFamily('builder', 'orchestrator'), 'command', 'family: the orchestrator tier is command');
-eq(roleFamily('worker-x', 'worker'), 'other', 'family: a worker tier keeps its role');
-eq(familyLabel('money'), 'Money', 'family label');
-
-const crew = [ag(1, 'builder'), ag(2, 'architect'), ag(3, 'finance'), ag(4, 'planner')];
-const cross = [bond(1, 3, 4, 0.8), bond(2, 3, 3, 0.4), bond(3, 1, 1, 0.6), bond(1, 2, 5, 0.9)];
-const top = level(crew, cross, { family: null, role: null }, true);
-eq(top.marks.map((m) => m.key), ['f:build', 'f:knowledge', 'f:money'], 'top level: one box per family');
-eq(top.edges.length, 1, 'edges: the one build-money edge (the build-build bond is inside a box; the planner has no contacts)');
-const buildMoney = top.edges.find((e) => e.from === 'f:build' && e.to === 'f:money');
-eq(buildMoney?.strength, 8, 'edge aggregation: summed strength of the cross contacts');
-eq(Math.round((buildMoney?.trust ?? 0) * 100), 60, 'edge aggregation: mean trust of the cross contacts');
-eq(buildMoney?.bonds.length, 3, 'edge aggregation: all three cross bonds in one edge');
-
-const flat = level(crew, cross, { family: null, role: null }, false);
-eq(flat.marks.map((m) => m.key), ['a:1', 'a:2', 'a:3', 'a:4'], 'flat level: every agent is its own mark');
-eq(flat.edges.length, 4, 'flat level: one edge per bond, direction kept');
-
-const team = [ag(1, 'builder'), ag(2, 'reviewer'), ag(3, 'reviewer'), ag(4, 'finance')];
-const inBuild = level(team, [], { family: 'build', role: null }, true);
-eq(inBuild.marks.map((m) => m.key), ['a:1', 'r:build/reviewer', 'f:money'], 'open family: roles, a single-agent role is its agent');
-eq(inBuild.marks.find((m) => m.key === 'r:build/reviewer')?.members.length, 2, 'open family: the role box holds its agents');
-const inRole = level(team, [], { family: 'build', role: 'reviewer' }, true);
-eq(inRole.marks.map((m) => m.key), ['a:1', 'a:2', 'a:3', 'f:money'], 'open role: its agents are drawn one by one');
-eq(membersOf(team, 'r:build/reviewer').map((a) => a.cid), [2, 3], 'membersOf: a role key');
-eq(membersOf(team, 'f:build').map((a) => a.cid), [1, 2, 3], 'membersOf: a family key');
-
-const at = { family: 'build', role: 'builder' } as const;
-eq(trailOf(at).map((c) => c.label), ['All families', 'Build', 'Builder'], 'breadcrumb: all families, family, role');
-eq(parentOf(at), { family: 'build', role: null }, 'back from a role goes to its family');
-eq(parentOf({ family: 'build', role: null }), { family: null, role: null }, 'back from a family goes to the top');
 
 // Charts: the scale, resampling and tweening that every chart animates through.
 eq(niceScale(0), [0, 1], 'nice scale: nothing to show is a unit axis');
@@ -256,14 +175,14 @@ eq(parse('#/p/pr2/work?task=t3').project, 'pr2', 'a scoped route keeps its proje
 
 // ---- The IDE's conversation view (ide/conversation-model.ts) ----
 {
-  const roster = [{ cid: 300, name: 'Ada' }, { cid: 304, name: 'Rhea' }];
+  const roster = [{ cid: 300, role: 'builder' }, { cid: 304, role: 'librarian' }];
   eq(isConversationId('conv-12'), true, 'a conversation workspace id');
   eq(isConversationId('agent:7'), false, 'an agent workspace is not one');
   eq(isConversationId(null), false, 'nothing open is not one');
-  eq(seatLine({ role: 'builder', count: 2, bench: [300] }, roster), '2 Builder (Ada from the bench, 1 new)', 'a seat from the bench and new');
-  eq(seatLine({ role: 'librarian', count: 1, bench: [304] }, roster), '1 Librarian (Rhea from the bench)', 'a seat all from the bench');
+  eq(seatLine({ role: 'builder', count: 2, bench: [300] }, roster), '2 Builder (Builder #300 from the bench, 1 new)', 'a seat from the bench and new');
+  eq(seatLine({ role: 'librarian', count: 1, bench: [304] }, roster), '1 Librarian (Librarian #304 from the bench)', 'a seat all from the bench');
   eq(seatLine({ role: 'qa', count: 1 }, roster), '1 QA (1 new)', 'a seat all new');
-  eq(seatLine({ role: 'qa', count: 1, bench: [999] }, roster), '1 QA (agent 999 from the bench)', 'an agent the roster does not know');
+  eq(seatLine({ role: 'qa', count: 1, bench: [999] }, roster), '1 QA (Agent #999 from the bench)', 'an agent the roster does not know');
   eq(teamLine([{ role: 'qa', count: 1 }, { role: 'release', count: 1 }], roster), '1 QA (1 new) · 1 Release (1 new)', 'the team in one line');
   eq(afterText({ after: ['1', '2'] }), 'after 1, 2', 'a task that runs after others');
   eq(afterText({}), '', 'one that runs at once');
@@ -520,6 +439,7 @@ eq(WIZARD_STEPS.length <= 6, true, 'wizard: at most six steps');
 eq(WIZARD_STEPS[1]?.id, 'look', 'wizard: the look is chosen second, right after the welcome');
 eq(WIZARD_STEPS[3]?.id, 'deps', 'wizard: the dependencies step comes after the hub');
 eq(TOUR_STEPS.length >= 6 && TOUR_STEPS.length <= 8, true, 'tour: six to eight steps');
+eq(TOUR_STEPS.some((step) => step.screen === 'conversations'), false, 'tour: no stop for the removed Conversations screen');
 eq(fill('{n} of {m} providers have a key', { n: 1, m: 3 }), '1 of 3 providers have a key', 'copy: placeholders fill');
 eq(fill('{n} of {m}', { n: 2 }), '2 of {m}', 'copy: a missing value stays visible');
 eq(keysSet([{ credential: 'missing' }, { credential: 'secret' }, { credential: 'env' }]), { n: 2, m: 3 }, 'keys: a missing credential does not count');
@@ -592,7 +512,6 @@ sectionEnd('ide wrapper tests: ok');
   }
   const srcDir = join(process.cwd(), 'src');
   const allowed: [string, string][] = [
-    ['views/agent-profile.ts', 'frame.innerHTML = robotSvg(a, size);'],
     ['views/engine-mount.ts', "root.innerHTML = '';"],
     ['views/nodes.ts', 't.innerHTML = markup;'],
     ['views/treasury.ts', 't.innerHTML = markup;'],
@@ -1455,11 +1374,12 @@ sectionEnd('rich card tests: ok');
 
 // ---- IDE grouping by project, duplicate names and the start choice (src/ide/groups.ts) ----
 {
-  const ag = (cid: number, name: string, over: Record<string, unknown> = {}): Agent => ({ cid, name, status: 'idle', work: null, ...over }) as unknown as Agent;
+  const ag = (cid: number, role: string, over: Record<string, unknown> = {}): Agent => ({ cid, role, status: 'idle', work: null, ...over }) as unknown as Agent;
   const pj = (id: string, title: string, lead_cid: number, tasks: string[] = [], updated_ms = 0): Project => ({ id, title, lead_cid, tasks, updated_ms, repo: null }) as unknown as Project;
   const tk = (id: string, agent_cid: number | null): Task => ({ id, agent_cid, state: 'open' }) as unknown as Task;
-  const names = (g: { agents: Agent[] }): string => g.agents.map((a) => a.name).join(',');
-  const work = (task: string) => ({ prompt: 'x', origin: { task, motion: null, from_cid: null } });
+  // The fixtures' roles stand for the names they were: an agent's label is its role and its CID.
+  const names = (g: { agents: Agent[] }): string => g.agents.map((a) => a.role).join(',');
+  const work = (task: string) => ({ prompt: 'x', origin: { task, from_cid: null } });
 
   // Alpha: led by zed (1), holds t1 which amy (2) claimed. Beta: led by amy (2), holds t2 which cy (4) is working on.
   // Gamma: no agents. t3 is held by dee (5), but no project holds t3.
@@ -1477,7 +1397,7 @@ sectionEnd('rich card tests: ok');
   eq(names(groups[0]), 'amy,cy', 'groupByProject: the lead and a work-origin assignee are in the project');
   eq(names(groups[1]), 'amy,zed', 'groupByProject: an agent in two projects is listed in both (amy: lead of Beta, claimed t1 in Alpha)');
   eq(groups[2].id, null, 'groupByProject: No project has a null id');
-  eq(names(groups[2]), 'bob,dee', 'groupByProject: agents in no project are sorted by name');
+  eq(names(groups[2]), 'bob,dee', 'groupByProject: agents in no project are sorted by their labels');
   eq(groupByProject([ag(1, 'zed')], [pj('p1', 'Alpha', 1)], []).map((g) => g.title).join(','), 'Alpha', 'groupByProject: no No project group when every agent has a project');
   eq(groupByProject([ag(2, 'amy')], [], []).map((g) => g.title).join(','), 'No project', 'groupByProject: with no projects every agent is in No project');
   eq(groupByProject([ag(2, 'amy')], [pj('p1', 'Alpha', 1, [], 5)], [tk('t9', 2)])[0]?.title, 'No project', 'groupByProject: a claimed task outside every project does not place the agent');
@@ -1486,8 +1406,6 @@ sectionEnd('rich card tests: ok');
   eq(projectOf(ag(2, 'amy', { project: 'p1' }), projects, tasks)?.id, 'p1', 'projectOf: a member is under its project only (amy also leads Beta)');
   eq(groupByProject([ag(6, 'eve', { project: 'p3' })], projects, tasks).map((g) => g.title).join(','), 'Gamma', 'groupByProject: a member of a project with no tasks yet is under it');
 
-  eq([...sharedNames([ag(1, 'Ada'), ag(2, 'ada'), ag(3, 'Bo')])].sort().join(','), '1,2', 'sharedNames: names that collide, case-insensitively');
-  eq(sharedNames([ag(1, 'Ada'), ag(2, 'Bo')]).size, 0, 'sharedNames: no collision, no cid shown');
 
   // The sidebar order is Beta (amy, cy), Alpha (amy, zed), No project (bob, dee); the unique order is 2, 4, 1, 3, 5.
   eq(startAgent(groups, 1), 1, 'startAgent: the agent selected last time, while it is listed');
@@ -1545,9 +1463,9 @@ sectionEnd('ide stored terminals tests: ok');
   eq(mentionAt('mail a@b', 8), null, 'mentionAt: an address is not a mention');
   eq(mentionAt('done. @', 7), { start: 6, query: '' }, 'mentionAt: a bare @ is a mention to finish');
   eq(mentionAt('hi @ana later', 9), null, 'mentionAt: a word after a space ends the mention');
-  const agent = (cid: number, name: string, role: string) => ({ cid, name, role }) as unknown as Agent;
-  const names = mentionOptions([agent(3, 'Ana', 'builder'), agent(4, 'builder', 'builder'), agent(5, 'Dev', 'reviewer')]).map((o) => o.name);
-  eq(names, ['all', 'Ana', 'builder', 'Dev', 'reviewer'], 'mentionOptions: all, then names and roles, no repeats (case-insensitive)');
+  const agent = (cid: number, role: string) => ({ cid, role }) as unknown as Agent;
+  const names = mentionOptions([agent(3, 'builder'), agent(4, 'builder'), agent(5, 'reviewer')]).map((o) => o.name);
+  eq(names, ['all', 'builder', 'reviewer'], 'mentionOptions: all, then each role once (agents have no names)');
 }
 sectionEnd('board owner composer tests: ok');
 
@@ -1765,8 +1683,8 @@ sectionEnd('sleep and checkpoint tests: ok');
   );
   eq([isStopped(nodeAt({})), isStopped(nodeAt({ draining: true })), isStopped(nodeAt({ state: 'stopping' }))], [false, true, true], 'nodes: stopping and stopped are out of service');
   eq(
-    waitingLines(nodeAt({ waiting: [{ cid: 1001, reason: 'finishing its turn first' }, { cid: 1002, reason: 'no machine in service has room for it' }] }), (cid) => (cid === 1001 ? 'Ada' : undefined)),
-    ['Ada: finishing its turn first', 'Agent 1002: no machine in service has room for it'],
+    waitingLines(nodeAt({ waiting: [{ cid: 1001, reason: 'finishing its turn first' }, { cid: 1002, reason: 'no machine in service has room for it' }] }), (cid) => (cid === 1001 ? 'Builder #1001' : undefined)),
+    ['Builder #1001: finishing its turn first', 'Agent #1002: no machine in service has room for it'],
     'nodes: each waiting agent by name, else by CID, with its reason',
   );
   eq(
@@ -2113,6 +2031,7 @@ import './new-project-tests';
 import './environments-tests';
 import './maintenance-tests';
 import './chat-tools-tests';
+import './cache-tests';
 
 // The web console's code highlighter (src/view/highlight.ts) against the golden vectors the Rust twin also checks.
 import { spans as highlightSpans } from '../src/view/highlight';

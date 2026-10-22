@@ -76,7 +76,7 @@
 //!   treasury view's `spent` is the sum of those credits.
 //! * **No subcontracts, payments, clawbacks, fines, fees or budget moves.**
 //!   Their kinds, accounts and posting rules are all present and enforced, but
-//!   nothing posts them at v0 — they belong to the Agora and sanction slices.
+//!   nothing posts them at v0 — they belong to the sanction and budget slices.
 //! * **No credit line above zero.** `agent_earnings` may go negative down to
 //!   `-credit_limit`, and the rule is enforced, but v0 has no reputation slice
 //!   to set a limit, so every lazily opened account keeps the schema's default
@@ -214,7 +214,7 @@ impl AccountKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
-    /// Owner or council funds a task budget.
+    /// The owner funds a task budget.
     Mint,
     /// Metered real cost: escrow -> external_spend.
     Spend,
@@ -230,7 +230,7 @@ pub enum EntryKind {
     Fine,
     /// Appeal filing fee (earnings -> treasury), refunded on success.
     Fee,
-    /// Owner or council moves budget between towns (0137).
+    /// The owner moves budget between towns (0137).
     BudgetMove,
     /// Agent-to-agent move of earnings: no task money, so it names no chain.
     Transfer,
@@ -1793,7 +1793,7 @@ impl Treasury {
     /// the sum of every `mint` entry's credited total, derived from the
     /// journal's postings and never stored.
     ///
-    /// This is the minted budget total the council's `budget_move` gate (0067,
+    /// This is the minted budget total the owner's `budget_move` gate (0067,
     /// over 10%) is measured against — the honest stand-in for a town's monthly
     /// budget in a port with one budget pool. It is **read afresh** by every
     /// caller: nothing caches it, so it follows the journal as tasks are

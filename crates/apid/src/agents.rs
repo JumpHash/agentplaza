@@ -4,7 +4,7 @@
 //! `// contract` — keep them.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -38,7 +38,6 @@ pub enum Status {
 #[derive(Debug, Clone, Serialize)]
 pub struct Agent {
     pub cid: u64,
-    pub name: String,
     pub role: String,
     /// The operator's per-agent model, if any (else role/tier default).
     pub model_override: Option<String>,
@@ -48,8 +47,6 @@ pub struct Agent {
     pub run: Option<String>,
     pub vm: Option<u32>,
     pub usage: Usage,
-    /// The robot species the hub dealt this agent (or the owner set); see `looks`.
-    pub species: String,
     /// "llm" for a VM agent, "model" for a promoted model (see foundry/registry.rs).
     pub kind: String,
     /// The features its harness advertised in its hello (`acp`, see `apz_proto::wire::CAP_ACP`).
@@ -57,9 +54,16 @@ pub struct Agent {
     pub caps: Vec<String>,
 }
 
+impl Agent {
+    /// The agent's label in logs and notices: its role and CID (agents have no names).
+    pub fn label(&self) -> String {
+        format!("{} #{}", self.role, self.cid)
+    }
+}
+
 /// The roster: the agents by CID, in memory, with an index of the CIDs by status, so a timer can ask for
-/// the idle ones without cloning the whole roster. With a database, every change to a durable field (name,
-/// role, model, species) is written through to the `agents` row, and a remove is a soft delete there
+/// the idle ones without cloning the whole roster. With a database, every change to a durable field (role,
+/// model) is written through to the `agents` row, and a remove is a soft delete there
 /// (db/roster.rs). Writes happen after the roster lock is released.
 #[derive(Default)]
 pub struct Roster {
@@ -268,154 +272,20 @@ impl Roster {
 }
 
 /// The fields the `agents` row holds; a change to one of them is written through.
-fn durable(agent: &Agent) -> (String, String, Option<String>, String) {
-    (
-        agent.name.clone(),
-        agent.role.clone(),
-        agent.model_override.clone(),
-        agent.species.clone(),
-    )
+fn durable(agent: &Agent) -> (String, Option<String>) {
+    (agent.role.clone(), agent.model_override.clone())
 }
 
 /// Loads the active rows of the `agents` table onto the roster before reconcile runs; without a
-/// database nothing loads. A row with no name takes its name from names.json, the fallback until
-/// that file is retired.
+/// database nothing loads.
 pub fn load_roster(app: &App) {
     let agents = app
         .db
         .active_agents()
         .into_iter()
-        .map(|row| {
-            let cid = row.cid;
-            let mut agent = row.into_agent();
-            if agent.name.is_empty() {
-                agent.name = app.names.get(cid).unwrap_or_default();
-            }
-            agent
-        })
+        .map(|row| row.into_agent())
         .collect();
     app.agents.restore(agents);
-}
-
-/// Agent names by CID, kept at `<state-dir>/names.json` and written atomically.
-pub struct Names {
-    path: PathBuf,
-    names: Mutex<BTreeMap<u64, String>>,
-    /// CIDs already asked to choose a name in this run.
-    asked: Mutex<BTreeSet<u64>>,
-}
-
-impl Names {
-    /// Loads the store; a missing or unreadable file starts empty.
-    pub fn load(path: PathBuf) -> Self {
-        let names: BTreeMap<u64, String> = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            names: Mutex::new(names),
-            asked: Mutex::new(BTreeSet::new()),
-        }
-    }
-
-    pub fn get(&self, cid: u64) -> Option<String> {
-        self.guard().get(&cid).cloned()
-    }
-
-    /// Whether another agent already uses `name` (case-insensitive).
-    pub fn used_by_other(&self, cid: u64, name: &str) -> bool {
-        let wanted = name.to_lowercase();
-        self.guard()
-            .iter()
-            .any(|(other, used)| *other != cid && used.to_lowercase() == wanted)
-    }
-
-    /// Stores `name` for `cid` and writes the file; on failure nothing changes.
-    pub fn set(&self, cid: u64, name: &str) -> std::io::Result<()> {
-        let mut names = self.guard();
-        let mut next = names.clone();
-        next.insert(cid, name.to_owned());
-        self.save(&next)?;
-        *names = next;
-        Ok(())
-    }
-
-    /// True the first time it is called for `cid` in this run.
-    pub fn first_ask(&self, cid: u64) -> bool {
-        self.asked
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(cid)
-    }
-
-    /// Forgets `cid`'s chosen name and lets it choose again; writes the file, and on
-    /// failure nothing changes.
-    pub fn forget(&self, cid: u64) -> std::io::Result<()> {
-        self.asked
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&cid);
-        let mut names = self.guard();
-        if !names.contains_key(&cid) {
-            return Ok(());
-        }
-        let mut next = names.clone();
-        next.remove(&cid);
-        self.save(&next)?;
-        *names = next;
-        Ok(())
-    }
-
-    fn guard(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, String>> {
-        self.names.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-/// Checks a proposed name for agent `cid` and returns it trimmed: 2 to 16
-/// characters, letters only, at most one inner space or hyphen, not a role
-/// name, and not another agent's name.
-pub fn check_name(app: &App, cid: u64, raw: &str) -> Result<String, String> {
-    let name = raw.trim().to_owned();
-    let len = name.chars().count();
-    if !(2..=16).contains(&len) {
-        return Err(format!("name must be 2 to 16 characters; it is {len}"));
-    }
-    let separators = name.chars().filter(|c| *c == ' ' || *c == '-').count();
-    let edged = name.starts_with([' ', '-']) || name.ends_with([' ', '-']);
-    let letters = name
-        .chars()
-        .all(|c| c.is_alphabetic() || c == ' ' || c == '-');
-    if separators > 1 || edged || !letters {
-        return Err("name must be letters only, with at most one inner space or hyphen".into());
-    }
-    if Role::parse(&name.to_lowercase().replace(' ', "-")).is_some() {
-        return Err(format!("{name} is a role name; choose a personal name"));
-    }
-    if app.names.used_by_other(cid, &name) {
-        return Err(format!("the name {name} is already used by another agent"));
-    }
-    Ok(name)
-}
-
-/// Stores a checked name: the file first, then the roster.
-fn store_name(app: &App, cid: u64, name: &str) -> Result<(), String> {
-    app.names
-        .set(cid, name)
-        .map_err(|e| format!("name not saved: {e}"))?;
-    app.agents.update(cid, |agent| agent.name = name.to_owned());
-    Ok(())
-}
-
-/// Renames agent `cid` (checked), pushes its profile to the guest and publishes it.
-pub fn rename(app: &App, cid: u64, raw: &str) -> Result<Agent, String> {
-    let name = check_name(app, cid, raw)?;
-    store_name(app, cid, &name)?;
-    let agent = app.agents.get(cid).ok_or("no such agent")?;
-    let push = json!({"message": HostMessage::Profile { profile: profile(app, &agent) }});
-    let _ = crate::fleet::send(app, cid, &push);
-    app.bus.publish("agent", &agent);
-    Ok(agent)
 }
 
 /// Pushes every connected agent its current profile (tools, model), e.g. after the
@@ -533,7 +403,7 @@ pub fn resolved_model(app: &App, agent: &Agent) -> (String, &'static str) {
     )
 }
 
-/// The agent's profile: name, role, model, system prompt, tools, limits.
+/// The agent's profile: its label (role and CID), role, model, system prompt, tools, limits.
 pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
     // contract
     let role_prompt = crate::roles_custom::prompt_for(app, &agent.role);
@@ -547,7 +417,7 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
         .and_then(|pid| app.prompts.bound_body(&format!("project:{pid}")))
         .map(|rules| render_vars(&rules, agent));
     AgentProfile {
-        name: agent.name.clone(),
+        name: format!("{} #{}", agent.role, agent.cid),
         role: agent.role.clone(),
         model: model_of(app, agent),
         system: with_project(
@@ -600,14 +470,8 @@ fn render_vars(text: &str, agent: &Agent) -> String {
         _ => "worker",
     };
     let vars = std::collections::BTreeMap::from([
-        (
-            "name",
-            if agent.name.is_empty() {
-                role_label(&agent.role).to_string()
-            } else {
-                agent.name.clone()
-            },
-        ),
+        // Agents have no name: the role and CID stand in for `{{name}}`.
+        ("name", format!("{} #{}", agent.role, agent.cid)),
         ("role", role_label(&agent.role).to_string()),
         ("cid", agent.cid.to_string()),
         ("tier", tier.to_string()),
@@ -660,17 +524,10 @@ fn with_project(system: String, section: Option<String>) -> String {
 fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
     let orchestrator = tier_of(&agent.role) == Tier::Orchestrator;
     let label = role_label(&agent.role);
-    let who = if agent.name.is_empty() {
-        format!(
-            "You have no name yet. You are the {label} agent of an AgentPlaza (CID {}).",
-            agent.cid
-        )
-    } else {
-        format!(
-            "You are {}, the {label} agent of an AgentPlaza (CID {}).",
-            agent.name, agent.cid
-        )
-    };
+    let who = format!(
+        "You are the {label} agent of an AgentPlaza (CID {}).",
+        agent.cid
+    );
     let mut text = format!(
         "{who}\n\n\
          You work in your own virtual machine, and inside it you may do anything: you are root, and you can \
@@ -716,7 +573,11 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              findings; hand the planner the proposal — for code an OpenSpec change (proposal, design, spec deltas, \
              tasks) written into the project's repo in Weft (the planner's task lane, which lands with the task; \
              weft_log and weft_show read what landed), for anything else proposal, design and tasks documents; get critiques from agents other \
-             than the author; the mayor approves. Only then post the tasks document's whole list at once with \
+             than the author. You approve the plan yourself with plaza_project_approve once it covers what a \
+             professional result includes and its tasks have acceptance a reviewer can check: you do not wait for \
+             every reviewer to agree, open revise items are recorded with your approval and carried into the tasks' \
+             acceptance, and after two rounds of revision you decide, approve or send it back once with one \
+             consolidated list. The owner can approve too. Only then post the tasks document's whole list at once with \
              plaza_tasks_post: each task's key, goal and acceptance, and `after`, the keys of the tasks it runs \
              after. The plaza hands each task to a worker as soon as everything it runs after is done, so do not \
              assign those yourself. When a task fails or is withdrawn, the tasks after it wait, blocked, and you are \
@@ -728,11 +589,7 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
     }
     if agent.role == "mayor" || agent.role == "mayor-office" {
         text.push_str(
-            "\n\nYou decide projects' plans (plaza_project_approve). Approve as soon as the plan is good enough to start: \
-             it covers what a professional result includes and its tasks have acceptance a reviewer can check. You do \
-             not wait for every reviewer to agree — open revise items are recorded with your approval and carried into \
-             the tasks' acceptance. After two rounds of revision you must decide: approve, or send it back once with \
-             one consolidated list. Never file status records instead of deciding. With the orchestrator you keep the \
+            "\n\nYou keep the \
              agents' harnesses healthy: plaza_agent_control (compress, steer, more turns, limits) and plaza_loop.",
         );
     }
@@ -753,7 +610,7 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
         "\n\nHow to write: people read what you write — the operator and other agents. Write plain, complete \
          sentences, the way a capable colleague explains something: lead with what matters, then the detail. Use \
          markdown for structure (short headings, lists, tables, code blocks) — the console renders it. Do not write \
-         in private shorthand: no strings of ids, seat numbers, hashes or byte counts in place of meaning; name \
+         in private shorthand: no strings of ids, hashes or byte counts in place of meaning; name \
          people, files and tasks so a reader can follow (\"Marlow's render script\", not \"202 f14ff615e383d \
          13431 B\"), and give an id or hash only where someone needs it to act. Do not repeat what was already \
          said, re-verify what is settled, or file status notes that change nothing; if there is nothing new, say \
@@ -761,17 +618,14 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
     );
     text.push_str(
         "\n\nHow money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
-         it is posted (plaza_post_task or plaza_hire) — no wallet is debited and no transfer cap applies. The \
+         it is posted (plaza_post_task) — no wallet is debited and no transfer cap applies. The \
          worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
          work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
          at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
-         nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. A plaza_hire \
-         bonus comes from the hirer's own wallet and is paid only if the work passes. Your wallet is only debited by \
-         what you send yourself (plaza_pay, hire bonuses), up to 1000 credits a day. plaza_money shows your wallet \
+         nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. Your wallet \
+         is only debited by what you send yourself (plaza_pay), up to 1000 credits a day. plaza_money shows your wallet \
          and any task's escrow, spend and payouts.",
     );
-    text.push_str("\n\n");
-    text.push_str(crate::society::PROMPT);
     let role_prompt = role_prompt.trim();
     if !role_prompt.is_empty() {
         text.push_str("\n\n");
@@ -811,11 +665,8 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Optio
             ),
         }
     }
-    // The first hello of an agent deals its species (its look is kept after that).
-    let species = app.looks.ensure(cid, &role, now, || app.agents.list());
     let agent = Agent {
         cid,
-        name: app.names.get(cid).unwrap_or_default(),
         role,
         model_override: previous
             .as_ref()
@@ -830,7 +681,6 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Optio
             .as_ref()
             .map(|old| old.usage.clone())
             .unwrap_or_default(),
-        species,
         kind: "llm".into(),
         caps: caps.to_vec(),
     };
@@ -887,7 +737,6 @@ pub fn spawn_reconcile(app: Arc<App>) {
 struct Placed {
     cid: u64,
     role: String,
-    species: String,
     run: Option<String>,
     vm: Option<u32>,
 }
@@ -957,7 +806,6 @@ fn reconcile_once(app: &App) {
         placements.contains_key(&agent.cid).then(|| Placed {
             cid: agent.cid,
             role: agent.role.clone(),
-            species: agent.species.clone(),
             run: agent.run.clone(),
             vm: agent.vm,
         })
@@ -972,24 +820,12 @@ fn reconcile_once(app: &App) {
             .spawned
             .role_of(agent.cid)
             .unwrap_or_else(|| agent.role.clone());
-        // The orchestrator is always the rover, also when its role arrived after its look was dealt.
-        let species = if role != agent.role
-            && role == crate::settings::ORCHESTRATOR_ROLE
-            && agent.species != crate::looks::ROVER
-        {
-            app.looks
-                .set(agent.cid, crate::looks::ROVER, apz_plaza::now_ms());
-            crate::looks::ROVER.to_owned()
-        } else {
-            agent.species.clone()
-        };
         if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) || role != agent.role
         {
             let updated = app.agents.update(agent.cid, |slot| {
                 slot.run = Some(run);
                 slot.vm = Some(vm);
                 slot.role = role;
-                slot.species = species;
             });
             if updated && let Some(fresh) = app.agents.get(agent.cid) {
                 app.bus.publish("agent", &fresh);
@@ -1014,7 +850,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .route("PATCH", "/v1/agents/{cid}", |app, req, p| {
             patch(app, req, p)
         })
-        .doc(RouteDoc::new("Rename an agent or change its model").errors(&[400, 404, 500]))
+        .doc(RouteDoc::new("Change an agent's model").errors(&[400, 404]))
         .delete("/v1/agents/{cid}", |app, _req, p| delete(app, p))
         .doc(RouteDoc::new("Delete an agent and its run").errors(&[404]))
         .post("/v1/agents/{cid}/chat", chat)
@@ -1173,8 +1009,7 @@ fn list(app: &App, req: &Request) -> Response {
 }
 
 /// Spawns `count` runs of `role` via noded. `model` is validated against the
-/// tier policy and applied at each spawned agent's first `hello`; an unknown
-/// `name` field is ignored: set it with `PATCH` once connected.
+/// tier policy and applied at each spawned agent's first `hello`.
 fn spawn(app: &App, req: &Request) -> Response {
     let b: SpawnBody = match body(req) {
         Ok(b) => b,
@@ -1298,7 +1133,7 @@ pub fn spawn_agents(
     }
 }
 
-/// `PATCH`: sets or clears the model (`null`), renames, pushes the new profile
+/// `PATCH`: sets or clears the model (`null`), pushes the new profile
 /// to the agent through the hub, and publishes the change.
 fn patch(app: &App, req: &Request, params: &Params<'_>) -> Response {
     let agent = match agent_at(app, params) {
@@ -1320,32 +1155,16 @@ fn patch(app: &App, req: &Request, params: &Params<'_>) -> Response {
         }
         Some(_) => return Response::error(400, "model must be a string or null"),
     };
-    let name = match b.get("name") {
-        None => None,
-        Some(Value::String(n)) => match check_name(app, agent.cid, n) {
-            Ok(valid) => Some(valid),
-            Err(e) => return Response::error(400, &e),
-        },
-        Some(_) => return Response::error(400, "name must be a string"),
-    };
     if let Some(m) = &model
         && let Err(e) = app.spawned.set_model(agent.cid, m.as_deref())
     {
         eprintln!("apid: model override not saved: {e}");
-    }
-    if let Some(n) = &name {
-        let _ = app.spawned.set_name(agent.cid, n);
     }
     app.agents.update(agent.cid, |a| {
         if let Some(m) = model {
             a.model_override = m;
         }
     });
-    if let Some(n) = &name
-        && let Err(e) = store_name(app, agent.cid, n)
-    {
-        return Response::error(500, &e);
-    }
     let Some(updated) = app.agents.get(agent.cid) else {
         return Response::error(404, "no such agent");
     };
@@ -1575,56 +1394,9 @@ fn transcript(app: &App, req: &Request, params: &Params<'_>) -> Response {
     )
 }
 
-impl Names {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&*self.guard()).unwrap_or_default()
-    }
-
-    /// Replaces the state with a [`Names::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let names: BTreeMap<u64, String> =
-            serde_json::from_str(json).map_err(|e| format!("bad names snapshot: {e}"))?;
-        let mut current = self.guard();
-        self.save(&names).map_err(|e| format!("write names: {e}"))?;
-        *current = names;
-        Ok(())
-    }
-
-    /// Writes the map to `names.json` atomically (tmp file, then rename).
-    fn save(&self, names: &BTreeMap<u64, String>) -> std::io::Result<()> {
-        let text = serde_json::to_string_pretty(names).map_err(std::io::Error::other)?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &self.path)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn names_snapshot_round_trips() {
-        let dir = std::env::temp_dir().join(format!("apid-names-snapshot-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let (a, b) = (dir.join("a"), dir.join("b"));
-        std::fs::create_dir_all(&a).unwrap();
-        std::fs::create_dir_all(&b).unwrap();
-        let names = Names::load(a.join("names.json"));
-        names.set(3, "Ada").unwrap();
-
-        let other = Names::load(b.join("names.json"));
-        other.restore(&names.snapshot()).unwrap();
-        assert_eq!(other.get(3).as_deref(), Some("Ada"));
-        assert_eq!(
-            Names::load(b.join("names.json")).get(3).as_deref(),
-            Some("Ada")
-        );
-        assert!(other.restore("not json").is_err());
-        assert_eq!(other.get(3).as_deref(), Some("Ada"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     #[test]
     fn model_source_prefers_agent_then_role_then_default() {
@@ -1673,7 +1445,6 @@ mod route_tests {
     fn agent(role: &str) -> Agent {
         Agent {
             cid: 42,
-            name: format!("{role}-42"),
             role: role.to_owned(),
             model_override: None,
             status: Status::Idle,
@@ -1682,7 +1453,6 @@ mod route_tests {
             run: None,
             vm: None,
             usage: Usage::default(),
-            species: String::new(),
             kind: "llm".into(),
             caps: Vec::new(),
         }
@@ -1764,14 +1534,8 @@ mod route_tests {
         assert!(orchestrator.contains("You plan and delegate"));
         assert!(orchestrator.contains("plaza_assign"));
         assert!(!worker.contains("delegate"));
-        assert!(worker.contains("You are builder-42, the Builder agent"));
+        assert!(worker.contains("You are the Builder agent of an AgentPlaza (CID 42)"));
         assert!(worker.ends_with("Write the code."));
-        let unnamed = Agent {
-            name: String::new(),
-            ..agent("qa")
-        };
-        let text = system_prompt(&unnamed, "");
-        assert!(text.contains("You have no name yet. You are the QA agent"));
     }
 }
 
@@ -1782,7 +1546,6 @@ mod roster_index_tests {
     fn agent(cid: u64, status: Status) -> Agent {
         Agent {
             cid,
-            name: format!("a{cid}"),
             role: "builder".into(),
             model_override: None,
             status,
@@ -1791,7 +1554,6 @@ mod roster_index_tests {
             run: None,
             vm: None,
             usage: Usage::default(),
-            species: String::new(),
             kind: "llm".into(),
             caps: Vec::new(),
         }
@@ -1851,7 +1613,7 @@ mod roster_index_tests {
                 }
                 3 => roster.restore(vec![agent(cid, status)]),
                 4 => {
-                    roster.update(cid, |a| a.name = format!("n{step}"));
+                    roster.update(cid, |a| a.model_override = Some(format!("m{step}")));
                 }
                 _ => {
                     roster.update_quietly(cid, |a| a.status = status);
@@ -1877,10 +1639,7 @@ mod roster_index_tests {
             roster.select(|a| (a.status == Status::Idle).then_some(a.cid)),
             vec![1, 3]
         );
-        assert_eq!(
-            roster.select(|a| (a.cid > 1).then(|| a.name.clone())),
-            vec!["a2".to_string(), "a3".to_string()]
-        );
+        assert_eq!(roster.select(|a| (a.cid > 1).then_some(a.cid)), vec![2, 3]);
         roster.update(1, |a| a.status = Status::Asleep);
         roster.remove(3);
         assert_eq!(

@@ -107,6 +107,8 @@ export const EFFORT_LEVELS: [string, string][] = [
 
 const CHOICE_TTL_MS = 60_000;
 const choiceCache = new Map<Tier, { at: number; load: Promise<ModelChoice[]> }>();
+// A model listing refreshed in the background: the pickers read the models again, not the minute-old choices.
+on('models', () => choiceCache.clear());
 
 /**
  * The models a tier may run, as the chip's picker lists them (the policy first for a worker, every model after it;

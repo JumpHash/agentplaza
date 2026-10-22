@@ -1,5 +1,5 @@
-//! `agentplaza rules`: The plaza's laws: what each one allows or forbids, the infractions the
-//! laws stopped, the owner's own rule sets (JHRL sources), and the switches on the built-in laws.
+//! `agentplaza rules`: The plaza's laws: what each one allows or forbids, the owner's own rule sets
+//! (JHRL sources), and the switches on the built-in laws.
 
 use std::io::Read;
 
@@ -24,25 +24,8 @@ pub enum Cmd {
         /// The law id.
         id: String,
     },
-    /// The infractions: actions the laws stopped, newest first.
-    Infractions {
-        /// How many to fetch.
-        #[arg(long, default_value_t = 200)]
-        limit: u32,
-        /// Only the infractions of this law.
-        #[arg(long)]
-        law: Option<String>,
-    },
     /// The owner's rules: the rule sets the owner wrote, whether each is on, and what it declares.
     Owner,
-    /// The recorded refusals of one law, newest first.
-    Violations {
-        /// The law id.
-        law: String,
-        /// How many to fetch.
-        #[arg(long, default_value_t = 20)]
-        limit: u32,
-    },
     /// A new owner rule from a JHRL source file (`-` reads stdin). It applies only if it compiles.
     Create {
         /// The rule's title.
@@ -138,23 +121,6 @@ fn effects_of(laws: &Value, rule_id: &str) -> String {
     effects.sort_unstable();
     effects.dedup();
     list_of(&json!(effects))
-}
-
-/// Infractions (or one law's refusals) as a table.
-fn infraction_table(v: &Value) {
-    let rows: Vec<Vec<String>> = array(v)
-        .iter()
-        .map(|i| {
-            vec![
-                ctx::when(&i["at_ms"]),
-                ctx::s(i, "agent_name").to_string(),
-                ctx::s(i, "law").to_string(),
-                ctx::s(i, "tool").to_string(),
-                ctx::s(i, "detail").to_string(),
-            ]
-        })
-        .collect();
-    ctx::table(&["at (ms)", "agent", "law", "tool", "detail"], &rows);
 }
 
 /// A title or reason as typed, trimmed; blank is refused.
@@ -333,17 +299,6 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 ]);
             });
         }
-        Cmd::Infractions { limit, law } => {
-            // With a law, the hub filters before its limit, so the newest rows of that law come back.
-            let v = match law {
-                Some(law) => ctx.client.get(&format!(
-                    "/v1/laws/violations?law={}&limit={limit}",
-                    ctx::seg(&law)
-                ))?,
-                None => ctx.client.get(&format!("/v1/infractions?limit={limit}"))?,
-            };
-            ctx.out(&v, infraction_table);
-        }
         Cmd::Owner => {
             let rules = ctx.client.get("/v1/laws/rules")?;
             let laws = ctx.client.get("/v1/laws")?;
@@ -367,13 +322,6 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     .collect();
                 ctx::table(&["id", "enabled", "effect", "title"], &rows);
             });
-        }
-        Cmd::Violations { law, limit } => {
-            let v = ctx.client.get(&format!(
-                "/v1/laws/violations?law={}&limit={limit}",
-                ctx::seg(&law)
-            ))?;
-            ctx.out(&v, infraction_table);
         }
         Cmd::Create { title, file } => {
             let title = non_blank(&title, "the title")?;

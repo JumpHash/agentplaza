@@ -3,6 +3,7 @@
 // change applies to the agents spawned from now on. The pure helpers (the name rule, the role list parser) are exported
 // and unit-tested (test/tests.ts).
 
+import { agentLabel, agentName } from '../roles';
 import '../styles/proto/settings-d.css';
 import { api, volumesApi, type Agent, type DataVolume, type Settings } from '../api';
 import { card, field, input, toast } from '../ui/components';
@@ -52,7 +53,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const rolesError = h('div.e2b-err');
   const volumesSlot = h('div');
   const rolesSlot = h('div');
-  const agentName = (cid: number): string => names.get(cid) ?? `agent ${cid}`;
+  const labelOf = (cid: number): string => names.get(cid) ?? agentLabel(cid);
 
   // ---- Volumes --------------------------------------------------------------------------------------------------------
 
@@ -70,7 +71,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const loadAgents = async (): Promise<void> => {
     const ag: Agent[] = await api.agents().catch((): Agent[] => []);
     if (!alive) return;
-    names = new Map(ag.map((a): [number, string] => [a.cid, a.name]));
+    names = new Map(ag.map((a): [number, string] => [a.cid, agentName(a)]));
     drawVolumes();
   };
 
@@ -103,7 +104,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
   const volumeColumns = (): PCol<DataVolume>[] => [
     { label: 'Name', cell: (v) => h('b', null, v.name) },
     { label: 'Size', cls: 'num', cell: (v) => h('span', { style: 'white-space:nowrap' }, `${(v.size_bytes / MIB).toFixed(1)} MiB`) },
-    { label: 'Mounted by', cell: (v) => (v.in_use.length ? v.in_use.map(agentName).join(', ') : '—') },
+    { label: 'Mounted by', cell: (v) => (v.in_use.length ? v.in_use.map(labelOf).join(', ') : '—') },
     { label: 'Source', cell: (v) => h('span.ws-mono', null, v.source) },
     // A volume an agent mounts stays until that agent lets go of it.
     {

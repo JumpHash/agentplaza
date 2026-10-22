@@ -380,7 +380,7 @@ pub fn control(app: &App, cid: u64, control: Control) -> Result<u64, String> {
     Ok(item.id)
 }
 
-/// One harness action, shared by the tool (`by` is the calling agent's name) and the owner's
+/// One harness action, shared by the tool (`by` is the calling agent's label) and the owner's
 /// route (`by` is "owner"). `input` carries `action` and the action's fields.
 fn act(app: &App, cid: u64, input: &Value, by: &str) -> Result<String, String> {
     let agent = app
@@ -611,13 +611,9 @@ fn same_project(app: &App, agent: &Agent, cid: u64) -> Result<(), String> {
     }
 }
 
-/// The name a tool call acts under (the role when the agent has no name).
+/// The role a tool call acts under.
 fn caller(agent: &Agent) -> &str {
-    if agent.name.is_empty() {
-        &agent.role
-    } else {
-        &agent.name
-    }
+    &agent.role
 }
 
 fn cid_of(input: &Value) -> Result<u64, String> {

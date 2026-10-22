@@ -797,7 +797,7 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             if version.is_empty() {
                 return Err("name the version to deploy".into());
             }
-            let deploy = request(&arc, &project, env, version, agent.cid, &agent.name, why)?;
+            let deploy = request(&arc, &project, env, version, agent.cid, &agent.label(), why)?;
             Ok(match deploy.status.as_str() {
                 "waiting" => format!(
                     "{env} is protected: the deploy of {version} waits for the owner's approval"

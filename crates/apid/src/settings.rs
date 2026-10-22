@@ -94,10 +94,8 @@ pub struct Settings {
     /// Whether the hub checkpoints an agent's whole VM before an irreversible tool call runs (see
     /// `vm_snapshots.rs`). Off: only the owner's explicit checkpoints are taken.
     pub vm_auto_checkpoints: bool,
-    /// How much of the plaza's conversations and board is kept, and for how long.
+    /// How much of the plaza's board is kept, and for how long.
     pub retention: Retention,
-    /// What the plaza does to an agent that breaks a law (see `sanctions.rs`).
-    pub sanctions: Sanctions,
     /// How the plaza's laws are applied (see `laws.rs`).
     pub laws: LawsSettings,
     /// How payments and model calls are gated and charged (see `payments.rs`, `llm_proxy.rs`).
@@ -260,7 +258,6 @@ impl Default for Settings {
             memory_autoscale: true,
             vm_auto_checkpoints: true,
             retention: Retention::default(),
-            sanctions: Sanctions::default(),
             laws: LawsSettings::default(),
             payments: Payments::default(),
             foundry: FoundrySettings::default(),
@@ -279,35 +276,6 @@ impl Default for Settings {
             role_volumes: BTreeMap::new(),
             health_interval_s: DEFAULT_HEALTH_INTERVAL_S,
             favourite_models: Vec::new(),
-        }
-    }
-}
-
-/// The most credits fines may take from one agent in seven days, and the most one fine may take
-/// (sanctions.yaml, `caps.max_fine_per_week`).
-pub const FINES_PER_WEEK_MAX: u64 = 1000;
-
-/// Sanctions for law violations, by the schedule in sanctions.yaml.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Sanctions {
-    /// Whether violations are sanctioned at all. Off: nothing is applied and no suspension holds.
-    pub enabled: bool,
-    /// Whether the schedule's fines are taken from agents' earnings.
-    pub fines: bool,
-    /// Whether probation and lockout refuse the offending tool for their duration.
-    pub suspensions: bool,
-    /// The most one fine may take, in credits (`0..=FINES_PER_WEEK_MAX`).
-    pub max_fine: u64,
-}
-
-impl Default for Sanctions {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            fines: true,
-            suspensions: true,
-            max_fine: 300,
         }
     }
 }
@@ -351,19 +319,13 @@ pub const RETENTION_DAYS_MAX: u32 = 3650;
 
 // A retention count may never ask for more than the store holds.
 const _: () = assert!(RETENTION_MAX as usize <= social::MAX_POSTS);
-const _: () = assert!(RETENTION_MAX as usize <= social::MAX_CONVERSATIONS);
 
-/// What the plaza keeps of its conversations and board: a count of each (the
-/// oldest go first past it) and an age in days (`0` keeps them whatever their
-/// age). Logs are kept until these say otherwise; the store never refuses a new
-/// one for room.
+/// What the plaza keeps of its board: a count of posts (the oldest go first past
+/// it) and an age in days (`0` keeps them whatever their age). The board is kept
+/// until these say otherwise; the store never refuses a new post for room.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Retention {
-    /// The most exchanges the conversation record keeps (`RETENTION_MIN..=RETENTION_MAX`).
-    pub conversations_max: u32,
-    /// Exchanges older than this many days go; `0` keeps them whatever their age.
-    pub conversations_days: u32,
     /// The most posts the board keeps (`RETENTION_MIN..=RETENTION_MAX`).
     pub posts_max: u32,
     /// Posts older than this many days go; `0` keeps them whatever their age.
@@ -377,8 +339,6 @@ pub struct Retention {
 impl Default for Retention {
     fn default() -> Self {
         Self {
-            conversations_max: 4096,
-            conversations_days: 30,
             posts_max: 1024,
             posts_days: 0,
             usage_calls_max: 20_000,
@@ -393,8 +353,6 @@ impl Retention {
         const DAY_MS: u64 = 86_400_000;
         let age = |days: u32| (days > 0).then(|| u64::from(days) * DAY_MS);
         Prune {
-            conversations_max: usize::try_from(self.conversations_max).unwrap_or(usize::MAX),
-            conversations_older_than_ms: age(self.conversations_days),
             posts_max: usize::try_from(self.posts_max).unwrap_or(usize::MAX),
             posts_older_than_ms: age(self.posts_days),
         }
@@ -737,7 +695,6 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
     }
     let retention = &new.retention;
     for (name, max) in [
-        ("conversations_max", retention.conversations_max),
         ("posts_max", retention.posts_max),
         ("usage_calls_max", retention.usage_calls_max),
     ] {
@@ -748,7 +705,6 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
         }
     }
     for (name, days) in [
-        ("conversations_days", retention.conversations_days),
         ("posts_days", retention.posts_days),
         ("usage_days", retention.usage_days),
     ] {
@@ -757,12 +713,6 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
                 "retention.{name} must be 0..={RETENTION_DAYS_MAX} (0 keeps everything), got {days}"
             ));
         }
-    }
-    if new.sanctions.max_fine > FINES_PER_WEEK_MAX {
-        return Err(format!(
-            "sanctions.max_fine must be 0..={FINES_PER_WEEK_MAX}, got {}",
-            new.sanctions.max_fine
-        ));
     }
     Ok(())
 }
@@ -984,20 +934,6 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
     let count_ok = |v: u32| (RETENTION_MIN..=RETENTION_MAX).contains(&v);
     let days_ok = |v: u32| v <= RETENTION_DAYS_MAX;
     s.retention = Retention {
-        conversations_max: or_default(
-            &mut notes,
-            "retention.conversations_max",
-            r.conversations_max,
-            rd.conversations_max,
-            count_ok(r.conversations_max),
-        ),
-        conversations_days: or_default(
-            &mut notes,
-            "retention.conversations_days",
-            r.conversations_days,
-            rd.conversations_days,
-            days_ok(r.conversations_days),
-        ),
         posts_max: or_default(
             &mut notes,
             "retention.posts_max",
@@ -1027,13 +963,6 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
             days_ok(r.usage_days),
         ),
     };
-    s.sanctions.max_fine = or_default(
-        &mut notes,
-        "sanctions.max_fine",
-        s.sanctions.max_fine,
-        d.sanctions.max_fine,
-        s.sanctions.max_fine <= FINES_PER_WEEK_MAX,
-    );
 
     if let Err(e) = check_settings(&s, dev_models) {
         notes.push(format!(
@@ -1423,19 +1352,7 @@ mod tests {
         let store = Store::load(&dir, false).unwrap();
         for bad in [
             Retention {
-                conversations_max: RETENTION_MIN - 1,
-                ..Retention::default()
-            },
-            Retention {
-                conversations_max: RETENTION_MAX + 1,
-                ..Retention::default()
-            },
-            Retention {
                 posts_max: 0,
-                ..Retention::default()
-            },
-            Retention {
-                conversations_days: RETENTION_DAYS_MAX + 1,
                 ..Retention::default()
             },
             Retention {
@@ -1451,8 +1368,6 @@ mod tests {
         }
         let ok = Settings {
             retention: Retention {
-                conversations_max: RETENTION_MIN,
-                conversations_days: 0,
                 posts_max: RETENTION_MAX,
                 posts_days: RETENTION_DAYS_MAX,
                 usage_calls_max: RETENTION_MIN,
@@ -1467,12 +1382,9 @@ mod tests {
         old.as_object_mut().unwrap().remove("retention");
         let loaded: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(loaded.retention, Retention::default());
-        assert_eq!(loaded.retention.conversations_max, 4096);
 
-        // The default keeps a month of exchanges and every post until its count goes.
+        // The default keeps posts up to their count, whatever their age.
         let policy = Retention::default().policy();
-        assert_eq!(policy.conversations_max, 4096);
-        assert_eq!(policy.conversations_older_than_ms, Some(30 * 86_400_000));
         assert_eq!(policy.posts_max, 1024);
         assert_eq!(policy.posts_older_than_ms, None);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1558,7 +1470,7 @@ mod tests {
             );
             obj.insert(
                 "retention".into(),
-                json!({"conversations_max": 5, "posts_max": 1024, "usage_calls_max": 20000}),
+                json!({"posts_max": 1024, "usage_calls_max": 20000}),
             );
             obj.insert(
                 "sanctions".into(),
@@ -1607,11 +1519,6 @@ mod tests {
         assert_eq!(s.max_turns, 24);
         assert_eq!(s.effort, None);
         assert_eq!(s.fetch_block, vec!["ok.example".to_string()]);
-        assert_eq!(
-            s.retention.conversations_max,
-            Retention::default().conversations_max
-        );
-        assert_eq!(s.sanctions.max_fine, 300);
         assert!(
             check_settings(&s, false).is_ok(),
             "what loads passes the save checks"

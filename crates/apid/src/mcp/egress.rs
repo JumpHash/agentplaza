@@ -13,9 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
-use std::net::{
-    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
-};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -23,6 +21,9 @@ use std::time::{Duration, Instant};
 
 use super::relay::{self, RELAY_LAN_IP, RelayProcess};
 use super::stdio::{Docker, SystemDocker, ensure_network, read_line_capped};
+
+/// The address rules, shared with vsockd's proxy (crates/apz-egress-rules). `mcp/http.rs` reaches them here.
+pub use apz_egress_rules::refusal;
 
 /// The proxy's default port on the host (apid's range).
 pub const DEFAULT_PORT: u16 = 19128;
@@ -34,8 +35,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE: Duration = Duration::from_secs(300);
 /// The first line the relay sends: the token of its current start.
 const TOKEN_PREFIX: &str = "APZ-RELAY-TOKEN ";
-/// The metadata service address (refused unless the server allows private hosts).
-const METADATA_V4: Ipv4Addr = Ipv4Addr::new(169, 254, 169, 254);
 /// The first addresses of `apz-mcp` are not leased: the relay has the second.
 const FIRST_LEASE: u8 = 3;
 
@@ -677,57 +676,6 @@ pub fn decide(
         ));
     }
     Ok(SocketAddr::new(addresses[0], port))
-}
-
-/// Why an address is refused. Same classes as `vsockd`'s egress (`addr_refusal` in
-/// crates/vsockd/src/egress.rs); a binary crate cannot be imported, so the table is mirrored here.
-pub fn refusal(ip: IpAddr) -> Option<&'static str> {
-    match ip {
-        IpAddr::V4(v4) => v4_refusal(v4),
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => v4_refusal(v4),
-            None => v6_refusal(v6),
-        },
-    }
-}
-
-fn v4_refusal(ip: Ipv4Addr) -> Option<&'static str> {
-    if ip == METADATA_V4 {
-        Some("metadata")
-    } else if ip.is_unspecified() {
-        Some("unspecified")
-    } else if ip.is_loopback() {
-        Some("loopback")
-    } else if ip.is_private() {
-        Some("private")
-    } else if ip.is_link_local() {
-        Some("link-local")
-    } else if ip.is_broadcast() {
-        Some("broadcast")
-    } else if ip.is_multicast() {
-        Some("multicast")
-    } else {
-        None
-    }
-}
-
-fn v6_refusal(ip: Ipv6Addr) -> Option<&'static str> {
-    let first = ip.segments()[0];
-    if ip.segments() == [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254] {
-        Some("metadata")
-    } else if ip.is_unspecified() {
-        Some("unspecified")
-    } else if ip.is_loopback() {
-        Some("loopback")
-    } else if ip.is_multicast() {
-        Some("multicast")
-    } else if first & 0xffc0 == 0xfe80 {
-        Some("link-local")
-    } else if first & 0xfe00 == 0xfc00 {
-        Some("unique-local")
-    } else {
-        None
-    }
 }
 
 /// `host[:port]` or `[v6][:port]`, with a default port when none is written.

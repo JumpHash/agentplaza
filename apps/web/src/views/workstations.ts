@@ -5,6 +5,7 @@
 // settings (the takeover policy, recording and rate) and its audit. `#/workstations/<id>/recordings/<rid>` plays
 // one recording. Refreshes on the station, lease and sync frames, and every few seconds.
 
+import { agentLabel, agentName } from '../roles';
 import '../styles/proto/settings-d.css';
 import { api, ApiError, type Agent, type StationAuditRow, type StationCode, type StationLease, type StationView, type Takeover } from '../api';
 import { href } from '../router';
@@ -345,7 +346,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   const liveBody = h('div', null, empty('machine', 'Loading…'));
   // The live view starts with the first load: it needs the workstation's sessions.
   let live: LiveHandle | null = null;
-  const nameOf = (cid: number): string => names.get(cid) ?? `agent ${cid}`;
+  const nameOf = (cid: number): string => names.get(cid) ?? agentLabel(cid);
   const sync: Section = syncCard(id);
   const recordings: Section = recordingsCard(id, nameOf);
 
@@ -517,7 +518,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   };
 
   const confirmRelease = (lease: StationLease): void => {
-    const who = names.get(lease.agent) ?? `agent ${lease.agent}`;
+    const who = names.get(lease.agent) ?? agentLabel(lease.agent);
     openDialog(
       'Release this lease?',
       h('p', null, `${who} gives the machine back: its session here ends, or its place in the queue is given up.`),
@@ -668,7 +669,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     }
     const [ag, au] = await Promise.all([api.agents().catch((): Agent[] => []), api.stationAudit(id, 50).catch((): null => null)]);
     if (!alive) return;
-    names = new Map((ag ?? []).map((a): [number, string] => [a.cid, a.name]));
+    names = new Map((ag ?? []).map((a): [number, string] => [a.cid, agentName(a)]));
     audit = au;
     void sync.refresh();
     void recordings.refresh();

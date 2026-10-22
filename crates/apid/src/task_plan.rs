@@ -559,7 +559,6 @@ mod tests {
         let orchestrator = actor(1, "orchestrator");
         let planner = actor(2, "planner");
         let critic = actor(3, "reviewer");
-        let mayor = actor(4, "mayor");
 
         // Planned: the brief, the research, then the proposal and its tasks list.
         let project = projects
@@ -606,7 +605,9 @@ mod tests {
             .expect("critiqued");
         projects.advance(pid, &planner, "").expect("to approval");
         // Approved.
-        projects.approve(pid, &mayor, "go").expect("approved");
+        projects
+            .approve(pid, &orchestrator, "go")
+            .expect("approved");
 
         // Posted: all four at once, each running after what its line names.
         let posted = post(&projects, &ledger, pid, &list, None).expect("posted");
