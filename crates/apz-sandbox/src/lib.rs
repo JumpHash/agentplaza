@@ -63,8 +63,9 @@ pub struct Spec {
 pub enum Network {
     /// No network access.
     None,
-    /// TCP to localhost on this port only: the hub's egress proxy. Each backend's exact
-    /// reach is described in [`support`]'s `detail`. Windows refuses this variant.
+    /// TCP to localhost on this port only: the hub's egress proxy, or a loose trainer job's hub. Each backend's exact
+    /// reach is described in [`support`]'s `detail`. Windows refuses this variant, and Linux refuses it below Landlock
+    /// ABI 4 (Linux 6.7), where the kernel cannot filter TCP ports.
     LoopbackPort(u16),
 }
 
