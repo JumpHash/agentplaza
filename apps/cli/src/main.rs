@@ -115,8 +115,8 @@ enum Command {
     /// status, leave.
     #[command(subcommand)]
     Workstation(cmd::workstation::Cmd),
-    /// What a local plaza needs on this machine (Docker, Postgres, Garage, the ports): check it,
-    /// and fix the missing parts after you confirm what the fix runs.
+    /// What a local plaza needs on this machine: its services beside the app, its ports, a hypervisor for the
+    /// agents. No Docker or database is needed; a requirement that is not met says what to do.
     Setup(cmd::setup::Args),
     /// STOP ALL and resume: the plaza's master switch.
     #[command(subcommand)]

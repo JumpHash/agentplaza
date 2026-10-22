@@ -154,6 +154,9 @@ fn boot() -> (Console, Task<Msg>) {
         } else if name.eq_ignore_ascii_case("Floor") {
             // The Floor is the Machines screen's grid, which is its default view.
             console.shell.current = screens::Id::Machines;
+        } else if name.eq_ignore_ascii_case("HardwareLab") {
+            // The hardware lab is under Lab in the sidebar; this opens it by name (a capture hook).
+            console.shell.current = screens::Id::HardwareLab;
         } else if name.eq_ignore_ascii_case("LabJobs") {
             // A Lab section has no nav entry; this opens the Jobs tab for the snapshot harness.
             console.shell.current = screens::Id::LabJobs;

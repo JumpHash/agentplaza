@@ -12,6 +12,7 @@ pub mod board;
 pub mod e2b;
 pub mod egress;
 pub mod floor;
+pub mod hardware_lab;
 pub mod history;
 mod history_map;
 mod history_ops;
@@ -134,6 +135,8 @@ pub enum Id {
     Agent(u64),
     /// The Lab: its overview (the section strip's first tab).
     Lab,
+    /// The hardware lab: the machine model kit on the engine's stage (`APZ_SCREEN=HardwareLab` opens it).
+    HardwareLab,
     LabJobs,
     /// One job's page, by its id.
     LabJobDetail(String),
@@ -165,6 +168,7 @@ pub const NAV: &[(Id, &str, &str, &str)] = &[
     (Id::Treasury, "Treasury", "Social", "treasury"),
     (Id::Rules, "Rules", "Social", "rules"),
     (Id::Lab, "Lab", "Lab", "brain"),
+    (Id::HardwareLab, "Hardware lab", "Lab", "machine"),
     (Id::Models, "Models", "Setup", "models"),
     (Id::Tools, "Tools", "Setup", "wrench"),
     (Id::Mcp, "MCP", "Setup", "terminal"),
@@ -215,6 +219,7 @@ pub struct Screens {
     pub lab_jobs: lab_jobs::State,
     pub lab_job_detail: lab_job_detail::State,
     pub lab_recipes: lab_recipes::State,
+    pub hardware_lab: hardware_lab::State,
     pub lab_datasets: lab_datasets::State,
     pub lab_models: lab_models::State,
     pub lab_model_detail: lab_model_detail::State,
@@ -259,6 +264,7 @@ pub enum Msg {
     LabJobDetail(lab_job_detail::Msg),
     LabRecipes(lab_recipes::Msg),
     LabDatasets(lab_datasets::Msg),
+    HardwareLab(hardware_lab::Msg),
     LabModels(lab_models::Msg),
     LabModelDetail(lab_model_detail::Msg),
     LabBreeders(lab_breeders::Msg),
@@ -303,6 +309,7 @@ pub fn navigation(msg: &Msg) -> Option<Id> {
         Msg::LabJobDetail(m) => lab_job_detail::go(m),
         Msg::LabRecipes(m) => lab_recipes::go(m),
         Msg::LabDatasets(m) => lab_datasets::go(m),
+        Msg::HardwareLab(m) => hardware_lab::go(m),
         Msg::LabModels(m) => lab_models::go(m),
         Msg::LabModelDetail(m) => lab_model_detail::go(m),
         Msg::LabBreeders(m) => lab_breeders::go(m),
@@ -448,6 +455,7 @@ pub fn refresh(screens: &mut Screens, id: &Id, ctx: &Ctx) -> Task<Msg> {
         }
         Id::LabRecipes => lab_recipes::load(&mut screens.lab_recipes, ctx).map(Msg::LabRecipes),
         Id::LabDatasets => lab_datasets::load(&mut screens.lab_datasets, ctx).map(Msg::LabDatasets),
+        Id::HardwareLab => hardware_lab::load(&mut screens.hardware_lab, ctx).map(Msg::HardwareLab),
         Id::LabModels => lab_models::load(&mut screens.lab_models, ctx).map(Msg::LabModels),
         Id::LabModelDetail(_) => {
             lab_model_detail::load(&mut screens.lab_model_detail, ctx).map(Msg::LabModelDetail)
@@ -506,6 +514,9 @@ pub fn update(screens: &mut Screens, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::LabDatasets(m) => {
             lab_datasets::update(&mut screens.lab_datasets, m, ctx).map(Msg::LabDatasets)
         }
+        Msg::HardwareLab(m) => {
+            hardware_lab::update(&mut screens.hardware_lab, m, ctx).map(Msg::HardwareLab)
+        }
         Msg::LabModels(m) => {
             lab_models::update(&mut screens.lab_models, m, ctx).map(Msg::LabModels)
         }
@@ -557,6 +568,7 @@ pub fn subscription(screens: &Screens, id: &Id, ctx: &Ctx) -> iced::Subscription
         Id::Approvals => approvals::subscription(ctx).map(Msg::Approvals),
         Id::Board => board::subscription(ctx).map(Msg::Board),
         Id::LabDatasets => lab_datasets::subscription(ctx).map(Msg::LabDatasets),
+        Id::HardwareLab => hardware_lab::subscription(&screens.hardware_lab).map(Msg::HardwareLab),
         Id::LabRecipes => lab_recipes::subscription(ctx).map(Msg::LabRecipes),
         Id::Ide(_) => ide::subscription(&screens.ide, ctx).map(Msg::Ide),
         Id::LabJobDetail(_) => lab_common::live(&ctx.client)
@@ -613,6 +625,7 @@ pub fn view<'a>(
         }
         Id::LabRecipes => lab_recipes::view(&screens.lab_recipes, ctx).map(Msg::LabRecipes),
         Id::LabDatasets => lab_datasets::view(&screens.lab_datasets, ctx).map(Msg::LabDatasets),
+        Id::HardwareLab => hardware_lab::view(&screens.hardware_lab, ctx).map(Msg::HardwareLab),
         Id::LabModels => lab_models::view(&screens.lab_models, ctx).map(Msg::LabModels),
         Id::LabModelDetail(_) => {
             lab_model_detail::view(&screens.lab_model_detail, ctx).map(Msg::LabModelDetail)

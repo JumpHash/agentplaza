@@ -814,6 +814,7 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Tools
             | Id::Mcp
             | Id::Agent(_)
+            | Id::HardwareLab
     )
 }
 

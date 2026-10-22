@@ -1,7 +1,7 @@
-//! `agentplaza setup`: what a local plaza needs on this machine (Docker, its daemon, Postgres,
-//! Garage, the services, the ports), and fixing the missing ones. A fix runs only after
-//! the user confirms it, having seen what it will do. The checks and fixes are `apz-setup`'s; the
-//! TUI's Dependencies step uses the same crate.
+//! `agentplaza setup`: what a local plaza needs on this machine (its services beside the app, its ports,
+//! a hypervisor for the agents). No Docker or database is needed, and the setup installs nothing: a
+//! requirement that is not met says what to do. The checks are `apz-setup`'s; the TUI's Dependencies
+//! step uses the same crate.
 
 use std::io::{IsTerminal, Write};
 use std::time::Duration;
@@ -13,7 +13,7 @@ use crate::ctx::{self, Client};
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Fix one requirement: services, docker, docker-running, postgres, garage, hypervisor or ports.
+    /// Fix one requirement: services, hypervisor or ports. The setup installs nothing, so the answer says what to do.
     #[arg(long, value_name = "NEED", conflicts_with = "fix_all")]
     fix: Option<Need>,
     /// Fix every missing requirement that has a fix, in the order of the checklist.
@@ -659,8 +659,8 @@ mod tests {
 
     #[test]
     fn the_setup_flags_parse_as_written_and_the_conflicting_ones_are_refused() {
-        let fix = parse(&["--fix", "docker-running"]).unwrap();
-        assert_eq!(fix.fix, Some(Need::DockerRunning));
+        let fix = parse(&["--fix", "ports"]).unwrap();
+        assert_eq!(fix.fix, Some(Need::Ports));
         assert!(!fix.fix_all && fix.hub.is_none());
         let all = parse(&["--fix-all"]).unwrap();
         assert!(all.fix_all && all.fix.is_none());
@@ -671,10 +671,13 @@ mod tests {
             parse(&["--hub", "work"]).unwrap().hub.as_deref(),
             Some("work")
         );
+        // The needs Docker and the database had are gone: naming one is refused like any unknown need.
         for refused in [
             &["--fix", "nope"][..],
-            &["--fix", "garage", "--fix-all"],
-            &["--hub", "--fix-all"],
+            &["--fix", "docker-running"][..],
+            &["--fix", "postgres"][..],
+            &["--fix", "ports", "--fix-all"][..],
+            &["--hub", "--fix-all"][..],
         ] {
             assert!(parse(refused).is_err(), "{refused:?} is refused");
         }

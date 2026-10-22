@@ -1037,9 +1037,9 @@ mod tests {
         // confirmation; No cancels it without running anything.
         {
             let mut ob = on_deps(vec![check(
-                Need::Postgres,
+                Need::Ports,
                 State::Missing,
-                Some("Create it"),
+                Some("Free the port"),
             )]);
             assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
             assert!(ob.deps.confirming);
@@ -1052,16 +1052,15 @@ mod tests {
         // after the question runs the missing fixable needs in order and nothing else.
         {
             let mut ob = on_deps(vec![
-                check(Need::Docker, State::Ok, None),
                 check(Need::Services, State::Blocked, None),
-                check(Need::Postgres, State::Missing, Some("Create it")),
-                check(Need::Garage, State::Missing, Some("Create Garage")),
+                check(Need::Hypervisor, State::Missing, Some("Turn it on")),
+                check(Need::Ports, State::Missing, Some("Free the port")),
             ]);
             ob.deps.log.push("left over".into());
             assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
             assert_eq!(
                 ob.deps_key(Input::Yes),
-                DepsKey::Run(vec![Need::Postgres, Need::Garage])
+                DepsKey::Run(vec![Need::Hypervisor, Need::Ports])
             );
             assert!(ob.deps.running && !ob.deps.confirming);
             assert!(ob.deps.log.is_empty(), "the log starts clean for the run");
@@ -1071,9 +1070,9 @@ mod tests {
         // included, until it ends.
         {
             let mut ob = on_deps(vec![check(
-                Need::Postgres,
+                Need::Ports,
                 State::Missing,
-                Some("Create it"),
+                Some("Free the port"),
             )]);
             ob.deps.running = true;
             for input in [
@@ -1095,7 +1094,7 @@ mod tests {
         // f_with_nothing_to_fix_says_so_and_asks_for_nothing: F with nothing to fix logs that
         // and asks for nothing.
         {
-            let mut ob = on_deps(vec![check(Need::Docker, State::Ok, None)]);
+            let mut ob = on_deps(vec![check(Need::Services, State::Ok, None)]);
             assert_eq!(ob.deps_key(Input::Fix), DepsKey::Handled);
             assert!(!ob.deps.confirming);
             assert_eq!(ob.deps.log, vec!["nothing here needs a fix".to_string()]);
@@ -1107,7 +1106,7 @@ mod tests {
 
         // yes_with_nothing_fixable_runs_nothing: Yes with nothing fixable runs nothing.
         {
-            let mut ob = on_deps(vec![check(Need::Docker, State::Ok, None)]);
+            let mut ob = on_deps(vec![check(Need::Services, State::Ok, None)]);
             ob.deps.confirming = true;
             assert_eq!(ob.deps_key(Input::Yes), DepsKey::Handled);
             assert!(!ob.deps.running);

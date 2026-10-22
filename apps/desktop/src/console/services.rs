@@ -1,12 +1,19 @@
-//! The local services this machine runs, started and stopped by the console: in local mode the
-//! hub (apid), the agent gateway (vsockd) and the node (noded), plus Postgres (a Docker container) and
-//! Garage when installed; as a node, apz-link + vsockd + noded.
+//! The local services this machine runs, started and stopped by the console: in local mode the hub (apid),
+//! the agent gateway (vsockd) and the node (noded); as a node, apz-link + vsockd + noded. Nothing else is
+//! needed: no Docker and no database, since the hub keeps its state in SQLite in its state folder.
+//!
+//! Each service is a binary beside this app. The packaging puts them there: `packaging/scripts/stage.sh` lays
+//! out `bin/` with apid, apz-link, agentplaza and agentplaza-desktop everywhere, and noded and vsockd where the
+//! VM node ships (Linux, Apple silicon, Windows x64). The macOS DMG copies `bin/` into `Contents/MacOS`, the
+//! Linux packages into `usr/bin`, and the Windows package into `bin` beside the app. `bin_path` looks there first.
 
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use apz_setup::node::{
     self, Layout, PlanProcess, cid_list, find_plan_pids, named_pids, repo_dir, resource, stop_pids,
@@ -24,11 +31,14 @@ fn hub_public_url() -> String {
 /// these on Windows, where a process's command line cannot be read to tell whose it is.
 static STARTED: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
 
+/// Where each service's log stood when this app last started it: its ready line is read from there on.
+static LOG_MARKS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+
 /// One local service and its state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
     pub name: String,
-    /// "running" | "stopped" | "missing" (not installed) | "optional" (not set up; not required).
+    /// "running" | "stopped" | "missing" (not installed) | "optional" (not run on this platform; not required).
     pub state: String,
     pub detail: String,
 }
@@ -50,21 +60,13 @@ fn uds_dir() -> String {
     apz_os::dirs::vsock_sockets().to_string_lossy().into_owned()
 }
 
-/// One service of a mode: a Docker container (never stopped by the console) or a process.
+/// One local service of a plan: its name, its binary beside this app (None when it is not installed), and the
+/// exact arguments and environment it runs with (see `node::PlanProcess`).
 struct Svc {
     name: &'static str,
-    how: How,
-}
-
-enum How {
-    /// A Docker container, by its Docker name (the displayed name is the service's).
-    Container { docker: &'static str },
-    Process {
-        /// `None` when the binary (or its config) is not installed.
-        bin: Option<PathBuf>,
-        args: Vec<String>,
-        env: Option<(&'static str, &'static str)>,
-    },
+    bin: Option<PathBuf>,
+    args: Vec<String>,
+    env: Option<(&'static str, &'static str)>,
 }
 
 /// The services of `mode` and their state now.
@@ -96,7 +98,7 @@ pub fn start_hub(bind: &str, public_url: &str) -> Result<Vec<String>, String> {
     start_with(Mode::Hub, Some((bind, public_url)))
 }
 
-/// Stops the services `mode` started (SIGTERM to the processes; containers are left running).
+/// Stops the services `mode` started (SIGTERM to the processes; a service that is not running is left alone).
 pub fn stop(mode: Mode) -> Result<Vec<String>, String> {
     Ok(plan_of(mode).iter().rev().map(stop_one).collect())
 }
@@ -157,9 +159,10 @@ pub struct NodeStatus {
 /// The node's identity (`node/node.json` under the data directory) and whether apz-link runs.
 #[cfg(test)]
 pub fn node_status() -> NodeStatus {
-    let node: Option<serde_json::Value> = fs::read_to_string(data_dir().join("node/node.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok());
+    let node: Option<serde_json::Value> =
+        fs::read_to_string(apz_os::dirs::data().join("node/node.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok());
     let field = |key: &str| node.as_ref().and_then(|n| n.get(key));
     let text = |key: &str| {
         field(key)
@@ -185,6 +188,52 @@ pub fn node_status() -> NodeStatus {
     }
 }
 
+/// Whether this app started service `name` and still holds its pid. A ready line is waited for only from a
+/// child this app started; a service another process started is checked, not waited for.
+pub fn started_here(name: &str) -> bool {
+    !recorded_pids(name).is_empty()
+}
+
+/// Waits up to `wait` for the ready line a service this app started prints on its stdout, as apid does
+/// ("apid: listening on <url>"), and returns the URL it names. A service's stdout is its log file (see
+/// `spawn`), so the line is read from the log, from where this service's last start began.
+pub fn await_ready(name: &str, wait: Duration) -> Result<String, String> {
+    let log = node::log_file(name);
+    let from = LOG_MARKS
+        .lock()
+        .ok()
+        .and_then(|marks| marks.iter().find(|(n, _)| n == name).map(|(_, at)| *at))
+        .unwrap_or(0);
+    let prefix = format!("{name}: listening on ");
+    let deadline = Instant::now() + wait;
+    loop {
+        if let Some(url) = ready_line(&log, from, &prefix) {
+            return Ok(url);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{name} did not say it was listening within {} seconds (its log: {})",
+                wait.as_secs(),
+                log.display()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The URL on the first complete line of `log`, after byte `from`, that starts with `prefix`.
+fn ready_line(log: &Path, from: u64, prefix: &str) -> Option<String> {
+    let mut file = fs::File::open(log).ok()?;
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    text.split_inclusive('\n')
+        .filter(|line| line.ends_with('\n'))
+        .find_map(|line| line.strip_prefix(prefix))
+        .map(|url| url.trim().to_string())
+}
+
 fn start_with(mode: Mode, hub: Option<(&str, &str)>) -> Result<Vec<String>, String> {
     if mode == Mode::Node && node::identity().is_none() {
         return Err("join a hub first".into());
@@ -206,10 +255,6 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
     let console = path_arg(&resource("console", "apps/web/dist"));
     let cids = local_cids();
     let internal = path_arg(&state_dir().join("internal.token"));
-    let garage_bin = Path::new("/usr/bin/garage");
-    let garage_cfg = data_dir().join("garage/garage.toml");
-    let garage_ok = garage_bin.is_file() && garage_cfg.is_file();
-    let garage_cfg = path_arg(&garage_cfg);
 
     let mut apid_args = argv(&[
         "--port",
@@ -230,90 +275,70 @@ fn plan(mode: Mode, hub: Option<(&str, &str)>) -> Vec<Svc> {
     }
 
     vec![
-        Svc {
-            name: "postgres",
-            how: How::Container {
-                docker: "agentplaza-postgres",
+        service("apid", apid_args, None),
+        service(
+            "vsockd",
+            argv(&[
+                "--uds-dir",
+                &uds_dir(),
+                "--cids",
+                &cids,
+                "--port",
+                "5000",
+                "--http-port",
+                "19080",
+                // The E2B gateway runs with the hub: the hub apid's default `--e2b-gateway-port`.
+                "--e2b-port",
+                "49982",
+                "--apid",
+                "http://127.0.0.1:7700",
+                "--internal-token-file",
+                &internal,
+            ]),
+            None,
+        ),
+        service(
+            "noded",
+            argv(&[
+                "--port",
+                "8899",
+                "--uds-dir",
+                &uds_dir(),
+                "--agents",
+                &roles,
+                "--internal-token-file",
+                &internal,
+            ]),
+            // The per-VM process mode and its jailer are Linux-only.
+            if cfg!(target_os = "linux") {
+                Some(("APZ_VMM_SPAWN", "process"))
+            } else {
+                None
             },
-        },
-        Svc {
-            name: "garage",
-            how: How::Process {
-                bin: garage_ok.then(|| garage_bin.to_path_buf()),
-                args: argv(&["-c", &garage_cfg, "server"]),
-                env: None,
-            },
-        },
-        Svc {
-            name: "apid",
-            how: How::Process {
-                bin: bin_path("apid"),
-                args: apid_args,
-                env: None,
-            },
-        },
-        Svc {
-            name: "vsockd",
-            how: How::Process {
-                bin: bin_path("vsockd"),
-                args: argv(&[
-                    "--uds-dir",
-                    &uds_dir(),
-                    "--cids",
-                    &cids,
-                    "--port",
-                    "5000",
-                    "--http-port",
-                    "19080",
-                    // The E2B gateway runs with the hub: the hub apid's default `--e2b-gateway-port`.
-                    "--e2b-port",
-                    "49982",
-                    "--apid",
-                    "http://127.0.0.1:7700",
-                    "--internal-token-file",
-                    &internal,
-                ]),
-                env: None,
-            },
-        },
-        Svc {
-            name: "noded",
-            how: How::Process {
-                bin: bin_path("noded"),
-                args: argv(&[
-                    "--port",
-                    "8899",
-                    "--uds-dir",
-                    &uds_dir(),
-                    "--agents",
-                    &roles,
-                    "--internal-token-file",
-                    &internal,
-                ]),
-                // The per-VM process mode and its jailer are Linux-only.
-                env: if cfg!(target_os = "linux") {
-                    Some(("APZ_VMM_SPAWN", "process"))
-                } else {
-                    None
-                },
-            },
-        },
+        ),
     ]
 }
 
+/// A service of a plan: its binary is found beside this app (`bin_path`).
+fn service(
+    name: &'static str,
+    args: Vec<String>,
+    env: Option<(&'static str, &'static str)>,
+) -> Svc {
+    Svc {
+        name,
+        bin: bin_path(name),
+        args,
+        env,
+    }
+}
+
 /// The node's services, from the plan both apps share (`apz_setup::node::plan`): apz-link forwards to
-/// the hub, vsockd and noded serve the node's CIDs. Each binary is found beside this app.
+/// the hub, vsockd and noded serve the node's CIDs.
 fn node_plan(base: u64, count: u64) -> Vec<Svc> {
     node::plan(base, count, &Layout::current())
         .into_iter()
-        .map(|process| Svc {
-            name: process.name,
-            how: How::Process {
-                bin: bin_path(process.name),
-                args: process.args,
-                env: process.env,
-            },
-        })
+        .map(|process| service(process.name, process.args, process.env))
         .collect()
 }
 
@@ -322,72 +347,64 @@ fn local_cids() -> String {
     cid_list(20, 111)
 }
 
-/// Garage is the Library's file store: optional, so a machine without it is not "missing".
-const OPTIONAL_SERVICE: &str = "garage";
+/// Whether this platform runs service `name`. The VM node (noded, vsockd) is staged for Linux, Apple silicon and
+/// Windows x64 (`packaging/scripts/stage.sh`), and vsockd refuses to start on macOS.
+fn runs_here(name: &str) -> bool {
+    let vm_node = cfg!(any(
+        target_os = "linux",
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(windows, target_arch = "x86_64")
+    ));
+    match name {
+        "noded" => vm_node,
+        "vsockd" => vm_node && !cfg!(target_os = "macos"),
+        _ => true,
+    }
+}
+
+/// Why a service this platform does not run is optional, in the status.
+fn not_run_here(name: &str) -> &'static str {
+    if name == "vsockd" && cfg!(target_os = "macos") {
+        "not run on macOS: vsockd refuses to start there"
+    } else {
+        "not built for this platform: the VM node ships on Linux, Apple silicon and Windows x64"
+    }
+}
 
 fn svc_state(svc: &Svc) -> (&'static str, String) {
-    match &svc.how {
-        How::Container { docker } => match container_state(docker) {
-            "missing" => ("missing", "docker or the container is absent".into()),
-            state => (state, format!("container {docker}")),
-        },
-        How::Process { bin, .. } => {
-            if let Some(pid) =
-                process_of(svc).and_then(|process| find_plan_pids(&process).first().copied())
-            {
-                return ("running", format!("pid {pid}"));
-            }
-            match bin {
-                Some(_) => ("stopped", String::new()),
-                None if svc.name == OPTIONAL_SERVICE => (
-                    "optional",
-                    "not set up: the Library keeps files on disk".into(),
-                ),
-                None => ("missing", "not installed".into()),
-            }
-        }
+    if !runs_here(svc.name) {
+        return ("optional", not_run_here(svc.name).into());
+    }
+    if let Some(pid) = find_plan_pids(&process_of(svc)).first().copied() {
+        return ("running", format!("pid {pid}"));
+    }
+    if svc.bin.is_some() {
+        ("stopped", String::new())
+    } else {
+        ("missing", "not installed".into())
     }
 }
 
 fn start_one(svc: &Svc) -> String {
     let name = svc.name;
-    match &svc.how {
-        How::Container { docker } => match container_state(docker) {
-            "running" => format!("{name}: already running"),
-            "stopped" => match Command::new("docker")
-                .args(["start", docker])
-                .stdin(Stdio::null())
-                .output()
-            {
-                Ok(out) if out.status.success() => format!("{name}: started"),
-                Ok(out) => format!("{name}: failed ({})", first_line(&out.stderr)),
-                Err(e) => format!("{name}: failed ({e})"),
-            },
-            _ => format!("{name}: not installed"),
-        },
-        How::Process { bin, args, env } => {
-            if let Some(pid) =
-                process_of(svc).and_then(|process| find_plan_pids(&process).first().copied())
-            {
-                return format!("{name}: already running (pid {pid})");
-            }
-            let Some(bin) = bin else {
-                if name == OPTIONAL_SERVICE {
-                    return format!("{name}: not set up (optional)");
-                }
-                return format!("{name}: not installed");
-            };
-            // Another process of this name that is not the plan's holds the ports this one needs.
-            if let Some(pid) = named_pids(name).first() {
-                return format!(
-                    "{name}: not started: another {name} runs (pid {pid}) that this app did not start"
-                );
-            }
-            match spawn(name, bin, args, *env) {
-                Ok(pid) => format!("{name}: started (pid {pid})"),
-                Err(e) => format!("{name}: failed ({e})"),
-            }
-        }
+    if !runs_here(name) {
+        return format!("{name}: not run here (optional)");
+    }
+    if let Some(pid) = find_plan_pids(&process_of(svc)).first().copied() {
+        return format!("{name}: already running (pid {pid})");
+    }
+    let Some(bin) = &svc.bin else {
+        return format!("{name}: not installed");
+    };
+    // Another process of this name that is not the plan's holds the ports this one needs.
+    if let Some(pid) = named_pids(name).first() {
+        return format!(
+            "{name}: not started: another {name} runs (pid {pid}) that this app did not start"
+        );
+    }
+    match spawn(name, bin, &svc.args, svc.env) {
+        Ok(pid) => format!("{name}: started (pid {pid})"),
+        Err(e) => format!("{name}: failed ({e})"),
     }
 }
 
@@ -395,9 +412,7 @@ fn start_one(svc: &Svc) -> String {
 /// A process of the same name that is not the plan's is left alone.
 fn stop_one(svc: &Svc) -> String {
     let name = svc.name;
-    let Some(process) = process_of(svc) else {
-        return format!("{name}: left running (the container persists)");
-    };
+    let process = process_of(svc);
     let pids = stop_pids(&process, &recorded_pids(name));
     if pids.is_empty() {
         return if find_plan_pids(&process).is_empty() {
@@ -419,16 +434,12 @@ fn stop_one(svc: &Svc) -> String {
     }
 }
 
-/// The plan's process of a service: its name and the exact arguments it was started with. None for a
-/// Docker container, which is not a process.
-fn process_of(svc: &Svc) -> Option<PlanProcess> {
-    match &svc.how {
-        How::Process { args, env, .. } => Some(PlanProcess {
-            name: svc.name,
-            args: args.clone(),
-            env: *env,
-        }),
-        How::Container { .. } => None,
+/// The plan's process of a service: its name and the exact arguments it was started with.
+fn process_of(svc: &Svc) -> PlanProcess {
+    PlanProcess {
+        name: svc.name,
+        args: svc.args.clone(),
+        env: svc.env,
     }
 }
 
@@ -463,7 +474,8 @@ fn signal(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// Starts a detached process: stdin closed, output appended to its log, its own process group.
+/// Starts a detached process: stdin closed, output appended to its log, its own process group. The log is the
+/// process's stdout and stderr, so its ready line is read from there (see `await_ready`).
 fn spawn(
     name: &str,
     bin: &Path,
@@ -479,6 +491,8 @@ fn spawn(
         .append(true)
         .open(&log_path)
         .map_err(|e| e.to_string())?;
+    // Where this start's output begins.
+    let from = log.metadata().map(|meta| meta.len()).unwrap_or(0);
     let errors = log.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = Command::new(bin);
     cmd.args(args)
@@ -494,25 +508,11 @@ fn spawn(
         started.retain(|(n, _)| n != name);
         started.push((name.to_string(), child.id()));
     }
-    Ok(child.id())
-}
-
-/// "running" | "stopped" | "missing" for a Docker container (missing when docker or it is absent).
-fn container_state(name: &str) -> &'static str {
-    match Command::new("docker")
-        .args(["inspect", "-f", "{{.State.Running}}", name])
-        .stdin(Stdio::null())
-        .output()
-    {
-        Ok(out) if out.status.success() => {
-            if String::from_utf8_lossy(&out.stdout).trim() == "true" {
-                "running"
-            } else {
-                "stopped"
-            }
-        }
-        _ => "missing",
+    if let Ok(mut marks) = LOG_MARKS.lock() {
+        marks.retain(|(n, _)| n != name);
+        marks.push((name.to_string(), from));
     }
+    Ok(child.id())
 }
 
 /// The first line of `apz-link join` stdout: "joined <hub> as <node id> (agents …)".
@@ -527,11 +527,6 @@ fn parse_join_output(text: &str) -> Option<String> {
 /// The plaza's state directory (`apz_os::dirs::state`).
 fn state_dir() -> PathBuf {
     apz_os::dirs::state()
-}
-
-/// The plaza's data directory (`apz_os::dirs::data`).
-fn data_dir() -> PathBuf {
-    apz_os::dirs::data()
 }
 
 /// The service binary `name`: beside this executable (the app ships its services next to itself),
@@ -584,15 +579,6 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|part| part.to_string()).collect()
 }
 
-fn first_line(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use apz_setup::node::{Layout, runs_plan};
@@ -618,7 +604,7 @@ mod tests {
             .iter()
             .find(|svc| svc.name == name)
             .expect("a service of the plan");
-        process_of(svc).expect("a process")
+        process_of(svc)
     }
 
     #[test]
@@ -748,9 +734,44 @@ mod tests {
         assert_eq!(flag("--public-url"), Some(hub_public_url()));
         assert!(apid.args.iter().any(|a| a == "--tls"));
         // Local is the hub without those arguments.
-        assert!(!plan_of(Mode::Local).iter().any(
-            |svc| matches!(&svc.how, How::Process { args, .. } if args.iter().any(|a| a == "--tls"))
-        ));
+        assert!(
+            !plan_of(Mode::Local)
+                .iter()
+                .any(|svc| svc.args.iter().any(|a| a == "--tls"))
+        );
+    }
+
+    #[test]
+    fn the_plan_has_no_container_and_no_object_store() {
+        let local: Vec<&str> = plan_of(Mode::Local).iter().map(|svc| svc.name).collect();
+        assert_eq!(local, ["apid", "vsockd", "noded"]);
+        let node: Vec<&str> = node_plan(20, 4).iter().map(|svc| svc.name).collect();
+        assert_eq!(node, node::NAMES);
+    }
+
+    #[test]
+    fn the_ready_line_is_read_from_this_start_and_only_once_complete() {
+        const PREFIX: &str = "apid: listening on ";
+        let dir = env::temp_dir().join(format!("apz-desktop-ready-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("apid.log");
+        let earlier = "apid: listening on http://127.0.0.1:9999\n";
+        fs::write(&log, earlier).unwrap();
+        let from = fs::metadata(&log).unwrap().len();
+        // The line is still being written: no newline yet, so no URL.
+        fs::write(&log, format!("{earlier}{PREFIX}http://127.0.0.1:77")).unwrap();
+        assert_eq!(ready_line(&log, from, PREFIX), None);
+        fs::write(&log, format!("{earlier}{PREFIX}http://127.0.0.1:7700\n")).unwrap();
+        assert_eq!(
+            ready_line(&log, from, PREFIX).as_deref(),
+            Some("http://127.0.0.1:7700")
+        );
+        // From the start of the log, the first line is the earlier start's.
+        assert_eq!(
+            ready_line(&log, 0, PREFIX).as_deref(),
+            Some("http://127.0.0.1:9999")
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
