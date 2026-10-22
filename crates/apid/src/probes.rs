@@ -35,7 +35,10 @@ static LATEST: RwLock<Option<Latest>> = RwLock::new(None);
 static STARTED: OnceLock<()> = OnceLock::new();
 
 fn answered(result: Result<(u16, Value), String>) -> Option<Value> {
-    result.ok().filter(|(code, _)| *code == 200).map(|(_, body)| body)
+    result
+        .ok()
+        .filter(|(code, _)| *code == 200)
+        .map(|(_, body)| body)
 }
 
 /// One round: the three probes on their own threads, joined.
@@ -53,7 +56,9 @@ fn round(app: &App) -> Latest {
 }
 
 fn store(latest: Latest) {
-    *LATEST.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(latest);
+    *LATEST
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(latest);
 }
 
 /// The latest round. The first call after a start runs a round itself (and starts the background prober); every

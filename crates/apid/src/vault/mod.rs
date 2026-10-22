@@ -131,8 +131,7 @@ pub enum OnBehalf {
     Agent { cid: u64, node: Option<String> },
     /// The owner, testing from the console. `None` means the hub's own machine.
     Owner { node: Option<String> },
-    /// The hub's background work: plaza-scope entries only. The first background consumer builds it.
-    #[allow(dead_code)]
+    /// The hub's background work: plaza-scope entries only (the providers' command credentials and header values).
     Hub,
 }
 

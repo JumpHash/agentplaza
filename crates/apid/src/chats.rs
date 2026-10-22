@@ -120,7 +120,15 @@ impl Chats {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn insert(inner: &mut Inner, id: String, kind: Kind, project: Option<String>, task: Option<String>, title: String, now_ms: u64) -> Chat {
+    fn insert(
+        inner: &mut Inner,
+        id: String,
+        kind: Kind,
+        project: Option<String>,
+        task: Option<String>,
+        title: String,
+        now_ms: u64,
+    ) -> Chat {
         let chat = Chat {
             id: id.clone(),
             kind,
@@ -143,7 +151,15 @@ impl Chats {
         if let Some(chat) = inner.chats.get(MAIN) {
             return chat.clone();
         }
-        Self::insert(&mut inner, MAIN.into(), Kind::Main, Some("plaza".into()), None, "Plaza".into(), now_ms)
+        Self::insert(
+            &mut inner,
+            MAIN.into(),
+            Kind::Main,
+            Some("plaza".into()),
+            None,
+            "Plaza".into(),
+            now_ms,
+        )
     }
 
     /// Opens a new chat with `project`'s planner.
@@ -151,7 +167,15 @@ impl Chats {
         let mut inner = self.lock();
         inner.next += 1;
         let id = format!("ch{}", inner.next);
-        Self::insert(&mut inner, id, Kind::Project, Some(project.into()), None, title.into(), now_ms)
+        Self::insert(
+            &mut inner,
+            id,
+            Kind::Project,
+            Some(project.into()),
+            None,
+            title.into(),
+            now_ms,
+        )
     }
 
     /// `task`'s chat (one per task), made on first use.
@@ -161,7 +185,15 @@ impl Chats {
         if let Some(chat) = inner.chats.get(&id) {
             return chat.clone();
         }
-        Self::insert(&mut inner, id, Kind::Task, Some(project.into()), Some(task.into()), title.into(), now_ms)
+        Self::insert(
+            &mut inner,
+            id,
+            Kind::Task,
+            Some(project.into()),
+            Some(task.into()),
+            title.into(),
+            now_ms,
+        )
     }
 
     pub fn get(&self, id: &str) -> Option<Chat> {
@@ -186,7 +218,14 @@ impl Chats {
     pub fn messages(&self, id: &str, after: u64, limit: usize) -> Option<Vec<Message>> {
         let inner = self.lock();
         let chat = inner.chats.get(id)?;
-        Some(chat.messages.iter().filter(|m| m.seq > after).take(limit).cloned().collect())
+        Some(
+            chat.messages
+                .iter()
+                .filter(|m| m.seq > after)
+                .take(limit)
+                .cloned()
+                .collect(),
+        )
     }
 
     /// Adds a message to a chat.
@@ -238,11 +277,18 @@ impl Chats {
     }
 
     /// Replaces the chats with what the store holds (at start).
-    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), apz_store::StoreError> {
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
         let stored: Vec<Chat> = apz_store::table::load_list(conn, def())?;
         let mut inner = Inner::default();
         for chat in stored {
-            if let Some(n) = chat.id.strip_prefix("ch").and_then(|n| n.parse::<u64>().ok()) {
+            if let Some(n) = chat
+                .id
+                .strip_prefix("ch")
+                .and_then(|n| n.parse::<u64>().ok())
+            {
                 inner.next = inner.next.max(n);
             }
             inner.chats.insert(chat.id.clone(), chat);
@@ -280,7 +326,10 @@ mod tests {
         let a = chats.open_project("pr1", "Export", 3);
         let b = chats.open_project("pr1", "Docs", 4);
         assert_ne!(a.id, b.id);
-        assert_eq!(chats.of_task("t1", "pr1", "T1", 5).id, chats.of_task("t1", "pr1", "T1", 6).id);
+        assert_eq!(
+            chats.of_task("t1", "pr1", "T1", 5).id,
+            chats.of_task("t1", "pr1", "T1", 6).id
+        );
         assert_eq!(chats.list(Some("pr1"), false).len(), 3);
     }
 
@@ -299,6 +348,10 @@ mod tests {
         let loaded = Chats::default();
         loaded.load(&conn).unwrap();
         assert_eq!(loaded.get(&c.id), chats.get(&c.id));
-        assert_ne!(loaded.open_project("pr1", "Next", 9).id, c.id, "ids continue after the stored ones");
+        assert_ne!(
+            loaded.open_project("pr1", "Next", 9).id,
+            c.id,
+            "ids continue after the stored ones"
+        );
     }
 }

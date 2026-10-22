@@ -31,7 +31,9 @@ pub enum Unit {
 }
 
 /// Whose budget it is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, apz_store::Column)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, apz_store::Column,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum OwnerKind {
     Project,
@@ -96,7 +98,13 @@ pub struct Budget {
 impl Budget {
     /// What is left to spend now; none when uncapped.
     pub fn left(&self) -> Option<u64> {
-        let used = self.spent + self.held + if self.owner_kind == OwnerKind::Project { self.reserved } else { 0 };
+        let used = self.spent
+            + self.held
+            + if self.owner_kind == OwnerKind::Project {
+                self.reserved
+            } else {
+                0
+            };
         self.cap.map(|cap| cap.saturating_sub(used))
     }
 
@@ -160,16 +168,28 @@ pub enum Short {
         left: u64,
     },
     /// The project's monthly cap for long-lived sessions.
-    Monthly { project: String, needed: u64, left: u64 },
+    Monthly {
+        project: String,
+        needed: u64,
+        left: u64,
+    },
     /// It is paused (by the owner, or at its cap waiting for a raise).
-    Paused { owner_kind: OwnerKind, owner: String },
+    Paused {
+        owner_kind: OwnerKind,
+        owner: String,
+    },
 }
 
 /// What settling a call told the owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
     /// A budget passed its warning share.
-    Warn { owner_kind: OwnerKind, owner: String, spent: u64, cap: u64 },
+    Warn {
+        owner_kind: OwnerKind,
+        owner: String,
+        spent: u64,
+        cap: u64,
+    },
 }
 
 fn month_of(ms: u64) -> u32 {
@@ -217,40 +237,49 @@ impl Budgets {
     }
 
     fn sink(&self) -> Sink {
-        self.sink.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.sink
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Writes `budgets` and `entries`: waiting for the commit when `durable` (a hold), queued otherwise.
-    fn persist(&self, budgets: Vec<Budget>, entries: Vec<Entry>, durable: bool) -> Result<(), String> {
+    fn persist(
+        &self,
+        budgets: Vec<Budget>,
+        entries: Vec<Entry>,
+        durable: bool,
+    ) -> Result<(), String> {
         let Some(db) = self.sink() else {
             return Ok(());
         };
-        let op = move |conn: &apz_store::rusqlite::Connection| -> Result<(), apz_store::StoreError> {
-            let mut rows = apz_store::RowSet::list(def(), budgets.iter())?;
-            // The budgets' rows are upserted one by one (a whole-table diff is not this table's way).
-            for (table, list) in std::mem::take(&mut rows.tables) {
-                if table != def().name {
-                    continue;
+        let op =
+            move |conn: &apz_store::rusqlite::Connection| -> Result<(), apz_store::StoreError> {
+                let mut rows = apz_store::RowSet::list(def(), budgets.iter())?;
+                // The budgets' rows are upserted one by one (a whole-table diff is not this table's way).
+                for (table, list) in std::mem::take(&mut rows.tables) {
+                    if table != def().name {
+                        continue;
+                    }
+                    for row in list {
+                        let mut changes = apz_store::table::Changes::default();
+                        changes.upserts.push((table.clone(), row));
+                        apz_store::table::apply(conn, def(), &changes)?;
+                    }
                 }
-                for row in list {
-                    let mut changes = apz_store::table::Changes::default();
-                    changes.upserts.push((table.clone(), row));
-                    apz_store::table::apply(conn, def(), &changes)?;
+                // The ledger only appends: each entry's key (`pos`, the row id) is left to SQLite.
+                let entries_def = entries_def();
+                let mut appended = apz_store::table::Changes::default();
+                for entry in &entries {
+                    let mut set = apz_store::RowSet::new();
+                    entry_put(entry, entries_def, &mut set)?;
+                    for row in set.tables.remove(&entries_def.name).unwrap_or_default() {
+                        appended.upserts.push((entries_def.name.clone(), row));
+                    }
                 }
-            }
-            // The ledger only appends: each entry's key (`pos`, the row id) is left to SQLite.
-            let entries_def = entries_def();
-            let mut appended = apz_store::table::Changes::default();
-            for entry in &entries {
-                let mut set = apz_store::RowSet::new();
-                entry_put(entry, entries_def, &mut set)?;
-                for row in set.tables.remove(&entries_def.name).unwrap_or_default() {
-                    appended.upserts.push((entries_def.name.clone(), row));
-                }
-            }
-            apz_store::table::apply(conn, entries_def, &appended)?;
-            Ok(())
-        };
+                apz_store::table::apply(conn, entries_def, &appended)?;
+                Ok(())
+            };
         if durable {
             db.write(op).map(|_| ()).map_err(|e| e.to_string())
         } else {
@@ -264,7 +293,11 @@ impl Budgets {
 
     /// Every budget of `project` (the project's and its tasks').
     pub fn of_project(&self, project: &str) -> Vec<Budget> {
-        self.lock().values().filter(|b| b.project == project).cloned().collect()
+        self.lock()
+            .values()
+            .filter(|b| b.project == project)
+            .cloned()
+            .collect()
     }
 
     /// Sets a project's budget (unit, cap, warning share, monthly cap). Its spending so far is kept; a unit change
@@ -296,12 +329,31 @@ impl Budgets {
             b.updated_ms = now_ms;
             b.clone()
         };
-        self.persist(vec![budget.clone()], vec![entry(&budget, EntryKind::Set, cap.unwrap_or(0), Amount::default(), None, None, now_ms)], true)?;
+        self.persist(
+            vec![budget.clone()],
+            vec![entry(
+                &budget,
+                EntryKind::Set,
+                cap.unwrap_or(0),
+                Amount::default(),
+                None,
+                None,
+                now_ms,
+            )],
+            true,
+        )?;
         Ok(budget)
     }
 
     /// Sets a task's own budget.
-    pub fn set_task(&self, task: &str, project: &str, unit: Unit, cap: Option<u64>, now_ms: u64) -> Result<Budget, String> {
+    pub fn set_task(
+        &self,
+        task: &str,
+        project: &str,
+        unit: Unit,
+        cap: Option<u64>,
+        now_ms: u64,
+    ) -> Result<Budget, String> {
         let budget = {
             let mut budgets = self.lock();
             let b = budgets
@@ -313,7 +365,19 @@ impl Budgets {
             b.updated_ms = now_ms;
             b.clone()
         };
-        self.persist(vec![budget.clone()], vec![entry(&budget, EntryKind::Set, cap.unwrap_or(0), Amount::default(), None, None, now_ms)], true)?;
+        self.persist(
+            vec![budget.clone()],
+            vec![entry(
+                &budget,
+                EntryKind::Set,
+                cap.unwrap_or(0),
+                Amount::default(),
+                None,
+                None,
+                now_ms,
+            )],
+            true,
+        )?;
         Ok(budget)
     }
 
@@ -330,7 +394,10 @@ impl Budgets {
                 return Ok(());
             };
             if p.paused {
-                return Err(Short::Paused { owner_kind: OwnerKind::Project, owner: p.owner.clone() });
+                return Err(Short::Paused {
+                    owner_kind: OwnerKind::Project,
+                    owner: p.owner.clone(),
+                });
             }
             if let Some(left) = p.left()
                 && left < reserve
@@ -346,15 +413,28 @@ impl Budgets {
             p.reserved += reserve;
             p.updated_ms = now_ms;
             let p = p.clone();
-            let t = budgets.get_mut(&(OwnerKind::Task, task.to_string())).expect("checked above");
+            let t = budgets
+                .get_mut(&(OwnerKind::Task, task.to_string()))
+                .expect("checked above");
             t.reserved = reserve;
             t.drawn = 0;
             t.updated_ms = now_ms;
             (t.clone(), p)
         };
-        let reserved = entry(&project_budget, EntryKind::Reserve, reserve, Amount::default(), None, None, now_ms);
+        let reserved = entry(
+            &project_budget,
+            EntryKind::Reserve,
+            reserve,
+            Amount::default(),
+            None,
+            None,
+            now_ms,
+        );
         self.persist(vec![task_budget, project_budget], vec![reserved], false)
-            .map_err(|_| Short::Paused { owner_kind: OwnerKind::Task, owner: task.to_string() })
+            .map_err(|_| Short::Paused {
+                owner_kind: OwnerKind::Task,
+                owner: task.to_string(),
+            })
     }
 
     /// Gives back what `task` did not spend of its reservation, as it ends.
@@ -377,7 +457,15 @@ impl Budgets {
             Some((t, p.clone(), unspent))
         };
         if let Some((t, p, unspent)) = changed {
-            let released = entry(&p, EntryKind::Release, unspent, Amount::default(), None, None, now_ms);
+            let released = entry(
+                &p,
+                EntryKind::Release,
+                unspent,
+                Amount::default(),
+                None,
+                None,
+                now_ms,
+            );
             let _ = self.persist(vec![t, p], vec![released], false);
         }
     }
@@ -403,16 +491,29 @@ impl Budgets {
             };
             let Some(b) = budgets.get_mut(&key) else {
                 // No budget set: nothing to check (a plaza with no budgets runs unmetered).
-                return Ok(Hold { owner_kind: key.0, owner: key.1, worst });
+                return Ok(Hold {
+                    owner_kind: key.0,
+                    owner: key.1,
+                    worst,
+                });
             };
             if b.paused {
-                return Err(Short::Paused { owner_kind: key.0, owner: key.1 });
+                return Err(Short::Paused {
+                    owner_kind: key.0,
+                    owner: key.1,
+                });
             }
             let amount = worst.in_unit(b.unit);
             if let Some(left) = b.left()
                 && left < amount
             {
-                return Err(Short::Cap { owner_kind: key.0, owner: key.1, unit: b.unit, needed: amount, left });
+                return Err(Short::Cap {
+                    owner_kind: key.0,
+                    owner: key.1,
+                    unit: b.unit,
+                    needed: amount,
+                    left,
+                });
             }
             if key.0 == OwnerKind::Project {
                 let month = month_of(now_ms);
@@ -423,7 +524,11 @@ impl Budgets {
                 if let Some(monthly) = b.monthly_cap {
                     let left = monthly.saturating_sub(b.month_spent);
                     if left < amount {
-                        return Err(Short::Monthly { project: b.owner.clone(), needed: amount, left });
+                        return Err(Short::Monthly {
+                            project: b.owner.clone(),
+                            needed: amount,
+                            left,
+                        });
                     }
                 }
             }
@@ -431,12 +536,27 @@ impl Budgets {
             b.updated_ms = now_ms;
             (b.clone(), amount)
         };
-        let hold = Hold { owner_kind: budget.owner_kind, owner: budget.owner.clone(), worst };
-        let held = entry(&budget, EntryKind::Hold, amount, worst, session, model, now_ms);
+        let hold = Hold {
+            owner_kind: budget.owner_kind,
+            owner: budget.owner.clone(),
+            worst,
+        };
+        let held = entry(
+            &budget,
+            EntryKind::Hold,
+            amount,
+            worst,
+            session,
+            model,
+            now_ms,
+        );
         // Acknowledged by the writer before the call goes out: a hold the hub answered survives a power loss.
         if self.persist(vec![budget], vec![held], true).is_err() {
             self.release(&hold, now_ms);
-            return Err(Short::Paused { owner_kind: hold.owner_kind, owner: hold.owner });
+            return Err(Short::Paused {
+                owner_kind: hold.owner_kind,
+                owner: hold.owner,
+            });
         }
         Ok(hold)
     }
@@ -488,7 +608,15 @@ impl Budgets {
             }
             b.updated_ms = now_ms;
             let project = b.project.clone();
-            entries.push(entry(b, EntryKind::Charge, amount, actual, session, model, now_ms));
+            entries.push(entry(
+                b,
+                EntryKind::Charge,
+                amount,
+                actual,
+                session,
+                model,
+                now_ms,
+            ));
             changed.push(b.clone());
             if hold.owner_kind == OwnerKind::Task
                 && let Some(p) = budgets.get_mut(&(OwnerKind::Project, project.clone()))
@@ -496,7 +624,15 @@ impl Budgets {
                 let amount = actual.in_unit(p.unit);
                 p.spent += amount;
                 p.updated_ms = now_ms;
-                entries.push(entry(p, EntryKind::Charge, amount, actual, session, model, now_ms));
+                entries.push(entry(
+                    p,
+                    EntryKind::Charge,
+                    amount,
+                    actual,
+                    session,
+                    model,
+                    now_ms,
+                ));
                 let p_unit = p.unit;
                 let p_snapshot = p.clone();
                 // The task draws on its reservation: the project's reserve shrinks by what the task spent of it.
@@ -532,7 +668,14 @@ impl Budgets {
     }
 
     /// Raises a budget's cap (by an amount, or to one) and resumes it. Returns the budget as raised.
-    pub fn raise(&self, owner_kind: OwnerKind, owner: &str, by: Option<u64>, to: Option<u64>, now_ms: u64) -> Option<Budget> {
+    pub fn raise(
+        &self,
+        owner_kind: OwnerKind,
+        owner: &str,
+        by: Option<u64>,
+        to: Option<u64>,
+        now_ms: u64,
+    ) -> Option<Budget> {
         let budget = {
             let mut budgets = self.lock();
             let b = budgets.get_mut(&(owner_kind, owner.to_string()))?;
@@ -547,13 +690,27 @@ impl Budgets {
             b.updated_ms = now_ms;
             b.clone()
         };
-        let raised = entry(&budget, EntryKind::Raise, budget.cap.unwrap_or(0), Amount::default(), None, None, now_ms);
+        let raised = entry(
+            &budget,
+            EntryKind::Raise,
+            budget.cap.unwrap_or(0),
+            Amount::default(),
+            None,
+            None,
+            now_ms,
+        );
         let _ = self.persist(vec![budget.clone()], vec![raised], true);
         Some(budget)
     }
 
     /// Pauses or resumes a budget by hand.
-    pub fn set_paused(&self, owner_kind: OwnerKind, owner: &str, paused: bool, now_ms: u64) -> Option<Budget> {
+    pub fn set_paused(
+        &self,
+        owner_kind: OwnerKind,
+        owner: &str,
+        paused: bool,
+        now_ms: u64,
+    ) -> Option<Budget> {
         let budget = {
             let mut budgets = self.lock();
             let b = budgets.get_mut(&(owner_kind, owner.to_string()))?;
@@ -573,7 +730,10 @@ impl Budgets {
 
     /// Replaces the budgets with what the store holds (at start). Holds of calls that were in flight are dropped: those
     /// calls ended with the hub.
-    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), apz_store::StoreError> {
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
         let stored: Vec<Budget> = apz_store::table::load_list(conn, def())?;
         let mut budgets = BTreeMap::new();
         for mut b in stored {
@@ -598,7 +758,17 @@ impl Budgets {
             apz_store::rusqlite::params![kind, owner, i64::try_from(limit).unwrap_or(i64::MAX)],
             |r| {
                 let v = |i: usize| r.get::<_, apz_store::table::Value>(i);
-                Ok((v(0)?, v(1)?, v(2)?, v(3)?, v(4)?, v(5)?, v(6)?, v(7)?, v(8)?))
+                Ok((
+                    v(0)?,
+                    v(1)?,
+                    v(2)?,
+                    v(3)?,
+                    v(4)?,
+                    v(5)?,
+                    v(6)?,
+                    v(7)?,
+                    v(8)?,
+                ))
             },
         )?;
         let mut out = Vec::new();
@@ -674,7 +844,11 @@ pub fn entries_def() -> &'static apz_store::TableDef {
 }
 
 /// Puts one ledger entry as a row (keyed by a fresh position: the ledger only appends).
-fn entry_put(e: &Entry, def: &apz_store::TableDef, out: &mut apz_store::RowSet) -> Result<(), apz_store::StoreError> {
+fn entry_put(
+    e: &Entry,
+    def: &apz_store::TableDef,
+    out: &mut apz_store::RowSet,
+) -> Result<(), apz_store::StoreError> {
     use apz_store::Table;
     // The ledger's key is its position; an append takes the next one in the statement (see apply_inserts).
     e.put(def, vec![apz_store::table::Value::Null], out)
@@ -690,8 +864,10 @@ mod tests {
 
     fn budgets() -> Budgets {
         let b = Budgets::default();
-        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1).unwrap();
-        b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1).unwrap();
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1)
+            .unwrap();
+        b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1)
+            .unwrap();
         b
     }
 
@@ -699,20 +875,41 @@ mod tests {
     fn a_task_reserves_from_its_project_and_gives_back_what_it_did_not_spend() {
         let b = budgets();
         b.start_task("t1", usd(4.0), 2).unwrap();
-        assert_eq!(b.get(OwnerKind::Project, "pr1").unwrap().left(), Some(usd(6.0)));
-        let hold = b.hold(Some("t1"), "pr1", Amount::of(usd(1.0), 1000), Some("s1"), Some("m"), 3).unwrap();
+        assert_eq!(
+            b.get(OwnerKind::Project, "pr1").unwrap().left(),
+            Some(usd(6.0))
+        );
+        let hold = b
+            .hold(
+                Some("t1"),
+                "pr1",
+                Amount::of(usd(1.0), 1000),
+                Some("s1"),
+                Some("m"),
+                3,
+            )
+            .unwrap();
         b.settle(&hold, Amount::of(usd(0.5), 400), Some("s1"), Some("m"), 4);
         let p = b.get(OwnerKind::Project, "pr1").unwrap();
         assert_eq!((p.spent, p.reserved), (usd(0.5), usd(3.5)));
         b.end_task("t1", 5);
         let p = b.get(OwnerKind::Project, "pr1").unwrap();
-        assert_eq!((p.spent, p.reserved, p.left()), (usd(0.5), 0, Some(usd(9.5))));
+        assert_eq!(
+            (p.spent, p.reserved, p.left()),
+            (usd(0.5), 0, Some(usd(9.5)))
+        );
     }
 
     #[test]
     fn a_project_that_cannot_reserve_refuses_the_task() {
         let b = budgets();
-        assert!(matches!(b.start_task("t1", usd(11.0), 2), Err(Short::Cap { owner_kind: OwnerKind::Project, .. })));
+        assert!(matches!(
+            b.start_task("t1", usd(11.0), 2),
+            Err(Short::Cap {
+                owner_kind: OwnerKind::Project,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -728,33 +925,79 @@ mod tests {
         b.settle(&hold, Amount::of(usd(4.0), 0), None, None, 4);
         let t = b.get(OwnerKind::Task, "t1").unwrap();
         assert!(t.paused, "at its cap the task pauses");
-        assert!(matches!(b.hold(Some("t1"), "pr1", Amount::of(1, 0), None, None, 5), Err(Short::Paused { .. })));
-        b.raise(OwnerKind::Task, "t1", Some(usd(2.0)), None, 6).unwrap();
-        assert!(b.hold(Some("t1"), "pr1", Amount::of(usd(1.0), 0), None, None, 7).is_ok(), "a raise resumes it");
+        assert!(matches!(
+            b.hold(Some("t1"), "pr1", Amount::of(1, 0), None, None, 5),
+            Err(Short::Paused { .. })
+        ));
+        b.raise(OwnerKind::Task, "t1", Some(usd(2.0)), None, 6)
+            .unwrap();
+        assert!(
+            b.hold(Some("t1"), "pr1", Amount::of(usd(1.0), 0), None, None, 7)
+                .is_ok(),
+            "a raise resumes it"
+        );
     }
 
     #[test]
     fn the_warning_comes_once_at_its_share() {
         let b = budgets();
         b.start_task("t1", usd(4.0), 2).unwrap();
-        let hold = b.hold(Some("t1"), "pr1", Amount::of(usd(3.3), 0), None, None, 3).unwrap();
+        let hold = b
+            .hold(Some("t1"), "pr1", Amount::of(usd(3.3), 0), None, None, 3)
+            .unwrap();
         let notices = b.settle(&hold, Amount::of(usd(3.3), 0), None, None, 4);
-        assert!(notices.iter().any(|n| matches!(n, Notice::Warn { owner_kind: OwnerKind::Task, .. })), "{notices:?}");
-        let hold = b.hold(Some("t1"), "pr1", Amount::of(usd(0.1), 0), None, None, 5).unwrap();
-        assert!(b.settle(&hold, Amount::of(usd(0.1), 0), None, None, 6).is_empty(), "not twice");
+        assert!(
+            notices.iter().any(|n| matches!(
+                n,
+                Notice::Warn {
+                    owner_kind: OwnerKind::Task,
+                    ..
+                }
+            )),
+            "{notices:?}"
+        );
+        let hold = b
+            .hold(Some("t1"), "pr1", Amount::of(usd(0.1), 0), None, None, 5)
+            .unwrap();
+        assert!(
+            b.settle(&hold, Amount::of(usd(0.1), 0), None, None, 6)
+                .is_empty(),
+            "not twice"
+        );
     }
 
     #[test]
     fn a_token_task_is_checked_in_tokens_and_charged_to_its_dollar_project_in_dollars() {
         let b = Budgets::default();
-        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1).unwrap();
-        b.set_task("t1", "pr1", Unit::Tokens, Some(2_000_000), 1).unwrap();
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1)
+            .unwrap();
+        b.set_task("t1", "pr1", Unit::Tokens, Some(2_000_000), 1)
+            .unwrap();
         b.start_task("t1", usd(2.0), 2).unwrap();
         assert!(matches!(
-            b.hold(Some("t1"), "pr1", Amount::of(usd(0.01), 3_000_000), None, None, 3),
-            Err(Short::Cap { unit: Unit::Tokens, .. })
+            b.hold(
+                Some("t1"),
+                "pr1",
+                Amount::of(usd(0.01), 3_000_000),
+                None,
+                None,
+                3
+            ),
+            Err(Short::Cap {
+                unit: Unit::Tokens,
+                ..
+            })
         ));
-        let hold = b.hold(Some("t1"), "pr1", Amount::of(usd(0.5), 500_000), None, None, 4).unwrap();
+        let hold = b
+            .hold(
+                Some("t1"),
+                "pr1",
+                Amount::of(usd(0.5), 500_000),
+                None,
+                None,
+                4,
+            )
+            .unwrap();
         b.settle(&hold, Amount::of(usd(0.4), 400_000), None, None, 5);
         assert_eq!(b.get(OwnerKind::Task, "t1").unwrap().spent, 400_000);
         assert_eq!(b.get(OwnerKind::Project, "pr1").unwrap().spent, usd(0.4));
@@ -763,13 +1006,22 @@ mod tests {
     #[test]
     fn a_long_lived_session_charges_its_project_under_the_monthly_cap() {
         let b = Budgets::default();
-        b.set_project("pr1", Unit::Usd, None, 80, Some(usd(1.0)), 1).unwrap();
-        let hold = b.hold(None, "pr1", Amount::of(usd(0.8), 0), None, None, 2).unwrap();
+        b.set_project("pr1", Unit::Usd, None, 80, Some(usd(1.0)), 1)
+            .unwrap();
+        let hold = b
+            .hold(None, "pr1", Amount::of(usd(0.8), 0), None, None, 2)
+            .unwrap();
         b.settle(&hold, Amount::of(usd(0.8), 0), None, None, 3);
-        assert!(matches!(b.hold(None, "pr1", Amount::of(usd(0.5), 0), None, None, 4), Err(Short::Monthly { .. })));
+        assert!(matches!(
+            b.hold(None, "pr1", Amount::of(usd(0.5), 0), None, None, 4),
+            Err(Short::Monthly { .. })
+        ));
         // A new month starts the count again.
         let next_month = 40 * 86_400_000;
-        assert!(b.hold(None, "pr1", Amount::of(usd(0.5), 0), None, None, next_month).is_ok());
+        assert!(
+            b.hold(None, "pr1", Amount::of(usd(0.5), 0), None, None, next_month)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -782,11 +1034,12 @@ mod tests {
     fn holds_and_charges_reach_the_store_and_budgets_load_back() {
         let dir = tempfile::tempdir().unwrap();
         let ddl = format!("{}{}", def().ddl(), entries_def().ddl());
-        let migrations: &'static [apz_store::Migration] = Box::leak(Box::new([apz_store::Migration {
-            version: 1,
-            name: "budgets",
-            sql: Box::leak(ddl.into_boxed_str()),
-        }]));
+        let migrations: &'static [apz_store::Migration] =
+            Box::leak(Box::new([apz_store::Migration {
+                version: 1,
+                name: "budgets",
+                sql: Box::leak(ddl.into_boxed_str()),
+            }]));
         let files: &'static [apz_store::FileSpec] = Box::leak(Box::new([apz_store::FileSpec {
             name: "plaza",
             file: "plaza.db",
@@ -797,16 +1050,32 @@ mod tests {
         let db = Arc::clone(store.db("plaza"));
         let b = budgets();
         b.attach(Arc::clone(&db));
-        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1).unwrap();
-        b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1).unwrap();
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, 1)
+            .unwrap();
+        b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1)
+            .unwrap();
         b.start_task("t1", usd(4.0), 2).unwrap();
-        let hold = b.hold(Some("t1"), "pr1", Amount::of(usd(1.0), 10), Some("s1"), Some("m"), 3).unwrap();
+        let hold = b
+            .hold(
+                Some("t1"),
+                "pr1",
+                Amount::of(usd(1.0), 10),
+                Some("s1"),
+                Some("m"),
+                3,
+            )
+            .unwrap();
         b.settle(&hold, Amount::of(usd(0.25), 5), Some("s1"), Some("m"), 4);
         db.flush().unwrap();
         let loaded = Budgets::default();
         db.read(|conn| loaded.load(conn)).unwrap();
-        assert_eq!(loaded.get(OwnerKind::Task, "t1"), b.get(OwnerKind::Task, "t1"));
-        let ledger = db.read(|conn| Budgets::ledger(conn, OwnerKind::Task, "t1", 10)).unwrap();
+        assert_eq!(
+            loaded.get(OwnerKind::Task, "t1"),
+            b.get(OwnerKind::Task, "t1")
+        );
+        let ledger = db
+            .read(|conn| Budgets::ledger(conn, OwnerKind::Task, "t1", 10))
+            .unwrap();
         assert_eq!(ledger.first().map(|e| e.kind), Some(EntryKind::Charge));
         assert!(ledger.iter().any(|e| e.kind == EntryKind::Hold));
     }

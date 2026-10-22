@@ -47,10 +47,6 @@ pub const COMPONENTS: &[&str] = &[
     "acp_sessions",
     "library",
     "deliverables",
-    "connectors",
-    "settings",
-    "appearance",
-    "providers",
     "spawned",
     "rules",
     "work",
@@ -94,10 +90,6 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "acp_sessions" => app.acp_sessions.snapshot(),
         "library" => app.library.snapshot(),
         "deliverables" => app.deliverables.snapshot(),
-        "connectors" => app.connectors.snapshot(),
-        "settings" => app.settings.snapshot(),
-        "appearance" => app.appearance.snapshot(),
-        "providers" => app.providers.snapshot(),
         "spawned" => app.spawned.snapshot(),
         "rules" => app.laws.rules_snapshot(),
         "work" => app.work.snapshot(),
@@ -134,10 +126,6 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "acp_sessions" => app.acp_sessions.restore(json),
         "library" => app.library.restore(json),
         "deliverables" => app.deliverables.restore(json),
-        "connectors" => app.connectors.restore(json),
-        "settings" => app.settings.restore(json),
-        "appearance" => app.appearance.restore(json),
-        "providers" => app.providers.restore(json),
         "spawned" => app.spawned.restore(json),
         "rules" => app.laws.rules_restore(json),
         "work" => app.work.restore(json),
@@ -1711,27 +1699,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The board's pauses are a setting, saved in `settings.json` on every backend: a store loaded from
-    /// the same state directory holds them again, and a save keeps them.
+    /// The board's pauses are a setting, kept in the store: rows saved and loaded again hold them, and a save that
+    /// names no pauses keeps the ones in force.
     #[test]
-    fn board_pauses_are_saved_in_settings_json() {
-        let dir = std::env::temp_dir().join(format!("apid-pauses-files-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = crate::settings::Store::load(&dir, false).unwrap();
+    fn board_pauses_are_saved_in_the_store() {
+        let store = crate::settings::Store::new(false);
+        let changed = |(changed, _): (bool, crate::settings::BoardPauses)| changed;
         assert_eq!(
-            store
-                .set_board_pause(Some("pr4"), true)
-                .map(|(changed, _)| changed),
+            store.set_board_pause(Some("pr4"), true).map(changed),
             Ok(true)
         );
         assert_eq!(
-            store
-                .set_board_pause(Some("pr4"), true)
-                .map(|(changed, _)| changed),
+            store.set_board_pause(Some("pr4"), true).map(changed),
             Ok(false)
         );
-        let reloaded = crate::settings::Store::load(&dir, false).unwrap();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&crate::settings::def().ddl()).unwrap();
+        apz_store::table::replace(&conn, crate::settings::def(), &store.rows().unwrap()).unwrap();
+        let reloaded = crate::settings::Store::new(false);
+        reloaded.load(&conn).unwrap();
         let pauses = reloaded.get().board_pauses;
         assert!(pauses.holds(Some("pr4")) && !pauses.holds(Some("pr5")) && !pauses.holds(None));
         // A save that names no pauses keeps the ones in force.
@@ -1744,45 +1730,5 @@ mod tests {
             reloaded.get().board_pauses.holds(Some("pr4")),
             "a save keeps the pauses in force"
         );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// On Postgres the `settings` component carries the pauses: stored, loaded and restored, they hold
-    /// the same boards. Skipped without a test server.
-    #[test]
-    fn board_pauses_survive_in_postgres() {
-        let Some(url) = test_database("board_pauses") else {
-            return;
-        };
-        let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
-        let db = Db::connect(&env);
-        assert!(db.enabled());
-        let dir = std::env::temp_dir().join(format!("apid-pauses-pg-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = crate::settings::Store::load(&dir, false).unwrap();
-        store.set_board_pause(Some("pr4"), true).unwrap();
-        store.set_board_pause(None, true).unwrap();
-        assert!(
-            db.store("settings", &store.snapshot()).is_ok(),
-            "the settings are stored"
-        );
-
-        let loaded = db.load("settings").expect("the stored settings");
-        let other = std::env::temp_dir().join(format!("apid-pauses-pg-b-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&other);
-        std::fs::create_dir_all(&other).unwrap();
-        let restored = crate::settings::Store::load(&other, false).unwrap();
-        restored
-            .restore(&loaded)
-            .expect("the stored settings restore");
-        let pauses = restored.get().board_pauses;
-        assert!(
-            pauses.all && pauses.holds(Some("pr9")),
-            "the whole board's pause came back"
-        );
-        assert!(pauses.projects.contains("pr4"));
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&other);
     }
 }

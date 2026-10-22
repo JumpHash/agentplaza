@@ -134,7 +134,10 @@ impl Threads {
         let mut inner = self.lock();
         let id = match thread {
             Some(id) => {
-                let t = inner.threads.get(id).ok_or_else(|| format!("no thread {id}"))?;
+                let t = inner
+                    .threads
+                    .get(id)
+                    .ok_or_else(|| format!("no thread {id}"))?;
                 if t.task != task {
                     return Err(format!("thread {id} belongs to task {}", t.task));
                 }
@@ -243,7 +246,12 @@ impl Threads {
 
     /// The threads of `task`, oldest first.
     pub fn of_task(&self, task: &str) -> Vec<Thread> {
-        self.lock().threads.values().filter(|t| t.task == task).cloned().collect()
+        self.lock()
+            .threads
+            .values()
+            .filter(|t| t.task == task)
+            .cloned()
+            .collect()
     }
 
     /// The threads' rows, for the hub's store.
@@ -253,7 +261,10 @@ impl Threads {
     }
 
     /// Replaces the threads with what the store holds (at start).
-    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), apz_store::StoreError> {
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
         let stored: Vec<Thread> = apz_store::table::load_list(conn, def())?;
         let mut inner = Inner::default();
         for t in stored {
@@ -281,11 +292,17 @@ mod tests {
         assert_eq!(address("planner", None), Some(Address::Planner));
         assert_eq!(
             address("t12/builder", None),
-            Some(Address::Seat { task: "t12".into(), seat: "builder".into() })
+            Some(Address::Seat {
+                task: "t12".into(),
+                seat: "builder".into()
+            })
         );
         assert_eq!(
             address("reviewer", Some("t3")),
-            Some(Address::Seat { task: "t3".into(), seat: "reviewer".into() })
+            Some(Address::Seat {
+                task: "t3".into(),
+                seat: "reviewer".into()
+            })
         );
         assert_eq!(address("reviewer", None), None);
         assert_eq!(address("/x", None), None);
@@ -295,26 +312,53 @@ mod tests {
     fn a_message_to_an_empty_seat_waits_for_its_next_session() {
         let threads = Threads::default();
         let sent = threads
-            .send("t1", None, "reviewer", Some("s2"), "builder", "which JSON shape?", Some("shape"), 1)
+            .send(
+                "t1",
+                None,
+                "reviewer",
+                Some("s2"),
+                "builder",
+                "which JSON shape?",
+                Some("shape"),
+                1,
+            )
             .unwrap();
         assert_eq!(threads.waiting("t1", "builder").len(), 1);
         threads.delivered(&sent.thread, sent.message.seq, "s3", 2);
         assert!(threads.waiting("t1", "builder").is_empty());
         threads
-            .send("t1", Some(&sent.thread), "builder", Some("s3"), "reviewer", "{rows: [...]}", None, 3)
+            .send(
+                "t1",
+                Some(&sent.thread),
+                "builder",
+                Some("s3"),
+                "reviewer",
+                "{rows: [...]}",
+                None,
+                3,
+            )
             .unwrap();
         assert_eq!(threads.get(&sent.thread).unwrap().messages.len(), 2);
-        assert!(threads.send("t2", Some(&sent.thread), "x", None, "y", "z", None, 4).is_err(), "not another task's thread");
+        assert!(
+            threads
+                .send("t2", Some(&sent.thread), "x", None, "y", "z", None, 4)
+                .is_err(),
+            "not another task's thread"
+        );
     }
 
     #[test]
     fn a_ping_pong_is_reported_once_and_an_output_resets_it() {
         let threads = Threads::default();
-        let first = threads.send("t1", None, "a", None, "b", "1", None, 1).unwrap();
+        let first = threads
+            .send("t1", None, "a", None, "b", "1", None, 1)
+            .unwrap();
         let mut looped = 0;
         for i in 0..LOOP_LIMIT + 3 {
             let (from, to) = if i % 2 == 0 { ("b", "a") } else { ("a", "b") };
-            let sent = threads.send("t1", Some(&first.thread), from, None, to, "again", None, 2).unwrap();
+            let sent = threads
+                .send("t1", Some(&first.thread), from, None, to, "again", None, 2)
+                .unwrap();
             looped += usize::from(sent.looped);
         }
         assert_eq!(looped, 1, "reported once");
@@ -325,7 +369,9 @@ mod tests {
     #[test]
     fn threads_round_trip() {
         let threads = Threads::default();
-        threads.send("t1", None, "a", None, "b", "hi", Some("s"), 1).unwrap();
+        threads
+            .send("t1", None, "a", None, "b", "hi", Some("s"), 1)
+            .unwrap();
         let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(&def().ddl()).unwrap();
         apz_store::table::replace(&conn, def(), &threads.rows().unwrap()).unwrap();

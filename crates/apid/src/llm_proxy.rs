@@ -1650,7 +1650,7 @@ mod tests {
                 now,
             )
             .unwrap();
-        let providers = crate::providers::Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let providers = crate::providers::test_store(Arc::clone(&vault));
         let caller = Caller::Agent {
             cid: 7,
             node: Some("n3".into()),
@@ -1945,7 +1945,7 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
         // Boot refuses the changed file; the vault stays up to say why.
         let vault = crate::vault::Store::open(&dir, &dir.join("vault.key"), None);
         let _ = vault.boot(apz_plaza::now_ms());
-        let providers = crate::providers::Store::load(&dir, Arc::new(vault)).unwrap();
+        let providers = crate::providers::test_store(Arc::new(vault));
         let caller = Caller::Agent {
             cid: 7,
             node: Some("n3".into()),
@@ -1973,7 +1973,7 @@ data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount
                 nodes: vec!["n3".into()],
             },
         );
-        let providers = crate::providers::Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let providers = crate::providers::test_store(Arc::clone(&vault));
         let elsewhere = Caller::Agent {
             cid: 7,
             node: Some("n4".into()),

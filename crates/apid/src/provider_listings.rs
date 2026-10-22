@@ -131,7 +131,12 @@ impl Listings {
 
     /// Lists `p` now (forced: even a fresh listing is fetched again) or only when its listing is missing or stale.
     /// The fetch uses the gateway's listing client: one deadline, no retries.
-    pub fn fetch(&self, gateway: &Gateway, p: &ProviderConfig, force: bool) -> Result<Arc<Listing>, String> {
+    pub fn fetch(
+        &self,
+        gateway: &Gateway,
+        p: &ProviderConfig,
+        force: bool,
+    ) -> Result<Arc<Listing>, String> {
         let id = p.id.clone();
         let generations = Arc::clone(&self.generations);
         let current = {
@@ -176,7 +181,8 @@ impl Listings {
                 None => true,
                 Some(entry) => {
                     entry.generation != self.generation(&p.id)
-                        || now.saturating_sub(entry.value.fetched_ms) >= interval_of(p).as_millis() as u64
+                        || now.saturating_sub(entry.value.fetched_ms)
+                            >= interval_of(p).as_millis() as u64
                 }
             })
             .collect()
@@ -193,7 +199,12 @@ impl Listings {
     ) -> Vec<String> {
         let (done_tx, done_rx) = mpsc::channel();
         for p in providers {
-            let (me, gateway, p, done) = (Arc::clone(self), gateway.clone(), (*p).clone(), done_tx.clone());
+            let (me, gateway, p, done) = (
+                Arc::clone(self),
+                gateway.clone(),
+                (*p).clone(),
+                done_tx.clone(),
+            );
             std::thread::Builder::new()
                 .name(format!("listing-{}", p.id))
                 .spawn(move || {
@@ -216,16 +227,24 @@ impl Listings {
     }
 
     /// Every listing, for the hub's store.
-    pub fn rows(&self, providers: &[ProviderConfig]) -> Result<apz_store::RowSet, apz_store::StoreError> {
-        let listings: Vec<Arc<Listing>> = providers.iter().filter_map(|p| self.peek(&p.id)).collect();
+    pub fn rows(
+        &self,
+        providers: &[ProviderConfig],
+    ) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        let listings: Vec<Arc<Listing>> =
+            providers.iter().filter_map(|p| self.peek(&p.id)).collect();
         apz_store::RowSet::list(def(), listings.iter().map(|l| &**l))
     }
 
     /// Fills the cache from the hub's store (at start), each listing at its provider's generation now.
-    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), apz_store::StoreError> {
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
         for listing in apz_store::table::load_list::<Listing>(conn, def())? {
             let generation = self.generation(&listing.provider);
-            self.cache.put(listing.provider.clone(), listing, generation);
+            self.cache
+                .put(listing.provider.clone(), listing, generation);
         }
         Ok(())
     }
@@ -239,8 +258,8 @@ pub fn def() -> &'static apz_store::TableDef {
 /// How often `p` is listed again: its `options.models_cache_secs` when it sets one, else [`REFRESH`].
 pub fn interval_of(p: &ProviderConfig) -> Duration {
     p.options
-        .get("models_cache_secs")
-        .and_then(serde_json::Value::as_u64)
+        .as_ref()
+        .and_then(|o| o.models_cache_secs)
         .filter(|s| *s > 0)
         .map_or(REFRESH, Duration::from_secs)
 }
@@ -259,12 +278,20 @@ mod tests {
         let p = mock("m");
         let gateway = Gateway::builder().providers(vec![p.clone()]).build();
         let listings = Listings::new();
-        assert_eq!(listings.due(std::slice::from_ref(&p)).len(), 1, "never listed");
+        assert_eq!(
+            listings.due(std::slice::from_ref(&p)).len(),
+            1,
+            "never listed"
+        );
         let first = listings.fetch(&gateway, &p, false).unwrap();
         assert!(!first.models.is_empty());
         assert!(listings.due(std::slice::from_ref(&p)).is_empty(), "fresh");
         listings.changed("m");
-        assert_eq!(listings.due(std::slice::from_ref(&p)).len(), 1, "a change makes it due");
+        assert_eq!(
+            listings.due(std::slice::from_ref(&p)).len(),
+            1,
+            "a change makes it due"
+        );
         assert_eq!(listings.attempt("m").unwrap().error, None);
     }
 
@@ -276,7 +303,12 @@ mod tests {
         listings.fetch(&gateway, &p, false).unwrap();
         let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(&def().ddl()).unwrap();
-        apz_store::table::replace(&conn, def(), &listings.rows(std::slice::from_ref(&p)).unwrap()).unwrap();
+        apz_store::table::replace(
+            &conn,
+            def(),
+            &listings.rows(std::slice::from_ref(&p)).unwrap(),
+        )
+        .unwrap();
         let restored = Listings::new();
         restored.load(&conn).unwrap();
         assert_eq!(restored.peek("m"), listings.peek("m"));
@@ -286,7 +318,8 @@ mod tests {
     fn an_interval_comes_from_the_provider_options() {
         let mut p = mock("o");
         assert_eq!(interval_of(&p), REFRESH);
-        p.options = serde_json::json!({ "models_cache_secs": 3600 });
+        p.options =
+            Some(serde_json::from_value(serde_json::json!({ "models_cache_secs": 3600 })).unwrap());
         assert_eq!(interval_of(&p), Duration::from_secs(3600));
     }
 }

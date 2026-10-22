@@ -271,7 +271,7 @@ impl App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
             laws: attached_laws(&config.state_dir),
-            connectors: crate::connectors::Store::load(&config.state_dir, Arc::clone(&vault))?,
+            connectors: crate::connectors::Store::new(Arc::clone(&vault)),
             approvals: crate::approvals::Store::load(&config.state_dir),
             acp_sessions: crate::acp::store::Sessions::default(),
             engine_feed: crate::engine_feed::Feed::default(),
@@ -352,14 +352,14 @@ impl App {
                     blobs,
                 )
             },
-            settings: settings::Store::load(&config.state_dir, config.dev_models)?,
-            appearance: crate::appearance::Store::load(&config.state_dir),
+            settings: settings::Store::new(config.dev_models),
+            appearance: crate::appearance::Store::new(),
             artifacts: Arc::new(crate::artifacts::Store::load(
                 &config.state_dir,
                 Arc::clone(&library),
             )),
             shares: Arc::new(crate::shares::Store::load(&config.state_dir)),
-            providers: providers::Store::load(&config.state_dir, Arc::clone(&vault))?,
+            providers: providers::Store::new(Arc::clone(&vault)),
             engines: crate::engine_instances::Store::load(&config.state_dir)?,
             usage_providers: crate::usage_providers::Store::load(&config.state_dir)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
@@ -408,7 +408,8 @@ impl App {
             eprintln!("apid: store: {problem}");
         }
         // A budget hold is written through to plaza.db, acknowledged before its call is sent (budgets.rs).
-        app.budgets.attach(Arc::clone(app.store.db(crate::store::PLAZA)));
+        app.budgets
+            .attach(Arc::clone(app.store.db(crate::store::PLAZA)));
         // Postgres, for the components not yet in the store.
         crate::db::restore_all(&app);
         // The built-in skills join the skill library (one the library already holds is left alone).
@@ -433,6 +434,8 @@ impl App {
             apz_plaza::now_ms(),
         );
         crate::vault::spawn_saver(Arc::clone(&app));
+        // The providers' command credentials and header values come from the vault (plaza.db keeps them blank).
+        app.providers.sync_vault();
         // Weft starts once the vault can give it its keys.
         crate::weft_hub::start(Arc::clone(&app));
         crate::shares::relay::start(Arc::clone(&app));

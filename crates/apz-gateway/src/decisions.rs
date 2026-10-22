@@ -221,7 +221,13 @@ pub(crate) fn decide(
             let base = ctx.p.base().ok_or_else(|| {
                 GatewayError::Config(format!("provider `{}` needs a base_url", ctx.p.id))
             })?;
-            let path = ctx.p.option("path").unwrap_or(SYSTEMONE_PATH);
+            let path = ctx
+                .p
+                .options
+                .as_ref()
+                .and_then(|o| o.path.as_deref())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(SYSTEMONE_PATH);
             (
                 format!("{base}/{}", path.trim_start_matches('/')),
                 system_one_body(model, req),
@@ -645,7 +651,7 @@ mod tests {
         assert_eq!(sent.path, "/v1/systemone");
         assert_eq!(sent.header("api-key"), Some("sk-secret-value"));
         assert_eq!(sent.header("authorization"), None);
-        az.options = json!({"path": "/custom/decide"});
+        az.options = Some(serde_json::from_value(json!({"path": "/custom/decide"})).unwrap());
         gateway(vec![az])
             .decide("az", "Microsoft-Decision-1", &sample())
             .unwrap();
