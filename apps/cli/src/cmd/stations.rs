@@ -1,6 +1,6 @@
 //! `agentplaza stations`: the workstations enrolled on the hub (docs/design/workstations.md, section 7): the
-//! list and one station, rename, drain, revoke, join codes, leases, the settings with the takeover policy and the
-//! hourly rate, the station audit, the recordings, the work folder's sync and files, and the live screen (a
+//! list and one station, rename, drain, revoke, join codes, leases, the settings with the takeover policy, the station
+//! audit, the recordings, the work folder's sync and files, and the live screen (a
 //! screenshot, a watch), the owner's takeover of a session from the terminal (`take`, `input`) and the workstation
 //! VMs (`vms`). The submodules hold most of those; the machine's own side (`agentplaza workstation join`) is not here.
 
@@ -222,9 +222,6 @@ pub struct SetArgs {
     /// For VMs: restore a clean snapshot after each lease.
     #[arg(long, value_enum)]
     pub snapshot_reset: Option<OnOff>,
-    /// What an hour of a lease here costs the lease's task, in plaza credits (1 credit is $0.001; 0 is free).
-    #[arg(long, value_name = "CREDITS")]
-    pub rate_per_hour: Option<u64>,
 }
 
 /// The takeover policy, as the flags spell it (`--takeover agent-waits`).
@@ -484,9 +481,6 @@ pub fn merged(mut current: StationSettings, set: &SetArgs) -> StationSettings {
     if let Some(on) = set.snapshot_reset {
         current.snapshot_reset = on.is_on();
     }
-    if let Some(credits) = set.rate_per_hour {
-        current.rate_per_hour = credits;
-    }
     current
 }
 
@@ -570,21 +564,7 @@ pub fn settings_fields(s: &Value) -> Vec<(&'static str, String)> {
         ("takeovers recorded", on_off(&s["record_takeovers"])),
         ("work folder", ctx::text(s, "work_folder")),
         ("snapshot reset", on_off(&s["snapshot_reset"])),
-        ("rate", rate_text(s["rate_per_hour"].as_u64().unwrap_or(0))),
     ]
-}
-
-/// The hourly rate in plaza credits, with its dollar equivalent (1 credit is $0.001); 0 is free.
-pub fn rate_text(credits: u64) -> String {
-    if credits == 0 {
-        "0 credits/h (free)".to_string()
-    } else {
-        format!(
-            "{credits} credits/h (${}.{:03}/h)",
-            credits / 1000,
-            credits % 1000
-        )
-    }
 }
 
 /// The warning shown wherever a station's agents act as the owner's own account: "agents act as <name>".

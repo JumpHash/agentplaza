@@ -159,15 +159,6 @@ pub enum Entry {
         #[serde(skip_serializing_if = "Option::is_none")]
         cost_usd: Option<f64>,
     },
-    /// A model call the task's budget could not cover in full.
-    ModelChargeShortfall {
-        model: String,
-        task: Option<String>,
-        wanted: i64,
-        charged: i64,
-        available: i64,
-        error: Option<String>,
-    },
     /// A tool request from the model: its call id, the tool's name, and its input as the model sent it.
     ToolRequest {
         call: String,
@@ -275,12 +266,6 @@ pub enum Entry {
         to: String,
         bytes: u64,
         ms: u64,
-    },
-    /// What the plaza paid a worker for a task, and what the task has spent.
-    Payment {
-        task: String,
-        amount: i64,
-        spent: i64,
     },
     /// The agent woke from sleep.
     Wake {},
@@ -727,14 +712,6 @@ mod tests {
                 },
                 cost_usd: None,
             },
-            Entry::ModelChargeShortfall {
-                model: "m".into(),
-                task: None,
-                wanted: 5,
-                charged: 2,
-                available: 2,
-                error: Some("short".into()),
-            },
             Entry::ToolRequest {
                 call: "c1".into(),
                 name: "read".into(),
@@ -825,11 +802,6 @@ mod tests {
                 bytes: 4096,
                 ms: 33,
             },
-            Entry::Payment {
-                task: "t1".into(),
-                amount: 500,
-                spent: 1000,
-            },
             Entry::Wake {},
             Entry::Sleep {
                 snapshot: json!({"id": "s1"}),
@@ -896,7 +868,7 @@ mod tests {
         let bus = Bus::default();
         store.attach(Arc::clone(db));
         let kinds = every_kind();
-        assert_eq!(kinds.len(), 35, "one sample for each of the 35 kinds");
+        assert_eq!(kinds.len(), 33, "one sample for each of the 33 kinds");
         for (i, entry) in kinds.iter().enumerate() {
             let work = 1 + (i as u64 % 3);
             store.record(&bus, 7, work, entry.clone());
@@ -912,7 +884,7 @@ mod tests {
             .iter()
             .map(|e| json_of(e)["kind"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(kinds_back.iter().collect::<HashSet<_>>().len(), 35);
+        assert_eq!(kinds_back.iter().collect::<HashSet<_>>().len(), 33);
     }
 
     #[test]

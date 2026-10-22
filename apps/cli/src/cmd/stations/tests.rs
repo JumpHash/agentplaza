@@ -28,7 +28,6 @@ fn all_settings() -> SetArgs {
         record_takeovers: Some(OnOff::On),
         work_folder: Some("/srv/work".into()),
         snapshot_reset: Some(OnOff::On),
-        rate_per_hour: Some(1500),
     }
 }
 
@@ -133,8 +132,6 @@ fn settings_show_and_set_parse_their_flags() {
             "/srv/work",
             "--snapshot-reset",
             "on",
-            "--rate-per-hour",
-            "1500",
         ])
         else {
             panic!("settings set")
@@ -209,43 +206,6 @@ fn flags_merge_onto_the_hubs_settings_and_leave_the_rest() {
         "a flag not given keeps the station's value"
     );
     assert_eq!(merged.work_folder, "~/AgentPlaza");
-    assert_eq!(
-        merged.rate_per_hour, 0,
-        "a flag not given keeps the station's rate"
-    );
-}
-
-#[test]
-fn the_rate_parses_as_credits_and_reads_in_credits_and_dollars() {
-    assert_eq!(rate_text(0), "0 credits/h (free)");
-    assert_eq!(rate_text(1500), "1500 credits/h ($1.500/h)");
-    assert_eq!(rate_text(7), "7 credits/h ($0.007/h)");
-    let set = SetArgs {
-        rate_per_hour: Some(250),
-        ..SetArgs::default()
-    };
-    assert!(check_set(&set).is_ok(), "a rate alone is a setting");
-    let merged = merged(
-        StationSettings {
-            rate_per_hour: 900,
-            ..StationSettings::default()
-        },
-        &set,
-    );
-    assert_eq!(merged.rate_per_hour, 250);
-    assert!(
-        settings_fields(&json!({ "rate_per_hour": 1500 }))
-            .contains(&("rate", "1500 credits/h ($1.500/h)".to_string()))
-    );
-    let Cmd::Settings {
-        action: Some(SettingsCmd::Set(set)),
-        ..
-    } = parsed(&["settings", "w1", "set", "--rate-per-hour", "0"])
-    else {
-        panic!("rate 0")
-    };
-    assert_eq!(set.rate_per_hour, Some(0), "0 is free, and it is a setting");
-    assert!(parse(&["settings", "w1", "set", "--rate-per-hour", "-5"]).is_err());
 }
 
 #[test]
@@ -550,8 +510,7 @@ fn the_merged_settings_encode_as_the_hub_reads_them() {
             "record_fps": 1,
             "record_takeovers": true,
             "work_folder": "/srv/work",
-            "snapshot_reset": true,
-            "rate_per_hour": 1500
+            "snapshot_reset": true
         })
     );
 }

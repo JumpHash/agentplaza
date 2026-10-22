@@ -1040,11 +1040,9 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             }
             let note = opt_str(input, "note").unwrap_or_default();
             let project = app.projects.advance(id, &actor, &note)?;
-            // Delivered: the project's agents' work ends, and the rest of its budget goes to the plaza (in maintenance
-            // they stay: the project is still looked after).
+            // Delivered: the project's agents' work ends (in maintenance they stay: the project is still looked after).
             if project.stage == "delivered" && !project.in_maintenance() {
                 crate::work_loop::end_project(app, &project.id, "the project was delivered");
-                crate::project_settings::return_rest(app, &project.id);
             }
             answer(app, &project, stage_hint(&project.stage))
         }
@@ -1287,9 +1285,8 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
     };
     if project.archived {
         // Nothing more is done for it: its agents' work ends (their sessions end and their VMs stop), then its open
-        // tasks are withdrawn (their escrow back in its budget), and the rest of its budget goes to the plaza. A task
-        // an agent was working on is still claimed here, its work only cancelled (it ends when the agent answers): it
-        // is withdrawn too, or its escrow would stay out of both budgets.
+        // tasks are withdrawn. A task an agent was working on is still claimed here, its work only cancelled (it ends
+        // when the agent answers): it is withdrawn too.
         crate::work_loop::end_project(app, id, "the project was archived");
         for task in &project.tasks {
             if let Some(task) = app.plaza.tasks.find(task)
@@ -1298,7 +1295,6 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
                 let _ = task.withdraw();
             }
         }
-        crate::project_settings::return_rest(app, id);
     } else if !project.paused {
         // Resumed: its agents' waiting work goes out.
         app.work.dispatch_idle(app);

@@ -243,7 +243,6 @@ impl App {
         // The same file the token was just written to: noded and vsockd are told it, and every call
         // this app makes to them presents it.
         let internal = apz_http::auth::InternalToken::file(config.state_dir.join("internal.token"));
-        let snapshot = std::fs::read_to_string(config.state_dir.join("treasury.json")).ok();
         let hub_auth =
             crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
                 .map_err(std::io::Error::other)?;
@@ -364,7 +363,7 @@ impl App {
             hf: crate::foundry::hf_import::Imports::open(&config.state_dir),
             transcripts: transcript::Store::default(),
             work: scheduler::Queues::default(),
-            plaza: plaza::Plaza::new(snapshot.as_deref()),
+            plaza: plaza::Plaza::new(),
             noded: Upstream::with_token(config.noded_port, internal.clone()),
             hub: Upstream::with_token(config.hub_port, internal),
             token,
@@ -391,11 +390,6 @@ impl App {
             }
         });
         let _ = app.me.set(Arc::downgrade(&app));
-        // A treasury.json that was refused is kept aside, not overwritten by the next save.
-        if snapshot.is_some() && !app.plaza.restored {
-            let path = app.config.state_dir.join("treasury.json");
-            let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
-        }
         // The store is the state of record: every converted component loads from it.
         for problem in crate::store::saver::load(&app) {
             eprintln!("apid: store: {problem}");
@@ -443,7 +437,6 @@ impl App {
         app.models.revive(&app.agents);
         crate::db::spawn_writer(Arc::clone(&app));
         crate::store::saver::spawn(Arc::clone(&app));
-        spawn_treasury_saver(Arc::clone(&app));
         spawn_component_savers(Arc::clone(&app));
         // A stop signal (SIGTERM, Ctrl-C) writes the state once more, in order, then exits (shutdown.rs).
         let stopping = app.handle();
@@ -454,7 +447,6 @@ impl App {
             eprintln!("apid: stopping: writing state");
             // The archives first: a snapshot that no longer holds what moved out is saved after its lines are.
             save_archives(&app);
-            save_treasury(&app);
             crate::store::saver::pass(&app);
             crate::db::write_pass(&app);
             app.store.close();
@@ -567,15 +559,11 @@ fn spawn_component_savers(app: Arc<App>) {
     });
 }
 
-/// Appends what the full task ledger and the full journal moved out ([`apz_plaza::tasks::TaskLedger::take_archived`],
-/// [`apz_plaza::treasury::Treasury::take_archived`]) to `<state-dir>/tasks-archive.jsonl` and
-/// `<state-dir>/treasury-archive.jsonl`, one JSON line each. Their sums stay in the treasury, so a line that cannot be
-/// written is logged and lost from the archive only.
+/// Appends what the full task ledger moved out ([`apz_plaza::tasks::TaskLedger::take_archived`]) to
+/// `<state-dir>/tasks-archive.jsonl`, one JSON line each. A line that cannot be written is logged and lost from the
+/// archive only.
 fn save_archives(app: &App) {
-    for (name, lines) in [
-        ("tasks-archive.jsonl", app.plaza.tasks.take_archived()),
-        ("treasury-archive.jsonl", app.plaza.treasury.take_archived()),
-    ] {
+    for (name, lines) in [("tasks-archive.jsonl", app.plaza.tasks.take_archived())] {
         if lines.is_empty() {
             continue;
         }
@@ -597,37 +585,6 @@ fn save_archives(app: &App) {
                 lines.len(),
                 path.display()
             );
-        }
-    }
-}
-
-/// Saves the treasury to `<state-dir>/treasury.json` every three seconds whenever
-/// its version has moved; the first tick always writes.
-fn spawn_treasury_saver(app: Arc<App>) {
-    std::thread::spawn(move || {
-        let mut saved = None;
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            let version = app.plaza.treasury.version();
-            if saved == Some(version) {
-                continue;
-            }
-            if save_treasury(&app) {
-                saved = Some(version);
-            }
-        }
-    });
-}
-
-/// One pass of the treasury save, run by the loop and by the stop. Returns whether the write landed; a failure is
-/// logged.
-fn save_treasury(app: &App) -> bool {
-    let path = app.config.state_dir.join("treasury.json");
-    match write_atomic(&path, &app.plaza.treasury.snapshot()) {
-        Ok(()) => true,
-        Err(err) => {
-            eprintln!("apid: cannot save {}: {err}", path.display());
-            false
         }
     }
 }

@@ -10,7 +10,6 @@ fn sample_settings() -> Settings {
         record_takeovers: false,
         work_folder: "~/AgentPlaza".to_string(),
         snapshot_reset: true,
-        rate_per_hour: 120,
     }
 }
 
@@ -31,7 +30,6 @@ fn settings_serialize_with_the_hub_keys_and_policy_names() {
             "record_takeovers": false,
             "work_folder": "~/AgentPlaza",
             "snapshot_reset": true,
-            "rate_per_hour": 120,
         })
     );
     assert_eq!(
@@ -82,20 +80,6 @@ fn settings_of_checks_the_work_folder_and_the_bounds() {
             settings_of(&form).is_ok(),
             "one frame a second is the least"
         );
-    }
-    // the_hourly_rate_is_whole_credits_from_free_to_the_bound
-    {
-        let mut form = sample_form();
-        form.rate_per_hour = "0".to_string();
-        assert_eq!(settings_of(&form).map(|s| s.rate_per_hour), Ok(0));
-        form.rate_per_hour = RATE_MAX.to_string();
-        assert!(settings_of(&form).is_ok());
-        for bad in ["-1", "1.5", "", "1000001"] {
-            form.rate_per_hour = bad.to_string();
-            assert!(settings_of(&form).is_err(), "accepted rate {bad:?}");
-        }
-        assert_eq!(rate_text(0), "Free: a lease here costs its task nothing.");
-        assert!(rate_text(120).starts_with("120 credits an hour: $0.120"));
     }
     // settings_of_refuses_an_empty_long_or_control_folder
     {

@@ -1,6 +1,6 @@
 [package]
 name = "apz-plaza"
-description = "The AgentPlaza domain: tasks, treasury and board — pure state, no I/O"
+description = "The AgentPlaza domain: tasks and board — pure state, no I/O"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1226,18 +1226,6 @@ pub const CATALOG: &[MetricDef] = &[
         "one size query per store per hour",
         "Size of a plaza store: blobs, git, database tables (the metrics tables listed apart)."
     ),
-    m!(
-        "treasury.credits",
-        "Treasury credits",
-        Count,
-        Gauge,
-        Basic,
-        Global,
-        [],
-        "the treasury journal",
-        ATOMIC,
-        "Plaza credits left."
-    ),
     // The metrics system's own cost.
     m!(
         "self.cpu_pct",

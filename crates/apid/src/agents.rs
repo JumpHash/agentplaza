@@ -551,14 +551,10 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
          nothing. Keep board posts and messages short; put long material in a shared file and link it.",
     );
     text.push_str(
-        "\n\nHow money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
-         it is posted (plaza_post_task) — no wallet is debited and no transfer cap applies. The \
-         worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
-         work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
-         at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
-         nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. Your wallet \
-         is only debited by what you send yourself (plaza_pay), up to 1000 credits a day. plaza_money shows your wallet \
-         and any task's escrow, spend and payouts.",
+        "\n\nHow money works: a task's budget is a cap in dollars or tokens, reserved from its project when the task \
+         starts. Each model call is held against the task's budget before it is sent, and settled with its real cost \
+         when it ends. A call that does not fit pauses the work until the owner raises the budget. You have no tools \
+         for money.",
     );
     let role_prompt = role_prompt.trim();
     if !role_prompt.is_empty() {

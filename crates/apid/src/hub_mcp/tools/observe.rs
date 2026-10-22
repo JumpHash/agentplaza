@@ -17,8 +17,6 @@ const DEFAULT_LIMIT: u64 = 50;
 const MAX_LIMIT: u64 = 200;
 /// A transcript tool result longer than this is cut, in bytes.
 const TOOL_RESULT_CAP: usize = 4096;
-/// The journal entries `treasury_summary` shows.
-const JOURNAL_LIMIT: usize = 20;
 const DAY_MS: u64 = 86_400_000;
 
 pub struct PlazaStatus;
@@ -33,7 +31,6 @@ pub struct GetProject;
 pub struct ProjectGraph;
 pub struct ListApprovals;
 pub struct ListMachines;
-pub struct TreasurySummary;
 pub struct UsageSummary;
 pub struct ListLaws;
 pub struct SearchLibrary;
@@ -201,14 +198,6 @@ impl Plaza for App {
             .iter()
             .filter_map(|node| serde_json::to_value(node).ok())
             .collect()
-    }
-
-    fn treasury(&self, journal_limit: usize) -> Value {
-        json!({
-            "view": serde_json::to_value(self.plaza.treasury.view()).unwrap_or(Value::Null),
-            "journal": serde_json::to_value(self.plaza.treasury.journal(journal_limit)).unwrap_or(Value::Null),
-            "plaza_budget": self.plaza.treasury.plaza_budget_balance(),
-        })
     }
 
     fn usage(&self, from_ms: u64, to_ms: u64) -> Value {
@@ -1297,44 +1286,6 @@ impl Tool for ListMachines {
             "{} machines on this page.",
             out["machines"].as_array().map_or(0, Vec::len)
         )
-    }
-}
-
-impl Tool for TreasurySummary {
-    fn name(&self) -> &'static str {
-        "treasury_summary"
-    }
-
-    fn scope(&self) -> Scope {
-        Scope::Observe
-    }
-
-    fn description(&self) -> &'static str {
-        "The treasury: balances, the plaza budget, and the latest journal entries. The balances are all-time; there is no per-window or per-agent spend yet."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "additionalProperties": false })
-    }
-
-    fn output_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "view": { "type": "object" },
-                "journal": { "type": "object" },
-                "plaza_budget": { "type": "integer" },
-            },
-            "required": ["view", "journal", "plaza_budget"],
-        })
-    }
-
-    fn call(&self, ctx: &Ctx<'_>, _args: &Value) -> Result<Value, String> {
-        Ok(ctx.plaza.treasury(JOURNAL_LIMIT))
-    }
-
-    fn summary(&self, out: &Value) -> String {
-        format!("Plaza budget {}.", out["plaza_budget"])
     }
 }
 

@@ -133,14 +133,12 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
 
   const doIt = (pr: Proposal): void => {
     const note = textarea({ rows: 2, placeholder: 'Anything the agents should know (optional)' });
-    const budget = input({ type: 'number', min: 200, step: 100, placeholder: pr.effort.budget ? String(pr.effort.budget) : 'The project’s default' });
     const knownTool = pr.instrument?.catalog;
     dialog(
       'Do it',
       [
         h('p', null, h('strong', null, pr.title)),
         h('p.pj-faint', null, knownTool ? `${pr.instrument!.name} is something you set up: it is picked, and you add it in Connectors or MCP.` : `It becomes a task of this project for a ${pr.role}. ${weighLine(pr)}.`),
-        knownTool ? null : field('Budget (credits)', budget),
         field('Note', note, undefined),
       ],
       (close) => [
@@ -148,9 +146,8 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
         lbtn(
           'Do it',
           () => {
-            const credits = Number(budget.value);
             void attempt(
-              () => projectsApi.approveProposal(p.id, pr.id, { note: note.value.trim() || undefined, budget: credits >= 200 ? credits : undefined }),
+              () => projectsApi.approveProposal(p.id, pr.id, { note: note.value.trim() || undefined }),
               knownTool ? `${pr.instrument!.name}: set it up in Connectors or MCP` : 'Picked: it is a task now',
             ).then((done) => {
               if (!done) return;

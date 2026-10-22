@@ -362,7 +362,7 @@ function build(root: HTMLElement, actions: HTMLElement, settings: Settings, mode
             h(
               'table.mdl-table',
               null,
-              h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Input (credits / 1M)'), h('th', null, 'Output (credits / 1M)'))),
+              h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Input (USD / 1M)'), h('th', null, 'Output (USD / 1M)'))),
               h('tbody', null, priceRows),
             ),
           )

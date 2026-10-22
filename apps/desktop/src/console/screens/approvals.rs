@@ -84,13 +84,13 @@ pub enum Msg {
 pub(super) struct Approval {
     pub(super) id: String,
     pub(super) cid: u64,
-    /// "tool", "payment", "review", "artifact.share" and the rest; a tool approval is "tool".
+    /// "tool", "review", "artifact.share" and the rest; a tool approval is "tool".
     pub(super) kind: String,
     /// What the approval is about: the tool for a tool approval.
     pub(super) subject: String,
     pub(super) tool: String,
     pub(super) input: Value,
-    /// The kind's own detail (a payment's amount); the input for a tool.
+    /// The kind's own detail (a review's run and task, a share's options); the input for a tool.
     pub(super) detail: Value,
     pub(super) created_ms: i64,
     pub(super) state: String,
@@ -206,7 +206,6 @@ fn wait_title(a: &Approval) -> String {
     match a.kind.as_str() {
         "review" if !goal.is_empty() => goal,
         "review" => format!("Review of {}", field(&a.detail, "task")),
-        "payment" => format!("Payment awaiting approval: {}", a.subject),
         "deploy" => a.subject.clone(),
         "artifact.share" => format!("Share {}", a.subject),
         _ => match (
@@ -226,7 +225,6 @@ fn kind_icon(kind: &str) -> &'static str {
         "review" => "git-pull-request",
         "tool" => "terminal",
         "deploy" => "rocket",
-        "payment" => "credit-card",
         "proposal" => "user-plus",
         _ => "shield-check",
     }
@@ -239,7 +237,6 @@ fn kind_colors(kind: &str) -> (Color, Color) {
         "review" => (p.review, p.review_soft),
         "tool" => (p.warn, p.warn_soft),
         "deploy" => (p.crit, p.crit_soft),
-        "payment" => (p.info, p.info_soft),
         "proposal" => (p.signal_ink, p.signal_soft),
         _ => (p.ink_2, p.hover),
     }
@@ -1001,7 +998,7 @@ fn proposal_row<'a>(p: &'a Proposal) -> Element<'a, Msg> {
     .into()
 }
 
-/// A waiting approval's card: a review with its calls, or a plain card (a tool call, a payment, a share).
+/// A waiting approval's card: a review with its calls, or a plain card (a tool call or a share).
 fn waiting_card<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
     let busy = state.busy.contains(&a.id);
     let key = format!("ap-{}", a.id);
@@ -1015,7 +1012,6 @@ fn waiting_card<'a>(state: &'a State, a: &'a Approval) -> Element<'a, Msg> {
     let deny = ui::btn("Deny", None, ui::Kind::Danger, decide(false, None));
     let approve = ui::btn("Approve", None, ui::Kind::Primary, decide(true, None));
     let (chips, body): (Vec<Element<'a, Msg>>, Element<'a, Msg>) = match a.kind.as_str() {
-        "payment" => (vec![agent], json_box(&a.detail)),
         "artifact.share" => (
             vec![agent, ui::badge("Share", ui::Tone::Signal)],
             share_body(&a.detail),
@@ -1056,7 +1052,7 @@ fn is_review(a: &Approval) -> bool {
     !field(&a.detail, "run").is_empty() && !field(&a.detail, "task").is_empty()
 }
 
-/// The JSON of a payment's detail or a tool's input, on sheet-2 and scrolling past 280 (the web's `.ap-pre`).
+/// The JSON of a tool's input, on sheet-2 and scrolling past 280 (the web's `.ap-pre`).
 fn json_box<'a>(value: &Value) -> Element<'a, Msg> {
     let source = serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".to_string());
     container(ui::scroll(ui::mono(

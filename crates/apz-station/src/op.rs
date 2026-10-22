@@ -585,7 +585,7 @@ mod tests {
             ),
             (
                 Op::Settings(settings_example()),
-                r#"{"op":"settings","takeover":"agent_waits","record":true,"retention_days":30,"record_fps":2,"record_takeovers":true,"work_folder":"~/AgentPlaza","snapshot_reset":false,"rate_per_hour":0}"#,
+                r#"{"op":"settings","takeover":"agent_waits","record":true,"retention_days":30,"record_fps":2,"record_takeovers":true,"work_folder":"~/AgentPlaza","snapshot_reset":false}"#,
             ),
         ]
     }

@@ -121,7 +121,7 @@ pub struct Event {
     pub note: String,
 }
 
-/// A project page's tabs: its plan and history, its maintenance, its environments, its settings and budget.
+/// A project page's tabs: its plan and history, its maintenance, its environments, its settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
@@ -1027,7 +1027,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         body.push(ui::card(
             "Archive project?",
             column![
-                ui::prose(format!("Nothing more is done for {}: its open tasks are withdrawn, its agents stop working on it, and the rest of its budget goes back to the plaza. Its history stays.", p.title)),
+                ui::prose(format!("Nothing more is done for {}: its open tasks are withdrawn and its agents stop working on it. Its history stays.", p.title)),
                 row![
                     ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelArchive)),
                     ui::btn("Archive", None, ui::Kind::Danger, Some(Msg::Archive)),

@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use apz_plaza::tasks::{BatchTask, CreateTask, TaskLedger, resolve_budget};
+use apz_plaza::tasks::{BatchTask, CreateTask, TaskLedger};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -40,9 +40,6 @@ pub struct Planned {
     /// The role it is for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    /// Its budget, in credits (the default when absent).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<u64>,
     /// The keys of the tasks of the list it runs after (or, when posting, the ids of tasks that
     /// exist already).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -114,7 +111,6 @@ fn checklist_task(line: &str) -> Option<Planned> {
         goal: goal.to_string(),
         acceptance: None,
         role: None,
-        budget: None,
         after,
     })
 }
@@ -285,14 +281,12 @@ pub struct Posted {
 /// Posts project `pid`'s task list whole. The project's plan must be approved (implementation or
 /// review); the list is checked ([`check`], where a link may also name a task that exists); then
 /// the ledger creates every task or none, in an order where each comes after the tasks it runs
-/// after, and each is linked to the project. A task that names no budget gets `default_budget`
-/// (the project's), else the plaza's default. Returns the tasks in the list's order.
+/// after, and each is linked to the project. Returns the tasks in the list's order.
 pub fn post(
     projects: &Store,
     ledger: &TaskLedger,
     pid: &str,
     tasks: &[Planned],
-    default_budget: Option<u64>,
 ) -> Result<Vec<Posted>, String> {
     let project = projects
         .get(pid)
@@ -322,8 +316,6 @@ pub fn post(
     let mut batch = Vec::with_capacity(tasks.len());
     for &at in &order {
         let task = &tasks[at];
-        let budget = resolve_budget(task.budget.or(default_budget))
-            .map_err(|refusal| format!("task {}: {refusal}", task.key.trim()))?;
         let (own, existing): (Vec<&str>, Vec<&str>) = task
             .after
             .iter()
@@ -333,7 +325,6 @@ pub fn post(
             request: CreateTask {
                 goal: task.goal.trim().to_string(),
                 acceptance: task.acceptance.clone(),
-                budget: Some(budget),
                 role: task.role.clone(),
                 after: existing.into_iter().map(str::to_string).collect(),
                 project: Some(pid.to_string()),
@@ -391,7 +382,6 @@ mod tests {
             goal: goal.to_string(),
             acceptance: None,
             role: None,
-            budget: None,
             after: after.iter().map(|key| key.to_string()).collect(),
         }
     }
@@ -433,12 +423,11 @@ mod tests {
     fn a_json_block_is_read_instead_of_the_checklist() {
         let text = "# Tasks\n\n- [ ] 9.9 ignored\n\n```json\n{\"tasks\": [\
             {\"key\": \"design\", \"goal\": \"Design it\", \"role\": \"architect\"},\
-            {\"key\": \"build\", \"goal\": \"Build it\", \"after\": [\"design\"], \"budget\": 3000}\
+            {\"key\": \"build\", \"goal\": \"Build it\", \"after\": [\"design\"]}\
             ]}\n```\n";
         let tasks = parse(text).expect("a list");
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[1].after, vec!["design"]);
-        assert_eq!(tasks[1].budget, Some(3000));
         assert_eq!(tasks[0].role.as_deref(), Some("architect"));
         let bare = parse("```json\n[{\"key\": \"a\", \"goal\": \"A\"}]\n```").expect("an array");
         assert_eq!(bare, vec![planned("a", "A", &[])]);
@@ -590,7 +579,7 @@ mod tests {
             .expect("tasks");
         // Posting before approval is refused, and creates nothing.
         assert!(
-            post(&projects, &ledger, pid, &list, None)
+            post(&projects, &ledger, pid, &list)
                 .unwrap_err()
                 .contains("only once its plan is approved")
         );
@@ -606,7 +595,7 @@ mod tests {
             .expect("approved");
 
         // Posted: all four at once, each running after what its line names.
-        let posted = post(&projects, &ledger, pid, &list, None).expect("posted");
+        let posted = post(&projects, &ledger, pid, &list).expect("posted");
         let keyed: Vec<(&str, &str, bool)> = posted
             .iter()
             .map(|task| (task.key.as_str(), task.id.as_str(), task.ready))
@@ -625,12 +614,7 @@ mod tests {
             projects.get(pid).expect("the project").tasks,
             vec!["t1", "t2", "t3", "t4"]
         );
-        assert!(
-            ledger
-                .list()
-                .iter()
-                .all(|task| task.project() == Some(pid) && task.budget() == 2000)
-        );
+        assert!(ledger.list().iter().all(|task| task.project() == Some(pid)));
 
         // Claimed in order: one worker, each pass taking the first ready task (as the
         // scheduler's pass does) and finishing it.
@@ -692,23 +676,16 @@ mod tests {
             .expect("the owner approves");
 
         let mut list = vec![planned("a", "write", &[]), planned("b", "check", &["a"])];
-        list[1].budget = Some(10);
-        let refused = post(&projects, &ledger, pid, &list, None).unwrap_err();
-        assert!(
-            refused.starts_with("task b: a budget of 10 credits is below the minimum"),
-            "{refused}"
-        );
-        list[1].budget = None;
         list[1].role = Some("r".repeat(65));
         assert_eq!(
-            post(&projects, &ledger, pid, &list, None).unwrap_err(),
+            post(&projects, &ledger, pid, &list).unwrap_err(),
             "task b: role must be at most 64 bytes",
             "the ledger's refusal names the task by its key"
         );
         assert!(ledger.list().is_empty());
         assert!(projects.get(pid).expect("the project").tasks.is_empty());
         list[1].role = None;
-        let posted = post(&projects, &ledger, pid, &list, None).expect("posted");
+        let posted = post(&projects, &ledger, pid, &list).expect("posted");
         let ids: Vec<&str> = posted.iter().map(|task| task.id.as_str()).collect();
         assert_eq!(ids, vec!["t1", "t2"], "the refused lists took no ids");
         assert_eq!(posted[1].after, vec!["t1"]);

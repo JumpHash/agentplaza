@@ -22,7 +22,7 @@ pub enum Cmd {
         #[arg(long)]
         project: Option<String>,
     },
-    /// One task in full: its goal, acceptance, budget and outcome.
+    /// One task in full: its goal, acceptance and outcome.
     Show {
         /// The task's id.
         id: String,
@@ -55,10 +55,6 @@ pub enum Cmd {
         /// The role that should do it.
         #[arg(long)]
         role: Option<String>,
-        /// The budget in credits, the escrow that pays the worker's work. Omit it for the
-        /// project's default, else the hub's (2000); the hub refuses a budget under 200.
-        #[arg(long)]
-        budget: Option<u64>,
         /// Assign it now to this agent (its cid): one of the project's agents.
         #[arg(long)]
         assign: Option<i64>,
@@ -583,20 +579,15 @@ fn ruling_sentence(task: &str, decision: &str) -> String {
 /// What `tasks create` says without `--project`: a task belongs to a project, and how to find or open one.
 const NO_PROJECT: &str = "a task belongs to a project: name it with --project <id> (`agentplaza projects list` shows them; `agentplaza projects create` opens one)";
 
-/// The `POST /v1/tasks` body with only the fields the user gave. An omitted budget
-/// is left out, so the hub applies its default (the project's, else the plaza's; the CLI holds no copy of them).
+/// The `POST /v1/tasks` body with only the fields the user gave.
 fn create_body(
     project: &str,
     goal: String,
     acceptance: Option<String>,
     role: Option<String>,
-    budget: Option<u64>,
     assign: Option<i64>,
 ) -> Value {
     let mut body = json!({ "project": project, "goal": goal });
-    if let Some(budget) = budget {
-        body["budget"] = json!(budget);
-    }
     if let Some(a) = acceptance {
         body["acceptance"] = json!(a);
     }
@@ -656,7 +647,6 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                     ("project", project_of(t)),
                     ("state", ctx::text(t, "state")),
                     ("role", ctx::text(t, "role")),
-                    ("budget", ctx::text(t, "budget")),
                     ("agent", ctx::text(t, "agent_cid")),
                     ("assignee", ctx::text(t, "assignee_id")),
                     ("created", ctx::when(&t["created_at"])),
@@ -731,7 +721,6 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             details,
             acceptance,
             role,
-            budget,
             assign,
         } => {
             let project = project
@@ -754,7 +743,7 @@ pub fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
                 .filter(|a| !a.trim().is_empty())
                 .map(|a| ctx::text_arg(&a))
                 .transpose()?;
-            let body = create_body(&project, goal, acceptance, role, budget, assign);
+            let body = create_body(&project, goal, acceptance, role, assign);
             let t = ctx.client.post("/v1/tasks", &body)?;
             ctx.out(&t, |t| {
                 println!(
@@ -859,15 +848,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_omits_the_budget_when_none_is_given() {
-        let bare = create_body("pr3", "t".into(), None, None, None, None);
+    fn create_never_sends_a_budget() {
+        let bare = create_body("pr3", "t".into(), None, None, None);
         assert!(bare.get("budget").is_none(), "no budget field: {bare}");
         assert_eq!(bare["goal"], "t");
         assert_eq!(bare["project"], "pr3");
-        let budgeted = create_body("pr3", "t".into(), None, None, Some(500), Some(7));
-        assert_eq!(budgeted["budget"], 500);
-        assert_eq!(budgeted["assignee"], 7);
-        assert!(budgeted.get("acceptance").is_none());
+        let assigned = create_body("pr3", "t".into(), None, None, Some(7));
+        assert_eq!(assigned["assignee"], 7);
+        assert!(assigned.get("acceptance").is_none());
     }
 
     #[test]
@@ -884,7 +872,6 @@ mod tests {
             details: None,
             acceptance: None,
             role: None,
-            budget: None,
             assign: None,
         };
         let refused = run(&ctx, create).unwrap_err();
@@ -907,7 +894,7 @@ mod tests {
             "tasks": [
                 { "id": "t1", "goal": "Survey the flaky tests", "role": "qa", "depth": 0, "state": "open", "ready": true, "blocked_by": [] },
                 { "id": "t2", "goal": "Fix the double-charge\nmore", "role": "builder", "depth": 0, "state": "claimed", "ready": false, "blocked_by": [],
-                  "agent_cid": 7, "step": { "stage": "approval", "tool": "plaza_pay", "since_ms": 0 } },
+                  "agent_cid": 7, "step": { "stage": "approval", "tool": "bash", "since_ms": 0 } },
                 { "id": "t3", "goal": "Make the tests deterministic", "role": null, "depth": 1, "state": "open", "ready": false, "blocked_by": [] },
                 { "id": "t4", "goal": "Try the migration", "role": "qa", "depth": 1, "state": "open", "ready": false, "blocked_by": ["t9"] }
             ],

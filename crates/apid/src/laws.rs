@@ -94,7 +94,7 @@ pub struct LawInfo {
     pub rationale: String,
     /// "permit" | "forbid".
     pub effect: String,
-    /// The actions it covers, e.g. "tool.exec", "plaza.pay".
+    /// The actions it covers, e.g. "tool.exec", "message.send".
     pub ops: Vec<String>,
     /// Who it applies to (`principal is Agent`, `principal in Role::"builder"`), as source text.
     pub principal: String,
@@ -1309,24 +1309,6 @@ fn plaza_operations(
                 Context::from([("role_allowed".to_string(), Value::Bool(allowed))]),
             )]
         }
-        // A payment is a send of credits from the plaza. The owner's threshold is not known here: plaza_pay
-        // holds a large payment for approval, so the law never forbids it (S-007a).
-        "plaza_pay" => {
-            let town = Entity {
-                ty: "Town".into(),
-                id: TOWN.into(),
-            };
-            store.insert(
-                &town,
-                BTreeMap::from([("name".to_string(), Value::str(TOWN))]),
-            );
-            let amount = input.get("amount").and_then(Json::as_i64).unwrap_or(0);
-            vec![(
-                "payment.send",
-                town,
-                Context::from([("amount".to_string(), Value::int(amount.into()))]),
-            )]
-        }
         // An MCP call is `mcp.call` on its server, with the tool and the risk class the owner's rules may limit.
         t if t.starts_with(crate::mcp::PREFIX) => match crate::mcp::law_operation(t) {
             Some((server, tool, risk)) => {
@@ -1377,7 +1359,7 @@ fn tool_kind(tool: &str) -> &'static str {
 /// The catalog's risk class for a tool; the constitution's irreversible-action law (C-004a) reads
 /// it. Connector actions carry their own class (`connectors::risk_of`: e.g. a DNS record or a droplet
 /// created is `irreversible`), and C-004a refuses them, since owner approvals are not threaded through
-/// tool calls yet. Payments stay `write`: they are capped transfers and verdicts are reviewable.
+/// tool calls yet.
 pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
         "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks"
@@ -1713,39 +1695,6 @@ mod tests {
                 "{tool} should be forbidden by {law}: {verdict:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_payment_is_checked_as_a_send_and_never_forbidden_whatever_its_amount() {
-        let laws = Laws::builtin();
-        for amount in [5, 900] {
-            let verdict = laws.check(
-                "7",
-                "auditor",
-                "plaza_pay",
-                &json!({"to": 9, "amount": amount, "memo": "thanks"}),
-            );
-            assert!(verdict.forbid.is_empty(), "{verdict:?}");
-            assert!(
-                verdict.requested.iter().any(|op| op == "payment.send"),
-                "{verdict:?}"
-            );
-            assert!(
-                verdict.permit.iter().any(|id| id == "S-007a"),
-                "{verdict:?}"
-            );
-        }
-        // Strict permits: a held payment is still not refused by the laws.
-        laws.set_strict(true);
-        assert!(
-            laws.refusal(
-                7,
-                "auditor",
-                "plaza_pay",
-                &json!({"to": 9, "amount": 900, "memo": "thanks"})
-            )
-            .is_none()
-        );
     }
 
     #[test]

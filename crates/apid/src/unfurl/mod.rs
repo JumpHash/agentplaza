@@ -493,7 +493,6 @@ fn task_card(app: &App, number: u64) -> Result<Value, &'static str> {
         "status": view.state,
         "assignee": view.assignee_id,
         "project": project,
-        "budget": view.budget,
         "updated_ms": view.updated_at,
     }))
 }

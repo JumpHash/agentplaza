@@ -1,8 +1,8 @@
-/* The Board, Treasury and Rules screens (the prototype's m-social2.js rules, with the console's token names). */
-.bd-bar,.tr-bar,.rl-bar,.rl-chips,.rl-acts,.rl-head,.rl-pills{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center}
+/* The Board and Rules screens (the prototype's m-social2.js rules, with the console's token names). */
+.bd-bar,.rl-bar,.rl-chips,.rl-acts,.rl-head,.rl-pills{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center}
 .rl-head{justify-content:space-between}
-.bd-feed,.tr-cards,.rl-main,.rl-group{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
-.tr-card,.rl-law,.rl-rule{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--radius-lg);padding:var(--gap);min-width:0}
+.bd-feed,.rl-main,.rl-group{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
+.rl-law,.rl-rule{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--radius-lg);padding:var(--gap);min-width:0}
 .bd-post,.rl-card{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--radius-lg);padding:16px;min-width:0}
 .bd-post{display:flex;flex-direction:column;gap:8px}
 .rl-card{display:flex;flex-direction:column;gap:12px}
@@ -49,33 +49,6 @@ button.chip{border:0;font:inherit;cursor:pointer}
 .bd-owner,.bd-slot{display:contents}
 @media (max-width:900px){.bd-time{margin-left:0}
 }
-/* Treasury */
-.tr-tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--gap)}
-@media (max-width:900px){.tr-tiles{grid-template-columns:1fr 1fr}
-}
-.tr-chart,.tr-diag{width:100%;height:auto;display:block;max-height:340px}
-.tr-chart text,.tr-diag text{font-size:9.5px;fill:var(--ink-3);font-family:var(--font-mono)}
-.tr-grid{stroke:var(--rule)}
-.tr-txt{fill:var(--ink-2);font-size:12px}
-.tr-leg{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
-.tr-leg button{display:inline-flex;gap:8px;align-items:center}
-.tr-leg .btn:first-child{padding-left:0}
-.tr-sw{width:12px;height:12px;border-radius:3px;display:inline-block}
-.tr-pager{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;color:var(--ink-2);font-size:var(--fs-sm)}
-.tr-box{fill:var(--sheet-2);stroke:var(--rule-strong)}
-.tr-arrow{fill:none;stroke:var(--ink-3);stroke-linecap:round}
-.tr-flow{stroke-dasharray:8 6;animation:tr-dash 2s linear infinite}
-@keyframes tr-dash{to{stroke-dashoffset:-28}}
-@media (prefers-reduced-motion:reduce){.tr-flow{animation:none}
-}
-.tr-val{font-weight:600}
-.tr-share{display:inline-block;position:relative;width:80px;height:6px;border-radius:3px;background:var(--rule);overflow:hidden;vertical-align:middle}
-.tr-share i{position:absolute;left:0;top:0;bottom:0;background:var(--signal);border-radius:3px}
-.tr-jrow{display:grid;grid-template-columns:88px 112px 96px minmax(0,1fr) 112px;gap:8px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--rule)}
-.tr-jrow>.num{text-align:right;font-variant-numeric:tabular-nums}
-@media (max-width:900px){.tr-jrow{grid-template-columns:1fr 1fr}
-}
-.tr-error{padding:10px 14px;border:1px solid var(--crit);border-radius:var(--radius);color:var(--crit);font-size:var(--fs-sm)}
 /* Rules: the rest of the prototype's rl- styles (its style block, with the console's token names). */
 .rl-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gap)}
 .rl-slot{display:contents}

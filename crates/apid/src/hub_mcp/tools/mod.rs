@@ -28,7 +28,6 @@ pub trait Plaza: Sync {
     fn project_graph(&self, id: &str) -> Option<Value>;
     fn approvals(&self) -> Vec<Value>;
     fn machines(&self) -> Vec<Value>;
-    fn treasury(&self, journal_limit: usize) -> Value;
     fn usage(&self, from_ms: u64, to_ms: u64) -> Value;
     fn laws(&self) -> Vec<Value>;
     /// The workstations, as `station_list` shows them. A plaza without workstations lists none.
@@ -266,7 +265,6 @@ pub static REGISTRY: &[&dyn Tool] = &[
     &observe::ProjectGraph,
     &observe::ListApprovals,
     &observe::ListMachines,
-    &observe::TreasurySummary,
     &observe::UsageSummary,
     &observe::ListLaws,
     &observe::SearchLibrary,

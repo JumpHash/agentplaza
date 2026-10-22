@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use apz_cache::Generations;
 use apz_http::{Params, Request, Response, RouteDoc, Router};
-use apz_plaza::tasks::MIN_TASK_BUDGET;
 use apz_store::rusqlite::Connection;
 use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
@@ -46,9 +45,6 @@ pub struct RoleDef {
     #[serde(default)]
     #[table(list)]
     pub tools: Vec<String>,
-    /// Default task budget for its work, credits.
-    #[serde(default)]
-    pub budget: u64,
     /// Its default model (`provider/model[@effort]`); empty = the plaza default.
     #[serde(default)]
     pub model: String,
@@ -162,10 +158,6 @@ fn validate(def: &RoleDef) -> Result<(), String> {
     for item in &def.deliverables {
         check_text("deliverable", item, usize::MAX)?;
     }
-    let min_budget = u64::try_from(MIN_TASK_BUDGET).unwrap_or(0);
-    if def.budget != 0 && !(min_budget..=50_000).contains(&def.budget) {
-        return Err(format!("budget: 0 (none) or {min_budget}..=50000 credits"));
-    }
     Ok(())
 }
 
@@ -216,12 +208,6 @@ pub fn prompt_of(def: &RoleDef) -> String {
         for item in &def.boundaries {
             out.push_str(&format!("- {}\n", item.trim()));
         }
-    }
-    if def.budget > 0 {
-        out.push_str(&format!(
-            "\n## Budget\nDefault task budget: {} credits.\n",
-            def.budget
-        ));
     }
     out
 }
@@ -401,7 +387,6 @@ mod tests {
             deliverables: vec!["A source list".into()],
             collaboration: "Takes work from the planner.".into(),
             boundaries: vec!["No purchases".into()],
-            budget: 500,
             ..Default::default()
         }
     }
@@ -422,9 +407,6 @@ mod tests {
         let mut long_resp = sample("longresp");
         long_resp.responsibilities = vec!["x".repeat(301)];
         assert!(store.save(long_resp).is_err(), "responsibility too long");
-        let mut bad_budget = sample("budget");
-        bad_budget.budget = 100;
-        assert!(store.save(bad_budget).is_err(), "budget below 200");
         assert_eq!(store.list().len(), 1);
     }
 
