@@ -258,8 +258,8 @@ pub fn def() -> &'static apz_store::TableDef {
 /// How often `p` is listed again: its `options.models_cache_secs` when it sets one, else [`REFRESH`].
 pub fn interval_of(p: &ProviderConfig) -> Duration {
     p.options
-        .get("models_cache_secs")
-        .and_then(serde_json::Value::as_u64)
+        .as_ref()
+        .and_then(|o| o.models_cache_secs)
         .filter(|s| *s > 0)
         .map_or(REFRESH, Duration::from_secs)
 }
@@ -318,7 +318,8 @@ mod tests {
     fn an_interval_comes_from_the_provider_options() {
         let mut p = mock("o");
         assert_eq!(interval_of(&p), REFRESH);
-        p.options = serde_json::json!({ "models_cache_secs": 3600 });
+        p.options =
+            Some(serde_json::from_value(serde_json::json!({ "models_cache_secs": 3600 })).unwrap());
         assert_eq!(interval_of(&p), Duration::from_secs(3600));
     }
 }

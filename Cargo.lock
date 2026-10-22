@@ -541,6 +541,7 @@ version = "0.1.0"
 dependencies = [
  "apz-http",
  "apz-proto",
+ "apz-store",
  "hmac 0.12.1",
  "serde",
  "serde_json",
@@ -780,6 +781,7 @@ dependencies = [
 name = "apz-theme"
 version = "0.1.0"
 dependencies = [
+ "apz-store",
  "serde",
  "serde_json",
  "zip",

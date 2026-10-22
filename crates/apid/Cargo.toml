@@ -26,7 +26,7 @@ apz-station = { path = "../apz-station" }
 apz-rich = { path = "../apz-rich" }
 # The metrics core and the Metrics view model (docs/architecture.md, "Metrics").
 apz-metrics-view = { path = "../apz-metrics-view" }
-apz-theme = { path = "../apz-theme" }
+apz-theme = { path = "../apz-theme", features = ["store"] }
 apz-view = { path = "../apz-view", features = ["raster"] }
 apz-artifact = { path = "../apz-artifact" }
 serde.workspace = true

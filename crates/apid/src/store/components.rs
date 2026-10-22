@@ -54,6 +54,30 @@ pub fn all() -> Vec<Component> {
         },
         // batch C2
         // batch C3
+        Component {
+            name: "connectors",
+            def: crate::connectors::def,
+            rows: |app| app.connectors.rows(),
+            load: |app, conn| app.connectors.load(conn),
+        },
+        Component {
+            name: "settings",
+            def: crate::settings::def,
+            rows: |app| app.settings.rows(),
+            load: |app, conn| app.settings.load(conn),
+        },
+        Component {
+            name: "appearance",
+            def: crate::appearance::def,
+            rows: |app| app.appearance.rows(),
+            load: |app, conn| app.appearance.load(conn),
+        },
+        Component {
+            name: "providers",
+            def: crate::providers::def,
+            rows: |app| app.providers.rows(),
+            load: |app, conn| app.providers.load(conn),
+        },
         // batch C4
         // batch C5
         // The work engine's records (phase 0).

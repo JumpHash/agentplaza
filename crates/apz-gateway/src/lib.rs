@@ -561,7 +561,7 @@ pub fn trains_on_data(name: &str) -> bool {
     };
     presets()
         .iter()
-        .any(|p| p.id == model.provider && lists_training_model(&p.options, &model.model))
+        .any(|p| p.id == model.provider && lists_training_model(p.options.as_ref(), &model.model))
 }
 
 /// What an adapter needs for one call: the gateway and the provider.
@@ -703,7 +703,10 @@ impl Ctx<'_> {
     ) -> Result<String, GatewayError> {
         let project = self
             .p
-            .option("project")
+            .options
+            .as_ref()
+            .and_then(|o| o.project.as_deref())
+            .filter(|s| !s.is_empty())
             .map(str::to_string)
             .or_else(|| self.env("GOOGLE_CLOUD_PROJECT"))
             .or_else(|| self.env("ANTHROPIC_VERTEX_PROJECT_ID"))
@@ -712,7 +715,10 @@ impl Ctx<'_> {
             })?;
         let location = self
             .p
-            .option("location")
+            .options
+            .as_ref()
+            .and_then(|o| o.location.as_deref())
+            .filter(|s| !s.is_empty())
             .map(str::to_string)
             .or_else(|| self.env("CLOUD_ML_REGION"))
             .unwrap_or_else(|| "global".to_string());

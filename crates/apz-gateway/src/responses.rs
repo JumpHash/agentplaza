@@ -58,8 +58,8 @@ pub(crate) fn complete(
 fn websocket(ctx: &Ctx) -> bool {
     ctx.p
         .options
-        .get("websocket")
-        .and_then(Value::as_bool)
+        .as_ref()
+        .and_then(|o| o.websocket)
         .unwrap_or(true)
 }
 
@@ -544,7 +544,7 @@ mod tests {
             &server,
             Auth::Env("OPENAI_API_KEY".into()),
         );
-        p.options = json!({"websocket": false});
+        p.options = Some(serde_json::from_value(json!({"websocket": false})).unwrap());
         let gw = gateway(vec![p]);
         let mut req = ChatRequest {
             model: "r/gpt-5.6-terra@max".into(),

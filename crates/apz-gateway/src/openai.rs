@@ -56,8 +56,8 @@ fn sends_effort(ctx: &Ctx) -> bool {
         || ctx
             .p
             .options
-            .get("reasoning_effort")
-            .and_then(Value::as_bool)
+            .as_ref()
+            .and_then(|o| o.reasoning_effort)
             .unwrap_or(false)
         || ctx
             .p
@@ -70,8 +70,8 @@ fn sends_effort(ctx: &Ctx) -> bool {
 fn replays_reasoning(ctx: &Ctx) -> bool {
     ctx.p
         .options
-        .get("replay_reasoning")
-        .and_then(Value::as_bool)
+        .as_ref()
+        .and_then(|o| o.replay_reasoning)
         .unwrap_or(false)
 }
 
@@ -80,8 +80,8 @@ fn replays_reasoning(ctx: &Ctx) -> bool {
 fn mistral_compat(ctx: &Ctx) -> bool {
     ctx.p
         .options
-        .get("mistral_compat")
-        .and_then(Value::as_bool)
+        .as_ref()
+        .and_then(|o| o.mistral_compat)
         .unwrap_or(false)
 }
 
@@ -102,7 +102,10 @@ fn body(ctx: &Ctx, req: &ChatRequest, model: &str, stream_options: bool) -> Valu
     if req.max_tokens > 0 {
         let field = ctx
             .p
-            .option("max_tokens_field")
+            .options
+            .as_ref()
+            .and_then(|o| o.max_tokens_field.as_deref())
+            .filter(|s| !s.is_empty())
             .unwrap_or(match ctx.p.kind {
                 ProviderKind::OpenAi if !compat => "max_completion_tokens",
                 _ => "max_tokens",
@@ -856,7 +859,7 @@ mod tests {
             Reply::sse(done),
         ]);
         let mut ds = provider("ds", ProviderKind::OpenAiCompatible, &server, Auth::None);
-        ds.options = json!({"replay_reasoning": true});
+        ds.options = Some(serde_json::from_value(json!({"replay_reasoning": true})).unwrap());
         let gw = gateway(vec![
             ds,
             provider("plain", ProviderKind::OpenAiCompatible, &server, Auth::None),
@@ -910,7 +913,7 @@ mod tests {
         ]);
         let server = FakeServer::start(vec![Reply::sse(done.clone()), Reply::sse(done)]);
         let mut mi = provider("mi", ProviderKind::OpenAiCompatible, &server, Auth::None);
-        mi.options = json!({"mistral_compat": true});
+        mi.options = Some(serde_json::from_value(json!({"mistral_compat": true})).unwrap());
         let gw = gateway(vec![
             mi,
             provider("plain", ProviderKind::OpenAiCompatible, &server, Auth::None),
@@ -979,7 +982,7 @@ mod tests {
         ]);
         let server = FakeServer::start(vec![Reply::sse(done)]);
         let mut mi = provider("mi", ProviderKind::OpenAi, &server, Auth::None);
-        mi.options = json!({"mistral_compat": true});
+        mi.options = Some(serde_json::from_value(json!({"mistral_compat": true})).unwrap());
         let gw = gateway(vec![mi]);
         gw.complete(
             &ChatRequest {

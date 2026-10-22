@@ -7,6 +7,7 @@ use crate::Tokens;
 use crate::color::Rgba;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 #[serde(rename_all = "snake_case")]
 pub enum Pattern {
     #[default]
@@ -19,6 +20,7 @@ pub enum Pattern {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 #[serde(rename_all = "snake_case")]
 pub enum Motion {
     #[default]
@@ -27,6 +29,7 @@ pub enum Motion {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 #[serde(rename_all = "snake_case")]
 pub enum Ornament {
     #[default]
@@ -36,6 +39,7 @@ pub enum Ornament {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// Behind console pages only.
@@ -47,6 +51,7 @@ pub enum Scope {
 
 /// A background spec, as stored in a theme file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 #[serde(default)]
 pub struct Background {
     pub id: String,
@@ -55,6 +60,7 @@ pub struct Background {
     /// The pattern's cell size in px.
     pub scale: f32,
     /// Up to three colour fields: token names (`signal`) or hex.
+    #[cfg_attr(feature = "store", table(list))]
     pub fields: Vec<String>,
     /// How strongly the fields show, 0..=1.
     pub strength: f32,
