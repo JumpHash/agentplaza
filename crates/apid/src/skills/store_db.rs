@@ -135,7 +135,7 @@ impl DbSkills {
             .prefix("apid-skills")
             .tempdir()
             .expect("a temporary folder");
-        let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+        let store = crate::store::open(dir.path()).expect("the store opens");
         DbSkills {
             db: Arc::clone(store.db(crate::store::PLAZA)),
             _keep: Some((dir, store)),

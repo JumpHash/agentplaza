@@ -49,7 +49,7 @@ fn fresh_cache() -> (tempfile::TempDir, apz_store::Store, Cache) {
         .prefix("unfurl-cache")
         .tempdir()
         .expect("a temporary folder");
-    let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+    let store = crate::store::open(dir.path()).expect("the store opens");
     let cache = Cache::new(Arc::clone(store.db(crate::store::PLAZA)));
     (dir, store, cache)
 }
@@ -622,13 +622,13 @@ fn the_answers_survive_a_restart() {
         fixture(include_str!("fixtures/github_pull.json")),
     );
     let first = {
-        let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+        let store = crate::store::open(dir.path()).expect("the store opens");
         let cache = Cache::new(Arc::clone(store.db(crate::store::PLAZA)));
         resolve_remote(&src, &cache, &github_pull_ref(), 0)
     };
     assert_eq!(src.calls().len(), 1);
 
-    let store = crate::store::open_for_tests(dir.path()).expect("the store opens again");
+    let store = crate::store::open(dir.path()).expect("the store opens again");
     let cache = Cache::new(Arc::clone(store.db(crate::store::PLAZA)));
     assert_eq!(
         resolve_remote(&src, &cache, &github_pull_ref(), 1_000),

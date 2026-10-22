@@ -211,7 +211,7 @@ fn sqlite_store_survives_a_reopen() {
         .expect("a temporary folder");
     let body = format!("{GOOD_SYSTEM}\nMore.\n");
     {
-        let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+        let store = crate::store::open(dir.path()).expect("the store opens");
         let prompts = SqlitePrompts::new(Arc::clone(store.db(crate::store::PLAZA)));
         prompts
             .create(
@@ -226,7 +226,7 @@ fn sqlite_store_survives_a_reopen() {
             .unwrap();
         prompts.set_active("rev", Some(2), "owner", T0 + 2).unwrap();
     }
-    let store = crate::store::open_for_tests(dir.path()).expect("the store opens again");
+    let store = crate::store::open(dir.path()).expect("the store opens again");
     let prompts = SqlitePrompts::new(Arc::clone(store.db(crate::store::PLAZA)));
     let rev = prompts.get("rev").unwrap().unwrap();
     assert_eq!(rev.tags, vec!["t".to_string()]);

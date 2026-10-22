@@ -158,7 +158,7 @@ impl SqlitePrompts {
             .prefix("apid-prompts")
             .tempdir()
             .expect("a temporary folder");
-        let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+        let store = crate::store::open(dir.path()).expect("the store opens");
         SqlitePrompts {
             db: Arc::clone(store.db(crate::store::PLAZA)),
             _keep: Some((dir, store)),

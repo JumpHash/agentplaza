@@ -221,7 +221,7 @@ fn skills_survive_a_reopen() {
         .expect("a temporary folder");
     let blobs: Arc<dyn Blobs> = Arc::new(MemBlobs::default());
     {
-        let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+        let store = crate::store::open(dir.path()).expect("the store opens");
         let skills = Skills::new(
             Arc::new(store_db::DbSkills::new(Arc::clone(
                 store.db(crate::store::PLAZA),
@@ -257,7 +257,7 @@ fn skills_survive_a_reopen() {
             .expect("edits");
     }
 
-    let store = crate::store::open_for_tests(dir.path()).expect("the store opens again");
+    let store = crate::store::open(dir.path()).expect("the store opens again");
     let skills = Skills::new(
         Arc::new(store_db::DbSkills::new(Arc::clone(
             store.db(crate::store::PLAZA),

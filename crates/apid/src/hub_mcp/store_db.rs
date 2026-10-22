@@ -302,7 +302,7 @@ fn millis(value: u64) -> i64 {
 #[cfg(test)]
 pub(crate) fn test_store(label: &str) -> (tempfile::TempDir, apz_store::Store) {
     let dir = tempfile::Builder::new().prefix(label).tempdir().unwrap();
-    let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+    let store = crate::store::open(dir.path()).expect("the store opens");
     (dir, store)
 }
 
@@ -511,7 +511,7 @@ mod tests {
             open_scope: Scope::Observe,
         };
         let token = {
-            let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+            let store = crate::store::open(dir.path()).expect("the store opens");
             let db = Arc::clone(store.db(crate::store::PLAZA));
             let tokens = DbTokens::new(Arc::clone(&db));
             let (token, record) = create(&tokens, "laptop", Scope::Operate, Some(T0 + 99_999));
@@ -521,7 +521,7 @@ mod tests {
             token
         };
 
-        let store = crate::store::open_for_tests(dir.path()).expect("the store opens again");
+        let store = crate::store::open(dir.path()).expect("the store opens again");
         let db = Arc::clone(store.db(crate::store::PLAZA));
         let tokens = DbTokens::new(Arc::clone(&db));
         let listed = tokens.list();

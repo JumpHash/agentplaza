@@ -132,7 +132,7 @@ impl Store {
             .prefix("apid-shares")
             .tempdir()
             .expect("a temporary folder");
-        let store = crate::store::open_for_tests(dir.path()).expect("the store opens");
+        let store = crate::store::open(dir.path()).expect("the store opens");
         let mut shares = Store::open(Arc::clone(store.db(crate::store::PLAZA)), dir.path());
         shares._keep = Some((dir, store));
         shares
@@ -593,7 +593,7 @@ mod tests {
 
     /// The hub's store in `dir`, and the share store over it.
     fn open(dir: &Path) -> (apz_store::Store, Store) {
-        let store = crate::store::open_for_tests(dir).expect("the store opens");
+        let store = crate::store::open(dir).expect("the store opens");
         let shares = Store::open(Arc::clone(store.db(crate::store::PLAZA)), dir);
         (store, shares)
     }

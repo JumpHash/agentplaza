@@ -1362,7 +1362,7 @@ mod tests {
 
     /// The store in `dir` as the hub has it at start: the plaza database (its tables made if missing) and the objects.
     fn open(dir: tempfile::TempDir) -> Fixture {
-        let plaza = crate::store::open_for_tests(dir.path()).expect("the store opens");
+        let plaza = crate::store::open(dir.path()).expect("the store opens");
         let objects = Arc::new(apz_blobs::Blobs::open(&dir.path().join("blobs")).expect("objects"));
         let store = Store::new(
             Arc::clone(plaza.db(crate::store::PLAZA)),

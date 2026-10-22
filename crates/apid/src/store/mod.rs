@@ -75,36 +75,6 @@ pub fn open(state_dir: &Path) -> Result<Store, StoreError> {
     Store::open(state_dir, FILES)
 }
 
-/// `open` for the tests: every component's table and every write-through table is created in `plaza.db` when the
-/// migrated file does not have it yet (the tables wait for `0001_init.sql` to be regenerated with `apid schema`).
-#[cfg(test)]
-pub fn open_for_tests(state_dir: &Path) -> Result<Store, StoreError> {
-    let store = open(state_dir)?;
-    let defs: Vec<&'static apz_store::TableDef> = components::all()
-        .iter()
-        .map(|c| (c.def)())
-        .chain(
-            components::written_through()
-                .into_iter()
-                .map(|(_, def)| def()),
-        )
-        .collect();
-    store.db(PLAZA).write(move |conn| {
-        for def in defs {
-            let found: i64 = conn.query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name = ?1",
-                [def.name.as_str()],
-                |r| r.get(0),
-            )?;
-            if found == 0 {
-                conn.execute_batch(&def.ddl())?;
-            }
-        }
-        Ok(())
-    })?;
-    Ok(store)
-}
-
 /// The DDL of every component's tables, as `sql/plaza/0001_init.sql` holds it (`apid schema` prints it).
 pub fn components_ddl() -> String {
     let mut out = String::new();

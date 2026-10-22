@@ -2712,3 +2712,321 @@ CREATE TABLE "station_sync_file" (
     PRIMARY KEY ("station", "path")
 ) STRICT;
 
+-- unfurl cache (written through)
+CREATE TABLE "unfurl_cache" (
+    "key" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "ok" INTEGER NOT NULL CHECK ("ok" IN (0, 1)),
+    "card_content" TEXT,
+    "error" TEXT,
+    "fetched_ms" INTEGER NOT NULL CHECK ("fetched_ms" >= 0),
+    "ttl_ms" INTEGER NOT NULL CHECK ("ttl_ms" >= 0),
+    PRIMARY KEY ("key")
+) STRICT;
+
+-- prompt (written through)
+CREATE TABLE "prompt" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('system', 'agents_md', 'fragment')),
+    "title" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
+    "binding" TEXT,
+    "active_version" INTEGER CHECK ("active_version" >= 0),
+    "latest_version" INTEGER NOT NULL CHECK ("latest_version" >= 0),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "archived_ms" INTEGER CHECK ("archived_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "prompt_tags" (
+    "prompt_id" TEXT NOT NULL,
+    "tags_pos" INTEGER NOT NULL CHECK ("tags_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("prompt_id", "tags_pos"),
+    FOREIGN KEY ("prompt_id") REFERENCES "prompt" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- prompt version (written through)
+CREATE TABLE "prompt_version" (
+    "prompt_id" TEXT NOT NULL,
+    "version" INTEGER NOT NULL CHECK ("version" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "note" TEXT NOT NULL,
+    "author" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "score" INTEGER NOT NULL CHECK ("score" >= 0),
+    "errors" INTEGER NOT NULL CHECK ("errors" >= 0),
+    "warnings" INTEGER NOT NULL CHECK ("warnings" >= 0),
+    "infos" INTEGER NOT NULL CHECK ("infos" >= 0),
+    "rules_version" INTEGER NOT NULL CHECK ("rules_version" >= 0),
+    "sha256" TEXT NOT NULL,
+    "body" TEXT NOT NULL,
+    PRIMARY KEY ("prompt_id", "version")
+) STRICT;
+CREATE TABLE "prompt_version_findings" (
+    "prompt_version_prompt_id" TEXT NOT NULL,
+    "prompt_version_version" INTEGER NOT NULL CHECK ("prompt_version_version" >= 0),
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "rule" TEXT NOT NULL,
+    "severity" TEXT NOT NULL CHECK ("severity" IN ('error', 'warning', 'info')),
+    "line" INTEGER NOT NULL CHECK ("line" >= 0),
+    "message" TEXT NOT NULL,
+    PRIMARY KEY ("prompt_version_prompt_id", "prompt_version_version", "findings_pos"),
+    FOREIGN KEY ("prompt_version_prompt_id", "prompt_version_version") REFERENCES "prompt_version" ("prompt_id", "version") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- prompt event (written through)
+CREATE TABLE "prompt_event" (
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "prompt_id" TEXT NOT NULL,
+    "action" TEXT NOT NULL CHECK ("action" IN ('create', 'version', 'publish', 'unpublish', 'edit', 'archive', 'restore')),
+    "version" INTEGER CHECK ("version" >= 0),
+    "actor" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "prompt_event_prompt_id" ON "prompt_event" ("prompt_id");
+
+-- hub mcp token (written through)
+CREATE TABLE "hub_mcp_token" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "name" TEXT NOT NULL,
+    "scope" TEXT NOT NULL CHECK ("scope" IN ('observe', 'operate', 'govern')),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "expires_ms" INTEGER CHECK ("expires_ms" >= 0),
+    "last_used_ms" INTEGER CHECK ("last_used_ms" >= 0),
+    "calls" INTEGER NOT NULL CHECK ("calls" >= 0),
+    "revoked_at_ms" INTEGER CHECK ("revoked_at_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "hub_mcp_token_allowlist" (
+    "hub_mcp_token_id" TEXT NOT NULL,
+    "allowlist_pos" INTEGER NOT NULL CHECK ("allowlist_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("hub_mcp_token_id", "allowlist_pos"),
+    FOREIGN KEY ("hub_mcp_token_id") REFERENCES "hub_mcp_token" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- hub mcp token digest (written through)
+CREATE TABLE "hub_mcp_token_digest" (
+    "token_id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "digest" BLOB NOT NULL,
+    PRIMARY KEY ("token_id")
+) STRICT;
+CREATE UNIQUE INDEX "hub_mcp_token_digest_digest" ON "hub_mcp_token_digest" ("digest");
+
+-- hub mcp call (written through)
+CREATE TABLE "hub_mcp_call" (
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "call_at_ms" INTEGER NOT NULL CHECK ("call_at_ms" >= 0),
+    "call_token_id" TEXT,
+    "call_client_ip" TEXT,
+    "call_tool" TEXT NOT NULL,
+    "call_args_sha256" TEXT NOT NULL,
+    "call_ok" INTEGER NOT NULL CHECK ("call_ok" IN (0, 1)),
+    "call_error" TEXT,
+    "call_duration_ms" INTEGER NOT NULL CHECK ("call_duration_ms" >= 0),
+    PRIMARY KEY ("seq")
+) STRICT;
+
+-- hub mcp settings (written through)
+CREATE TABLE "hub_mcp_settings" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "enabled" INTEGER NOT NULL CHECK ("enabled" IN (0, 1)),
+    "bind" TEXT NOT NULL CHECK ("bind" IN ('local', 'remote')),
+    "auth_mode" TEXT NOT NULL CHECK ("auth_mode" IN ('secure', 'open')),
+    "open_scope" TEXT NOT NULL CHECK ("open_scope" IN ('observe', 'operate', 'govern')),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "hub_mcp_settings_allowed_origins" (
+    "hub_mcp_settings_pos" INTEGER NOT NULL CHECK ("hub_mcp_settings_pos" >= 0),
+    "allowed_origins_pos" INTEGER NOT NULL CHECK ("allowed_origins_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("hub_mcp_settings_pos", "allowed_origins_pos"),
+    FOREIGN KEY ("hub_mcp_settings_pos") REFERENCES "hub_mcp_settings" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- share (written through)
+CREATE TABLE "share" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "target_kind" TEXT NOT NULL,
+    "target_id" TEXT NOT NULL,
+    "version" INTEGER CHECK ("version" >= 0),
+    "password_hash" TEXT,
+    "expires_ms" INTEGER CHECK ("expires_ms" >= 0),
+    "allow_download" INTEGER NOT NULL CHECK ("allow_download" IN (0, 1)),
+    "created_by" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "revoked_ms" INTEGER CHECK ("revoked_ms" >= 0),
+    "title" TEXT NOT NULL,
+    PRIMARY KEY ("id")
+) STRICT;
+
+-- share event (written through)
+CREATE TABLE "share_event" (
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "share" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "kind" TEXT NOT NULL,
+    "via" TEXT NOT NULL,
+    PRIMARY KEY ("seq")
+) STRICT;
+CREATE INDEX "share_event_share_at_ms" ON "share_event" ("share", "at_ms");
+
+-- skill (written through)
+CREATE TABLE "skill" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "name" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
+    "active_version" INTEGER CHECK ("active_version" >= 0),
+    "latest_version" INTEGER NOT NULL CHECK ("latest_version" >= 0),
+    "source_kind" TEXT NOT NULL CHECK ("source_kind" IN ('built', 'upload', 'github')),
+    "source_github_repo" TEXT,
+    "source_github_git_ref" TEXT,
+    "source_github_path" TEXT,
+    "source_github_commit" TEXT,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "archived_ms" INTEGER CHECK ("archived_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "skill_tags" (
+    "skill_id" TEXT NOT NULL,
+    "tags_pos" INTEGER NOT NULL CHECK ("tags_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("skill_id", "tags_pos"),
+    FOREIGN KEY ("skill_id") REFERENCES "skill" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "skill_bindings" (
+    "skill_id" TEXT NOT NULL,
+    "bindings_pos" INTEGER NOT NULL CHECK ("bindings_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("skill_id", "bindings_pos"),
+    FOREIGN KEY ("skill_id") REFERENCES "skill" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- skill version (written through)
+CREATE TABLE "skill_version" (
+    "skill_id" TEXT NOT NULL,
+    "version" INTEGER NOT NULL CHECK ("version" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "note" TEXT NOT NULL,
+    "author" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "score" INTEGER NOT NULL CHECK ("score" >= 0),
+    "errors" INTEGER NOT NULL CHECK ("errors" >= 0),
+    "warnings" INTEGER NOT NULL CHECK ("warnings" >= 0),
+    "infos" INTEGER NOT NULL CHECK ("infos" >= 0),
+    "rules_version" INTEGER NOT NULL CHECK ("rules_version" >= 0),
+    "hash" TEXT NOT NULL,
+    "file_count" INTEGER NOT NULL CHECK ("file_count" >= 0),
+    "total_bytes" INTEGER NOT NULL CHECK ("total_bytes" >= 0),
+    "source_commit" TEXT,
+    "skill_md" TEXT NOT NULL,
+    PRIMARY KEY ("skill_id", "version")
+) STRICT;
+
+-- skill file (written through)
+CREATE TABLE "skill_file" (
+    "skill_id" TEXT NOT NULL,
+    "version" INTEGER NOT NULL CHECK ("version" >= 0),
+    "path" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "hash" TEXT NOT NULL,
+    "size" INTEGER NOT NULL CHECK ("size" >= 0),
+    "executable" INTEGER NOT NULL CHECK ("executable" IN (0, 1)),
+    PRIMARY KEY ("skill_id", "version", "path")
+) STRICT;
+
+-- skill finding (written through)
+CREATE TABLE "skill_finding" (
+    "skill_id" TEXT NOT NULL,
+    "version" INTEGER NOT NULL CHECK ("version" >= 0),
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "finding_rule" TEXT NOT NULL,
+    "finding_severity" TEXT NOT NULL CHECK ("finding_severity" IN ('error', 'warning', 'info')),
+    "finding_path" TEXT NOT NULL,
+    "finding_line" INTEGER NOT NULL CHECK ("finding_line" >= 0),
+    "finding_message" TEXT NOT NULL,
+    PRIMARY KEY ("skill_id", "version", "seq")
+) STRICT;
+
+-- skill event (written through)
+CREATE TABLE "skill_event" (
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "skill_id" TEXT NOT NULL,
+    "action" TEXT NOT NULL CHECK ("action" IN ('create', 'version', 'publish', 'unpublish', 'edit', 'bind', 'archive', 'restore')),
+    "version" INTEGER CHECK ("version" >= 0),
+    "actor" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+
+-- artifact (written through)
+CREATE TABLE "artifact" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "author_cid" INTEGER CHECK ("author_cid" >= 0),
+    "author" TEXT NOT NULL,
+    "project" TEXT,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "shared" INTEGER NOT NULL CHECK ("shared" IN (0, 1)),
+    PRIMARY KEY ("id")
+) STRICT;
+
+-- artifact version (written through)
+CREATE TABLE "artifact_version" (
+    "artifact_id" TEXT NOT NULL,
+    "version" INTEGER NOT NULL CHECK ("version" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "title" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "spec_bytes" INTEGER NOT NULL CHECK ("spec_bytes" >= 0),
+    "bytes" INTEGER NOT NULL CHECK ("bytes" >= 0),
+    "spec_hash" TEXT NOT NULL,
+    PRIMARY KEY ("artifact_id", "version")
+) STRICT;
+CREATE TABLE "artifact_version_blobs" (
+    "artifact_version_artifact_id" TEXT NOT NULL,
+    "artifact_version_version" INTEGER NOT NULL CHECK ("artifact_version_version" >= 0),
+    "blobs_pos" INTEGER NOT NULL CHECK ("blobs_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("artifact_version_artifact_id", "artifact_version_version", "blobs_pos"),
+    FOREIGN KEY ("artifact_version_artifact_id", "artifact_version_version") REFERENCES "artifact_version" ("artifact_id", "version") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "artifact_version_scripts" (
+    "artifact_version_artifact_id" TEXT NOT NULL,
+    "artifact_version_version" INTEGER NOT NULL CHECK ("artifact_version_version" >= 0),
+    "scripts_pos" INTEGER NOT NULL CHECK ("scripts_pos" >= 0),
+    "panel" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    "hash" TEXT NOT NULL,
+    PRIMARY KEY ("artifact_version_artifact_id", "artifact_version_version", "scripts_pos"),
+    FOREIGN KEY ("artifact_version_artifact_id", "artifact_version_version") REFERENCES "artifact_version" ("artifact_id", "version") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- artifact blob (written through)
+CREATE TABLE "artifact_blob" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "cid" INTEGER CHECK ("cid" >= 0),
+    "content_type" TEXT NOT NULL,
+    "bytes" INTEGER NOT NULL CHECK ("bytes" >= 0),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "hash" TEXT NOT NULL,
+    PRIMARY KEY ("id")
+) STRICT;
+
