@@ -35,11 +35,20 @@ pub(crate) fn complete(
     }
     let stop = match call {
         Some((name, input)) => {
-            sink(Delta::ToolUse {
-                name: name.to_string(),
-            });
             output_chars += name.len() + input.to_string().len();
             let id = format!("mock_{}", crate::tool_use_count(&req.messages));
+            // The call comes whole: its start, its input and its end go out together.
+            let index = content.len();
+            sink(Delta::ToolUse {
+                name: name.to_string(),
+                index,
+                id: id.clone(),
+            });
+            sink(Delta::ToolInput {
+                index,
+                json: input.to_string(),
+            });
+            sink(Delta::BlockEnd { index });
             content.push(Block::ToolUse {
                 id,
                 name: name.to_string(),
@@ -260,9 +269,11 @@ mod tests {
         assert!(first.usage.input_tokens > 0 && first.usage.output_tokens > 0);
         assert!(
             deltas.iter().any(|d| matches!(d, Delta::Text { .. }))
-                && deltas.contains(&Delta::ToolUse {
-                    name: "write_file".into()
-                })
+                && deltas.iter().any(|d| matches!(
+                    d,
+                    Delta::ToolUse { name, id: started, .. }
+                        if name == "write_file" && started.as_str() == id
+                ))
         );
 
         let id = id.to_string();

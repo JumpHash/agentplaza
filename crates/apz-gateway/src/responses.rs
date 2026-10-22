@@ -237,6 +237,8 @@ fn exchange(socket: &mut Socket, body: &Value, sink: &mut dyn FnMut(Delta)) -> E
     let deadline = Instant::now() + CALL_TIMEOUT;
     let mut seen = false;
     let (mut streamed_text, mut streamed_thinking) = (false, false);
+    // The output indices of the function calls streamed as they were written, and of those whose input came in chunks.
+    let (mut streamed_calls, mut chunked): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
     loop {
         let message = match socket.recv(POLL) {
             Ok(Some(message)) => message,
@@ -279,12 +281,48 @@ fn exchange(socket: &mut Socket, body: &Value, sink: &mut dyn FnMut(Delta)) -> E
                     });
                 }
             }
+            "response.output_item.added" if event["item"]["type"] == "function_call" => {
+                let index = output_index(&event);
+                streamed_calls.push(index);
+                sink(Delta::ToolUse {
+                    name: event["item"]["name"].as_str().unwrap_or("").to_string(),
+                    index,
+                    id: event["item"]["call_id"].as_str().unwrap_or("").to_string(),
+                });
+            }
+            "response.function_call_arguments.delta" => {
+                if let Some(delta) = event["delta"].as_str() {
+                    let index = output_index(&event);
+                    chunked.push(index);
+                    sink(Delta::ToolInput {
+                        index,
+                        json: delta.to_string(),
+                    });
+                }
+            }
+            "response.function_call_arguments.done" => {
+                let index = output_index(&event);
+                // A call whose input came whole, with no chunks before it, is sent whole here.
+                let arguments = event["arguments"].as_str().unwrap_or("");
+                if !chunked.contains(&index) && !arguments.is_empty() {
+                    sink(Delta::ToolInput {
+                        index,
+                        json: arguments.to_string(),
+                    });
+                }
+                sink(Delta::BlockEnd { index });
+            }
             "response.completed" | "response.incomplete" => {
                 // The text and reasoning summaries went out as they streamed; the
-                // final object contributes what was not streamed, and the tool calls.
+                // final object contributes what was not streamed, and the tool calls
+                // that did not stream.
                 let mut rest = |delta: Delta| match delta {
                     Delta::Text { .. } if streamed_text => {}
                     Delta::Thinking { .. } if streamed_thinking => {}
+                    Delta::ToolUse { index, .. }
+                    | Delta::ToolInput { index, .. }
+                    | Delta::BlockEnd { index }
+                        if streamed_calls.contains(&index) => {}
                     other => sink(other),
                 };
                 return Exchange::Finished(decode(&event["response"], &mut rest));
@@ -406,6 +444,11 @@ fn input(messages: &[Message]) -> Vec<Value> {
     items
 }
 
+/// The output index of the item an event is about: its place in the response's `output`.
+fn output_index(event: &Value) -> usize {
+    event["output_index"].as_u64().unwrap_or(0) as usize
+}
+
 fn decode(v: &Value, sink: &mut dyn FnMut(Delta)) -> Result<ChatResponse, GatewayError> {
     if v["status"] == "failed" {
         let message = v["error"]["message"]
@@ -419,7 +462,7 @@ fn decode(v: &Value, sink: &mut dyn FnMut(Delta)) -> Result<ChatResponse, Gatewa
     }
     let mut content = Vec::new();
     let mut refused = false;
-    for item in v["output"].as_array().into_iter().flatten() {
+    for (index, item) in v["output"].as_array().into_iter().flatten().enumerate() {
         match item["type"].as_str().unwrap_or("") {
             "message" => {
                 for part in item["content"].as_array().into_iter().flatten() {
@@ -443,11 +486,24 @@ fn decode(v: &Value, sink: &mut dyn FnMut(Delta)) -> Result<ChatResponse, Gatewa
             }
             "function_call" => {
                 let name = item["name"].as_str().unwrap_or("").to_string();
-                sink(Delta::ToolUse { name: name.clone() });
-                let (input, invalid) = parse_tool_input(item["arguments"].as_str().unwrap_or(""));
+                let id = item["call_id"].as_str().unwrap_or("").to_string();
+                // A call that did not stream goes out whole, at its place in the output.
+                let arguments = item["arguments"].as_str().unwrap_or("");
+                sink(Delta::ToolUse {
+                    name: name.clone(),
+                    index,
+                    id: id.clone(),
+                });
+                if !arguments.is_empty() {
+                    sink(Delta::ToolInput {
+                        index,
+                        json: arguments.to_string(),
+                    });
+                }
+                sink(Delta::BlockEnd { index });
+                let (input, invalid) = parse_tool_input(arguments);
                 let meta =
                     invalid.or_else(|| item.get("id").map(|id| json!({"kind": TAG, "id": id})));
-                let id = item["call_id"].as_str().unwrap_or("").to_string();
                 content.push(Block::ToolUse {
                     id,
                     name,
@@ -578,6 +634,22 @@ mod tests {
         assert!(deltas.contains(&Delta::Text {
             text: "Listing.".into()
         }));
+        // The call came whole in the answer: its start, its input and its end, at its place in the output.
+        assert_eq!(
+            deltas[deltas.len() - 3..],
+            [
+                Delta::ToolUse {
+                    name: "bash".into(),
+                    index: 2,
+                    id: "call_1".into(),
+                },
+                Delta::ToolInput {
+                    index: 2,
+                    json: "{\"command\":\"ls\"}".into(),
+                },
+                Delta::BlockEnd { index: 2 },
+            ]
+        );
 
         let b = server.requests()[0].json();
         assert_eq!(
@@ -639,10 +711,46 @@ mod tests {
         ]
     }
 
+    /// The events of one call that streams a function call: its start, its
+    /// arguments in two chunks, the arguments whole, then the completed response.
+    fn call_events(id: &Value) -> Vec<Value> {
+        let call = json!({
+            "type": "function_call", "id": "fc_1", "call_id": "call_9", "name": "read_file",
+            "arguments": "", "status": "in_progress",
+        });
+        let response = json!({
+            "model": "gpt-5-2025", "status": "completed",
+            "output": [{
+                "type": "function_call", "id": "fc_1", "call_id": "call_9", "name": "read_file",
+                "arguments": "{\"path\": \"a.txt\"}", "status": "completed",
+            }],
+            "usage": {"input_tokens": 5, "output_tokens": 2},
+        });
+        vec![
+            json!({"type": "response.created", "stream_id": id, "response": {"status": "in_progress"}}),
+            json!({"type": "response.output_item.added", "stream_id": id, "output_index": 0, "item": call}),
+            json!({"type": "response.function_call_arguments.delta", "stream_id": id, "output_index": 0, "item_id": "fc_1", "delta": "{\"path\": "}),
+            json!({"type": "response.function_call_arguments.delta", "stream_id": id, "output_index": 0, "item_id": "fc_1", "delta": "\"a.txt\"}"}),
+            json!({"type": "response.function_call_arguments.done", "stream_id": id, "output_index": 0, "item_id": "fc_1", "arguments": "{\"path\": \"a.txt\"}"}),
+            json!({"type": "response.completed", "stream_id": id, "response": response}),
+        ]
+    }
+
     /// Port 0, `/v1/responses`: a WebSocket that answers every `response.create`
     /// with [`events`] (or closes at once, when `close_at_once`), and a POST
     /// answered with `answer`. Counts the sockets opened and the POSTs.
     fn server(
+        answer: Value,
+        close_at_once: bool,
+        accepts: Arc<AtomicUsize>,
+        posts: Arc<AtomicUsize>,
+    ) -> Handle {
+        server_with(events, answer, close_at_once, accepts, posts)
+    }
+
+    /// [`server`], answering each `response.create` with the events `script` gives.
+    fn server_with(
+        script: fn(&Value) -> Vec<Value>,
         answer: Value,
         close_at_once: bool,
         accepts: Arc<AtomicUsize>,
@@ -671,7 +779,7 @@ mod tests {
                                     Ok(Some(ws::Message::Text(raw))) => {
                                         let create: Value =
                                             serde_json::from_str(&raw).expect("JSON");
-                                        for event in events(&create["stream_id"]) {
+                                        for event in script(&create["stream_id"]) {
                                             socket
                                                 .send(&ws::Message::Text(event.to_string()))
                                                 .expect("send");
@@ -738,6 +846,51 @@ mod tests {
         assert_eq!(
             (accepts.load(Ordering::SeqCst), posts.load(Ordering::SeqCst)),
             (1, 0)
+        );
+    }
+
+    #[test]
+    fn websocket_streams_a_function_call_as_it_is_written_and_does_not_send_it_twice() {
+        let (accepts, posts) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let server = server_with(
+            call_events,
+            json!({}),
+            false,
+            accepts.clone(),
+            posts.clone(),
+        );
+        let gw = gateway(vec![at(server.port())]);
+        let mut deltas = Vec::new();
+        let resp = call(&gw, &mut deltas);
+        assert_eq!(
+            deltas,
+            vec![
+                Delta::ToolUse {
+                    name: "read_file".into(),
+                    index: 0,
+                    id: "call_9".into(),
+                },
+                Delta::ToolInput {
+                    index: 0,
+                    json: "{\"path\": ".into(),
+                },
+                Delta::ToolInput {
+                    index: 0,
+                    json: "\"a.txt\"}".into(),
+                },
+                Delta::BlockEnd { index: 0 },
+            ],
+            "the completed object adds no call that already streamed"
+        );
+        let Block::ToolUse {
+            id, name, input, ..
+        } = &resp.content[0]
+        else {
+            panic!("the call is the answer's first block: {:?}", resp.content)
+        };
+        assert_eq!(
+            (id.as_str(), name.as_str(), input.clone()),
+            ("call_9", "read_file", json!({"path": "a.txt"}))
         );
     }
 

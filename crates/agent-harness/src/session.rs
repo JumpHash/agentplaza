@@ -219,6 +219,7 @@ pub(crate) fn kind_of(message: &HostMessage) -> &'static str {
         HostMessage::Stop { .. } => "stop",
         HostMessage::Work { .. } => "work",
         HostMessage::ModelResult { .. } => "model_result",
+        HostMessage::ModelDelta { .. } => "model_delta",
         HostMessage::ToolDecision { .. } => "tool_decision",
         HostMessage::PermissionDecision { .. } => "permission_decision",
         HostMessage::ToolBatchDecision { .. } => "tool_batch_decision",
