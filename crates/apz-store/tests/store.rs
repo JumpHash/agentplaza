@@ -211,6 +211,31 @@ fn a_backup_taken_during_writes_is_consistent_and_restores() {
     );
 }
 
+/// The files hold the hub's state of record (and the vault's sealed records): owner-only, with their WAL and backups.
+#[cfg(unix)]
+#[test]
+fn the_files_and_their_backups_are_the_owners_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    // A file another version left world-readable is tightened too.
+    std::fs::write(state.join("transcripts.db"), b"").unwrap();
+    std::fs::set_permissions(
+        state.join("transcripts.db"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let store = Store::open(&state, FILES).unwrap();
+    insert(&store, 1, 0).unwrap();
+    store.backup_to(&dir.path().join("backup")).unwrap();
+    let mode = |p: std::path::PathBuf| std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+    for file in ["plaza.db", "plaza.db-wal", "transcripts.db"] {
+        assert_eq!(mode(state.join(file)), 0o600, "{file}");
+    }
+    assert_eq!(mode(dir.path().join("backup").join("plaza.db")), 0o600);
+}
+
 #[test]
 fn thirty_two_readers_and_ten_thousand_writes_never_see_busy() {
     const READERS: usize = 32;

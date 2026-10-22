@@ -53,6 +53,50 @@ const MMAP_BYTES: i64 = 256 * 1024 * 1024;
 /// Prepared statements each connection keeps compiled.
 const STATEMENT_CACHE: usize = 256;
 
+/// Makes `path` readable and writable by its owner only (0600), creating it empty when it is missing, before SQLite
+/// opens it: the hub's files hold its state of record (and the vault's sealed records), and SQLite gives a file's
+/// `-wal` and `-shm` the file's own mode. Tightens the mode of a file (and of its `-wal`/`-shm`) that has a looser one.
+/// Elsewhere than Unix the file keeps the folder's access rules.
+pub(crate) fn private(path: &Path) -> Result<(), StoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+        {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                for p in [
+                    path.to_path_buf(),
+                    with_suffix(path, "-wal"),
+                    with_suffix(path, "-shm"),
+                ] {
+                    if let Ok(meta) = std::fs::metadata(&p)
+                        && meta.permissions().mode() & 0o077 != 0
+                    {
+                        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
+                    }
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// `path` with `suffix` after its file name (`plaza.db` → `plaza.db-wal`).
+#[cfg(unix)]
+fn with_suffix(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    std::path::PathBuf::from(name)
+}
+
 /// Opens a connection to `path` with the settings every connection of a store shares: WAL (set by the writer), the
 /// file's durability, foreign keys, the busy timeout, the cache, memory-mapped reads, temporary data in memory, the
 /// statement cache; a reader is also `query_only`. Each connection is used by one thread at a time (SQLite's
@@ -62,6 +106,9 @@ pub(crate) fn open(
     durability: Durability,
     role: Role,
 ) -> Result<Connection, StoreError> {
+    if role == Role::Writer {
+        private(path)?;
+    }
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX

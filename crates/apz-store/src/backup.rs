@@ -18,6 +18,8 @@ pub(crate) fn copy(src: &Connection, dest: &Path) -> Result<(), StoreError> {
         std::fs::create_dir_all(parent)?;
     }
     let _ = std::fs::remove_file(dest);
+    // A backup holds what the file holds: owner-only, like it.
+    crate::conn::private(dest)?;
     {
         let mut out = Connection::open(dest)?;
         let backup = Backup::new(src, &mut out)?;
