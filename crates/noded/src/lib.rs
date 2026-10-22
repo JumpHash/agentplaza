@@ -261,10 +261,7 @@ impl Node {
             apple: self.probed.apple.clone(),
             cpu: self.probed.cpu.clone(),
             gpus: host_gpus(),
-            accelerators: accelerators_now(
-                &self.probed.facts.accelerators,
-                &train::busy_devices(self.probed.facts.docker_host.as_deref()),
-            ),
+            accelerators: accelerators_now(&self.probed.facts.accelerators, &train::busy_devices()),
             trainer: self.probed.facts.trainer.clone(),
             fabric: cached_fabric(&self.fabric, Instant::now(), probe_fabric),
             cpus: host_cpus(),
@@ -1088,8 +1085,6 @@ pub struct Trainer {
 struct MachineFacts {
     accelerators: Vec<Accelerator>,
     trainer: Trainer,
-    /// The docker engine trainers run in (`docker -H`); None for the default context.
-    docker_host: Option<String>,
 }
 
 /// How long the fabric addresses are kept before they are read again.
@@ -1122,16 +1117,14 @@ const ROCM_QUERY: [&str; 4] = ["--showproductname", "--showmeminfo", "vram", "--
 const NVIDIA_REFRESH: Duration = Duration::from_secs(2);
 const WINDOWS_ADDRESSES: &str = "Get-NetIPAddress | ForEach-Object { $_.IPAddress }";
 
-/// Probes the accelerators, the docker engine, the trainer runtime and the fabric addresses.
+/// Probes the accelerators and the trainer runtime.
 fn probe_machine_facts(apple: Option<&Apple>) -> MachineFacts {
     let accelerators = probe_accelerators(apple);
     let vendors: Vec<&str> = accelerators.iter().map(|device| device.vendor).collect();
-    let docker_host = train::docker_host();
-    let trainer = train::probe_trainer(&vendors, docker_host.as_deref());
+    let trainer = train::probe_trainer(&vendors);
     MachineFacts {
         accelerators,
         trainer,
-        docker_host,
     }
 }
 
@@ -1959,23 +1952,23 @@ fn router() -> Router<Node> {
         .post("/v1/runs/{id}/vms/{index}/fork", |node, request, params| {
             fork_vm(node, params.get("id"), params.get("index"), &request.body)
         })
-        // Trainer jobs: a container per job (or the native runner on macOS); see `train`.
-        .get("/v1/train", |node, _, _| train::list(node))
+        // Trainer jobs: a native run per job, under the OS sandbox; see `train`.
+        .get("/v1/train", |_, _, _| train::list())
         .post("/v1/train", |node, request, _| {
             train::start(node, &request.body)
         })
-        .get("/v1/train/{job_id}/events", |node, request, params| {
+        .get("/v1/train/{job_id}/events", |_, request, params| {
             let after = request
                 .query_param("after")
                 .and_then(|text| text.parse().ok())
                 .unwrap_or(0);
-            train::events(node, params.get("job_id"), after)
+            train::events(params.get("job_id"), after)
         })
-        .post("/v1/train/{job_id}/stop", |node, _, params| {
-            train::stop(node, params.get("job_id"))
+        .post("/v1/train/{job_id}/stop", |_, _, params| {
+            train::stop(params.get("job_id"))
         })
-        .delete("/v1/train/{job_id}", |node, _, params| {
-            train::delete(node, params.get("job_id"))
+        .delete("/v1/train/{job_id}", |_, _, params| {
+            train::delete(params.get("job_id"))
         })
 }
 

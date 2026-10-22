@@ -51,7 +51,8 @@ pub struct Spec {
     pub workdir: PathBuf,
     /// More paths the child may read (a runtime: node, python, a uv cache).
     pub read_only: Vec<PathBuf>,
-    /// More paths the child may read and write (caches).
+    /// More paths the child may read and write: directories (caches; created if missing), or existing files and device
+    /// nodes (a GPU's), granted as they are.
     pub read_write: Vec<PathBuf>,
     pub network: Network,
     pub limits: Limits,
@@ -239,7 +240,7 @@ pub(crate) fn prepare(spec: &Spec) -> Result<Prepared, SandboxError> {
     let read_write = spec
         .read_write
         .iter()
-        .map(|path| writable_dir(path))
+        .map(|path| writable_path(path))
         .collect::<Result<Vec<_>, _>>()?;
 
     for granted in [&workdir].into_iter().chain(&read_write).chain(&read_only) {
@@ -291,6 +292,15 @@ fn writable_dir(path: &Path) -> Result<PathBuf, SandboxError> {
     }
     std::fs::create_dir_all(path)?;
     real_path(path)
+}
+
+/// A path the child may write: an existing file or device node (a GPU's `/dev/nvidia0`) as it is, anything else a
+/// directory, created if missing.
+fn writable_path(path: &Path) -> Result<PathBuf, SandboxError> {
+    match std::fs::metadata(path) {
+        Ok(meta) if !meta.is_dir() => real_path(path),
+        _ => writable_dir(path),
+    }
 }
 
 /// Finds the program: an absolute path is used as given; a bare name is searched in
