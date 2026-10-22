@@ -20,7 +20,7 @@ mod runner;
 
 use std::str::FromStr;
 
-pub use checks::{check_all, check_with};
+pub use checks::{check_all, check_with, not_run_here, runs_here, runs_on};
 pub use runner::{Output, Runner, SystemRunner};
 
 /// One requirement.

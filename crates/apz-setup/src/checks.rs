@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 const WHP_QUERY: &str =
     "(Get-CimInstance Win32_OptionalFeature -Filter \"Name='HypervisorPlatform'\").InstallState";
 
-/// The services `mode` runs on this machine, in start order. A node's are apz-link (it forwards to the
-/// hub), vsockd and noded: the node's plan ([`node::NAMES`]).
+/// The services `mode` runs, in start order, on a platform that runs all of them. A node's are apz-link (it
+/// forwards to the hub), vsockd and noded: the node's plan ([`node::NAMES`]).
 fn services_for(mode: Mode) -> &'static [&'static str] {
     match mode {
         Mode::Local => &["apid", "vsockd", "noded"],
@@ -19,14 +19,62 @@ fn services_for(mode: Mode) -> &'static [&'static str] {
     }
 }
 
-/// The ports `mode`'s services listen on: apid's 7700 for a hub; noded's 8899 and vsockd's HTTP 19080
-/// for a node, and apz-link's forwarder on 7701 (vsockd reaches apid through it).
-fn ports_for(mode: Mode) -> &'static [u16] {
-    match mode {
-        Mode::Local => &[7700, 8899, 19080],
-        Mode::Hub => &[7700],
-        Mode::Node => &[7701, 8899, 19080],
+/// Whether a machine of `os` and `arch` (`std::env::consts`) runs service `name`. The VM node (noded, vsockd) is
+/// staged for Linux, Apple silicon and Windows x64 (`packaging/scripts/stage.sh`), and vsockd's guest backend does not
+/// run on macOS yet (it comes with the Hypervisor.framework node, PLAN 7.1); apid and apz-link run everywhere.
+pub fn runs_on(name: &str, os: &str, arch: &str) -> bool {
+    let vm_node = os == "linux"
+        || (os == "macos" && arch == "aarch64")
+        || (os == "windows" && arch == "x86_64");
+    match name {
+        "noded" => vm_node,
+        "vsockd" => vm_node && os != "macos",
+        _ => true,
     }
+}
+
+/// [`runs_on`] for this machine.
+pub fn runs_here(name: &str) -> bool {
+    runs_on(name, std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Why this machine does not run service `name`, for a status line.
+pub fn not_run_here(name: &str) -> &'static str {
+    if name == "vsockd" && cfg!(target_os = "macos") {
+        "not run on macOS yet: vsockd's guest backend comes with the Mac's VM node"
+    } else {
+        "not built for this platform: the VM node ships on Linux, Apple silicon and Windows x64"
+    }
+}
+
+/// The port service `name` listens on: apid's 7700, apz-link's forwarder on 7701 (vsockd reaches apid through it),
+/// noded's 8899 and vsockd's HTTP 19080.
+fn port_of(name: &str) -> u16 {
+    match name {
+        "apz-link" => 7701,
+        "noded" => 8899,
+        "vsockd" => 19080,
+        _ => 7700,
+    }
+}
+
+/// The services `mode` runs on a machine of `os` and `arch`.
+fn services_on(mode: Mode, os: &str, arch: &str) -> Vec<&'static str> {
+    services_for(mode)
+        .iter()
+        .copied()
+        .filter(|name| runs_on(name, os, arch))
+        .collect()
+}
+
+/// The ports `mode`'s services listen on, on a machine of `os` and `arch`, ascending.
+fn ports_on(mode: Mode, os: &str, arch: &str) -> Vec<u16> {
+    let mut ports: Vec<u16> = services_on(mode, os, arch)
+        .into_iter()
+        .map(port_of)
+        .collect();
+    ports.sort_unstable();
+    ports
 }
 
 /// Every requirement for `mode` on this machine, in the order the checklist shows them.
@@ -54,7 +102,11 @@ pub fn check_with(
     if mode.runs_node() {
         rows.push(probe_hypervisor());
     }
-    rows.push(probe_ports(ports_for(mode)));
+    rows.push(probe_ports(&ports_on(
+        mode,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )));
     rows
 }
 
@@ -114,13 +166,8 @@ fn locate(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 
 /// The services of `mode`, looked for in `dirs`: all of them there, or the missing ones named.
 fn services(mode: Mode, dirs: &[PathBuf]) -> Check {
-    // Only apid and apz-link ship for macOS x86_64: noded and vsockd are Apple silicon builds.
-    let intel_mac = cfg!(all(target_os = "macos", target_arch = "x86_64"));
-    let needed: Vec<&str> = services_for(mode)
-        .iter()
-        .copied()
-        .filter(|name| !intel_mac || matches!(*name, "apid" | "apz-link"))
-        .collect();
+    // Only what this platform runs (`runs_on`): a Mac runs no vsockd yet, an Intel Mac and Windows on Arm no VM node.
+    let needed = services_on(mode, std::env::consts::OS, std::env::consts::ARCH);
     let found: Vec<(&str, Option<PathBuf>)> = needed
         .iter()
         .map(|name| (*name, locate(name, dirs)))
@@ -351,12 +398,42 @@ mod tests {
 
     #[test]
     fn each_mode_asks_for_its_own_services_and_ports() {
-        assert_eq!(services_for(Mode::Hub), &["apid"]);
-        assert_eq!(services_for(Mode::Local), &["apid", "vsockd", "noded"]);
-        assert_eq!(services_for(Mode::Node), &["apz-link", "vsockd", "noded"]);
-        assert_eq!(ports_for(Mode::Hub), &[7700u16]);
-        assert_eq!(ports_for(Mode::Local), &[7700u16, 8899, 19080]);
-        assert_eq!(ports_for(Mode::Node), &[7701u16, 8899, 19080]);
+        let linux = |mode| {
+            (
+                services_on(mode, "linux", "x86_64"),
+                ports_on(mode, "linux", "x86_64"),
+            )
+        };
+        assert_eq!(linux(Mode::Hub), (vec!["apid"], vec![7700u16]));
+        assert_eq!(
+            linux(Mode::Local),
+            (vec!["apid", "vsockd", "noded"], vec![7700u16, 8899, 19080])
+        );
+        assert_eq!(
+            linux(Mode::Node),
+            (
+                vec!["apz-link", "vsockd", "noded"],
+                vec![7701u16, 8899, 19080]
+            )
+        );
+    }
+
+    #[test]
+    fn a_platform_is_asked_only_for_the_services_it_runs() {
+        // Apple silicon runs the hub and noded; vsockd's guest backend is not there yet.
+        assert_eq!(
+            services_on(Mode::Local, "macos", "aarch64"),
+            ["apid", "noded"]
+        );
+        assert_eq!(ports_on(Mode::Local, "macos", "aarch64"), [7700u16, 8899]);
+        // An Intel Mac and Windows on Arm run no VM node: the hub alone (and apz-link for a node).
+        assert_eq!(services_on(Mode::Local, "macos", "x86_64"), ["apid"]);
+        assert_eq!(services_on(Mode::Local, "windows", "aarch64"), ["apid"]);
+        assert_eq!(services_on(Mode::Node, "windows", "aarch64"), ["apz-link"]);
+        assert_eq!(
+            services_on(Mode::Local, "windows", "x86_64"),
+            ["apid", "vsockd", "noded"]
+        );
     }
 
     #[test]
@@ -386,7 +463,10 @@ mod tests {
             std::slice::from_ref(&dir),
             fixed_hypervisor,
             |wanted| {
-                assert_eq!(wanted, &[7700u16, 8899, 19080]);
+                assert_eq!(
+                    wanted,
+                    ports_on(Mode::Local, std::env::consts::OS, std::env::consts::ARCH)
+                );
                 fixed_ports(wanted)
             },
         );

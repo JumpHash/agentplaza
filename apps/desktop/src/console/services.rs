@@ -347,33 +347,9 @@ fn local_cids() -> String {
     cid_list(20, 111)
 }
 
-/// Whether this platform runs service `name`. The VM node (noded, vsockd) is staged for Linux, Apple silicon and
-/// Windows x64 (`packaging/scripts/stage.sh`), and vsockd refuses to start on macOS.
-fn runs_here(name: &str) -> bool {
-    let vm_node = cfg!(any(
-        target_os = "linux",
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(windows, target_arch = "x86_64")
-    ));
-    match name {
-        "noded" => vm_node,
-        "vsockd" => vm_node && !cfg!(target_os = "macos"),
-        _ => true,
-    }
-}
-
-/// Why a service this platform does not run is optional, in the status.
-fn not_run_here(name: &str) -> &'static str {
-    if name == "vsockd" && cfg!(target_os = "macos") {
-        "not run on macOS: vsockd refuses to start there"
-    } else {
-        "not built for this platform: the VM node ships on Linux, Apple silicon and Windows x64"
-    }
-}
-
 fn svc_state(svc: &Svc) -> (&'static str, String) {
-    if !runs_here(svc.name) {
-        return ("optional", not_run_here(svc.name).into());
+    if !apz_setup::runs_here(svc.name) {
+        return ("optional", apz_setup::not_run_here(svc.name).into());
     }
     if let Some(pid) = find_plan_pids(&process_of(svc)).first().copied() {
         return ("running", format!("pid {pid}"));
@@ -387,7 +363,7 @@ fn svc_state(svc: &Svc) -> (&'static str, String) {
 
 fn start_one(svc: &Svc) -> String {
     let name = svc.name;
-    if !runs_here(name) {
+    if !apz_setup::runs_here(name) {
         return format!("{name}: not run here (optional)");
     }
     if let Some(pid) = find_plan_pids(&process_of(svc)).first().copied() {
