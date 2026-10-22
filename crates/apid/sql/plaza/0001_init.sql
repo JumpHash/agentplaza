@@ -31,6 +31,7 @@ CREATE TABLE "session" (
     "handover_content" TEXT,
     "outcome" TEXT,
     "attempt" INTEGER NOT NULL CHECK ("attempt" >= 0),
+    "verdict" INTEGER CHECK ("verdict" IN (0, 1)),
     "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
     "started_ms" INTEGER CHECK ("started_ms" >= 0),
     "ended_ms" INTEGER CHECK ("ended_ms" >= 0),

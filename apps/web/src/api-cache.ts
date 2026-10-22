@@ -21,7 +21,15 @@ const COPIES_PREFIX = 'apz.cache|';
  * provider's key. Their copies stay in memory and are never written to localStorage: any script of this origin can
  * read localStorage, and it outlives the tab, so a secret written there would outlive the session that fetched it.
  */
-const SECRET_ROUTES = [/^\/v1\/vault(?=[/?]|$)/, /^\/v1\/auth(?=[/?]|$)/, /^\/v1\/hub-mcp\/tokens(?=[/?]|$)/, /^\/v1\/providers\/[^/?]+\/key(?=[/?]|$)/];
+const SECRET_ROUTES = [
+  /^\/v1\/vault(?=[/?]|$)/,
+  /^\/v1\/auth(?=[/?]|$)/,
+  /^\/v1\/hub-mcp\/tokens(?=[/?]|$)/,
+  /^\/v1\/providers\/[^/?]+\/key(?=[/?]|$)/,
+  // Transcripts hold what tools printed and models wrote (and they are large): kept in memory only.
+  /^\/v1\/(agents|sessions)\/[^/?]+\/transcript(?=[/?]|$)/,
+  /^\/v1\/owner\/conversations\/[^/?]+\/transcript(?=[/?]|$)/,
+];
 
 /** Whether a GET of `path` may hold a secret, so its copy is never persisted. */
 export function isSecretRoute(path: string): boolean {

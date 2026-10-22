@@ -147,6 +147,8 @@ pub struct Session {
     pub outcome: Option<String>,
     /// Which try of its seat this is (1, 2, …).
     pub attempt: u32,
+    /// A reviewer's verdict, once given (true: passed).
+    pub verdict: Option<bool>,
     pub created_ms: u64,
     pub started_ms: Option<u64>,
     pub ended_ms: Option<u64>,
@@ -240,6 +242,7 @@ impl Sessions {
             handover: None,
             outcome: None,
             attempt: new.attempt.max(1),
+            verdict: None,
             created_ms: now_ms,
             started_ms: None,
             ended_ms: None,

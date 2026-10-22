@@ -78,6 +78,7 @@ pub fn router() -> Router<App> {
         })
         .doc(RouteDoc::new("Delete a warm template"));
     let router = events::routes(router);
+    let router = crate::work_routes::routes(router);
     let router = crate::acp::routes(router);
     let router = settings::routes(router);
     let router = providers::routes(router);

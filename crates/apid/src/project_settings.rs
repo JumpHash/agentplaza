@@ -331,13 +331,8 @@ pub fn routes(router: Router<App>) -> Router<App> {
             RouteDoc::new("Show the settings a project's agents get, and where each comes from")
                 .errors(&[404]),
         )
-        .get("/v1/projects/{id}/budget", |app, _, p| {
-            match app.projects.get(p.get("id")) {
-                Some(project) => Response::json(200, &budget_view(app, &project.id)),
-                None => Response::error(404, "no such project"),
-            }
-        })
-        .doc(RouteDoc::new("Show a project's budget").errors(&[404]))
+        // GET /v1/projects/{id}/budget is the work engine's budget (work_routes.rs); this POST moves credits until
+        // the treasury goes (Engine 0.5).
         .post("/v1/projects/{id}/budget", budget_route)
         .doc(
             RouteDoc::new("Set credits aside for a project, or give some back")

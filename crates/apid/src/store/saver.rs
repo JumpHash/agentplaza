@@ -86,6 +86,15 @@ fn save_one(app: &App, c: &Component) -> Result<bool, StoreError> {
     Ok(true)
 }
 
+/// Writes component `name` now (an owner's message, a card answer): its write commits before this returns.
+pub fn save_now(app: &App, name: &str) {
+    if let Some(c) = components::all().into_iter().find(|c| c.name == name)
+        && let Err(e) = save_one(app, &c)
+    {
+        eprintln!("store: saving {name} failed (retried on the next pass): {e}");
+    }
+}
+
 /// Starts the saver thread.
 pub fn spawn(app: Arc<App>) {
     std::thread::Builder::new()

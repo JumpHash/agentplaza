@@ -114,6 +114,8 @@ mod vault;
 mod vendor_relay;
 mod vm_snapshots;
 mod weft_hub;
+mod work_loop;
+mod work_routes;
 
 use std::process::ExitCode;
 
