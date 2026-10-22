@@ -8,7 +8,8 @@
 //! input) is marked `content` and stored as text in a column named `<field>_content`, never read back as state.
 //!
 //! Field attributes (`#[table(...)]`): `key` (part of a root table's primary key), `skip` (not stored; `Default` on
-//! load), `rename = "col"`, `flatten`, `child` (a `Vec`/`VecDeque` of tables, or an `Option` of one), `list` (a `Vec`
+//! load), `rename = "col"`, `flatten`, `child` (a `Vec`/`VecDeque` of tables, an `Option` of one, or one table: a struct that
+//! holds collections cannot be flattened, so it is a child table of one row, `Default` when a load finds none), `list` (a `Vec`
 //! of columns), `set` (a set of columns), `map` (a map to tables), `map_value` (a map to columns), `content`,
 //! `index`, `unique`; a child table's name can be given (`child = "name"`, likewise `list`, `set`, `map`,
 //! `map_value`). On the struct: `#[table(name = "table")]`.

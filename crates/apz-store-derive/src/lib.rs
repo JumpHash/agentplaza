@@ -379,6 +379,17 @@ fn table_struct(input: &DeriveInput) -> syn::Result<Tokens> {
                         quote! { __t::put_option(&__def.children[#i], &__k, self.#fident.as_ref(), __out)?; },
                         quote! { let #fident: #fty = __t::take_option(&__def.children[#i], &__row.key, __loaded)?; },
                     ),
+                    // A struct (not a collection, not an `Option`): a child table holding its one row, which a
+                    // load without it fills with `Default`.
+                    Kind::Child(_)
+                        if !last_segment_is(fty, "Vec") && !last_segment_is(fty, "VecDeque") =>
+                    {
+                        (
+                            quote! { __t::option_def::<#fty>(&__def, #col, #table) },
+                            quote! { __t::put_option(&__def.children[#i], &__k, Some(&self.#fident), __out)?; },
+                            quote! { let #fident: #fty = __t::take_option::<#fty>(&__def.children[#i], &__row.key, __loaded)?.unwrap_or_default(); },
+                        )
+                    }
                     Kind::Child(_) => (
                         quote! { __t::children_def::<<#fty as __t::Elem>::Item>(&__def, #col, #table) },
                         quote! { __t::put_children(&__def.children[#i], &__k, self.#fident.iter(), __out)?; },

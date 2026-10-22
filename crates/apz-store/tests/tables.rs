@@ -338,3 +338,44 @@ fn a_u64_past_i64_is_refused_not_wrapped() {
         apz_store::table::Value::Integer(7)
     );
 }
+
+#[derive(Debug, Clone, PartialEq, Default, Table)]
+struct Rules {
+    every_hours: u32,
+    #[table(list)]
+    watch: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Table)]
+#[table(name = "book")]
+struct Book {
+    #[table(key)]
+    project: String,
+    #[table(child)]
+    rules: Rules,
+}
+
+#[test]
+fn a_struct_that_holds_a_list_is_a_child_of_one_row_and_a_missing_row_loads_as_default() {
+    let def = Book::root();
+    let conn = migrated(&def);
+    let books = vec![
+        Book {
+            project: "pr1".into(),
+            rules: Rules {
+                every_hours: 6,
+                watch: vec!["errors".into(), "support".into()],
+            },
+        },
+        Book {
+            project: "pr2".into(),
+            rules: Rules::default(),
+        },
+    ];
+    table::replace(&conn, &def, &RowSet::list(&def, &books).unwrap()).unwrap();
+    assert_eq!(load_list::<Book>(&conn, &def).unwrap(), books);
+    conn.execute("DELETE FROM book_rules WHERE book_project = 'pr1'", [])
+        .unwrap();
+    let back = load_list::<Book>(&conn, &def).unwrap();
+    assert_eq!(back[0].rules, Rules::default());
+}
