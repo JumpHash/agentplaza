@@ -4,7 +4,7 @@ import { agentName, roleLabel } from '../roles';
 
 import { api, type Agent, type AgentStatus, type WorkKind } from '../api';
 import { go, href } from '../router';
-import { inScope, liveProjects, onBench, projects, projectTitle, scope } from '../scope';
+import { inScope, projectTitle, scope } from '../scope';
 import { agents, refreshAgents } from '../store';
 import { attempt, badge, button, card, clip, compact, dot, empty, select, table, type Column, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
@@ -37,11 +37,10 @@ function pillWord(a: Agent): HTMLElement | null {
   return word ? badge(word, tone) : null;
 }
 
-/** Where an agent works, as the roster says it: its project (a link), the bench, or every project (the orchestrator). */
+/** Where an agent works, as the roster says it: its project (a link), every project (the orchestrator), or a dash. */
 export function projectCell(a: Agent): HTMLElement {
   if (a.project) return h('a.ag-clip', { href: href('projects', a.project), title: a.held ?? undefined }, projectTitle(a.project));
   if (a.tier === 'orchestrator') return h('span.muted', null, 'Every project');
-  if (onBench(a)) return badge('Bench', 'muted');
   return h('span.muted', null, '—');
 }
 
@@ -67,7 +66,7 @@ function modelCell(a: Agent): HTMLElement {
 }
 
 export function mountAgentList(root: HTMLElement): Cleanup {
-  // Under a project the roster is its agents, with the bench beside them; under All projects, every agent.
+  // Under a project the roster is its agents; under All projects, every agent.
   const inProject = scope.get();
   let roleFilter = '';
   let statusFilter: 'all' | AgentStatus = 'all';
@@ -82,8 +81,7 @@ export function mountAgentList(root: HTMLElement): Cleanup {
     { value: 'offline', label: 'Offline' },
   ]);
   const body = h('div');
-  const bench = h('div');
-  const spawnHead = button(inProject ? 'New agents for this project' : 'Spawn agents', () => openWizard(), { kind: 'primary', icon: 'plus' });
+  const spawnHead = button('Spawn agents', () => openWizard(), { kind: 'primary', icon: 'plus' });
 
   roleSel.addEventListener('change', () => {
     roleFilter = roleSel.value;
@@ -118,7 +116,6 @@ export function mountAgentList(root: HTMLElement): Cleanup {
       h('div.ag-head-actions', null, roleSel, statusSel, spawnHead),
     ),
     card('Agents', body, { flush: true }),
-    ...(inProject ? [bench] : []),
   );
 
   const off = agents.watch(render);
@@ -128,19 +125,6 @@ export function mountAgentList(root: HTMLElement): Cleanup {
     return h(
       'div.cluster.ag-acts',
       null,
-      // Under its project, an agent can go back to the bench (its work there stops).
-      inProject && a.project === inProject
-        ? button(
-            '',
-            (ev) => {
-              ev.stopPropagation();
-              void attempt(() => api.removeMember(inProject, a.cid), `${agentName(a)} is back on the bench`).then(() => void refreshAgents());
-            },
-            { kind: 'ghost', size: 'sm', icon: 'x', title: 'Back to the bench' },
-          )
-        : null,
-      // Under All projects, an agent on the bench can be put on a project.
-      !inProject && onBench(a) ? joinControl(a) : null,
       button(
         '',
         (ev) => {
@@ -170,54 +154,14 @@ export function mountAgentList(root: HTMLElement): Cleanup {
     );
   }
 
-  /** A picker that puts bench agent `a` on a live project. */
-  function joinControl(a: Agent): HTMLElement | null {
-    const live = liveProjects(projects.get());
-    if (!live.length) return null;
-    const sel = select([{ value: '', label: 'Put on…' }, ...live.map((p) => ({ value: p.id, label: p.title }))], '');
-    sel.setAttribute('aria-label', 'Put on a project');
-    sel.addEventListener('click', (ev) => ev.stopPropagation());
-    sel.addEventListener('change', () => {
-      if (!sel.value) return;
-      const to = sel.value;
-      void attempt(() => api.addMember(to, a.cid), `${agentName(a)} works on ${projectTitle(to)} now`).then(() => void refreshAgents());
-    });
-    return sel;
-  }
-
-  /** The bench beside a project's agents: who could join it, each with Add. */
-  function drawBench(list: Agent[]): void {
-    if (!inProject) return;
-    const waiting = list.filter(onBench);
-    const benchCols: Column<Agent>[] = [
-      { label: 'Agent', cell: (a) => agentCell(a) },
-      { label: 'Model', cell: modelCell },
-      {
-        label: '',
-        cell: (a) =>
-          button('Add to project', () => void attempt(() => api.addMember(inProject, a.cid), `${agentName(a)} joined ${projectTitle(inProject)}`).then(() => void refreshAgents()), {
-            size: 'sm',
-            icon: 'plus',
-          }),
-      },
-    ];
-    const content = waiting.length
-      ? [h('p.hint', null, 'Agents on no project do nothing and sleep. Add one to give it this project’s work.'), h('div.tbl-wrap', null, table(benchCols, waiting, undefined, (a) => `bench-${a.cid}`))]
-      : [h('p.hint', null, 'Nobody is on the bench: every agent works on a project.')];
-    const next = card('The bench', content);
-    next.classList.add('ag-bench');
-    replace(bench, next);
-  }
-
   function render(all: Agent[]): void {
-    drawBench(all);
     const list = all.filter((a) => inScope(a, inProject));
     syncRoles(list);
     if (!list.length) {
       replace(
         body,
         inProject
-          ? empty('agents', 'Nobody works on this project yet', 'Add agents from the bench below, or spawn new ones for it.', button('New agents for this project', () => openWizard(), { kind: 'primary', icon: 'plus' }))
+          ? empty('agents', 'Nobody works on this project yet', 'Its agents show here while they work on its tasks.')
           : empty('agents', 'No agents connected', 'Spawn agents to fill the roster.', button('Spawn agents', () => openWizard(), { kind: 'primary', icon: 'plus' })),
       );
       return;
@@ -253,6 +197,6 @@ export function mountAgentList(root: HTMLElement): Cleanup {
 
   // Spawning goes through the agent wizard: pick or define a role, then spawn of it.
   function openWizard(): void {
-    openAgentWizard({ onDone: () => void refreshAgents(), project: inProject ?? undefined });
+    openAgentWizard({ onDone: () => void refreshAgents() });
   }
 }

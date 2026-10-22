@@ -1665,7 +1665,7 @@ mod tests {
             expect_type(host, "model_call");
             host.send(&control(
                 1,
-                json!({"action": "steer", "from": "mayor", "text": "focus on the parser"}),
+                json!({"action": "steer", "from": "orchestrator", "text": "focus on the parser"}),
             ))
             .unwrap();
             host.send(&answer(
@@ -1679,7 +1679,7 @@ mod tests {
             let next = expect_type(host, "model_call");
             let results = &next["request"]["messages"][2]["content"];
             assert_eq!(
-                results[1]["text"], "[note from mayor]: focus on the parser",
+                results[1]["text"], "[note from orchestrator]: focus on the parser",
                 "{results}"
             );
             host.send(&answer(2, json!([text("found")]), "end_turn"))

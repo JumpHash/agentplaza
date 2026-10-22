@@ -443,7 +443,7 @@ impl Queues {
             return;
         };
         // A poster that may not work now (it left the project) is not told: its queue would only hold it.
-        if crate::membership::held_cid(app, poster).is_some() {
+        if crate::projects::held_cid(app, poster).is_some() {
             return;
         }
         let worker_name = app
@@ -663,14 +663,12 @@ impl Queues {
         let Some(project) = record.project().map(str::to_string) else {
             return false;
         };
-        if crate::membership::project_state(app, &project)
-            != crate::membership::ProjectState::Active
-        {
+        if crate::projects::state(app, &project) != crate::projects::ProjectState::Active {
             return false;
         }
-        let members = app.members.members(&project);
+        let on_project = crate::projects::agents_of(app, &project);
         let reviewers = app.agents.select(|a| {
-            (a.role == REVIEWER_ROLE && a.status == Status::Idle && members.contains(&a.cid))
+            (a.role == REVIEWER_ROLE && a.status == Status::Idle && on_project.contains(&a.cid))
                 .then(|| a.clone())
         });
         let Some(reviewer) = next_reviewer(&reviewers, worker) else {
@@ -893,10 +891,10 @@ impl Queues {
     fn dispatch(&self, app: &App, cid: u64) {
         let agent = app.agents.get(cid);
         let status = agent.as_ref().map(|a| a.status);
-        // An agent on the bench, or on a paused project, keeps its work queued and is not woken for it.
+        // An agent whose project is paused or over keeps its work queued and is not woken for it.
         let held = agent
             .as_ref()
-            .is_some_and(|a| crate::membership::held(app, a).is_some());
+            .is_some_and(|a| crate::projects::held(app, a).is_some());
         match dispatch_step(
             status,
             app.control.paused() || held,
@@ -965,8 +963,8 @@ pub(crate) fn project_conversation(app: &App, task: &str, cid: u64) -> Option<St
 /// What `dispatch` does with an agent's waiting work, decided before anything moves.
 #[derive(Debug, PartialEq, Eq)]
 enum DispatchStep {
-    /// Keep it queued: STOP ALL holds the plaza, the agent may not work now (on the bench, or its project
-    /// paused, see `membership`), it is away (moving, or on a stopped node it leaves first:
+    /// Keep it queued: STOP ALL holds the plaza, the agent may not work now (its project is paused or over, see
+    /// `projects::held`), it is away (moving, or on a stopped node it leaves first:
     /// `mover::holds`), or it is gone (or unknown).
     Hold,
     /// Keep it queued and wake the agent: it is asleep (`crate::sleep`).
@@ -975,7 +973,7 @@ enum DispatchStep {
     Send,
 }
 
-/// `held`: STOP ALL holds the plaza, or the agent may not work now (`membership`); `away`: it is moving,
+/// `held`: STOP ALL holds the plaza, or the agent may not work now (`projects::held`); `away`: it is moving,
 /// or on a stopped node (`mover::holds`).
 fn dispatch_step(status: Option<Status>, held: bool, away: bool) -> DispatchStep {
     match status {
@@ -1033,7 +1031,7 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
     }
     // A task of a project that is over refunded its project's budget: that goes back to the plaza too.
     if let Some(pid) = task.project()
-        && crate::membership::project_state(app, pid) == crate::membership::ProjectState::Over
+        && crate::projects::state(app, pid) == crate::projects::ProjectState::Over
     {
         crate::project_settings::return_rest(app, pid);
     }
@@ -1540,7 +1538,7 @@ mod tests {
         assert_eq!(
             dispatch_step(Some(Status::Idle), true, false),
             DispatchStep::Hold,
-            "an agent on the bench (or STOP ALL) keeps its work queued, and an asleep one is not woken for it"
+            "an agent whose project is held (or STOP ALL) keeps its work queued, and an asleep one is not woken for it"
         );
         assert_eq!(
             dispatch_step(Some(Status::Idle), false, true),

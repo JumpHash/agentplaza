@@ -498,7 +498,7 @@ fn credential(app: &App, name: Option<&str>) -> Option<String> {
 
 /// An agent's key, certified for its current role and project (a new key when the project changed).
 pub fn agent_key(app: &App, cid: u64) -> Result<Arc<KeyPair>, String> {
-    let project = app.members.project_of(cid);
+    let project = crate::projects::project_of(app, cid);
     if let Some((k, p)) = app
         .weft
         .agents

@@ -1,7 +1,7 @@
 //! The Agents screen (parity with the web console's `agents` view): the roster, filtered by role
 //! and status, each row's own actions, and the wizard that spawns agents over it. Under a project
-//! it is that project's agents (and the orchestrator), with the bench beside them to add from;
-//! under All projects every agent, with where it works and a Put on… picker for the bench.
+//! it is the agents working on it (and the orchestrator); under All projects every agent, with
+//! where each works.
 
 use std::fmt;
 
@@ -33,9 +33,7 @@ pub struct State {
     note: Option<String>,
     /// None until the first load.
     agents: Option<Vec<AgentRow>>,
-    /// The roster as the hub sent it: the bench card reads it.
-    raw: Vec<Value>,
-    /// Every project: the Project column's titles and the Put on… picker's live ones.
+    /// Every project: the Project column's titles.
     projects: Vec<Value>,
     /// The roles the roster holds, as (id, label), sorted by id.
     roles: Vec<(String, String)>,
@@ -58,11 +56,6 @@ pub enum Msg {
     Cancel(u64),
     Stop(u64),
     Acted(Result<(), String>, &'static str),
-    /// Puts a bench agent on a project, or sends a member back to the bench (cid, project).
-    Join(u64, String),
-    Leave(u64, String),
-    /// A move went through (the line to show) or failed.
-    Moved(Result<String, String>),
     Wizard(WizardMsg),
     /// A hub event: the roster changed.
     Event(crate::console::events::Event),
@@ -140,11 +133,9 @@ struct AgentRow {
     tokens: u64,
     /// The work it is doing now: (kind, prompt).
     work: Option<(String, String)>,
-    /// The project it works on (None: the bench, or the orchestrator), and why it waits, if it does.
+    /// The project its live session is on (None: no live session, or the orchestrator), and why its work waits.
     project: Option<String>,
     held: Option<String>,
-    /// On no project, and neither the orchestrator nor a model-only agent.
-    bench: bool,
 }
 
 fn parse(v: &Value) -> Option<AgentRow> {
@@ -189,7 +180,6 @@ fn parse(v: &Value) -> Option<AgentRow> {
             .filter(|p| !p.is_empty())
             .map(str::to_string),
         held: v["held"].as_str().map(str::to_string),
-        bench: scope::on_bench(v),
     })
 }
 
@@ -245,13 +235,12 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     match msg {
         Msg::Go(_) => Task::none(),
         Msg::Loaded(Ok(v)) => {
-            state.raw = v["agents"].as_array().cloned().unwrap_or_default();
+            let raw = v["agents"].as_array().cloned().unwrap_or_default();
             if let Some(projects) = v["projects"].as_array() {
                 state.projects = projects.clone();
             }
-            // Under a project, its agents and the orchestrator; under All projects, every agent.
-            let list: Vec<AgentRow> = state
-                .raw
+            // Under a project, the agents working on it and the orchestrator; under All projects, every agent.
+            let list: Vec<AgentRow> = raw
                 .iter()
                 .filter(|a| scope::in_scope(a, ctx.project.as_deref()))
                 .filter_map(parse)
@@ -325,46 +314,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.error = Some(e);
             Task::none()
         }
-        Msg::Join(cid, project) => {
-            let client = ctx.client.clone();
-            let line = format!(
-                "{} works on {} now",
-                raw_label(&state.raw, cid),
-                scope::title_in(&state.projects, &project)
-            );
-            client::task(
-                move || {
-                    client
-                        .post::<Value>(
-                            &format!("/v1/projects/{project}/members"),
-                            &serde_json::json!({ "cid": cid }),
-                        )
-                        .map(|_| line)
-                },
-                Msg::Moved,
-            )
-        }
-        Msg::Leave(cid, project) => {
-            let client = ctx.client.clone();
-            let line = format!("{} is back on the bench", raw_label(&state.raw, cid));
-            client::task(
-                move || {
-                    client
-                        .delete(&format!("/v1/projects/{project}/members/{cid}"))
-                        .map(|_| line)
-                },
-                Msg::Moved,
-            )
-        }
-        Msg::Moved(Ok(line)) => {
-            state.note = Some(line);
-            state.error = None;
-            load(state, ctx)
-        }
-        Msg::Moved(Err(e)) => {
-            state.error = Some(e);
-            Task::none()
-        }
         Msg::Wizard(m) => {
             if let WizardMsg::Done(Err(e)) = &m {
                 state.error = Some(e.clone());
@@ -382,10 +331,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let scope = ctx.project.as_deref();
-    let mut body = column![list(state, scope)].spacing(16);
-    if let Some(project) = scope {
-        body = body.push(bench_card(state, project));
-    }
+    let body = column![list(state, scope)].spacing(16);
     let page = ui::sheet(head(state, scope), body.into());
     if state.wizard.open {
         Stack::new()
@@ -397,74 +343,14 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     }
 }
 
-/// Spawns agents through the wizard; under a project, they join it at their first hello.
-fn spawn_button<'a>(scope: Option<&str>) -> Element<'a, Msg> {
+/// Spawns agents through the wizard; a new agent has no project until a session puts it on one.
+fn spawn_button<'a>() -> Element<'a, Msg> {
     ui::btn(
-        if scope.is_some() {
-            "New agents for this project"
-        } else {
-            "Spawn agents"
-        },
+        "Spawn agents",
         Some("plus"),
         Kind::Primary,
         Some(Msg::Wizard(WizardMsg::Open)),
     )
-}
-
-/// The bench beside a project's agents, as the web's card: who could join it, each with Add to project.
-fn bench_card<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
-    let waiting: Vec<AgentRow> = state
-        .raw
-        .iter()
-        .filter(|a| scope::on_bench(a))
-        .filter_map(parse)
-        .collect();
-    let body: Element<'a, Msg> = if waiting.is_empty() {
-        ui::faint("Nobody is on the bench: every agent works on a project.").into()
-    } else {
-        let cols = [
-            Col::flex(3, false),
-            Col::flex(3, false),
-            Col::fixed(ACTIONS_WIDTH, true),
-        ];
-        let labels = vec![head_cell("Agent"), head_cell("Model"), head_cell("")];
-        let n = waiting.len();
-        let mut lines: Vec<Element<'a, Msg>> = Vec::new();
-        for (slot, a) in waiting.iter().enumerate() {
-            lines.push(bench_row(a, project, &cols));
-            if slot + 1 < n {
-                lines.push(rule(crate::theme::palette().rule));
-            }
-        }
-        column![
-            ui::faint(
-                "Agents on no project do nothing and sleep. Add one to give it this project's work."
-            ),
-            head_row(&cols, labels, 0.0),
-            column(lines).width(Length::Fill),
-        ]
-        .spacing(8)
-        .into()
-    };
-    ui::card("The bench", body)
-}
-
-/// A bench row: the agent, its model, and Add to project.
-fn bench_row<'a>(a: &AgentRow, project: &str, cols: &[Col]) -> Element<'a, Msg> {
-    let add = ui::btn_sm::<Msg>(
-        "Add to project",
-        Some("plus"),
-        Kind::Secondary,
-        Some(Msg::Join(a.cid, project.to_string())),
-    );
-    grid_row(cols, vec![agent_cell(a), model_cell(a), add], 0.0)
-}
-
-/// An agent's label from the roster, for the lines a move shows.
-fn raw_label(raw: &[Value], cid: u64) -> String {
-    raw.iter()
-        .find(|a| a["cid"].as_u64() == Some(cid))
-        .map_or_else(|| roles::agent_label("", cid), roles::agent_label_of)
 }
 
 fn head<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
@@ -503,7 +389,7 @@ fn head<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
             .text_size(CELL)
             .font(theme::SANS)
             .into(),
-            spawn_button(scope),
+            spawn_button(),
         ],
     )
 }
@@ -555,14 +441,14 @@ fn list<'a>(state: &'a State, scope: Option<&'a str>) -> Element<'a, Msg> {
             Some(_) => empty(
                 "agents",
                 "Nobody works on this project yet",
-                "Add agents from the bench below, or spawn new ones for it.",
-                Some(spawn_button(scope)),
+                "Agents show here while they work on its tasks.",
+                Some(spawn_button()),
             ),
             None => empty(
                 "agents",
                 "No agents connected",
                 "Spawn agents to fill the roster.",
-                Some(spawn_button(scope)),
+                Some(spawn_button()),
             ),
         },
         Some(all) => {
@@ -696,10 +582,9 @@ fn table<'a>(
         head_row(&cols, labels, EDGE),
         rule(crate::theme::palette().rule_strong),
     ];
-    let live = scope::picks(&state.projects);
     let n = rows.len();
     for (slot, a) in rows.into_iter().enumerate() {
-        lines.push(row_view(a, state, scope, &cols, &live));
+        lines.push(row_view(a, state, scope, &cols));
         if slot + 1 < n {
             lines.push(rule(crate::theme::palette().rule));
         }
@@ -717,7 +602,6 @@ fn row_view<'a>(
     state: &'a State,
     scope: Option<&'a str>,
     cols: &[Col],
-    live: &[scope::Pick],
 ) -> Element<'a, Msg> {
     let mut cells = vec![agent_cell(a)];
     if scope.is_none() {
@@ -726,7 +610,7 @@ fn row_view<'a>(
     cells.push(model_cell(a));
     cells.push(work_cell(a));
     cells.push(tokens_cell(a.tokens));
-    cells.push(actions(a, scope, live));
+    cells.push(actions(a));
     let line = container(grid_row(cols, cells, EDGE))
         .padding([9, 0])
         .width(Length::Fill);
@@ -801,8 +685,7 @@ fn sleep_word(status: &str) -> Option<&'static str> {
     }
 }
 
-/// Where an agent works: its project (to its page), every project (the orchestrator), or the bench (a badge; its
-/// Put on… picker is in the actions).
+/// Where an agent works: its project (to its page), every project (the orchestrator), or no project.
 fn project_cell<'a>(a: &AgentRow, state: &State) -> Element<'a, Msg> {
     let quiet = |s: &str| {
         text(s.to_string())
@@ -827,10 +710,7 @@ fn project_cell<'a>(a: &AgentRow, state: &State) -> Element<'a, Msg> {
     if a.orchestrator {
         return quiet("Every project").into();
     }
-    if !a.bench {
-        return quiet("—").into();
-    }
-    ui::badge::<Msg>("Bench", Tone::Muted)
+    quiet("No project").into()
 }
 
 /// The model, and under it where it comes from (its own, its project's, its role's) and the orchestrator's mark: the
@@ -885,23 +765,10 @@ fn tokens_cell<'a>(tokens: u64) -> Element<'a, Msg> {
         .into()
 }
 
-/// The row's own actions, as the web: under its project send it back to the bench; on the bench under All projects,
-/// the Put on… picker of the live projects; then chat, cancel its work while it works, and stop its session.
-fn actions<'a>(a: &AgentRow, scope: Option<&str>, live: &[scope::Pick]) -> Element<'a, Msg> {
+/// The row's own actions, as the web: chat, cancel its work while it works, and stop its session.
+fn actions<'a>(a: &AgentRow) -> Element<'a, Msg> {
     let cid = a.cid;
     let mut buttons = row![].spacing(4).align_y(Alignment::Center);
-    if let Some(project) = scope
-        && a.project.as_deref() == Some(project)
-    {
-        buttons = buttons.push(icon_button(
-            "x",
-            "Back to the bench",
-            Msg::Leave(cid, project.to_string()),
-        ));
-    }
-    if scope.is_none() && a.bench && !live.is_empty() {
-        buttons = buttons.push(join_picker(cid, live));
-    }
     buttons = buttons.push(icon_button(
         "conversations",
         "Chat",
@@ -913,20 +780,6 @@ fn actions<'a>(a: &AgentRow, scope: Option<&str>, live: &[scope::Pick]) -> Eleme
     buttons
         .push(icon_button("stop", "Stop session", Msg::Stop(cid)))
         .into()
-}
-
-/// The Put on… picker that puts bench agent `cid` on a live project.
-fn join_picker<'a>(cid: u64, live: &[scope::Pick]) -> Element<'a, Msg> {
-    pick_list(live.to_vec(), None::<scope::Pick>, move |c: scope::Pick| {
-        Msg::Join(cid, c.id)
-    })
-    .placeholder("Put on…")
-    .style(select_style)
-    .text_size(12.5)
-    .font(theme::SANS)
-    .padding([3, 8])
-    .width(Length::Fixed(124.0))
-    .into()
 }
 
 /// The web's small ghost icon button (28px), with its title as a tooltip.

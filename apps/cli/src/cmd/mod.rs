@@ -26,6 +26,7 @@ pub mod plaza;
 pub mod projects;
 pub mod prompts;
 pub mod recipes;
+pub mod roles;
 pub mod rules;
 pub mod setup;
 pub mod skills;

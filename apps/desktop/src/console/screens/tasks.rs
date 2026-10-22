@@ -333,7 +333,7 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 /// The idle workers on `project`: a project's task goes only to its agents.
-fn idle_members<'a>(agents: &'a [AgentRecord], project: Option<&str>) -> Vec<&'a AgentRecord> {
+fn idle_agents<'a>(agents: &'a [AgentRecord], project: Option<&str>) -> Vec<&'a AgentRecord> {
     idle_workers(agents)
         .into_iter()
         .filter(|a| project.is_some() && a.project.as_deref() == project)
@@ -1498,7 +1498,7 @@ fn draft_modal<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
         .padding(8.0);
     let mut assignee_options = vec![Pick::scheduler()];
     assignee_options.extend(
-        idle_members(&state.agents, Some(project.id.as_str()))
+        idle_agents(&state.agents, Some(project.id.as_str()))
             .into_iter()
             .map(|a| Pick {
                 key: a.cid.to_string(),
@@ -1552,7 +1552,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
     };
 
     let open = t.state == "open";
-    let assign_options: Vec<Pick> = idle_members(&state.agents, t.project.as_deref())
+    let assign_options: Vec<Pick> = idle_agents(&state.agents, t.project.as_deref())
         .into_iter()
         .map(|a| Pick {
             key: a.cid.to_string(),
@@ -1648,7 +1648,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
             Some(Msg::OpenIde(review)),
         )
     });
-    // The open task's actions: assign to an idle member, and withdraw, in one row.
+    // The open task's actions: assign to an idle agent, and withdraw, in one row.
     let controls: Option<Element<'a, Msg>> = open.then(|| {
         row![
             pick_list(assign_options, None::<Pick>, Msg::Assign)

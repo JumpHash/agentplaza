@@ -513,7 +513,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     }
     if (!nodes.length) {
       nodes.push(h('p.ide-empty-list', null,
-        needsOnly ? 'Nothing waits for you.' : q ? 'No matches.' : inProject ? 'Nobody works on this project yet: add agents from the bench in its Team tab.' : 'Nothing yet. Start with a conversation: New conversation, above.'));
+        needsOnly ? 'Nothing waits for you.' : q ? 'No matches.' : inProject ? 'Nobody works on this project yet.' : 'Nothing yet. Start with a conversation: New conversation, above.'));
     }
     els.clear();
     for (const n of nodes) if (n.dataset.key) els.set(n.dataset.key, n);

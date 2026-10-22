@@ -53,7 +53,6 @@ pub mod platforms;
 pub mod project_environments;
 pub mod project_maintenance;
 pub mod project_settings;
-pub mod project_team;
 pub mod projects;
 pub mod prompt_editor;
 pub mod prompts;
@@ -127,7 +126,7 @@ pub enum Id {
     Task(String),
     /// One project's page, on the Projects screen, by its id.
     Project(String),
-    /// One project's page on one of its tabs (its Team, its Settings).
+    /// One project's page on one of its tabs (its Maintenance, its Settings).
     ProjectTab(String, projects::Tab),
     /// One tab of the Work screen: a project's id, or the tasks outside projects (`work::LOOSE`).
     WorkOn(String),
@@ -589,7 +588,7 @@ pub fn view<'a>(
         Id::Overview => overview::view(&screens.overview, ctx).map(Msg::Overview),
         Id::Agents => agents::view(&screens.agents, ctx).map(Msg::Agents),
         Id::Projects | Id::Project(_) | Id::ProjectTab(..) => {
-            projects::view(&screens.projects, ctx).map(Msg::Projects)
+            projects::view(&screens.projects).map(Msg::Projects)
         }
         Id::Work | Id::WorkOn(_) => work::view(&screens.work, ctx).map(Msg::Work),
         Id::Prompts => prompts::view(&screens.prompts, ctx).map(Msg::Prompts),
@@ -644,7 +643,7 @@ mod tests {
         assert_eq!(scope_home(&Id::Agent(300)), Id::Agents);
         assert_eq!(scope_home(&Id::Task("t3".into())), Id::Tasks);
         assert_eq!(
-            scope_home(&Id::ProjectTab("pr2".into(), projects::Tab::Team)),
+            scope_home(&Id::ProjectTab("pr2".into(), projects::Tab::Settings)),
             Id::Projects
         );
         assert_eq!(

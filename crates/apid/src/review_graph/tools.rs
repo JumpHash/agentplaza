@@ -145,10 +145,7 @@ fn text(v: &Value) -> String {
 
 /// The agent's project repo (or the one named, if it is in the agent's project).
 fn repo_of(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
-    let project = app
-        .members
-        .project_of(agent.cid)
-        .ok_or("you are not on a project")?;
+    let project = crate::projects::project_of(app, agent.cid).ok_or("you are not on a project")?;
     let own = crate::weft_hub::ensure_repo(app, &project)?;
     match input.get("repo").and_then(Value::as_str) {
         Some(r) if r != own => Err(format!("{r} is not your project's repo ({own})")),

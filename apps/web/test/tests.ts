@@ -1,7 +1,7 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href, hrefIn, movedTo, setLinkScope } from '../src/router';
-import { inScope, isLive, liveProjects, onBench } from '../src/scope';
-import { afterText, budgetText, isConversationId, seatLine, settingsLine, startBlock, streamed, teamLine } from '../src/ide/conversation-model';
+import { inScope, isLive, liveProjects } from '../src/scope';
+import { afterText, budgetText, isConversationId, settingsLine, startBlock, streamed } from '../src/ide/conversation-model';
 import type { ProjectDraft } from '../src/api';
 import { machinesRoute, viewHash } from '../src/views/machines';
 import { parseStyle, STYLES } from '../src/views/machine-style';
@@ -175,15 +175,9 @@ eq(parse('#/p/pr2/work?task=t3').project, 'pr2', 'a scoped route keeps its proje
 
 // ---- The IDE's conversation view (ide/conversation-model.ts) ----
 {
-  const roster = [{ cid: 300, role: 'builder' }, { cid: 304, role: 'librarian' }];
   eq(isConversationId('conv-12'), true, 'a conversation workspace id');
   eq(isConversationId('agent:7'), false, 'an agent workspace is not one');
   eq(isConversationId(null), false, 'nothing open is not one');
-  eq(seatLine({ role: 'builder', count: 2, bench: [300] }, roster), '2 Builder (Builder #300 from the bench, 1 new)', 'a seat from the bench and new');
-  eq(seatLine({ role: 'librarian', count: 1, bench: [304] }, roster), '1 Librarian (Librarian #304 from the bench)', 'a seat all from the bench');
-  eq(seatLine({ role: 'qa', count: 1 }, roster), '1 QA (1 new)', 'a seat all new');
-  eq(seatLine({ role: 'qa', count: 1, bench: [999] }, roster), '1 QA (Agent #999 from the bench)', 'an agent the roster does not know');
-  eq(teamLine([{ role: 'qa', count: 1 }, { role: 'release', count: 1 }], roster), '1 QA (1 new) · 1 Release (1 new)', 'the team in one line');
   eq(afterText({ after: ['1', '2'] }), 'after 1, 2', 'a task that runs after others');
   eq(afterText({}), '', 'one that runs at once');
   const draft = { problems: [] as string[], budget: 15000 } as unknown as ProjectDraft;
@@ -218,16 +212,13 @@ eq(parse('#/p/pr2/work?task=t3').project, 'pr2', 'a scoped route keeps its proje
     ['pr2', 'pr1'],
     'the switcher offers the live projects, newest first',
   );
-  const agent = (project: string | null, tier: 'worker' | 'orchestrator' = 'worker', kind = 'llm') => ({ project, tier, kind }) as unknown as Agent;
+  const agent = (project: string | null, tier: 'worker' | 'orchestrator' = 'worker') => ({ project, tier }) as unknown as Agent;
   eq(inScope(agent('pr1'), 'pr1'), true, "a project's agent is in its scope");
   eq(inScope(agent('pr2'), 'pr1'), false, "another project's is not");
-  eq(inScope(agent(null), 'pr1'), false, 'nor a bench agent');
+  eq(inScope(agent(null), 'pr1'), false, 'nor an agent on no project');
   eq(inScope(agent(null, 'orchestrator'), 'pr1'), true, 'the orchestrator works on every project');
   eq(inScope(agent('pr2'), null), true, 'All projects shows everyone');
-  eq(onBench(agent(null)), true, 'no project is the bench');
-  eq(onBench(agent(null, 'orchestrator')), false, 'the orchestrator is never on the bench');
-  eq(onBench(agent(null, 'worker', 'model')), false, 'a model agent takes no work, so it is not on the bench');
-  eq(onBench(agent('pr1')), false, "a project's agent is not on the bench");
+  eq(inScope(agent(null), null), true, 'All projects shows an agent on no project');
 }
 
 // Treasury: the range window, flow totals, chart data, journal paging merge and the party labels.
@@ -1403,8 +1394,8 @@ sectionEnd('rich card tests: ok');
   eq(groupByProject([ag(2, 'amy')], [pj('p1', 'Alpha', 1, [], 5)], [tk('t9', 2)])[0]?.title, 'No project', 'groupByProject: a claimed task outside every project does not place the agent');
   eq(projectOf(agents[1], projects, tasks)?.id, 'p2', 'projectOf: the most recently active project of the agent');
   eq(projectOf(agents[2], projects, tasks), null, 'projectOf: null for an agent in no project');
-  eq(projectOf(ag(2, 'amy', { project: 'p1' }), projects, tasks)?.id, 'p1', 'projectOf: a member is under its project only (amy also leads Beta)');
-  eq(groupByProject([ag(6, 'eve', { project: 'p3' })], projects, tasks).map((g) => g.title).join(','), 'Gamma', 'groupByProject: a member of a project with no tasks yet is under it');
+  eq(projectOf(ag(2, 'amy', { project: 'p1' }), projects, tasks)?.id, 'p1', 'projectOf: an agent on a project is under it only (amy also leads Beta)');
+  eq(groupByProject([ag(6, 'eve', { project: 'p3' })], projects, tasks).map((g) => g.title).join(','), 'Gamma', 'groupByProject: an agent on a project with no tasks yet is under it');
 
 
   // The sidebar order is Beta (amy, cy), Alpha (amy, zed), No project (bob, dee); the unique order is 2, 4, 1, 3, 5.
@@ -1894,7 +1885,7 @@ sectionEnd('graph wrapper tests: ok');
   const project = {
     id: 'pr1', title: 'Release', goal: 'g', kind: 'other', stage: 'implementation', lead_cid: 1, owner_approval: false, repo: null,
     docs: [{ kind: 'brief', title: 'The brief', file: 'f1', repo_path: null, commit: null, summary: 's', by_cid: 1, by: 'Ada', at_ms: 0 }],
-    critiques: [{ by_cid: 3, by: 'Cy', verdict: 'approve', text: 'ok', revision: 1, at_ms: 0 }], revision: 1, approved_by: 'Mayor',
+    critiques: [{ by_cid: 3, by: 'Cy', verdict: 'approve', text: 'ok', revision: 1, at_ms: 0 }], revision: 1, approved_by: 'Orchestrator',
     tasks: ['t1', 't2'], history: [], created_ms: 0, updated_ms: 0,
   } as Project;
   const taskRow = (id: string, over: Partial<Task> = {}): Task => ({
@@ -1906,11 +1897,11 @@ sectionEnd('graph wrapper tests: ok');
   eq(flowSegments(null, [taskRow('t9')]).map((x) => x.kind), ['task'], 'work: tasks outside projects have task squares only');
   const cards = planCards(project);
   eq(cards.map((c) => c.state), ['done', 'done', 'done', 'done', 'done'], 'work: an approved plan is done');
-  eq(cards[4]?.title, 'Approved by Mayor', 'work: the approval names who approved');
+  eq(cards[4]?.title, 'Approved by Orchestrator', 'work: the approval names who approved');
   eq(planCards({ ...project, stage: 'approval', approved_by: null, owner_approval: true })[4]?.state, 'you', 'work: a plan waiting on the owner is the owner’s');
   const asking = { ...project, stage: 'critique', approved_by: null, owner_approval: true, tasks: [] } as Project;
   eq(flowSegments(asking, []).map((x) => x.state), ['done', 'done', 'done', 'current', 'you', 'later', 'later'], 'work: the flow line shows the approval waiting on the owner');
-  eq(flowSegments({ ...asking, owner_approval: false }, [])[4]?.state, 'later', 'work: the mayor’s approval is not the owner’s');
+  eq(flowSegments({ ...asking, owner_approval: false }, [])[4]?.state, 'later', 'work: the orchestrator’s approval is not the owner’s');
   const claimed = [taskRow('t1', { state: 'claimed', ready: false, agent_cid: 7 }), taskRow('t2', { state: 'claimed', ready: false, agent_cid: 8 })];
   const deciding = (cid: number) => (cid === 7 ? { stage: 'approval' as const, tool: 'plaza_pay', since_ms: 0 } : { stage: 'tool' as const, tool: 'bash', since_ms: 0 });
   eq(flowSegments(project, claimed, deciding).filter((x) => x.kind === 'task').map((x) => x.state), ['needs-you', 'working'], 'work: with the steps, a task waiting on the owner is the owner’s square');

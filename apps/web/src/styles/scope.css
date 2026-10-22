@@ -1,4 +1,4 @@
-/* The project scope: the top bar's switcher, the New project dialog, the bench and team rows, a project's settings. */
+/* The project scope: the top bar's switcher, the New project dialog, a project's settings. */
 
 .scope-switcher { max-width: 260px; margin-left: 14px; font: 600 12px var(--font); }
 
@@ -10,11 +10,6 @@
 .new-project section + section { padding-top: 18px; border-top: 1px solid var(--rule); }
 .new-project h3 { margin: 0; font: 600 14px var(--font); }
 .new-project .actions { display: flex; justify-content: flex-end; gap: 8px; }
-
-.bench-row, .team-row { gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--rule-faint); }
-.bench-row:last-child, .team-row:last-child { border-bottom: 0; }
-.team-who { flex: 1; min-width: 0; }
-.team-who a { color: var(--ink); text-decoration: none; }
 
 .agent-project { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; flex-basis: 100%; }
 

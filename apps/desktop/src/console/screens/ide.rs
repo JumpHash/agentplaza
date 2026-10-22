@@ -704,8 +704,8 @@ pub(super) fn selected_agent(st: &State) -> Option<&AgentRow> {
     }
 }
 
-/// The project the workspace on screen belongs to: the one its agent works on (else the first project that names
-/// it), or the one whose repo it is.
+/// The project the workspace on screen belongs to: the one its agent works on (else the project it leads), or the one
+/// whose repo it is.
 pub(super) fn selected_project(st: &State) -> Option<&ProjectRow> {
     match st.ide.workspace.as_ref()? {
         WorkspaceId::Agent(cid) => {
@@ -716,7 +716,7 @@ pub(super) fn selected_project(st: &State) -> Option<&ProjectRow> {
                 .and_then(|a| a.project.as_deref())
             {
                 Some(project) => st.projects.iter().find(|p| p.id == project),
-                None => st.projects.iter().find(|p| p.members.contains(cid)),
+                None => st.projects.iter().find(|p| p.agents.contains(cid)),
             }
         }
         WorkspaceId::Repo { name, .. } => st
@@ -1953,19 +1953,15 @@ pub(super) fn left_panel(st: &State, width: f32) -> Element<'_, Msg> {
 /// conversation on screen, the project it drafts.
 pub(super) fn right_panel(st: &State, width: f32) -> Element<'_, Msg> {
     let (body, padding) = match &st.conversation {
-        Some(conv) => {
-            let roster: Vec<(u64, String)> =
-                st.roster.iter().map(|a| (a.cid, a.label.clone())).collect();
-            (
-                ide_conversation::draft(conv, &roster, now_ms(), Msg::Conversation, Msg::Shell),
-                Padding {
-                    top: 10.0,
-                    right: 12.0,
-                    bottom: 10.0,
-                    left: 10.0,
-                },
-            )
-        }
+        Some(conv) => (
+            ide_conversation::draft(conv, now_ms(), Msg::Conversation, Msg::Shell),
+            Padding {
+                top: 10.0,
+                right: 12.0,
+                bottom: 10.0,
+                left: 10.0,
+            },
+        ),
         None => (ide_right::view(st), Padding::from(0.0)),
     };
     container(body)

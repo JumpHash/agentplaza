@@ -406,7 +406,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         col(at('research'), docsOf(['research']), 'Researchers attach what they find.'),
         col(at('proposal'), docsOf(['proposal', 'design', 'spec', 'tasks', 'revision']), 'The planner writes the proposal, the design and the tasks list.'),
         col(at('critique'), crits, 'Agents other than the author critique the plan.'),
-        col(at('approval'), [], 'The mayor approves.'),
+        col(at('approval'), [], 'The orchestrator approves.'),
       ),
       h(
         'section.wk-note',

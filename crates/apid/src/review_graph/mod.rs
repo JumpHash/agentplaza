@@ -904,11 +904,11 @@ fn unclaim(app: &App, run: &str, node: &str) {
 
 /// An agent of `role` working on `project`, not the worker, preferring one not already on this run and idle.
 fn pick_agent(app: &App, project: &str, role: &str, worker: u64, taken: &[u64]) -> Option<u64> {
-    let members = app.members.members(project);
+    let on_project = crate::projects::agents_of(app, project);
     let mut candidates = app.agents.select(|a| {
         (a.role == role
             && a.cid != worker
-            && members.contains(&a.cid)
+            && on_project.contains(&a.cid)
             && a.status != crate::agents::Status::Offline
             && a.kind != "model")
             .then(|| (a.cid, a.status == crate::agents::Status::Idle))

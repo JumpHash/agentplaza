@@ -178,16 +178,11 @@ pub struct Wizard {
     rejecting: bool,
     /// The rejection reason, typed in a multi-line editor (Enter adds a line, as the web's textarea).
     reject_reason: Content,
-    /// The project the spawned agents join at their first hello (a project's Team tab sets it); None: the console's
-    /// project, if it is scoped to one, else they wait on the bench.
-    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum WizardMsg {
     Open,
-    /// Opens the wizard for a project: the agents it spawns join that project.
-    OpenFor(String),
     Close,
     /// Spawned (or failed): the Agents screen reloads.
     Done(Result<(), String>),
@@ -426,8 +421,6 @@ impl Wizard {
             Mode::New => (self.id.clone(), Some(self.role_json(&model))),
             Mode::Existing => (self.role_id.clone(), None),
         };
-        // The agents join this project at their first hello; with none they wait on the bench.
-        let project = self.project.clone().or_else(|| ctx.project.clone());
         client::task(
             move || {
                 if let Some(def) = new_role {
@@ -435,7 +428,7 @@ impl Wizard {
                 }
                 client.post::<Value>(
                     "/v1/agents",
-                    &json!({ "role": role_id, "count": count, "model": model, "project": project }),
+                    &json!({ "role": role_id, "count": count, "model": model }),
                 )?;
                 Ok(())
             },
@@ -467,12 +460,6 @@ pub fn update(wizard: &mut Wizard, msg: WizardMsg, ctx: &Ctx) -> Task<WizardMsg>
         WizardMsg::Open => {
             *wizard = Wizard::fresh();
             wizard.open = true;
-            return load(ctx);
-        }
-        WizardMsg::OpenFor(project) => {
-            *wizard = Wizard::fresh();
-            wizard.open = true;
-            wizard.project = Some(project);
             return load(ctx);
         }
         WizardMsg::Close => wizard.open = false,

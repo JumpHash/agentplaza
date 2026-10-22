@@ -1,19 +1,18 @@
 //! The Projects screen (parity with the web console's `projects` view).
 //!
 //! The list of projects, with New project, and one project's page: its brief, the eight-stage
-//! track, Pause, Resume and Archive, and three tabs: Plan (documents, critiques, tasks, repository
+//! track, Pause, Resume and Archive, and its tabs: Plan (documents, critiques, tasks, repository
 //! and history; the owner approves the plan or sends the project back to an earlier stage with a
-//! reason), Team ([`super::project_team`]) and Settings ([`super::project_settings`]).
+//! reason), Maintenance, Environments and Settings ([`super::project_settings`]).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use iced::widget::{Space, Stack, button, column, container, row, text, text_input};
+use iced::widget::{Space, button, column, container, row, text, text_input};
 use iced::{Alignment, Border, Color, Element, Font, Length, Subscription, Task, Theme, font};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::wizard::WizardMsg;
-use super::{Id, ide, project_environments, project_maintenance, project_settings, project_team};
+use super::{Id, ide, project_environments, project_maintenance, project_settings};
 use crate::console::shell::pmono;
 use crate::console::{Ctx, client, events, ui};
 
@@ -121,32 +120,30 @@ pub struct Event {
     pub note: String,
 }
 
-/// A project page's tabs: its plan and history, the agents working on it, its settings and budget.
+/// A project page's tabs: its plan and history, its maintenance, its environments, its settings and budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     #[default]
     Plan,
     Maintenance,
     Environments,
-    Team,
     Settings,
 }
 
 impl Tab {
-    /// A tab by its name (`plan`, `maintenance`, `environments`, `team`, `settings`), as the web's route names it.
+    /// A tab by its name (`plan`, `maintenance`, `environments`, `settings`), as the web's route names it.
     pub fn named(name: &str) -> Option<Tab> {
         match name.trim() {
             "plan" => Some(Tab::Plan),
             "maintenance" => Some(Tab::Maintenance),
             "environments" => Some(Tab::Environments),
-            "team" => Some(Tab::Team),
             "settings" => Some(Tab::Settings),
             _ => None,
         }
     }
 }
 
-/// A send-back in progress: the stage it returns to and the reason the team must act on.
+/// A send-back in progress: the stage it returns to and the reason the agents must act on.
 #[derive(Debug, Clone)]
 pub struct SendBack {
     pub stage: String,
@@ -178,7 +175,6 @@ pub struct State {
     pub confirm_archive: bool,
     /// The More menu (send back, archive) is open.
     pub more: bool,
-    pub team: project_team::State,
     pub settings: project_settings::State,
     pub maintenance: project_maintenance::State,
     pub environments: project_environments::State,
@@ -225,7 +221,6 @@ pub enum Msg {
     OpenArchive,
     Archive,
     CancelArchive,
-    Team(project_team::Msg),
     Settings(project_settings::Msg),
     Maintenance(project_maintenance::Msg),
     Environments(project_environments::Msg),
@@ -243,7 +238,6 @@ pub enum Msg {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
-        Msg::Team(m) => project_team::go(m),
         Msg::Settings(m) => project_settings::go(m),
         Msg::Maintenance(m) => project_maintenance::go(m),
         Msg::Environments(m) => project_environments::go(m),
@@ -274,14 +268,12 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-/// The open tab's own data: the team, or the settings (the plan is the project itself).
+/// The open tab's own data (the plan is the project itself, so it has none).
 fn load_tab(state: &State, id: &str, ctx: &Ctx) -> Task<Msg> {
-    let live = state.detail.as_ref().is_none_or(Project::live);
     match state.tab {
         Tab::Plan => Task::none(),
         Tab::Maintenance => project_maintenance::load(id, ctx).map(Msg::Maintenance),
         Tab::Environments => project_environments::load(id, ctx).map(Msg::Environments),
-        Tab::Team => project_team::load(id, live, ctx).map(Msg::Team),
         Tab::Settings => project_settings::load(id, ctx).map(Msg::Settings),
     }
 }
@@ -327,13 +319,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::CancelArchive => {
             state.confirm_archive = false;
             Task::none()
-        }
-        Msg::Team(m) => {
-            let Some(p) = state.detail.as_ref() else {
-                return Task::none();
-            };
-            let (id, title, live) = (p.id.clone(), p.title.clone(), p.live());
-            project_team::update(&mut state.team, m, &id, &title, live, ctx).map(Msg::Team)
         }
         Msg::Settings(m) => {
             let Some(id) = state.open.clone() else {
@@ -586,7 +571,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             };
             let why = sb.reason.trim().to_string();
             if why.is_empty() {
-                state.error = Some("Give a reason so the team knows what to change".into());
+                state.error = Some("Give a reason so the agents know what to change".into());
                 return Task::none();
             }
             let client = ctx.client.clone();
@@ -600,24 +585,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
     }
 }
 
-pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
+pub fn view<'a>(state: &'a State) -> Element<'a, Msg> {
     match (&state.open, &state.detail) {
         (None, _) => list_view(state),
-        (Some(_), Some(p)) => {
-            let page = detail(state, p);
-            // The Team tab's wizard spawns new agents for the project, over the page.
-            if state.tab == Tab::Team && state.team.wizard.open {
-                Stack::new()
-                    .push(page)
-                    .push(
-                        super::wizard::view(&state.team.wizard, ctx)
-                            .map(|m: WizardMsg| Msg::Team(project_team::Msg::Wizard(m))),
-                    )
-                    .into()
-            } else {
-                page
-            }
-        }
+        (Some(_), Some(p)) => detail(state, p),
         (Some(_), None) => {
             // A failed read is "not found" on the web (the toast carries the reason).
             let body: Element<'a, Msg> = match &state.error {
@@ -879,7 +850,7 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Msg> {
             body.push(ui::empty(
                 "commit",
                 "No projects yet.",
-                "Start one in a conversation with the orchestrator: it drafts the tasks, the team and the budget, and you start it.",
+                "Start one in a conversation with the orchestrator: it drafts the tasks and the budget, and you start it.",
             ));
             body.push(
                 container(new_project_button())
@@ -1039,7 +1010,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
         body.push(ui::card(
             "Archive project?",
             column![
-                ui::prose(format!("Nothing more is done for {}: its open tasks are withdrawn, its agents go back to the bench, and the rest of its budget goes back to the plaza. Its history stays.", p.title)),
+                ui::prose(format!("Nothing more is done for {}: its open tasks are withdrawn, its agents stop working on it, and the rest of its budget goes back to the plaza. Its history stays.", p.title)),
                 row![
                     ui::btn("Cancel", None, ui::Kind::Ghost, Some(Msg::CancelArchive)),
                     ui::btn("Archive", None, ui::Kind::Danger, Some(Msg::Archive)),
@@ -1099,7 +1070,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
     }
 
     if let Some(note) = &state.approve {
-        let field = text_input("A note for the team (optional)", note)
+        let field = text_input("A note for the agents (optional)", note)
             .on_input(Msg::ApproveNote)
             .on_submit(Msg::SubmitApprove)
             .style(theme::input);
@@ -1161,10 +1132,6 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
 
     body.push(tab_bar(p, state.tab));
     match state.tab {
-        Tab::Team => {
-            body.push(project_team::view(&state.team, &p.id, live).map(Msg::Team));
-            return page(p, badges, body);
-        }
         Tab::Settings => {
             body.push(project_settings::view(&state.settings, &p.id, live).map(Msg::Settings));
             return page(p, badges, body);
@@ -1227,7 +1194,7 @@ fn detail<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
 /// The page's tabs (the web's `.pj-tabs`): the ones drawn here, and the console's own Work, Tasks and Weft screens for the
 /// project. Selected: ink with a signal rule under it; the rest faint.
 fn tab_bar<'a>(p: &'a Project, tab: Tab) -> Element<'a, Msg> {
-    let items: [(&str, Msg, bool); 8] = [
+    let items: [(&str, Msg, bool); 7] = [
         ("Plan", Msg::Tab(Tab::Plan), tab == Tab::Plan),
         ("Work", Msg::Go(Id::WorkOn(p.id.clone())), false),
         ("Tasks", Msg::Go(Id::Tasks), false),
@@ -1242,7 +1209,6 @@ fn tab_bar<'a>(p: &'a Project, tab: Tab) -> Element<'a, Msg> {
             Msg::Tab(Tab::Environments),
             tab == Tab::Environments,
         ),
-        ("Team", Msg::Tab(Tab::Team), tab == Tab::Team),
         ("Settings", Msg::Tab(Tab::Settings), tab == Tab::Settings),
     ];
     let cells = items.into_iter().map(|(name, msg, on)| {

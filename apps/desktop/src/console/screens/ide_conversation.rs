@@ -1,6 +1,6 @@
 //! The IDE's conversation workspace (the web's `views/ide-conversation.ts`): the owner's conversation with the
 //! orchestrator, the project it drafts beside it, and Start. The IDE's sidebar lists the conversations; the centre is
-//! the chat (answers stream in as they are written); the right panel is the draft: its goal, tasks, team, budget and
+//! the chat (answers stream in as they are written); the right panel is the draft: its goal, tasks, budget and
 //! settings, what still stops Start, the owner's edits, and Start. Once started, the conversation stays the project's
 //! line to the orchestrator.
 
@@ -26,49 +26,6 @@ const MESSAGE_MAX: usize = 8000;
 pub fn is_conversation_id(id: &str) -> bool {
     id.strip_prefix("conv-")
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// The label of agent `cid` in `roster` ((cid, label) pairs), or `agent #<cid>` if it is not listed.
-fn label_in(roster: &[(u64, String)], cid: u64) -> String {
-    roster
-        .iter()
-        .find(|(c, _)| *c == cid)
-        .map(|(_, label)| label.clone())
-        .unwrap_or_else(|| roles::agent_label("", cid))
-}
-
-/// One role of the team as the draft shows it: `2 Builder (Builder #300 from the bench, 1 new)`.
-pub fn seat_line(seat: &Value, roster: &[(u64, String)]) -> String {
-    let count = seat["count"].as_u64().unwrap_or(0);
-    let named: Vec<String> = seat["bench"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_u64)
-        .map(|cid| label_in(roster, cid))
-        .collect();
-    let fresh = count.saturating_sub(named.len() as u64);
-    let mut parts = Vec::new();
-    if !named.is_empty() {
-        parts.push(format!("{} from the bench", named.join(", ")));
-    }
-    if fresh > 0 {
-        parts.push(format!("{fresh} new"));
-    }
-    let role = roles::label(seat["role"].as_str().unwrap_or(""));
-    if parts.is_empty() {
-        format!("{count} {role}")
-    } else {
-        format!("{count} {role} ({})", parts.join(", "))
-    }
-}
-
-/// The team in one line, roles joined by a dot.
-pub fn team_line(team: &[Value], roster: &[(u64, String)]) -> String {
-    team.iter()
-        .map(|seat| seat_line(seat, roster))
-        .collect::<Vec<_>>()
-        .join(" · ")
 }
 
 /// A task's `after` in words: `after 1, 2`, or '' when it runs at once.
@@ -430,17 +387,10 @@ pub fn update(conv: &mut Conversation, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                         .as_object_mut()
                         .and_then(|o| o.remove("started"))
                         .unwrap_or_default();
-                    let fresh: u64 = started["spawned"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|s| s["count"].as_u64())
-                        .sum();
                     conv.notice = Some(format!(
-                        "{} started: {} tasks, {} agents from the bench, {fresh} new",
+                        "{} started: {} tasks",
                         scope::title(started["project"].as_str().unwrap_or("")),
                         started["tasks"].as_array().map_or(0, Vec::len),
-                        started["joined"].as_array().map_or(0, Vec::len),
                     ));
                     adopt(conv, data);
                     conv.error = None;
@@ -770,11 +720,10 @@ pub fn chat<'a, M: Clone + 'a>(
     .into()
 }
 
-/// The draft beside the chat: its title and revision, goal, repository, team, budget, settings and tasks, then
-/// what stops Start (or Start), or once started the project and the way to it. `roster` labels the bench agents.
+/// The draft beside the chat: its title and revision, goal, repository, budget, settings and tasks, then
+/// what stops Start (or Start), or once started the project and the way to it.
 pub fn draft<'a, M: Clone + 'a>(
     conv: &'a Conversation,
-    roster: &[(u64, String)],
     now_ms: u64,
     wrap: fn(Msg) -> M,
     to_console: fn(shell::Msg) -> M,
@@ -787,7 +736,7 @@ pub fn draft<'a, M: Clone + 'a>(
     if !d.is_object() {
         return column![
             ui::sans("The project draft", 15.0, p.ink),
-            ui::faint("As you talk, the orchestrator drafts the project here: its goal, its tasks, its team and its budget. You start it when it looks right."),
+            ui::faint("As you talk, the orchestrator drafts the project here: its goal, its tasks and its budget. You start it when it looks right."),
         ]
         .spacing(10)
         .into();
@@ -822,15 +771,6 @@ pub fn draft<'a, M: Clone + 'a>(
     if let Some(repo) = d["repo"].as_str().filter(|r| !r.is_empty()) {
         col = col.push(fact("Repo", repo.to_string()));
     }
-    let team: Vec<Value> = d["team"].as_array().cloned().unwrap_or_default();
-    col = col.push(fact(
-        "Team",
-        if team.is_empty() {
-            "Not drafted yet".into()
-        } else {
-            team_line(&team, roster)
-        },
-    ));
     col = col.push(fact("Budget", budget_text(d)));
     let settings = settings_line(&d["settings"]);
     if !settings.is_empty() {
@@ -994,10 +934,6 @@ fn edit_form<'a, M: Clone + 'a>(edit: &'a DraftEdit, wrap: fn(Msg) -> M) -> Elem
 mod tests {
     use super::*;
 
-    fn roster() -> Vec<(u64, String)> {
-        vec![(300, "Builder #300".into()), (304, "Librarian #304".into())]
-    }
-
     #[test]
     fn the_drafts_words() {
         assert!(is_conversation_id("conv-12"));
@@ -1005,41 +941,6 @@ mod tests {
             !is_conversation_id("agent:7")
                 && !is_conversation_id("conv-")
                 && !is_conversation_id("conv-1x")
-        );
-        assert_eq!(
-            seat_line(
-                &json!({ "role": "builder", "count": 2, "bench": [300] }),
-                &roster()
-            ),
-            "2 Builder (Builder #300 from the bench, 1 new)"
-        );
-        assert_eq!(
-            seat_line(
-                &json!({ "role": "librarian", "count": 1, "bench": [304] }),
-                &roster()
-            ),
-            "1 Librarian (Librarian #304 from the bench)"
-        );
-        assert_eq!(
-            seat_line(&json!({ "role": "qa", "count": 1 }), &roster()),
-            "1 QA (1 new)"
-        );
-        assert_eq!(
-            seat_line(
-                &json!({ "role": "qa", "count": 1, "bench": [999] }),
-                &roster()
-            ),
-            "1 QA (agent #999 from the bench)"
-        );
-        assert_eq!(
-            team_line(
-                &[
-                    json!({ "role": "qa", "count": 1 }),
-                    json!({ "role": "release", "count": 1 })
-                ],
-                &roster()
-            ),
-            "1 QA (1 new) · 1 Release (1 new)"
         );
         assert_eq!(after_text(&json!({ "after": ["1", "2"] })), "after 1, 2");
         assert_eq!(after_text(&json!({})), "");

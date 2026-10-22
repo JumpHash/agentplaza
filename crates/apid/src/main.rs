@@ -61,7 +61,6 @@ mod lifecycle;
 mod llm_proxy;
 mod maintenance;
 mod mcp;
-mod membership;
 mod metrics;
 mod mover;
 mod node_link;

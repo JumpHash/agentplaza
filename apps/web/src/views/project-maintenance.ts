@@ -132,7 +132,7 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
   // ---- The owner's answers ---------------------------------------------------------------------------------------
 
   const doIt = (pr: Proposal): void => {
-    const note = textarea({ rows: 2, placeholder: 'Anything the team should know (optional)' });
+    const note = textarea({ rows: 2, placeholder: 'Anything the agents should know (optional)' });
     const budget = input({ type: 'number', min: 200, step: 100, placeholder: pr.effort.budget ? String(pr.effort.budget) : 'The project’s default' });
     const knownTool = pr.instrument?.catalog;
     dialog(
@@ -424,7 +424,7 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
       'Sweeps',
       [
         field('Sweep', every, 'A sweep is one watcher reading what came in, updating the map and proposing.'),
-        h('p.pj-faint', null, m.watchers.length ? `Watchers, in turn: ${m.watchers.map(nameOf).join(', ')}.` : 'No agent watches it yet: add a planner or a researcher on the Team tab.'),
+        h('p.pj-faint', null, m.watchers.length ? `Watchers, in turn: ${m.watchers.map(nameOf).join(', ')}.` : 'No agent watches it yet.'),
       ],
       (close) => [
         lbtn('Cancel', () => close(), { kind: 'ghost' }),

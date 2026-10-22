@@ -1,11 +1,11 @@
 // The IDE's conversation workspace (`#/talk/conv-<n>` and `#/ide/conv-<n>`): the owner's conversation with the
 // orchestrator, the project it drafts beside it, and Start. On the left, the conversations; in the centre, the chat
-// (answers stream in as they are written); on the right, the draft: its goal, tasks, team, budget and settings, with
+// (answers stream in as they are written); on the right, the draft: its goal, tasks, budget and settings, with
 // what still stops Start, the owner's edits, and Start. Once started, the conversation stays the project's line to the
 // orchestrator. The markup is the prototype's talk screen (loom: m-workspace's talk, m-ide-chat's conversation and draft).
 
 import { api, type Delta, type OwnerConversation, type OwnerConversationSummary, type OwnerMessage, type ProjectDraft } from '../api';
-import { afterText, budgetText, settingsLine, startBlock, streamed, teamLine } from '../ide/conversation-model';
+import { afterText, budgetText, settingsLine, startBlock, streamed } from '../ide/conversation-model';
 import { consoleOrigin } from '../ide/open';
 import { hrefIn } from '../router';
 import { agentName, roleLabel } from '../roles';
@@ -215,12 +215,10 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
       );
       return;
     }
-    const roster = agents.get();
     const block = startBlock(c);
     const started = !!c.project;
     const facts: [string, string | Node][] = [];
     if (d.repo) facts.push(['Repo', d.repo]);
-    facts.push(['Team', d.team.length ? teamLine(d.team, roster) : 'Not drafted yet']);
     facts.push(['Budget', budgetText(d)]);
     const settings = settingsLine(d.settings);
     replace(
@@ -336,8 +334,7 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
     conversation = done;
     await refreshProjects();
     const s = done.started;
-    const fresh = s.spawned.reduce((n, x) => n + x.count, 0);
-    toast(`${projectTitle(s.project)} started: ${s.tasks.length} tasks, ${s.joined.length} agents from the bench, ${fresh} new`);
+    toast(`${projectTitle(s.project)} started: ${s.tasks.length} tasks`);
     draw();
   }
 

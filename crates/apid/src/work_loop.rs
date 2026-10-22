@@ -45,8 +45,8 @@ fn now() -> u64 {
     apz_plaza::now_ms()
 }
 
-/// Whether the work loop runs `task` (it has seats): the scheduler's old paths (the bench, the reviewer pool, the
-/// review graph) leave it alone.
+/// Whether the work loop runs `task` (it has seats): the scheduler's old paths (the reviewer pool, the review graph)
+/// leave it alone.
 pub fn owns(app: &App, task: &str) -> bool {
     !app.seats.of_task(task).is_empty()
 }
@@ -665,6 +665,37 @@ pub fn on_gone(app: &App, cid: u64) {
         )
     {
         fail_session(app, &session, "its VM went away", now());
+    }
+}
+
+/// A project is over (archived or delivered): its open and claimed tasks are withdrawn first (so the seats that end with
+/// them do not fail them), its tasks' seats close (their sessions end, their budgets are released), and whatever else
+/// still runs for it ends too, its planner included. Its work in flight is cancelled and its VMs stop.
+pub fn end_project(app: &App, project: &str, why: &str) {
+    let now = now();
+    if let Some(found) = app.projects.get(project) {
+        for task in &found.tasks {
+            if let Some(record) = app.plaza.tasks.find(task)
+                && (record.is_open() || record.state() == "claimed")
+            {
+                let _ = record.withdraw();
+            }
+        }
+        for task in &found.tasks {
+            if !app.seats.of_task(task).is_empty() {
+                close_task(app, task, now);
+            }
+        }
+    }
+    for session in app.sessions.list(&crate::sessions::Filter {
+        project: Some(project.to_string()),
+        live: true,
+        ..Default::default()
+    }) {
+        if let Some(cid) = session.cid {
+            app.work.cancel(app, cid, why);
+        }
+        end_session(app, &session, "", false, now);
     }
 }
 

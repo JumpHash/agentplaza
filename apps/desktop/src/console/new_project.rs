@@ -665,7 +665,7 @@ pub fn view(form: &Form) -> Element<'_, Msg> {
 
     let talk = section(
         "Talk it through",
-        "The orchestrator asks what it needs and drafts the project beside the conversation: its tasks, its team and its budget. You start it when it looks right.",
+        "The orchestrator asks what it needs and drafts the project beside the conversation: its tasks and its budget. You start it when it looks right.",
         column![
             field(
                 "Your goal",
