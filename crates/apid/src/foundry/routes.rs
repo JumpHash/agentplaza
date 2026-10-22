@@ -405,6 +405,7 @@ pub(crate) fn submit_job(app: &App, doc: Value) -> Result<Job, (u16, String)> {
         mode: plan.mode.to_string(),
         budget_gpu_hours: spec.budget,
         gpu_hours: 0.0,
+        agent: doc.get("agent").and_then(Value::as_u64),
         doc,
         plan: plan_doc,
         runs,
@@ -435,7 +436,7 @@ fn job_summary(job: &Job) -> Value {
            "created_ms": job.created_ms, "updated_ms": job.updated_ms, "gpu_hours": job.gpu_hours,
            "budget_gpu_hours": job.budget_gpu_hours, "error": job.error, "runs": job.runs.len(),
            // The breeder (agent cid) that submitted it, if an agent did; the owner's own jobs have none.
-           "agent": job.doc.get("agent").and_then(Value::as_u64)})
+           "agent": job.agent})
 }
 
 /// One job in full: the summary, its plan, runs, series, metrics and outputs.
@@ -528,7 +529,14 @@ mod tests {
             created_ms: 1,
             ..Job::default()
         };
-        older.series = vec![json!({"step": 1})];
+        older.series = vec![crate::foundry::store::Point::Step {
+            island: "i1".into(),
+            step: Some(1),
+            loss: None,
+            lr: None,
+            samples: None,
+            t: 0,
+        }];
         let newer = Job {
             id: "b".into(),
             created_ms: 2,

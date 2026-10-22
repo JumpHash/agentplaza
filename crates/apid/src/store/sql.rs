@@ -6,6 +6,21 @@
 // The budgets' ledger (budgets.rs).
 pub const BUDGET_LEDGER: &str = include_str!("../../sql/queries/budget_ledger.sql");
 
+// The model-usage ledger (usage.rs): written through as calls are metered, read and pruned by the retention.
+pub const USAGE_CALLS_CLEAR: &str = include_str!("../../sql/queries/usage_calls_clear.sql");
+pub const USAGE_CALLS_COUNT: &str = include_str!("../../sql/queries/usage_calls_count.sql");
+pub const USAGE_CALLS_PAGE: &str = include_str!("../../sql/queries/usage_calls_page.sql");
+pub const USAGE_CALLS_PRUNE: &str = include_str!("../../sql/queries/usage_calls_prune.sql");
+pub const USAGE_ESCALATED: &str = include_str!("../../sql/queries/usage_escalated.sql");
+pub const USAGE_HOUR_ADD: &str = include_str!("../../sql/queries/usage_hour_add.sql");
+pub const USAGE_HOURS_PRUNE: &str = include_str!("../../sql/queries/usage_hours_prune.sql");
+pub const USAGE_NEWEST_ID: &str = include_str!("../../sql/queries/usage_newest_id.sql");
+pub const USAGE_SERIES: &str = include_str!("../../sql/queries/usage_series.sql");
+pub const USAGE_SUMMARY: &str = include_str!("../../sql/queries/usage_summary.sql");
+pub const USAGE_WORK_ADD: &str = include_str!("../../sql/queries/usage_work_add.sql");
+pub const USAGE_WORK_TOTALS: &str = include_str!("../../sql/queries/usage_work_totals.sql");
+pub const USAGE_WORKS_PRUNE: &str = include_str!("../../sql/queries/usage_works_prune.sql");
+
 // A page of the vault's audit log (vault/audit.rs).
 pub const VAULT_AUDIT_PAGE: &str = include_str!("../../sql/queries/vault_audit_page.sql");
 
@@ -65,6 +80,19 @@ pub const TRANSCRIPT_DELETE: &str = include_str!("../../sql/queries/transcript_d
 #[cfg(test)]
 pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "budget_ledger", BUDGET_LEDGER),
+    ("plaza", "usage_calls_clear", USAGE_CALLS_CLEAR),
+    ("plaza", "usage_calls_count", USAGE_CALLS_COUNT),
+    ("plaza", "usage_calls_page", USAGE_CALLS_PAGE),
+    ("plaza", "usage_calls_prune", USAGE_CALLS_PRUNE),
+    ("plaza", "usage_escalated", USAGE_ESCALATED),
+    ("plaza", "usage_hour_add", USAGE_HOUR_ADD),
+    ("plaza", "usage_hours_prune", USAGE_HOURS_PRUNE),
+    ("plaza", "usage_newest_id", USAGE_NEWEST_ID),
+    ("plaza", "usage_series", USAGE_SERIES),
+    ("plaza", "usage_summary", USAGE_SUMMARY),
+    ("plaza", "usage_work_add", USAGE_WORK_ADD),
+    ("plaza", "usage_work_totals", USAGE_WORK_TOTALS),
+    ("plaza", "usage_works_prune", USAGE_WORKS_PRUNE),
     ("plaza", "vault_audit_page", VAULT_AUDIT_PAGE),
     (
         "metrics",

@@ -29,7 +29,9 @@ use crate::state::App;
 /// Every component still snapshotted into Postgres, by name, in restore order. The task ledger and the components of
 /// `plaza.db` are not here: `store` keeps them.
 pub const COMPONENTS: &[&str] = &[
-    "treasury", "members", "prices", "usage", "foundry", "models", "mcp",
+    "treasury",
+    "members",
+    "mcp",
 ];
 
 pub mod data_migrate;
@@ -48,10 +50,6 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
     match component {
         "treasury" => app.plaza.treasury.snapshot(),
         "members" => app.members.snapshot(),
-        "prices" => app.prices.snapshot(),
-        "usage" => app.usage.snapshot(),
-        "foundry" => app.foundry.snapshot(),
-        "models" => app.models.snapshot(),
         "mcp" => app.mcp.store.snapshot(),
         _ => String::new(),
     }
@@ -62,10 +60,6 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
     match component {
         "treasury" => app.plaza.treasury.restore(json),
         "members" => app.members.restore(json),
-        "prices" => app.prices.restore(json),
-        "usage" => app.usage.restore(json),
-        "foundry" => app.foundry.restore(json),
-        "models" => app.models.restore(json),
         "mcp" => app.mcp.store.restore(json),
         other => Err(format!("unknown component {other}")),
     }
@@ -791,12 +785,6 @@ mod tests {
         let stranded = stranded_escrows(&tasks);
         let ids: Vec<&str> = stranded.iter().map(|(id, _, _)| id.as_str()).collect();
         assert_eq!(ids, ["t1", "t4"]);
-    }
-
-    /// The registry is a snapshotted component: restored at start and written by the writer.
-    #[test]
-    fn models_is_a_component() {
-        assert!(COMPONENTS.contains(&"models"));
     }
 
     #[test]

@@ -1647,6 +1647,389 @@ CREATE TABLE "social_cursor" (
     FOREIGN KEY ("social_pos") REFERENCES "social" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component prices
+CREATE TABLE "price_catalog" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "fetched_at_ms" INTEGER NOT NULL CHECK ("fetched_at_ms" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "price_catalog_openrouter" (
+    "price_catalog_pos" INTEGER NOT NULL CHECK ("price_catalog_pos" >= 0),
+    "openrouter_key" TEXT NOT NULL,
+    "input" REAL NOT NULL,
+    "output" REAL NOT NULL,
+    "cache_read" REAL,
+    "cache_write" REAL,
+    PRIMARY KEY ("price_catalog_pos", "openrouter_key"),
+    FOREIGN KEY ("price_catalog_pos") REFERENCES "price_catalog" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "price_catalog_litellm" (
+    "price_catalog_pos" INTEGER NOT NULL CHECK ("price_catalog_pos" >= 0),
+    "litellm_key" TEXT NOT NULL,
+    "input" REAL NOT NULL,
+    "output" REAL NOT NULL,
+    "cache_read" REAL,
+    "cache_write" REAL,
+    PRIMARY KEY ("price_catalog_pos", "litellm_key"),
+    FOREIGN KEY ("price_catalog_pos") REFERENCES "price_catalog" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "price_catalog_sources" (
+    "price_catalog_pos" INTEGER NOT NULL CHECK ("price_catalog_pos" >= 0),
+    "sources_pos" INTEGER NOT NULL CHECK ("sources_pos" >= 0),
+    "name" TEXT NOT NULL,
+    "url" TEXT NOT NULL,
+    "models" INTEGER NOT NULL CHECK ("models" >= 0),
+    "ok" INTEGER NOT NULL CHECK ("ok" IN (0, 1)),
+    "error" TEXT,
+    PRIMARY KEY ("price_catalog_pos", "sources_pos"),
+    FOREIGN KEY ("price_catalog_pos") REFERENCES "price_catalog" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component usage
+CREATE TABLE "usage_state" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "next_id" INTEGER NOT NULL CHECK ("next_id" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+
+-- component foundry
+CREATE TABLE "foundry" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "foundry_recipes" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "recipes_key" TEXT NOT NULL,
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "repo" TEXT NOT NULL,
+    "commit" TEXT NOT NULL,
+    "schema_content" TEXT,
+    "vetted_by" TEXT,
+    "vetted_ms" INTEGER CHECK ("vetted_ms" >= 0),
+    "local_dev" INTEGER NOT NULL CHECK ("local_dev" IN (0, 1)),
+    PRIMARY KEY ("foundry_pos", "recipes_key"),
+    FOREIGN KEY ("foundry_pos") REFERENCES "foundry" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_datasets" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "datasets_key" TEXT NOT NULL,
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "from_ms" INTEGER NOT NULL CHECK ("from_ms" >= 0),
+    "to_ms" INTEGER NOT NULL CHECK ("to_ms" >= 0),
+    "rows" INTEGER NOT NULL CHECK ("rows" >= 0),
+    "frozen_rows" INTEGER NOT NULL CHECK ("frozen_rows" >= 0),
+    "provenance_content" TEXT,
+    "file" TEXT NOT NULL,
+    "frozen_file" TEXT NOT NULL,
+    "sha256" TEXT NOT NULL,
+    PRIMARY KEY ("foundry_pos", "datasets_key"),
+    FOREIGN KEY ("foundry_pos") REFERENCES "foundry" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_datasets_label_balance" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "datasets_key" TEXT NOT NULL,
+    "label_balance_key" TEXT NOT NULL,
+    "value" INTEGER NOT NULL CHECK ("value" >= 0),
+    PRIMARY KEY ("foundry_pos", "datasets_key", "label_balance_key"),
+    FOREIGN KEY ("foundry_pos", "datasets_key") REFERENCES "foundry_datasets" ("foundry_pos", "datasets_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_datasets_taint" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "datasets_key" TEXT NOT NULL,
+    "taint_pos" INTEGER NOT NULL CHECK ("taint_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("foundry_pos", "datasets_key", "taint_pos"),
+    FOREIGN KEY ("foundry_pos", "datasets_key") REFERENCES "foundry_datasets" ("foundry_pos", "datasets_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_jobs" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "jobs_key" TEXT NOT NULL,
+    "id" TEXT NOT NULL,
+    "status" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "recipe" TEXT NOT NULL,
+    "mode" TEXT NOT NULL,
+    "budget_gpu_hours" REAL NOT NULL,
+    "gpu_hours" REAL NOT NULL,
+    "agent" INTEGER CHECK ("agent" >= 0),
+    "doc_content" TEXT,
+    "plan_content" TEXT,
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "outputs_remote" INTEGER NOT NULL CHECK ("outputs_remote" IN (0, 1)),
+    "metrics_content" TEXT,
+    "error" TEXT,
+    PRIMARY KEY ("foundry_pos", "jobs_key"),
+    FOREIGN KEY ("foundry_pos") REFERENCES "foundry" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_jobs_datasets" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "jobs_key" TEXT NOT NULL,
+    "datasets_pos" INTEGER NOT NULL CHECK ("datasets_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("foundry_pos", "jobs_key", "datasets_pos"),
+    FOREIGN KEY ("foundry_pos", "jobs_key") REFERENCES "foundry_jobs" ("foundry_pos", "jobs_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_jobs_runs" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "jobs_key" TEXT NOT NULL,
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "node_job" TEXT NOT NULL,
+    "node" TEXT NOT NULL,
+    "island" TEXT NOT NULL,
+    "started_ms" INTEGER NOT NULL CHECK ("started_ms" >= 0),
+    "ended_ms" INTEGER CHECK ("ended_ms" >= 0),
+    "state" TEXT NOT NULL,
+    "exit_code" INTEGER,
+    "next" INTEGER NOT NULL CHECK ("next" >= 0),
+    "gpu_hours" REAL NOT NULL,
+    PRIMARY KEY ("foundry_pos", "jobs_key", "runs_pos"),
+    FOREIGN KEY ("foundry_pos", "jobs_key") REFERENCES "foundry_jobs" ("foundry_pos", "jobs_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_jobs_runs_devices" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "jobs_key" TEXT NOT NULL,
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "devices_pos" INTEGER NOT NULL CHECK ("devices_pos" >= 0),
+    "value" INTEGER NOT NULL CHECK ("value" >= 0),
+    PRIMARY KEY ("foundry_pos", "jobs_key", "runs_pos", "devices_pos"),
+    FOREIGN KEY ("foundry_pos", "jobs_key", "runs_pos") REFERENCES "foundry_jobs_runs" ("foundry_pos", "jobs_key", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_jobs_series" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "jobs_key" TEXT NOT NULL,
+    "series_pos" INTEGER NOT NULL CHECK ("series_pos" >= 0),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('step', 'eval', 'round', 'trial')),
+    "step_island" TEXT,
+    "step_step" INTEGER CHECK ("step_step" >= 0),
+    "step_loss" REAL,
+    "step_lr" REAL,
+    "step_samples" INTEGER CHECK ("step_samples" >= 0),
+    "step_t" INTEGER CHECK ("step_t" >= 0),
+    "eval_island" TEXT,
+    "eval_step" INTEGER CHECK ("eval_step" >= 0),
+    "eval_split" TEXT,
+    "eval_metrics_content" TEXT,
+    "eval_t" INTEGER CHECK ("eval_t" >= 0),
+    "round_island" TEXT,
+    "round_round" INTEGER CHECK ("round_round" >= 0),
+    "round_accepted" INTEGER CHECK ("round_accepted" IN (0, 1)),
+    "round_hub_round" INTEGER CHECK ("round_hub_round" >= 0),
+    "round_step" INTEGER CHECK ("round_step" >= 0),
+    "round_t" INTEGER CHECK ("round_t" >= 0),
+    "trial_island" TEXT,
+    "trial_trial" INTEGER CHECK ("trial_trial" >= 0),
+    "trial_objective" REAL,
+    "trial_t" INTEGER CHECK ("trial_t" >= 0),
+    PRIMARY KEY ("foundry_pos", "jobs_key", "series_pos"),
+    FOREIGN KEY ("foundry_pos", "jobs_key") REFERENCES "foundry_jobs" ("foundry_pos", "jobs_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_jobs_outputs" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "jobs_key" TEXT NOT NULL,
+    "outputs_pos" INTEGER NOT NULL CHECK ("outputs_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("foundry_pos", "jobs_key", "outputs_pos"),
+    FOREIGN KEY ("foundry_pos", "jobs_key") REFERENCES "foundry_jobs" ("foundry_pos", "jobs_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "foundry_jobs_candidates" (
+    "foundry_pos" INTEGER NOT NULL CHECK ("foundry_pos" >= 0),
+    "jobs_key" TEXT NOT NULL,
+    "candidates_pos" INTEGER NOT NULL CHECK ("candidates_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("foundry_pos", "jobs_key", "candidates_pos"),
+    FOREIGN KEY ("foundry_pos", "jobs_key") REFERENCES "foundry_jobs" ("foundry_pos", "jobs_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component models
+CREATE TABLE "model_registry" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "model_registry_records" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "state" TEXT NOT NULL CHECK ("state" IN ('trained', 'shadow', 'promoted', 'retired', 'imported')),
+    "source_job" TEXT,
+    "agent_cid" INTEGER CHECK ("agent_cid" >= 0),
+    "provenance_content" TEXT,
+    "calibration_content" TEXT,
+    "size_bytes" INTEGER NOT NULL CHECK ("size_bytes" >= 0),
+    "parameters" INTEGER NOT NULL CHECK ("parameters" >= 0),
+    "shadow_runs" INTEGER NOT NULL CHECK ("shadow_runs" >= 0),
+    "shadow_agreed" INTEGER NOT NULL CHECK ("shadow_agreed" >= 0),
+    "shadow_cost_saved_usd" REAL NOT NULL,
+    "shadow_updated_ms" INTEGER NOT NULL CHECK ("shadow_updated_ms" >= 0),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "state_changed_ms" INTEGER NOT NULL CHECK ("state_changed_ms" >= 0),
+    "source_present" INTEGER NOT NULL CHECK ("source_present" IN (0, 1)),
+    "source_hf" TEXT,
+    "source_revision" TEXT,
+    "source_as_" TEXT,
+    "source_path" TEXT,
+    "source_servable_reason" TEXT,
+    "source_task" TEXT,
+    PRIMARY KEY ("model_registry_pos", "records_key"),
+    FOREIGN KEY ("model_registry_pos") REFERENCES "model_registry" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "version" TEXT NOT NULL,
+    "onnx_sha256" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "metrics_content" TEXT,
+    "serving_content" TEXT,
+    PRIMARY KEY ("model_registry_pos", "records_key"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_input" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_input_properties" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "properties_key" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('number', 'integer', 'string', 'boolean', 'array', 'object')),
+    PRIMARY KEY ("model_registry_pos", "records_key", "properties_key"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card_input" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_input_properties_allowed" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "properties_key" TEXT NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key", "properties_key"),
+    FOREIGN KEY ("model_registry_pos", "records_key", "properties_key") REFERENCES "model_registry_records_card_input_properties" ("model_registry_pos", "records_key", "properties_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_input_properties_allowed_values" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "properties_key" TEXT NOT NULL,
+    "values_pos" INTEGER NOT NULL CHECK ("values_pos" >= 0),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('bool', 'int', 'real', 'text')),
+    "bool" INTEGER CHECK ("bool" IN (0, 1)),
+    "int" INTEGER,
+    "real" REAL,
+    "text" TEXT,
+    PRIMARY KEY ("model_registry_pos", "records_key", "properties_key", "values_pos"),
+    FOREIGN KEY ("model_registry_pos", "records_key", "properties_key") REFERENCES "model_registry_records_card_input_properties_allowed" ("model_registry_pos", "records_key", "properties_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_input_required" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "required_pos" INTEGER NOT NULL CHECK ("required_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key", "required_pos"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card_input" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_output" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_output_properties" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "properties_key" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('number', 'integer', 'string', 'boolean', 'array', 'object')),
+    PRIMARY KEY ("model_registry_pos", "records_key", "properties_key"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card_output" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_output_properties_allowed" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "properties_key" TEXT NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key", "properties_key"),
+    FOREIGN KEY ("model_registry_pos", "records_key", "properties_key") REFERENCES "model_registry_records_card_output_properties" ("model_registry_pos", "records_key", "properties_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_output_properties_allowed_values" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "properties_key" TEXT NOT NULL,
+    "values_pos" INTEGER NOT NULL CHECK ("values_pos" >= 0),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('bool', 'int', 'real', 'text')),
+    "bool" INTEGER CHECK ("bool" IN (0, 1)),
+    "int" INTEGER,
+    "real" REAL,
+    "text" TEXT,
+    PRIMARY KEY ("model_registry_pos", "records_key", "properties_key", "values_pos"),
+    FOREIGN KEY ("model_registry_pos", "records_key", "properties_key") REFERENCES "model_registry_records_card_output_properties_allowed" ("model_registry_pos", "records_key", "properties_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_output_required" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "required_pos" INTEGER NOT NULL CHECK ("required_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key", "required_pos"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card_output" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_features" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "features_pos" INTEGER NOT NULL CHECK ("features_pos" >= 0),
+    "name" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('numeric', 'onehot', 'hash')),
+    "buckets" INTEGER CHECK ("buckets" >= 0),
+    PRIMARY KEY ("model_registry_pos", "records_key", "features_pos"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_features_values" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "features_pos" INTEGER NOT NULL CHECK ("features_pos" >= 0),
+    "values_pos" INTEGER NOT NULL CHECK ("values_pos" >= 0),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('bool', 'int', 'real', 'text')),
+    "bool" INTEGER CHECK ("bool" IN (0, 1)),
+    "int" INTEGER,
+    "real" REAL,
+    "text" TEXT,
+    PRIMARY KEY ("model_registry_pos", "records_key", "features_pos", "values_pos"),
+    FOREIGN KEY ("model_registry_pos", "records_key", "features_pos") REFERENCES "model_registry_records_card_features" ("model_registry_pos", "records_key", "features_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_features_scale" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "features_pos" INTEGER NOT NULL CHECK ("features_pos" >= 0),
+    "mean" REAL NOT NULL,
+    "std" REAL NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key", "features_pos"),
+    FOREIGN KEY ("model_registry_pos", "records_key", "features_pos") REFERENCES "model_registry_records_card_features" ("model_registry_pos", "records_key", "features_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_labels" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_labels_names" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "names_pos" INTEGER NOT NULL CHECK ("names_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key", "names_pos"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card_labels" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "model_registry_records_card_allowed_roles" (
+    "model_registry_pos" INTEGER NOT NULL CHECK ("model_registry_pos" >= 0),
+    "records_key" TEXT NOT NULL,
+    "allowed_roles_pos" INTEGER NOT NULL CHECK ("allowed_roles_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("model_registry_pos", "records_key", "allowed_roles_pos"),
+    FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component sessions
 CREATE TABLE "session" (
     "id" TEXT NOT NULL,
@@ -1962,4 +2345,65 @@ CREATE TABLE "vault_audit" (
     "detail" TEXT,
     PRIMARY KEY ("seq")
 ) STRICT;
+
+-- usage calls (written through)
+CREATE TABLE "usage_call" (
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
+    "role" TEXT NOT NULL,
+    "model" TEXT NOT NULL,
+    "provider" TEXT NOT NULL,
+    "tokens_input" INTEGER NOT NULL CHECK ("tokens_input" >= 0),
+    "tokens_output" INTEGER NOT NULL CHECK ("tokens_output" >= 0),
+    "tokens_cache_read" INTEGER NOT NULL CHECK ("tokens_cache_read" >= 0),
+    "tokens_cache_write" INTEGER NOT NULL CHECK ("tokens_cache_write" >= 0),
+    "cost_usd" REAL,
+    "est_usd" REAL NOT NULL,
+    "task" TEXT,
+    "work" INTEGER NOT NULL CHECK ("work" >= 0),
+    "via" TEXT NOT NULL,
+    "rung" TEXT,
+    "escalated" INTEGER NOT NULL CHECK ("escalated" IN (0, 1)),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "usage_call_at_ms" ON "usage_call" ("at_ms");
+CREATE INDEX "usage_call_task" ON "usage_call" ("task");
+
+-- usage hours (written through)
+CREATE TABLE "usage_hour" (
+    "hour_ms" INTEGER NOT NULL CHECK ("hour_ms" >= 0),
+    "model" TEXT NOT NULL,
+    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "provider" TEXT NOT NULL,
+    "role" TEXT NOT NULL,
+    "totals_calls" INTEGER NOT NULL CHECK ("totals_calls" >= 0),
+    "totals_tokens_input" INTEGER NOT NULL CHECK ("totals_tokens_input" >= 0),
+    "totals_tokens_output" INTEGER NOT NULL CHECK ("totals_tokens_output" >= 0),
+    "totals_tokens_cache_read" INTEGER NOT NULL CHECK ("totals_tokens_cache_read" >= 0),
+    "totals_tokens_cache_write" INTEGER NOT NULL CHECK ("totals_tokens_cache_write" >= 0),
+    "totals_cost_usd" REAL NOT NULL,
+    "totals_est_usd" REAL NOT NULL,
+    "totals_usd" REAL NOT NULL,
+    PRIMARY KEY ("hour_ms", "model", "cid")
+) STRICT;
+
+-- usage works (written through)
+CREATE TABLE "usage_work" (
+    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
+    "work" INTEGER NOT NULL CHECK ("work" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "totals_calls" INTEGER NOT NULL CHECK ("totals_calls" >= 0),
+    "totals_tokens_input" INTEGER NOT NULL CHECK ("totals_tokens_input" >= 0),
+    "totals_tokens_output" INTEGER NOT NULL CHECK ("totals_tokens_output" >= 0),
+    "totals_tokens_cache_read" INTEGER NOT NULL CHECK ("totals_tokens_cache_read" >= 0),
+    "totals_tokens_cache_write" INTEGER NOT NULL CHECK ("totals_tokens_cache_write" >= 0),
+    "totals_cost_usd" REAL NOT NULL,
+    "totals_est_usd" REAL NOT NULL,
+    "totals_usd" REAL NOT NULL,
+    PRIMARY KEY ("cid", "work")
+) STRICT;
+CREATE INDEX "usage_work_work" ON "usage_work" ("work");
 

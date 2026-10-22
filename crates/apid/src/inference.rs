@@ -21,28 +21,31 @@ use tract_onnx::prelude::{
 };
 
 /// A JSON-schema subset: an object with typed properties, optional enums and required fields.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Schema {
     /// Always `"object"` (checked by [`Schema::check`]).
     #[serde(rename = "type")]
     pub kind: String,
+    #[table(map)]
     pub properties: BTreeMap<String, Property>,
     #[serde(default)]
+    #[table(list)]
     pub required: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Property {
     #[serde(rename = "type")]
     pub kind: PropType,
     /// Allowed values (`enum` in JSON schema).
     #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
-    pub allowed: Option<Vec<Value>>,
+    #[table(child)]
+    pub allowed: Option<Allowed>,
 }
 
 /// The input types of the brief plus `array` and `object`, which output schemas use for `values`
 /// and `probabilities`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "lowercase")]
 pub enum PropType {
     Number,
@@ -54,22 +57,58 @@ pub enum PropType {
 }
 
 /// How one input field becomes float columns. Features are concatenated in card order.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct FeatureSpec {
     pub name: String,
     pub kind: FeatureKind,
     /// `onehot`: the categories, in column order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub values: Vec<Value>,
+    #[table(child)]
+    pub values: Vec<Scalar>,
     /// `hash`: the number of columns (the value's FNV-1a hash picks one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub buckets: Option<usize>,
     /// `numeric`: `(x - mean) / std`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(child)]
     pub scale: Option<Scale>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// A category of a one-hot feature or a value a property allows: a JSON scalar, kept typed (the card writes it as
+/// the plain JSON value, which [`Scalar::as_value`] gives back).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[serde(untagged)]
+pub enum Scalar {
+    Bool(bool),
+    Int(i64),
+    Real(f64),
+    Text(String),
+}
+
+impl Scalar {
+    /// The JSON value this scalar is written as.
+    pub fn as_value(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
+/// The values a property allows (`enum` in the schema), in the order the schema lists them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[serde(transparent)]
+pub struct Allowed {
+    #[table(child)]
+    pub values: Vec<Scalar>,
+}
+
+/// A classifier's class names, in the order the card lists them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[serde(transparent)]
+pub struct Labels {
+    #[table(list)]
+    pub names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "lowercase")]
 pub enum FeatureKind {
     /// One column: the number, scaled when `scale` is set.
@@ -80,32 +119,40 @@ pub enum FeatureKind {
     Hash,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Scale {
     pub mean: f64,
     pub std: f64,
 }
 
 /// A model's identity, contract and provenance. Stored as JSON by the foundry's registry.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct ModelCard {
     pub id: String,
     pub name: String,
     pub version: String,
+    #[table(child)]
     pub input: Schema,
+    #[table(child)]
     pub output: Schema,
+    #[table(child)]
     pub features: Vec<FeatureSpec>,
     /// Class names for a classifier: the output is then `{label, probabilities}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub labels: Option<Vec<String>>,
+    #[table(child)]
+    pub labels: Option<Labels>,
+    #[table(list)]
     pub allowed_roles: Vec<String>,
     /// Lowercase hex SHA-256 of the ONNX bytes; [`LoadedModel::load`] refuses other bytes.
     pub onnx_sha256: String,
     pub created_ms: u64,
+    /// The model's metrics per split, as the trainer wrote them (shown verbatim; the hub reads them from the file).
     #[serde(default)]
+    #[table(content)]
     pub metrics: Value,
-    /// The trainer's `serving` block, for a card the trainer wrote (see [`featurize_serving`]).
+    /// The trainer's `serving` block, for a card the trainer wrote (see [`featurize_serving`]), kept as written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(content)]
     pub serving: Option<Value>,
 }
 
@@ -134,11 +181,11 @@ impl Schema {
             let Some(allowed) = &prop.allowed else {
                 continue;
             };
-            if allowed.is_empty() {
+            if allowed.values.is_empty() {
                 return Err(format!("{what} schema: `{name}` has an empty enum"));
             }
-            for value in allowed {
-                check_type(prop.kind, value).map_err(|_| {
+            for value in allowed.values.iter().map(Scalar::as_value) {
+                check_type(prop.kind, &value).map_err(|_| {
                     format!(
                         "{what} schema: `{name}` enum member {value} is not a {}",
                         kind_name(prop.kind)
@@ -166,11 +213,14 @@ impl Schema {
             check_type(prop.kind, field)
                 .map_err(|_| format!("field `{name}` must be a {}", kind_name(prop.kind)))?;
             if let Some(allowed) = &prop.allowed
-                && !allowed.iter().any(|a| value_eq(a, field))
+                && !allowed
+                    .values
+                    .iter()
+                    .any(|a| value_eq(&a.as_value(), field))
             {
                 return Err(format!(
                     "field `{name}` must be one of {}",
-                    Value::Array(allowed.clone())
+                    Value::Array(allowed.values.iter().map(Scalar::as_value).collect())
                 ));
             }
         }
@@ -248,11 +298,10 @@ impl FeatureSpec {
                         "feature `{name}`: onehot takes values only, and at least one"
                     ));
                 }
+                // The categories are scalars by type (`Scalar`), so only the repeats are left to refuse.
                 for (i, v) in self.values.iter().enumerate() {
-                    if !(v.is_string() || v.is_number() || v.is_boolean()) {
-                        return Err(format!("feature `{name}`: onehot values must be scalars"));
-                    }
-                    if self.values[..i].iter().any(|w| value_eq(v, w)) {
+                    let v = v.as_value();
+                    if self.values[..i].iter().any(|w| value_eq(&v, &w.as_value())) {
                         return Err(format!(
                             "feature `{name}`: onehot value {v} is listed twice"
                         ));
@@ -302,7 +351,7 @@ pub fn featurize(features: &[FeatureSpec], input: &Value) -> Result<Vec<f32>, St
                 let hot = feature
                     .values
                     .iter()
-                    .position(|v| value_eq(v, field))
+                    .position(|v| value_eq(&v.as_value(), field))
                     .ok_or_else(|| {
                         format!("feature `{name}`: {field} is not one of its categories")
                     })?;
@@ -783,6 +832,7 @@ impl ModelCard {
             feature.check()?;
         }
         if let Some(labels) = &self.labels {
+            let labels = &labels.names;
             if labels.is_empty() {
                 return Err("the card's labels are empty".into());
             }
@@ -924,7 +974,7 @@ impl LoadedModel {
             .and_then(Value::as_str)
             == Some("logits");
         let output = match &self.card.labels {
-            Some(labels) => classify(labels, &scores, logits)?,
+            Some(labels) => classify(&labels.names, &scores, logits)?,
             None => json!({ "values": scores }),
         };
         self.card
@@ -1040,6 +1090,14 @@ mod tests {
 
     const CLASSES: [&str; 3] = ["cat", "dog", "bird"];
 
+    /// The typed categories of a card written as JSON values in a test.
+    fn scalars(values: Vec<Value>) -> Vec<Scalar> {
+        values
+            .into_iter()
+            .map(|v| serde_json::from_value(v).expect("a scalar"))
+            .collect()
+    }
+
     fn labels() -> Vec<String> {
         CLASSES.iter().map(|s| s.to_string()).collect()
     }
@@ -1090,7 +1148,7 @@ mod tests {
             input,
             output: classifier_output(),
             features,
-            labels,
+            labels: labels.map(|names| Labels { names }),
             allowed_roles: vec!["breeder".into()],
             onnx_sha256: sha256_hex(onnx),
             created_ms: 1,
@@ -1197,7 +1255,7 @@ mod tests {
             FeatureSpec {
                 name: "color".into(),
                 kind: FeatureKind::Onehot,
-                values: vec![json!("red"), json!("green"), json!("blue")],
+                values: scalars(vec![json!("red"), json!("green"), json!("blue")]),
                 buckets: None,
                 scale: None,
             },
@@ -1259,7 +1317,9 @@ mod tests {
             });
             assert!(LoadedModel::load(LINEAR3, bad).is_err());
             let mut dup = xyz_card(LINEAR3);
-            dup.labels = Some(vec!["cat".into(), "cat".into(), "bird".into()]);
+            dup.labels = Some(Labels {
+                names: vec!["cat".into(), "cat".into(), "bird".into()],
+            });
             assert!(LoadedModel::load(LINEAR3, dup).is_err());
             let mut wrong_hash = xyz_card(LINEAR3);
             wrong_hash.onnx_sha256 = "0".repeat(64);
@@ -1372,7 +1432,7 @@ mod tests {
             FeatureSpec {
                 name: "color".into(),
                 kind: FeatureKind::Onehot,
-                values: vec![json!("a"), json!("b")],
+                values: scalars(vec![json!("a"), json!("b")]),
                 buckets: None,
                 scale: None,
             },
@@ -1416,8 +1476,9 @@ mod tests {
         );
         // An output schema that does not allow "cat" rejects the answer the model gives.
         let mut strict = xyz_card(LINEAR3);
-        strict.output.properties.get_mut("label").unwrap().allowed =
-            Some(vec![json!("dog"), json!("bird")]);
+        strict.output.properties.get_mut("label").unwrap().allowed = Some(Allowed {
+            values: scalars(vec![json!("dog"), json!("bird")]),
+        });
         let strict = LoadedModel::load(LINEAR3, strict).unwrap();
         let err = strict
             .invoke(&json!({ "x0": 1.0, "x1": 0.0, "x2": 0.0 }))

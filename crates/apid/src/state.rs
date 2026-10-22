@@ -304,12 +304,12 @@ impl App {
             nodes: crate::nodes::Store::default(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
-            usage: crate::usage::Ledger::default(),
+            usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
             metrics: crate::metrics::Metrics::open(
                 Arc::clone(store.db(crate::store::METRICS)),
                 apz_plaza::now_ms(),
             ),
-            foundry: crate::foundry::store::Foundry::open(foundry_dir, apz_plaza::now_ms()),
+            foundry: crate::foundry::store::Foundry::new(foundry_dir),
             mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port),
             hub_auth,
             hub_mcp: crate::hub_mcp::HubMcp::open(
@@ -452,7 +452,6 @@ impl App {
             // The archives first: a snapshot that no longer holds what moved out is saved after its lines are.
             save_archives(&app);
             save_treasury(&app);
-            save_components(&app);
             crate::store::saver::pass(&app);
             crate::db::write_pass(&app);
             app.store.close();
@@ -561,7 +560,6 @@ fn spawn_component_savers(app: Arc<App>) {
             std::thread::sleep(std::time::Duration::from_secs(3));
             crate::mcp::tick(&app);
             save_archives(&app);
-            save_components(&app);
         }
     });
 }
@@ -597,16 +595,6 @@ fn save_archives(app: &App) {
                 path.display()
             );
         }
-    }
-}
-
-/// One pass of the component saves, run by the loop and by the stop: a component Postgres holds is skipped (its
-/// load failed); a failed save is logged each time.
-fn save_components(app: &App) {
-    if !app.db.is_held("foundry")
-        && let Err(err) = app.foundry.save()
-    {
-        eprintln!("apid: cannot save the foundry: {err}");
     }
 }
 
