@@ -782,6 +782,27 @@ impl RowSet {
         self.tables.entry(table.to_string()).or_default().push(row);
     }
 
+    /// Every row `def`'s tables hold now (each its key's values, then its columns', as [`RowSet::list`] lays them
+    /// out). A component that loaded from these tables starts its [`Saved`] from them, so its first save writes what
+    /// its state has that they do not: a single value's default root when its table is empty, what its load changed.
+    pub fn stored(conn: &Connection, def: &TableDef) -> Result<RowSet, StoreError> {
+        let mut out = RowSet::new();
+        for table in def.walk() {
+            let rows = out.tables.entry(table.name.clone()).or_default();
+            let mut stmt = conn.prepare_cached(&table.select_sql())?;
+            let width = table.key.len() + table.columns.len();
+            let mut found = stmt.query([])?;
+            while let Some(r) = found.next()? {
+                let mut row = Vec::with_capacity(width);
+                for i in 0..width {
+                    row.push(r.get::<_, Value>(i)?);
+                }
+                rows.push(row);
+            }
+        }
+        Ok(out)
+    }
+
     /// The rows of a root list of `items`, in order.
     pub fn list<'a, T: Table + 'a>(
         def: &TableDef,

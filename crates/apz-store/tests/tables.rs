@@ -379,3 +379,29 @@ fn a_struct_that_holds_a_list_is_a_child_of_one_row_and_a_missing_row_loads_as_d
     let back = load_list::<Book>(&conn, &def).unwrap();
     assert_eq!(back[0].rules, Rules::default());
 }
+
+#[test]
+fn a_save_after_a_load_writes_only_what_the_tables_do_not_hold() {
+    // A single value whose tables are empty: its first save writes its root with its children (a child alone would
+    // name a parent row that is not there).
+    let def = Book::root();
+    let conn = migrated(&def);
+    let empty = Saved::of(&def, &RowSet::stored(&conn, &def).unwrap());
+    let book = Book {
+        project: "pr1".into(),
+        rules: Rules {
+            every_hours: 2,
+            watch: vec!["errors".into()],
+        },
+    };
+    let rows = RowSet::list(&def, [&book]).unwrap();
+    let first = empty.diff(&def, &rows);
+    assert!(
+        first.upserts.iter().any(|(t, _)| t == "book"),
+        "the root is written: {first:?}"
+    );
+    table::apply(&conn, &def, &first).unwrap();
+    // What the tables hold now is what was saved: the next save writes nothing.
+    let saved = Saved::of(&def, &RowSet::stored(&conn, &def).unwrap());
+    assert!(saved.diff(&def, &rows).is_empty());
+}

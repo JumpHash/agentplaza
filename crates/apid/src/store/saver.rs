@@ -1,6 +1,6 @@
 //! The saver: keeps every component's tables equal to its in-memory state, writing only what changed.
 //!
-//! At start [`load`] fills each component from its tables and records what was loaded as saved. Then a thread runs a
+//! At start [`load`] fills each component from its tables and records what the tables hold as saved. Then a thread runs a
 //! [`pass`] every [`EVERY`] (and once more at shutdown): for each component, its rows now, diffed against what was last
 //! saved, become one write (upserts and deletes) through `plaza.db`'s writer; once it commits, it is what was saved.
 //! A failed write is retried by the next pass (the diff is computed again from the last commit that succeeded). A
@@ -36,29 +36,31 @@ pub fn load(app: &App) -> Vec<String> {
     let mut problems = Vec::new();
     let db = app.store.db(crate::store::PLAZA);
     for c in components::all() {
-        let loaded = db.read(|conn| (c.load)(app, conn));
-        if let Err(e) = loaded {
-            problems.push(format!(
-                "{}: {e} (it is not written until the hub starts again)",
-                c.name
-            ));
-            app.saved
-                .held_out
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(c.name);
-            continue;
-        }
-        match (c.rows)(app) {
-            Ok(rows) => {
-                let saved = Saved::of((c.def)(), &rows);
+        // What the tables hold is what is saved (read in the load's own transaction): the first pass writes what the
+        // component's state has that they do not, such as a single value's default root over an empty table.
+        let loaded = db.read(|conn| {
+            (c.load)(app, conn)?;
+            apz_store::RowSet::stored(conn, (c.def)())
+        });
+        match loaded {
+            Ok(stored) => {
                 app.saved
                     .saved
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
-                    .insert(c.name, saved);
+                    .insert(c.name, Saved::of((c.def)(), &stored));
             }
-            Err(e) => problems.push(format!("{}: {e}", c.name)),
+            Err(e) => {
+                problems.push(format!(
+                    "{}: {e} (it is not written until the hub starts again)",
+                    c.name
+                ));
+                app.saved
+                    .held_out
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(c.name);
+            }
         }
     }
     problems

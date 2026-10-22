@@ -387,6 +387,14 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
             .is_some_and(|m| m.iter().any(|m| text(&m["text"]).contains("is done"))),
         "the task's chat says it is done: {messages}"
     );
+    every_save_succeeded(&hub);
+}
+
+/// After a saver pass (every second), no component's write failed (a child row without its parent, a bad value).
+fn every_save_succeeded(hub: &Hub) {
+    std::thread::sleep(Duration::from_millis(1500));
+    let log = hub.log();
+    assert!(!log.contains("store: saving"), "a save failed:\n{log}");
 }
 
 /// The fleet's orchestrator VM.
@@ -514,4 +522,5 @@ fn the_main_orchestrator_and_a_projects_planner_are_long_sessions_their_chats_ta
         .as_array()
         .map(|s| s.iter().filter(|s| s["role"] == "planner").count());
     assert_eq!(planners, Some(1), "{sessions}");
+    every_save_succeeded(&hub);
 }
