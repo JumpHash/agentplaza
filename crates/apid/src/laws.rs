@@ -120,7 +120,7 @@ pub struct LawInfo {
 }
 
 /// An owner rule set: JHRL source with one or more `law` blocks, applied while it is enabled.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct OwnerRule {
     pub id: String,
     pub title: String,
@@ -132,7 +132,7 @@ pub struct OwnerRule {
 }
 
 /// The owner's disabling of one built-in statute, with who did it and why.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Override {
     pub law: String,
     pub disabled_by: String,
@@ -142,7 +142,7 @@ pub struct Override {
 
 /// One change of state of a constitutional law, kept in the rules' history: who made it, when, and
 /// whether the owner confirmed it by typing the law's id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct LawChange {
     pub law: String,
     pub title: String,
@@ -156,13 +156,17 @@ pub struct LawChange {
     pub confirmed: bool,
 }
 
-/// The owner's rules and overrides: the state that is persisted (the `rules` component).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The owner's rules and overrides: the state that is persisted (the `rules` tables, saved by the store's saver).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
+#[table(name = "rules")]
 pub struct RuleSet {
+    #[table(child = "owner_rule")]
     pub rules: Vec<OwnerRule>,
+    #[table(child = "law_override")]
     pub overrides: Vec<Override>,
     /// The changes made to constitutional laws, oldest first; the newest [`HISTORY_KEPT`] are kept.
+    #[table(child = "law_change")]
     pub history: Vec<LawChange>,
 }
 
@@ -242,7 +246,7 @@ struct Seen {
     at_ms: u64,
 }
 
-/// Reads a state file (`rules.json`, `permissions.json`). A missing file is
+/// Reads a state file (`permissions.json`, the approvals' modes). A missing file is
 /// `Ok(None)`. A file that exists but does not parse is copied to `<name>.corrupt-<unix-ms>`, never
 /// over an existing copy, and left where it is: it is read again at every start, so the damage is
 /// reported until the owner restores or removes it. The error names both paths. Any other read
@@ -305,74 +309,39 @@ pub struct Laws {
     live: RwLock<Arc<Compiled>>,
     /// The owner's rules and overrides. Changes are made under this lock, then committed.
     rules: Mutex<RuleSet>,
-    /// The state directory: `rules.json` is written there.
-    dir: Mutex<PathBuf>,
     /// Memoized [`Laws::permits`] answers, keyed by (role, tool). Cleared whenever the laws change.
     permitted: Mutex<HashMap<(String, String), bool>>,
     /// Whether an operation with permit laws must be allowed by one of them (`settings.laws`).
     strict: AtomicBool,
-    /// Set when the owner's rules could not be read at attach: only the built-in laws apply, and
-    /// `rules.json` is not written until the owner's rules are restored and the hub restarts.
-    rules_unreadable: AtomicBool,
     /// The most recent tool calls checked, for the dry run.
     seen: Mutex<VecDeque<Seen>>,
 }
 
 impl Laws {
-    /// Compiles the built-in laws and loads the owner's rules from `state_dir`.
+    /// The built-in laws, compiled, with no owner rules yet (the store's load adds them).
     /// Panics at startup if the built-in laws do not compile: an unenforced law is worse than no start.
-    pub fn load(state_dir: &Path) -> Laws {
+    pub fn builtin() -> Laws {
         let files: Vec<(String, String)> = LAW_FILES
             .iter()
             .map(|(name, text)| (name.to_string(), text.to_string()))
             .collect();
-        Laws::from_files(state_dir, files)
+        Laws::from_files(files)
     }
 
-    /// [`Laws::load`] for the given built-in law sources (`(file name, text)`). Tests use it to put a
+    /// [`Laws::builtin`] for the given built-in law sources (`(file name, text)`). Tests use it to put a
     /// rule in or leave one out.
-    pub fn from_files(state_dir: &Path, files: Vec<(String, String)>) -> Laws {
+    pub fn from_files(files: Vec<(String, String)>) -> Laws {
         let compiled = match compile(&files, &RuleSet::default()) {
             Ok(compiled) => compiled,
             Err(failure) => panic!("the laws do not compile: {}", failure.message()),
         };
-        let laws = Laws {
+        Laws {
             base: files,
             live: RwLock::new(Arc::new(compiled)),
             rules: Mutex::new(RuleSet::default()),
-            dir: Mutex::new(state_dir.to_path_buf()),
             permitted: Mutex::new(HashMap::new()),
             strict: AtomicBool::new(false),
-            rules_unreadable: AtomicBool::new(false),
             seen: Mutex::new(VecDeque::new()),
-        };
-        laws.attach(state_dir);
-        laws
-    }
-
-    /// Makes `state_dir` the home of this law set: the owner's rules are read from
-    /// it, and written back to it on every change. A rules file that no longer compiles is not applied.
-    /// One that cannot be read (or does not parse: a copy is kept and the file is left in place) leaves
-    /// the built-in laws only, and is not written over until it is restored or removed and the hub restarts.
-    pub fn attach(&self, state_dir: &Path) {
-        *lock(&self.dir) = state_dir.to_path_buf();
-        let (rules, unreadable) = match read_state::<RuleSet>(&state_dir.join("rules.json")) {
-            Ok(found) => (found.unwrap_or_default(), false),
-            Err(_) => (RuleSet::default(), true),
-        };
-        self.rules_unreadable.store(unreadable, Ordering::Relaxed);
-        if unreadable {
-            eprintln!(
-                "laws: the owner's rules are not applied (rules.json could not be read, see above), so only the built-in laws apply; rules.json is not written until it is restored or removed and the hub restarts"
-            );
-        }
-        let mut slot = lock(&self.rules);
-        match compile(&self.base, &rules) {
-            Ok(compiled) => {
-                *slot = rules;
-                self.swap(compiled);
-            }
-            Err(failure) => eprintln!("laws: rules.json not applied: {}", failure.message()),
         }
     }
 
@@ -880,17 +849,28 @@ impl Laws {
         Ok(DryRun { laws, would_refuse })
     }
 
-    /// The whole owner state as JSON, for Postgres (`crate::db`).
-    pub fn rules_snapshot(&self) -> String {
-        serde_json::to_string_pretty(&*lock(&self.rules)).unwrap_or_default()
+    /// The owner's rules and overrides as rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        apz_store::RowSet::one(def(), &*lock(&self.rules))
     }
 
-    /// Replaces the owner's rules with a [`Laws::rules_snapshot`]; a source that does not compile changes nothing.
-    pub fn rules_restore(&self, json: &str) -> Result<(), String> {
-        let next: RuleSet = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    /// Replaces the owner's rules with what plaza.db holds (at start), and applies them when they compile. Stored
+    /// rules that no longer compile are kept as they are and not applied: only the built-in laws apply until the
+    /// owner fixes or removes them (nothing is lost meanwhile).
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let stored: RuleSet = apz_store::table::load_one(conn, def())?.unwrap_or_default();
         let mut slot = lock(&self.rules);
-        let compiled = compile(&self.base, &next).map_err(|failure| failure.message())?;
-        self.commit(&mut slot, next, compiled);
+        match compile(&self.base, &stored) {
+            Ok(compiled) => self.swap(compiled),
+            Err(failure) => eprintln!(
+                "laws: the owner's rules are not applied: {}",
+                failure.message()
+            ),
+        }
+        *slot = stored;
         Ok(())
     }
 
@@ -916,28 +896,10 @@ impl Laws {
         Ok(edited)
     }
 
-    /// Whether the owner's rules are written to rules.json: false while the file is damaged (see `attach`),
-    /// when a change applies in memory only.
-    pub fn rules_saved(&self) -> bool {
-        !self.rules_unreadable.load(Ordering::Relaxed)
-    }
-
-    /// Stores `next` as the owner's rules, swaps in its compiled set and writes the rules to disk.
+    /// Stores `next` as the owner's rules and swaps in its compiled set. The saver writes it (see [`Laws::rows`]).
     fn commit(&self, slot: &mut MutexGuard<'_, RuleSet>, next: RuleSet, compiled: Compiled) {
         **slot = next;
         self.swap(compiled);
-        if self.rules_unreadable.load(Ordering::Relaxed) {
-            // The damaged file was copied to `.corrupt-<ms>` and left in place: nothing is written over
-            // rules.json until it is restored or removed.
-            eprintln!(
-                "laws: rules.json not written: the owner's rules could not be read at startup"
-            );
-            return;
-        }
-        let path = lock(&self.dir).join("rules.json");
-        if let Err(e) = write_json(&path, &**slot) {
-            eprintln!("laws: could not save rules: {e}");
-        }
     }
 
     /// Swaps in a compiled set. The memo lock is held so that no answer computed under the old set
@@ -1109,29 +1071,16 @@ fn diagnostic(sources: &SourceMap, diag: &Diag) -> Diagnostic {
     }
 }
 
-/// Writes a value as JSON atomically, see [`write_synced`].
-fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-    write_synced(path, text.as_bytes())
+/// The owner's rules' tables: `rules`, with each rule, override and history change as a child table.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(RuleSet)
 }
 
-/// Writes `bytes` to a temporary file beside `path`, syncs it to disk, then renames it over `path`:
-/// a crash leaves the old file or the new one, never a partly written mix.
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let tmp = path.with_extension("json.tmp");
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&tmp, path)
-}
-
-/// The compiled-in laws for questions asked outside an `App` (tool offers), compiled once.
-/// Only [`Laws::permits`] is answered from it, and that keeps nothing.
+/// The plaza's one law set (the state folder's rules are loaded into it at start, see [`Laws::load`]). Only
+/// [`Laws::permits`] is answered from the built-in set without an `App`, and that keeps nothing.
 pub fn global() -> &'static Laws {
     static LAWS: OnceLock<Laws> = OnceLock::new();
-    LAWS.get_or_init(|| Laws::load(&std::env::temp_dir().join("apz-laws-gate")))
+    LAWS.get_or_init(Laws::builtin)
 }
 
 /// The attributes of an agent as the laws read them: [`member_attrs`] plus its kind, `model` for a
@@ -1703,15 +1652,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-laws-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
     fn the_catalog_explains_each_law() {
-        let laws = Laws::load(&scratch("catalog"));
+        let laws = Laws::builtin();
         let catalog = laws.catalog();
         assert!(!catalog.is_empty());
         assert!(
@@ -1742,7 +1685,7 @@ mod tests {
     fn a_plain_read_and_an_acp_engines_actions_are_checked() {
         // a_plain_read_is_not_forbidden: a plain read is not forbidden.
         {
-            let laws = Laws::load(&scratch("read"));
+            let laws = Laws::builtin();
             let verdict = laws.check(
                 "7",
                 "researcher",
@@ -1753,7 +1696,7 @@ mod tests {
         }
         // an_acp_engines_own_actions_are_checked_one_by_one: each engine action is checked on its own.
         {
-            let laws = Laws::load(&scratch("engine"));
+            let laws = Laws::builtin();
             // A read is a tool call alone; an edit also runs in the VM, so the sandbox is checked too.
             let read = laws.check("7", "builder", "engine.read", &json!({}));
             assert!(!read.unpermitted && read.forbid.is_empty(), "{read:?}");
@@ -1779,7 +1722,7 @@ mod tests {
 
     #[test]
     fn a_credential_or_an_impersonation_is_forbidden_by_its_constitution_law() {
-        let laws = Laws::load(&scratch("cred"));
+        let laws = Laws::builtin();
         let key = "sk-proj-abcdefghijklmnopqrstuvwxyz0123";
         // (tool, input, the law that must forbid the call, as an id prefix). A malformed recipient is still a message.
         for (tool, input, law) in [
@@ -1809,7 +1752,7 @@ mod tests {
 
     #[test]
     fn a_payment_is_checked_as_a_send_and_never_forbidden_whatever_its_amount() {
-        let laws = Laws::load(&scratch("pay"));
+        let laws = Laws::builtin();
         for amount in [5, 900] {
             let verdict = laws.check(
                 "7",
@@ -1858,7 +1801,7 @@ mod tests {
 
     #[test]
     fn every_tool_offered_to_a_role_is_permitted_by_a_law() {
-        let laws = Laws::load(&scratch("offered"));
+        let laws = Laws::builtin();
         let mut roles = vec!["builder", "reviewer", "planner", "finance"];
         roles.push(crate::settings::ORCHESTRATOR_ROLE);
         for role in roles {
@@ -1878,7 +1821,7 @@ mod tests {
 
     #[test]
     fn a_call_no_law_permits_is_refused() {
-        let laws = Laws::load(&scratch("default-deny"));
+        let laws = Laws::builtin();
         let refusal = laws.refusal(7, "builder", "plaza_post_task", &json!({}));
         assert_eq!(
             refusal.as_deref(),
@@ -1894,7 +1837,7 @@ mod tests {
     fn refused_ops_and_permits_follow_the_laws_by_role() {
         // a_file_published_from_the_vm_is_checked_as_an_artifact: a published file is checked as an artifact.
         {
-            let laws = Laws::load(&scratch("artifact"));
+            let laws = Laws::builtin();
             let artifact = Entity {
                 ty: "Artifact".into(),
                 id: "report.txt".into(),
@@ -1911,7 +1854,7 @@ mod tests {
         }
         // a_researcher_may_not_push_to_the_hub_git_but_a_builder_may: only a builder may push to the hub git.
         {
-            let laws = Laws::load(&scratch("git-push"));
+            let laws = Laws::builtin();
             let host = || Entity {
                 ty: "Host".into(),
                 id: "hub-git".into(),
@@ -1933,7 +1876,7 @@ mod tests {
         }
         // a_hidden_artifact_is_refused_to_the_role_it_is_hidden_from: a hidden artifact is refused to its hidden role.
         {
-            let laws = Laws::load(&scratch("hidden-artifact"));
+            let laws = Laws::builtin();
             let hidden = Entity {
                 ty: "Artifact".into(),
                 id: "acceptance.txt".into(),
@@ -1962,7 +1905,7 @@ mod tests {
     fn permits_follows_the_tier_and_connector_laws() {
         // an_irreversible_connector_action_is_withheld_from_every_role: no role is offered an irreversible action.
         {
-            let laws = Laws::load(&scratch("irreversible"));
+            let laws = Laws::builtin();
             assert_eq!(
                 crate::connectors::risk_of("cloudflare_dns_create"),
                 Some("irreversible")
@@ -1974,7 +1917,7 @@ mod tests {
         }
         // permits_follows_the_tier_laws: permits follow the tier laws.
         {
-            let laws = Laws::load(&scratch("permits"));
+            let laws = Laws::builtin();
             assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_project_approve"));
             assert!(!laws.permits("builder", "plaza_project_approve"));
             assert!(!laws.permits("builder", "plaza_post_task"));
@@ -2039,7 +1982,7 @@ mod tests {
             ),
         ];
         for (role, tool, input, op, permit, allowed) in cases {
-            let laws = Laws::load(&scratch(&format!("checked-{tool}")));
+            let laws = Laws::builtin();
             let verdict = laws.check("7", role, tool, &input);
             assert!(
                 verdict.requested.iter().any(|o| o == op),
@@ -2089,21 +2032,13 @@ mod owner_rules_tests {
 }
 ";
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("apid-owner-rules-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     fn now() -> u64 {
         apz_plaza::now_ms()
     }
 
     #[test]
     fn a_rule_nested_past_the_parser_budget_is_refused() {
-        let laws = Laws::load(&scratch("nesting-budget"));
+        let laws = Laws::builtin();
         let source = format!(
             "law \"O-900\" \"Deep nesting\" {{
   tier statute
@@ -2130,7 +2065,7 @@ mod owner_rules_tests {
 
     #[test]
     fn a_rule_source_over_64_kib_is_refused() {
-        let laws = Laws::load(&scratch("size-limit"));
+        let laws = Laws::builtin();
         let source = "x".repeat(64 * 1024 + 1);
         let err = laws
             .add_rule("Too large", &source, true, now())
@@ -2148,43 +2083,8 @@ mod owner_rules_tests {
     }
 
     #[test]
-    fn a_damaged_rules_file_is_left_in_place_with_a_copy_and_an_owner_change_does_not_overwrite_it()
-    {
-        let dir = scratch("damaged-rules");
-        let damaged: &[u8] = b"law \"O-901\" {";
-        std::fs::write(dir.join("rules.json"), damaged).unwrap();
-        let corrupt_copies = |root: &std::path::Path| -> Vec<String> {
-            std::fs::read_dir(root)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.starts_with("rules.json.corrupt-"))
-                .collect()
-        };
-        let laws = Laws::load(&dir);
-        assert!(laws.rules().rules.is_empty(), "no owner rules survive");
-        // The damaged file stays where it is, and its copy is kept beside it.
-        assert_eq!(std::fs::read(dir.join("rules.json")).unwrap(), damaged);
-        let kept = corrupt_copies(dir.as_path());
-        assert_eq!(kept.len(), 1, "{kept:?}");
-        // An owner change applies in memory but is not written: rules.json keeps its damaged bytes.
-        let rule = "law \"O-901\" \"Sensors\" {\n  tier statute\n  permit device.read\n  principal is Agent\n  when principal.role == \"sensor\"\n}\n";
-        let _ = laws.add_rule("", rule, true, now());
-        assert_eq!(std::fs::read(dir.join("rules.json")).unwrap(), damaged);
-        assert_eq!(corrupt_copies(dir.as_path()), kept);
-        // A second start still finds no owner rules, and the damaged file is still there.
-        let again = Laws::load(&dir);
-        assert!(
-            again.rules().rules.is_empty(),
-            "no owner rules survive a restart"
-        );
-        assert_eq!(std::fs::read(dir.join("rules.json")).unwrap(), damaged);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn a_rule_that_does_not_compile_is_rejected_with_its_place_and_not_applied() {
-        let laws = Laws::load(&scratch("compile"));
+        let laws = Laws::builtin();
         let broken = "law \"O-900\" \"Broken\" {\n  tier statute\n  frobnicate everything\n}\n";
         match laws.add_rule("", broken, true, now()) {
             Err(Failure::Diagnostics(list)) => assert!(
@@ -2204,7 +2104,7 @@ mod owner_rules_tests {
 
     #[test]
     fn an_added_forbid_refuses_the_call_at_once_and_disabling_it_stops_that() {
-        let laws = Laws::load(&scratch("forbid"));
+        let laws = Laws::builtin();
         let input = json!({"path": "a.md"});
         assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
         let rule = laws
@@ -2232,7 +2132,7 @@ mod owner_rules_tests {
 
     #[test]
     fn an_owner_disables_one_builtin_statute_with_a_reason_on_record() {
-        let laws = Laws::load(&scratch("override"));
+        let laws = Laws::builtin();
         let input = json!({"to_cid": 9, "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
         let forbids = |laws: &Laws| {
             laws.check("7", "builder", "plaza_send_message", &input)
@@ -2277,7 +2177,7 @@ mod owner_rules_tests {
 
     #[test]
     fn strict_permits_refuse_an_operation_no_permit_allows_only_when_on() {
-        let laws = Laws::load(&scratch("strict"));
+        let laws = Laws::builtin();
         laws.add_rule("Only sensors read devices", SENSORS_ONLY, true, now())
             .expect("compiles");
         let device = || Entity {
@@ -2314,42 +2214,61 @@ mod owner_rules_tests {
         assert!(read(&laws, "builder").is_none());
     }
 
+    /// The laws as plaza.db keeps them, loaded into a fresh set: the owner's rules and overrides go through their
+    /// tables, as the saver writes them and the start loads them.
+    fn restored(laws: &Laws) -> Laws {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &laws.rows().unwrap()).unwrap();
+        let fresh = Laws::builtin();
+        fresh.load(&conn).unwrap();
+        fresh
+    }
+
     #[test]
-    fn owner_rules_and_overrides_survive_a_restart_and_a_snapshot() {
-        let dir = scratch("persist");
-        let laws = Laws::load(&dir);
+    fn owner_rules_and_overrides_survive_a_restart() {
+        let laws = Laws::builtin();
         laws.add_rule("No reading files", NO_READS, true, now())
             .unwrap();
         laws.set_override("C-002b", true, "testing", "C-002b", now())
             .unwrap();
         let before = laws.rules();
-        let again = Laws::load(&dir);
+        let again = restored(&laws);
         assert_eq!(again.rules(), before);
         assert!(gate(&again, "read_file", &json!({"path": "a.md"})).is_err());
-        // The Postgres copy restores the same state into a fresh set.
-        let other = Laws::load(&scratch("persist-db"));
-        other.rules_restore(&again.rules_snapshot()).unwrap();
-        assert_eq!(other.rules(), before);
         assert!(
-            other
+            again
                 .catalog()
                 .iter()
                 .any(|info| info.id == "O-001" && info.enabled)
         );
-        // A snapshot whose source does not compile changes nothing.
-        let mut bad = before.clone();
+    }
+
+    /// Stored rules that no longer compile are kept as they are and not applied: nothing is lost, and the built-in
+    /// laws alone decide until the owner fixes or removes them.
+    #[test]
+    fn stored_rules_that_do_not_compile_are_kept_and_not_applied() {
+        let laws = Laws::builtin();
+        laws.add_rule("No reading files", NO_READS, true, now())
+            .unwrap();
+        let mut bad = laws.rules();
         bad.rules[0].source = "law \"O-901\" \"Bad\" {".into();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        let rows = apz_store::RowSet::one(def(), &bad).unwrap();
+        apz_store::table::replace(&conn, def(), &rows).unwrap();
+        let loaded = Laws::builtin();
+        loaded.load(&conn).unwrap();
+        assert_eq!(loaded.rules(), bad, "kept as stored");
         assert!(
-            other
-                .rules_restore(&serde_json::to_string(&bad).unwrap())
-                .is_err()
+            !loaded.catalog().iter().any(|info| info.id == "O-001"),
+            "not applied"
         );
-        assert_eq!(other.rules(), before);
     }
 
     #[test]
     fn a_dry_run_lists_the_recent_calls_a_rule_would_refuse_and_applies_nothing() {
-        let laws = Laws::load(&scratch("dry"));
+        let laws = Laws::builtin();
         assert!(
             laws.refusal(7, "builder", "read_file", &json!({"path": "a.md"}))
                 .is_none()
@@ -2367,8 +2286,7 @@ mod owner_rules_tests {
 
     #[test]
     fn a_constitutional_law_switches_off_only_with_its_typed_id_and_its_changes_are_kept() {
-        let dir = scratch("constitution");
-        let laws = Laws::load(&dir);
+        let laws = Laws::builtin();
         let law = "C-002b";
         let input = json!({"to_cid": 9, "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
         let forbids = |laws: &Laws| {
@@ -2432,7 +2350,7 @@ mod owner_rules_tests {
                 && history[1].title == title
         );
         // The history is part of the rules: it survives a restart.
-        assert_eq!(Laws::load(&dir).rules().history, history);
+        assert_eq!(restored(&laws).rules().history, history);
         // A statute of another tier is switched off with no confirmation and no entry in the history.
         laws.set_override("S-013d", true, "researchers may commit", "", 3_000)
             .unwrap();

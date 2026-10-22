@@ -486,9 +486,7 @@ fn wait_for_grant(app: &App, station: &str, view: LeaseView) -> LeaseView {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread::{self, JoinHandle};
 
     use apz_station::{FilesOp, HubFrame, ImageFormat, StationFrame, StationSettings};
@@ -588,17 +586,9 @@ mod tests {
         }
     }
 
-    /// A fresh state directory for a set of laws (the tests run in parallel).
+    /// The built-in laws, with no owner rules.
     fn laws() -> Laws {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir: PathBuf = std::env::temp_dir().join(format!(
-            "apid-act-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Laws::load(&dir)
+        Laws::builtin()
     }
 
     fn station(draining: bool, revoked: bool) -> Station {

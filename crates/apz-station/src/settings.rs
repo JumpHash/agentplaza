@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// What happens when the owner takes over a pixel session (plan section 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 pub enum Takeover {
     /// The agent waits and resumes when the owner gives the session back.
     #[default]
@@ -18,6 +19,7 @@ pub enum Takeover {
 /// Per-workstation settings. Missing fields take the defaults, so a partial object is valid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub struct StationSettings {
     pub takeover: Takeover,
     /// Whether screen sessions are recorded.

@@ -15,6 +15,8 @@ use apz_metrics::{EntityKind, Registry, SeriesKey};
 use apz_plaza::tasks::{FinishOutcome, TaskState};
 use apz_plaza::treasury::{MARGIN_CAP_PCT, PostError};
 use apz_proto::wire::{HostMessage, WorkKind, WorkStatus};
+use apz_store::rusqlite::Connection;
+use apz_store::{Db, RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -26,7 +28,7 @@ use crate::state::App;
 pub const REVIEWER_ROLE: &str = "reviewer";
 
 /// What a work item is about, beyond its prompt.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, apz_store::Table)]
 pub struct Origin {
     pub task: Option<String>,
     /// For `message` work: the agent who wrote.
@@ -45,25 +47,29 @@ pub struct Origin {
     pub conversation: Option<String>,
     /// The task's lane in Weft, for a worker's task item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(flatten)]
     pub lane: Option<apz_proto::wire::WorkLane>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, apz_store::Table)]
 pub struct WorkItem {
     pub id: u64,
     pub cid: u64,
     pub kind: WorkKind,
     pub thread: String,
     pub prompt: String,
+    #[table(flatten)]
     pub origin: Origin,
     pub created_ms: u64,
     pub started_ms: Option<u64>,
 }
 
 /// One agent's queue: the item in flight and the items waiting behind it.
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize, apz_store::Table)]
 struct Lane {
+    #[table(child = "work_lane_queue")]
     queue: VecDeque<WorkItem>,
+    #[table(child = "work_lane_current")]
     current: Option<WorkItem>,
 }
 
@@ -1239,10 +1245,13 @@ pub fn spawn(app: Arc<App>) {
     }
 }
 
-/// The saved form of the queues: the id counter and every lane (queue and item in flight).
-#[derive(Serialize, Deserialize)]
+/// The saved form of the queues: the id counter (the one row of `work`) and every lane (`work_lane`, with its queue
+/// and item in flight as child tables).
+#[derive(Default, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "work")]
 struct Saved {
     next_id: u64,
+    #[table(map = "work_lane")]
     lanes: BTreeMap<u64, Lane>,
 }
 
@@ -1262,41 +1271,33 @@ fn resumed(prompt: &str, prefix: &str) -> String {
 }
 
 impl Queues {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let lanes = self.locked().clone();
-        let next_id = self.next_id.load(Ordering::Relaxed);
-        if next_id == 1
-            && lanes
-                .lanes
-                .values()
-                .all(|l| l.current.is_none() && l.queue.is_empty())
-        {
-            return String::new();
-        }
-        serde_json::to_string(&Saved {
-            next_id,
-            lanes: lanes.lanes,
-        })
-        .expect("work queues serialize")
+    /// The queues' rows, as they are now (the saver writes what changed): the id counter and every lane.
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let saved = Saved {
+            next_id: self.next_id.load(Ordering::Relaxed),
+            lanes: self.locked().lanes.clone(),
+        };
+        RowSet::one(def(), &saved)
     }
 
-    /// Replaces the state with a [`Queues::snapshot`]; a refusal changes nothing.
-    /// Work that was in flight goes back to the front of its agent's queue, marked
-    /// as resumed. Nothing is sent: the queues dispatch as agents are idle.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let (next_id, mut lanes) = if json.is_empty() {
-            (1, Lanes::default())
-        } else {
-            let saved: Saved =
-                serde_json::from_str(json).map_err(|e| format!("work queues: {e}"))?;
-            (saved.next_id, Lanes { lanes: saved.lanes })
+    /// Replaces the queues with what plaza.db holds (at start). Work that was in flight goes back to the front of
+    /// its agent's queue, marked as resumed, and the id counter moves past the queued work. Nothing is sent: the
+    /// queues dispatch as agents are idle. A change made here is written back at once, through `db`, so the tables
+    /// hold the queues as they are in memory: the saver's first pass diffs from what it loaded.
+    pub fn load(&self, conn: &Connection, db: &Db) -> Result<(), StoreError> {
+        let stored = apz_store::table::load_one::<Saved>(conn, def())?;
+        let stored_next = stored.as_ref().map_or(1, |saved| saved.next_id);
+        let (mut next_id, mut lanes) = match stored {
+            Some(saved) => (saved.next_id, Lanes { lanes: saved.lanes }),
+            None => (1, Lanes::default()),
         };
+        let mut changed = false;
         for lane in lanes.lanes.values_mut() {
             if let Some(mut item) = lane.current.take() {
                 item.started_ms = None;
                 item.prompt = resumed(&item.prompt, RESUMED_PREFIX);
                 lane.queue.push_front(item);
+                changed = true;
             }
         }
         let highest = lanes
@@ -1306,11 +1307,28 @@ impl Queues {
             .map(|i| i.id)
             .max()
             .unwrap_or(0);
-        let next_id = next_id.max(highest.saturating_add(1));
+        next_id = next_id.max(highest.saturating_add(1));
+        changed |= next_id != stored_next;
+        if changed {
+            let rows = RowSet::one(
+                def(),
+                &Saved {
+                    next_id,
+                    lanes: lanes.lanes.clone(),
+                },
+            )?;
+            db.write(move |conn| apz_store::table::replace(conn, def(), &rows))?;
+        }
         *self.locked() = lanes;
         self.next_id.store(next_id, Ordering::Relaxed);
         Ok(())
     }
+}
+
+/// The work queues' tables: `work` (the id counter), `work_lane` (one lane per agent) with its queue and item in
+/// flight as child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Saved)
 }
 
 #[cfg(test)]
@@ -1703,8 +1721,66 @@ mod tests {
         );
     }
 
+    /// A work item's whole origin, its Weft lane included, comes back from the lane's tables as it was saved.
     #[test]
-    fn snapshot_restores_queues_and_resumes_in_flight_first() {
+    fn a_work_items_origin_comes_back_whole() {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        let mut owner = item(1, 7, Some("t9"));
+        owner.kind = WorkKind::Chat;
+        owner.origin = Origin {
+            task: Some("t9".into()),
+            from_cid: Some(5),
+            owner: true,
+            mcp: true,
+            acp: false,
+            conversation: Some("conv-3".into()),
+            lane: Some(apz_proto::wire::WorkLane {
+                change: "c-4".into(),
+                repo: "weft".into(),
+            }),
+        };
+        let mut lanes = BTreeMap::new();
+        lanes.insert(
+            7,
+            Lane {
+                queue: VecDeque::from([owner.clone()]),
+                current: Some(owner.clone()),
+            },
+        );
+        let saved = Saved { next_id: 2, lanes };
+        apz_store::table::replace(&conn, def(), &RowSet::one(def(), &saved).unwrap()).unwrap();
+        let loaded: Saved = apz_store::table::load_one(&conn, def()).unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&loaded.lanes[&7].queue[0]).unwrap(),
+            serde_json::to_value(&owner).unwrap()
+        );
+        assert_eq!(
+            loaded.lanes[&7].current.as_ref().unwrap().origin.lane,
+            owner.origin.lane
+        );
+    }
+
+    /// The queues come back from their tables. Work that was in flight goes back to the front of its agent's queue,
+    /// marked as resumed, and the load writes that back, so the tables hold what memory holds.
+    #[test]
+    fn queues_come_back_from_their_tables_and_resume_in_flight_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let migrations: &'static [apz_store::Migration] =
+            Box::leak(Box::new([apz_store::Migration {
+                version: 1,
+                name: "work",
+                sql: Box::leak(def().ddl().into_boxed_str()),
+            }]));
+        let files: &'static [apz_store::FileSpec] = Box::leak(Box::new([apz_store::FileSpec {
+            name: "plaza",
+            file: "plaza.db",
+            durability: apz_store::Durability::Full,
+            migrations,
+        }]));
+        let store = apz_store::Store::open(dir.path(), files).unwrap();
+        let db = Arc::clone(store.db("plaza"));
+
         let queues = Queues::default();
         {
             let mut lanes = queues.locked();
@@ -1716,11 +1792,12 @@ mod tests {
             lanes.start_next(7, 0); // item 1 is in flight for agent 7
         }
         queues.next_id.store(4, Ordering::Relaxed);
-        let json = queues.snapshot();
-        assert!(!json.is_empty());
+        let rows = queues.rows().unwrap();
+        db.write(move |conn| apz_store::table::replace(conn, def(), &rows))
+            .unwrap();
 
         let fresh = Queues::default();
-        fresh.restore(&json).expect("restores");
+        db.read(|conn| fresh.load(conn, &db)).unwrap();
         assert_eq!(
             fresh.queued(7).len(),
             2,
@@ -1728,7 +1805,7 @@ mod tests {
         );
         assert!(
             fresh.current(7).is_none(),
-            "nothing is in flight after restore"
+            "nothing is in flight after load"
         );
         assert_eq!(fresh.queued(8).len(), 1);
         let first = &fresh.queued(7)[0];
@@ -1737,10 +1814,17 @@ mod tests {
         assert_eq!(fresh.queued(7)[1].prompt, "work 2");
         assert!(fresh.next_id.load(Ordering::Relaxed) >= 4);
 
-        // A refusal changes nothing.
-        assert!(fresh.restore("not json").is_err());
-        assert_eq!(fresh.queued(7).len(), 2);
-        assert_eq!(fresh.queued(8).len(), 1);
+        // The move was written back: the tables now hold the queue, with nothing in flight.
+        let stored = db
+            .read(|conn| apz_store::table::load_one::<Saved>(conn, def()))
+            .unwrap()
+            .expect("the work row");
+        assert!(stored.lanes[&7].current.is_none());
+        assert_eq!(stored.lanes[&7].queue.len(), 2);
+        assert_eq!(
+            stored.lanes[&7].queue[0].prompt,
+            format!("{RESUMED_PREFIX}work 1")
+        );
     }
 }
 

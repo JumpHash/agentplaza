@@ -1256,8 +1256,7 @@ mod law_refusal_tests {
 
     #[test]
     fn a_breeder_job_over_eight_gpu_hours_is_refused_by_the_statute_and_one_within_passes() {
-        let dir = std::env::temp_dir().join(format!("foundry-law-{}", std::process::id()));
-        let laws = Laws::load(&dir);
+        let laws = Laws::builtin();
         let over = refuse(&laws, 9).expect("a 9 GPU-hour job is refused by law");
         assert!(over.contains("S-006"), "{over}");
         assert!(

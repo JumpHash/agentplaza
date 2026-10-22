@@ -747,6 +747,568 @@ CREATE TABLE "provider_offered" (
     FOREIGN KEY ("providers_pos") REFERENCES "providers" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component spawned
+CREATE TABLE "spawned" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "spawned_entry" (
+    "spawned_pos" INTEGER NOT NULL CHECK ("spawned_pos" >= 0),
+    "spawned_pos_2" INTEGER NOT NULL CHECK ("spawned_pos_2" >= 0),
+    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
+    "role" TEXT NOT NULL,
+    "model" TEXT,
+    PRIMARY KEY ("spawned_pos", "spawned_pos_2"),
+    FOREIGN KEY ("spawned_pos") REFERENCES "spawned" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "spawned_model" (
+    "spawned_pos" INTEGER NOT NULL CHECK ("spawned_pos" >= 0),
+    "models_key" INTEGER NOT NULL CHECK ("models_key" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("spawned_pos", "models_key"),
+    FOREIGN KEY ("spawned_pos") REFERENCES "spawned" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component rules
+CREATE TABLE "rules" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "owner_rule" (
+    "rules_pos" INTEGER NOT NULL CHECK ("rules_pos" >= 0),
+    "rules_pos_2" INTEGER NOT NULL CHECK ("rules_pos_2" >= 0),
+    "id" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "source" TEXT NOT NULL,
+    "enabled" INTEGER NOT NULL CHECK ("enabled" IN (0, 1)),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "author" TEXT NOT NULL,
+    PRIMARY KEY ("rules_pos", "rules_pos_2"),
+    FOREIGN KEY ("rules_pos") REFERENCES "rules" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "law_override" (
+    "rules_pos" INTEGER NOT NULL CHECK ("rules_pos" >= 0),
+    "overrides_pos" INTEGER NOT NULL CHECK ("overrides_pos" >= 0),
+    "law" TEXT NOT NULL,
+    "disabled_by" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("rules_pos", "overrides_pos"),
+    FOREIGN KEY ("rules_pos") REFERENCES "rules" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "law_change" (
+    "rules_pos" INTEGER NOT NULL CHECK ("rules_pos" >= 0),
+    "history_pos" INTEGER NOT NULL CHECK ("history_pos" >= 0),
+    "law" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "tier" TEXT NOT NULL,
+    "disabled" INTEGER NOT NULL CHECK ("disabled" IN (0, 1)),
+    "by" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "confirmed" INTEGER NOT NULL CHECK ("confirmed" IN (0, 1)),
+    PRIMARY KEY ("rules_pos", "history_pos"),
+    FOREIGN KEY ("rules_pos") REFERENCES "rules" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component work
+CREATE TABLE "work" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "next_id" INTEGER NOT NULL CHECK ("next_id" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "work_lane" (
+    "work_pos" INTEGER NOT NULL CHECK ("work_pos" >= 0),
+    "lanes_key" INTEGER NOT NULL CHECK ("lanes_key" >= 0),
+    PRIMARY KEY ("work_pos", "lanes_key"),
+    FOREIGN KEY ("work_pos") REFERENCES "work" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "work_lane_queue" (
+    "work_pos" INTEGER NOT NULL CHECK ("work_pos" >= 0),
+    "lanes_key" INTEGER NOT NULL CHECK ("lanes_key" >= 0),
+    "queue_pos" INTEGER NOT NULL CHECK ("queue_pos" >= 0),
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('task', 'chat', 'message')),
+    "thread" TEXT NOT NULL,
+    "prompt" TEXT NOT NULL,
+    "origin_task" TEXT,
+    "origin_from_cid" INTEGER CHECK ("origin_from_cid" >= 0),
+    "origin_owner" INTEGER NOT NULL CHECK ("origin_owner" IN (0, 1)),
+    "origin_mcp" INTEGER NOT NULL CHECK ("origin_mcp" IN (0, 1)),
+    "origin_acp" INTEGER NOT NULL CHECK ("origin_acp" IN (0, 1)),
+    "origin_conversation" TEXT,
+    "origin_lane_present" INTEGER NOT NULL CHECK ("origin_lane_present" IN (0, 1)),
+    "origin_lane_change" TEXT,
+    "origin_lane_repo" TEXT,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "started_ms" INTEGER CHECK ("started_ms" >= 0),
+    PRIMARY KEY ("work_pos", "lanes_key", "queue_pos"),
+    FOREIGN KEY ("work_pos", "lanes_key") REFERENCES "work_lane" ("work_pos", "lanes_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "work_lane_current" (
+    "work_pos" INTEGER NOT NULL CHECK ("work_pos" >= 0),
+    "lanes_key" INTEGER NOT NULL CHECK ("lanes_key" >= 0),
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('task', 'chat', 'message')),
+    "thread" TEXT NOT NULL,
+    "prompt" TEXT NOT NULL,
+    "origin_task" TEXT,
+    "origin_from_cid" INTEGER CHECK ("origin_from_cid" >= 0),
+    "origin_owner" INTEGER NOT NULL CHECK ("origin_owner" IN (0, 1)),
+    "origin_mcp" INTEGER NOT NULL CHECK ("origin_mcp" IN (0, 1)),
+    "origin_acp" INTEGER NOT NULL CHECK ("origin_acp" IN (0, 1)),
+    "origin_conversation" TEXT,
+    "origin_lane_present" INTEGER NOT NULL CHECK ("origin_lane_present" IN (0, 1)),
+    "origin_lane_change" TEXT,
+    "origin_lane_repo" TEXT,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "started_ms" INTEGER CHECK ("started_ms" >= 0),
+    PRIMARY KEY ("work_pos", "lanes_key"),
+    FOREIGN KEY ("work_pos", "lanes_key") REFERENCES "work_lane" ("work_pos", "lanes_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component control
+CREATE TABLE "control" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "paused" INTEGER NOT NULL CHECK ("paused" IN (0, 1)),
+    "since_ms" INTEGER NOT NULL CHECK ("since_ms" >= 0),
+    "by" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "cancelled" INTEGER NOT NULL CHECK ("cancelled" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+
+-- component custom_roles
+CREATE TABLE "custom_role" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "title" TEXT NOT NULL,
+    "purpose" TEXT NOT NULL,
+    "collaboration" TEXT NOT NULL,
+    "budget" INTEGER NOT NULL CHECK ("budget" >= 0),
+    "model" TEXT NOT NULL,
+    "prompt" TEXT NOT NULL,
+    "created_by" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "custom_role_responsibilities" (
+    "custom_role_id" TEXT NOT NULL,
+    "responsibilities_pos" INTEGER NOT NULL CHECK ("responsibilities_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("custom_role_id", "responsibilities_pos"),
+    FOREIGN KEY ("custom_role_id") REFERENCES "custom_role" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "custom_role_deliverables" (
+    "custom_role_id" TEXT NOT NULL,
+    "deliverables_pos" INTEGER NOT NULL CHECK ("deliverables_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("custom_role_id", "deliverables_pos"),
+    FOREIGN KEY ("custom_role_id") REFERENCES "custom_role" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "custom_role_boundaries" (
+    "custom_role_id" TEXT NOT NULL,
+    "boundaries_pos" INTEGER NOT NULL CHECK ("boundaries_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("custom_role_id", "boundaries_pos"),
+    FOREIGN KEY ("custom_role_id") REFERENCES "custom_role" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "custom_role_tools" (
+    "custom_role_id" TEXT NOT NULL,
+    "tools_pos" INTEGER NOT NULL CHECK ("tools_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("custom_role_id", "tools_pos"),
+    FOREIGN KEY ("custom_role_id") REFERENCES "custom_role" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component agent_proposals
+CREATE TABLE "agent_proposal" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "new_role" INTEGER NOT NULL CHECK ("new_role" IN (0, 1)),
+    "count" INTEGER NOT NULL CHECK ("count" >= 0),
+    "model" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "instruction" TEXT NOT NULL,
+    "by_cid" INTEGER NOT NULL CHECK ("by_cid" >= 0),
+    "by" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "state" TEXT NOT NULL,
+    "decided_ms" INTEGER NOT NULL CHECK ("decided_ms" >= 0),
+    "note" TEXT NOT NULL,
+    "project" TEXT,
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "agent_proposal_role" (
+    "agent_proposal_id" TEXT NOT NULL,
+    "id" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "purpose" TEXT NOT NULL,
+    "collaboration" TEXT NOT NULL,
+    "budget" INTEGER NOT NULL CHECK ("budget" >= 0),
+    "model" TEXT NOT NULL,
+    "prompt" TEXT NOT NULL,
+    "created_by" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    PRIMARY KEY ("agent_proposal_id"),
+    FOREIGN KEY ("agent_proposal_id") REFERENCES "agent_proposal" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "agent_proposal_role_responsibilities" (
+    "agent_proposal_id" TEXT NOT NULL,
+    "responsibilities_pos" INTEGER NOT NULL CHECK ("responsibilities_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("agent_proposal_id", "responsibilities_pos"),
+    FOREIGN KEY ("agent_proposal_id") REFERENCES "agent_proposal_role" ("agent_proposal_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "agent_proposal_role_deliverables" (
+    "agent_proposal_id" TEXT NOT NULL,
+    "deliverables_pos" INTEGER NOT NULL CHECK ("deliverables_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("agent_proposal_id", "deliverables_pos"),
+    FOREIGN KEY ("agent_proposal_id") REFERENCES "agent_proposal_role" ("agent_proposal_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "agent_proposal_role_boundaries" (
+    "agent_proposal_id" TEXT NOT NULL,
+    "boundaries_pos" INTEGER NOT NULL CHECK ("boundaries_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("agent_proposal_id", "boundaries_pos"),
+    FOREIGN KEY ("agent_proposal_id") REFERENCES "agent_proposal_role" ("agent_proposal_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "agent_proposal_role_tools" (
+    "agent_proposal_id" TEXT NOT NULL,
+    "tools_pos" INTEGER NOT NULL CHECK ("tools_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("agent_proposal_id", "tools_pos"),
+    FOREIGN KEY ("agent_proposal_id") REFERENCES "agent_proposal_role" ("agent_proposal_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "agent_proposal_spawned" (
+    "agent_proposal_id" TEXT NOT NULL,
+    "spawned_pos" INTEGER NOT NULL CHECK ("spawned_pos" >= 0),
+    "value" INTEGER NOT NULL CHECK ("value" >= 0),
+    PRIMARY KEY ("agent_proposal_id", "spawned_pos"),
+    FOREIGN KEY ("agent_proposal_id") REFERENCES "agent_proposal" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component nodes
+CREATE TABLE "nodes" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "local_stopped" INTEGER NOT NULL CHECK ("local_stopped" IN (0, 1)),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "node" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "public_key" TEXT NOT NULL,
+    "cid_base" INTEGER NOT NULL CHECK ("cid_base" >= 0),
+    "cid_count" INTEGER NOT NULL CHECK ("cid_count" >= 0),
+    "joined_ms" INTEGER NOT NULL CHECK ("joined_ms" >= 0),
+    "last_seen_ms" INTEGER NOT NULL CHECK ("last_seen_ms" >= 0),
+    "draining" INTEGER NOT NULL CHECK ("draining" IN (0, 1)),
+    "revoked" INTEGER NOT NULL CHECK ("revoked" IN (0, 1)),
+    "address" TEXT NOT NULL,
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2"),
+    FOREIGN KEY ("nodes_pos") REFERENCES "nodes" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_machine" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "cpus" INTEGER CHECK ("cpus" >= 0),
+    "memory_mib" INTEGER CHECK ("memory_mib" >= 0),
+    "host" TEXT,
+    "version" TEXT,
+    "name" TEXT,
+    "arch" TEXT,
+    "os" TEXT,
+    "backend" TEXT,
+    "irqchip" TEXT,
+    "class" TEXT,
+    "kind" TEXT,
+    "vendor" TEXT,
+    "model" TEXT,
+    "apple_present" INTEGER NOT NULL CHECK ("apple_present" IN (0, 1)),
+    "apple_chip" TEXT,
+    "apple_p_cores" INTEGER CHECK ("apple_p_cores" >= 0),
+    "apple_e_cores" INTEGER CHECK ("apple_e_cores" >= 0),
+    "apple_gpu_cores" INTEGER CHECK ("apple_gpu_cores" >= 0),
+    "apple_neural_cores" INTEGER CHECK ("apple_neural_cores" >= 0),
+    "apple_unified_memory_gib" INTEGER CHECK ("apple_unified_memory_gib" >= 0),
+    "cpu_present" INTEGER NOT NULL CHECK ("cpu_present" IN (0, 1)),
+    "cpu_model" TEXT,
+    "cpu_cores" INTEGER CHECK ("cpu_cores" >= 0),
+    "cpu_threads" INTEGER CHECK ("cpu_threads" >= 0),
+    "trainer_present" INTEGER NOT NULL CHECK ("trainer_present" IN (0, 1)),
+    "trainer_runtime" TEXT,
+    "trainer_ok" INTEGER CHECK ("trainer_ok" IN (0, 1)),
+    "trainer_detail" TEXT,
+    "storage_gib" INTEGER CHECK ("storage_gib" >= 0),
+    "vsock_mode" TEXT,
+    "started_at_ms" INTEGER CHECK ("started_at_ms" >= 0),
+    "stats_present" INTEGER NOT NULL CHECK ("stats_present" IN (0, 1)),
+    "stats_cpu_pct" REAL,
+    "stats_mem_used_mib" INTEGER CHECK ("stats_mem_used_mib" >= 0),
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_machine_gpu" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "gpus_pos" INTEGER NOT NULL CHECK ("gpus_pos" >= 0),
+    "vendor" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "memory_mib" INTEGER CHECK ("memory_mib" >= 0),
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2", "gpus_pos"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_machine_accelerator" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "accelerators_pos" INTEGER NOT NULL CHECK ("accelerators_pos" >= 0),
+    "index" INTEGER NOT NULL CHECK ("index" >= 0),
+    "vendor" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "memory_mib" INTEGER CHECK ("memory_mib" >= 0),
+    "backend" TEXT NOT NULL,
+    "capability" TEXT,
+    "link" TEXT NOT NULL,
+    "busy" INTEGER NOT NULL CHECK ("busy" IN (0, 1)),
+    "util_pct" INTEGER CHECK ("util_pct" >= 0),
+    "mem_used_mib" INTEGER CHECK ("mem_used_mib" >= 0),
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2", "accelerators_pos"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_machine_fabric" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "fabric_pos" INTEGER NOT NULL CHECK ("fabric_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2", "fabric_pos"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_machine_workstation_backend" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "workstation_backends_pos" INTEGER NOT NULL CHECK ("workstation_backends_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2", "workstation_backends_pos"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_code" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "codes_pos" INTEGER NOT NULL CHECK ("codes_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "secret_sha256" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "expires_ms" INTEGER NOT NULL CHECK ("expires_ms" >= 0),
+    "used_by" TEXT,
+    "revoked" INTEGER NOT NULL CHECK ("revoked" IN (0, 1)),
+    "failures" INTEGER NOT NULL CHECK ("failures" >= 0),
+    PRIMARY KEY ("nodes_pos", "codes_pos"),
+    FOREIGN KEY ("nodes_pos") REFERENCES "nodes" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_override" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "overrides_key" INTEGER NOT NULL CHECK ("overrides_key" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("nodes_pos", "overrides_key"),
+    FOREIGN KEY ("nodes_pos") REFERENCES "nodes" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component stations
+CREATE TABLE "stations" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "station" (
+    "stations_pos" INTEGER NOT NULL CHECK ("stations_pos" >= 0),
+    "stations_pos_2" INTEGER NOT NULL CHECK ("stations_pos_2" >= 0),
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "version" TEXT NOT NULL,
+    "code" TEXT NOT NULL,
+    "token_sha256" TEXT NOT NULL,
+    "joined_ms" INTEGER NOT NULL CHECK ("joined_ms" >= 0),
+    "last_seen_ms" INTEGER NOT NULL CHECK ("last_seen_ms" >= 0),
+    "settings_takeover" TEXT NOT NULL CHECK ("settings_takeover" IN ('agent_waits', 'release_lease', 'keep_working_pointer_paused')),
+    "settings_record" INTEGER NOT NULL CHECK ("settings_record" IN (0, 1)),
+    "settings_retention_days" INTEGER NOT NULL CHECK ("settings_retention_days" >= 0),
+    "settings_record_fps" INTEGER NOT NULL CHECK ("settings_record_fps" >= 0),
+    "settings_record_takeovers" INTEGER NOT NULL CHECK ("settings_record_takeovers" IN (0, 1)),
+    "settings_work_folder" TEXT NOT NULL,
+    "settings_snapshot_reset" INTEGER NOT NULL CHECK ("settings_snapshot_reset" IN (0, 1)),
+    "settings_rate_per_hour" INTEGER NOT NULL CHECK ("settings_rate_per_hour" >= 0),
+    "draining" INTEGER NOT NULL CHECK ("draining" IN (0, 1)),
+    "revoked" INTEGER NOT NULL CHECK ("revoked" IN (0, 1)),
+    "address" TEXT NOT NULL,
+    PRIMARY KEY ("stations_pos", "stations_pos_2"),
+    FOREIGN KEY ("stations_pos") REFERENCES "stations" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "station_facts" (
+    "stations_pos" INTEGER NOT NULL CHECK ("stations_pos" >= 0),
+    "stations_pos_2" INTEGER NOT NULL CHECK ("stations_pos_2" >= 0),
+    "os" TEXT NOT NULL CHECK ("os" IN ('macos', 'windows', 'linux')),
+    "os_version" TEXT NOT NULL,
+    "arch" TEXT NOT NULL,
+    "hostname" TEXT NOT NULL,
+    "form" TEXT NOT NULL CHECK ("form" IN ('laptop', 'desktop', 'mini', 'server', 'vm')),
+    "cpus" INTEGER NOT NULL CHECK ("cpus" >= 0),
+    "ram_mb" INTEGER NOT NULL CHECK ("ram_mb" >= 0),
+    "account_kind" TEXT NOT NULL CHECK ("account_kind" IN ('agent_user', 'owner')),
+    "account_agent_user_name" TEXT,
+    "account_owner_name" TEXT,
+    "apps" INTEGER NOT NULL CHECK ("apps" >= 0),
+    "virtual_displays" INTEGER NOT NULL CHECK ("virtual_displays" IN (0, 1)),
+    "ui_tree" INTEGER NOT NULL CHECK ("ui_tree" IN (0, 1)),
+    "machine_id" TEXT,
+    PRIMARY KEY ("stations_pos", "stations_pos_2"),
+    FOREIGN KEY ("stations_pos", "stations_pos_2") REFERENCES "station" ("stations_pos", "stations_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "station_facts_gpus" (
+    "stations_pos" INTEGER NOT NULL CHECK ("stations_pos" >= 0),
+    "stations_pos_2" INTEGER NOT NULL CHECK ("stations_pos_2" >= 0),
+    "gpus_pos" INTEGER NOT NULL CHECK ("gpus_pos" >= 0),
+    "vendor" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "vram_mb" INTEGER NOT NULL CHECK ("vram_mb" >= 0),
+    PRIMARY KEY ("stations_pos", "stations_pos_2", "gpus_pos"),
+    FOREIGN KEY ("stations_pos", "stations_pos_2") REFERENCES "station_facts" ("stations_pos", "stations_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "station_facts_displays" (
+    "stations_pos" INTEGER NOT NULL CHECK ("stations_pos" >= 0),
+    "stations_pos_2" INTEGER NOT NULL CHECK ("stations_pos_2" >= 0),
+    "displays_pos" INTEGER NOT NULL CHECK ("displays_pos" >= 0),
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "w" INTEGER NOT NULL CHECK ("w" >= 0),
+    "h" INTEGER NOT NULL CHECK ("h" >= 0),
+    "scale" REAL NOT NULL,
+    PRIMARY KEY ("stations_pos", "stations_pos_2", "displays_pos"),
+    FOREIGN KEY ("stations_pos", "stations_pos_2") REFERENCES "station_facts" ("stations_pos", "stations_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "station_sync_pause" (
+    "stations_pos" INTEGER NOT NULL CHECK ("stations_pos" >= 0),
+    "stations_pos_2" INTEGER NOT NULL CHECK ("stations_pos_2" >= 0),
+    "reason" TEXT NOT NULL,
+    "since_ms" INTEGER NOT NULL CHECK ("since_ms" >= 0),
+    PRIMARY KEY ("stations_pos", "stations_pos_2"),
+    FOREIGN KEY ("stations_pos", "stations_pos_2") REFERENCES "station" ("stations_pos", "stations_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "station_sync_pause_deletion" (
+    "stations_pos" INTEGER NOT NULL CHECK ("stations_pos" >= 0),
+    "stations_pos_2" INTEGER NOT NULL CHECK ("stations_pos_2" >= 0),
+    "deletions_pos" INTEGER NOT NULL CHECK ("deletions_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("stations_pos", "stations_pos_2", "deletions_pos"),
+    FOREIGN KEY ("stations_pos", "stations_pos_2") REFERENCES "station_sync_pause" ("stations_pos", "stations_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "station_code" (
+    "stations_pos" INTEGER NOT NULL CHECK ("stations_pos" >= 0),
+    "codes_pos" INTEGER NOT NULL CHECK ("codes_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "secret_sha256" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "expires_ms" INTEGER NOT NULL CHECK ("expires_ms" >= 0),
+    "used_by" TEXT,
+    "revoked" INTEGER NOT NULL CHECK ("revoked" IN (0, 1)),
+    "failures" INTEGER NOT NULL CHECK ("failures" >= 0),
+    PRIMARY KEY ("stations_pos", "codes_pos"),
+    FOREIGN KEY ("stations_pos") REFERENCES "stations" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "station_vm" (
+    "stations_pos" INTEGER NOT NULL CHECK ("stations_pos" >= 0),
+    "vms_pos" INTEGER NOT NULL CHECK ("vms_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "node" TEXT NOT NULL,
+    "vm" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "os" TEXT NOT NULL,
+    "cpus" INTEGER NOT NULL CHECK ("cpus" >= 0),
+    "ram_mb" INTEGER NOT NULL CHECK ("ram_mb" >= 0),
+    "disk_gb" INTEGER NOT NULL CHECK ("disk_gb" >= 0),
+    "gpu" TEXT NOT NULL,
+    "image" TEXT,
+    "backend" TEXT NOT NULL,
+    "code" TEXT NOT NULL,
+    "station" TEXT,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    PRIMARY KEY ("stations_pos", "vms_pos"),
+    FOREIGN KEY ("stations_pos") REFERENCES "stations" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component social
+CREATE TABLE "social" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "posts_seq" INTEGER NOT NULL CHECK ("posts_seq" >= 0),
+    "comment_seq" INTEGER NOT NULL CHECK ("comment_seq" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "social_post" (
+    "social_pos" INTEGER NOT NULL CHECK ("social_pos" >= 0),
+    "posts_pos" INTEGER NOT NULL CHECK ("posts_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "agent_cid" INTEGER NOT NULL CHECK ("agent_cid" >= 0),
+    "role" TEXT NOT NULL,
+    "subject" TEXT NOT NULL,
+    "body" TEXT NOT NULL,
+    "task" TEXT,
+    "posted_by" TEXT NOT NULL,
+    "created_at" INTEGER NOT NULL CHECK ("created_at" >= 0),
+    "owner" INTEGER NOT NULL CHECK ("owner" IN (0, 1)),
+    "project" TEXT,
+    PRIMARY KEY ("social_pos", "posts_pos"),
+    FOREIGN KEY ("social_pos") REFERENCES "social" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "social_post_comment" (
+    "social_pos" INTEGER NOT NULL CHECK ("social_pos" >= 0),
+    "posts_pos" INTEGER NOT NULL CHECK ("posts_pos" >= 0),
+    "comments_pos" INTEGER NOT NULL CHECK ("comments_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "post" TEXT NOT NULL,
+    "agent_cid" INTEGER CHECK ("agent_cid" >= 0),
+    "author" TEXT NOT NULL,
+    "body" TEXT NOT NULL,
+    "created_at" INTEGER NOT NULL CHECK ("created_at" >= 0),
+    PRIMARY KEY ("social_pos", "posts_pos", "comments_pos"),
+    FOREIGN KEY ("social_pos", "posts_pos") REFERENCES "social_post" ("social_pos", "posts_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "social_comment_attachment" (
+    "social_pos" INTEGER NOT NULL CHECK ("social_pos" >= 0),
+    "posts_pos" INTEGER NOT NULL CHECK ("posts_pos" >= 0),
+    "comments_pos" INTEGER NOT NULL CHECK ("comments_pos" >= 0),
+    "attachments_pos" INTEGER NOT NULL CHECK ("attachments_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("social_pos", "posts_pos", "comments_pos", "attachments_pos"),
+    FOREIGN KEY ("social_pos", "posts_pos", "comments_pos") REFERENCES "social_post_comment" ("social_pos", "posts_pos", "comments_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "social_post_attachment" (
+    "social_pos" INTEGER NOT NULL CHECK ("social_pos" >= 0),
+    "posts_pos" INTEGER NOT NULL CHECK ("posts_pos" >= 0),
+    "attachments_pos" INTEGER NOT NULL CHECK ("attachments_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("social_pos", "posts_pos", "attachments_pos"),
+    FOREIGN KEY ("social_pos", "posts_pos") REFERENCES "social_post" ("social_pos", "posts_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "social_post_mention" (
+    "social_pos" INTEGER NOT NULL CHECK ("social_pos" >= 0),
+    "posts_pos" INTEGER NOT NULL CHECK ("posts_pos" >= 0),
+    "mentions_pos" INTEGER NOT NULL CHECK ("mentions_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("social_pos", "posts_pos", "mentions_pos"),
+    FOREIGN KEY ("social_pos", "posts_pos") REFERENCES "social_post" ("social_pos", "posts_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "social_cursor" (
+    "social_pos" INTEGER NOT NULL CHECK ("social_pos" >= 0),
+    "cursors_key" INTEGER NOT NULL CHECK ("cursors_key" >= 0),
+    "value" INTEGER NOT NULL CHECK ("value" >= 0),
+    PRIMARY KEY ("social_pos", "cursors_key"),
+    FOREIGN KEY ("social_pos") REFERENCES "social" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component sessions
 CREATE TABLE "session" (
     "id" TEXT NOT NULL,

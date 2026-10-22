@@ -14,7 +14,7 @@ apz-prompt = { path = "../apz-prompt" }
 apz-skill = { path = "../apz-skill" }
 jhrl = { path = "../jhrl" }
 apz-acp = { path = "../apz-acp" }
-apz-proto.workspace = true
+apz-proto = { workspace = true, features = ["store"] }
 apz-http = { path = "../apz-http" }
 weft = { path = "../weft" }
 apz-metrics.workspace = true
@@ -22,7 +22,7 @@ apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
 apz-ide = { path = "../apz-ide" }
 # The workstation link protocol (docs/design/workstations.md; crates/apz-station): frames, operations, facts, settings.
-apz-station = { path = "../apz-station" }
+apz-station = { path = "../apz-station", features = ["store"] }
 apz-rich = { path = "../apz-rich" }
 # The metrics core and the Metrics view model (docs/architecture.md, "Metrics").
 apz-metrics-view = { path = "../apz-metrics-view" }

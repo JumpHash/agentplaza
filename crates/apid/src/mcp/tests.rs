@@ -700,10 +700,7 @@ fn colliding_names_get_distinct_wire_names_that_map_back_to_their_tools() {
 
 #[test]
 fn the_laws_permit_an_enabled_read_tool_and_hold_an_irreversible_one() {
-    let dir = std::env::temp_dir().join(format!("apz-mcp-laws-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let laws = crate::laws::Laws::load(&dir);
+    let laws = crate::laws::Laws::builtin();
     let listed = vec![
         tool("search", json!({"readOnlyHint": true})),
         tool("wipe", json!({"destructiveHint": true})),
@@ -721,7 +718,6 @@ fn the_laws_permit_an_enabled_read_tool_and_hold_an_irreversible_one() {
         !laws.permits("builder", &wires[1]),
         "C-004a holds an irreversible tool without an owner approval"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

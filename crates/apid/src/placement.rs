@@ -167,20 +167,18 @@ pub(crate) fn reserved_mib(node: &str, now: Instant) -> u64 {
 /// A node's memory as (total, used) in MiB: `n0`'s stats asked now, a joined node's from its last
 /// heartbeat. None when the stats did not answer.
 pub(crate) fn memory_of(app: &App, node: &str) -> Option<(u64, u64)> {
-    let (stats, machine_total) = if node == LOCAL {
+    if node == LOCAL {
         let Ok((200, stats)) = fleet::noded(app, LOCAL, "GET", "/v1/machine/stats", None) else {
             return None;
         };
-        (stats, None)
-    } else {
-        let machine = app.nodes.get(node)?.machine;
-        (
-            machine.get("stats")?.clone(),
-            machine["memory_mib"].as_u64(),
-        )
-    };
-    let used = stats["mem_used_mib"].as_u64()?;
-    let total = stats["mem_total_mib"].as_u64().or(machine_total)?;
+        let used = stats["mem_used_mib"].as_u64()?;
+        let total = stats["mem_total_mib"].as_u64()?;
+        return Some((total, used));
+    }
+    // A joined node's heartbeat carries its live memory in use; its total is the machine's own memory.
+    let machine = app.nodes.get(node)?.machine;
+    let used = machine.stats?.mem_used_mib?;
+    let total = machine.memory_mib?;
     Some((total, used))
 }
 
@@ -734,11 +732,11 @@ fn push_piece(
     .map(|_| ())
 }
 
-/// Saves the node store, placements included, now (the saver would do it on its next pass).
+/// Saves the node store, placements included, now (the saver's write, not its next pass). A failed write is logged
+/// by the saver and retried on its next pass.
 fn save_placements(app: &App) -> Result<(), String> {
-    app.db
-        .store("nodes", &crate::db::snapshot_of(app, "nodes"))
-        .map(|_| ())
+    crate::store::saver::save_now(app, "nodes");
+    Ok(())
 }
 
 /// A node's answer as its body when it is 2xx; otherwise the failure as text.
@@ -866,7 +864,7 @@ mod tests {
             cid_count: 100,
             joined_ms: 0,
             last_seen_ms,
-            machine: Value::Null,
+            machine: crate::nodes::Machine::default(),
             draining,
             revoked,
             address: String::new(),
@@ -1047,14 +1045,19 @@ mod tests {
         }
         // node_of takes the override over the range owner.
         {
-            let store = crate::nodes::Store::default();
-            store
-                .restore(
-                    &json!({"nodes": [{"id": "n1", "name": "a", "public_key": "", "cid_base": 1000,
-                        "cid_count": 100, "joined_ms": 0, "last_seen_ms": 0}], "codes": []})
-                    .to_string(),
-                )
-                .unwrap();
+            let store = crate::nodes::Store::holding(vec![crate::nodes::Node {
+                id: "n1".into(),
+                name: "a".into(),
+                public_key: String::new(),
+                cid_base: 1000,
+                cid_count: 100,
+                joined_ms: 0,
+                last_seen_ms: 0,
+                machine: crate::nodes::Machine::default(),
+                draining: false,
+                revoked: false,
+                address: String::new(),
+            }]);
             let owner = |cid| store.owner_of_cid(cid).map(|n| n.id);
             assert_eq!(node_for(store.override_of(1005), owner(1005)), "n1");
             store.set_override(1005, Some("n0"));
@@ -1063,25 +1066,32 @@ mod tests {
         }
     }
 
+    /// The node store's rows saved to their tables and loaded into a fresh store.
+    fn saved(store: &crate::nodes::Store) -> crate::nodes::Store {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&crate::nodes::def().ddl()).unwrap();
+        apz_store::table::replace(&conn, crate::nodes::def(), &store.rows().unwrap()).unwrap();
+        let again = crate::nodes::Store::default();
+        again.load(&conn).unwrap();
+        again
+    }
+
     #[test]
-    fn the_override_map_survives_a_snapshot_and_a_clear_is_saved_too() {
+    fn the_override_map_survives_a_save_and_a_clear_is_saved_too() {
         let store = crate::nodes::Store::default();
         assert_eq!(store.set_override(1005, Some("n2")), None);
         assert_eq!(store.override_of(1005).as_deref(), Some("n2"));
-        let restored = crate::nodes::Store::default();
-        restored.restore(&store.snapshot()).unwrap();
+        let restored = saved(&store);
         assert_eq!(restored.override_of(1005).as_deref(), Some("n2"));
         assert_eq!(restored.set_override(1005, None).as_deref(), Some("n2"));
-        let after_clear = crate::nodes::Store::default();
-        after_clear.restore(&restored.snapshot()).unwrap();
+        let after_clear = saved(&restored);
         assert_eq!(after_clear.override_of(1005), None, "the clear is saved");
     }
 
     #[test]
-    fn a_snapshot_from_before_overrides_restores_with_none() {
+    fn an_empty_store_loads_with_no_overrides() {
         let store = crate::nodes::Store::default();
-        store.restore(r#"{"nodes":[],"codes":[]}"#).unwrap();
-        assert_eq!(store.override_of(1005), None);
+        assert_eq!(saved(&store).override_of(1005), None);
     }
 
     #[test]

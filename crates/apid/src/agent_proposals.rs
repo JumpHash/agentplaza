@@ -3,7 +3,7 @@
 //! the work it runs in is the owner's own chat. A proposal holds a full role definition (or an
 //! existing role), how many agents, and why; it waits in the console's Approvals until the owner
 //! approves (optionally after editing it in the agent wizard) or rejects it. Approval saves the
-//! role (when new) and spawns the agents. Saved in Postgres ("agent_proposals").
+//! role (when new) and spawns the agents. Saved in plaza.db (the `agent_proposal` tables, saved by the store's saver).
 //!
 //! GET  /v1/agent-proposals                    → [AgentProposal], newest first
 //! POST /v1/agent-proposals/{id}/approve  body {role?: RoleDef, count?, model?, project?} → the proposal (spawned)
@@ -14,6 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_proto::wire::WorkKind;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -31,11 +33,14 @@ const REJECTED: &str = "rejected";
 const MAX_COUNT: u32 = 8;
 const MAX_TEXT_CHARS: usize = 2000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "agent_proposal")]
 pub struct AgentProposal {
     /// `ap<seq>`.
+    #[table(key)]
     pub id: String,
     /// The role: a new definition, or an existing role's id with the other fields empty.
+    #[table(child)]
     pub role: RoleDef,
     /// True when `role` defines a new role.
     pub new_role: bool,
@@ -57,6 +62,7 @@ pub struct AgentProposal {
     pub note: String,
     /// Agents spawned on approval (cids, when known).
     #[serde(default)]
+    #[table(list)]
     pub spawned: Vec<u64>,
     /// The project the agents work on once they connect; none leaves them on the bench.
     #[serde(default)]
@@ -104,14 +110,22 @@ impl Store {
     fn deciding(&self) -> MutexGuard<'_, ()> {
         self.deciding.lock().unwrap_or_else(|e| e.into_inner())
     }
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&self.list()).unwrap_or_default()
+    /// Every proposal's rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let items = self.items.lock().unwrap_or_else(|e| e.into_inner());
+        RowSet::list(def(), items.iter())
     }
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let items: Vec<AgentProposal> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        *self.items.lock().map_err(|e| e.to_string())? = items;
+    /// Replaces the proposals with what plaza.db holds (at start), in the order they were kept.
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<AgentProposal> = apz_store::table::load_list(conn, def())?;
+        *self.items.lock().unwrap_or_else(|e| e.into_inner()) = stored;
         Ok(())
     }
+}
+
+/// The proposals' table: `agent_proposal`, with the role each asks for as a child row.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(AgentProposal)
 }
 
 pub fn spec(name: &str) -> Option<(&'static str, Value)> {
@@ -557,5 +571,26 @@ mod tests {
         let rejected = store.update("ap1", |p| p.state = REJECTED.into()).unwrap();
         assert_eq!(rejected.state, REJECTED);
         assert!(store.update("ap9", |_| {}).is_none());
+    }
+
+    #[test]
+    fn the_proposals_come_back_whole_from_their_tables() {
+        let store = Store::default();
+        store.add(draft("a-role"));
+        let mut second = draft("b-role");
+        second.spawned = vec![42, 43];
+        second.project = Some("pr1".into());
+        store.add(second);
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+
+        let restored = Store::default();
+        restored.load(&conn).unwrap();
+        assert_eq!(restored.list()[0].id, "ap2", "newest first, as kept");
+        assert_eq!(
+            serde_json::to_value(restored.list()).unwrap(),
+            serde_json::to_value(store.list()).unwrap()
+        );
     }
 }

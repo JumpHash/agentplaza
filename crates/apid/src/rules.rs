@@ -48,18 +48,11 @@ fn rules_list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
     )
 }
 
-/// A rule change's answer with `saved` added: false while rules.json is damaged, when the change
-/// applies in memory only, and a note says so.
-fn with_saved(laws: &crate::laws::Laws, mut body: Value) -> Value {
-    let saved = laws.rules_saved();
+/// A rule change's answer with `saved` added: the change applies at once, and the store's saver keeps it in plaza.db
+/// within a second.
+fn with_saved(mut body: Value) -> Value {
     if let Some(map) = body.as_object_mut() {
-        map.insert("saved".into(), json!(saved));
-        if !saved {
-            map.insert(
-                "note".into(),
-                json!("rules.json is damaged; the change applies until the hub restarts"),
-            );
-        }
+        map.insert("saved".into(), json!(true));
     }
     body
 }
@@ -77,7 +70,7 @@ fn rule_create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         enabled,
         apz_plaza::now_ms(),
     ) {
-        Ok(rule) => Response::json(201, &with_saved(app.laws, json!(rule))),
+        Ok(rule) => Response::json(201, &with_saved(json!(rule))),
         Err(failure) => failure_response(failure),
     }
 }
@@ -95,7 +88,7 @@ fn rule_update_route(app: &App, req: &Request, params: &Params<'_>) -> Response 
         source,
         apz_plaza::now_ms(),
     ) {
-        Ok(rule) => Response::json(200, &with_saved(app.laws, json!(rule))),
+        Ok(rule) => Response::json(200, &with_saved(json!(rule))),
         Err(failure) => failure_response(failure),
     }
 }
@@ -110,17 +103,14 @@ fn rule_disable_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
 
 fn set_enabled(app: &App, id: &str, enabled: bool) -> Response {
     match app.laws.set_rule_enabled(id, enabled, apz_plaza::now_ms()) {
-        Ok(rule) => Response::json(200, &with_saved(app.laws, json!(rule))),
+        Ok(rule) => Response::json(200, &with_saved(json!(rule))),
         Err(failure) => failure_response(failure),
     }
 }
 
 fn rule_delete_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
     match app.laws.delete_rule(params.get("id")) {
-        Ok(()) => Response::json(
-            200,
-            &with_saved(app.laws, json!({ "deleted": params.get("id") })),
-        ),
+        Ok(()) => Response::json(200, &with_saved(json!({ "deleted": params.get("id") }))),
         Err(failure) => failure_response(failure),
     }
 }
@@ -188,10 +178,7 @@ fn set_override_answer(
         Ok(made) => {
             let made: Option<Override> = made;
             announce_constitutional(laws, bus, law, now_ms);
-            Response::json(
-                200,
-                &with_saved(laws, json!({ "law": law, "override": made })),
-            )
+            Response::json(200, &with_saved(json!({ "law": law, "override": made })))
         }
         Err(failure) => failure_response(failure),
     }
@@ -292,14 +279,6 @@ mod tests {
 
     const C: &str = "C-002b";
 
-    fn laws(name: &str) -> Laws {
-        let dir =
-            std::env::temp_dir().join(format!("apid-rules-route-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Laws::load(&dir)
-    }
-
     fn answer(laws: &Laws, bus: &Bus, law: &str, body: Value) -> Response {
         set_override_answer(laws, bus, law, &body, 5_000)
     }
@@ -315,7 +294,7 @@ mod tests {
     fn switching_a_law_off_depends_on_its_tier() {
         // A constitutional switch-off without the typed id is a 409 and applies nothing.
         {
-            let laws = laws("no-confirm");
+            let laws = Laws::builtin();
             let bus = Bus::default();
             let asked =
                 format!("{C} is a constitutional law; to switch it off, send confirm: \"{C}\"");
@@ -346,7 +325,7 @@ mod tests {
         }
         // A statute of another tier switches off as before, with no event.
         {
-            let laws = laws("statute");
+            let laws = Laws::builtin();
             let bus = Bus::default();
             let events = bus.subscribe();
             let off = answer(
@@ -364,7 +343,7 @@ mod tests {
 
     #[test]
     fn a_confirmed_switch_off_is_recorded_and_announced_and_switching_on_needs_nothing() {
-        let laws = laws("confirmed");
+        let laws = Laws::builtin();
         let bus = Bus::default();
         let events = bus.subscribe();
         let off = answer(

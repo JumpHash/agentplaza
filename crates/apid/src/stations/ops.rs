@@ -79,8 +79,8 @@ fn announce(app: &App, id: &str, action: &str) {
 
 /// The hub's hostname: what a machine reporting the same name is refused as. Empty when it cannot be read.
 fn hub_host() -> String {
-    let host = crate::nodes::local_summary()["host"]
-        .as_str()
+    let host = crate::nodes::local_summary()
+        .host
         .unwrap_or_default()
         .trim()
         .to_string();

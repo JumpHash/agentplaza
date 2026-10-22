@@ -38,7 +38,7 @@ mod vms;
 
 pub use api::routes;
 pub use ops::{audit_row, freeze_all, spawn};
-pub use registry::Store;
+pub use registry::{Store, def as store_def};
 // The agents' pixel path (stations/act.rs) asks these before a screenshot or an input.
 #[allow(unused_imports)]
 pub use takeover::{pixel_paused, pointer_paused};

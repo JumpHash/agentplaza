@@ -41,15 +41,16 @@
 //!
 //! # What v0 narrows (stated, not hidden)
 //!
-//! * **The board is in this process.** Like the ledger and the treasury, the
-//!   board is held in memory and apid snapshots it, so it survives a restart;
-//!   the schema's tables are a later slice.
+//! * **The board is in plaza.db.** It is held in memory, and its rows (the
+//!   `social` tables) are saved by the store's saver, so it survives a restart.
 //! * **The drivers are not here.** The board is the state and the view the
 //!   drivers act on; who posts for an agent is the caller's to say.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
@@ -266,7 +267,7 @@ impl std::fmt::Display for SocialError {
 impl std::error::Error for SocialError {}
 
 /// One post as the API reports it: the contract's `board.posts` row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct PostView {
     /// The post's id (`p<seq>`), monotonic and never reused.
     pub id: String,
@@ -287,9 +288,11 @@ pub struct PostView {
     pub created_at: u64,
     /// The post's comments, oldest first. A post keeps its newest
     /// [`Social::MAX_COMMENTS`]; the oldest is dropped past that.
+    #[table(child = "social_post_comment")]
     pub comments: Vec<CommentView>,
     /// Ids of the files shown with the post (the plaza's file store). Always present.
     #[serde(default)]
+    #[table(list = "social_post_attachment")]
     pub attachments: Vec<String>,
     /// Whether the owner wrote the post. Its `agent_cid` is `0` and its `role` is [`OWNER_ROLE`].
     #[serde(default)]
@@ -299,6 +302,7 @@ pub struct PostView {
     pub project: Option<String>,
     /// The names the owner mentioned (`all` for everyone), as written. Empty for an agent's post.
     #[serde(default)]
+    #[table(list = "social_post_mention")]
     pub mentions: Vec<String>,
 }
 
@@ -313,7 +317,7 @@ pub const MAX_MENTION: usize = 64;
 
 /// One comment on a board post's thread, as the API reports it: the contract's
 /// `{id: c<seq>, post, agent_cid, author, body, created_at}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct CommentView {
     /// The comment's id (`c<seq>`), on its own counter, monotonic and never reused.
     pub id: String,
@@ -329,6 +333,7 @@ pub struct CommentView {
     pub created_at: u64,
     /// Ids of the files shown with the comment. Always present.
     #[serde(default)]
+    #[table(list = "social_comment_attachment")]
     pub attachments: Vec<String>,
 }
 
@@ -394,14 +399,17 @@ pub struct Social {
     inner: Mutex<SocialInner>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "social")]
 struct SocialInner {
     /// The board, oldest first. The oldest posts are dropped past the retention
     /// (never the newest), so the held ids run unbroken up to `posts_seq`.
+    #[table(child = "social_post")]
     posts: Vec<PostView>,
     /// The number of the newest post (`0` while the board is empty).
     posts_seq: u64,
     /// Each agent's read cursor: the number of the last post it has read.
+    #[table(map_value = "social_cursor")]
     cursors: BTreeMap<u64, u64>,
     /// The number of the newest comment (`0` while none has been recorded).
     comment_seq: u64,
@@ -788,26 +796,28 @@ fn to_usize(count: u64) -> usize {
 }
 
 impl Social {
-    /// The whole state as JSON, for the store: the board with its comments and
-    /// attachments, and the read cursors. The event bus is not part of it.
-    pub fn snapshot(&self) -> String {
-        let inner = self.lock();
-        serde_json::to_string(&*inner).expect("the social state serializes")
+    /// The board's rows, as they are now (the saver writes what changed): the posts with their comments and
+    /// attachments, the read cursors and the two counters. The event bus is not part of them.
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::one(def(), &*self.lock())
     }
 
-    /// Replaces the state with `json`, a [`Social::snapshot`]. The snapshot must
-    /// hold to the invariants a live operation keeps; a refusal changes nothing,
-    /// and a restore publishes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let restored: SocialInner = serde_json::from_str(json)
-            .map_err(|err| format!("the snapshot does not parse: {err}"))?;
-        check_snapshot(&restored)?;
-        *self.lock() = restored;
+    /// Replaces the board with what plaza.db holds (at start). The stored board must hold to the invariants a live
+    /// operation keeps; a board that does not is refused and nothing changes, and a load publishes nothing.
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored = apz_store::table::load_one::<SocialInner>(conn, def())?.unwrap_or_default();
+        check_snapshot(&stored).map_err(StoreError::invalid)?;
+        *self.lock() = stored;
         Ok(())
     }
 }
 
-/// Refuses a snapshot no sequence of live operations could have produced: the
+/// The board's tables: `social` (the counters), `social_post` with its comments, and the read cursors.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(SocialInner)
+}
+
+/// Refuses a stored board no sequence of live operations could have produced: the
 /// board's ids contiguous up to its counter, comment ids unique and within
 /// their counter, every comment filed under the
 /// post it names, and no cursor past the board (its unread arithmetic would
@@ -912,8 +922,10 @@ mod tests {
             .expect("room on the board")
     }
 
+    /// The board comes back from its tables whole, and publishes nothing on the way; a stored board that breaks the
+    /// board's invariants is refused, and a refusal changes nothing.
     #[test]
-    fn a_snapshot_restores_the_board_and_refuses_garbage() {
+    fn the_board_comes_back_from_its_tables_and_refuses_a_broken_one() {
         let (social, _notes) = lab();
         let builder = agent(100, "builder");
         let scout = agent(101, "scout");
@@ -928,22 +940,27 @@ mod tests {
         social
             .attach("post", &first.id, &["f1".to_string()])
             .expect("a file on a post");
-        let json = social.snapshot();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &social.rows().unwrap()).unwrap();
 
         let (restored, notes) = lab();
-        restored.restore(&json).expect("a snapshot restores");
-        assert!(notes.try_recv().is_err(), "a restore publishes nothing");
+        restored.load(&conn).expect("the board loads");
+        assert!(notes.try_recv().is_err(), "a load publishes nothing");
         assert_eq!(
             serde_json::to_string(&restored.board(&[], 50)).unwrap(),
             serde_json::to_string(&social.board(&[], 50)).unwrap()
         );
-        assert_eq!(restored.snapshot(), json, "the snapshot round-trips");
+        assert_eq!(
+            restored.rows().unwrap(),
+            social.rows().unwrap(),
+            "the rows round-trip"
+        );
 
         let (fresh, _notes) = lab();
-        assert!(fresh.restore("not json").is_err());
-        let mut broken: serde_json::Value = serde_json::from_str(&json).unwrap();
-        broken["posts_seq"] = serde_json::json!(1);
-        assert!(fresh.restore(&broken.to_string()).is_err());
+        conn.execute("UPDATE \"social\" SET \"posts_seq\" = 1", [])
+            .unwrap();
+        assert!(fresh.load(&conn).is_err(), "two posts under counter 1");
         assert_eq!(fresh.board(&[], 50).total, 0, "a refusal changes nothing");
     }
 

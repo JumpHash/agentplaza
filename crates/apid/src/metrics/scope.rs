@@ -248,8 +248,10 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
     match kind {
         EntityKind::Node => match app.nodes.get(entity) {
             Some(node) => {
-                let host = node.machine["host"]
-                    .as_str()
+                let host = node
+                    .machine
+                    .host
+                    .as_deref()
                     .filter(|host| !host.is_empty())
                     .unwrap_or(node.name.as_str());
                 format!("{entity} · {host}")

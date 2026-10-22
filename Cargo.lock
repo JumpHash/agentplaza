@@ -709,6 +709,7 @@ name = "apz-proto"
 version = "0.1.0"
 dependencies = [
  "apz-os",
+ "apz-store",
  "apz-uds",
  "serde",
  "serde_json",
@@ -753,6 +754,7 @@ dependencies = [
 name = "apz-station"
 version = "0.1.0"
 dependencies = [
+ "apz-store",
  "serde",
  "serde_json",
 ]
