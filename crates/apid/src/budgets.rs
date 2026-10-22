@@ -561,7 +561,8 @@ impl Budgets {
         Ok(hold)
     }
 
-    fn release(&self, hold: &Hold, now_ms: u64) {
+    /// Releases a call's hold without charging it (the call failed).
+    pub fn release(&self, hold: &Hold, now_ms: u64) {
         let mut budgets = self.lock();
         if let Some(b) = budgets.get_mut(&(hold.owner_kind, hold.owner.clone())) {
             b.held = b.held.saturating_sub(hold.worst.in_unit(b.unit));

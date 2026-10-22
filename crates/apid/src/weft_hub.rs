@@ -430,7 +430,9 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
         if let Ok(detail) = app.weft.get(&format!("/changes/{change}"))
             && let Some(task) = detail["task"].as_str()
         {
-            if app
+            if crate::work_loop::owns(&app, task) {
+                crate::work_loop::landed(&app, task, &change);
+            } else if app
                 .plaza
                 .tasks
                 .find(task)
@@ -894,6 +896,11 @@ fn conflict_task(app: &App, repo: &str, step: &Value) {
          they can live together, and finish: the resolution is reviewed and re-checked like any change.",
         files.join(", ")
     );
+    // A task that runs in seats: its builder seat goes again with the clash (the session that wrote it has ended).
+    if crate::work_loop::owns(app, task) {
+        crate::work_loop::clashed(app, task, &prompt);
+        return;
+    }
     let lane = Some(apz_proto::wire::WorkLane {
         change: change.to_string(),
         repo: repo.to_string(),

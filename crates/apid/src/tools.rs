@@ -44,6 +44,7 @@ const ALWAYS: &[&str] = &[
     "plaza_board_post",
     "plaza_board_comment",
     "plaza_send_message",
+    "plaza_message_seat",
     "share_file",
     "plaza_get_file",
     "fetch_url",
@@ -164,6 +165,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_board_post"
         | "plaza_board_comment"
         | "plaza_send_message"
+        | "plaza_message_seat"
         | "plaza_agents"
         | "plaza_money"
         | "plaza_post_task"
@@ -933,6 +935,15 @@ fn host_call(
                 )
             }))
         }
+        "plaza_message_seat" => crate::work_loop::message_seat(
+            app,
+            agent.cid,
+            str_arg(input, "to")?,
+            str_arg(input, "text")?,
+            input.get("thread").and_then(Value::as_str),
+            input.get("subject").and_then(Value::as_str),
+            input.get("close").and_then(Value::as_bool).unwrap_or(false),
+        ),
         "plaza_verdict" => {
             let task = str_arg(input, "task")?;
             let pass = input
@@ -940,6 +951,10 @@ fn host_call(
                 .and_then(Value::as_bool)
                 .ok_or_else(|| "missing boolean `pass`".to_string())?;
             let notes = str_arg(input, "notes")?;
+            // A reviewer seat's verdict moves the task's seats on (work_loop.rs).
+            if let Some(reply) = crate::work_loop::on_verdict(app, agent.cid, task, pass, notes) {
+                return Ok(reply);
+            }
             app.work.verdict(app, task, work, pass, notes)
         }
         other if crate::skills::agent_tools::TOOLS.contains(&other) => {

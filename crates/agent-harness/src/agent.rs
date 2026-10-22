@@ -1362,9 +1362,8 @@ mod thread_store_tests {
     }
 }
 
-/// The start of a model result's error that means "held, ask again later": the work's budget or a limit is reached,
-/// or the plaza is held (STOP ALL). The turn waits instead of failing (Engine 0.5).
-pub const PAUSED: &str = "paused: ";
+/// The start of a model result's error that means "held, ask again later" (the hub's budget, a limit, STOP ALL).
+pub const PAUSED: &str = apz_proto::wire::MODEL_PAUSED;
 
 /// How long to wait before asking again after the `n`-th "paused" answer in a row: 2, 4, 8, 15, then 30 seconds.
 fn paused_wait(n: u32) -> Duration {

@@ -772,9 +772,11 @@ pub fn tick(app: &App) {
     if app.control.paused() || !app.weft.running() {
         return;
     }
-    // Tasks awaiting review with a sealed lane get a run.
+    // Tasks awaiting review with a sealed lane get a run, except the work loop's (their reviewer is a seat).
     for task in app.plaza.tasks.list() {
-        if task.state() == apz_plaza::tasks::TaskState::AwaitingReview.as_str() {
+        if task.state() == apz_plaza::tasks::TaskState::AwaitingReview.as_str()
+            && !crate::work_loop::owns(app, task.id())
+        {
             start(app, task.id());
         }
     }

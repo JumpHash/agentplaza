@@ -6,10 +6,12 @@
 //! GET   /v1/tasks/{id}/seats                                → [Seat]
 //! GET   /v1/tasks/{id}/threads                              → [Thread]
 //! GET   /v1/threads/{id}                                    → Thread
-//! GET   /v1/projects/{id}/budget                            → BudgetView
+//! GET   /v1/projects/{id}/budget                            → BudgetView, with `tasks`: its tasks' budgets
 //! PUT   /v1/projects/{id}/budget {unit, cap?, warn_at_pct?, monthly_cap?} → BudgetView
+//! GET   /v1/projects/{id}/budget/ledger[?limit=]            → [Entry], newest first
 //! GET   /v1/tasks/{id}/budget                               → BudgetView
 //! PUT   /v1/tasks/{id}/budget {unit, cap?}                  → BudgetView
+//! GET   /v1/tasks/{id}/budget/ledger[?limit=]               → [Entry], newest first
 //! GET   /v1/cards[?open=true&chat=]                         → [Card], newest first
 //! GET   /v1/cards/{id}                                      → Card
 //! POST  /v1/cards/{id} {choice, amount?}                    → Card (answered, and what it decides done)
@@ -27,7 +29,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::budgets::{Budget, OwnerKind, Unit};
-use crate::cards::{Card, Kind as CardKind, State as CardState};
 use crate::chats::{Author, MessageKind, Post};
 use crate::sessions::{Filter, State};
 use crate::state::App;
@@ -74,17 +75,25 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Read a thread").errors(&[404]))
         .get("/v1/projects/{id}/budget", |app, _, p| {
-            budget_view(app, OwnerKind::Project, p.get("id"))
+            project_budget_view(app, p.get("id"))
         })
         .doc(RouteDoc::new("Read a project's budget"))
         .route("PUT", "/v1/projects/{id}/budget", put_project_budget)
         .doc(RouteDoc::new("Set a project's budget").errors(&[400, 404]))
+        .get("/v1/projects/{id}/budget/ledger", |app, req, p| {
+            ledger_view(app, req, OwnerKind::Project, p.get("id"))
+        })
+        .doc(RouteDoc::new("Read a project budget's ledger").errors(&[500]))
         .get("/v1/tasks/{id}/budget", |app, _, p| {
             budget_view(app, OwnerKind::Task, p.get("id"))
         })
         .doc(RouteDoc::new("Read a task's budget"))
         .route("PUT", "/v1/tasks/{id}/budget", put_task_budget)
         .doc(RouteDoc::new("Set a task's budget").errors(&[400, 404]))
+        .get("/v1/tasks/{id}/budget/ledger", |app, req, p| {
+            ledger_view(app, req, OwnerKind::Task, p.get("id"))
+        })
+        .doc(RouteDoc::new("Read a task budget's ledger").errors(&[500]))
         .get("/v1/cards", |app, req, _| {
             let open = req
                 .query_param("open")
@@ -175,6 +184,40 @@ fn budget_view(app: &App, kind: OwnerKind, id: &str) -> Response {
             200,
             &json!({ "owner": id, "cap": null, "spent": 0, "unit": null }),
         ),
+    }
+}
+
+/// A project's budget, with its tasks' budgets.
+fn project_budget_view(app: &App, id: &str) -> Response {
+    let mut view = match app.budgets.get(OwnerKind::Project, id) {
+        Some(b) => budget_json(&b),
+        None => json!({ "owner": id, "cap": null, "spent": 0, "unit": null }),
+    };
+    view["tasks"] = app
+        .budgets
+        .of_project(id)
+        .iter()
+        .filter(|b| b.owner_kind == OwnerKind::Task)
+        .map(budget_json)
+        .collect();
+    Response::json(200, &view)
+}
+
+/// A budget's ledger (what was reserved, held, charged and released), newest first.
+fn ledger_view(app: &App, req: &Request, kind: OwnerKind, id: &str) -> Response {
+    let limit = req
+        .query_param("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200)
+        .min(1000);
+    let db = app.store.db(crate::store::PLAZA);
+    // A charge is queued as its call returns: what is queued now is in the ledger it reads.
+    let read = db
+        .flush()
+        .and_then(|_| db.read(|conn| crate::budgets::Budgets::ledger(conn, kind, id, limit)));
+    match read {
+        Ok(entries) => Response::json(200, &entries),
+        Err(e) => Response::error(500, &format!("the ledger cannot be read: {e}")),
     }
 }
 
@@ -383,12 +426,4 @@ fn edit_chat(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Some(chat) => Response::json(200, &chat),
         None => Response::error(404, &format!("no chat {id}")),
     }
-}
-
-/// Whether a card is a budget card the owner answered with a raise (for the tests).
-#[cfg(test)]
-pub fn raised(card: &Card) -> bool {
-    card.kind == CardKind::Budget
-        && card.state == CardState::Answered
-        && card.answer.as_deref() == Some("raise_to")
 }

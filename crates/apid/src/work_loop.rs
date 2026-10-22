@@ -11,20 +11,23 @@
 //! When the VM says hello ([`on_hello`]) the session runs: its step's work item (the task's goal and acceptance, what a
 //! review sent back, the messages waiting on its seat) goes out on the VM's lane. When the step's work item ends
 //! ([`on_work_end`]) or the reviewer gives its verdict ([`on_verdict`]), the seats move on (build → review → done, or
-//! back to the builder with the findings), the session writes its handover and ends, and its VM is retired. The task's
-//! budget is released when it ends.
+//! back to the builder with the findings), the session writes its handover and ends, and its VM is retired. A code
+//! task's builder seals its Weft lane when it finishes, so the reviewer reviews a fixed revision; a pass joins the
+//! project's landing queue and the task is done when its change lands ([`landed`]); a clash on landing sends it back to
+//! the builder ([`clashed`]). The task's budget is released when it ends.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, PoisonError};
 
 use apz_plaza::tasks::FinishOutcome;
 use apz_proto::wire::{WorkKind, WorkStatus};
 
-use crate::budgets::{OwnerKind, Short, Unit};
+use crate::budgets::{Amount, Notice, OwnerKind, Short, Unit};
 use crate::cards::{self, NewCard};
 use crate::chats::{Author, MessageKind, Post};
 use crate::scheduler::Origin;
 use crate::seats::{self, Next, Seat};
-use crate::sessions::{Kind, NewSession, Session, State};
+use crate::sessions::{Kind, NewSession, PausedBy, Session, State};
 use crate::state::App;
 
 /// How long a session's VM may take from its start to its hello before the session fails.
@@ -34,9 +37,18 @@ pub const DEFAULT_RESERVE_USD: u64 = 2_000_000;
 pub const DEFAULT_RESERVE_TOKENS: u64 = 2_000_000;
 /// The engine a session runs on until recipes choose (phase 4): the plaza's own harness.
 pub const ENGINE: &str = "harness";
+/// The longest answer a call that names no cap may get, for its budget hold: the largest default a provider answers
+/// with (Anthropic's 32 000 tokens; the others' are lower).
+pub const UNCAPPED_ANSWER_TOKENS: u64 = 32_000;
 
 fn now() -> u64 {
     apz_plaza::now_ms()
+}
+
+/// Whether the work loop runs `task` (it has seats): the scheduler's old paths (the bench, the reviewer pool, the
+/// review graph) leave it alone.
+pub fn owns(app: &App, task: &str) -> bool {
+    !app.seats.of_task(task).is_empty()
 }
 
 /// One tick of the loop.
@@ -134,8 +146,9 @@ fn provider_of(model: &str) -> &str {
     model.split('/').next().unwrap_or(model)
 }
 
-/// The model for `seat`: the first candidate; for a `differ` seat the first that no other seat of the task used,
-/// preferring another provider. None when a `differ` seat has no model left.
+/// The model for `seat`: the first candidate; for a `differ` seat the project's own model for the role when no other
+/// seat of the task used it, else the first candidate no other seat used, preferring another provider. None when a
+/// `differ` seat has no model left.
 pub fn pick_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
     let all = candidates(app, project, &seat.role);
     if seat.model_policy == seats::ModelPolicy::Any {
@@ -146,6 +159,15 @@ pub fn pick_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
         .models_to_avoid(&seat.task, &seat.name)
         .into_iter()
         .collect();
+    if let Some(chosen) = app
+        .project_settings
+        .get(project)
+        .role_models
+        .get(&seat.role)
+        .filter(|m| !m.is_empty() && !avoid.contains(*m))
+    {
+        return Some(chosen.clone());
+    }
     let avoid_providers: HashSet<&str> = avoid.iter().map(|m| provider_of(m)).collect();
     let free: Vec<&String> = all.iter().filter(|m| !avoid.contains(*m)).collect();
     free.iter()
@@ -248,11 +270,17 @@ fn step_prompt(app: &App, session: &Session) -> String {
     }
     match seat {
         "reviewer" => {
-            let builder = app.seats.get(task_id, "builder").and_then(|s| s.session);
-            if let Some(handover) = builder
-                .and_then(|id| app.sessions.get(&id))
-                .and_then(|s| s.handover)
-            {
+            // The builder's newest session (its seat let go of it when its step ended).
+            let builder = app
+                .sessions
+                .list(&crate::sessions::Filter {
+                    task: Some(task_id.clone()),
+                    ..Default::default()
+                })
+                .into_iter()
+                .filter(|s| s.seat.as_deref() == Some("builder"))
+                .max_by_key(|s| s.created_ms);
+            if let Some(handover) = builder.and_then(|s| s.handover) {
                 prompt.push_str(&format!("\nThe builder's handover:\n{handover}\n"));
             }
             prompt.push_str(
@@ -337,6 +365,13 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
     if session.work != Some(work) {
         return false;
     }
+    // A session that is already ending (its VM being retired) has nothing left to move on.
+    if !matches!(
+        session.state,
+        State::Running | State::Paused | State::Compacting
+    ) {
+        return true;
+    }
     let now = now();
     let (Some(task), Some(seat)) = (session.task.clone(), session.seat.clone()) else {
         return false;
@@ -359,6 +394,8 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
         let passed = status == WorkStatus::Done;
         let crashed = status == WorkStatus::Stopped;
         if passed && let Some(t) = app.plaza.tasks.find(&task) {
+            // The builder's lane is sealed while its VM still holds the key: the reviewer reviews that revision.
+            crate::weft_hub::seal(app, &task, cid, summary);
             let _ = t.await_review(Some(summary.to_string()));
         }
         app.seats.ended(&task, &seat, passed, crashed, summary, now)
@@ -418,6 +455,16 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
             );
         }
         Next::Done => {
+            // A code task lands first: its change joins the project's landing queue, and the landing finishes it.
+            if join_landing_queue(app, task_id) {
+                notice(
+                    app,
+                    &chat,
+                    &format!("Task {task_id} passed review: its change lands next."),
+                    now,
+                );
+                return;
+            }
             if let Some(t) = &task {
                 let _ = t.finish(FinishOutcome::Done, Some("passed review".into()));
             }
@@ -446,6 +493,59 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
         .publish("task", &serde_json::json!({ "id": task_id }));
 }
 
+/// Puts `task`'s Weft lane on its repo's landing queue (as a passed review graph does). False when the task has no
+/// lane, or Weft does not take it: the task is then done on its review.
+fn join_landing_queue(app: &App, task: &str) -> bool {
+    let Some(change) = app.weft.lane_of(task) else {
+        return false;
+    };
+    let Ok(detail) = app.weft.get(&format!("/changes/{change}")) else {
+        return false;
+    };
+    let rounds = detail["rounds"].as_array().map_or(0, Vec::len);
+    match app.weft.hub(
+        "queue.add",
+        serde_json::json!({ "repo": detail["repo"], "ref": detail["ref"], "change": change, "n": rounds }),
+    ) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("apid: {change} did not join its landing queue: {e}");
+            false
+        }
+    }
+}
+
+/// `task`'s change landed: the task is done, its sessions end, its seats close and its budget is released.
+pub fn landed(app: &App, task: &str, change: &str) {
+    let now = now();
+    if let Some(t) = app.plaza.tasks.find(task) {
+        let _ = t.finish(FinishOutcome::Done, Some(format!("{change} landed")));
+    }
+    close_task(app, task, now);
+    let project = app
+        .plaza
+        .tasks
+        .find(task)
+        .and_then(|t| t.project().map(str::to_string))
+        .unwrap_or_default();
+    notice(
+        app,
+        &task_chat(app, task, &project, now),
+        &format!("Task {task} is done: {change} landed."),
+        now,
+    );
+    app.bus.publish("task", &serde_json::json!({ "id": task }));
+}
+
+/// `task`'s change clashed with main on landing: the builder seat goes again with what `prompt` says, as a review that
+/// sent it back would.
+pub fn clashed(app: &App, task: &str, prompt: &str) {
+    let now = now();
+    if let Some(next) = app.seats.ended(task, "reviewer", false, false, prompt, now) {
+        apply(app, task, next, now);
+    }
+}
+
 fn close_task(app: &App, task: &str, now: u64) {
     for s in app.sessions.list(&crate::sessions::Filter {
         task: Some(task.to_string()),
@@ -456,6 +556,9 @@ fn close_task(app: &App, task: &str, now: u64) {
     }
     app.seats.close(task);
     app.budgets.end_task(task, now);
+    for thread in app.threads.of_task(task) {
+        app.threads.close(&thread.id, now);
+    }
 }
 
 /// Ends a session with its handover and retires its VM.
@@ -521,6 +624,7 @@ pub fn on_gone(app: &App, cid: u64) {
 /// Retires a session's VM: its lane is cleared and noded stops it.
 fn retire(app: &App, cid: u64) {
     app.work.clear(cid);
+    unread_back_to_seats(app, cid);
     if let Some(agent) = app.agents.get(cid)
         && let (Some(run), Some(vm)) = (agent.run.clone(), agent.vm)
     {
@@ -739,6 +843,16 @@ pub fn resume_budget(app: &App, kind: OwnerKind, owner: &str) {
         }
     }
     let _ = app.budgets.set_paused(kind, owner, false, now);
+    // The cards that asked about it are moot now.
+    let mut subjects = vec![subject_of(kind, owner)];
+    if kind == OwnerKind::Project {
+        subjects.push(format!("monthly:{owner}"));
+    }
+    for subject in subjects {
+        for card in app.cards.withdraw(cards::Kind::Budget, &subject, now) {
+            app.bus.publish("card", &card);
+        }
+    }
 }
 
 /// Does what an answered card decides; returns it in words.
@@ -1054,4 +1168,323 @@ pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> boo
         );
     }
     true
+}
+
+// ── model calls against budgets (Engine 0.5) ─────────────────────────────────────────────────────────────────────
+
+/// A session's model call held on its budget: given by [`before_call`], returned to [`after_call`].
+pub struct CallHold {
+    hold: crate::budgets::Hold,
+    session: String,
+    model: String,
+}
+
+/// What `input` and `output` tokens of `model` cost, in both units (micro-dollars at the model's price, and tokens).
+fn call_cost(app: &App, model: &str, tokens: crate::prices::Tokens) -> Amount {
+    let usd = app
+        .prices
+        .lookup(model, &app.settings.get().prices)
+        .map_or(0.0, |priced| {
+            crate::prices::estimate(&priced.price, &tokens)
+        });
+    Amount::of(
+        (usd * 1_000_000.0).ceil() as u64,
+        tokens.input + tokens.output + tokens.cache_read + tokens.cache_write,
+    )
+}
+
+/// Before a model call of `cid`: when `cid` is a session's VM, the call's worst case (the request's size and its answer's
+/// cap, at the model's price) is held on the session's task, or on its project for a long-lived session. A budget that
+/// cannot take it pauses the session and asks the owner (one card per budget); the `Err` is the harness's
+/// `paused:` answer ([`apz_proto::wire::MODEL_PAUSED`]), which makes the turn wait and ask again. `Ok(None)`: not a
+/// session's call, nothing held.
+pub fn before_call(
+    app: &App,
+    cid: u64,
+    model: &str,
+    request: &apz_proto::chat::ChatRequest,
+) -> Result<Option<CallHold>, String> {
+    let Some(session) = app.sessions.by_cid(cid) else {
+        return Ok(None);
+    };
+    let now = now();
+    let size = serde_json::to_string(&request.messages).map_or(0, |t| t.len())
+        + serde_json::to_string(&request.tools).map_or(0, |t| t.len());
+    // About three bytes a token, rounded up: the hold is a ceiling, and the settle charges what the call really cost.
+    let worst = call_cost(
+        app,
+        model,
+        crate::prices::Tokens {
+            input: (size as u64).div_ceil(3),
+            output: match request.max_tokens {
+                0 => UNCAPPED_ANSWER_TOKENS,
+                cap => u64::from(cap),
+            },
+            cache_read: 0,
+            cache_write: 0,
+        },
+    );
+    match app.budgets.hold(
+        session.task.as_deref(),
+        &session.project,
+        worst,
+        Some(&session.id),
+        Some(model),
+        now,
+    ) {
+        Ok(hold) => {
+            if session.state == State::Paused && session.paused_by == Some(PausedBy::Budget) {
+                let _ = app.sessions.set_state(&session.id, State::Running, now);
+                app.bus.publish("session", &app.sessions.get(&session.id));
+            }
+            Ok(Some(CallHold {
+                hold,
+                session: session.id,
+                model: model.to_string(),
+            }))
+        }
+        Err(short) => {
+            if session.state != State::Paused {
+                let _ = app.sessions.pause(&session.id, PausedBy::Budget, now);
+                app.bus.publish("session", &app.sessions.get(&session.id));
+            }
+            ask_budget(app, &short, session.task.as_deref(), &session.project, now);
+            Err(format!(
+                "{}{}",
+                apz_proto::wire::MODEL_PAUSED,
+                short_sentence(&short)
+            ))
+        }
+    }
+}
+
+/// After the call: what it really cost is charged (and the hold released), its usage is added to the session, and a
+/// budget it took past its warning share says so in the task's chat. A failed call (`usage` none) charges nothing.
+pub fn after_call(app: &App, cid: u64, held: CallHold, usage: Option<&apz_proto::chat::Usage>) {
+    let now = now();
+    let Some(usage) = usage else {
+        app.budgets.release(&held.hold, now);
+        return;
+    };
+    let tokens = crate::prices::Tokens {
+        input: usage.input_tokens,
+        output: usage.output_tokens,
+        cache_read: usage.cache_read_tokens,
+        cache_write: usage.cache_write_tokens,
+    };
+    let actual = call_cost(app, &held.model, tokens);
+    let _ = app.sessions.add_usage(
+        cid,
+        &crate::sessions::Usage {
+            tokens_in: usage.input_tokens,
+            tokens_out: usage.output_tokens,
+            tokens_cached: usage.cache_read_tokens,
+            cost_micros: actual.micros,
+            model_calls: 1,
+            tool_calls: 0,
+        },
+    );
+    let notices = app.budgets.settle(
+        &held.hold,
+        actual,
+        Some(&held.session),
+        Some(&held.model),
+        now,
+    );
+    for Notice::Warn {
+        owner_kind,
+        owner,
+        spent,
+        cap,
+    } in notices
+    {
+        let unit = app
+            .budgets
+            .get(owner_kind, &owner)
+            .map_or(Unit::Usd, |b| b.unit);
+        let (task, project) = match owner_kind {
+            OwnerKind::Task => (
+                Some(owner.clone()),
+                app.plaza
+                    .tasks
+                    .find(&owner)
+                    .and_then(|t| t.project().map(str::to_string))
+                    .unwrap_or_default(),
+            ),
+            OwnerKind::Project => (None, owner.clone()),
+        };
+        let chat = match &task {
+            Some(task) => task_chat(app, task, &project, now),
+            None => app.chats.main(now).id,
+        };
+        notice(
+            app,
+            &chat,
+            &format!(
+                "{owner_kind:?} {owner} has spent {} of its {} budget.",
+                amount(spent, unit),
+                amount(cap, unit)
+            ),
+            now,
+        );
+    }
+}
+
+/// Why a call was held, in a sentence for the harness's log.
+fn short_sentence(short: &Short) -> String {
+    match short {
+        Short::Cap {
+            owner_kind,
+            owner,
+            unit,
+            needed,
+            left,
+        } => format!(
+            "{owner_kind:?} {owner} has {} left and the call may cost {}; the owner was asked to raise it",
+            amount(*left, *unit),
+            amount(*needed, *unit)
+        ),
+        Short::Monthly { project, .. } => {
+            format!("project {project} reached its monthly budget; the owner was asked to raise it")
+        }
+        Short::Paused { owner_kind, owner } => {
+            format!("{owner_kind:?} {owner} is paused at its budget")
+        }
+    }
+}
+
+// ── seat messages (Engine 0.8) ───────────────────────────────────────────────────────────────────────────────────
+
+/// A seat message handed to a running session as a work item: (the VM, the thread, the message's seq, the session).
+type Delivery = (u64, String, u64, String);
+
+/// The seat messages handed to running sessions and not read yet, by work item.
+static DELIVERIES: Mutex<Option<HashMap<u64, Delivery>>> = Mutex::new(None);
+
+fn deliveries<R>(f: impl FnOnce(&mut HashMap<u64, Delivery>) -> R) -> R {
+    let mut guard = DELIVERIES.lock().unwrap_or_else(PoisonError::into_inner);
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// `plaza_message_seat`: the session of `cid` sends `text` to a seat (`reviewer`, `builder`: a seat of its own task;
+/// `T12/reviewer`: another task's; `planner`: its project's planner). The session filling the seat now gets it as a
+/// work item; with none, it waits on the seat and is the first thing the seat's next session reads. `thread` continues
+/// a thread; a new one gets `subject`. A thread that loops (more than [`crate::threads::LOOP_LIMIT`] messages with
+/// no output) is reported to the planner. Returns what happened, for the tool's answer.
+pub fn message_seat(
+    app: &App,
+    cid: u64,
+    to: &str,
+    text: &str,
+    thread: Option<&str>,
+    subject: Option<&str>,
+    close: bool,
+) -> Result<String, String> {
+    let session = app.sessions.by_cid(cid).ok_or(
+        "only a session's seat sends seat messages: use plaza_send_message to reach an agent",
+    )?;
+    let from_seat = session.seat.clone().unwrap_or_else(|| session.role.clone());
+    let from = match &session.task {
+        Some(task) => format!("{task}/{from_seat}"),
+        None => from_seat.clone(),
+    };
+    let now = now();
+    match crate::threads::address(to, session.task.as_deref()).ok_or_else(|| {
+        format!("`{to}` is not a seat: write `reviewer`, `T12/builder` or `planner`")
+    })? {
+        crate::threads::Address::Planner => {
+            to_planner(app, &session.project, &format!("[from {from}] {text}"));
+            Ok("sent to the project's planner".into())
+        }
+        crate::threads::Address::Seat { task, seat } => {
+            let target = app
+                .seats
+                .get(&task, &seat)
+                .ok_or_else(|| format!("task {task} has no seat {seat}"))?;
+            let sent = app.threads.send(
+                &task,
+                thread,
+                &from,
+                Some(&session.id),
+                &seat,
+                text,
+                subject,
+                now,
+            )?;
+            // An answer that settles the question closes its thread (the loop count starts again).
+            if close {
+                app.threads.close(&sent.thread, now);
+            }
+            if sent.looped {
+                to_planner(
+                    app,
+                    &session.project,
+                    &format!(
+                        "Thread {} of task {task} looped: more than {} messages between its seats without an output. \
+                         Read it (GET /v1/threads/{}) and settle the question or stop the task.",
+                        sent.thread,
+                        crate::threads::LOOP_LIMIT,
+                        sent.thread
+                    ),
+                );
+            }
+            let running = target
+                .session
+                .and_then(|id| app.sessions.get(&id))
+                .filter(|s| s.state == State::Running)
+                .and_then(|s| s.cid.map(|cid| (s.id, cid)));
+            match running {
+                Some((id, to_cid)) => {
+                    let work = app.work.enqueue(
+                        app,
+                        to_cid,
+                        WorkKind::Message,
+                        format!("task-{task}"),
+                        format!(
+                            "[thread {}] from {from}: {text}\n(Answer with plaza_message_seat to \"{from}\", thread \"{}\".)",
+                            sent.thread, sent.thread
+                        ),
+                        Origin {
+                            task: Some(task.clone()),
+                            ..Origin::default()
+                        },
+                    );
+                    app.threads.pend(&sent.thread, sent.message.seq);
+                    deliveries(|d| {
+                        d.insert(work, (to_cid, sent.thread.clone(), sent.message.seq, id));
+                    });
+                    Ok(format!(
+                        "sent to {task}/{seat} in thread {}: its session reads it next",
+                        sent.thread
+                    ))
+                }
+                None => Ok(format!(
+                    "sent in thread {}: it waits for the next session of {task}/{seat}",
+                    sent.thread
+                )),
+            }
+        }
+    }
+}
+
+/// A work item ended: a seat message it carried was read.
+pub fn on_item_done(app: &App, work: u64) {
+    if let Some((_, thread, seq, session)) = deliveries(|d| d.remove(&work)) {
+        app.threads.delivered(&thread, seq, &session, now());
+    }
+}
+
+/// The VM of `cid` is retired: the seat messages handed to it and not read wait on their seats again.
+fn unread_back_to_seats(app: &App, cid: u64) {
+    let unread: Vec<Delivery> = deliveries(|d| {
+        let works: Vec<u64> = d
+            .iter()
+            .filter(|(_, (to, ..))| *to == cid)
+            .map(|(work, _)| *work)
+            .collect();
+        works.into_iter().filter_map(|w| d.remove(&w)).collect()
+    });
+    for (_, thread, seq, _) in unread {
+        app.threads.unpend(&thread, seq);
+    }
 }

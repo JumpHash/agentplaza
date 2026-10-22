@@ -88,6 +88,17 @@ impl Hub {
         noded: Option<u16>,
         roles: Option<&Value>,
     ) -> Hub {
+        Hub::start_with_env(scratch, gateway, noded, roles, &[])
+    }
+
+    /// [`Hub::start_with_roles`] with environment variables of its own (`WEFT_BIN` to a missing file: no Weft).
+    pub fn start_with_env(
+        scratch: &Scratch,
+        gateway: Option<u16>,
+        noded: Option<u16>,
+        roles: Option<&Value>,
+        env: &[(&str, &str)],
+    ) -> Hub {
         (1..=ATTEMPTS)
             .find_map(|attempt| {
                 boot(
@@ -95,6 +106,7 @@ impl Hub {
                     gateway,
                     noded,
                     roles,
+                    env,
                 )
             })
             .expect("a scratch hub comes up")
@@ -230,6 +242,7 @@ fn boot(
     gateway: Option<u16>,
     noded: Option<u16>,
     roles: Option<&Value>,
+    env: &[(&str, &str)],
 ) -> Option<Hub> {
     let port = free_port();
     let state = dir.join("state");
@@ -267,6 +280,7 @@ fn boot(
         .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
         .env("XDG_DATA_HOME", dir.join("xdg-data"))
         .env("APZ_SHARE", dir.join("no-share"))
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

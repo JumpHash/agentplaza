@@ -433,12 +433,17 @@ impl Laws {
         // message laws then see an empty recipient instead of being skipped.
         if matches!(
             tool,
-            "plaza_send_message" | "plaza_board_post" | "plaza_board_comment"
+            "plaza_send_message"
+                | "plaza_message_seat"
+                | "plaza_board_post"
+                | "plaza_board_comment"
         ) {
+            // A seat message's recipient is its seat address (`T12/reviewer`, `planner`).
             let to = input
                 .get("to_cid")
                 .and_then(Json::as_u64)
                 .map(|n| n.to_string())
+                .or_else(|| input.get("to").and_then(Json::as_str).map(str::to_string))
                 .unwrap_or_default();
             let peer = Entity {
                 ty: "Agent".into(),

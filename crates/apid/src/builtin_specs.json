@@ -1194,5 +1194,37 @@
       ],
       "additionalProperties": false
     }
+  },
+  "plaza_message_seat": {
+    "description": "Send a message to a seat, not to an agent: `reviewer` or `builder` (a seat of your own task), `T12/reviewer` (a seat of another task), or `planner` (your project's planner). The session filling the seat now reads it next; with none, it waits and is the first thing the seat's next session reads. To answer a message, send to the seat it came from with its `thread`. Messages that go back and forth without either seat producing an output are reported to the planner.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "string",
+          "description": "The seat: `reviewer`, `T12/builder`, or `planner`."
+        },
+        "text": {
+          "type": "string"
+        },
+        "thread": {
+          "type": "string",
+          "description": "The thread a message you answer came in (`th3`)."
+        },
+        "subject": {
+          "type": "string",
+          "description": "What a new thread is about."
+        },
+        "close": {
+          "type": "boolean",
+          "description": "Your message settles the thread's question: it closes."
+        }
+      },
+      "required": [
+        "to",
+        "text"
+      ],
+      "additionalProperties": false
+    }
   }
 }

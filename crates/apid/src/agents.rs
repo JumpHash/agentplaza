@@ -686,6 +686,8 @@ pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Optio
     };
     app.agents.upsert(agent.clone());
     app.bus.publish("agent", &agent);
+    // A session's VM: its step's work goes on its lane now.
+    crate::work_loop::on_hello(app, cid);
     // Work queued while the agent was asleep (or offline) goes out now that it is idle.
     app.work.dispatch_idle(app);
     Some(profile(app, &agent))
@@ -720,6 +722,8 @@ pub fn gone(app: &App, cid: u64, reason: &str) {
     eprintln!("apid: agent {cid} offline: {reason}");
     // The roster lock is released above; the scheduler may take its own locks.
     app.work.agent_gone(app, cid);
+    // A session's VM that went away: the session fails and its seat goes again.
+    crate::work_loop::on_gone(app, cid);
 }
 
 /// Every 10 s: reconcile the roster with the hub's sessions and noded's runs.

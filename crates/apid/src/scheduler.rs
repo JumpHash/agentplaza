@@ -18,9 +18,8 @@ use apz_proto::wire::{HostMessage, WorkKind, WorkStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::agents::{Agent, Status, connected_agent};
+use crate::agents::{Agent, Status};
 use crate::approvals::{Approval, State as ApprovalState, Store as ApprovalStore};
-use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
 /// The role that verifies done tasks before they pay.
@@ -154,15 +153,6 @@ impl Lanes {
                 .chain(lane.queue.iter())
                 .any(|item| item.id == work)
                 .then_some(*cid)
-        })
-    }
-
-    fn holds_task(&self, task: &str) -> bool {
-        self.lanes.values().any(|lane| {
-            lane.current
-                .iter()
-                .chain(lane.queue.iter())
-                .any(|item| item.origin.task.as_deref() == Some(task))
         })
     }
 
@@ -328,7 +318,16 @@ impl Queues {
             &json!({ "cid": cid, "work": work, "state": "ended", "status": state }),
         );
         crate::conversations::work_ended(app, &item, state, summary);
-        if let Some(task) = item.origin.task.as_deref() {
+        // A chat item (thread `chat:<id>`): its answer goes into the chat; a seat message it carried was read.
+        crate::work_loop::on_chat_work_end(app, cid, &item.thread, summary);
+        crate::work_loop::on_item_done(app, work);
+        // A session's step: the work loop moves the task's seats on and ends the session, whose VM it retires.
+        if crate::work_loop::on_work_end(app, cid, work, status, summary) {
+            return;
+        }
+        if let Some(task) = item.origin.task.as_deref()
+            && !crate::work_loop::owns(app, task)
+        {
             // A worker's done is a claim: the task waits for a reviewer's verdict, and its
             // escrow stays held until then (see `assign_reviews`).
             let waiting = matches!(status, WorkStatus::Done)
@@ -553,7 +552,9 @@ impl Queues {
                 &json!({ "cid": cid, "work": item.id, "state": "ended", "status": "failed" }),
             );
             crate::conversations::work_ended(app, &item, "failed", "agent went offline");
-            if let Some(task) = item.origin.task.as_deref() {
+            if let Some(task) = item.origin.task.as_deref()
+                && !crate::work_loop::owns(app, task)
+            {
                 settle_task(app, task, WorkStatus::Failed, "agent went offline");
             }
             self.review_lost(app, item.id, "reviewer went offline");
@@ -602,6 +603,10 @@ impl Queues {
                 continue;
             };
             let id = view.id.to_string();
+            // A task the work loop runs is reviewed by its reviewer seat.
+            if crate::work_loop::owns(app, &id) {
+                continue;
+            }
             // A task whose lane is sealed in Weft is reviewed by the review graph (review_graph::tick).
             if crate::review_graph::handles(app, &id) {
                 continue;
@@ -1030,7 +1035,7 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
 
 /// Puts a task back in the queue when the owner takes the workstation its worker was using (the lease is released
 /// with reason `owner_takeover`, takeover.rs): the task is `open` again with `reason` as its note, the worker's work
-/// on it is cancelled, and `assign_tasks` gives it to an idle worker of its role. A task that is not claimed (it
+/// on it is cancelled, and the work loop runs it again. A task that is not claimed (it
 /// ended, or it waits for a review) is left alone, and the error says so.
 pub fn requeue_task(app: &App, task: &str, reason: &str) -> Result<(), String> {
     let record = app
@@ -1208,7 +1213,8 @@ pub fn spawn(app: Arc<App>) {
             loop {
                 // While STOP ALL holds the plaza, nothing new starts; usage still drains.
                 if !app.control.paused() {
-                    assign_tasks(&app);
+                    // Tasks run as sessions filling seats (work_loop.rs).
+                    crate::work_loop::tick(&app);
                     app.work.assign_reviews(&app);
                     crate::review_graph::tick(&app);
                     crate::weft_hub::land_queues(&app);
@@ -1230,66 +1236,6 @@ pub fn spawn(app: Arc<App>) {
         });
     if let Err(err) = spawned {
         eprintln!("scheduler: cannot start: {err}");
-    }
-}
-
-/// Gives each ready task (open, and every task it runs after done) with no work behind it to an idle worker of
-/// its role on its project. A task that waits on its links stays open; the pass after its last link is done hands
-/// it out. A task outside projects, or of a paused or ended project, is not handed out (`membership`).
-fn assign_tasks(app: &App) {
-    for task in app.plaza.tasks.list() {
-        if !task.is_ready() {
-            continue;
-        }
-        let Some(project) = task.project().map(str::to_string) else {
-            continue;
-        };
-        if crate::membership::project_state(app, &project)
-            != crate::membership::ProjectState::Active
-        {
-            continue;
-        }
-        let busy = app.work.locked().holds_task(task.id());
-        if busy {
-            continue;
-        }
-        let members = app.members.members(&project);
-        let role = task.role().map(str::to_string);
-        // A model agent (a promoted model, no VM) takes no task, and an agent on a stopped node is leaving it:
-        // a new task goes to one that can start on it now.
-        let worker = app
-            .agents
-            .select(|a| {
-                (a.status == Status::Idle
-                    && a.kind != "model"
-                    && tier_of(&a.role) == Tier::Worker
-                    && members.contains(&a.cid)
-                    && role.as_deref().is_none_or(|r| a.role == r))
-                .then_some(a.cid)
-            })
-            .into_iter()
-            .find(|&cid| !crate::mover::holds(app, cid))
-            .and_then(|cid| app.agents.get(cid));
-        let Some(worker) = worker else {
-            continue;
-        };
-        if task.claim(&connected_agent(&worker)).is_err() {
-            continue;
-        }
-        let prompt = match task.acceptance() {
-            Some(acceptance) => format!("{}\n\nAcceptance: {acceptance}", task.goal()),
-            None => task.goal().to_string(),
-        };
-        // The task's lane in Weft: the worker's files are checked out from it and snapshotted each turn.
-        let (prompt, origin) = crate::weft_hub::task_work(app, &task, worker.cid, prompt);
-        app.work.enqueue(
-            app,
-            worker.cid,
-            WorkKind::Task,
-            format!("task-{}", task.id()),
-            prompt,
-            origin,
-        );
     }
 }
 
@@ -1715,15 +1661,14 @@ mod tests {
     }
 
     #[test]
-    fn drain_takes_flight_then_queue_and_task_is_held_until_then() {
+    fn drain_takes_the_item_in_flight_then_the_queue() {
         let mut lanes = Lanes::default();
         lanes.push(item(1, 7, Some("t1")));
         lanes.push(item(2, 7, None));
         lanes.start_next(7, 0);
-        assert!(lanes.holds_task("t1"));
         let ids: Vec<u64> = lanes.drain(7).into_iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![1, 2]);
-        assert!(!lanes.holds_task("t1"));
+        assert!(lanes.current(7).is_none());
     }
 
     #[test]

@@ -10,7 +10,7 @@
 //!
 //! The records live in memory; the hub's saver keeps them in `plaza.db` (tables `thread`, `thread_messages`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
@@ -77,6 +77,9 @@ pub struct Sent {
 struct Inner {
     next: u64,
     threads: BTreeMap<String, Thread>,
+    /// Messages handed to a running session (as a work item) that it has not read yet, by (thread, seq): they wait
+    /// again if that session ends first. Not stored: after a restart they wait again.
+    pending: BTreeSet<(String, u64)>,
 }
 
 /// Every thread.
@@ -202,6 +205,7 @@ impl Threads {
                 t.messages
                     .iter()
                     .filter(|m| m.to_seat == seat && m.delivered_session.is_none())
+                    .filter(|m| !inner.pending.contains(&(t.id.clone(), m.seq)))
                     .map(move |m| (t.id.clone(), m.clone()))
             })
             .collect();
@@ -209,9 +213,21 @@ impl Threads {
         out
     }
 
-    /// Records that message `seq` of `thread` was given to `session`.
+    /// Message `seq` of `thread` was handed to a running session that has not read it yet: it does not wait on its seat
+    /// meanwhile.
+    pub fn pend(&self, thread: &str, seq: u64) {
+        self.lock().pending.insert((thread.to_string(), seq));
+    }
+
+    /// The session message `seq` of `thread` was handed to ended before reading it: it waits on its seat again.
+    pub fn unpend(&self, thread: &str, seq: u64) {
+        self.lock().pending.remove(&(thread.to_string(), seq));
+    }
+
+    /// Records that message `seq` of `thread` was given to `session` (and read).
     pub fn delivered(&self, thread: &str, seq: u64, session: &str, now_ms: u64) {
         let mut inner = self.lock();
+        inner.pending.remove(&(thread.to_string(), seq));
         if let Some(m) = inner
             .threads
             .get_mut(thread)

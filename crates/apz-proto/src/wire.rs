@@ -41,6 +41,10 @@ pub const WELCOME_ECHO: &str = "plaza-orchestrator";
 /// The longest line either side accepts (model requests carry history).
 pub const MAX_LINE_BYTES: usize = 8 << 20;
 
+/// The start of a model result's error that means "held, ask again later": the work's budget or a limit is reached,
+/// or the plaza is held (STOP ALL). The harness's turn waits and asks again instead of failing (Engine 0.5).
+pub const MODEL_PAUSED: &str = "paused: ";
+
 /// The longest tool output the guest reports; longer output is cut head+tail.
 pub const MAX_TOOL_OUTPUT: usize = 64 << 10;
 

@@ -726,10 +726,15 @@ fn model_call(
 ) -> HostMessage {
     // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent on the bench, or on
     // a paused project, does not think either (see `membership`).
+    // A held call answers `paused:`, so the harness's turn waits and asks again instead of failing.
     let held = if app.control.paused() {
-        Some("the plaza is held (STOP ALL); waiting for the owner to resume".to_string())
+        Some(format!(
+            "{}the plaza is held (STOP ALL); waiting for the owner to resume",
+            apz_proto::wire::MODEL_PAUSED
+        ))
     } else {
         crate::membership::held(app, agent)
+            .map(|why| format!("{}{why}", apz_proto::wire::MODEL_PAUSED))
     };
     if let Some(e) = held {
         app.transcripts.record(
@@ -780,6 +785,26 @@ fn model_call(
         request_summary(&model, &request.messages, &tool_names),
     );
 
+    // A session's call is held on its budget first; one that does not fit pauses the session (work_loop.rs).
+    let budget_hold = match crate::work_loop::before_call(app, cid, &model, &request) {
+        Ok(held) => held,
+        Err(paused) => {
+            app.transcripts.record(
+                &app.bus,
+                cid,
+                work,
+                crate::transcript::Entry::Error {
+                    message: paused.clone(),
+                },
+            );
+            return HostMessage::ModelResult {
+                req,
+                ok: false,
+                response: None,
+                error: Some(paused),
+            };
+        }
+    };
     let gateway = app.providers.gateway();
     let caller = Caller::Agent {
         cid,
@@ -805,6 +830,9 @@ fn model_call(
     );
     let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     collect::agent_state(app, cid, "tools");
+    if let Some(held) = budget_hold {
+        crate::work_loop::after_call(app, cid, held, result.as_ref().ok().map(|r| &r.usage));
+    }
     match result {
         Ok(resp) => {
             let answer = crate::transcript::Entry::ModelResponse {
