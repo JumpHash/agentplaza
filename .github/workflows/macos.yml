@@ -186,10 +186,6 @@ jobs:
           path: target/guest/aarch64
           key: ${{ steps.guest-key.outputs.key }}
           enableCrossOsArchive: true
-      - name: The relay binaries (both architectures, from the relay job)
-        if: inputs.package
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with: { path: relay, key: "mcp-relay-x86_64-aarch64-${{ github.sha }}", fail-on-cache-miss: true }
       - name: The web console (from the console job)
         if: inputs.package
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -198,7 +194,6 @@ jobs:
         if: inputs.package
         env:
           # A hand run (guest.yml did not fill the cache) may go without the guest.
-          APZ_RELAY_DIR: relay
           APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_NOTARY_PROFILE: ${{ secrets.APPLE_NOTARY_PROFILE }}

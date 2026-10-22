@@ -176,6 +176,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.plaza.social.load(conn),
         },
         // batch C5
+        Component {
+            name: "mcp",
+            def: crate::mcp::config::def,
+            rows: |app| app.mcp.store.rows(),
+            load: |app, conn| app.mcp.store.load(conn),
+        },
         // The work engine's records (phase 0).
         Component {
             name: "sessions",

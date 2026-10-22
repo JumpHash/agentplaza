@@ -16,7 +16,6 @@ this page disagree, fix one of them in the same change. The
 | `dispatchd` | `crates/dispatchd` | — | The fleet dispatcher, a separate binary: each pass reads the task ledger and the fleet, claims open tasks whose role has a connected agent and a permitted workflow, drives that agent through the workflow, and finishes the task with its artifacts (`--once` runs one pass). |
 | `apz-workstation` | `crates/apz-workstation` | — (dials the hub) | The daemon on a machine agents operate through the hub: joins with a station code, holds the link open, serves files, terminals, runs, the screen, input and STOP ALL. See "Workstations". |
 | `apz-link` | `crates/apz-link` | — | Joins a machine to a hub with a join code and carries the hub's commands to its node (`agentplaza node join`). |
-| `mcp-relay` | `crates/mcp-relay` | — (container) | The pipe between an MCP server's container and the hub's egress proxy. |
 | `vmctl` | `crates/vmctl` | — | Spawns N microVMs from the command line. |
 
 Library crates the daemons share: `apz-proto` (wire and chat types, no I/O),
@@ -300,15 +299,12 @@ them: `POST /v1/unfurl` (a batch) and `GET /v1/unfurl` (one).
 
 Two directions, both off until the owner turns them on.
 
-- **MCP servers the plaza uses.** The owner adds a server (a container image for
-  stdio, or an https URL) under `/v1/mcp/servers`. Each tool it offers is a plaza
-  tool named `mcp__<id>__<tool>`, offered to the agents whose role and node pass
-  the server's access rule. The hub makes every call; agents never hold a server's
-  credentials, which resolve through the vault for the calling agent. A stdio server
-  is a container on the hub's host with no route out: its only network path is
-  the egress proxy (port 19128 by default, `--mcp-proxy-port`), reached through the
-  `mcp-relay` container. The owner's configuration starts it; an agent cannot pick
-  its command.
+- **MCP servers the plaza uses.** The owner adds a server (a pinned npm, PyPI or binary package for stdio, or an https
+  URL) under `/v1/mcp/servers`. Each tool it offers is a plaza tool named `mcp__<id>__<tool>`, offered to the agents
+  whose role and node pass the server's access rule. The hub makes every call; agents never hold a server's
+  credentials, which resolve through the vault for the calling agent. A stdio server runs under the OS sandbox with no
+  route out: its only network path is the hub's egress proxy (port 19128 by default, `--mcp-proxy-port`), with a
+  credential per server. The owner's configuration starts it; an agent cannot pick its command.
 - **The hub as an MCP server.** `POST /mcp` speaks JSON-RPC 2.0 over Streamable HTTP
   (JSON-response form), for clients such as Claude Code. Each request in `secure`
   mode (the default) carries a bearer token (`apz_mcp_...`) with one of three

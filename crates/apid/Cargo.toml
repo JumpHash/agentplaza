@@ -55,6 +55,10 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 # The relay's signatures (shares/relay.rs), matching crates/apz-trust.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 flate2 = "1.1"
+# The stdio servers' OS sandbox (crates/apz-sandbox) and the archives of the runtimes and binary packages.
+apz-sandbox = { path = "../apz-sandbox" }
+tar = "0.4"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # The egress CA and its leaf certificates (egress_inject.rs). Already in the lock as apz-http's dev-dependency.
 rcgen = "0.13"
 # RS256 for the GitHub App's JWT (already in the tree through rcgen and rustls).

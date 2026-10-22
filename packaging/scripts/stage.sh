@@ -30,19 +30,6 @@ for b in "${bins[@]}"; do
   cp "$src" "$stage/bin/"
 done
 
-# The relay container's binaries (docs/design/mcp.md): static musl builds for both architectures, so apid can run
-# container servers on either Docker engine (Docker Desktop's VM decides which). Every bundle carries both, as
-# mcp_relay-<arch>. APZ_RELAY_DIR holds the relay job's artifact; without it, a dev tree's musl builds are used.
-for arch in x86_64 aarch64; do
-  if [ -n "${APZ_RELAY_DIR:-}" ]; then
-    relay="$APZ_RELAY_DIR/mcp_relay-$arch"
-  else
-    relay="$root/target/$arch-unknown-linux-musl/release/mcp_relay"
-  fi
-  [ -f "$relay" ] || { echo "stage.sh: missing the relay $relay (build -p mcp-relay for $arch-unknown-linux-musl)" >&2; exit 1; }
-  cp "$relay" "$stage/bin/mcp_relay-$arch"
-done
-
 # The console ships with its wasm engine and the IDE's wasm (apps/web/build.mjs): a dist without them has no 3D
 # or no IDE, so refuse to stage it.
 for pat in 'apz_engine_web-*_bg.wasm' 'apz_engine_web-*.js' 'apz_ide_web-*_bg.wasm' 'apz_ide_web-*.js'; do
