@@ -315,3 +315,68 @@ fn the_store_refuses_what_its_signers_may_not_say() {
     let _ = &p.owner;
     std::fs::remove_dir_all(&p.dir).ok();
 }
+
+/// A lane handed to another agent (a new session fills the task's builder seat): its revisions come from the new
+/// author, the first author's are refused, and each revision keeps the signature of whoever wrote it.
+#[test]
+fn a_lane_handed_to_another_agent_takes_its_revisions_and_refuses_the_first_authors() {
+    let p = plaza("handover");
+    let s = &p.store;
+    let priya = Actor::Agent { cid: 107 };
+    let nell = Actor::Agent { cid: 110 };
+    let change = s
+        .open_lane(
+            "agentplaza",
+            "main",
+            Some("t53"),
+            "Fix the queue",
+            priya.clone(),
+            None,
+            "normal",
+        )
+        .unwrap();
+    let draft = |actor: &Actor, n: u64| {
+        Statement::new(
+            "revision.draft",
+            actor.clone(),
+            json!({ "change": change, "n": n, "deltas": [] }),
+        )
+    };
+    s.append(draft(&priya, 1).sign(&p.priya)).unwrap();
+    // Only the hub hands a lane over, and only to an agent.
+    assert!(
+        s.append(
+            Statement::new(
+                "lane.author",
+                priya.clone(),
+                json!({ "change": change, "author": nell })
+            )
+            .sign(&p.priya)
+        )
+        .unwrap_err()
+        .contains("only the hub")
+    );
+    assert!(
+        s.hub_append(
+            "lane.author",
+            json!({ "change": change, "author": { "kind": "owner" } })
+        )
+        .unwrap_err()
+        .contains("written by an agent")
+    );
+    s.hub_append(
+        "lane.author",
+        json!({ "change": change, "author": { "kind": "agent", "cid": 110 }, "reason": "a new builder session" }),
+    )
+    .unwrap();
+    assert!(
+        s.append(draft(&priya, 2).sign(&p.priya))
+            .unwrap_err()
+            .contains("only agent:110")
+    );
+    s.append(draft(&nell, 2).sign(&p.nell)).unwrap();
+    let st = s.state();
+    let c = st.changes.values().find(|c| c.name == change).unwrap();
+    assert_eq!(c.author, nell);
+    assert_eq!(c.drafts.len(), 2);
+}

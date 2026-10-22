@@ -340,8 +340,12 @@ pub fn on_hello(app: &App, cid: u64) -> bool {
         let _ = task.claim(&crate::agents::connected_agent(&agent));
     }
     let prompt = step_prompt(app, &session);
-    // A code task's work is a lane in Weft: task_work opens it and says so in the prompt.
+    // A code task's work is a lane in Weft: the builder writes it (task_work opens it, or takes it over from the
+    // seat's last session), the reviewer reads its sealed revision (review_work).
     let (prompt, origin) = match app.plaza.tasks.find(&task_id) {
+        Some(task) if session.seat.as_deref() == Some("reviewer") => {
+            crate::weft_hub::review_work(app, &task, cid, prompt)
+        }
         Some(task) => crate::weft_hub::task_work(app, &task, cid, prompt),
         None => (
             prompt,

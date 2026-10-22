@@ -641,6 +641,7 @@ pub fn open_lane(
         })
     };
     if let Some(l) = app.weft.lane_of(task) {
+        take_lane(app, &l, worker);
         return lane(l);
     }
     // An existing open lane for this task (a claim after a restart, a rework).
@@ -657,6 +658,7 @@ pub fn open_lane(
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(task.to_string(), c.to_string());
+        take_lane(app, c, worker);
         return lane(c.to_string());
     }
     let stacked = after.iter().filter_map(|t| app.weft.lane_of(t)).find(|l| {
@@ -688,6 +690,59 @@ pub fn open_lane(
             None
         }
     }
+}
+
+/// Lane `change` is written by `worker` from now on: its key is certified, and a lane another VM wrote (an ended session
+/// of the task's builder seat) is handed to it (`lane.author`, signed by the hub; each revision keeps its writer's
+/// signature).
+fn take_lane(app: &App, change: &str, worker: u64) {
+    if let Err(e) = agent_key(app, worker) {
+        eprintln!("apid: agent {worker} has no Weft key for {change}: {e}");
+    }
+    let writes_it = app
+        .weft
+        .get(&format!("/changes/{change}"))
+        .ok()
+        .and_then(|d| d["author"].as_str().map(|a| a == format!("agent:{worker}")))
+        .unwrap_or(false);
+    if !writes_it
+        && let Err(e) = app.weft.hub(
+            "lane.author",
+            json!({ "change": change, "author": { "kind": "agent", "cid": worker }, "reason": "a new session fills the task's builder seat" }),
+        )
+    {
+        eprintln!("apid: {change} not handed to agent {worker}: {e}");
+    }
+}
+
+/// A reviewer's work on a task's lane: its key is certified so it can read the lane (never write it), and the prompt
+/// names the sealed revision to review. Its turns are not drafts, so the origin has no lane.
+pub fn review_work(
+    app: &App,
+    task: &apz_plaza::tasks::Task,
+    cid: u64,
+    mut prompt: String,
+) -> (String, crate::scheduler::Origin) {
+    if app.weft.running()
+        && let Some(change) = app.weft.lane_of(task.id())
+        && let Ok(detail) = app.weft.get(&format!("/changes/{change}"))
+    {
+        if let Err(e) = agent_key(app, cid) {
+            eprintln!("apid: reviewer {cid} has no Weft key for {change}: {e}");
+        }
+        let repo = detail["repo"].as_str().unwrap_or("");
+        let rounds = detail["rounds"].as_array().map_or(0, Vec::len);
+        prompt.push_str(&format!(
+            "\n\nThe change to review is lane {change} in Weft (repo {repo}), sealed as {change}.r{rounds}. Check it out \
+             read-only with `weft checkout {change} --dir ./review` and read it with `weft diff` and `weft show`; you do \
+             not write to it."
+        ));
+    }
+    let origin = crate::scheduler::Origin {
+        task: Some(task.id().to_string()),
+        ..Default::default()
+    };
+    (prompt, origin)
 }
 
 /// The lane an editor session's agent works in (`acp/<session>`, the agent's, never queued): opened the first time
