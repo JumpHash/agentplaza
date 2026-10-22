@@ -216,16 +216,13 @@ pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
     let mut specs = specs_for(
         app,
         &agent.role,
-        app.members.project_of(agent.cid).as_deref(),
+        crate::projects::project_of(app, agent.cid).as_deref(),
     );
     specs.extend(crate::library::specs_for(app, agent.cid));
     specs.extend(crate::mcp::specs_for_agent(app, agent));
     // A project's maintenance and environment tools are offered only where they apply: the maintenance tools on a
     // project in maintenance, the environment tools on one that has environments.
-    let project = app
-        .members
-        .project_of(agent.cid)
-        .and_then(|id| app.projects.get(&id));
+    let project = crate::projects::project_of(app, agent.cid).and_then(|id| app.projects.get(&id));
     let maintained = project.as_ref().is_some_and(|p| p.in_maintenance());
     let has_envs = project
         .as_ref()
@@ -660,7 +657,7 @@ fn host_tasks(
                     .agents
                     .get(cid)
                     .ok_or_else(|| format!("no connected agent {cid}"))?;
-                crate::membership::may_take_task(app, &target, Some(pid))?;
+                crate::projects::may_take_task(app, &target, Some(pid))?;
             }
             let task = app
                 .plaza
@@ -810,7 +807,7 @@ fn host_social(
                 from_req(json!({"agent_cid": agent.cid, "subject": subject, "body": text}))?;
             // The post is on the author's project's board (the orchestrator's on the whole board).
             let mut post = request.checked()?;
-            post.project = app.members.project_of(agent.cid);
+            post.project = crate::projects::project_of(app, agent.cid);
             let mut view = app.plaza.social.post(me, post).map_err(|e| e.to_string())?;
             if !files.is_empty() {
                 app.plaza
@@ -875,7 +872,7 @@ fn host_social(
                         "cid": a.cid,
                         "role": a.role,
                         "status": a.status,
-                        "project": app.members.project_of(a.cid),
+                        "project": crate::projects::project_of(app, a.cid),
                     })
                 })
                 .collect();
@@ -1005,24 +1002,24 @@ fn host_call(
 /// The project a task `agent` posts goes to: `named`, else the agent's own. An agent on a project posts only to
 /// it; the orchestrator, which works on every project, names one.
 fn own_project(app: &App, agent: &Agent, named: Option<String>) -> Result<String, String> {
-    if crate::membership::plaza_wide(&agent.role) {
-        // In the conversation a project was started from, the task is that project's unless another is named.
-        let from_conversation = || {
+    if crate::settings::plaza_wide(&agent.role) {
+        // In the project chat a task's work is in, the task is that project's unless another is named (the main chat
+        // is no project's).
+        let from_chat = || {
             app.work
                 .current(agent.cid)
-                .and_then(|item| item.origin.conversation)
-                .and_then(|id| app.conversations.get(&id))
+                .and_then(|item| item.thread.strip_prefix("chat:").map(str::to_string))
+                .and_then(|id| app.chats.get(&id))
+                .filter(|c| c.kind == crate::chats::Kind::Project)
                 .and_then(|c| c.project)
         };
-        return named.or_else(from_conversation).ok_or_else(|| {
+        return named.or_else(from_chat).ok_or_else(|| {
             "a task belongs to a project: name it with `project` (plaza_projects lists them)"
                 .to_string()
         });
     }
-    let own = app
-        .members
-        .project_of(agent.cid)
-        .ok_or("you are on the bench: you post tasks only for your project")?;
+    let own = crate::projects::project_of(app, agent.cid)
+        .ok_or("you have no project: you post tasks only for your project")?;
     match named {
         Some(named) if named != own => Err(format!(
             "you work on project {own}: you post tasks only for it, not for {named}"
@@ -1031,7 +1028,7 @@ fn own_project(app: &App, agent: &Agent, named: Option<String>) -> Result<String
     }
 }
 
-/// Refuses tasks for an archived project: it is over, and its agents are back on the bench.
+/// Refuses tasks for an archived project: it is over, and its agents' work has ended.
 fn takes_tasks(app: &App, pid: &str) -> Result<(), String> {
     match app.projects.get(pid) {
         None => Err(format!("no project {pid}")),
@@ -1043,15 +1040,15 @@ fn takes_tasks(app: &App, pid: &str) -> Result<(), String> {
 
 /// Whether `from` may message `to`: both work now, on the same project, or one of them is the orchestrator.
 fn may_message(app: &App, from: &Agent, to: &Agent) -> Result<(), String> {
-    if let Some(why) = crate::membership::held(app, to) {
+    if let Some(why) = crate::projects::held(app, to) {
         return Err(format!("{} cannot be messaged now: {why}", to.label()));
     }
-    if crate::membership::plaza_wide(&from.role) || crate::membership::plaza_wide(&to.role) {
+    if crate::settings::plaza_wide(&from.role) || crate::settings::plaza_wide(&to.role) {
         return Ok(());
     }
     let (mine, theirs) = (
-        app.members.project_of(from.cid),
-        app.members.project_of(to.cid),
+        crate::projects::project_of(app, from.cid),
+        crate::projects::project_of(app, to.cid),
     );
     if mine == theirs {
         Ok(())
@@ -1069,7 +1066,7 @@ fn assign(app: &App, task: &Task, cid: u64) -> Result<(), String> {
         .agents
         .get(cid)
         .ok_or_else(|| format!("no connected agent {cid}"))?;
-    crate::membership::may_take_task(app, &target, task.project())?;
+    crate::projects::may_take_task(app, &target, task.project())?;
     task.claim(&agents::connected_agent(&target))
         .map_err(|e| e.to_string())?;
     let (prompt, origin) = crate::weft_hub::task_work(app, task, cid, task_text(task));
@@ -1569,7 +1566,7 @@ mod tests {
 
     #[test]
     fn every_role_gets_the_in_vm_tools() {
-        for role in ["worker", "reviewer", "mayor"] {
+        for role in ["worker", "reviewer", "planner"] {
             let offered = offered(role, &[]);
             for name in IN_VM {
                 assert!(offered.iter().any(|n| n == name), "{role} lacks {name}");

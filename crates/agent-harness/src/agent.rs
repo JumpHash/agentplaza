@@ -19,10 +19,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::Write;
+use std::num::NonZeroUsize;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,6 +41,7 @@ use crate::bash;
 use crate::files::{self, Workspace};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
 use crate::session::{SessionError, escape_for_transcript, kind_of};
+use crate::tool_batch::{self, Streamed, Touch};
 use crate::tools;
 use crate::v2;
 use crate::{checkpoints, library, plan};
@@ -59,6 +62,27 @@ const PROFILE_WAIT: Duration = Duration::from_secs(60);
 /// A local tool's result: its output, or why it failed.
 type Outcome = Result<String, String>;
 
+/// A call's run, owned, so that it runs on a thread of its own.
+type Thunk<'a> = Box<dyn FnOnce() -> Outcome + Send + 'a>;
+
+/// A call's outcome and how long the call ran, in milliseconds (the tool's time, as the report carries it).
+struct Timed {
+    outcome: Outcome,
+    ms: u64,
+}
+
+impl Timed {
+    /// Runs `run` and times it.
+    fn run(run: impl FnOnce() -> Outcome) -> Timed {
+        let started = Instant::now();
+        let outcome = run();
+        Timed {
+            outcome,
+            ms: started.elapsed().as_millis() as u64,
+        }
+    }
+}
+
 /// How the policy and the hub settle one of a model turn's tool calls.
 enum Route {
     /// Refused for its input: the text the model sees, without asking the hub.
@@ -71,21 +95,66 @@ enum Route {
 
 /// How an allowed call runs: the program or the engine's launch spec its decision carries, and the policy the
 /// harness decided it under (None for a call the hub decided).
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Allowance {
     program: Option<Program>,
     engine: Option<EngineSpec>,
     policy: Option<String>,
 }
 
+/// One of a turn's calls: a result the model gets as it stands, or a call that runs here.
+enum Step {
+    /// Settled without running: the result text the model sees, and whether it is an error.
+    Settled(String, bool),
+    Run(Run),
+}
+
+/// A call that runs here: the call, what it touches, and how it runs.
+struct Run {
+    id: String,
+    name: String,
+    input: Value,
+    touch: Touch,
+    allowance: Allowance,
+}
+
+/// A turn's calls as they settle. Each result goes back in the model's order, and each run is reported once the calls
+/// before it have settled.
+struct Turn {
+    steps: Vec<Step>,
+    /// Each run's outcome, once it has one.
+    outcomes: Vec<Option<Timed>>,
+    /// The results settled so far, in the model's order.
+    results: Vec<(String, bool)>,
+}
+
+/// A read-only call that ran while its answer streamed, kept for the answer's tool turn: the policy it ran under, and
+/// the call it ran for (its tool and input) and its outcome.
+struct Early {
+    policy: String,
+    name: String,
+    input: Value,
+    timed: Timed,
+}
+
+/// A read-only call still running while its answer streams.
+struct Running<'scope> {
+    id: String,
+    policy: String,
+    name: String,
+    input: Value,
+    thread: thread::ScopedJoinHandle<'scope, Timed>,
+}
+
 /// The report a guest sends once it has run a call. A call the policy decided carries its record: its tool, its
-/// input and the policy it was decided under.
+/// input and the policy it was decided under. It carries how long the call ran.
 fn tool_report(
     work: u64,
     call: &str,
     ok: bool,
     output: String,
     record: Option<&(String, String, Value)>,
+    ms: u64,
 ) -> GuestMessage {
     let (policy, name, input) = match record {
         Some((policy, name, input)) => (
@@ -103,6 +172,7 @@ fn tool_report(
         policy,
         name,
         input,
+        duration_ms: Some(ms),
     }
 }
 
@@ -165,6 +235,9 @@ struct Agent<'a, 'l, S, W> {
     /// The hub's signed policy: the tools this agent runs without asking. None until the hub sends one, and then
     /// every call goes to the hub.
     policy: Option<PolicySnapshot>,
+    /// The read-only calls that ran while the last model answer streamed, by call id. The answer's tool turn uses each
+    /// one the answer asks for, under the same policy; the others are not used.
+    early: HashMap<String, Early>,
     queue: VecDeque<Job>,
     threads: HashMap<String, Thread>,
     /// Orders the stored threads: the next value a stored thread takes.
@@ -339,6 +412,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
             req: 0,
             profile,
             policy: None,
+            early: HashMap::new(),
             queue: VecDeque::new(),
             threads: load_threads(workspace),
             clock: 0,
@@ -371,7 +445,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
     Ok(calls)
 }
 
-impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
+impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
     /// The agent loop: runs queued work and waits for the host, until the host stops it.
     /// Work does not start before the profile arrives; it waits up to `PROFILE_WAIT`, and
     /// then fails as having no model.
@@ -601,26 +675,68 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         }
     }
 
-    /// Runs a local tool on its own thread, beating beside it and taking the
-    /// host's messages meanwhile. A panicking tool is an error result, not a dead
-    /// session.
-    fn run_local(&mut self, job: impl FnOnce() -> Outcome + Send) -> Result<Outcome, SessionError> {
+    /// Sends the heartbeat and the stats report when either is due.
+    fn beat_when_due(&mut self) -> Result<(), SessionError> {
+        if Instant::now() >= self.next_beat {
+            self.beat()?;
+        }
+        if Instant::now() >= self.next_stats {
+            self.report_stats()?;
+        }
+        Ok(())
+    }
+
+    /// Runs `jobs` on as many threads as the VM has CPUs, beating and taking the host's messages meanwhile. `done` gets
+    /// each job's index and outcome as its job finishes. A job that panics is an error result, not a dead session.
+    fn run_jobs(
+        &mut self,
+        jobs: Vec<(usize, Thunk<'a>)>,
+        done: &mut dyn FnMut(&mut Self, usize, Timed) -> Result<(), SessionError>,
+    ) -> Result<(), SessionError> {
+        let total = jobs.len();
+        if total == 0 {
+            return Ok(());
+        }
+        let threads = thread::available_parallelism()
+            .map_or(1, NonZeroUsize::get)
+            .min(total);
         self.tool_cancel.store(false, Ordering::SeqCst);
-        thread::scope(|scope| -> Result<Outcome, SessionError> {
-            let handle = scope.spawn(job);
-            while !handle.is_finished() {
-                if Instant::now() >= self.next_beat {
-                    self.beat()?;
-                }
-                if Instant::now() >= self.next_stats {
-                    self.report_stats()?;
-                }
-                self.hear_during_tool()?;
-                thread::sleep(LOCAL_POLL);
+        let queue = Mutex::new(VecDeque::from(jobs));
+        let (finished, outcomes) = mpsc::channel();
+        thread::scope(|scope| {
+            for _ in 0..threads {
+                let (queue, finished) = (&queue, finished.clone());
+                scope.spawn(move || {
+                    loop {
+                        let next = queue
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .pop_front();
+                        let Some((index, job)) = next else { break };
+                        let timed = Timed::run(|| {
+                            panic::catch_unwind(AssertUnwindSafe(job))
+                                .unwrap_or_else(|_| Err("internal: the tool panicked".to_string()))
+                        });
+                        let _ = finished.send((index, timed));
+                    }
+                });
             }
-            Ok(handle
-                .join()
-                .unwrap_or_else(|_| Err("internal: the tool panicked".to_string())))
+            drop(finished);
+            let mut seen = 0;
+            while seen < total {
+                match outcomes.recv_timeout(LOCAL_POLL) {
+                    Ok((index, timed)) => {
+                        seen += 1;
+                        done(&mut *self, index, timed)?;
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        self.beat_when_due()?;
+                        self.hear_during_tool()?;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            Ok(())
         })
     }
 
@@ -1046,16 +1162,80 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             effort: None,
         };
         self.say(&GuestMessage::ModelCall { req, work, request })?;
-        let (ok, response, error) =
-            self.await_message("model_result", |message| match message {
-                HostMessage::ModelResult {
-                    req: got,
-                    ok,
-                    response,
-                    error,
-                } if got == req => Ok((ok, response, error)),
-                other => Err(other),
-            })?;
+        // The calls that ran ahead of an earlier answer are not this answer's.
+        self.early.clear();
+        let workspace = self.workspace;
+        let (ok, response, error) = thread::scope(|scope| -> Result<_, Halt> {
+            let mut streamed = Streamed::default();
+            let mut running = Vec::new();
+            let answer = loop {
+                match self.pump()? {
+                    // A read-only call whose block is whole starts now, if the policy allows it and no call before it
+                    // could change what it reads (see `tool_batch::Streamed`).
+                    Incoming::Message(HostMessage::ModelDelta { req: got, delta })
+                        if got == req =>
+                    {
+                        let Some(whole) = streamed.push(workspace, delta) else {
+                            continue;
+                        };
+                        let allowed = self
+                            .policy
+                            .as_ref()
+                            .filter(|policy| policy.allow.contains(&whole.name));
+                        let Some(policy) = allowed.map(|policy| policy.id.clone()) else {
+                            continue;
+                        };
+                        let (name, input) = (whole.name.clone(), whole.input.clone());
+                        let thread = scope.spawn(move || {
+                            Timed::run(|| run_guest_tool(workspace, work, &name, &input))
+                        });
+                        running.push(Running {
+                            id: whole.id,
+                            policy,
+                            name: whole.name,
+                            input: whole.input,
+                            thread,
+                        });
+                    }
+                    Incoming::Message(HostMessage::ModelResult {
+                        req: got,
+                        ok,
+                        response,
+                        error,
+                    }) if got == req => break (ok, response, error),
+                    Incoming::Message(other) => {
+                        let kind = kind_of(&other);
+                        self.shared.note(&format!(
+                            "agent-harness: ignoring {kind} while waiting for model_result"
+                        ));
+                    }
+                    Incoming::Stop(reason) => return Err(Halt::Stop(reason)),
+                    Incoming::Beat | Incoming::Handled => {}
+                }
+            };
+            // The answer is in: the calls that ran ahead finish first, beating meanwhile.
+            while running.iter().any(|call| !call.thread.is_finished()) {
+                self.beat_when_due()?;
+                self.hear_during_tool()?;
+                thread::sleep(LOCAL_POLL);
+            }
+            for call in running {
+                let timed = call.thread.join().unwrap_or_else(|_| Timed {
+                    outcome: Err("internal: the tool panicked".to_string()),
+                    ms: 0,
+                });
+                self.early.insert(
+                    call.id,
+                    Early {
+                        policy: call.policy,
+                        name: call.name,
+                        input: call.input,
+                        timed,
+                    },
+                );
+            }
+            Ok(answer)
+        })?;
         Ok(match (ok, response) {
             (true, Some(response)) => Ok(response),
             (true, None) => Err("the host sent no answer".to_string()),
@@ -1065,14 +1245,15 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
 
     /// The turn's tool calls, in the model's order, each as its result text and whether it is an error. A call with
     /// invalid input is refused without asking the host. A call the policy allows runs here, reported under the policy
-    /// it was decided by. The others go to the host in one batch, which answers once; then the calls run in order,
-    /// one at a time, each as its decision says.
+    /// it was decided by. The others go to the host in one batch, which answers once. The calls that run here run in
+    /// waves: the calls that touch nothing in common run at once, and the rest keep their order (see `tool_batch`).
     fn tool_turn(
         &mut self,
         work: u64,
         uses: &[(String, String, Value, Option<Value>)],
     ) -> Result<Vec<(String, bool)>, Halt> {
         let policy = self.policy.clone();
+        let mut early = std::mem::take(&mut self.early);
         let routes: Vec<Route> = uses
             .iter()
             .map(|(_, name, input, meta)| {
@@ -1112,96 +1293,160 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                 .map(|decision| (decision.call.clone(), decision))
                 .collect();
         }
-        let mut outcomes = Vec::with_capacity(uses.len());
-        for ((id, name, input, _), route) in uses.iter().zip(routes) {
-            let outcome = match route {
-                Route::Refused(text) => (text, true),
-                Route::Local(policy) => {
-                    let allowance = Allowance {
+        let steps: Vec<Step> = uses
+            .iter()
+            .zip(routes)
+            .map(|((id, name, input, _), route)| match route {
+                Route::Refused(text) => Step::Settled(text, true),
+                Route::Local(policy) => run_step(
+                    self.workspace,
+                    id,
+                    name,
+                    input,
+                    Allowance {
                         policy: Some(policy),
                         ..Allowance::default()
-                    };
-                    self.run_allowed(work, id, name, input, allowance)?
-                }
+                    },
+                ),
                 Route::Hub => match decided.remove(id) {
-                    Some(decision) => self.apply_decision(work, id, name, input, decision)?,
-                    None => (
+                    Some(decision) => decided_step(self.workspace, id, name, input, decision),
+                    None => Step::Settled(
                         "the host sent no decision for this tool call".to_string(),
                         true,
                     ),
                 },
+            })
+            .collect();
+        // A call that ran while the answer streamed is the one the turn settles with, when the answer asks for the
+        // same call under the same policy.
+        let outcomes = steps
+            .iter()
+            .map(|step| match step {
+                Step::Run(run) => early
+                    .remove(&run.id)
+                    .filter(|ran| {
+                        ran.name == run.name
+                            && ran.input == run.input
+                            && run.allowance.policy.as_deref() == Some(ran.policy.as_str())
+                    })
+                    .map(|ran| ran.timed),
+                Step::Settled(..) => None,
+            })
+            .collect();
+        let mut turn = Turn {
+            steps,
+            outcomes,
+            results: Vec::new(),
+        };
+        // The calls still to run, in waves (see `tool_batch::waves`). They are found before anything settles, since
+        // settling takes the outcomes it reports: a call that ran ahead of the answer is not run again.
+        let pending: Vec<usize> = (0..turn.steps.len())
+            .filter(|&index| {
+                matches!(turn.steps[index], Step::Run(_)) && turn.outcomes[index].is_none()
+            })
+            .collect();
+        let touches: Vec<Touch> = pending
+            .iter()
+            .map(|&index| match &turn.steps[index] {
+                Step::Run(run) => run.touch.clone(),
+                Step::Settled(..) => Touch::Other,
+            })
+            .collect();
+        self.settle(work, &mut turn)?;
+        for wave in tool_batch::waves(&touches) {
+            let jobs: Vec<(usize, Thunk<'a>)> = wave
+                .iter()
+                .filter_map(|&position| {
+                    let index = pending[position];
+                    match &turn.steps[index] {
+                        Step::Run(run) => Some((index, self.job(work, run))),
+                        Step::Settled(..) => None,
+                    }
+                })
+                .collect();
+            self.run_jobs(jobs, &mut |agent, index, timed| {
+                turn.outcomes[index] = Some(timed);
+                agent.settle(work, &mut turn)
+            })?;
+        }
+        self.settle(work, &mut turn)?;
+        Ok(turn.results)
+    }
+
+    /// Settles the turn's calls in the model's order, as far as their outcomes are known: a call that ran is reported,
+    /// and every result is kept for the model.
+    fn settle(&mut self, work: u64, turn: &mut Turn) -> Result<(), SessionError> {
+        while let Some(step) = turn.steps.get(turn.results.len()) {
+            let index = turn.results.len();
+            let result = match step {
+                Step::Settled(text, is_error) => (text.clone(), *is_error),
+                Step::Run(run) => match turn.outcomes[index].take() {
+                    Some(timed) => self.report(work, run, timed)?,
+                    None => break,
+                },
             };
-            outcomes.push(outcome);
+            turn.results.push(result);
         }
-        Ok(outcomes)
+        Ok(())
     }
 
-    /// The hub's decision on one call of the turn: an allowed call runs here and is reported; a done, pending or
-    /// denied call is its result.
-    fn apply_decision(
+    /// Reports a call that ran here, and returns its result for the model. A call the policy decided carries its record
+    /// in the report: its tool, its input and the policy it was decided under.
+    fn report(
         &mut self,
         work: u64,
-        id: &str,
-        name: &str,
-        input: &Value,
-        decided: BatchDecision,
-    ) -> Result<(String, bool), Halt> {
-        let BatchDecision {
-            decision,
-            output,
-            is_error,
-            program,
-            engine,
-            ..
-        } = decided;
-        match decision {
-            Decision::Allow => {
-                let allowance = Allowance {
-                    program,
-                    engine,
-                    policy: None,
-                };
-                self.run_allowed(work, id, name, input, allowance)
-            }
-            Decision::Done => Ok((cap_output(&output, MAX_TOOL_OUTPUT), is_error)),
-            // Held for the owner (only an ACP engine's requests are held, and those wait on their own
-            // nested ids). A model's call that comes back held is an error it can retry later.
-            Decision::Pending => Ok((
-                "the owner has not decided this tool call yet; try again later".to_string(),
-                true,
-            )),
-            Decision::Deny if output.is_empty() => {
-                Ok(("the host denied this tool call".to_string(), true))
-            }
-            Decision::Deny => Ok((output, true)),
+        run: &Run,
+        timed: Timed,
+    ) -> Result<(String, bool), SessionError> {
+        let (ok, output) = match timed.outcome {
+            Ok(output) => (true, output),
+            Err(err) => (false, err),
+        };
+        let record = run
+            .allowance
+            .policy
+            .clone()
+            .map(|policy| (policy, run.name.clone(), run.input.clone()));
+        // A packaged tool travels to the host whole (the library files it from the report);
+        // the model only needs to hear what was packaged.
+        if run.name == "tool_package" && ok {
+            self.say(&tool_report(
+                work,
+                &run.id,
+                ok,
+                output.clone(),
+                record.as_ref(),
+                timed.ms,
+            ))?;
+            return Ok((library::summary(&output), false));
         }
+        let output = cap_output(&output, MAX_TOOL_OUTPUT);
+        self.say(&tool_report(
+            work,
+            &run.id,
+            ok,
+            output.clone(),
+            record.as_ref(),
+            timed.ms,
+        ))?;
+        Ok((output, !ok))
     }
 
-    /// Runs one call the host allowed, or the policy did, and reports it. A call the policy decided carries its
-    /// record in the report: its tool, its input and the policy it was decided under.
-    fn run_allowed(
-        &mut self,
-        work: u64,
-        id: &str,
-        name: &str,
-        input: &Value,
-        allowance: Allowance,
-    ) -> Result<(String, bool), Halt> {
-        let Allowance {
-            program,
-            engine,
-            policy,
-        } = allowance;
+    /// The job that runs `run` here: a library tool with its program, an engine's ACP session, or a built-in tool. The
+    /// job owns what it needs, so it can run on a thread of its own.
+    fn job(&self, work: u64, run: &Run) -> Thunk<'a> {
         let workspace = self.workspace;
-        // A library tool comes with its program; built-in tools run from this harness.
-        let outcome = match program {
-            Some(program) => self.run_local(move || library::run(workspace, &program, input))?,
-            // An engine runs as an ACP session whose every action the hub checks. The hub's
-            // launch spec, for an engine instance the owner configured, comes with the decision.
+        let name = run.name.clone();
+        let input = run.input.clone();
+        match run.allowance.program.clone() {
+            Some(program) => Box::new(move || library::run(workspace, &program, &input)),
+            // An engine runs as an ACP session whose every action the hub checks. The hub's launch spec, for an engine
+            // instance the owner configured, comes with the decision.
             None if name == "code_engine" => {
                 let shared = self.shared;
                 let cancel = Arc::clone(&self.tool_cancel);
-                let call = id.to_string();
+                let call = run.id.clone();
+                let engine = run.allowance.engine.clone();
                 // The engine's MCP server offers the profile's plaza tools, through the hub.
                 let tools = self
                     .profile
@@ -1210,27 +1455,73 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                 let protocol = self.profile.as_ref().map_or(1, |profile| {
                     crate::acp::run::protocol_offer(&profile.engine_transport)
                 });
-                self.run_local(move || {
+                Box::new(move || {
                     let link = HubLink::new(shared, work, call, &cancel, tools);
-                    crate::acp::run::run(workspace, input, &link, protocol, engine.as_ref())
-                })?
+                    crate::acp::run::run(workspace, &input, &link, protocol, engine.as_ref())
+                })
             }
-            None => self.run_local(move || run_guest_tool(workspace, work, name, input))?,
-        };
-        let (ok, output) = match outcome {
-            Ok(output) => (true, output),
-            Err(err) => (false, err),
-        };
-        let record = policy.map(|policy| (policy, name.to_string(), input.clone()));
-        // A packaged tool travels to the host whole (the library files it from the report);
-        // the model only needs to hear what was packaged.
-        if name == "tool_package" && ok {
-            self.say(&tool_report(work, id, ok, output.clone(), record.as_ref()))?;
-            return Ok((library::summary(&output), false));
+            None => Box::new(move || run_guest_tool(workspace, work, &name, &input)),
         }
-        let output = cap_output(&output, MAX_TOOL_OUTPUT);
-        self.say(&tool_report(work, id, ok, output.clone(), record.as_ref()))?;
-        Ok((output, !ok))
+    }
+}
+
+/// The step of a call that runs here: what it is, and what it touches.
+fn run_step(
+    workspace: &Workspace,
+    id: &str,
+    name: &str,
+    input: &Value,
+    allowance: Allowance,
+) -> Step {
+    Step::Run(Run {
+        id: id.to_string(),
+        name: name.to_string(),
+        input: input.clone(),
+        touch: tool_batch::touch(workspace, name, input),
+        allowance,
+    })
+}
+
+/// The step of a call the hub decided: an allowed call runs here under the hub's launch spec, and any other is
+/// settled as its decision says.
+fn decided_step(
+    workspace: &Workspace,
+    id: &str,
+    name: &str,
+    input: &Value,
+    decided: BatchDecision,
+) -> Step {
+    let BatchDecision {
+        decision,
+        output,
+        is_error,
+        program,
+        engine,
+        ..
+    } = decided;
+    match decision {
+        Decision::Allow => run_step(
+            workspace,
+            id,
+            name,
+            input,
+            Allowance {
+                program,
+                engine,
+                policy: None,
+            },
+        ),
+        Decision::Done => Step::Settled(cap_output(&output, MAX_TOOL_OUTPUT), is_error),
+        // Held for the owner (only an ACP engine's requests are held, and those wait on their own nested ids). A
+        // model's call that comes back held is an error it can retry later.
+        Decision::Pending => Step::Settled(
+            "the owner has not decided this tool call yet; try again later".to_string(),
+            true,
+        ),
+        Decision::Deny if output.is_empty() => {
+            Step::Settled("the host denied this tool call".to_string(), true)
+        }
+        Decision::Deny => Step::Settled(output, true),
     }
 }
 
@@ -1287,9 +1578,7 @@ pub(crate) fn is_guest_tool(name: &str) -> bool {
     GUEST_TOOLS.contains(&name) || tools::serves(name)
 }
 
-/// Runs a tool the host allowed, under the names the model knows. `edit_file`
-/// takes `old` and `new` from the model, which the file tool calls `find` and
-/// `replace`.
+/// Runs a tool the host allowed, under the names the model knows.
 fn run_guest_tool(workspace: &Workspace, work: u64, name: &str, input: &Value) -> Outcome {
     match name {
         "read" | "edit" | "find" | "search" | "run" | "run_tests" => {
@@ -2003,7 +2292,7 @@ mod tests {
             expect_type(host, "model_call");
             host.send(&control(
                 1,
-                json!({"action": "steer", "from": "mayor", "text": "focus on the parser"}),
+                json!({"action": "steer", "from": "orchestrator", "text": "focus on the parser"}),
             ))
             .unwrap();
             host.send(&answer(
@@ -2017,7 +2306,7 @@ mod tests {
             let next = expect_type(host, "model_call");
             let results = &next["request"]["messages"][2]["content"];
             assert_eq!(
-                results[1]["text"], "[note from mayor]: focus on the parser",
+                results[1]["text"], "[note from orchestrator]: focus on the parser",
                 "{results}"
             );
             host.send(&answer(2, json!([text("found")]), "end_turn"))
@@ -2538,6 +2827,289 @@ mod tests {
         );
     }
 
+    /// A named pipe in the workspace. A read of it waits until a writer opens and closes it, so a read takes as long as
+    /// the writer keeps it waiting.
+    fn pipe(workspace: &Workspace, name: &str) -> std::path::PathBuf {
+        let path = workspace.dir().join(name);
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success(), "mkfifo {name}");
+        path
+    }
+
+    /// One fragment of model call `req`'s answer, as the hub sends it while the answer streams.
+    fn fragment(req: u64, delta: Value) -> String {
+        json!({"type": "model_delta", "req": req, "delta": delta}).to_string()
+    }
+
+    #[test]
+    fn five_reads_of_different_files_finish_the_turn_in_about_one_read() {
+        let workspace = scratch("five-reads");
+        // Each file is a pipe that a writer fills 300 ms after a read opens it, so one read takes 300 ms.
+        let names: Vec<String> = (1..=5).map(|n| format!("slow{n}.txt")).collect();
+        for name in &names {
+            let path = pipe(&workspace, name);
+            thread::spawn(move || {
+                let Ok(mut writer) = std::fs::OpenOptions::new().write(true).open(&path) else {
+                    return;
+                };
+                thread::sleep(Duration::from_millis(300));
+                let _ = writer.write_all(b"slow\n");
+            });
+        }
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("reads", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "read five")).unwrap();
+            expect_type(host, "model_call");
+            let calls: Vec<Value> = names
+                .iter()
+                .enumerate()
+                .map(|(n, name)| {
+                    tool_use(&format!("r{n}"), "read", json!({"files": [{"path": name}]}))
+                })
+                .collect();
+            let asked = Instant::now();
+            host.send(&answer(1, json!(calls), "tool_use")).unwrap();
+            // The reports go out in the answer's order, once all five reads are done.
+            for n in 0..5 {
+                let report = expect_type(host, "tool_report");
+                assert_eq!(
+                    (report["call"].clone(), report["ok"].clone()),
+                    (json!(format!("r{n}")), json!(true)),
+                    "{report}"
+                );
+            }
+            expect_type(host, "model_call");
+            let took = asked.elapsed();
+            assert!(
+                took < Duration::from_millis(900),
+                "five reads took {took:?}; one read takes 300 ms"
+            );
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn two_edits_of_one_file_keep_their_order() {
+        let workspace = scratch("two-edits");
+        let notes = workspace.dir().join("notes.txt");
+        std::fs::write(&notes, "a").unwrap();
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("edits", &["edit"])).unwrap();
+            host.send(&work(1, "task", "t", "edit twice")).unwrap();
+            expect_type(host, "model_call");
+            // The second edit finds "b" only once the first has written it.
+            host.send(&answer(
+                1,
+                json!([
+                    tool_use(
+                        "e1",
+                        "edit",
+                        json!({"edits": [{"path": "notes.txt", "old": "a", "new": "b"}]})
+                    ),
+                    tool_use(
+                        "e2",
+                        "edit",
+                        json!({"edits": [{"path": "notes.txt", "old": "b", "new": "c"}]})
+                    ),
+                ]),
+                "tool_use",
+            ))
+            .unwrap();
+            for call in ["e1", "e2"] {
+                let report = expect_type(host, "tool_report");
+                assert_eq!(
+                    (report["call"].clone(), report["ok"].clone()),
+                    (json!(call), json!(true)),
+                    "{report}"
+                );
+            }
+            expect_type(host, "model_call");
+            assert_eq!(std::fs::read_to_string(&notes).unwrap(), "c");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_read_whose_call_is_whole_starts_before_the_answer_ends_and_its_result_is_the_one_reported()
+    {
+        let workspace = scratch("ahead");
+        let path = pipe(&workspace, "ahead.txt");
+        // The writer opens the pipe, which only a running read does, and writes once the test says so.
+        let (opened, reader_opened) = mpsc::channel();
+        let (go, write_now) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            let Ok(mut writer) = std::fs::OpenOptions::new().write(true).open(&path) else {
+                return;
+            };
+            let _ = opened.send(());
+            if write_now.recv().is_ok() {
+                let _ = writer.write_all(b"early data\n");
+            }
+        });
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("ahead", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "read ahead")).unwrap();
+            expect_type(host, "model_call");
+            // The answer streams the read as a whole call: its start, its input and its end.
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_use", "name": "read", "index": 0, "id": "r1"}),
+            ))
+            .unwrap();
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_input", "index": 0, "json": "{\"files\": [{\"path\": \"ahead.txt\"}]}"}),
+            ))
+            .unwrap();
+            host.send(&fragment(1, json!({"type": "block_end", "index": 0})))
+                .unwrap();
+            // The read has started while the answer is still to come.
+            reader_opened
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the read started before the answer ended");
+            host.send(&answer(
+                1,
+                json!([tool_use(
+                    "r1",
+                    "read",
+                    json!({"files": [{"path": "ahead.txt"}]})
+                )]),
+                "tool_use",
+            ))
+            .unwrap();
+            // The writer writes only now, so the read's result can only be the one it started with.
+            go.send(()).unwrap();
+            let report = expect_type(host, "tool_report");
+            assert_eq!(report["call"], "r1", "{report}");
+            assert!(
+                report["output"]
+                    .as_str()
+                    .is_some_and(|output| output.contains("early data")),
+                "{report}"
+            );
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_write_never_starts_before_the_answer_ends() {
+        let workspace = scratch("ahead-write");
+        std::fs::write(workspace.dir().join("w.txt"), "a").unwrap();
+        let file = workspace.dir().join("w.txt");
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("write", &["edit"])).unwrap();
+            host.send(&work(1, "task", "t", "edit")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_use", "name": "edit", "index": 0, "id": "w1"}),
+            ))
+            .unwrap();
+            host.send(&fragment(1, json!({"type": "tool_input", "index": 0, "json": "{\"edits\": [{\"path\": \"w.txt\", \"old\": \"a\", \"new\": \"b\"}]}"})))
+                .unwrap();
+            host.send(&fragment(1, json!({"type": "block_end", "index": 0})))
+                .unwrap();
+            // A write that had started early would have landed by now.
+            thread::sleep(Duration::from_millis(300));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "a");
+            host.send(&answer(
+                1,
+                json!([tool_use(
+                    "w1",
+                    "edit",
+                    json!({"edits": [{"path": "w.txt", "old": "a", "new": "b"}]})
+                )]),
+                "tool_use",
+            ))
+            .unwrap();
+            let report = expect_type(host, "tool_report");
+            assert_eq!(report["ok"], json!(true), "{report}");
+            expect_type(host, "model_call");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "b");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_read_the_policy_does_not_allow_never_starts_before_the_answer_ends() {
+        let workspace = scratch("ahead-held");
+        let path = pipe(&workspace, "held.txt");
+        let (opened, reader_opened) = mpsc::channel();
+        thread::spawn(move || {
+            let Ok(mut writer) = std::fs::OpenOptions::new().write(true).open(&path) else {
+                return;
+            };
+            let _ = opened.send(());
+            let _ = writer.write_all(b"held\n");
+        });
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            // STOP ALL: an empty policy allows nothing, so the read goes to the hub with the rest of the answer.
+            host.send(&policy_line("held", &[])).unwrap();
+            host.send(&work(1, "task", "t", "read held")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_use", "name": "read", "index": 0, "id": "h1"}),
+            ))
+            .unwrap();
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_input", "index": 0, "json": "{\"files\": [{\"path\": \"held.txt\"}]}"}),
+            ))
+            .unwrap();
+            host.send(&fragment(1, json!({"type": "block_end", "index": 0})))
+                .unwrap();
+            // Nothing opens the pipe before the answer is in.
+            assert!(
+                reader_opened
+                    .recv_timeout(Duration::from_millis(300))
+                    .is_err(),
+                "the read ran before the answer ended"
+            );
+            host.send(&answer(
+                1,
+                json!([tool_use(
+                    "h1",
+                    "read",
+                    json!({"files": [{"path": "held.txt"}]})
+                )]),
+                "tool_use",
+            ))
+            .unwrap();
+            let batch = expect_type(host, "tool_batch");
+            assert_eq!(batch["calls"][0]["call"], "h1", "{batch}");
+            host.send(&decision("h1", "allow", "", false)).unwrap();
+            let report = expect_type(host, "tool_report");
+            assert!(report.get("policy").is_none(), "{report}");
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
     #[test]
     fn a_stats_report_reads_the_process_table_it_is_given() {
         let dir = std::env::temp_dir().join(format!("apz-proc-{}", std::process::id()));
@@ -2558,5 +3130,29 @@ mod tests {
                 rss_mib: 200.0,
             }]
         );
+    }
+
+    #[test]
+    fn a_tool_report_carries_how_long_its_call_ran_and_a_timed_run_keeps_its_outcome() {
+        let report = tool_report(1, "toolu_1", true, "ok".into(), None, 7);
+        assert_eq!(
+            report,
+            GuestMessage::ToolReport {
+                work: 1,
+                call: "toolu_1".into(),
+                ok: true,
+                output: "ok".into(),
+                policy: None,
+                name: None,
+                input: None,
+                duration_ms: Some(7),
+            }
+        );
+        let timed = Timed::run(|| {
+            thread::sleep(Duration::from_millis(20));
+            Err("late".to_string())
+        });
+        assert_eq!(timed.outcome, Err("late".to_string()));
+        assert!(timed.ms >= 20, "{}", timed.ms);
     }
 }

@@ -2,8 +2,7 @@
 //!
 //! A seat is a role in a task: `builder`, `reviewer`, … A task's recipe decides its seats; each seat serves one step
 //! and is filled by one session at a time. Messages are addressed to seats, not sessions (threads.rs), so direct talk
-//! survives sessions ending. Seats replace the bench and project membership: a session belongs to its task's project
-//! by construction.
+//! survives sessions ending. A session belongs to its task's project by construction.
 //!
 //! The minimal `change` recipe runs every task until the recipe engine (phase 4) brings its own: the builder's step,
 //! then a review by a reviewer whose model differs from the builder's (W27), then done; a review that fails sends the

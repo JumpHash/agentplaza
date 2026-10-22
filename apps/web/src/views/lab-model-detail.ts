@@ -73,7 +73,7 @@ function usd(v: number): string {
 /** The model's identity and sources. A promoted or retired model keeps the agent it had. */
 function identityCard(m: ModelView): HTMLElement {
   const c = m.card;
-  const agent: Node | string = m.agent_cid !== null ? h('a', { href: href('agents', m.agent_cid) }, `CID ${m.agent_cid}`) : 'none';
+  const agent: Node | string = m.agent_cid !== null ? h('a', { href: href('sessions', m.agent_cid) }, `CID ${m.agent_cid}`) : 'none';
   return panel(
     'Model',
     kv([

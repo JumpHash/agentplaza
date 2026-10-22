@@ -453,6 +453,7 @@ fn port_of(url: &str) -> Result<u16, String> {
 }
 
 /// What apid answers an agent's hello with: its profile, and the policy the session starts with.
+#[derive(Debug)]
 pub struct HelloReply {
     pub profile: Option<AgentProfile>,
     pub policy: Option<PolicySnapshot>,

@@ -1166,7 +1166,7 @@ pub fn call(
     let plan = gate(&app.connectors, role, connector, action, &on_behalf)?;
     // An agent's call is held to the connector's projects too; the owner's and the console's are not.
     if let Some((cid, _)) = agent {
-        let project = app.members.project_of(cid);
+        let project = crate::projects::project_of(app, cid);
         if !admits_project(
             &app.connectors.setting(plan.connector.id),
             project.as_deref(),

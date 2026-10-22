@@ -2,7 +2,9 @@
 // a cleanup that unsubscribes everything it subscribed to.
 
 import type { IconName } from '../ui/icons.gen';
-import { mount as agents } from './agents';
+import { mount as sessions } from './sessions';
+import { mount as inbox } from './inbox';
+import { mount as chats } from './chats';
 import { mount as appearance } from './appearance';
 import { mount as artifact } from './artifact';
 import { mount as approvals } from './approvals';
@@ -50,7 +52,9 @@ export interface Screen {
 
 export const SCREENS: Screen[] = [
   { key: 'overview', label: 'Overview', icon: 'overview', section: 'Plaza', mount: overview },
-  { key: 'agents', label: 'Agents', icon: 'agents', section: 'Plaza', mount: agents },
+  { key: 'sessions', label: 'Sessions', icon: 'agents', section: 'Plaza', mount: sessions },
+  { key: 'inbox', label: 'Inbox', icon: 'inbox', section: 'Plaza', mount: inbox },
+  { key: 'chats', label: 'Chats', icon: 'conversations', section: 'Plaza', mount: chats },
   { key: 'prompts', label: 'Prompts', icon: 'edit', section: 'Plaza', mount: prompts },
   { key: 'skills', label: 'Skills', icon: 'wrench', section: 'Plaza', mount: skills },
   { key: 'projects', label: 'Projects', icon: 'projects', section: 'Plaza', mount: projects },

@@ -31,6 +31,10 @@
 //!   guest tool_batch{work,calls:[{call,name,input}]} → host tool_batch_decision{work,decisions:[…]}, one answer for
 //!     the turn's calls the policy does not allow; the guest runs the allowed ones itself and reports each one with
 //!     tool_report{…,policy,name,input} (the hub records the call with the policy it was decided under)
+//! v6  streamed answers (inside a v3 session): while a model call runs, host model_delta{req,delta} carries each
+//!     fragment of its answer as the provider streams it, before the model_result; a tool call's fragments
+//!     (tool_use, tool_input, block_end) let the guest start a read-only call before the answer ends
+//! v7  a tool_report{…,duration_ms} says how long the guest ran the call (an older harness's report has none)
 //! ```
 //!
 //! The guest's identity is never taken from a line: the hub binds every
@@ -39,7 +43,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::chat::{ChatRequest, ChatResponse, ToolSpec};
+use crate::chat::{ChatRequest, ChatResponse, Delta, ToolSpec};
 
 /// `welcome.echo`.
 pub const WELCOME_ECHO: &str = "plaza-orchestrator";
@@ -116,6 +120,9 @@ pub enum GuestMessage {
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input: Option<Value>,
+        /// v7: how long the guest ran the call, in milliseconds. A harness from before v7 sends none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
     /// v5: the calls of one model turn the policy does not allow, decided by the hub in one answer
     /// ([`HostMessage::ToolBatchDecision`]), in the calls' order.
@@ -305,6 +312,9 @@ pub enum HostMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// v6: one fragment of model call `req`'s answer, as the provider streams it. The hub sends them in order, all
+    /// before the call's [`HostMessage::ModelResult`].
+    ModelDelta { req: u64, delta: Delta },
     /// v3: the answer to a [`GuestMessage::ToolRequest`].
     ToolDecision {
         call: String,
@@ -349,7 +359,7 @@ pub enum HostMessage {
     Cancel { work: u64, reason: String },
     /// v3: replace the agent's profile (model, tools, limits).
     Profile { profile: AgentProfile },
-    /// v3: steer the running work item `work` (the orchestrator, the mayor or the owner).
+    /// v3: steer the running work item `work` (the orchestrator or the owner).
     Control { work: u64, control: Control },
 }
 
@@ -887,6 +897,23 @@ mod tests {
     }
 
     #[test]
+    fn a_model_delta_line_carries_its_fragment_for_its_call() {
+        let delta = HostMessage::ModelDelta {
+            req: 3,
+            delta: Delta::ToolInput {
+                index: 0,
+                json: "{\"path\":".into(),
+            },
+        };
+        let line = delta.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"model_delta","req":3,"delta":{"type":"tool_input","index":0,"json":"{\"path\":"}}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), delta);
+    }
+
+    #[test]
     fn a_policy_line_round_trips_and_an_empty_allow_list_holds_every_call() {
         let policy = HostMessage::Policy {
             policy: PolicySnapshot {
@@ -925,6 +952,7 @@ mod tests {
             policy: None,
             name: None,
             input: None,
+            duration_ms: None,
         };
         assert_eq!(
             plain.to_line().unwrap(),
@@ -938,13 +966,23 @@ mod tests {
             policy: Some("ab12".into()),
             name: Some("glob".into()),
             input: Some(json!({"pattern": "*.rs"})),
+            duration_ms: Some(12),
         };
         let line = local.to_line().unwrap();
         assert_eq!(
             line,
-            r#"{"type":"tool_report","work":1,"call":"toolu_2","ok":true,"output":"a.rs","policy":"ab12","name":"glob","input":{"pattern":"*.rs"}}"#
+            r#"{"type":"tool_report","work":1,"call":"toolu_2","ok":true,"output":"a.rs","policy":"ab12","name":"glob","input":{"pattern":"*.rs"},"duration_ms":12}"#
         );
         assert_eq!(GuestMessage::from_line(&line).unwrap(), local);
+        // A harness from before v7 sends no duration: its report parses with none.
+        let timed = r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x","duration_ms":5}"#;
+        assert!(matches!(
+            GuestMessage::from_line(timed).unwrap(),
+            GuestMessage::ToolReport {
+                duration_ms: Some(5),
+                ..
+            }
+        ));
         // A harness from before v5 sends no policy: its report parses with none.
         let old = r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x"}"#;
         assert_eq!(GuestMessage::from_line(old).unwrap(), plain);

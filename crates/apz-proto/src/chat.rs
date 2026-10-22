@@ -190,14 +190,35 @@ impl ChatResponse {
     }
 }
 
-/// A streamed fragment, for live display only (the final [`ChatResponse`] is
-/// authoritative).
+/// A streamed fragment: text for live display, and a tool call as the provider
+/// writes it. A call opens with its [`Delta::ToolUse`], takes its input JSON in
+/// [`Delta::ToolInput`] chunks and is whole at its [`Delta::BlockEnd`]. `index`
+/// names the call's block within the answer. The final [`ChatResponse`] is
+/// authoritative.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Delta {
-    Text { text: String },
-    Thinking { text: String },
-    ToolUse { name: String },
+    Text {
+        text: String,
+    },
+    Thinking {
+        text: String,
+    },
+    /// A tool call opens at block `index`: its tool `name` and the call's `id`.
+    ToolUse {
+        name: String,
+        index: usize,
+        id: String,
+    },
+    /// The next chunk of block `index`'s input JSON.
+    ToolInput {
+        index: usize,
+        json: String,
+    },
+    /// Block `index` is complete: its input JSON has been sent whole.
+    BlockEnd {
+        index: usize,
+    },
 }
 
 #[cfg(test)]
@@ -228,6 +249,28 @@ mod tests {
         let line = serde_json::to_string(&blocks).unwrap();
         assert!(line.contains(r#""type":"tool_use""#));
         assert_eq!(serde_json::from_str::<Vec<Block>>(&line).unwrap(), blocks);
+    }
+
+    #[test]
+    fn a_tool_call_streams_as_open_input_and_end() {
+        let stream = vec![
+            Delta::ToolUse {
+                name: "bash".into(),
+                index: 1,
+                id: "t1".into(),
+            },
+            Delta::ToolInput {
+                index: 1,
+                json: "{\"command\"".into(),
+            },
+            Delta::BlockEnd { index: 1 },
+        ];
+        let line = serde_json::to_string(&stream).unwrap();
+        assert_eq!(
+            line,
+            r#"[{"type":"tool_use","name":"bash","index":1,"id":"t1"},{"type":"tool_input","index":1,"json":"{\"command\""},{"type":"block_end","index":1}]"#
+        );
+        assert_eq!(serde_json::from_str::<Vec<Delta>>(&line).unwrap(), stream);
     }
 
     #[test]

@@ -2,6 +2,9 @@
 //! (as many as the owner opens: each a conversation with the project's planner), and a task's chat (one per task: its
 //! thread with its seats). Questions (cards) and notices arrive as messages in the chat they belong to.
 //!
+//! The owner's conversations with the orchestrator are the main chat now: a project a conversation drafts is a project
+//! chat that holds its draft until the owner starts it (`drafts.rs`).
+//!
 //! The records live in memory; the hub's saver keeps them in `plaza.db` (tables `chat`, `chat_messages`). A message the
 //! owner sends is written at once (`crate::store::saver::save_now`), not on the saver's next pass.
 
@@ -46,6 +49,18 @@ pub enum MessageKind {
     Notice,
 }
 
+/// A file the owner attached to a message, as the consoles show it: `{id, name, size, type}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct Attachment {
+    /// The file's id in the Library of deliverables.
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    /// Its media type.
+    #[serde(rename = "type")]
+    pub mime: String,
+}
+
 /// One message of a chat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Message {
@@ -60,6 +75,10 @@ pub struct Message {
     /// The card of a question.
     pub card: Option<String>,
     pub at_ms: u64,
+    /// The files the owner attached.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(child)]
+    pub attachments: Vec<Attachment>,
 }
 
 /// One chat.
@@ -78,6 +97,21 @@ pub struct Chat {
     pub next_seq: u64,
     pub created_ms: u64,
     pub updated_ms: u64,
+    /// The model this chat's turns run on (`<provider>/<model>[@effort]`); None: the agent's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The project draft a project's chat holds until the owner starts it (`drafts.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(child)]
+    pub draft: Option<crate::drafts::Draft>,
+    /// The draft revision the orchestrator last read or wrote: an edit of the owner's after it is pointed out with the
+    /// next message.
+    #[serde(default)]
+    pub draft_seen: u64,
+    /// The work items the owner's messages queued here, oldest first (the orchestrator's turns for the context).
+    #[serde(default)]
+    #[table(list)]
+    pub works: Vec<u64>,
     #[table(child)]
     pub messages: Vec<Message>,
 }
@@ -101,6 +135,7 @@ pub struct Post {
     pub kind: MessageKind,
     pub text: String,
     pub card: Option<String>,
+    pub attachments: Vec<Attachment>,
 }
 
 #[derive(Default)]
@@ -139,6 +174,10 @@ impl Chats {
             next_seq: 1,
             created_ms: now_ms,
             updated_ms: now_ms,
+            model: None,
+            draft: None,
+            draft_seen: 0,
+            works: Vec::new(),
             messages: Vec::new(),
         };
         inner.chats.insert(id, chat.clone());
@@ -241,6 +280,7 @@ impl Chats {
             text: post.text,
             card: post.card,
             at_ms: now_ms,
+            attachments: post.attachments,
         };
         chat.next_seq += 1;
         chat.updated_ms = now_ms;
@@ -252,22 +292,21 @@ impl Chats {
         Some(message)
     }
 
-    /// Archives or restores a chat (the main chat cannot be archived).
-    pub fn set_archived(&self, id: &str, archived: bool) -> Option<Chat> {
+    /// Changes chat `id` with `change`, on a copy: a refusal (409) changes nothing, an unknown chat is 404.
+    pub fn update(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut Chat) -> Result<(), String>,
+    ) -> Result<Chat, (u16, String)> {
         let mut inner = self.lock();
-        let chat = inner.chats.get_mut(id)?;
-        if chat.kind != Kind::Main {
-            chat.archived = archived;
-        }
-        Some(chat.summary())
-    }
-
-    /// Renames a chat.
-    pub fn rename(&self, id: &str, title: &str) -> Option<Chat> {
-        let mut inner = self.lock();
-        let chat = inner.chats.get_mut(id)?;
-        chat.title = title.to_string();
-        Some(chat.summary())
+        let chat = inner
+            .chats
+            .get_mut(id)
+            .ok_or_else(|| (404, format!("no chat {id}")))?;
+        let mut next = chat.clone();
+        change(&mut next).map_err(|e| (409, e))?;
+        *chat = next.clone();
+        Ok(next)
     }
 
     /// The chats' rows, for the hub's store.
@@ -315,7 +354,31 @@ mod tests {
             kind: MessageKind::Message,
             text: text.into(),
             card: None,
+            attachments: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_refused_change_leaves_the_chat_as_it_was() {
+        let chats = Chats::default();
+        let c = chats.open_project("pr1", "Export", 1);
+        let changed = chats
+            .update(&c.id, |c| {
+                c.model = Some("anthropic/x".into());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(changed.model.as_deref(), Some("anthropic/x"));
+        let refused = chats.update(&c.id, |c| {
+            c.model = None;
+            Err("no".into())
+        });
+        assert_eq!(refused.unwrap_err(), (409, "no".to_string()));
+        assert_eq!(
+            chats.get(&c.id).unwrap().model.as_deref(),
+            Some("anthropic/x")
+        );
+        assert_eq!(chats.update("ch9", |_| Ok(())).unwrap_err().0, 404);
     }
 
     #[test]

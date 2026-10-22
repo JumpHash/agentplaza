@@ -55,6 +55,7 @@ CREATE TABLE "project" (
     "paused" INTEGER NOT NULL CHECK ("paused" IN (0, 1)),
     "archived" INTEGER NOT NULL CHECK ("archived" IN (0, 1)),
     "mode" TEXT NOT NULL,
+    "github" TEXT NOT NULL,
     PRIMARY KEY ("id")
 ) STRICT;
 CREATE TABLE "project_docs" (
@@ -315,138 +316,6 @@ CREATE TABLE "deploy" (
     FOREIGN KEY ("project_environment_project", "environments_pos") REFERENCES "environment" ("project_environment_project", "environments_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
--- component conversations
-CREATE TABLE "conversation_store" (
-    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
-    "next" INTEGER NOT NULL CHECK ("next" >= 0),
-    PRIMARY KEY ("pos")
-) STRICT;
-CREATE TABLE "conversation_store_items" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "id" TEXT NOT NULL,
-    "title" TEXT NOT NULL,
-    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
-    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
-    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
-    "archived" INTEGER NOT NULL CHECK ("archived" IN (0, 1)),
-    "model" TEXT,
-    "project" TEXT,
-    "draft_seen" INTEGER NOT NULL CHECK ("draft_seen" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos"),
-    FOREIGN KEY ("conversation_store_pos") REFERENCES "conversation_store" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_messages" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "messages_pos" INTEGER NOT NULL CHECK ("messages_pos" >= 0),
-    "from" TEXT NOT NULL,
-    "text" TEXT NOT NULL,
-    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
-    "work" INTEGER NOT NULL CHECK ("work" >= 0),
-    "status" TEXT,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "messages_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_messages_attachments" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "messages_pos" INTEGER NOT NULL CHECK ("messages_pos" >= 0),
-    "attachments_pos" INTEGER NOT NULL CHECK ("attachments_pos" >= 0),
-    "id" TEXT NOT NULL,
-    "name" TEXT NOT NULL,
-    "size" INTEGER NOT NULL CHECK ("size" >= 0),
-    "mime" TEXT NOT NULL,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "messages_pos", "attachments_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos", "messages_pos") REFERENCES "conversation_store_items_messages" ("conversation_store_pos", "items_pos", "messages_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_works" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "works_pos" INTEGER NOT NULL CHECK ("works_pos" >= 0),
-    "value" INTEGER NOT NULL CHECK ("value" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "works_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "revision" INTEGER NOT NULL CHECK ("revision" >= 0),
-    "title" TEXT NOT NULL,
-    "goal" TEXT NOT NULL,
-    "kind" TEXT NOT NULL,
-    "repo" TEXT,
-    "budget" INTEGER CHECK ("budget" >= 0),
-    "updated_by" TEXT NOT NULL,
-    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
-    "started_ms" INTEGER CHECK ("started_ms" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_tasks" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
-    "key" TEXT NOT NULL,
-    "goal" TEXT NOT NULL,
-    "acceptance" TEXT,
-    "role" TEXT,
-    "budget" INTEGER CHECK ("budget" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "tasks_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items_draft" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_tasks_after" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
-    "after_pos" INTEGER NOT NULL CHECK ("after_pos" >= 0),
-    "value" TEXT NOT NULL,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "tasks_pos", "after_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos", "tasks_pos") REFERENCES "conversation_store_items_draft_tasks" ("conversation_store_pos", "items_pos", "tasks_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_team" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "team_pos" INTEGER NOT NULL CHECK ("team_pos" >= 0),
-    "role" TEXT NOT NULL,
-    "count" INTEGER NOT NULL CHECK ("count" >= 0),
-    "model" TEXT,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "team_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items_draft" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_team_bench" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "team_pos" INTEGER NOT NULL CHECK ("team_pos" >= 0),
-    "bench_pos" INTEGER NOT NULL CHECK ("bench_pos" >= 0),
-    "value" INTEGER NOT NULL CHECK ("value" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "team_pos", "bench_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos", "team_pos") REFERENCES "conversation_store_items_draft_team" ("conversation_store_pos", "items_pos", "team_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_settings" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "default_model" TEXT,
-    "effort" TEXT,
-    "max_tokens" INTEGER CHECK ("max_tokens" >= 0),
-    "max_turns" INTEGER CHECK ("max_turns" >= 0),
-    "compress_at" INTEGER CHECK ("compress_at" >= 0),
-    "keep_recent" INTEGER CHECK ("keep_recent" >= 0),
-    "task_budget" INTEGER CHECK ("task_budget" >= 0),
-    "permission_mode" TEXT CHECK ("permission_mode" IN ('autonomous', 'ask', 'read_only')),
-    "review_timeout_minutes" INTEGER CHECK ("review_timeout_minutes" >= 0),
-    PRIMARY KEY ("conversation_store_pos", "items_pos"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items_draft" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-CREATE TABLE "conversation_store_items_draft_settings_role_models" (
-    "conversation_store_pos" INTEGER NOT NULL CHECK ("conversation_store_pos" >= 0),
-    "items_pos" INTEGER NOT NULL CHECK ("items_pos" >= 0),
-    "role_models_key" TEXT NOT NULL,
-    "value" TEXT NOT NULL,
-    PRIMARY KEY ("conversation_store_pos", "items_pos", "role_models_key"),
-    FOREIGN KEY ("conversation_store_pos", "items_pos") REFERENCES "conversation_store_items_draft_settings" ("conversation_store_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT;
-
 -- component toolbox
 CREATE TABLE "discovery" (
     "id" TEXT NOT NULL,
@@ -639,8 +508,7 @@ CREATE TABLE "deliverable" (
     "author" TEXT NOT NULL,
     "task" TEXT,
     "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
-    "sha256" TEXT NOT NULL,
-    "store" TEXT NOT NULL,
+    "hash" TEXT NOT NULL,
     "kind" TEXT NOT NULL,
     "audience" TEXT NOT NULL,
     PRIMARY KEY ("id")
@@ -1176,7 +1044,6 @@ CREATE TABLE "work_lane_queue" (
     "origin_owner" INTEGER NOT NULL CHECK ("origin_owner" IN (0, 1)),
     "origin_mcp" INTEGER NOT NULL CHECK ("origin_mcp" IN (0, 1)),
     "origin_acp" INTEGER NOT NULL CHECK ("origin_acp" IN (0, 1)),
-    "origin_conversation" TEXT,
     "origin_lane_present" INTEGER NOT NULL CHECK ("origin_lane_present" IN (0, 1)),
     "origin_lane_change" TEXT,
     "origin_lane_repo" TEXT,
@@ -1198,7 +1065,6 @@ CREATE TABLE "work_lane_current" (
     "origin_owner" INTEGER NOT NULL CHECK ("origin_owner" IN (0, 1)),
     "origin_mcp" INTEGER NOT NULL CHECK ("origin_mcp" IN (0, 1)),
     "origin_acp" INTEGER NOT NULL CHECK ("origin_acp" IN (0, 1)),
-    "origin_conversation" TEXT,
     "origin_lane_present" INTEGER NOT NULL CHECK ("origin_lane_present" IN (0, 1)),
     "origin_lane_change" TEXT,
     "origin_lane_repo" TEXT,
@@ -2030,6 +1896,154 @@ CREATE TABLE "model_registry_records_card_allowed_roles" (
     FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component mcp
+CREATE TABLE "mcp_server" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "name" TEXT NOT NULL,
+    "enabled" INTEGER NOT NULL CHECK ("enabled" IN (0, 1)),
+    "limits_timeout_s" INTEGER NOT NULL CHECK ("limits_timeout_s" >= 0),
+    "limits_max_output_kb" INTEGER NOT NULL CHECK ("limits_max_output_kb" >= 0),
+    "limits_idle_stop_min" INTEGER NOT NULL CHECK ("limits_idle_stop_min" >= 0),
+    "allow_private" INTEGER NOT NULL CHECK ("allow_private" IN (0, 1)),
+    "storage_volume" INTEGER NOT NULL CHECK ("storage_volume" IN (0, 1)),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "mcp_server_transport" (
+    "mcp_server_id" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('stdio', 'http')),
+    "workdir" TEXT,
+    "url" TEXT,
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_transport_package" (
+    "mcp_server_id" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('npm', 'pypi', 'binary')),
+    "npm_name" TEXT,
+    "npm_version" TEXT,
+    "pypi_name" TEXT,
+    "pypi_version" TEXT,
+    "pypi_entry" TEXT,
+    "binary_url" TEXT,
+    "binary_sha256" TEXT,
+    "binary_entry" TEXT,
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_transport" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_transport_args" (
+    "mcp_server_id" TEXT NOT NULL,
+    "args_pos" INTEGER NOT NULL CHECK ("args_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "args_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_transport" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_env" (
+    "mcp_server_id" TEXT NOT NULL,
+    "env_key" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('secret', 'value')),
+    "secret_secret" TEXT,
+    "secret_format" TEXT,
+    "value_value" TEXT,
+    PRIMARY KEY ("mcp_server_id", "env_key"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_headers" (
+    "mcp_server_id" TEXT NOT NULL,
+    "headers_key" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('secret', 'value')),
+    "secret_secret" TEXT,
+    "secret_format" TEXT,
+    "value_value" TEXT,
+    PRIMARY KEY ("mcp_server_id", "headers_key"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_tools" (
+    "mcp_server_id" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_tools_allow" (
+    "mcp_server_id" TEXT NOT NULL,
+    "all" INTEGER NOT NULL CHECK ("all" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_tools" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_tools_allow_names" (
+    "mcp_server_id" TEXT NOT NULL,
+    "names_pos" INTEGER NOT NULL CHECK ("names_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "names_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_tools_allow" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_tools_risk" (
+    "mcp_server_id" TEXT NOT NULL,
+    "risk_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL CHECK ("value" IN ('read', 'write', 'irreversible')),
+    PRIMARY KEY ("mcp_server_id", "risk_key"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_tools" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access" (
+    "mcp_server_id" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_roles" (
+    "mcp_server_id" TEXT NOT NULL,
+    "all" INTEGER NOT NULL CHECK ("all" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_roles_names" (
+    "mcp_server_id" TEXT NOT NULL,
+    "names_pos" INTEGER NOT NULL CHECK ("names_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "names_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access_roles" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_nodes" (
+    "mcp_server_id" TEXT NOT NULL,
+    "all" INTEGER NOT NULL CHECK ("all" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_nodes_names" (
+    "mcp_server_id" TEXT NOT NULL,
+    "names_pos" INTEGER NOT NULL CHECK ("names_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "names_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access_nodes" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_projects" (
+    "mcp_server_id" TEXT NOT NULL,
+    "all" INTEGER NOT NULL CHECK ("all" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_projects_names" (
+    "mcp_server_id" TEXT NOT NULL,
+    "names_pos" INTEGER NOT NULL CHECK ("names_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "names_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access_projects" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_offered" (
+    "mcp_server_id" TEXT NOT NULL,
+    "offered_pos" INTEGER NOT NULL CHECK ("offered_pos" >= 0),
+    "name" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
+    "input_schema_content" TEXT,
+    "annotations_title" TEXT,
+    "annotations_read_only_hint" INTEGER CHECK ("annotations_read_only_hint" IN (0, 1)),
+    "annotations_destructive_hint" INTEGER CHECK ("annotations_destructive_hint" IN (0, 1)),
+    "annotations_idempotent_hint" INTEGER CHECK ("annotations_idempotent_hint" IN (0, 1)),
+    "annotations_open_world_hint" INTEGER CHECK ("annotations_open_world_hint" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id", "offered_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component sessions
 CREATE TABLE "session" (
     "id" TEXT NOT NULL,
@@ -2098,6 +2112,7 @@ CREATE TABLE "budget" (
     "cap" INTEGER CHECK ("cap" >= 0),
     "warn_at_pct" INTEGER NOT NULL CHECK ("warn_at_pct" >= 0),
     "monthly_cap" INTEGER CHECK ("monthly_cap" >= 0),
+    "disk_quota_bytes" INTEGER CHECK ("disk_quota_bytes" >= 0),
     "month" INTEGER NOT NULL CHECK ("month" >= 0),
     "month_spent" INTEGER NOT NULL CHECK ("month_spent" >= 0),
     "reserved" INTEGER NOT NULL CHECK ("reserved" >= 0),
@@ -2114,7 +2129,7 @@ CREATE TABLE "budget" (
 CREATE TABLE "card" (
     "id" TEXT NOT NULL,
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
-    "kind" TEXT NOT NULL CHECK ("kind" IN ('start', 'budget', 'allowance', 'disk', 'connector', 'tool', 'engine', 'recipe', 'promote', 'memory', 'review', 'land', 'adopt', 'yank', 'seat', 'release', 'deploy', 'tool_call', 'incident')),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('start', 'budget', 'allowance', 'disk', 'connector', 'tool', 'engine', 'recipe', 'promote', 'memory', 'review', 'land', 'adopt', 'yank', 'seat', 'release', 'deploy', 'tool_call', 'incident', 'proposal')),
     "chat" TEXT,
     "project" TEXT,
     "task" TEXT,
@@ -2153,10 +2168,82 @@ CREATE TABLE "chat" (
     "next_seq" INTEGER NOT NULL CHECK ("next_seq" >= 0),
     "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
     "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "model" TEXT,
+    "draft_seen" INTEGER NOT NULL CHECK ("draft_seen" >= 0),
     PRIMARY KEY ("id")
 ) STRICT;
 CREATE INDEX "chat_project" ON "chat" ("project");
 CREATE INDEX "chat_task" ON "chat" ("task");
+CREATE TABLE "chat_draft" (
+    "chat_id" TEXT NOT NULL,
+    "revision" INTEGER NOT NULL CHECK ("revision" >= 0),
+    "title" TEXT NOT NULL,
+    "goal" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "repo" TEXT,
+    "github" TEXT NOT NULL,
+    "disk_quota_bytes" INTEGER CHECK ("disk_quota_bytes" >= 0),
+    "updated_by" TEXT NOT NULL,
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "started_ms" INTEGER CHECK ("started_ms" >= 0),
+    PRIMARY KEY ("chat_id"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_tasks" (
+    "chat_id" TEXT NOT NULL,
+    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
+    "key" TEXT NOT NULL,
+    "goal" TEXT NOT NULL,
+    "acceptance" TEXT,
+    "role" TEXT,
+    "budget" INTEGER CHECK ("budget" >= 0),
+    PRIMARY KEY ("chat_id", "tasks_pos"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_tasks_after" (
+    "chat_id" TEXT NOT NULL,
+    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
+    "after_pos" INTEGER NOT NULL CHECK ("after_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("chat_id", "tasks_pos", "after_pos"),
+    FOREIGN KEY ("chat_id", "tasks_pos") REFERENCES "chat_draft_tasks" ("chat_id", "tasks_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_budget" (
+    "chat_id" TEXT NOT NULL,
+    "unit" TEXT NOT NULL CHECK ("unit" IN ('usd', 'tokens')),
+    "cap" INTEGER NOT NULL CHECK ("cap" >= 0),
+    "monthly_cap" INTEGER CHECK ("monthly_cap" >= 0),
+    PRIMARY KEY ("chat_id"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_settings" (
+    "chat_id" TEXT NOT NULL,
+    "default_model" TEXT,
+    "effort" TEXT,
+    "max_tokens" INTEGER CHECK ("max_tokens" >= 0),
+    "max_turns" INTEGER CHECK ("max_turns" >= 0),
+    "compress_at" INTEGER CHECK ("compress_at" >= 0),
+    "keep_recent" INTEGER CHECK ("keep_recent" >= 0),
+    "task_budget" INTEGER CHECK ("task_budget" >= 0),
+    "permission_mode" TEXT CHECK ("permission_mode" IN ('autonomous', 'ask', 'read_only')),
+    "review_timeout_minutes" INTEGER CHECK ("review_timeout_minutes" >= 0),
+    PRIMARY KEY ("chat_id"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_settings_role_models" (
+    "chat_id" TEXT NOT NULL,
+    "role_models_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("chat_id", "role_models_key"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft_settings" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_works" (
+    "chat_id" TEXT NOT NULL,
+    "works_pos" INTEGER NOT NULL CHECK ("works_pos" >= 0),
+    "value" INTEGER NOT NULL CHECK ("value" >= 0),
+    PRIMARY KEY ("chat_id", "works_pos"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
 CREATE TABLE "chat_messages" (
     "chat_id" TEXT NOT NULL,
     "messages_pos" INTEGER NOT NULL CHECK ("messages_pos" >= 0),
@@ -2170,6 +2257,17 @@ CREATE TABLE "chat_messages" (
     "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
     PRIMARY KEY ("chat_id", "messages_pos"),
     FOREIGN KEY ("chat_id") REFERENCES "chat" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_messages_attachments" (
+    "chat_id" TEXT NOT NULL,
+    "messages_pos" INTEGER NOT NULL CHECK ("messages_pos" >= 0),
+    "attachments_pos" INTEGER NOT NULL CHECK ("attachments_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "size" INTEGER NOT NULL CHECK ("size" >= 0),
+    "mime" TEXT NOT NULL,
+    PRIMARY KEY ("chat_id", "messages_pos", "attachments_pos"),
+    FOREIGN KEY ("chat_id", "messages_pos") REFERENCES "chat_messages" ("chat_id", "messages_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component threads
@@ -2406,4 +2504,250 @@ CREATE TABLE "usage_work" (
     PRIMARY KEY ("cid", "work")
 ) STRICT;
 CREATE INDEX "usage_work_work" ON "usage_work" ("work");
+
+-- ide audit (written through)
+CREATE TABLE "ide_audit" (
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "actor" TEXT NOT NULL,
+    "workspace" TEXT NOT NULL,
+    "path" TEXT,
+    "action_kind" TEXT NOT NULL CHECK ("action_kind" IN ('write', 'restore', 'run', 'run_stop', 'term_open', 'term_kill')),
+    "action_write_hash_before" TEXT,
+    "action_write_hash_after_content" TEXT,
+    "action_write_checkpoint_content" TEXT,
+    "action_write_change_content" TEXT,
+    "action_restore_restored" INTEGER CHECK ("action_restore_restored" >= 0),
+    "action_restore_checkpoint_content" TEXT,
+    "action_run_run_content" TEXT,
+    "action_run_command" TEXT,
+    "action_run_timeout_s" INTEGER CHECK ("action_run_timeout_s" >= 0),
+    "action_run_stop_run" TEXT,
+    "action_term_open_term" TEXT,
+    "action_term_open_cols" INTEGER CHECK ("action_term_open_cols" >= 0),
+    "action_term_open_rows" INTEGER CHECK ("action_term_open_rows" >= 0),
+    "action_term_open_cwd" TEXT,
+    "action_term_kill_term" TEXT,
+    PRIMARY KEY ("seq")
+) STRICT;
+CREATE INDEX "ide_audit_workspace_at_ms" ON "ide_audit" ("workspace", "at_ms");
+
+-- station audit (written through)
+CREATE TABLE "station_audit" (
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "actor" TEXT NOT NULL,
+    "station" TEXT,
+    "agent" INTEGER CHECK ("agent" >= 0),
+    "event_kind" TEXT NOT NULL CHECK ("event_kind" IN ('code_issue', 'code_revoke', 'join', 'join_refused', 'lease_ended', 'revoke', 'drain', 'undrain', 'rename', 'settings', 'lease_open', 'lease_released', 'lease_granted', 'lease_failed', 'freeze', 'unfreeze', 'freeze_failed', 'owner_input', 'agent_op', 'takeover', 'give_back', 'lease_charge', 'recording_delete', 'recording_defaults', 'sync_conflict', 'sync_paused', 'sync_resumed', 'sync_resume', 'sync_put', 'sync_delete', 'sync_deliver', 'vm_reset', 'vm_reset_failed', 'vm_create', 'vm_remove', 'vm_sleep', 'vm_wake', 'owner_ide')),
+    "event_code_issue_code" TEXT,
+    "event_code_issue_label" TEXT,
+    "event_code_issue_expires_ms" INTEGER CHECK ("event_code_issue_expires_ms" >= 0),
+    "event_code_revoke_code" TEXT,
+    "event_join_name" TEXT,
+    "event_join_code" TEXT,
+    "event_join_address" TEXT,
+    "event_join_hostname" TEXT,
+    "event_join_refused_address" TEXT,
+    "event_lease_ended_lease" TEXT,
+    "event_lease_ended_session" INTEGER CHECK ("event_lease_ended_session" >= 0),
+    "event_lease_ended_reason" TEXT,
+    "event_revoke_name" TEXT,
+    "event_rename_name" TEXT,
+    "event_settings_settings_takeover" TEXT CHECK ("event_settings_settings_takeover" IN ('agent_waits', 'release_lease', 'keep_working_pointer_paused')),
+    "event_settings_settings_record" INTEGER CHECK ("event_settings_settings_record" IN (0, 1)),
+    "event_settings_settings_retention_days" INTEGER CHECK ("event_settings_settings_retention_days" >= 0),
+    "event_settings_settings_record_fps" INTEGER CHECK ("event_settings_settings_record_fps" >= 0),
+    "event_settings_settings_record_takeovers" INTEGER CHECK ("event_settings_settings_record_takeovers" IN (0, 1)),
+    "event_settings_settings_work_folder" TEXT,
+    "event_settings_settings_snapshot_reset" INTEGER CHECK ("event_settings_settings_snapshot_reset" IN (0, 1)),
+    "event_settings_settings_rate_per_hour" INTEGER CHECK ("event_settings_settings_rate_per_hour" >= 0),
+    "event_lease_open_lease" TEXT,
+    "event_lease_open_lease_kind" TEXT CHECK ("event_lease_open_lease_kind" IN ('shared', 'pixel')),
+    "event_lease_open_task" TEXT,
+    "event_lease_released_lease" TEXT,
+    "event_lease_released_session" INTEGER CHECK ("event_lease_released_session" >= 0),
+    "event_lease_released_close_error" TEXT,
+    "event_lease_released_reason" TEXT,
+    "event_lease_granted_lease" TEXT,
+    "event_lease_granted_session" INTEGER CHECK ("event_lease_granted_session" >= 0),
+    "event_lease_failed_lease" TEXT,
+    "event_lease_failed_reason" TEXT,
+    "event_freeze_failed_reason" TEXT,
+    "event_owner_input_lease" TEXT,
+    "event_owner_input_session" INTEGER CHECK ("event_owner_input_session" >= 0),
+    "event_owner_input_source" TEXT,
+    "event_owner_input_action" TEXT,
+    "event_agent_op_op_content" TEXT,
+    "event_agent_op_lease" TEXT,
+    "event_agent_op_ok" INTEGER CHECK ("event_agent_op_ok" IN (0, 1)),
+    "event_agent_op_error" TEXT,
+    "event_takeover_by" TEXT,
+    "event_takeover_source" TEXT,
+    "event_takeover_policy" TEXT CHECK ("event_takeover_policy" IN ('agent_waits', 'release_lease', 'keep_working_pointer_paused')),
+    "event_takeover_session" INTEGER CHECK ("event_takeover_session" >= 0),
+    "event_give_back_by" TEXT,
+    "event_give_back_reason" TEXT,
+    "event_give_back_session" INTEGER CHECK ("event_give_back_session" >= 0),
+    "event_lease_charge_lease" TEXT,
+    "event_lease_charge_task" TEXT,
+    "event_lease_charge_rate_per_hour" INTEGER CHECK ("event_lease_charge_rate_per_hour" >= 0),
+    "event_lease_charge_active_ms" INTEGER CHECK ("event_lease_charge_active_ms" >= 0),
+    "event_lease_charge_wanted" INTEGER,
+    "event_lease_charge_charged" INTEGER,
+    "event_lease_charge_error" TEXT,
+    "event_recording_delete_recording" TEXT,
+    "event_recording_delete_lease" TEXT,
+    "event_recording_delete_frames" INTEGER CHECK ("event_recording_delete_frames" >= 0),
+    "event_recording_defaults_defaults_record" INTEGER CHECK ("event_recording_defaults_defaults_record" IN (0, 1)),
+    "event_recording_defaults_defaults_retention_days" INTEGER CHECK ("event_recording_defaults_defaults_retention_days" >= 0),
+    "event_recording_defaults_defaults_record_fps" INTEGER CHECK ("event_recording_defaults_defaults_record_fps" >= 0),
+    "event_recording_defaults_defaults_record_takeovers" INTEGER CHECK ("event_recording_defaults_defaults_record_takeovers" IN (0, 1)),
+    "event_sync_conflict_path" TEXT,
+    "event_sync_conflict_copy" TEXT,
+    "event_sync_paused_reason" TEXT,
+    "event_sync_paused_deletions" INTEGER CHECK ("event_sync_paused_deletions" >= 0),
+    "event_sync_resumed_by" TEXT,
+    "event_sync_resume_apply_deletions" INTEGER CHECK ("event_sync_resume_apply_deletions" IN (0, 1)),
+    "event_sync_resume_reason" TEXT,
+    "event_sync_resume_deletions" INTEGER CHECK ("event_sync_resume_deletions" >= 0),
+    "event_sync_put_path" TEXT,
+    "event_sync_put_hash" TEXT,
+    "event_sync_put_size" INTEGER CHECK ("event_sync_put_size" >= 0),
+    "event_sync_delete_path" TEXT,
+    "event_sync_deliver_path" TEXT,
+    "event_sync_deliver_file" TEXT,
+    "event_vm_reset_vm" TEXT,
+    "event_vm_reset_failed_vm" TEXT,
+    "event_vm_reset_failed_reason" TEXT,
+    "event_vm_create_vm" TEXT,
+    "event_vm_create_node" TEXT,
+    "event_vm_create_node_vm" TEXT,
+    "event_vm_create_os" TEXT,
+    "event_vm_create_code" TEXT,
+    "event_vm_remove_vm" TEXT,
+    "event_vm_remove_node" TEXT,
+    "event_vm_remove_node_vm" TEXT,
+    "event_vm_remove_station" TEXT,
+    "event_vm_sleep_vm" TEXT,
+    "event_vm_sleep_node" TEXT,
+    "event_vm_sleep_node_vm" TEXT,
+    "event_vm_wake_vm" TEXT,
+    "event_vm_wake_node" TEXT,
+    "event_vm_wake_node_vm" TEXT,
+    "event_owner_ide_action_kind" TEXT CHECK ("event_owner_ide_action_kind" IN ('write', 'run', 'run_stop', 'term_open', 'term_kill')),
+    "event_owner_ide_action_write_path" TEXT,
+    "event_owner_ide_action_write_hash_before" TEXT,
+    "event_owner_ide_action_write_hash_after_content" TEXT,
+    "event_owner_ide_action_run_run_content" TEXT,
+    "event_owner_ide_action_run_command" TEXT,
+    "event_owner_ide_action_run_timeout_s" INTEGER CHECK ("event_owner_ide_action_run_timeout_s" >= 0),
+    "event_owner_ide_action_run_stop_run" TEXT,
+    "event_owner_ide_action_term_open_term" TEXT,
+    "event_owner_ide_action_term_open_cols" INTEGER CHECK ("event_owner_ide_action_term_open_cols" >= 0),
+    "event_owner_ide_action_term_open_rows" INTEGER CHECK ("event_owner_ide_action_term_open_rows" >= 0),
+    "event_owner_ide_action_term_open_cwd" TEXT,
+    "event_owner_ide_action_term_kill_term" TEXT,
+    PRIMARY KEY ("seq")
+) STRICT;
+CREATE INDEX "station_audit_station_at_ms" ON "station_audit" ("station", "at_ms");
+
+-- station recordings (written through)
+CREATE TABLE "station_recording" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "station" TEXT NOT NULL,
+    "lease" TEXT NOT NULL,
+    "agent" INTEGER NOT NULL CHECK ("agent" >= 0),
+    "task" TEXT,
+    "started_ms" INTEGER NOT NULL CHECK ("started_ms" >= 0),
+    "ended_ms" INTEGER CHECK ("ended_ms" >= 0),
+    "frames" INTEGER NOT NULL CHECK ("frames" >= 0),
+    "actions" INTEGER NOT NULL CHECK ("actions" >= 0),
+    "bytes" INTEGER NOT NULL CHECK ("bytes" >= 0),
+    "takeover" INTEGER NOT NULL CHECK ("takeover" IN (0, 1)),
+    "width" INTEGER CHECK ("width" >= 0),
+    "height" INTEGER CHECK ("height" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "station_recording_station_started_ms" ON "station_recording" ("station", "started_ms");
+
+-- station recording events (written through)
+CREATE TABLE "station_recording_event" (
+    "recording" TEXT NOT NULL,
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "event_at_ms" INTEGER NOT NULL CHECK ("event_at_ms" >= 0),
+    "event_kind" TEXT NOT NULL,
+    "event_ok" INTEGER NOT NULL CHECK ("event_ok" IN (0, 1)),
+    "event_summary_content" TEXT,
+    PRIMARY KEY ("recording", "seq")
+) STRICT;
+
+-- station recording frames (written through)
+CREATE TABLE "station_recording_frame" (
+    "recording" TEXT NOT NULL,
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "ts_ms" INTEGER NOT NULL CHECK ("ts_ms" >= 0),
+    "bytes" INTEGER NOT NULL CHECK ("bytes" >= 0),
+    "hash" TEXT NOT NULL,
+    PRIMARY KEY ("recording", "seq")
+) STRICT;
+
+-- station sync files (written through)
+CREATE TABLE "station_sync_file" (
+    "station" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "hash" TEXT,
+    "size" INTEGER NOT NULL CHECK ("size" >= 0),
+    "mtime_ms" INTEGER NOT NULL CHECK ("mtime_ms" >= 0),
+    "version" INTEGER NOT NULL CHECK ("version" >= 0),
+    "base" TEXT,
+    "conflict_of" TEXT,
+    "synced_ms" INTEGER NOT NULL CHECK ("synced_ms" >= 0),
+    PRIMARY KEY ("station", "path")
+) STRICT;
+
+-- eval runs (written through)
+CREATE TABLE "eval_run" (
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "session" TEXT NOT NULL,
+    "project" TEXT NOT NULL,
+    "task" TEXT,
+    "recipe" TEXT NOT NULL,
+    "step" TEXT NOT NULL,
+    "seat" TEXT NOT NULL,
+    "round" INTEGER NOT NULL CHECK ("round" >= 0),
+    "engine" TEXT NOT NULL,
+    "engine_version" TEXT NOT NULL,
+    "model" TEXT,
+    "provider" TEXT,
+    "harness" TEXT NOT NULL,
+    "node" TEXT,
+    "tokens_in" INTEGER NOT NULL CHECK ("tokens_in" >= 0),
+    "tokens_out" INTEGER NOT NULL CHECK ("tokens_out" >= 0),
+    "tokens_cached" INTEGER NOT NULL CHECK ("tokens_cached" >= 0),
+    "cost_micros" INTEGER NOT NULL CHECK ("cost_micros" >= 0),
+    "model_calls" INTEGER NOT NULL CHECK ("model_calls" >= 0),
+    "tool_calls" INTEGER NOT NULL CHECK ("tool_calls" >= 0),
+    "tool_ms" INTEGER NOT NULL CHECK ("tool_ms" >= 0),
+    "wall_ms" INTEGER NOT NULL CHECK ("wall_ms" >= 0),
+    "verdict" INTEGER CHECK ("verdict" IN (0, 1)),
+    "outcome" TEXT NOT NULL,
+    "ok" INTEGER NOT NULL CHECK ("ok" IN (0, 1)),
+    "landed" INTEGER CHECK ("landed" IN (0, 1)),
+    "reverted" INTEGER CHECK ("reverted" IN (0, 1)),
+    "ended_ms" INTEGER NOT NULL CHECK ("ended_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "eval_run_project" ON "eval_run" ("project");
+CREATE INDEX "eval_run_task" ON "eval_run" ("task");
+CREATE INDEX "eval_run_seat" ON "eval_run" ("seat");
+CREATE INDEX "eval_run_model" ON "eval_run" ("model");
+CREATE INDEX "eval_run_ended_ms" ON "eval_run" ("ended_ms");
 

@@ -1,0 +1,25 @@
+meta {
+  name: Answer 404 to renaming a chat that does not exist
+  type: http
+  seq: 18
+}
+
+patch {
+  url: {{baseUrl}}/v1/chats/ch999999
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"title": "nobody"}
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

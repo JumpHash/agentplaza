@@ -369,7 +369,7 @@ export function openNewProject(): void {
         'section.np-sec',
         { 'aria-label': 'Talk it through' },
         h('h3.np-h', null, 'Talk it through'),
-        h('p.np-p', null, 'The orchestrator asks what it needs and drafts the project beside the conversation: its tasks, its team and its budget. You start it when it looks right.'),
+        h('p.np-p', null, 'The orchestrator asks what it needs and drafts the project beside the conversation: its tasks and its budget. You start it when it looks right.'),
         field('Your goal', ask),
         fieldBox('Files', talkFiles.el),
         h('div.np-foot', null, talk),

@@ -54,12 +54,6 @@ pub fn all() -> Vec<Component> {
         },
         // batch C2
         Component {
-            name: "conversations",
-            def: crate::conversations::def,
-            rows: |app| app.conversations.rows(),
-            load: |app, conn| app.conversations.load(conn),
-        },
-        Component {
             name: "toolbox",
             def: crate::toolbox::def,
             rows: |app| app.toolbox.rows(),
@@ -200,6 +194,12 @@ pub fn all() -> Vec<Component> {
             rows: |app| app.models.rows(),
             load: |app, conn| app.models.load(conn),
         },
+        Component {
+            name: "mcp",
+            def: crate::mcp::config::def,
+            rows: |app| app.mcp.store.rows(),
+            load: |app, conn| app.mcp.store.load(conn),
+        },
         // The work engine's records (phase 0).
         Component {
             name: "sessions",
@@ -260,5 +260,18 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
         ("usage calls", crate::usage::call_def),
         ("usage hours", crate::usage::hour_def),
         ("usage works", crate::usage::work_def),
+        ("ide audit", crate::ide::audit_def),
+        ("station audit", crate::stations::audit::def),
+        ("station recordings", crate::stations::recordings::def),
+        (
+            "station recording events",
+            crate::stations::recordings::event_def,
+        ),
+        (
+            "station recording frames",
+            crate::stations::recordings::frame_def,
+        ),
+        ("station sync files", crate::stations::sync::def),
+        ("eval runs", crate::evals::def),
     ]
 }

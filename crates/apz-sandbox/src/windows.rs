@@ -108,8 +108,8 @@ pub(crate) fn spawn(
     let p = crate::prepare(spec)?;
     if let Network::LoopbackPort(port) = p.network {
         return Err(SandboxError::Unsupported(format!(
-            "LoopbackPort({port}): an AppContainer needs a loopback exemption, which this \
-             backend does not set"
+            "LoopbackPort({port}): an AppContainer reaches loopback only through a loopback \
+             exemption, which only an administrator can grant, and this backend does not grant one"
         )));
     }
     let memory = match p.limits.memory_bytes {

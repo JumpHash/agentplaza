@@ -1,7 +1,7 @@
 //! OpenAI Chat Completions: `openai`, `azure-openai` (v1 API) and every
 //! `openai-compatible` server. Streamed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
 use apz_proto::chat::{Block, ChatRequest, ChatResponse, Delta, Role, StopReason, Usage};
@@ -292,6 +292,18 @@ struct Call {
     args: String,
 }
 
+/// Sends `BlockEnd` for each call that has not ended yet. A call ends with its answer's `finish_reason`, or with the
+/// stream if that never comes.
+fn end_calls(calls: &BTreeMap<u64, Call>, ended: &mut BTreeSet<u64>, sink: &mut dyn FnMut(Delta)) {
+    for &index in calls.keys() {
+        if ended.insert(index) {
+            sink(Delta::BlockEnd {
+                index: index as usize,
+            });
+        }
+    }
+}
+
 fn read_stream(
     body: impl Read,
     sink: &mut dyn FnMut(Delta),
@@ -300,6 +312,7 @@ fn read_stream(
 ) -> Result<ChatResponse, GatewayError> {
     let (mut text, mut thinking, mut model) = (String::new(), String::new(), String::new());
     let mut calls: BTreeMap<u64, Call> = BTreeMap::new();
+    let mut ended: BTreeSet<u64> = BTreeSet::new();
     let mut usage = Usage::default();
     let mut finish: Option<String> = None;
     let mut refused = false;
@@ -367,9 +380,8 @@ fn read_stream(
                 }
             }
             for (pos, tc) in d["tool_calls"].as_array().into_iter().flatten().enumerate() {
-                let call = calls
-                    .entry(tc["index"].as_u64().unwrap_or(pos as u64))
-                    .or_default();
+                let index = tc["index"].as_u64().unwrap_or(pos as u64);
+                let call = calls.entry(index).or_default();
                 if let Some(id) = tc["id"].as_str().filter(|s| !s.is_empty()) {
                     call.id = id.to_string();
                 }
@@ -377,19 +389,29 @@ fn read_stream(
                     if call.name.is_empty() {
                         sink(Delta::ToolUse {
                             name: name.to_string(),
+                            index: index as usize,
+                            id: call.id.clone(),
                         });
                     }
                     call.name = name.to_string();
                 }
-                call.args
-                    .push_str(tc["function"]["arguments"].as_str().unwrap_or(""));
+                let args = tc["function"]["arguments"].as_str().unwrap_or("");
+                if !args.is_empty() {
+                    call.args.push_str(args);
+                    sink(Delta::ToolInput {
+                        index: index as usize,
+                        json: args.to_string(),
+                    });
+                }
             }
             if let Some(reason) = choice["finish_reason"].as_str() {
                 finish = Some(reason.to_string());
+                end_calls(&calls, &mut ended, sink);
             }
         }
         Ok(true)
     })?;
+    end_calls(&calls, &mut ended, sink);
     if !done && finish.is_none() {
         return Err(GatewayError::Transport(
             "stream ended before the answer finished".into(),
@@ -638,6 +660,60 @@ mod tests {
                 .filter(|d| matches!(d, Delta::ToolUse { .. }))
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn a_streamed_tool_call_opens_takes_its_input_and_ends_at_the_finish() {
+        let server = FakeServer::start(vec![Reply::sse(sse_data(STREAM))]);
+        let gw = gateway(vec![provider(
+            "o",
+            ProviderKind::OpenAi,
+            &server,
+            Auth::Env("OPENAI_API_KEY".into()),
+        )]);
+        let mut deltas = Vec::new();
+        gw.complete(
+            &ChatRequest {
+                model: "o/gpt-6-astra".into(),
+                ..conversation()
+            },
+            &mut |d| deltas.push(d),
+        )
+        .unwrap();
+        // The text and reasoning deltas are not part of the calls; the calls' deltas keep their order.
+        let calls: Vec<Delta> = deltas
+            .into_iter()
+            .filter(|d| !matches!(d, Delta::Text { .. } | Delta::Thinking { .. }))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                Delta::ToolUse {
+                    name: "bash".into(),
+                    index: 0,
+                    id: "call_a".into(),
+                },
+                Delta::ToolUse {
+                    name: "list".into(),
+                    index: 1,
+                    id: "call_b".into(),
+                },
+                Delta::ToolInput {
+                    index: 1,
+                    json: "{}".into(),
+                },
+                Delta::ToolInput {
+                    index: 0,
+                    json: "{\"command\":".into(),
+                },
+                Delta::ToolInput {
+                    index: 0,
+                    json: "\"ls\"}".into(),
+                },
+                Delta::BlockEnd { index: 0 },
+                Delta::BlockEnd { index: 1 },
+            ]
         );
     }
 

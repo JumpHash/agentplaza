@@ -757,10 +757,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 }
 
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
-    let project = app
-        .members
-        .project_of(agent.cid)
-        .ok_or("you are on no project")?;
+    let project = crate::projects::project_of(app, agent.cid).ok_or("you are on no project")?;
     match name {
         "plaza_environments" => {
             let envs: Vec<Value> = list(app, &project)

@@ -610,7 +610,7 @@ mod tests {
 
         let refused = handle(
             &json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-                    "params": {"name": "bash", "arguments": {}}}),
+                    "params": {"name": "run", "arguments": {}}}),
             &tools,
             &Fake,
             deadline,

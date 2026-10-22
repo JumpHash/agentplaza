@@ -102,6 +102,12 @@ function detailOf(input: unknown): string {
   if (typeof input === 'string') return clip(input);
   if (!input || typeof input !== 'object') return '';
   const rec = input as Record<string, unknown>;
+  // The v2 file tools name their files in a list: the first file's path stands for the call.
+  for (const list of ['files', 'edits', 'create']) {
+    const first = Array.isArray(rec[list]) ? (rec[list] as unknown[])[0] : undefined;
+    const path = first && typeof first === 'object' ? str((first as Record<string, unknown>).path) : undefined;
+    if (path) return clip(path);
+  }
   for (const key of ['path', 'file_path', 'file', 'command', 'query', 'pattern', 'url', 'title', 'name']) {
     const v = str(rec[key]);
     if (v) return clip(v);

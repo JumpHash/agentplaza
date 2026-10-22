@@ -120,7 +120,10 @@ mod tests {
         let ben = json!({ "cid": 8, "project": null });
         assert!(agent_in(&ada, None) && agent_in(&ben, None));
         assert!(agent_in(&ada, Some("pr2")));
-        assert!(!agent_in(&ben, Some("pr2")), "the bench is in no project");
+        assert!(
+            !agent_in(&ben, Some("pr2")),
+            "an agent with no live session is in no project"
+        );
         let atlas =
             json!({ "cid": 3, "role": "orchestrator", "tier": "orchestrator", "project": null });
         assert!(

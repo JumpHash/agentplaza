@@ -63,8 +63,9 @@ pub struct Spec {
 pub enum Network {
     /// No network access.
     None,
-    /// TCP to localhost on this port only: the hub's egress proxy. Each backend's exact
-    /// reach is described in [`support`]'s `detail`. Windows refuses this variant.
+    /// TCP to localhost on this port only: the hub's egress proxy, or a loose trainer job's hub. Each backend's exact
+    /// reach is described in [`support`]'s `detail`. Windows refuses this variant, and Linux refuses it below Landlock
+    /// ABI 4 (Linux 6.7), where the kernel cannot filter TCP ports.
     LoopbackPort(u16),
 }
 
@@ -190,8 +191,8 @@ impl Sandboxed {
         self.inner.try_wait()
     }
 
-    /// Kills the child. On Unix that is the child alone (SIGKILL). On Windows it
-    /// terminates the whole job.
+    /// Kills the child and what it started: on Unix its whole process group (SIGKILL; the
+    /// child leads its own group), on Windows the whole job.
     pub fn kill(&mut self) -> io::Result<()> {
         self.inner.kill()
     }

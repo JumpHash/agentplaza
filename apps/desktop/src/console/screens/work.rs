@@ -1500,7 +1500,7 @@ fn planning<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             col(
                 "approval",
                 approval.into_iter().collect(),
-                "The mayor approves."
+                "The orchestrator approves."
             ),
         ]
         .spacing(10),

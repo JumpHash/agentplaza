@@ -81,7 +81,7 @@ pub struct Config {
     /// Hours between scheduled sweeps; 0 sweeps only when the owner asks (or new signals come and none ran today).
     #[serde(default = "default_every")]
     pub every_hours: u32,
-    /// The agents who sweep, in turn; empty: the project's members, planners and researchers first.
+    /// The agents who sweep, in turn; empty: the project's agents, planners and researchers first.
     #[serde(default)]
     #[table(list)]
     pub watchers: Vec<u64>,
@@ -752,7 +752,7 @@ pub fn view(app: &App, project: &str) -> Value {
 
 // ---- Sweeps --------------------------------------------------------------------------------------------------------
 
-/// The agents who sweep `project`: the owner's choice, else its members (planners, researchers and architects
+/// The agents who sweep `project`: the owner's choice, else its agents (planners, researchers and architects
 /// first), the ones that can work now.
 pub fn watchers(app: &App, project: &str, config: &Config) -> Vec<u64> {
     const FIRST: &[&str] = &[
@@ -763,9 +763,9 @@ pub fn watchers(app: &App, project: &str, config: &Config) -> Vec<u64> {
         "incident",
         "auditor",
     ];
-    let members = app.members.members(project);
+    let on_project = crate::projects::agents_of(app, project);
     let mut picked: Vec<u64> = if config.watchers.is_empty() {
-        let mut list: Vec<(usize, u64)> = members
+        let mut list: Vec<(usize, u64)> = on_project
             .iter()
             .filter_map(|cid| app.agents.get(*cid))
             .filter(|a| a.kind != "model")
@@ -784,7 +784,7 @@ pub fn watchers(app: &App, project: &str, config: &Config) -> Vec<u64> {
             .watchers
             .iter()
             .copied()
-            .filter(|cid| members.contains(cid))
+            .filter(|cid| on_project.contains(cid))
             .collect()
     };
     picked.dedup();
@@ -838,7 +838,7 @@ pub fn start(app: &App, project: &str, why: &str) -> Result<u64, String> {
     let cid = (0..candidates.len())
         .map(|i| candidates[(start_at + i) % candidates.len()])
         .find(|cid| {
-            crate::membership::held_cid(app, *cid).is_none()
+            crate::projects::held_cid(app, *cid).is_none()
                 && app
                     .agents
                     .get(*cid)
@@ -1327,10 +1327,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 
 /// The project agent `agent` works on, when it is in maintenance.
 fn project_of(app: &App, agent: &Agent) -> Result<crate::projects::Project, String> {
-    let id = app
-        .members
-        .project_of(agent.cid)
-        .ok_or("you are on no project")?;
+    let id = crate::projects::project_of(app, agent.cid).ok_or("you are on no project")?;
     let project = app
         .projects
         .get(&id)
@@ -1815,11 +1812,11 @@ fn config_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
             let Some(list) = list.as_array() else {
                 return Response::error(400, "watchers must be a list of agent cids");
             };
-            let members = app.members.members(id);
+            let on_project = crate::projects::agents_of(app, id);
             let mut cids = Vec::new();
             for v in list {
                 match v.as_u64() {
-                    Some(cid) if members.contains(&cid) => cids.push(cid),
+                    Some(cid) if on_project.contains(&cid) => cids.push(cid),
                     Some(cid) => {
                         return Response::error(
                             400,

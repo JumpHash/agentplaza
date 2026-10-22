@@ -232,6 +232,49 @@ fn loopback_port_reaches_only_the_granted_port() {
     drop((granted, other));
 }
 
+/// The rule is TCP to the granted port only: a connect to a listener on a free port succeeds, a connect to another
+/// port is refused, and a UDP datagram to the granted port is refused too, since the rule names `tcp`, not `ip`.
+#[test]
+fn the_loopback_rule_is_tcp_to_the_granted_port_only() {
+    let Some(python) = python3() else {
+        return;
+    };
+    let work = TempDir::new("tcp-only");
+    let granted = TcpListener::bind("127.0.0.1:0").unwrap();
+    let other = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (g, o) = (
+        granted.local_addr().unwrap().port(),
+        other.local_addr().unwrap().port(),
+    );
+    // Prints three results: 0 when the connect or the send succeeds, else the errno (1 is EPERM, the sandbox's refusal).
+    let script = r#"import socket
+def tcp(p):
+    with socket.socket() as s:
+        s.settimeout(2)
+        return s.connect_ex(('127.0.0.1', p))
+def udp(p):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.sendto(b'x', ('127.0.0.1', p))
+            return 0
+        except OSError as e:
+            return e.errno
+print(tcp(GRANTED), tcp(OTHER), udp(GRANTED))
+"#
+    .replace("GRANTED", &g.to_string())
+    .replace("OTHER", &o.to_string());
+    let mut probe = spec(work.path(), python, &["-c", &script]);
+    probe.network = Network::LoopbackPort(g);
+    let out = run(&probe);
+    assert_eq!(
+        stdout(&out).trim(),
+        "0 1 1",
+        "tcp to the granted port, tcp to another port, udp to the granted port: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    drop((granted, other));
+}
+
 #[test]
 fn child_gets_exactly_the_spec_environment() {
     let work = TempDir::new("env");
@@ -440,4 +483,39 @@ fn links_planted_in_the_workdir_do_not_reach_outside_files() {
         !stdout(&out).contains("LINKED-SECRET"),
         "linked outside file was readable"
     );
+}
+
+/// Killing a confined child takes down what it started too: a grandchild left running would live on, confined, with
+/// no one to stop it (a `uv tool run` server's Python).
+#[test]
+fn kill_takes_down_the_childs_own_children() {
+    let dir = TempDir::new("killpg");
+    let spec = spec(dir.path(), "/bin/sh", &["-c", "sleep 300 & echo $!; wait"]);
+    let mut child = spawn(&spec, Stdio::null(), Stdio::piped(), Stdio::null()).expect("spawn");
+    let mut out = child.stdout().expect("its stdout");
+    let mut line = String::new();
+    let mut byte = [0u8; 1];
+    while out.read(&mut byte).expect("read") == 1 && byte[0] != b'\n' {
+        line.push(byte[0] as char);
+    }
+    let grandchild: i32 = line.trim().parse().expect("the grandchild's pid");
+    let alive = |pid: i32| {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    assert!(alive(grandchild), "the grandchild runs");
+    child.kill().expect("kill");
+    let _ = child.wait();
+    let mut gone = false;
+    for _ in 0..50 {
+        if !alive(grandchild) {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(gone, "the grandchild went with its parent");
 }

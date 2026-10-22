@@ -1417,7 +1417,7 @@ mod tests {
             "no budget: refused"
         );
         let other =
-            law_refusal(9, "mayor", "foundry_submit_job", &eight).expect("only breeders submit");
+            law_refusal(9, "builder", "foundry_submit_job", &eight).expect("only breeders submit");
         assert!(other.contains("no law permits"), "{other}");
         let _ = fs::remove_dir_all(&root);
     }
@@ -1427,7 +1427,7 @@ mod tests {
         let root = scratch("laws-model-agent");
         let assign = law_refusal(
             3,
-            "mayor",
+            "builder",
             "plaza_assign",
             &json!({ "task": "t1", "agent": 10_000 }),
         )
@@ -1435,7 +1435,7 @@ mod tests {
         assert!(assign.contains("S-006f"), "{assign}");
         let message = law_refusal(
             3,
-            "mayor",
+            "builder",
             "plaza_send_message",
             &json!({ "to_cid": 10_500, "text": "hi" }),
         )
@@ -1443,7 +1443,7 @@ mod tests {
         assert!(message.contains("S-006g"), "{message}");
         let plain = law_refusal(
             3,
-            "mayor",
+            "builder",
             "plaza_assign",
             &json!({ "task": "t1", "agent": 42 }),
         );

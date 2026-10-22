@@ -1,0 +1,4 @@
+{
+  "goal": "Count the TODO markers in the src/ tree (every line that contains TODO, in every file) and write the number into SURVEY.txt.",
+  "check": "[ \"$(tr -d ' \\n' < SURVEY.txt)\" = 4 ]"
+}

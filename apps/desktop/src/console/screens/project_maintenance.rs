@@ -1303,7 +1303,7 @@ fn dialog_view<'a>(state: &'a State, data: &'a Maintenance) -> Option<Element<'a
                 "Note",
                 text_editor(&a.note)
                     .style(crate::theme::editor)
-                    .placeholder("Anything the team should know (optional)")
+                    .placeholder("Anything the agents should know (optional)")
                     .size(13.0)
                     .height(Length::Fixed(60.0))
                     .on_action(Msg::ApproveNote)
@@ -1396,7 +1396,7 @@ fn dialog_view<'a>(state: &'a State, data: &'a Maintenance) -> Option<Element<'a
         Dialog::Sweeps(hours) => {
             let choices: Vec<Every> = EVERY_CHOICES.iter().map(|&h| Every(h)).collect();
             let watchers = if data.watchers.is_empty() {
-                "No agent watches it yet: add a planner or a researcher on the Team tab.".to_string()
+                "No agent watches it yet.".to_string()
             } else {
                 let labels: Vec<String> = data
                     .watchers

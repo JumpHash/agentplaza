@@ -649,7 +649,6 @@ mod tests {
                 "legal-gov-judge",
                 &["read_case_record", "search_precedent", "issue_ruling"],
             ),
-            ("mayor", &["read", "find", "search"]),
         ]);
         let roles = Some(&roles);
 
@@ -674,9 +673,9 @@ mod tests {
             "a shell grant covers the default's write"
         );
         // A role that may read and search but has no write *and* no shell — the
-        // mayor — falls back to the read-only script.
+        // auditor — falls back to the read-only script.
         assert_eq!(
-            plan_for("mayor", roles),
+            plan_for("auditor", roles),
             Plan::Drive(&READ_ONLY_FAMILY),
             "no write grant and no shell: the read-only fallback"
         );

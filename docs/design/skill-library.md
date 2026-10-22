@@ -53,7 +53,7 @@ A skill reaches agents only once it is published. A role can hold several skills
   - the live version;
   - its source: `built` in the app, `upload`, or `github`. A GitHub source keeps the repo, the ref, the path and the
     commit it was taken from.
-- **A version** is immutable: the SKILL.md text, the files (path, sha256, size, executable), a note, the author, and
+- **A version** is immutable: the SKILL.md text, the files (path, BLAKE3 hash, size, executable), a note, the author, and
   the check result.
 - **Publishing** points the skill at a version. A version with an error-level finding cannot be published.
 - **History:** every create, version, publish, unpublish, edit, archive and restore is an event row.
@@ -94,9 +94,8 @@ skill_findings   (skill_id, version, seq) PK, rule, severity, path, line, messag
 skill_events     id, skill_id, action, version, actor, at                                   append-only
 ```
 
-**File contents** are blobs and stay out of Postgres (plaza rule). They are content-addressed by sha256:
-- in Garage, with the same client the Library uses;
-- without Garage, under `<state_dir>/skills/blobs/<sha256>`.
+**File contents** are blobs and stay out of Postgres (plaza rule). They sit in the hub's object store (`apz-blobs`),
+the same store the Library uses, content-addressed by their BLAKE3 hash.
 
 Without Postgres, `MemorySkills` keeps the rows in `<state_dir>/skills.json`, as `MemoryPrompts` does.
 
@@ -139,8 +138,8 @@ The prompt library's routes, with skills:
 
 Two routes differ from the prompt library:
 - `GET /v1/skills/{id}/versions/{v}/files/{path}` returns one file.
-- `POST /v1/skills/{id}/versions` takes `{skill_md, files: [{path, content_b64 | sha256, executable}], base_version,
-  note}`. An unchanged file is sent by its sha256 alone.
+- `POST /v1/skills/{id}/versions` takes `{skill_md, files: [{path, content_b64 | hash, executable}], base_version,
+  note}`. An unchanged file is sent by its BLAKE3 hash alone.
 
 ## Agents and the hub MCP server
 

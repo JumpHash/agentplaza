@@ -13,10 +13,8 @@
 //! Tables:
 //!   plaza_state(component text primary key, data jsonb not null, hash bigint not null,
 //!               updated_at timestamptz not null default now())
-//!   ide_audit(seq bigserial, at_ms bigint, workspace text, kind text, data jsonb)
-//!              (append-only: the owner's IDE actions, migration 0008)
-//!   station_audit(seq bigserial, at_ms bigint, station text, agent bigint, kind text, data jsonb)
-//!              (append-only: the owner's workstation actions and lease changes, migration 0010)
+//! The IDE audit, the station audit, the workstation recordings and the work-folder sync rows are not here: they
+//! are typed tables of `plaza.db` (ide.rs, stations/audit.rs, stations/recordings.rs, stations/sync.rs).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -28,16 +26,13 @@ use crate::state::App;
 
 /// Every component still snapshotted into Postgres, by name, in restore order. The task ledger and the components of
 /// `plaza.db` are not here: `store` keeps them.
-pub const COMPONENTS: &[&str] = &["treasury", "members", "mcp"];
+pub const COMPONENTS: &[&str] = &["treasury"];
 
 pub mod data_migrate;
-pub mod files;
 pub mod hub_mcp;
 pub mod migrate;
-pub mod recordings;
 pub mod roster;
 pub mod sql;
-pub mod sync;
 
 const MINUTE: Duration = Duration::from_secs(60);
 
@@ -45,8 +40,6 @@ const MINUTE: Duration = Duration::from_secs(60);
 pub fn snapshot_of(app: &App, component: &str) -> String {
     match component {
         "treasury" => app.plaza.treasury.snapshot(),
-        "members" => app.members.snapshot(),
-        "mcp" => app.mcp.store.snapshot(),
         _ => String::new(),
     }
 }
@@ -55,8 +48,6 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
 pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String> {
     match component {
         "treasury" => app.plaza.treasury.restore(json),
-        "members" => app.members.restore(json),
-        "mcp" => app.mcp.store.restore(json),
         other => Err(format!("unknown component {other}")),
     }
 }
@@ -159,10 +150,6 @@ pub struct Db {
     /// Components whose stored state must not be overwritten this run: a failed load, or a
     /// restore that was refused.
     held: Mutex<BTreeSet<String>>,
-    ide_audit_logged: Mutex<Option<Instant>>,
-    station_audit_logged: Mutex<Option<Instant>>,
-    /// The file fallback for the audit logs and recordings (see `attach_files`).
-    files: std::sync::OnceLock<files::Files>,
 }
 
 impl Db {
@@ -172,9 +159,6 @@ impl Db {
             client: client.map(Mutex::new),
             stored: Mutex::new(BTreeMap::new()),
             held: Mutex::new(BTreeSet::new()),
-            ide_audit_logged: Mutex::new(None),
-            station_audit_logged: Mutex::new(None),
-            files: std::sync::OnceLock::new(),
         }
     }
 
@@ -213,29 +197,6 @@ impl Db {
 
     pub fn enabled(&self) -> bool {
         self.client.is_some()
-    }
-
-    /// Makes `state_dir` the home of the file fallback: with no Postgres this run, the audit logs and
-    /// the recordings are written to files there (see `db::files`).
-    pub fn attach_files(&self, state_dir: &std::path::Path) {
-        let _ = self.files.set(files::Files::open(state_dir));
-    }
-
-    /// The file fallback, when this run has no Postgres and `attach_files` was called.
-    fn file_store(&self) -> Option<&files::Files> {
-        if self.enabled() {
-            None
-        } else {
-            self.files.get()
-        }
-    }
-
-    /// A database with no Postgres whose audit logs and recordings live under `state_dir`.
-    #[cfg(test)]
-    pub fn files_only(state_dir: &std::path::Path) -> Db {
-        let db = Db::with(String::new(), None);
-        db.attach_files(state_dir);
-        db
     }
 
     /// Runs `op` on the connection; on a closed connection, reconnects once and retries.
@@ -354,130 +315,6 @@ impl Db {
     }
 }
 
-/// The IDE audit: one owner action on an agent workspace (`ide.rs` builds the row). The row is the table's
-/// data and its `at_ms`, `workspace` and `kind` are its columns. A failed append is
-/// an error: the owner's action has happened, so the route answers with it (see `append_ide_audit`).
-impl Db {
-    /// Appends one owner action to the IDE audit (table `ide_audit`, or the file fallback). A failed
-    /// append is returned to the caller and logged at most once a minute.
-    pub fn append_ide_audit(&self, row: &Value) -> Result<(), String> {
-        let written = self.write_ide_audit(row);
-        if let Err(e) = &written {
-            let mut logged = self
-                .ide_audit_logged
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if due(*logged) {
-                *logged = Some(Instant::now());
-                eprintln!(
-                    "db: ide audit append failed: {e} (answered to the owner; logged once a minute)"
-                );
-            }
-        }
-        written
-    }
-
-    fn write_ide_audit(&self, row: &Value) -> Result<(), String> {
-        let at_ms = row["at_ms"].as_u64().ok_or("the audit row has no at_ms")? as i64;
-        let workspace = row["workspace"]
-            .as_str()
-            .ok_or("the audit row has no workspace")?;
-        let kind = row["kind"].as_str().ok_or("the audit row has no kind")?;
-        if let Some(files) = self.file_store() {
-            return files.append_ide_audit(row);
-        }
-        if !self.enabled() {
-            return Err("no database and no state directory for the IDE audit".to_string());
-        }
-        self.run(|c| c.execute(sql::IDE_AUDIT_APPEND, &[&at_ms, &workspace, &kind, row]))
-            .map(|_| ())
-    }
-
-    /// IDE audit rows, newest first (by `at_ms`, then the later row first), of one workspace when
-    /// `workspace` is given. A failed read is an error.
-    pub fn ide_audit(&self, workspace: Option<&str>, limit: i64) -> Result<Vec<Value>, String> {
-        if let Some(files) = self.file_store() {
-            return files.ide_audit(workspace, limit);
-        }
-        if !self.enabled() {
-            return Err("no database and no state directory for the IDE audit".to_string());
-        }
-        let rows = match workspace {
-            Some(workspace) => {
-                self.run(|c| c.query(sql::IDE_AUDIT_PAGE_BY_WORKSPACE, &[&workspace, &limit]))
-            }
-            None => self.run(|c| c.query(sql::IDE_AUDIT_PAGE, &[&limit])),
-        };
-        rows.map(|rows| rows.iter().map(|r| r.get::<_, Value>(0)).collect())
-            .inspect_err(|e| {
-                eprintln!("db: ide audit read failed: {e}");
-            })
-    }
-}
-
-/// The station audit (stations/): one owner action on a workstation, or one lease change. Its row is the
-/// table's data; `at_ms`, `kind` are required, `station` (null for the registry as a whole) and `agent` (a
-/// CID, or null) are its columns. Like the IDE audit, a failed append is an error the caller answers with.
-impl Db {
-    /// Appends one station audit row (table `station_audit`, or the file fallback).
-    pub fn append_station_audit(&self, row: &Value) -> Result<(), String> {
-        let written = self.write_station_audit(row);
-        if let Err(e) = &written {
-            let mut logged = self
-                .station_audit_logged
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if due(*logged) {
-                *logged = Some(Instant::now());
-                eprintln!(
-                    "db: station audit append failed: {e} (answered to the owner; logged once a minute)"
-                );
-            }
-        }
-        written
-    }
-
-    fn write_station_audit(&self, row: &Value) -> Result<(), String> {
-        let at_ms = row["at_ms"].as_u64().ok_or("the audit row has no at_ms")? as i64;
-        let kind = row["kind"].as_str().ok_or("the audit row has no kind")?;
-        if let Some(files) = self.file_store() {
-            return files.append_station_audit(row);
-        }
-        if !self.enabled() {
-            return Err("no database and no state directory for the station audit".to_string());
-        }
-        let station = row["station"].as_str();
-        let agent = row["agent"].as_u64().map(|cid| cid as i64);
-        self.run(|c| {
-            c.execute(
-                sql::STATION_AUDIT_APPEND,
-                &[&at_ms, &station, &agent, &kind, row],
-            )
-        })
-        .map(|_| ())
-    }
-
-    /// Station audit rows, newest first, of one workstation when `station` is given. A failed read is an error.
-    pub fn station_audit(&self, station: Option<&str>, limit: i64) -> Result<Vec<Value>, String> {
-        if let Some(files) = self.file_store() {
-            return files.station_audit(station, limit);
-        }
-        if !self.enabled() {
-            return Err("no database and no state directory for the station audit".to_string());
-        }
-        let rows = match station {
-            Some(station) => {
-                self.run(|c| c.query(sql::STATION_AUDIT_PAGE_BY_STATION, &[&station, &limit]))
-            }
-            None => self.run(|c| c.query(sql::STATION_AUDIT_PAGE, &[&limit])),
-        };
-        rows.map(|rows| rows.iter().map(|r| r.get::<_, Value>(0)).collect())
-            .inspect_err(|e| {
-                eprintln!("db: station audit read failed: {e}");
-            })
-    }
-}
-
 /// The unfurl cache (`unfurl_cache`, migration 0009): one answer per reference, upserted. Without Postgres the
 /// unfurl keeps its own memory copy (unfurl/mod.rs), so these answer nothing when the database is not enabled.
 impl Db {
@@ -515,44 +352,12 @@ impl Db {
 pub fn restore_all(app: &App) {
     if app.db.enabled() {
         restore_components(app);
-        import_ide_audit(app);
     } else {
         eprintln!(
-            "db: no APZ_DATABASE_URL; components stay in their files; the audit logs and recordings go to files under the state dir"
+            "db: no APZ_DATABASE_URL; the components not yet in the store stay in their files"
         );
-        app.db.attach_files(&app.config.state_dir);
     }
     restore_transcripts(app);
-}
-
-/// The IDE audit rows the state directory's file kept before Postgres held any: imported once, oldest
-/// first (a Postgres run whose `ide_audit` is empty and whose file has rows).
-fn import_ide_audit(app: &App) {
-    match app.db.ide_audit(None, 1) {
-        Ok(rows) if rows.is_empty() => {}
-        Ok(_) => return,
-        Err(e) => {
-            eprintln!("db: ide audit import skipped: {e}");
-            return;
-        }
-    }
-    let mut rows = match files::Files::open(&app.config.state_dir).ide_audit(None, i64::MAX) {
-        Ok(rows) => rows,
-        Err(e) => {
-            eprintln!("db: ide audit file cannot be read for the import: {e}");
-            return;
-        }
-    };
-    rows.reverse();
-    for row in &rows {
-        if let Err(e) = app.db.append_ide_audit(row) {
-            eprintln!("db: ide audit import stopped part way: {e}");
-            return;
-        }
-    }
-    if !rows.is_empty() {
-        eprintln!("db: imported {} IDE audit rows from the file", rows.len());
-    }
 }
 
 /// Restores every component that Postgres holds (the first run imports the files' copies).
@@ -667,7 +472,7 @@ pub fn write_pass(app: &App) {
 
 /// The writer: every two seconds, store each component whose snapshot changed.
 pub fn spawn_writer(app: Arc<App>) {
-    if !app.db.enabled() && app.db.file_store().is_none() {
+    if !app.db.enabled() {
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -901,84 +706,6 @@ mod tests {
         db.run(|c| c.execute(sql::STATE_DELETE, &[&component]))
             .unwrap();
         assert!(db.load(component).is_none());
-    }
-
-    /// The query-level behaviour both backends must show: the same rows in the same orders.
-    fn check_queries(db: &Db, cid: u64) {
-        // The IDE audit: newest first by at_ms (a tie goes to the later row), filtered by workspace.
-        let (ws, other) = (format!("agent:{cid}"), format!("agent:{}", cid + 1));
-        let audit = |at_ms: u64, workspace: &str, kind: &str| serde_json::json!({ "at_ms": at_ms, "actor": "owner", "workspace": workspace, "kind": kind, "path": null });
-        let (w1, w2, w3) = (
-            audit(10, &ws, "write"),
-            audit(20, &other, "write"),
-            audit(20, &ws, "restore"),
-        );
-        for row in [&w1, &w2, &w3] {
-            db.append_ide_audit(row).unwrap();
-        }
-        assert_eq!(
-            db.ide_audit(None, 10).unwrap(),
-            vec![w3.clone(), w2.clone(), w1.clone()]
-        );
-        assert_eq!(
-            db.ide_audit(Some(&ws), 10).unwrap(),
-            vec![w3.clone(), w1.clone()]
-        );
-        assert_eq!(db.ide_audit(Some(&ws), 1).unwrap(), vec![w3.clone()]);
-        assert_eq!(db.ide_audit(Some(&other), 10).unwrap(), vec![w2.clone()]);
-        assert!(db.ide_audit(Some("agent:0"), 10).unwrap().is_empty());
-        assert!(
-            db.append_ide_audit(&serde_json::json!({ "kind": "write" }))
-                .is_err(),
-            "a row with no at_ms is refused"
-        );
-
-        // The station audit: newest first by at_ms (a tie goes to the later row), filtered by station; the
-        // registry-wide rows (station null) appear only in the whole list.
-        let (st, st_other) = (format!("ws-{cid}"), format!("ws-{}", cid + 1));
-        let station_row = |at_ms: u64, station: Option<&str>, kind: &str| serde_json::json!({ "at_ms": at_ms, "actor": "owner", "station": station, "agent": null, "kind": kind });
-        let (s1, s2, s3) = (
-            station_row(10, Some(&st), "join"),
-            station_row(20, Some(&st_other), "join"),
-            station_row(20, None, "code_issue"),
-        );
-        for row in [&s1, &s2, &s3] {
-            db.append_station_audit(row).unwrap();
-        }
-        assert_eq!(
-            db.station_audit(None, 10).unwrap(),
-            vec![s3.clone(), s2.clone(), s1.clone()]
-        );
-        assert_eq!(db.station_audit(Some(&st), 10).unwrap(), vec![s1.clone()]);
-        assert_eq!(
-            db.station_audit(Some(&st_other), 10).unwrap(),
-            vec![s2.clone()]
-        );
-        assert!(db.station_audit(Some("ws-0"), 10).unwrap().is_empty());
-        assert!(
-            db.append_station_audit(&serde_json::json!({ "kind": "join" }))
-                .is_err(),
-            "a row with no at_ms is refused"
-        );
-    }
-
-    /// Every query gives the same results on Postgres (a fresh test database, when the test server
-    /// is set) and on the file fallback.
-    #[test]
-    fn every_query_behaves_the_same_on_both_backends() {
-        let cid = 8_100_000_000_000 + u64::from(std::process::id());
-        if let Some(url) = test_database("parity") {
-            let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
-            let db = Db::connect(&env);
-            assert!(db.enabled());
-            check_queries(&db, cid);
-        }
-        let dir = std::env::temp_dir().join(format!("apid-parity-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let db = Db::files_only(&dir);
-        assert!(!db.enabled());
-        check_queries(&db, cid);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The board's pauses are a setting, kept in the store: rows saved and loaded again hold them, and a save that

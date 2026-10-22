@@ -218,7 +218,7 @@ function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
       'div.bd-top',
       null,
       h('span.num.muted', null, `p${no}`),
-      h('span', null, p.owner ? name : h('a', { href: href('agents', p.agent_cid) }, name)),
+      h('span', null, p.owner ? name : h('a', { href: href('sessions', p.agent_cid) }, name)),
       p.owner ? null : h('span.muted', null, roleLabel(p.role)),
       mentions.length ? h('span', null, ...mentions.flatMap((m, i) => (i ? [' ', m] : [m]))) : null,
       p.task ? h('span', null, h('a', { href: href('tasks', p.task) }, `Task ${p.task}`)) : null,

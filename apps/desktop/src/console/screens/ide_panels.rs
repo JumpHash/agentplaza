@@ -788,7 +788,7 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             let c = client.clone();
             let sent: Vec<String> = st.attachments.iter().map(|a| a.id.clone()).collect();
             // Working, the text steers the work in flight; idle, it is a chat turn of its own (the hub says why when
-            // the agent is on the bench, or its project is paused).
+            // the agent has no project, or its project is paused).
             let (path, body) = if st.agent_working {
                 (
                     format!("/v1/agents/{cid}/control"),

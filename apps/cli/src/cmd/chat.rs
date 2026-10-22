@@ -2,8 +2,8 @@
 //! terminal it is a line-oriented chat: the conversation so far, then each line you type goes to the orchestrator,
 //! whose answer prints as it is written (the hub's `delta` events) and stays once it is in. The project draft the
 //! orchestrator keeps in the conversation prints whenever its revision changes, and `/start` starts it at the revision
-//! on screen: the hub opens the project, saves its settings, sets its budget aside, posts its tasks and staffs it, all
-//! or nothing. Off a terminal, a message given as arguments is sent and the answer printed, so a script can talk to the
+//! on screen: the hub opens the project, saves its settings, sets its budget aside and posts its tasks, all or nothing.
+//! Off a terminal, a message given as arguments is sent and the answer printed, so a script can talk to the
 //! orchestrator too.
 //!
 //! The routes are `/v1/owner/conversations…` (`crates/apid/src/conversations.rs` and `drafts.rs`). Each change to a
@@ -428,38 +428,9 @@ fn task_rows(tasks: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// A draft's team: each role with its count, the agents it takes from the bench, and the model of the new ones.
-fn team_text(team: &[Value]) -> String {
-    if team.is_empty() {
-        return "none yet".to_string();
-    }
-    team.iter()
-        .map(|seat| {
-            let mut text = format!("{} ×{}", ctx::s(seat, "role"), ctx::text(seat, "count"));
-            let mut more = Vec::new();
-            let bench: Vec<String> = array_at(seat, "bench")
-                .iter()
-                .map(Value::to_string)
-                .collect();
-            if !bench.is_empty() {
-                more.push(format!("from the bench: {}", bench.join(", ")));
-            }
-            if let Some(model) = seat.get("model").and_then(Value::as_str) {
-                more.push(format!("model {model}"));
-            }
-            if !more.is_empty() {
-                text.push_str(&format!(" ({})", more.join("; ")));
-            }
-            text
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
 /// A project draft as lines (`GET …/draft`, or a conversation's `draft`): its revision, title and kind, and who edited
-/// it last; then the goal, where the work goes, the tasks with what they run after, the team, the budget and the
-/// settings; then what still stops Start, or that nothing does. A started draft says so instead, with its project
-/// when it is known.
+/// it last; then the goal, where the work goes, the tasks with what they run after, the budget and the settings; then
+/// what still stops Start, or that nothing does. A started draft says so instead, with its project when it is known.
 pub(crate) fn draft_lines(draft: &Value, project: Option<&str>) -> Vec<String> {
     let by = match ctx::s(draft, "updated_by") {
         "owner" => "you",
@@ -489,7 +460,6 @@ pub(crate) fn draft_lines(draft: &Value, project: Option<&str>) -> Vec<String> {
         "tasks",
         &task_rows(array_at(draft, "tasks")).join("\n"),
     );
-    field(&mut lines, "team", &team_text(array_at(draft, "team")));
     if let Some(budget) = draft.get("budget").and_then(Value::as_u64) {
         field(&mut lines, "budget", &format!("{budget} credits"));
     }
@@ -531,49 +501,17 @@ fn plural(n: u64, noun: &str) -> String {
     }
 }
 
-/// What Start did, in a sentence (`started` of its answer): the project it opened, the tasks it posted, the agents it
-/// put on it from the bench, and the new ones on their way.
+/// What Start did, in a sentence (`started` of its answer): the project it opened and the tasks it posted.
 fn started_line(started: &Value) -> String {
     let tasks: Vec<&str> = array_at(started, "tasks")
         .iter()
         .map(|t| ctx::s(t, "id"))
         .collect();
-    let mut parts = vec![format!(
-        "{} posted ({})",
+    format!(
+        "Started project {}: {} posted ({}).",
+        ctx::s(started, "project"),
         plural(tasks.len() as u64, "task"),
         tasks.join(", ")
-    )];
-    let joined: Vec<String> = array_at(started, "joined")
-        .iter()
-        .map(Value::to_string)
-        .collect();
-    if !joined.is_empty() {
-        parts.push(format!(
-            "{} from the bench ({})",
-            plural(joined.len() as u64, "agent"),
-            joined.join(", ")
-        ));
-    }
-    let seats: Vec<String> = array_at(started, "spawned")
-        .iter()
-        .map(|s| format!("{} ×{}", ctx::s(s, "role"), number(s, "count")))
-        .collect();
-    let new: u64 = array_at(started, "spawned")
-        .iter()
-        .map(|s| number(s, "count"))
-        .sum();
-    if new > 0 {
-        parts.push(format!(
-            "{} on {} way ({})",
-            plural(new, "new agent"),
-            if new == 1 { "its" } else { "their" },
-            seats.join(", ")
-        ));
-    }
-    format!(
-        "Started project {}: {}.",
-        ctx::s(started, "project"),
-        parts.join("; ")
     )
 }
 
@@ -855,14 +793,10 @@ mod tests {
                 { "key": "2", "goal": "Fix the double-charge\nin detail", "role": "builder", "after": ["1"] },
                 { "key": "3", "goal": "Tag 0.9", "after": ["1", "2"] }
             ],
-            "team": [
-                { "role": "builder", "count": 2, "bench": [104] },
-                { "role": "qa", "count": 1, "model": "openai/gpt-6" }
-            ],
             "budget": 15000,
             "settings": { "effort": "high", "role_models": { "qa": "openai/gpt-6" } },
             "updated_by": "orchestrator", "updated_ms": 50,
-            "problems": ["task 3 is for a release, and the team has none"]
+            "problems": ["task 3 is for a release, and no review follows it"]
         })
     }
 
@@ -878,11 +812,10 @@ mod tests {
                 "   tasks  1  qa        Survey the flaky tests",
                 "          2  builder   Fix the double-charge   after 1",
                 "          3  any role  Tag 0.9                 after 1, 2",
-                "    team  builder ×2 (from the bench: 104) · qa ×1 (model openai/gpt-6)",
                 "  budget  15000 credits",
                 "settings  effort=high · role_models.qa=openai/gpt-6",
                 "Before it can start:",
-                "  - task 3 is for a release, and the team has none",
+                "  - task 3 is for a release, and no review follows it",
             ]
         );
         assert!(!startable(&draft()));
@@ -913,7 +846,6 @@ mod tests {
                 "Draft r1: Notes (code), last edited by you",
                 "    goal  Write them",
                 "   tasks  none yet",
-                "    team  none yet",
                 "Before it can start:",
                 "  - the draft has no tasks yet",
             ]
@@ -921,21 +853,19 @@ mod tests {
     }
 
     #[test]
-    fn start_says_what_it_opened_posted_and_staffed() {
+    fn start_says_what_it_opened_and_posted() {
         let started = json!({
             "project": "pr3",
-            "tasks": [{ "key": "1", "id": "t12" }, { "key": "2", "id": "t13" }],
-            "joined": [104],
-            "spawned": [{ "role": "builder", "count": 1, "reply": {} }, { "role": "qa", "count": 1, "reply": {} }]
+            "tasks": [{ "key": "1", "id": "t12" }, { "key": "2", "id": "t13" }]
         });
         assert_eq!(
             started_line(&started),
-            "Started project pr3: 2 tasks posted (t12, t13); 1 agent from the bench (104); 2 new agents on their way (builder ×1, qa ×1)."
+            "Started project pr3: 2 tasks posted (t12, t13)."
         );
-        let alone = json!({ "project": "pr4", "tasks": [{ "id": "t20" }], "joined": [], "spawned": [{ "role": "qa", "count": 1 }] });
+        let alone = json!({ "project": "pr4", "tasks": [{ "id": "t20" }] });
         assert_eq!(
             started_line(&alone),
-            "Started project pr4: 1 task posted (t20); 1 new agent on its way (qa ×1)."
+            "Started project pr4: 1 task posted (t20)."
         );
     }
 

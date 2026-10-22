@@ -96,7 +96,7 @@ export function agoLabel(ms: number | null | undefined, now = Date.now()): strin
 /** The tasks `id` runs after, from the links, as `[from, to]` pairs. */
 export const upstreamOf = (id: string, edges: [string, string][]): string[] => edges.filter(([, to]) => to === id).map(([from]) => from);
 
-/** Who can claim a task: `QA agent`, or `agent` when it names no role. Role labels are names (Finance,
+/** Who can claim a task: `QA agent`, or `agent` when it names no role. Role labels are names (Builder,
  * Incident), so the wording never puts an article or a plural on them. */
 export const claimant = (role: string | null): string => (role ? `${roleLabel(role)} agent` : 'agent');
 
@@ -271,7 +271,7 @@ export function planCards(p: Project): PlanCard[] {
       }
       default: {
         if (p.approved_by) return { stage, state: 'done', title: p.approved_by === 'owner' ? 'Approved by you' : `Approved by ${p.approved_by}`, line: 'The tasks were posted from it' };
-        return { stage, state: planWaitsForOwner(p) ? 'you' : state, title: stageLabel(stage), line: p.owner_approval ? 'Waits for your approval' : 'The mayor approves' };
+        return { stage, state: planWaitsForOwner(p) ? 'you' : state, title: stageLabel(stage), line: p.owner_approval ? 'Waits for your approval' : 'The orchestrator approves' };
       }
     }
   });

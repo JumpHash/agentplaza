@@ -118,29 +118,6 @@
     "submit_device_report"
    ]
   },
-  "finance": {
-   "role": "finance",
-   "slot": 4,
-   "title": "Finance",
-   "permits": [
-    "statutes/S-005"
-   ],
-   "toolsets": [
-    "python"
-   ],
-   "budget": 1000,
-   "variant": null,
-   "tools": [
-    "run",
-    "run_tests",
-    "read",
-    "search",
-    "read_audit",
-    "read_usage",
-    "file_detection",
-    "submit_finance_report"
-   ]
-  },
   "incident": {
    "role": "incident",
    "slot": 5,
@@ -177,47 +154,6 @@
     "transcript_search",
     "read_artifact",
     "submit_memory_change"
-   ]
-  },
-  "mayor": {
-   "role": "mayor",
-   "slot": 7,
-   "title": "Mayor",
-   "permits": [
-    "statutes/S-004"
-   ],
-   "toolsets": [],
-   "budget": 3000,
-   "variant": null,
-   "tools": [
-    "read",
-    "find",
-    "search",
-    "transcript_search",
-    "assign_task",
-    "spawn_agent",
-    "hibernate_agent",
-    "approve_plan",
-    "approve_merge",
-    "escalate",
-    "send_message"
-   ]
-  },
-  "mayor-office": {
-   "role": "mayor-office",
-   "slot": 8,
-   "title": "Mayor Office",
-   "permits": [
-    "statutes/S-005"
-   ],
-   "toolsets": [],
-   "budget": 800,
-   "variant": null,
-   "tools": [
-    "read_audit",
-    "search",
-    "send_message",
-    "submit_town_report"
    ]
   },
   "planner": {

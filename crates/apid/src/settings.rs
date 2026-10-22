@@ -35,6 +35,12 @@ pub fn tier_of(role: &str) -> Tier {
     }
 }
 
+/// Whether `role` works across projects without a session on one: only the orchestrator, which opens the projects
+/// and runs them.
+pub fn plaza_wide(role: &str) -> bool {
+    matches!(tier_of(role), Tier::Orchestrator)
+}
+
 /// The models each tier's list names (canonical `provider/model[@effort]`). The orchestrator may run
 /// only its list. Workers may run any model: their list is the presets offered first, plus the default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]

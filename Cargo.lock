@@ -336,6 +336,7 @@ version = "0.1.0"
 dependencies = [
  "apz-acp",
  "apz-artifact",
+ "apz-blobs",
  "apz-cache",
  "apz-egress-rules",
  "apz-gateway",
@@ -348,6 +349,7 @@ dependencies = [
  "apz-prompt",
  "apz-proto",
  "apz-rich",
+ "apz-sandbox",
  "apz-skill",
  "apz-station",
  "apz-store",
@@ -373,6 +375,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sysinfo",
+ "tar",
  "tempfile",
  "tokenizers",
  "toml 1.1.8+spec-1.1.0",
@@ -381,6 +384,7 @@ dependencies = [
  "ureq",
  "weft",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -538,6 +542,15 @@ dependencies = [
  "web-sys",
  "web-time",
  "wgpu",
+]
+
+[[package]]
+name = "apz-evals"
+version = "0.1.0"
+dependencies = [
+ "apz-http",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -868,10 +881,10 @@ dependencies = [
  "apz-station",
  "apz-trust",
  "base64 0.22.1",
+ "blake3",
  "libc",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "windows 0.58.0",
  "windows-sys 0.61.2",
  "zbus",
@@ -5724,10 +5737,6 @@ dependencies = [
  "cfg-if",
  "rayon",
 ]
-
-[[package]]
-name = "mcp-relay"
-version = "0.1.0"
 
 [[package]]
 name = "md-5"

@@ -175,13 +175,24 @@ fn decode(v: &Value, model: &str, sink: &mut dyn FnMut(Delta)) -> ChatResponse {
             });
         } else if let Some(tool) = block.get("toolUse") {
             let name = tool["name"].as_str().unwrap_or("").to_string();
-            sink(Delta::ToolUse { name: name.clone() });
             let input = if tool["input"].is_object() {
                 tool["input"].clone()
             } else {
                 json!({})
             };
             let id = tool["toolUseId"].as_str().unwrap_or("").to_string();
+            // A call comes whole in the answer: its start, its input and its end go out together.
+            let index = content.len();
+            sink(Delta::ToolUse {
+                name: name.clone(),
+                index,
+                id: id.clone(),
+            });
+            sink(Delta::ToolInput {
+                index,
+                json: input.to_string(),
+            });
+            sink(Delta::BlockEnd { index });
             content.push(Block::ToolUse {
                 id,
                 name,

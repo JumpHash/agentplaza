@@ -4,11 +4,13 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 use apz_gateway::Caller;
 use apz_http::{Request, Response, RouteDoc, Router};
 use apz_metrics::{EntityKind, Event, SeriesKey};
-use apz_proto::chat::{Block, ChatRequest, Message, Role};
+use apz_proto::chat::{Block, ChatRequest, Delta, Message, Role};
 use apz_proto::wire::{
     BatchCall, BatchDecision, CAP_ACP, Decision, EngineSpec, GuestMessage, HostMessage, Program,
     WorkStatus, cap_output,
@@ -146,6 +148,8 @@ fn record_compaction(app: &App, cid: u64, before: u64, after: u64) {
 /// Records one stats report of agent `cid`'s VM: its `/workspace` use and size as gauges, and its busiest
 /// processes as rows of the node's `top_processes` report, in place of the VM's previous rows.
 fn record_stats(app: &App, cid: u64, used_mib: u64, size_mib: u64, top: Vec<(String, f64, f64)>) {
+    // The project's disk counts this VM's workspace (disk.rs).
+    app.disk.report(cid, used_mib);
     let Some(agent) = app.agents.get(cid) else {
         return;
     };
@@ -497,11 +501,11 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
             "intercept": false,
         });
     }
-    // An agent the owner holds (on the bench, or on a paused project) does not reach the internet either.
+    // An agent the owner holds (its project is paused or over) does not reach the internet either.
     let held = app
         .agents
         .get(cid)
-        .and_then(|agent| crate::membership::held(app, &agent));
+        .and_then(|agent| crate::projects::held(app, &agent));
     if let Some(why) = held {
         return json!({
             "allow": false,
@@ -616,6 +620,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             policy,
             name,
             input,
+            duration_ms,
         } => {
             // One credit per tool report; task work is cancelled if its escrow runs out.
             let _ = meter(app, cid, work, 1, "tool report");
@@ -628,8 +633,10 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 let input = input.unwrap_or(Value::Null);
                 record_local(app, cid, work, &call, &tool, &input, policy);
             }
-            // A report carries no duration of its own, so the tool's time is recorded as 0.
-            collect::tool_call(app, cid, &tool, 0.0, ok);
+            // A harness from before v7 sends no duration: its calls count as 0 ms.
+            let ms = duration_ms.unwrap_or(0);
+            app.evals.tool(cid, &tool, ms, ok);
+            collect::tool_call(app, cid, &tool, ms as f64, ok);
             let snap = app.context.on_tool(cid, work, &tool, ok, output.len());
             crate::context_track::publish(app, &snap);
             if crate::library::take_package_call(cid, &call)
@@ -759,8 +766,8 @@ fn model_call(
     work: u64,
     mut request: ChatRequest,
 ) -> HostMessage {
-    // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent on the bench, or on
-    // a paused project, does not think either (see `membership`).
+    // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent whose project is
+    // paused or over does not think either (see `projects::held`).
     // A held call answers `paused:`, so the harness's turn waits and asks again instead of failing.
     let held = if app.control.paused() {
         Some(format!(
@@ -768,7 +775,7 @@ fn model_call(
             apz_proto::wire::MODEL_PAUSED
         ))
     } else {
-        crate::membership::held(app, agent)
+        crate::projects::held(app, agent)
             .map(|why| format!("{}{why}", apz_proto::wire::MODEL_PAUSED))
     };
     if let Some(e) = held {
@@ -785,7 +792,7 @@ fn model_call(
             error: Some(e),
         };
     }
-    // A chat's own choice (one message's, or its owner conversation's) before the agent's model.
+    // The model of the chat the call is for (one message's choice, else the chat's own) before the agent's model.
     let model =
         crate::context_track::chat_model(app, cid, work).unwrap_or_else(|| model_of(app, agent));
     let settings = app.settings.get();
@@ -848,21 +855,42 @@ fn model_call(
     collect::agent_state(app, cid, "first_token");
     let started = std::time::Instant::now();
     let mut first_delta_ms: Option<f64> = None;
-    let result = gateway.complete_for(
-        &request,
-        &mut |delta| {
-            if first_delta_ms.is_none() {
-                // The first token is in: the agent waits on the model's stream from here.
-                collect::agent_state(app, cid, "streaming");
-            }
-            first_delta_ms.get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.0);
-            app.bus.publish(
-                "delta",
-                &json!({ "cid": cid, "work": work, "req": req, "delta": delta }),
-            );
-        },
-        &caller,
-    );
+    // The VM hears the answer as it streams. A thread of its own sends the fragments in order, so the stream never
+    // waits on the VM's session; the answer goes back only once they are all sent.
+    let result = thread::scope(|scope| {
+        let (sent, fragments) = mpsc::channel();
+        scope.spawn(move || {
+            stream_deltas(fragments, |delta| {
+                // A fragment the VM does not take ends what it hears of this answer; the answer carries the rest.
+                matches!(
+                    crate::fleet::send(app, cid, &delta_line(req, delta)),
+                    Ok((200..300, _))
+                )
+            })
+        });
+        let result = gateway.complete_for(
+            &request,
+            &mut |delta| {
+                if first_delta_ms.is_none() {
+                    // The first token is in: the agent waits on the model's stream from here.
+                    collect::agent_state(app, cid, "streaming");
+                }
+                first_delta_ms.get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.0);
+                // The bus keeps the events it has always carried: the text, the reasoning and the start of a tool call.
+                if !matches!(delta, Delta::ToolInput { .. } | Delta::BlockEnd { .. }) {
+                    app.bus.publish(
+                        "delta",
+                        &json!({ "cid": cid, "work": work, "req": req, "delta": delta }),
+                    );
+                }
+                let _ = sent.send(delta.clone());
+            },
+            &caller,
+        );
+        // The stream is over: the sender sends what is left, and the scope waits for it.
+        drop(sent);
+        result
+    });
     let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     collect::agent_state(app, cid, "tools");
     if let Some(held) = budget_hold {
@@ -973,6 +1001,54 @@ fn model_call(
                 error: Some(message),
             }
         }
+    }
+}
+
+/// The line that carries one fragment of model call `req`'s answer to the VM.
+fn delta_line(req: u64, delta: Delta) -> Value {
+    json!({ "message": HostMessage::ModelDelta { req, delta } })
+}
+
+/// Sends a model call's fragments to the VM in the order they arrive, until the stream ends (`fragments` closes), or
+/// until the VM refuses one (`send` returns false): the answer carries the whole response, so the rest are not sent.
+/// Fragments that are waiting together go as one: text joins text, and the input of a tool call joins its own. A VM
+/// on a remote node answers each send only after a round trip, so the fragments do not queue behind a line each.
+fn stream_deltas(fragments: Receiver<Delta>, mut send: impl FnMut(Delta) -> bool) {
+    while let Ok(first) = fragments.recv() {
+        let mut outgoing = first;
+        while let Ok(next) = fragments.try_recv() {
+            if let Err(next) = join_fragment(&mut outgoing, next)
+                && !send(std::mem::replace(&mut outgoing, next))
+            {
+                return;
+            }
+        }
+        if !send(outgoing) {
+            return;
+        }
+    }
+}
+
+/// Joins `next` onto `into` when both are the same kind of fragment for the same place: text onto text, reasoning
+/// onto reasoning, the input of one tool call onto that call's. Otherwise `next` is handed back.
+fn join_fragment(into: &mut Delta, next: Delta) -> Result<(), Delta> {
+    match (into, next) {
+        (Delta::Text { text }, Delta::Text { text: more })
+        | (Delta::Thinking { text }, Delta::Thinking { text: more }) => {
+            text.push_str(&more);
+            Ok(())
+        }
+        (
+            Delta::ToolInput { index, json: chunk },
+            Delta::ToolInput {
+                index: next_index,
+                json: more,
+            },
+        ) if *index == next_index => {
+            chunk.push_str(&more);
+            Ok(())
+        }
+        (_, next) => Err(next),
     }
 }
 
@@ -1103,12 +1179,12 @@ fn decide_call(
         .map(|t| t.name)
         .collect();
     // STOP ALL holds every tool call, also one that was on its way when the owner stopped the plaza (its work's
-    // cancel may not have reached the VM yet). An agent on the bench, or on a paused project, runs no tool either
-    // (see `membership`). Then the plaza's laws and the grant (see `gate_call`).
+    // cancel may not have reached the VM yet). An agent whose project is paused or over runs no tool either
+    // (see `projects::held`). Then the plaza's laws and the grant (see `gate_call`).
     let hold = if app.control.paused() {
         Some("the plaza is held (STOP ALL); waiting for the owner to resume".to_string())
     } else {
-        crate::membership::held(app, agent)
+        crate::projects::held(app, agent)
     };
     let verdict = match hold {
         Some(why) => Err(why),
@@ -1759,5 +1835,116 @@ mod hold_tests {
         // Not an engine call, even from an ACP harness: the plaza's own tools behave as they did.
         assert!(!holds_for_owner(&acp, "edit"));
         assert!(!holds_for_owner(&acp, "code_engine"));
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn a_model_calls_fragments_reach_the_vm_in_order_and_waiting_ones_join() {
+        let (sent, fragments) = mpsc::channel();
+        for delta in [
+            Delta::Text { text: "a".into() },
+            Delta::Text { text: "b".into() },
+            Delta::ToolUse {
+                name: "read".into(),
+                index: 1,
+                id: "t1".into(),
+            },
+            Delta::ToolInput {
+                index: 1,
+                json: "{\"path\"".into(),
+            },
+            Delta::ToolInput {
+                index: 1,
+                json: ": \"x\"}".into(),
+            },
+            Delta::BlockEnd { index: 1 },
+            Delta::Text { text: "c".into() },
+        ] {
+            sent.send(delta).unwrap();
+        }
+        // The stream is over: the sender sends what is left and returns.
+        drop(sent);
+        let mut lines = Vec::new();
+        stream_deltas(fragments, |delta| {
+            lines.push(delta_line(7, delta));
+            true
+        });
+        // Text joins text, and one call's input joins its own; the call's start and end, and the text after them,
+        // keep their place in the order.
+        assert_eq!(
+            lines,
+            vec![
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "text", "text": "ab"}}}),
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "tool_use", "name": "read", "index": 1, "id": "t1"}}}),
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "tool_input", "index": 1, "json": "{\"path\": \"x\"}"}}}),
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "block_end", "index": 1}}}),
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "text", "text": "c"}}}),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_fragments_stop_at_the_first_one_the_vm_does_not_take() {
+        let (sent, fragments) = mpsc::channel();
+        for delta in [
+            Delta::BlockEnd { index: 0 },
+            Delta::Text { text: "a".into() },
+            Delta::BlockEnd { index: 1 },
+            Delta::Text { text: "b".into() },
+        ] {
+            sent.send(delta).unwrap();
+        }
+        drop(sent);
+        let mut offered = Vec::new();
+        stream_deltas(fragments, |delta| {
+            offered.push(delta);
+            // The VM takes its first two fragments only.
+            offered.len() < 2
+        });
+        assert_eq!(
+            offered,
+            vec![
+                Delta::BlockEnd { index: 0 },
+                Delta::Text { text: "a".into() }
+            ],
+            "nothing after the refused fragment is offered"
+        );
+    }
+
+    #[test]
+    fn fragments_of_different_calls_or_kinds_never_join() {
+        let mut text = Delta::Text { text: "x".into() };
+        assert_eq!(
+            join_fragment(&mut text, Delta::Thinking { text: "y".into() }),
+            Err(Delta::Thinking { text: "y".into() })
+        );
+        let mut first = Delta::ToolInput {
+            index: 0,
+            json: "{".into(),
+        };
+        assert_eq!(
+            join_fragment(
+                &mut first,
+                Delta::ToolInput {
+                    index: 2,
+                    json: "}".into(),
+                },
+            ),
+            Err(Delta::ToolInput {
+                index: 2,
+                json: "}".into(),
+            })
+        );
+        assert_eq!(
+            first,
+            Delta::ToolInput {
+                index: 0,
+                json: "{".into(),
+            }
+        );
     }
 }

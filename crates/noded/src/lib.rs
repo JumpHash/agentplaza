@@ -1073,10 +1073,22 @@ pub struct Accelerator {
 
 /// The trainer runtime this node can run jobs in (see `train`). `runtime` is null when none
 /// applies; `ok` is false when the runtime is missing something, and `detail` says what.
+/// `trainer_env` is the torch build the trainer's environment holds (`ok` does not depend on it).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Trainer {
     pub runtime: Option<&'static str>,
     pub ok: bool,
+    pub detail: String,
+    pub trainer_env: TrainerEnv,
+}
+
+/// The torch build in the trainer's environment, and whether it serves this machine's accelerators. `torch` is
+/// `cuda`, `rocm`, `xpu`, `cpu` or `default` (the PyPI wheel: macOS's, with MPS), null when there is no torch.
+/// `detail` says what matches, or the `uv sync` that installs the right build.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TrainerEnv {
+    pub torch: Option<&'static str>,
+    pub matches: bool,
     pub detail: String,
 }
 

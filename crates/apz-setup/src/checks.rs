@@ -597,13 +597,7 @@ mod tests {
             let lower = text
                 .to_ascii_lowercase()
                 .replace("no docker or database needed", "");
-            for banned in [
-                "docker",
-                "postgres",
-                "garage",
-                "apz_database_url",
-                "apz_s3_",
-            ] {
+            for banned in ["docker", "postgres", "apz_database_url"] {
                 assert!(!lower.contains(banned), "{text:?} names {banned}");
             }
         }

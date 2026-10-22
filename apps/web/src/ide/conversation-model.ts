@@ -1,27 +1,12 @@
-// The words of the IDE's conversation view (views/ide-conversation.ts): the draft's team and tasks as lines, whether
-// Start can be pressed, and the text that streams in for a reply. Pure: no DOM, no fetch.
+// The words of the IDE's conversation view (views/ide-conversation.ts): the draft's tasks, budget and settings as lines,
+// whether Start can be pressed, and the text that streams in for a reply. Pure: no DOM, no fetch.
 
-import type { Agent, DraftSeat, DraftTask, OwnerConversation, ProjectDraft, ProjectSettings } from '../api';
-import { agentLabelIn, roleLabel } from '../roles';
+import type { DraftTask, OwnerConversation, ProjectDraft, ProjectSettings } from '../api';
+import { roleLabel } from '../roles';
 
 /** A workspace id the IDE opens as a conversation: `conv-<n>`. */
 export function isConversationId(id: string | null | undefined): id is string {
   return !!id && /^conv-\d+$/.test(id);
-}
-
-/** One role of the team as the draft shows it: `2 Builder (Builder #300 from the bench, 1 new)`. */
-export function seatLine(seat: DraftSeat, roster: Pick<Agent, 'cid' | 'role'>[]): string {
-  const named = (seat.bench ?? []).map((cid) => agentLabelIn(roster, cid));
-  const fresh = seat.count - named.length;
-  const parts: string[] = [];
-  if (named.length) parts.push(`${named.join(', ')} from the bench`);
-  if (fresh > 0) parts.push(`${fresh} new`);
-  return `${seat.count} ${roleLabel(seat.role)}${parts.length ? ` (${parts.join(', ')})` : ''}`;
-}
-
-/** The team in one line, roles joined by a dot. */
-export function teamLine(team: DraftSeat[], roster: Pick<Agent, 'cid' | 'role'>[]): string {
-  return team.map((seat) => seatLine(seat, roster)).join(' · ');
 }
 
 /** A task's `after` in words: `after 1, 2`, or '' when it runs at once. */

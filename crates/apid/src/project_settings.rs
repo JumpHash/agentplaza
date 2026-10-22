@@ -194,7 +194,7 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         if !crate::roles_custom::exists(app, role) {
             return Err(format!("role_models: the plaza has no role {role}"));
         }
-        if crate::membership::plaza_wide(role) {
+        if crate::settings::plaza_wide(role) {
             return Err(format!(
                 "role_models: {role} works on every project, so a project sets no model for it"
             ));
@@ -278,9 +278,7 @@ pub fn merged(current: &ProjectSettings, patch: &Value) -> Result<ProjectSetting
 
 /// The overrides of the project agent `cid` works on, if it works on one.
 pub fn of_agent(app: &App, cid: u64) -> Option<ProjectSettings> {
-    app.members
-        .project_of(cid)
-        .map(|project| app.project_settings.get(&project))
+    crate::projects::project_of(app, cid).map(|project| app.project_settings.get(&project))
 }
 
 /// The model agent `agent` runs, from the project's overrides (its role's, else the project's default); `None` when
@@ -316,16 +314,6 @@ pub fn permission_mode(app: &App, cid: u64) -> Mode {
 
 // ---- The budget ---------------------------------------------------------------------------------------------------
 
-/// Sets `credits` of the plaza's budget aside for project `pid` (the owner's operation).
-pub fn fund(app: &App, pid: &str, credits: u64) -> Result<(), String> {
-    let amount = i64::try_from(credits).map_err(|_| "too many credits".to_string())?;
-    app.plaza
-        .treasury
-        .move_budget(PLAZA_OWNER, pid, amount)
-        .map(|_| ())
-        .map_err(|e| format!("the plaza's budget could not set {credits} credits aside: {e}"))
-}
-
 /// Gives the rest of project `pid`'s budget back to the plaza (it is over); nothing when it has none.
 pub fn return_rest(app: &App, pid: &str) {
     if let Err(e) = app.plaza.treasury.return_town_budget(pid) {
@@ -345,8 +333,8 @@ fn budget_view(app: &App, pid: &str) -> Value {
 }
 
 /// After a change to project `pid`'s overrides, its agents get their new profiles at once.
-fn push_members(app: &App, pid: &str) {
-    for cid in app.members.members(pid) {
+fn push_agents(app: &App, pid: &str) {
+    for cid in crate::projects::agents_of(app, pid) {
         if let Some(agent) = app.agents.get(cid)
             && agent.status != crate::agents::Status::Offline
         {
@@ -404,7 +392,7 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if let Err(e) = app.project_settings.set(id, next.clone()) {
         return Response::error(500, &format!("settings not saved: {e}"));
     }
-    push_members(app, id);
+    push_agents(app, id);
     if let Some(project) = app.projects.get(id) {
         app.bus.publish("project", &project);
     }

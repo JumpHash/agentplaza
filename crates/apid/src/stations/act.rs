@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use apz_station::{AppsOp, Op};
 use serde_json::{Value, json};
 
+use super::audit::StationAudit;
 use super::hooks;
 use super::leases::{Kind, Lease, LeaseView, State};
 use super::link::StationLink;
@@ -44,14 +45,13 @@ pub(crate) trait Hub {
     fn pointer_paused(&self, station: &str, session: u64) -> bool;
     /// The laws' refusal of a call (`Laws::refusal`), `None` when it may run.
     fn refusal(&self, cid: u64, role: &str, tool: &str, input: &Value) -> Option<String>;
-    /// Writes one row to the station audit.
+    /// Writes one entry to the station audit.
     fn audit(
         &self,
         station: &str,
         cid: u64,
-        kind: &str,
         actor: &str,
-        data: Value,
+        event: StationAudit,
     ) -> Result<(), String>;
 }
 
@@ -90,11 +90,10 @@ impl Hub for AppHub<'_> {
         &self,
         station: &str,
         cid: u64,
-        kind: &str,
         actor: &str,
-        data: Value,
+        event: StationAudit,
     ) -> Result<(), String> {
-        ops::audit(self.0, Some(station), Some(cid), kind, actor, data)
+        ops::audit(self.0, Some(station), Some(cid), actor, event)
     }
 }
 
@@ -130,13 +129,13 @@ pub(crate) fn run_op(
 ) -> Result<Value, Failure> {
     let summary = summary(&op);
     let outcome = send(hub, cid, role, station, lease, op);
-    let row = json!({
-        "op": summary,
-        "lease": lease,
-        "ok": outcome.is_ok(),
-        "error": outcome.as_ref().err().map(|(_, message)| message),
-    });
-    match hub.audit(station, cid, "agent_op", &actor_of(cid), row) {
+    let event = StationAudit::AgentOp {
+        op: summary,
+        lease: lease.map(str::to_string),
+        ok: outcome.is_ok(),
+        error: outcome.as_ref().err().map(|(_, message)| message.clone()),
+    };
+    match hub.audit(station, cid, &actor_of(cid), event) {
         Ok(()) => outcome,
         Err(e) if outcome.is_ok() => Err((
             500,
@@ -363,12 +362,13 @@ pub(crate) fn run_deliver(
     perform: impl FnOnce() -> Result<Value, Failure>,
 ) -> Result<Value, Failure> {
     let outcome = deliver_checks(hub, cid, role, station, path).and_then(|()| perform());
-    let row = json!({
-        "op": {"op": "deliver", "path": path},
-        "ok": outcome.is_ok(),
-        "error": outcome.as_ref().err().map(|(_, message)| message),
-    });
-    match hub.audit(station, cid, "agent_op", &actor_of(cid), row) {
+    let event = StationAudit::AgentOp {
+        op: json!({"op": "deliver", "path": path}),
+        lease: None,
+        ok: outcome.is_ok(),
+        error: outcome.as_ref().err().map(|(_, message)| message.clone()),
+    };
+    match hub.audit(station, cid, &actor_of(cid), event) {
         Ok(()) => outcome,
         Err(e) if outcome.is_ok() => Err((
             500,
@@ -449,15 +449,13 @@ pub fn lease_release(app: &App, cid: u64, station: &str, lease: &str) -> Result<
 
 /// A lease the laws refused: audited as a refused operation, and answered with the law's reason.
 fn refused(app: &App, station: &str, cid: u64, op: Value, why: String) -> Failure {
-    let row = json!({"op": op, "ok": false, "error": why});
-    match ops::audit(
-        app,
-        Some(station),
-        Some(cid),
-        "agent_op",
-        &actor_of(cid),
-        row,
-    ) {
+    let event = StationAudit::AgentOp {
+        op,
+        lease: None,
+        ok: false,
+        error: Some(why.clone()),
+    };
+    match ops::audit(app, Some(station), Some(cid), &actor_of(cid), event) {
         Ok(()) => (403, why),
         Err(e) => (500, e),
     }
@@ -571,17 +569,16 @@ mod tests {
             &self,
             station: &str,
             cid: u64,
-            kind: &str,
             actor: &str,
-            data: Value,
+            event: StationAudit,
         ) -> Result<(), String> {
             if self.audit_broken {
                 return Err("disk full".into());
             }
-            self.audit
-                .lock()
-                .unwrap()
-                .push(json!({"station": station, "agent": cid, "kind": kind, "actor": actor, "data": data}));
+            let data = serde_json::to_value(&event).unwrap_or(Value::Null);
+            self.audit.lock().unwrap().push(
+                json!({"station": station, "agent": cid, "kind": data["kind"], "actor": actor, "data": data}),
+            );
             Ok(())
         }
     }

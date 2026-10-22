@@ -12,7 +12,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
-use super::agent;
 use super::nodes::Load;
 use crate::console::{Ctx, client, ui};
 
@@ -512,7 +511,7 @@ fn keys_card(state: &State) -> Element<'_, Msg> {
                     };
                     vec![
                         ui::sans(label, 13.0, p.ink).into(),
-                        ui::faint(agent::ago(k.created_ms)).into(),
+                        ui::faint(ui::ago(k.created_ms)).into(),
                         ui::btn_sm(
                             "Revoke",
                             Some("trash"),

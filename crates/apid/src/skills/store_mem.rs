@@ -72,7 +72,7 @@ struct StoredVersion {
     warnings: u32,
     infos: u32,
     rules_version: u32,
-    sha256: String,
+    hash: String,
     skill_md: String,
     files: Vec<StoredFile>,
     findings: Vec<Finding>,
@@ -82,7 +82,7 @@ struct StoredVersion {
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredFile {
     path: String,
-    sha256: String,
+    hash: String,
     size: u64,
     executable: bool,
 }
@@ -224,14 +224,14 @@ impl StoredVersion {
             warnings: next.report.warnings,
             infos: next.report.infos,
             rules_version: next.report.rules_version,
-            sha256: next.sha256.clone(),
+            hash: next.hash.clone(),
             skill_md: next.skill_md.clone(),
             files: next
                 .files
                 .iter()
                 .map(|f| StoredFile {
                     path: f.path.clone(),
-                    sha256: f.sha256.clone(),
+                    hash: f.hash.clone(),
                     size: f.size,
                     executable: f.executable,
                 })
@@ -252,7 +252,7 @@ impl StoredVersion {
             warnings: self.warnings,
             infos: self.infos,
             rules_version: self.rules_version,
-            sha256: self.sha256.clone(),
+            hash: self.hash.clone(),
             file_count: self.files.len() as u32,
             total_bytes: self.files.iter().map(|f| f.size).sum(),
             source_commit: self.source_commit.clone(),
@@ -268,7 +268,7 @@ impl StoredVersion {
                 .iter()
                 .map(|f| SkillFile {
                     path: f.path.clone(),
-                    sha256: f.sha256.clone(),
+                    hash: f.hash.clone(),
                     size: f.size,
                     executable: f.executable,
                 })

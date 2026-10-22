@@ -55,7 +55,7 @@ export interface MaintenanceConfig { every_hours: number; watchers: number[]; fo
 export interface Maintenance {
   project: string;
   config: MaintenanceConfig;
-  /** The agents who sweep, in turn (the owner's choice, else the project's members). */
+  /** The agents who sweep, in turn (the owner's choice, else the project's agents). */
   watchers: number[];
   map: ProductMap;
   /** The newest 200, newest first. */

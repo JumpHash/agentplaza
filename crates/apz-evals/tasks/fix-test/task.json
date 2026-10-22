@@ -1,0 +1,4 @@
+{
+  "goal": "The unit test in src/lib.rs fails: make add() return the sum of its arguments, and keep the test as it is.",
+  "check": "rustc --edition 2021 --test src/lib.rs -o /tmp/apz-fix-test && /tmp/apz-fix-test"
+}
