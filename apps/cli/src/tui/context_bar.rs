@@ -1,8 +1,8 @@
-//! The context of a chat, and the model and effort it runs at, as the TUI's chat views show them: the Workspace's agent
-//! chat and the Chat tab's conversation. A bar above the input says how full the context is (`41.2k / 200k · 21%`);
-//! `i` opens the breakdown (the six parts, the tool calls, the calls and compactions); `M` opens the model and effort
-//! picker, which saves the choice at once. The hub answers `GET /v1/agents/{cid}/context` (or the conversation's), the
-//! model list is `GET /v1/models`, and a choice is a `PATCH` of the chat's `model` (see `crates/apid/src/context_track.rs`).
+//! The context of an agent's chat, and the model and effort it runs at, as the Workspace tab shows them. A bar above
+//! the input says how full the context is (`41.2k / 200k · 21%`); `i` opens the breakdown (the six parts, the tool
+//! calls, the calls and compactions); `M` opens the model and effort picker, which saves the choice at once. The hub
+//! answers `GET /v1/agents/{cid}/context`, the model list is `GET /v1/models`, and a choice is a `PATCH` of the agent's
+//! `model` (see `crates/apid/src/context_track.rs`).
 //! This file holds the data, its formatting, the picker's keys and its drawing; the views call it, and the app runs
 //! the requests it asks for (`Ask`).
 
@@ -17,7 +17,7 @@ use super::app::Palette;
 use super::screens::clip;
 use super::style;
 use super::workspace::{Got, Key};
-use crate::ctx::{Client, seg};
+use crate::ctx::Client;
 
 /// How often the context of a chat on screen is asked for again (the events refresh it sooner).
 pub const EVERY: f32 = 10.0;
@@ -42,11 +42,10 @@ pub const EFFORTS: [(&str, Option<&str>); 5] = [
     ("Max", Some("max")),
 ];
 
-/// What a context belongs to: an agent's chat (its cid), or an owner conversation (the orchestrator's work in it).
+/// What a context belongs to: an agent's chat, by its cid.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Owner {
     Agent(u64),
-    Conversation(String),
 }
 
 impl Owner {
@@ -54,7 +53,6 @@ impl Owner {
     pub fn context_path(&self) -> String {
         match self {
             Owner::Agent(cid) => format!("/v1/agents/{cid}/context"),
-            Owner::Conversation(id) => format!("/v1/owner/conversations/{}/context", seg(id)),
         }
     }
 
@@ -62,7 +60,6 @@ impl Owner {
     pub fn model_path(&self) -> String {
         match self {
             Owner::Agent(cid) => format!("/v1/agents/{cid}"),
-            Owner::Conversation(id) => format!("/v1/owner/conversations/{}", seg(id)),
         }
     }
 }
@@ -333,50 +330,6 @@ pub fn bar_line(ctx: Option<&Context>, width: u16, palette: Palette, clock: f32)
     spans.push(Span::raw(" "));
     spans.push(Span::styled(text, text_style));
     Line::from(spans)
-}
-
-/// The breakdown's rows: the model and window, the parts with their tokens and share, the tool calls, and the calls and
-/// compactions. Plain text, one string per line, shared by the panel and `/context`.
-pub fn plain(ctx: &Context) -> Vec<String> {
-    let mut lines = vec![format!(
-        "{} · window {}",
-        if ctx.model.is_empty() {
-            "-"
-        } else {
-            &ctx.model
-        },
-        ctx.window.map_or("unknown".to_string(), compact)
-    )];
-    lines.push(String::new());
-    lines.push("Context".to_string());
-    let total: u64 = ctx.parts.iter().sum();
-    for ((_, label), tokens) in PARTS.iter().zip(ctx.parts) {
-        lines.push(format!(
-            "  {label:<14}{:>8}{:>5}%",
-            compact(tokens),
-            percent(tokens, total)
-        ));
-    }
-    lines.push(String::new());
-    lines.push("Tool calls".to_string());
-    if ctx.tools.is_empty() {
-        lines.push("  No tool calls yet".to_string());
-    }
-    for tool in &ctx.tools {
-        lines.push(format!(
-            "  {:<20}{:>6} calls{:>6} errors{:>9} tokens",
-            clip(&tool.name, 20),
-            tool.calls,
-            tool.errors,
-            compact(tool.result_tokens)
-        ));
-    }
-    lines.push(String::new());
-    lines.push(format!(
-        "{} model calls · {} compactions",
-        ctx.calls, ctx.compactions
-    ));
-    lines
 }
 
 /// The breakdown as styled lines for the panel: the same rows as `plain`, with the swatches, the tool errors in crit
@@ -738,39 +691,6 @@ pub fn model_of(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The text of `/model <provider/model[@effort]|default>` as the entry the hub takes: None for the default. Only the
-/// shape is checked here; the hub refuses a model outside the tier policy.
-pub fn model_entry(text: &str) -> Result<Option<String>, String> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err("usage: /model <provider/model[@effort]|default>".to_string());
-    }
-    if text == "default" {
-        return Ok(None);
-    }
-    let (entry, level) = match text.split_once('@') {
-        Some((entry, level)) => (entry, Some(level)),
-        None => (text, None),
-    };
-    let well_formed = entry.split_once('/').is_some_and(|(provider, model)| {
-        !provider.is_empty() && !model.is_empty() && !model.contains(char::is_whitespace)
-    });
-    if !well_formed {
-        return Err(format!(
-            "{text}: use provider/model, with an optional @effort"
-        ));
-    }
-    match level {
-        None => Ok(Some(entry.to_string())),
-        Some(level) if EFFORTS.iter().any(|(_, s)| *s == Some(level)) => {
-            Ok(Some(format!("{entry}@{level}")))
-        }
-        Some(level) => Err(format!(
-            "{level}: effort is one of low, medium, high, max (or none for the default)"
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ratatui::style::Color;
@@ -898,7 +818,10 @@ mod tests {
 
     #[test]
     fn the_breakdown_lists_each_part_its_tokens_and_share_and_the_tool_calls() {
-        let lines: Vec<String> = plain(&sample());
+        let lines: Vec<String> = breakdown_lines(Some(&sample()), palette())
+            .iter()
+            .map(text_of)
+            .collect();
         assert_eq!(lines[0], "anthropic/claude-sonnet-4-5@high · window 200k");
         assert!(
             lines
@@ -920,7 +843,12 @@ mod tests {
             tools: Vec::new(),
             ..sample()
         };
-        assert!(plain(&empty).iter().any(|l| l == "  No tool calls yet"));
+        assert!(
+            breakdown_lines(Some(&empty), palette())
+                .iter()
+                .map(text_of)
+                .any(|l| l == "  No tool calls yet")
+        );
         let styled: Vec<String> = breakdown_lines(Some(&sample()), palette())
             .iter()
             .map(text_of)
@@ -932,27 +860,6 @@ mod tests {
         assert_eq!(
             text_of(&breakdown_lines(None, palette())[0]),
             "reading the context…"
-        );
-    }
-
-    #[test]
-    fn a_model_argument_is_provider_model_with_an_optional_effort_or_default() {
-        assert_eq!(model_entry("default"), Ok(None));
-        assert_eq!(
-            model_entry("anthropic/claude-sonnet-4-5"),
-            Ok(Some("anthropic/claude-sonnet-4-5".into()))
-        );
-        assert_eq!(
-            model_entry(" openai/gpt-x@max "),
-            Ok(Some("openai/gpt-x@max".into()))
-        );
-        assert!(model_entry("").unwrap_err().starts_with("usage:"));
-        assert!(model_entry("gpt-x").unwrap_err().contains("provider/model"));
-        assert!(model_entry("a/b c").unwrap_err().contains("provider/model"));
-        assert!(
-            model_entry("a/b@turbo")
-                .unwrap_err()
-                .contains("effort is one of")
         );
     }
 
@@ -976,7 +883,7 @@ mod tests {
             {"provider": "anthropic", "id": "claude-b", "favourite": true, "context": 200000},
             {"provider": "anthropic", "id": "claude-a", "favourite": false},
         ]});
-        let mut picker = Picker::open(Owner::Conversation("conv-3".into()), Some("openai/gpt-x"));
+        let mut picker = Picker::open(Owner::Agent(3), Some("openai/gpt-x"));
         assert_eq!(picker.chosen(), None, "nothing is listed yet");
         assert_eq!(picker.key(Key::Enter), Stroke::Keep);
         assert!(picker.note.is_some());
@@ -1004,7 +911,7 @@ mod tests {
         assert_eq!(
             picker.key(Key::Enter),
             Stroke::Save {
-                owner: Owner::Conversation("conv-3".into()),
+                owner: Owner::Agent(3),
                 model: Some("anthropic/claude-a@medium".into()),
             }
         );
@@ -1013,7 +920,7 @@ mod tests {
         assert_eq!(
             picker.key(Key::Enter),
             Stroke::Save {
-                owner: Owner::Conversation("conv-3".into()),
+                owner: Owner::Agent(3),
                 model: None,
             },
             "the default row saves no model, whatever the effort"
@@ -1047,13 +954,5 @@ mod tests {
     fn owners_name_their_context_and_model_paths() {
         assert_eq!(Owner::Agent(7).context_path(), "/v1/agents/7/context");
         assert_eq!(Owner::Agent(7).model_path(), "/v1/agents/7");
-        assert_eq!(
-            Owner::Conversation("conv-3".into()).context_path(),
-            "/v1/owner/conversations/conv-3/context"
-        );
-        assert_eq!(
-            Owner::Conversation("conv-3".into()).model_path(),
-            "/v1/owner/conversations/conv-3"
-        );
     }
 }

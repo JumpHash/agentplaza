@@ -25,8 +25,7 @@ const BLINK_SECS: f32 = 0.5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     GoTo(Tab),
-    NewConversation,
-    MessageAgent,
+    NewChat,
     NextProject,
     PreviousProject,
     Refresh,
@@ -277,8 +276,7 @@ fn commands() -> Vec<Command> {
         })
         .collect();
     let actions = [
-        ("New conversation", 'n', Action::NewConversation),
-        ("Message the selected agent", 't', Action::MessageAgent),
+        ("New chat", 'n', Action::NewChat),
         ("Next project", 'p', Action::NextProject),
         ("Previous project", 'P', Action::PreviousProject),
         ("Refresh", 'r', Action::Refresh),
@@ -468,11 +466,10 @@ mod tests {
     #[test]
     fn the_actions_are_the_listed_commands() {
         let labels: Vec<String> = commands().into_iter().map(|c| c.label).collect();
-        assert_eq!(labels.len(), Tab::ALL.len() + 8);
+        assert_eq!(labels.len(), Tab::ALL.len() + 7);
         assert!(labels.contains(&"Go to Providers".to_string()));
         for wanted in [
-            "New conversation",
-            "Message the selected agent",
+            "New chat",
             "Next project",
             "Previous project",
             "Refresh",
