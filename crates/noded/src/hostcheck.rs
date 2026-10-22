@@ -19,10 +19,15 @@ use vmm::cgroup::{SWAP_ENV, SwapPolicy, swap_policy_from};
 
 const ZSWAP_ADVICE: &str = "enable zswap (zswap.enabled=1 on the kernel command line, or echo Y > /sys/module/zswap/parameters/enabled) so cold guest pages compress in RAM";
 const SWAP_ADVICE: &str = "guest memory holds agent secrets: use zram swap, or swap onto an encrypted (dm-crypt) device; no swap, or unencrypted swap, is not fit";
+#[cfg(not(target_os = "macos"))]
 const REFLINK_ADVICE: &str = "put the snapshot directory on XFS, Btrfs or bcachefs: without reflinks, sleeps, forks and workspaces copy whole files";
+#[cfg(target_os = "macos")]
+const REFLINK_ADVICE: &str = "put the snapshot directory on APFS: without clonefile, sleeps, forks and workspaces copy whole files";
 const CGROUP_ADVICE: &str =
     "delegate the cpu, memory and pids controllers to the user manager (systemd user@ delegation)";
 const KSM_ADVICE: &str = "KSM merges identical pages across VMs, a cross-VM timing side channel: write 0 to /sys/kernel/mm/ksm/run";
+#[cfg(target_os = "macos")]
+const HVF_ADVICE: &str = "sign apz-vmm with the hypervisor entitlement (codesign -s - --entitlements scripts/hvf-entitlements.plist -f apz-vmm): without it no VM boots";
 const VM_SWAP_ADVICE: &str =
     "zswap is on: set APZ_VMM_SWAP=ram so a VM's cold pages can be compressed instead of held";
 
@@ -141,16 +146,80 @@ fn checks(snapshot_dir: Option<&Path>) -> Vec<Check> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn checks(_snapshot_dir: Option<&Path>) -> Vec<Check> {
+fn checks(snapshot_dir: Option<&Path>) -> Vec<Check> {
     let env = std::env::var(SWAP_ENV).ok();
-    vec![
+    let mut checks = vec![
         Check::not_applicable("zswap"),
         Check::not_applicable("swap"),
-        Check::not_applicable("reflink"),
+        platform_reflink(snapshot_dir),
         Check::not_applicable("cgroups"),
         Check::not_applicable("ksm"),
-        vm_swap_check(env.as_deref(), false),
-    ]
+    ];
+    checks.extend(platform_hvf());
+    checks.push(vm_swap_check(env.as_deref(), false));
+    checks
+}
+
+/// The reflink item where the copies are clones: APFS `clonefile` on macOS.
+#[cfg(target_os = "macos")]
+fn platform_reflink(snapshot_dir: Option<&Path>) -> Check {
+    reflink_check(snapshot_dir)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn platform_reflink(_snapshot_dir: Option<&Path>) -> Check {
+    Check::not_applicable("reflink")
+}
+
+/// The Hypervisor.framework item on Apple Silicon; no item elsewhere.
+#[cfg(target_os = "macos")]
+fn platform_hvf() -> Vec<Check> {
+    vec![hvf_check()]
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn platform_hvf() -> Vec<Check> {
+    Vec::new()
+}
+
+/// The Hypervisor.framework item (Apple Silicon): every VM is an `apz-vmm` process next to this
+/// daemon, and each one fails its boot with `HV_DENIED` unless it carries the hypervisor entitlement.
+#[cfg(target_os = "macos")]
+fn hvf_check() -> Check {
+    let child = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("apz-vmm")));
+    let shown = child
+        .as_deref()
+        .map_or_else(|| "apz-vmm".to_string(), |path| path.display().to_string());
+    let entitled = child.as_deref().is_some_and(vm_process_entitled);
+    let value = if entitled {
+        format!("{shown} carries com.apple.security.hypervisor")
+    } else {
+        format!("{shown} lacks com.apple.security.hypervisor")
+    };
+    Check::fit("hvf", value, entitled, HVF_ADVICE)
+}
+
+/// Whether the binary at `path` is signed with the hypervisor entitlement, read back with
+/// `codesign`. A binary that cannot be read, or that `codesign` cannot read, is not entitled.
+#[cfg(target_os = "macos")]
+fn vm_process_entitled(path: &Path) -> bool {
+    std::process::Command::new("codesign")
+        .args(["-d", "--entitlements", ":-"])
+        .arg(path)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|output| hypervisor_entitled(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Whether an entitlements plist (what `codesign -d --entitlements :-` prints) grants the hypervisor
+/// entitlement: the key is present and its value is `true`.
+pub fn hypervisor_entitled(plist: &str) -> bool {
+    plist
+        .split("<key>com.apple.security.hypervisor</key>")
+        .nth(1)
+        .is_some_and(|rest| rest.trim_start().starts_with("<true/>"))
 }
 
 /// A file's text, or `None` when it cannot be read (absent, or not for this user).
@@ -508,5 +577,44 @@ mod tests {
         assert_eq!(report.lines()[1], format!("warn zswap: N — {ZSWAP_ADVICE}"));
         assert_eq!(report.to_json()["checks"][1]["name"], json!("zswap"));
         assert_eq!(report.to_json()["checks"][1]["ok"], json!(false));
+    }
+}
+
+#[cfg(test)]
+mod hypervisor_tests {
+    use super::hypervisor_entitled;
+
+    #[test]
+    fn the_hypervisor_entitlement_is_read_from_an_entitlements_plist() {
+        let granted = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+	<key>com.apple.security.hypervisor</key>
+	<true/>
+</dict></plist>"#;
+        assert!(hypervisor_entitled(granted));
+        let refused = granted.replace("<true/>", "<false/>");
+        assert!(
+            !hypervisor_entitled(&refused),
+            "a false entitlement is not granted"
+        );
+        assert!(!hypervisor_entitled(""), "no plist, no entitlement");
+        assert!(
+            !hypervisor_entitled("<key>com.apple.security.app-sandbox</key><true/>"),
+            "another entitlement does not grant the hypervisor"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_report_names_the_hypervisor_and_the_clone_probe() {
+        let names: Vec<&str> = super::report(None)
+            .checks
+            .iter()
+            .map(|check| check.name)
+            .collect();
+        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert!(names.contains(&"hvf"), "{names:?}");
+        }
+        assert!(names.contains(&"reflink"), "{names:?}");
     }
 }

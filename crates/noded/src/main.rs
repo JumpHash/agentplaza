@@ -181,8 +181,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         shown(config.persist_dir.as_deref())
     );
     // One process per VM (the flag, or `APZ_VMM_SPAWN=process` as the service plans set it): the
-    // shape the jailer applies to, and the one cgroup limits need.
-    if config.vm_processes {
+    // shape the jailer applies to, and the one cgroup limits need. Apple Silicon has no other shape:
+    // Hypervisor.framework allows one VM per process, so each VM there is an `apz-vmm` process.
+    if config.vm_processes || cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         vmm::spawner::set_spawn_mode(vmm::spawner::SpawnMode::Process);
     }
     if matches!(
