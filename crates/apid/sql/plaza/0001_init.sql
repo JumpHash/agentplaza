@@ -1312,6 +1312,9 @@ CREATE TABLE "node_machine" (
     "arch" TEXT,
     "os" TEXT,
     "backend" TEXT,
+    "cpu_baseline" TEXT,
+    "clones" INTEGER CHECK ("clones" IN (0, 1)),
+    "storage_free_gib" INTEGER CHECK ("storage_free_gib" >= 0),
     "irqchip" TEXT,
     "class" TEXT,
     "kind" TEXT,
@@ -1340,6 +1343,14 @@ CREATE TABLE "node_machine" (
     "stats_mem_used_mib" INTEGER CHECK ("stats_mem_used_mib" >= 0),
     PRIMARY KEY ("nodes_pos", "nodes_pos_2"),
     FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_machine_bases" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "bases_pos" INTEGER NOT NULL CHECK ("bases_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2", "bases_pos"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE TABLE "node_machine_gpu" (
     "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),

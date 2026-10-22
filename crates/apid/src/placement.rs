@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 use crate::agents::Status;
 use crate::fleet::{self, LOCAL};
-use crate::nodes::{Node, OFFLINE_AFTER_MS};
+use crate::nodes::{Node, OFFLINE_AFTER_MS, Pool};
 use crate::sleep;
 use crate::state::App;
 
@@ -65,6 +65,8 @@ pub struct Candidate {
     pub running_vms: u64,
     /// It holds a warm template for the role.
     pub warm: bool,
+    /// Its pool (see `nodes::Pool`); None when it reports no CPU baseline.
+    pub pool: Option<Pool>,
 }
 
 /// A candidate's score; the higher wins. Free memory, less the VMs it runs, plus the warm bonus.
@@ -121,14 +123,11 @@ pub fn choose_node(app: &App, role: &str) -> String {
     chosen
 }
 
-/// The node an agent of `role` leaving `from` moves to: the best of the other nodes in service by
-/// [`pick`] that hold the `needs` volumes (see [`lacking_volumes`]), reserved for it as a new agent's
-/// would be. None when none has room.
+/// The node an agent of `role` leaving `from` moves to: the best of the other nodes in service in `from`'s
+/// pool by [`pick`] that hold the `needs` volumes (see [`lacking_volumes`]), reserved for it as a new agent's
+/// would be. None when none in the pool has room.
 pub fn target_for(app: &App, role: &str, from: &str, needs: &[String]) -> Option<String> {
-    let others: Vec<Candidate> = candidates(app, role, needs)
-        .into_iter()
-        .filter(|candidate| candidate.node != from)
-        .collect();
+    let others = in_pool(candidates(app, role, needs), from, pool_of(app, from).as_ref());
     let chosen = pick(&others)?;
     reserve(&chosen);
     Some(chosen)
@@ -204,10 +203,55 @@ fn candidates(app: &App, role: &str, needs: &[String]) -> Vec<Candidate> {
                     .saturating_sub(reserved_mib(&node, now)),
                 running_vms: running_vms(&runs),
                 warm: warm_for(&templates_of(app, &node), role),
+                pool: pool_of(app, &node),
                 node,
             })
         })
         .collect()
+}
+
+/// The pool of node `node` (see `nodes::Pool`): `n0`'s from noded's machine view, a joined node's from its
+/// last heartbeat. None when the node reports no CPU baseline, or does not answer.
+pub(crate) fn pool_of(app: &App, node: &str) -> Option<Pool> {
+    if node == LOCAL {
+        let Ok((200, machine)) = fleet::noded(app, LOCAL, "GET", "/v1/machine", None) else {
+            return None;
+        };
+        return Pool::of(
+            machine["arch"].as_str(),
+            machine["backend"].as_str(),
+            machine["cpu_baseline"].as_str(),
+        );
+    }
+    app.nodes.get(node)?.machine.pool()
+}
+
+/// The candidates an agent may move to from a node of pool `from_pool` (pure): the others of that pool. A node
+/// with no pool takes no move, and no node is in its pool.
+pub fn in_pool(candidates: Vec<Candidate>, from: &str, from_pool: Option<&Pool>) -> Vec<Candidate> {
+    let Some(pool) = from_pool else {
+        return Vec::new();
+    };
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.node != from && candidate.pool.as_ref() == Some(pool))
+        .collect()
+}
+
+/// Why a move of an agent from a node of pool `from_pool` to `target` (of pool `target_pool`) is refused (pure):
+/// a VM moves only within its pool (plan 17.2), and a node with no pool is in none.
+pub fn pool_refusal(
+    target: &str,
+    from_pool: Option<&Pool>,
+    target_pool: Option<&Pool>,
+) -> Option<(u16, String)> {
+    match (from_pool, target_pool) {
+        (Some(from), Some(to)) if from == to => None,
+        _ => Some((
+            409,
+            format!("node {target} is not in the agent's pool: a VM moves only within its pool"),
+        )),
+    }
 }
 
 /// Sets [`RESERVE_MIB`] aside on `node` for an agent placed or moved there.
@@ -535,6 +579,11 @@ fn move_claimed(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
         return Err(Response::error(404, &format!("no agent {cid}")));
     };
     if let Some((status, message)) = status_refusal(cid, agent.status) {
+        return Err(Response::error(status, &message));
+    }
+    let (from_pool, target_pool) = (pool_of(app, &from), pool_of(app, target));
+    if let Some((status, message)) = pool_refusal(target, from_pool.as_ref(), target_pool.as_ref())
+    {
         return Err(Response::error(status, &message));
     }
     if app.work.current(cid).is_some() {
@@ -928,7 +977,20 @@ mod tests {
             free_mib,
             running_vms,
             warm,
+            pool: None,
         }
+    }
+
+    /// A candidate in pool `pool`, a short name for an arm64 KVM pool or an x86_64 one.
+    fn in_pool_of(node: &str, free_mib: u64, pool: Option<Pool>) -> Candidate {
+        Candidate {
+            pool,
+            ..candidate(node, free_mib, 0, false)
+        }
+    }
+
+    fn pool(arch: &str, hypervisor: &str, baseline: &str) -> Pool {
+        Pool::of(Some(arch), Some(hypervisor), Some(baseline)).expect("a pool")
     }
 
     fn node_record(id: &str, last_seen_ms: u64, draining: bool, revoked: bool) -> Node {
@@ -1360,5 +1422,87 @@ mod tests {
         .expect("copies");
         assert_eq!(copied, 8);
         assert_eq!(pushed, vec![(4, b64(&[7, 7, 7, 7]))]);
+    }
+
+    #[test]
+    fn a_move_lands_only_in_the_pool_of_its_node() {
+        let arm = pool("aarch64", "kvm", "arm64 midr=0x41:0xd0c:0x3:1");
+        let x86 = pool("x86_64", "kvm", "x86_64 vendor=GenuineIntel sig=0x000806e9");
+        let fleet = vec![
+            in_pool_of("n1", 9000, Some(x86.clone())),
+            in_pool_of("n2", 4000, Some(arm.clone())),
+            in_pool_of("n3", 2000, Some(arm.clone())),
+            in_pool_of(
+                "n4",
+                9000,
+                Some(Pool {
+                    hypervisor: "hvf".into(),
+                    ..arm.clone()
+                }),
+            ),
+            in_pool_of("n5", 9000, None),
+        ];
+        // An arm64 agent leaving n2 has room on n4 and n1 (other pools) and n5 (no pool): only n3 is in its pool.
+        let movable = in_pool(fleet.clone(), "n2", Some(&arm));
+        assert_eq!(pick(&movable).as_deref(), Some("n3"));
+        // An x86_64 agent leaving n1 has no other machine in its pool.
+        assert_eq!(pick(&in_pool(fleet.clone(), "n1", Some(&x86))), None);
+        // A node with no pool takes no move out, and nothing moves to it.
+        assert!(in_pool(fleet.clone(), "n5", None).is_empty());
+        assert!(in_pool(fleet, "n2", None).is_empty());
+    }
+
+    #[test]
+    fn a_new_agent_is_placed_on_the_best_node_of_any_pool() {
+        let arm = pool("aarch64", "kvm", "arm64 midr=0x41:0xd0c:0x3:1");
+        let x86 = pool("x86_64", "kvm", "x86_64 vendor=GenuineIntel sig=0x000806e9");
+        let fleet = vec![
+            in_pool_of("n2", 4000, Some(arm)),
+            in_pool_of("n1", 9000, Some(x86)),
+        ];
+        assert_eq!(
+            choose(&fleet),
+            "n1",
+            "a new agent is not pinned to a pool by placement"
+        );
+    }
+
+    #[test]
+    fn a_move_is_refused_across_pools_and_from_a_node_with_none() {
+        let arm = pool("aarch64", "kvm", "arm64 midr=0x41:0xd0c:0x3:1");
+        let other = pool("aarch64", "kvm", "arm64 midr=0x41:0xd0d:0x3:1");
+        assert_eq!(pool_refusal("n3", Some(&arm), Some(&arm)), None);
+        for (case, from, to) in [
+            ("another baseline", Some(&arm), Some(&other)),
+            ("the agent's node has no pool", None, Some(&arm)),
+            ("the target has no pool", Some(&arm), None),
+        ] {
+            let (status, message) = pool_refusal("n3", from, to).expect(case);
+            assert_eq!(status, 409, "{case}");
+            assert!(
+                message.contains("only within its pool"),
+                "{case}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_heartbeat_names_the_pool_of_its_machine() {
+        let machine: crate::nodes::Machine = serde_json::from_value(json!({
+            "arch": "aarch64",
+            "backend": "hvf",
+            "cpu_baseline": "arm64 cpufamily=0x67f674b3"
+        }))
+        .unwrap();
+        assert_eq!(
+            machine.pool(),
+            Some(pool("aarch64", "hvf", "arm64 cpufamily=0x67f674b3"))
+        );
+        let without: crate::nodes::Machine = serde_json::from_value(json!({
+            "arch": "aarch64",
+            "backend": "hvf"
+        }))
+        .unwrap();
+        assert_eq!(without.pool(), None, "no baseline, no pool");
     }
 }
