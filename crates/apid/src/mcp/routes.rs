@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::client::{ServerInfo, ToolInfo};
 use super::config::{self, McpServer, Setting, StoreError};
 use super::runtime::{Ctx, LogLine, Status};
-use super::{McpSecrets, OnBehalf, VaultSecrets, auto_risk, risk_for, stdio, wire_names};
+use super::{McpSecrets, OnBehalf, VaultSecrets, auto_risk, risk_for, wire_names};
 use crate::state::App;
 
 /// The node a test or an owner's start runs for when the request names none (as the vault does).
@@ -18,7 +18,12 @@ const DEFAULT_NODE: &str = "n0";
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/mcp/catalog", |_, _, _| {
-            Response::json(200, &super::catalog::PRESETS)
+            let target = super::runtimes::host_target().unwrap_or("none");
+            let presets: Vec<Value> = super::catalog::PRESETS
+                .iter()
+                .map(|preset| preset.view(target))
+                .collect();
+            Response::json(200, &presets)
         })
         .doc(RouteDoc::new("List the MCP server presets"))
         .get("/v1/mcp/servers", list_route)
@@ -188,8 +193,8 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
 }
 
-/// Deletes a server: its instances stop, its vault bindings `mcp:<id>` are removed, and its storage volume
-/// stays unless `?purge=1` asks for it.
+/// Deletes a server: its instances stop, its vault bindings `mcp:<id>` are removed, and its data stays unless
+/// `?purge=1` asks for it.
 fn delete_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let id = p.get("id");
     let server = match server_or_404(app, id) {
@@ -210,11 +215,11 @@ fn delete_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     changed(app, id);
     if req.query_param("purge") == Some("1")
         && server.storage.volume
-        && let Err(why) = stdio::purge_volume(id)
+        && let Err(why) = app.mcp.runtime.purge_data(id)
     {
         return error(
             500,
-            &format!("the server is deleted, but its volume was not purged: {why}"),
+            &format!("the server is deleted, but its data was not purged: {why}"),
             None,
         );
     }

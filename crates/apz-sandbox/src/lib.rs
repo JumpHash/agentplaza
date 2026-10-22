@@ -190,8 +190,8 @@ impl Sandboxed {
         self.inner.try_wait()
     }
 
-    /// Kills the child. On Unix that is the child alone (SIGKILL). On Windows it
-    /// terminates the whole job.
+    /// Kills the child and what it started: on Unix its whole process group (SIGKILL; the
+    /// child leads its own group), on Windows the whole job.
     pub fn kill(&mut self) -> io::Result<()> {
         self.inner.kill()
     }

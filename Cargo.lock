@@ -343,6 +343,7 @@ dependencies = [
  "apz-prompt",
  "apz-proto",
  "apz-rich",
+ "apz-sandbox",
  "apz-skill",
  "apz-station",
  "apz-store",
@@ -368,6 +369,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sysinfo",
+ "tar",
  "tempfile",
  "tokenizers",
  "toml 1.1.8+spec-1.1.0",
@@ -376,6 +378,7 @@ dependencies = [
  "ureq",
  "weft",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -5628,10 +5631,6 @@ dependencies = [
  "cfg-if",
  "rayon",
 ]
-
-[[package]]
-name = "mcp-relay"
-version = "0.1.0"
 
 [[package]]
 name = "md-5"

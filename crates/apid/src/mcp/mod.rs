@@ -1,9 +1,9 @@
 //! MCP servers: outside tools the hub runs for agents (docs/design/mcp.md).
 //!
-//! The owner adds a server (a container image for stdio, or an https URL). Each tool it offers becomes a
-//! plaza tool, named `mcp__<id>__<tool>` on the wire, for the agents whose role and node pass the server's
-//! `access`. Every call is made by the hub: agents never hold a server's credentials, and no server runs on
-//! the host.
+//! The owner adds a server (a pinned package for stdio, or an https URL). Each tool it offers becomes a plaza
+//! tool, named `mcp__<id>__<tool>` on the wire, for the agents whose role and node pass the server's `access`.
+//! Every call is made by the hub: agents never hold a server's credentials. A stdio server runs under the OS
+//! sandbox, with the network only through the hub's egress proxy (docs/design/mcp.md).
 //!
 //! Secrets resolve through the vault with binding `mcp:<id>`, on behalf of the calling agent (or the owner
 //! for a test). A server whose secret is not in scope for its caller does not start.
@@ -15,9 +15,9 @@ pub mod egress;
 #[cfg(test)]
 pub mod fixture;
 pub mod http;
-pub mod relay;
 pub mod routes;
 pub mod runtime;
+pub mod runtimes;
 pub mod stdio;
 #[cfg(test)]
 mod tests;
@@ -124,14 +124,17 @@ pub struct Mcp {
 }
 
 impl Mcp {
-    /// Loads `<state-dir>/mcp.json` (the database's copy replaces it at start when it holds one). The egress proxy
-    /// listens on `port` and keeps the relay binary under `state_dir`.
+    /// An empty MCP state: the store fills from the database at start. Stdio servers run under the OS sandbox, with
+    /// their directories and the runtimes under `state_dir`, and reach the network through the egress proxy on
+    /// loopback `port`.
     pub fn load(state_dir: &Path, port: u16) -> Mcp {
         Mcp {
-            store: config::Store::load(state_dir.join(config::FILE)),
-            runtime: Runtime::with_egress(
-                Arc::new(stdio::DockerLauncher),
-                egress::Egress::new(state_dir.to_path_buf(), port),
+            store: config::Store::default(),
+            runtime: Runtime::new(
+                state_dir.to_path_buf(),
+                Arc::new(runtimes::HttpFetch),
+                Arc::new(stdio::SandboxLauncher),
+                Some(egress::Egress::new(port)),
             ),
         }
     }
@@ -235,10 +238,9 @@ pub fn forget_risks(server: &str) {
 /// The risk a tool's annotations give, before any owner override (destructive is irreversible, read-only
 /// is read, anything else is write).
 pub fn auto_risk(tool: &ToolInfo) -> Risk {
-    let hint = |key: &str| tool.annotations.get(key).and_then(Value::as_bool) == Some(true);
-    if hint("destructiveHint") {
+    if tool.annotations.destructive_hint == Some(true) {
         Risk::Irreversible
-    } else if hint("readOnlyHint") {
+    } else if tool.annotations.read_only_hint == Some(true) {
         Risk::Read
     } else {
         Risk::Write
@@ -263,7 +265,7 @@ pub fn allowed(server: &McpServer, role: &str, node: Option<&str>, project: Opti
         && node.is_some_and(|n| server.access.nodes.admits(n))
         && match project {
             Some(project) => server.access.projects.admits(project),
-            None => server.access.projects == crate::mcp::config::Pick::All,
+            None => server.access.projects.all,
         }
 }
 
@@ -446,13 +448,8 @@ pub fn law_operation(name: &str) -> Option<(String, String, &'static str)> {
     lookup(name).map(|e| (e.server, e.tool, e.risk))
 }
 
-/// The background work of the MCP store: saves the file when it changed (unless the database holds it), and
-/// stops the instances that sat idle. Run every three seconds from `state::App::start`.
+/// The background work of the MCP runtime: stops the instances that sat idle. Run every three seconds from
+/// `state::App::start` (the store itself is saved by the saver, with the other components).
 pub fn tick(app: &App) {
-    if !app.db.is_held("mcp")
-        && let Err(err) = app.mcp.store.save_if_changed()
-    {
-        eprintln!("apid: cannot save mcp.json: {err}");
-    }
     app.mcp.runtime.reap_idle(apz_plaza::now_ms());
 }

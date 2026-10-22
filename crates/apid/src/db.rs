@@ -31,7 +31,6 @@ use crate::state::App;
 pub const COMPONENTS: &[&str] = &[
     "treasury",
     "members",
-    "mcp",
 ];
 
 pub mod data_migrate;
@@ -50,7 +49,6 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
     match component {
         "treasury" => app.plaza.treasury.snapshot(),
         "members" => app.members.snapshot(),
-        "mcp" => app.mcp.store.snapshot(),
         _ => String::new(),
     }
 }
@@ -60,7 +58,6 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
     match component {
         "treasury" => app.plaza.treasury.restore(json),
         "members" => app.members.restore(json),
-        "mcp" => app.mcp.store.restore(json),
         other => Err(format!("unknown component {other}")),
     }
 }

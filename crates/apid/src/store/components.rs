@@ -200,6 +200,12 @@ pub fn all() -> Vec<Component> {
             rows: |app| app.models.rows(),
             load: |app, conn| app.models.load(conn),
         },
+        Component {
+            name: "mcp",
+            def: crate::mcp::config::def,
+            rows: |app| app.mcp.store.rows(),
+            load: |app, conn| app.mcp.store.load(conn),
+        },
         // The work engine's records (phase 0).
         Component {
             name: "sessions",

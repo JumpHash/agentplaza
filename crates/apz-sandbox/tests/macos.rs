@@ -441,3 +441,38 @@ fn links_planted_in_the_workdir_do_not_reach_outside_files() {
         "linked outside file was readable"
     );
 }
+
+/// Killing a confined child takes down what it started too: a grandchild left running would live on, confined, with
+/// no one to stop it (a `uv tool run` server's Python).
+#[test]
+fn kill_takes_down_the_childs_own_children() {
+    let dir = TempDir::new("killpg");
+    let spec = spec(dir.path(), "/bin/sh", &["-c", "sleep 300 & echo $!; wait"]);
+    let mut child = spawn(&spec, Stdio::null(), Stdio::piped(), Stdio::null()).expect("spawn");
+    let mut out = child.stdout().expect("its stdout");
+    let mut line = String::new();
+    let mut byte = [0u8; 1];
+    while out.read(&mut byte).expect("read") == 1 && byte[0] != b'\n' {
+        line.push(byte[0] as char);
+    }
+    let grandchild: i32 = line.trim().parse().expect("the grandchild's pid");
+    let alive = |pid: i32| {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    assert!(alive(grandchild), "the grandchild runs");
+    child.kill().expect("kill");
+    let _ = child.wait();
+    let mut gone = false;
+    for _ in 0..50 {
+        if !alive(grandchild) {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(gone, "the grandchild went with its parent");
+}

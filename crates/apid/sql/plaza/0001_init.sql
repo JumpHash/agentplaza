@@ -2030,6 +2030,154 @@ CREATE TABLE "model_registry_records_card_allowed_roles" (
     FOREIGN KEY ("model_registry_pos", "records_key") REFERENCES "model_registry_records_card" ("model_registry_pos", "records_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component mcp
+CREATE TABLE "mcp_server" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "name" TEXT NOT NULL,
+    "enabled" INTEGER NOT NULL CHECK ("enabled" IN (0, 1)),
+    "limits_timeout_s" INTEGER NOT NULL CHECK ("limits_timeout_s" >= 0),
+    "limits_max_output_kb" INTEGER NOT NULL CHECK ("limits_max_output_kb" >= 0),
+    "limits_idle_stop_min" INTEGER NOT NULL CHECK ("limits_idle_stop_min" >= 0),
+    "allow_private" INTEGER NOT NULL CHECK ("allow_private" IN (0, 1)),
+    "storage_volume" INTEGER NOT NULL CHECK ("storage_volume" IN (0, 1)),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "mcp_server_transport" (
+    "mcp_server_id" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('stdio', 'http')),
+    "workdir" TEXT,
+    "url" TEXT,
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_transport_package" (
+    "mcp_server_id" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('npm', 'pypi', 'binary')),
+    "npm_name" TEXT,
+    "npm_version" TEXT,
+    "pypi_name" TEXT,
+    "pypi_version" TEXT,
+    "pypi_entry" TEXT,
+    "binary_url" TEXT,
+    "binary_sha256" TEXT,
+    "binary_entry" TEXT,
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_transport" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_transport_args" (
+    "mcp_server_id" TEXT NOT NULL,
+    "args_pos" INTEGER NOT NULL CHECK ("args_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "args_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_transport" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_env" (
+    "mcp_server_id" TEXT NOT NULL,
+    "env_key" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('secret', 'value')),
+    "secret_secret" TEXT,
+    "secret_format" TEXT,
+    "value_value" TEXT,
+    PRIMARY KEY ("mcp_server_id", "env_key"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_headers" (
+    "mcp_server_id" TEXT NOT NULL,
+    "headers_key" TEXT NOT NULL,
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('secret', 'value')),
+    "secret_secret" TEXT,
+    "secret_format" TEXT,
+    "value_value" TEXT,
+    PRIMARY KEY ("mcp_server_id", "headers_key"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_tools" (
+    "mcp_server_id" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_tools_allow" (
+    "mcp_server_id" TEXT NOT NULL,
+    "all" INTEGER NOT NULL CHECK ("all" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_tools" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_tools_allow_names" (
+    "mcp_server_id" TEXT NOT NULL,
+    "names_pos" INTEGER NOT NULL CHECK ("names_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "names_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_tools_allow" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_tools_risk" (
+    "mcp_server_id" TEXT NOT NULL,
+    "risk_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL CHECK ("value" IN ('read', 'write', 'irreversible')),
+    PRIMARY KEY ("mcp_server_id", "risk_key"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_tools" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access" (
+    "mcp_server_id" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_roles" (
+    "mcp_server_id" TEXT NOT NULL,
+    "all" INTEGER NOT NULL CHECK ("all" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_roles_names" (
+    "mcp_server_id" TEXT NOT NULL,
+    "names_pos" INTEGER NOT NULL CHECK ("names_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "names_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access_roles" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_nodes" (
+    "mcp_server_id" TEXT NOT NULL,
+    "all" INTEGER NOT NULL CHECK ("all" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_nodes_names" (
+    "mcp_server_id" TEXT NOT NULL,
+    "names_pos" INTEGER NOT NULL CHECK ("names_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "names_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access_nodes" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_projects" (
+    "mcp_server_id" TEXT NOT NULL,
+    "all" INTEGER NOT NULL CHECK ("all" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_access_projects_names" (
+    "mcp_server_id" TEXT NOT NULL,
+    "names_pos" INTEGER NOT NULL CHECK ("names_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("mcp_server_id", "names_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server_access_projects" ("mcp_server_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "mcp_server_offered" (
+    "mcp_server_id" TEXT NOT NULL,
+    "offered_pos" INTEGER NOT NULL CHECK ("offered_pos" >= 0),
+    "name" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
+    "input_schema_content" TEXT,
+    "annotations_title" TEXT,
+    "annotations_read_only_hint" INTEGER CHECK ("annotations_read_only_hint" IN (0, 1)),
+    "annotations_destructive_hint" INTEGER CHECK ("annotations_destructive_hint" IN (0, 1)),
+    "annotations_idempotent_hint" INTEGER CHECK ("annotations_idempotent_hint" IN (0, 1)),
+    "annotations_open_world_hint" INTEGER CHECK ("annotations_open_world_hint" IN (0, 1)),
+    PRIMARY KEY ("mcp_server_id", "offered_pos"),
+    FOREIGN KEY ("mcp_server_id") REFERENCES "mcp_server" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component sessions
 CREATE TABLE "session" (
     "id" TEXT NOT NULL,
