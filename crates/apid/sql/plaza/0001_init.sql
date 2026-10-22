@@ -1196,6 +1196,67 @@ CREATE TABLE "agent_proposal_spawned" (
     FOREIGN KEY ("agent_proposal_id") REFERENCES "agent_proposal" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component memory_entries
+CREATE TABLE "memory_entry" (
+    "key" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "id" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "status" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "body" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    "verified_commit" TEXT NOT NULL,
+    "verified_date" TEXT NOT NULL,
+    "provenance_task" TEXT NOT NULL,
+    "provenance_session" TEXT NOT NULL,
+    "provenance_change" TEXT NOT NULL,
+    PRIMARY KEY ("key")
+) STRICT;
+CREATE TABLE "memory_entry_anchors" (
+    "memory_entry_key" TEXT NOT NULL,
+    "anchors_pos" INTEGER NOT NULL CHECK ("anchors_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("memory_entry_key", "anchors_pos"),
+    FOREIGN KEY ("memory_entry_key") REFERENCES "memory_entry" ("key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "memory_entry_supersedes" (
+    "memory_entry_key" TEXT NOT NULL,
+    "supersedes_pos" INTEGER NOT NULL CHECK ("supersedes_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("memory_entry_key", "supersedes_pos"),
+    FOREIGN KEY ("memory_entry_key") REFERENCES "memory_entry" ("key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "memory_entry_links" (
+    "memory_entry_key" TEXT NOT NULL,
+    "links_pos" INTEGER NOT NULL CHECK ("links_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("memory_entry_key", "links_pos"),
+    FOREIGN KEY ("memory_entry_key") REFERENCES "memory_entry" ("key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component memory_proposals
+CREATE TABLE "memory_proposal" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "text" TEXT NOT NULL,
+    "why" TEXT NOT NULL,
+    "by_cid" INTEGER NOT NULL CHECK ("by_cid" >= 0),
+    "by" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "memory_proposal_anchors" (
+    "memory_proposal_id" TEXT NOT NULL,
+    "anchors_pos" INTEGER NOT NULL CHECK ("anchors_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("memory_proposal_id", "anchors_pos"),
+    FOREIGN KEY ("memory_proposal_id") REFERENCES "memory_proposal" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component nodes
 CREATE TABLE "nodes" (
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
@@ -2299,6 +2360,39 @@ CREATE TABLE "thread_messages" (
     "delivered_ms" INTEGER CHECK ("delivered_ms" >= 0),
     PRIMARY KEY ("thread_id", "messages_pos"),
     FOREIGN KEY ("thread_id") REFERENCES "thread" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component journal
+CREATE TABLE "journal" (
+    "task" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("task")
+) STRICT;
+CREATE TABLE "journal_notes" (
+    "journal_task" TEXT NOT NULL,
+    "notes_pos" INTEGER NOT NULL CHECK ("notes_pos" >= 0),
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('decision', 'dead_end', 'open_question')),
+    "session" TEXT,
+    "text_content" TEXT,
+    "reason_content" TEXT,
+    "thread" TEXT,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("journal_task", "notes_pos"),
+    FOREIGN KEY ("journal_task") REFERENCES "journal" ("task") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "journal_handovers" (
+    "journal_task" TEXT NOT NULL,
+    "handovers_pos" INTEGER NOT NULL CHECK ("handovers_pos" >= 0),
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "session" TEXT NOT NULL,
+    "stands_content" TEXT,
+    "done_content" TEXT,
+    "next_content" TEXT,
+    "check_first_content" TEXT,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("journal_task", "handovers_pos"),
+    FOREIGN KEY ("journal_task") REFERENCES "journal" ("task") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component provider_listings

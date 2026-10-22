@@ -460,6 +460,8 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
             }
             crate::review_graph::post_land(&app, &repo, &change, task);
         }
+        // The landing changed main: the projects on the repo read their memory again.
+        crate::project_memory::landed(&app, &repo);
         export_all(&app, &repo);
         // And the landing goes to the environments that run main.
         crate::environments::tracked(&app, &repo, "main", &change);
