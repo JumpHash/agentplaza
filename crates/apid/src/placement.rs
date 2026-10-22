@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 use crate::agents::Status;
 use crate::fleet::{self, LOCAL};
-use crate::nodes::{Node, OFFLINE_AFTER_MS};
+use crate::nodes::{MachineMac, Node, OFFLINE_AFTER_MS};
 use crate::sleep;
 use crate::state::App;
 
@@ -830,6 +830,63 @@ fn move_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
 }
 
+/// A unit of Mac work placement starts: a build or a simulator. A Mac node reports a cap for each (`mac`).
+// Mac build work places through these (engine 7.5); the tests place fake nodes through them until then.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacWork {
+    Build,
+    Simulator,
+}
+
+/// Why a Mac node cannot start `want` (pure): its cap for that kind of work is full. None when it has room, or
+/// when it reports no caps (it is not a Mac with the node's sandbox).
+#[allow(dead_code)]
+pub fn mac_refusal(mac: Option<&MachineMac>, want: MacWork) -> Option<String> {
+    let mac = mac?;
+    let (running, cap, what) = match want {
+        MacWork::Build => (mac.builds_running, mac.builds, "builds"),
+        MacWork::Simulator => (mac.simulators_running, mac.simulators, "simulators"),
+    };
+    (running >= cap).then(|| format!("its cap of {cap} {what} is full ({running} running)"))
+}
+
+/// The Mac node a unit of `want` goes to (pure, over the nodes given with their caps): the one with the most room
+/// for it, a tie going to the earlier. A node at its cap, and a node with no caps, is not chosen. None when every
+/// Mac is full.
+#[allow(dead_code)]
+pub fn mac_pick(nodes: &[(String, Option<MachineMac>)], want: MacWork) -> Option<String> {
+    let mut best: Option<(u32, &String)> = None;
+    for (node, mac) in nodes {
+        if mac_refusal(mac.as_ref(), want).is_some() {
+            continue;
+        }
+        let Some(mac) = mac else { continue };
+        let free = match want {
+            MacWork::Build => mac.builds - mac.builds_running,
+            MacWork::Simulator => mac.simulators - mac.simulators_running,
+        };
+        if best.is_none_or(|(most, _)| free > most) {
+            best = Some((free, node));
+        }
+    }
+    best.map(|(_, node)| node.clone())
+}
+
+/// The Mac node a unit of `want` goes to, among the nodes in service (see [`mac_pick`]).
+#[allow(dead_code)]
+pub fn choose_mac(app: &App, want: MacWork) -> Option<String> {
+    let stopped = app.nodes.stopped_ids();
+    let nodes: Vec<(String, Option<MachineMac>)> = app
+        .nodes
+        .list()
+        .into_iter()
+        .filter(|node| !stopped.contains(&node.id))
+        .map(|node| (node.id, node.machine.mac))
+        .collect();
+    mac_pick(&nodes, want)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fleet::node_for;
@@ -1264,5 +1321,68 @@ mod tests {
         .expect("copies");
         assert_eq!(copied, 8);
         assert_eq!(pushed, vec![(4, b64(&[7, 7, 7, 7]))]);
+    }
+
+    fn mac(
+        builds: u32,
+        builds_running: u32,
+        simulators: u32,
+        simulators_running: u32,
+    ) -> MachineMac {
+        MachineMac {
+            builds,
+            simulators,
+            builds_running,
+            simulators_running,
+        }
+    }
+
+    #[test]
+    fn a_mac_at_its_build_cap_gets_no_build_and_the_room_goes_to_another() {
+        let nodes = vec![
+            ("n1".to_string(), Some(mac(2, 2, 6, 0))),
+            ("n2".to_string(), Some(mac(2, 1, 6, 0))),
+            ("n3".to_string(), None),
+        ];
+        assert_eq!(mac_pick(&nodes, MacWork::Build).as_deref(), Some("n2"));
+        let refused = mac_refusal(nodes[0].1.as_ref(), MacWork::Build).unwrap();
+        assert!(refused.contains("cap of 2 builds"), "{refused}");
+        assert_eq!(
+            mac_refusal(nodes[0].1.as_ref(), MacWork::Simulator),
+            None,
+            "the caps are separate"
+        );
+        assert_eq!(
+            mac_refusal(nodes[2].1.as_ref(), MacWork::Build),
+            None,
+            "a node with no caps is not refused as full"
+        );
+    }
+
+    #[test]
+    fn a_full_mac_gets_neither_a_build_nor_a_simulator() {
+        let nodes = vec![("n1".to_string(), Some(mac(2, 2, 6, 6)))];
+        assert_eq!(mac_pick(&nodes, MacWork::Build), None);
+        assert_eq!(mac_pick(&nodes, MacWork::Simulator), None);
+    }
+
+    #[test]
+    fn the_mac_with_most_simulator_room_takes_the_simulator() {
+        let nodes = vec![
+            ("n1".to_string(), Some(mac(2, 0, 6, 4))),
+            ("n2".to_string(), Some(mac(2, 0, 6, 1))),
+            ("n3".to_string(), None),
+        ];
+        assert_eq!(mac_pick(&nodes, MacWork::Simulator).as_deref(), Some("n2"));
+        assert_eq!(mac_pick(&[], MacWork::Build), None);
+    }
+
+    #[test]
+    fn a_heartbeat_carries_the_mac_caps_into_the_machine() {
+        let machine: crate::nodes::Machine = serde_json::from_value(serde_json::json!({
+            "mac": {"builds": 2, "simulators": 6, "builds_running": 1, "simulators_running": 0}
+        }))
+        .unwrap();
+        assert_eq!(machine.mac, Some(mac(2, 1, 6, 0)));
     }
 }

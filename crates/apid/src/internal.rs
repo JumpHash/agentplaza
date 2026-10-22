@@ -487,8 +487,10 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
     }
     // A sandbox's CID is a party of its own: the laws see the role `sandbox`, and it never intercepts.
     let sandbox = crate::e2b::sandbox_by_cid(app, cid);
-    // A CID that is neither an agent nor a sandbox is refused before the laws are asked.
-    if sandbox.is_none() && app.agents.get(cid).is_none() {
+    // A Mac node's project proxy asks as its project's party: the project's rules decide (see `project_egress`).
+    let project = crate::project_egress::project_of(app, cid);
+    // A CID that is neither an agent, a sandbox nor a project's party is refused before the laws are asked.
+    if sandbox.is_none() && project.is_none() && app.agents.get(cid).is_none() {
         let verdict = unknown_agent_verdict();
         return json!({
             "allow": verdict.allow,
@@ -497,11 +499,20 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
             "intercept": false,
         });
     }
-    // An agent the owner holds (on the bench, or on a paused project) does not reach the internet either.
-    let held = app
-        .agents
-        .get(cid)
-        .and_then(|agent| crate::membership::held(app, &agent));
+    // An agent the owner holds (on the bench, or on a paused project) does not reach the internet either; nor does
+    // a project whose party it is while the project is paused, over or gone.
+    let held = match &project {
+        Some(id) => crate::membership::hold_reason(
+            cid,
+            crate::project_egress::PROJECT_ROLE,
+            Some(id.as_str()),
+            Some(crate::membership::project_state(app, id)),
+        ),
+        None => app
+            .agents
+            .get(cid)
+            .and_then(|agent| crate::membership::held(app, &agent)),
+    };
     if let Some(why) = held {
         return json!({
             "allow": false,
@@ -510,9 +521,10 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
             "intercept": false,
         });
     }
-    let role = match &sandbox {
-        Some(_) => "sandbox".to_string(),
-        None => app
+    let role = match (&sandbox, &project) {
+        (Some(_), _) => "sandbox".to_string(),
+        (None, Some(_)) => crate::project_egress::PROJECT_ROLE.to_string(),
+        (None, None) => app
             .agents
             .get(cid)
             .map(|agent| agent.role)

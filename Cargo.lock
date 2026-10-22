@@ -5929,6 +5929,7 @@ dependencies = [
 name = "noded"
 version = "0.1.0"
 dependencies = [
+ "apz-egress-rules",
  "apz-http",
  "apz-metrics",
  "apz-os",
@@ -5941,6 +5942,7 @@ dependencies = [
  "sha2 0.10.9",
  "sysinfo",
  "vmm",
+ "vsockd",
 ]
 
 [[package]]

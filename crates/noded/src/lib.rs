@@ -24,6 +24,7 @@ mod collect;
 pub mod events;
 pub mod fleet;
 pub mod hostcheck;
+pub mod mac_sandbox;
 pub mod metrics;
 pub mod migrate;
 pub mod registry;
@@ -183,6 +184,8 @@ pub struct MachineView {
     pub model: Option<String>,
     /// A Mac's Apple Silicon details; null elsewhere.
     pub apple: Option<Apple>,
+    /// A Mac's build and simulator caps and what runs now; null elsewhere (see `mac_sandbox::facts_for`).
+    pub mac: Option<mac_sandbox::MacFacts>,
     pub cpu: Cpu,
     pub gpus: Vec<Gpu>,
     /// The devices that run trainers (GPUs, Apple's GPU); empty on a CPU-only machine.
@@ -259,6 +262,11 @@ impl Node {
             vendor: self.probed.vendor.clone(),
             model: self.probed.model.clone(),
             apple: self.probed.apple.clone(),
+            mac: mac_sandbox::facts_for(
+                Some(self.probed.memory_mib),
+                host_cpus(),
+                mac_sandbox::Load::default(),
+            ),
             cpu: self.probed.cpu.clone(),
             gpus: host_gpus(),
             accelerators: accelerators_now(&self.probed.facts.accelerators, &train::busy_devices()),
