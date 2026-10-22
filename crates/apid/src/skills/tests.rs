@@ -31,7 +31,7 @@ impl Blobs for MemBlobs {
 }
 
 fn skills_on(store: Arc<dyn SkillStore>) -> Skills {
-    Skills::new(store, Arc::new(MemBlobs::default()))
+    Skills::with_generations(store, Arc::new(MemBlobs::default()), Arc::default())
 }
 
 fn version(skills: &Skills, skill_md: &str, note: &str) -> NewVersion {
@@ -222,11 +222,12 @@ fn skills_survive_a_reopen() {
     let blobs: Arc<dyn Blobs> = Arc::new(MemBlobs::default());
     {
         let store = crate::store::open(dir.path()).expect("the store opens");
-        let skills = Skills::new(
+        let skills = Skills::with_generations(
             Arc::new(store_db::DbSkills::new(Arc::clone(
                 store.db(crate::store::PLAZA),
             ))),
             Arc::clone(&blobs),
+            Arc::default(),
         );
         skills
             .store()
@@ -258,11 +259,12 @@ fn skills_survive_a_reopen() {
     }
 
     let store = crate::store::open(dir.path()).expect("the store opens again");
-    let skills = Skills::new(
+    let skills = Skills::with_generations(
         Arc::new(store_db::DbSkills::new(Arc::clone(
             store.db(crate::store::PLAZA),
         ))),
         blobs,
+        Arc::default(),
     );
     let back = skills
         .store()
@@ -367,9 +369,10 @@ fn file_in(path: &str, bytes: &[u8]) -> FileIn {
 fn a_version_file_is_kept_in_the_object_store_under_its_hash() {
     let dir = scratch("version-file");
     let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
-    let skills = Skills::new(
+    let skills = Skills::with_generations(
         Arc::new(store_db::DbSkills::for_tests()),
         Arc::new(StoreBlobs::new(Arc::clone(&objects))),
+        Arc::default(),
     );
     let reference = b"# Reference\n";
     let first = skills
@@ -474,9 +477,10 @@ fn hashes_are_every_file_of_every_version_archived_or_not() {
 fn a_known_hash_reads_its_bytes_back_from_the_store() {
     let dir = scratch("known-hash");
     let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
-    let skills = Skills::new(
+    let skills = Skills::with_generations(
         Arc::new(store_db::DbSkills::for_tests()),
         Arc::new(StoreBlobs::new(objects)),
+        Arc::default(),
     );
     let reference = b"# Reference\n";
     let first = skills

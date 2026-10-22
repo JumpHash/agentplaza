@@ -197,9 +197,10 @@ mod tests {
     const T0: u64 = 1_800_000_000_000;
 
     fn library() -> Skills {
-        Skills::new(
+        Skills::with_generations(
             Arc::new(DbSkills::for_tests()),
             Arc::new(MemBlobs::default()),
+            Arc::default(),
         )
     }
 

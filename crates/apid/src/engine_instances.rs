@@ -260,6 +260,8 @@ const LATEST_FOR: Duration = Duration::from_secs(3600);
 
 /// The engines store: `engines.json`, the cached registry, and the last check of each instance.
 pub struct Store {
+    /// The hub's generations: a save of the instances bumps `engines`.
+    gens: std::sync::Arc<apz_cache::Generations<String>>,
     path: PathBuf,
     registry_path: PathBuf,
     stored: Mutex<Vec<Stored>>,
@@ -291,6 +293,7 @@ impl Store {
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .and_then(|v| Some((v["fetched_ms"].as_u64()?, v["registry"].clone())));
         Ok(Self {
+            gens: Default::default(),
             path,
             registry_path,
             stored: Mutex::new(stored),
@@ -306,11 +309,21 @@ impl Store {
         lock(&self.stored).iter().find(|s| s.id == id).cloned()
     }
 
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(
+        mut self,
+        gens: std::sync::Arc<apz_cache::Generations<String>>,
+    ) -> Self {
+        self.gens = gens;
+        self
+    }
+
     fn save(&self, all: Vec<Stored>) -> Result<(), Failure> {
         let bytes = serde_json::to_vec_pretty(&all).map_err(|e| (500, e.to_string()))?;
         write_atomic(&self.path, &bytes, 0o600)
             .map_err(|e| (500, format!("write engines.json: {e}")))?;
         *lock(&self.stored) = all;
+        crate::sources::bump(&self.gens, crate::sources::ENGINES);
         Ok(())
     }
 
@@ -1504,5 +1517,18 @@ mod tests {
         let (at, reg) = s.registry(true).unwrap();
         assert_eq!(at, 1);
         assert_eq!(registry_view(at, &reg)["agents"][0]["runs_in_vm"], true);
+    }
+
+    #[test]
+    fn a_save_of_the_instances_moves_the_engines_source() {
+        let dir = std::env::temp_dir().join(format!("apid-engines-gens-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::load(&dir)
+            .expect("load")
+            .with_generations(std::sync::Arc::clone(&gens));
+        store.save(Vec::new()).expect("save");
+        assert!(gens.get(&crate::sources::ENGINES.to_string()) > 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
