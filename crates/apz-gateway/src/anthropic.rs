@@ -379,6 +379,8 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta)) -> Result<Turn, Gat
                     "tool_use" => {
                         sink(Delta::ToolUse {
                             name: s(&cb["name"]),
+                            index: index as usize,
+                            id: s(&cb["id"]),
                         });
                         Acc::Tool {
                             id: s(&cb["id"]),
@@ -409,11 +411,26 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta)) -> Result<Turn, Gat
                     (Some(Acc::Thinking { signature, .. }), "signature_delta") => {
                         signature.push_str(field("signature"))
                     }
-                    (Some(Acc::Tool { json, .. } | Acc::Raw(_, json)), "input_json_delta") => {
+                    (Some(Acc::Tool { json, .. }), "input_json_delta") => {
+                        let chunk = field("partial_json");
+                        json.push_str(chunk);
+                        sink(Delta::ToolInput {
+                            index: index as usize,
+                            json: chunk.to_string(),
+                        });
+                    }
+                    (Some(Acc::Raw(_, json)), "input_json_delta") => {
                         json.push_str(field("partial_json"))
                     }
                     (Some(Acc::Raw(raw, _)), _) => append_strings(raw, d),
                     _ => {}
+                }
+            }
+            "content_block_stop" => {
+                if matches!(blocks.get(&index), Some(Acc::Tool { .. })) {
+                    sink(Delta::BlockEnd {
+                        index: index as usize,
+                    });
                 }
             }
             "message_delta" => {
@@ -881,8 +898,97 @@ mod tests {
             ]
         );
         assert!(deltas.contains(&Delta::ToolUse {
-            name: "bash".into()
+            name: "bash".into(),
+            index: 3,
+            id: "tu9".into(),
         }));
+    }
+
+    #[test]
+    fn a_tool_call_streams_its_start_its_input_chunks_and_its_end() {
+        let server = FakeServer::start(vec![Reply::sse(sse_body(&[
+            (
+                "message_start",
+                r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":5}}}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Looking."}}"#,
+            ),
+            (
+                "content_block_stop",
+                r#"{"type":"content_block_stop","index":0}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"read_file","input":{}}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\": "}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"a.txt\"}"}}"#,
+            ),
+            (
+                "content_block_stop",
+                r#"{"type":"content_block_stop","index":1}"#,
+            ),
+            (
+                "message_delta",
+                r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}"#,
+            ),
+            ("message_stop", r#"{"type":"message_stop"}"#),
+        ]))]);
+        let gw = gateway(vec![provider(
+            "a",
+            ProviderKind::Anthropic,
+            &server,
+            Auth::None,
+        )]);
+        let mut deltas = Vec::new();
+        let req = ChatRequest {
+            model: "a/m".into(),
+            ..crate::testutil::request("hi")
+        };
+        let resp = gw.complete(&req, &mut |d| deltas.push(d)).unwrap();
+        assert_eq!(
+            deltas,
+            vec![
+                Delta::Text {
+                    text: "Looking.".into()
+                },
+                Delta::ToolUse {
+                    name: "read_file".into(),
+                    index: 1,
+                    id: "tu1".into(),
+                },
+                Delta::ToolInput {
+                    index: 1,
+                    json: "{\"path\": ".into(),
+                },
+                Delta::ToolInput {
+                    index: 1,
+                    json: "\"a.txt\"}".into(),
+                },
+                Delta::BlockEnd { index: 1 },
+            ]
+        );
+        assert_eq!(resp.stop, StopReason::ToolUse);
+        assert_eq!(
+            resp.content[1],
+            Block::ToolUse {
+                id: "tu1".into(),
+                name: "read_file".into(),
+                input: json!({"path": "a.txt"}),
+                meta: None,
+            }
+        );
     }
 
     #[test]

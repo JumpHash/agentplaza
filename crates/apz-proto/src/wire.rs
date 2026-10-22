@@ -31,6 +31,9 @@
 //!   guest tool_batch{work,calls:[{call,name,input}]} → host tool_batch_decision{work,decisions:[…]}, one answer for
 //!     the turn's calls the policy does not allow; the guest runs the allowed ones itself and reports each one with
 //!     tool_report{…,policy,name,input} (the hub records the call with the policy it was decided under)
+//! v6  streamed answers (inside a v3 session): while a model call runs, host model_delta{req,delta} carries each
+//!     fragment of its answer as the provider streams it, before the model_result; a tool call's fragments
+//!     (tool_use, tool_input, block_end) let the guest start a read-only call before the answer ends
 //! ```
 //!
 //! The guest's identity is never taken from a line: the hub binds every
@@ -39,7 +42,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::chat::{ChatRequest, ChatResponse, ToolSpec};
+use crate::chat::{ChatRequest, ChatResponse, Delta, ToolSpec};
 
 /// `welcome.echo`.
 pub const WELCOME_ECHO: &str = "plaza-orchestrator";
@@ -305,6 +308,9 @@ pub enum HostMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// v6: one fragment of model call `req`'s answer, as the provider streams it. The hub sends them in order, all
+    /// before the call's [`HostMessage::ModelResult`].
+    ModelDelta { req: u64, delta: Delta },
     /// v3: the answer to a [`GuestMessage::ToolRequest`].
     ToolDecision {
         call: String,
@@ -884,6 +890,23 @@ mod tests {
             r#"{"type":"tool_batch_decision","work":3,"decisions":[{"call":"toolu_1","decision":"allow","output":"","is_error":false},{"call":"toolu_2","decision":"pending","output":"waiting for the owner's approval (a7)","is_error":false,"approval":"a7"}]}"#
         );
         assert_eq!(HostMessage::from_line(&line).unwrap(), decided);
+    }
+
+    #[test]
+    fn a_model_delta_line_carries_its_fragment_for_its_call() {
+        let delta = HostMessage::ModelDelta {
+            req: 3,
+            delta: Delta::ToolInput {
+                index: 0,
+                json: "{\"path\":".into(),
+            },
+        };
+        let line = delta.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"model_delta","req":3,"delta":{"type":"tool_input","index":0,"json":"{\"path\":"}}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), delta);
     }
 
     #[test]
