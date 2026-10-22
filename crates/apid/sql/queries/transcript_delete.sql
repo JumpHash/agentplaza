@@ -1,3 +1,2 @@
--- Deletes every stored transcript record of one agent (a wipe).
--- $1 = cid (bigint)
-DELETE FROM transcript WHERE cid = $1
+-- Deletes every stored entry of one agent (a wipe). ?1 = cid.
+DELETE FROM "entry" WHERE "cid" = ?1

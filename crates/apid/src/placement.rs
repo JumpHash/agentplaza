@@ -497,8 +497,10 @@ fn move_claimed(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
         &app.bus,
         cid,
         0,
-        "move_started",
-        json!({"from": from, "to": target}),
+        crate::transcript::Entry::MoveStarted {
+            from: from.clone(),
+            to: target.to_string(),
+        },
     );
 
     let mut staged = Staged::default();
@@ -570,8 +572,12 @@ fn move_claimed(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
         &app.bus,
         cid,
         0,
-        "moved",
-        json!({"from": from, "to": target, "bytes": bytes, "ms": ms}),
+        crate::transcript::Entry::Moved {
+            from: from.clone(),
+            to: target.to_string(),
+            bytes,
+            ms,
+        },
     );
     Ok(Moved {
         from,

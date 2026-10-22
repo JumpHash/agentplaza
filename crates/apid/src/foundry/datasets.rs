@@ -244,7 +244,9 @@ pub fn export(app: &App, data_dir: &Path, spec: &ExportSpec) -> Result<Dataset, 
     let mut entries: Vec<(u64, u64, String, Value)> = Vec::new();
     for cid in &cids {
         for entry in app.transcripts.after(*cid, 0, usize::MAX) {
-            entries.push((entry.cid, entry.work, entry.kind, entry.data));
+            let json = serde_json::to_value(&entry).unwrap_or(serde_json::Value::Null);
+            let kind = json["kind"].as_str().unwrap_or_default().to_string();
+            entries.push((entry.cid, entry.work, kind, json["data"].clone()));
         }
     }
     let refs: Vec<(u64, u64, &str, &Value)> = entries

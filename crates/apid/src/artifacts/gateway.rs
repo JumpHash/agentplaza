@@ -288,13 +288,12 @@ fn record(app: &App, cid: u64, artifact: &Artifact) {
         &app.bus,
         cid,
         work,
-        "artifact",
-        json!({
-            "id": artifact.id,
-            "version": artifact.version,
-            "title": artifact.title,
-            "kind": artifact.kind,
-        }),
+        crate::transcript::Entry::Artifact {
+            id: artifact.id.clone(),
+            version: artifact.version,
+            title: artifact.title.clone(),
+            kind: artifact.kind.clone(),
+        },
     );
 }
 

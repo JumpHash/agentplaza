@@ -365,7 +365,7 @@ pub fn control(app: &App, cid: u64, control: Control) -> Result<u64, String> {
         .work
         .current(cid)
         .ok_or_else(|| format!("agent {cid} has no running work"))?;
-    let data = json!({ "control": control.clone() });
+    let data = serde_json::to_value(&control).unwrap_or(Value::Null);
     let message = apz_proto::wire::HostMessage::Control {
         work: item.id,
         control,
@@ -375,8 +375,12 @@ pub fn control(app: &App, cid: u64, control: Control) -> Result<u64, String> {
         Ok((code, _)) => return Err(format!("agent {cid} refused the control (HTTP {code})")),
         Err(e) => return Err(format!("agent {cid} is unreachable: {e}")),
     }
-    app.transcripts
-        .record(&app.bus, cid, item.id, "control", data);
+    app.transcripts.record(
+        &app.bus,
+        cid,
+        item.id,
+        crate::transcript::Entry::Control { control: data },
+    );
     Ok(item.id)
 }
 

@@ -69,8 +69,7 @@ fn wipe_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
     let mut wiped = vec!["workspace"];
     if wipe.transcript {
-        app.transcripts.clear(cid);
-        app.db.delete_transcript(cid);
+        app.transcripts.wipe(cid);
         wiped.push("transcript");
     }
     if let Some(agent) = app.agents.get(cid) {

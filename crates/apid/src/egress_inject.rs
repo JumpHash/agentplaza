@@ -713,13 +713,12 @@ pub(crate) fn inject_reply(app: &App, cid: u64, ask: &Ask) -> Response {
         &app.bus,
         cid,
         0,
-        "egress_inject",
-        json!({
-            "host": normalize_host(&ask.host),
-            "method": ask.method.to_ascii_uppercase(),
-            "path": path,
-            "rule": rule.id,
-        }),
+        crate::transcript::Entry::EgressInject {
+            host: normalize_host(&ask.host),
+            method: ask.method.to_ascii_uppercase(),
+            path: path.to_string(),
+            rule: rule.id.clone(),
+        },
     );
     Response::json(
         200,

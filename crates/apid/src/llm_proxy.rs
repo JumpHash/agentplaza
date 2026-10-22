@@ -564,18 +564,19 @@ fn record_usage(
         &app.bus,
         cid,
         0,
-        "model_response",
-        json!({
-            "via": "gateway",
-            "model": model,
-            "usage": {
-                "input_tokens": t.input,
-                "output_tokens": t.output,
-                "cache_read_tokens": t.cache_read,
-                "cache_write_tokens": t.cache_write,
+        crate::transcript::Entry::ModelResponse {
+            via: Some("gateway".to_string()),
+            model: model.to_string(),
+            content: None,
+            stop: None,
+            usage: crate::transcript::Usage {
+                input_tokens: t.input,
+                output_tokens: t.output,
+                cache_read_tokens: t.cache_read,
+                cache_write_tokens: t.cache_write,
             },
-            "cost_usd": metered.cost_usd,
-        }),
+            cost_usd: metered.cost_usd,
+        },
     );
     bill_call(app, cid, charge.task.as_deref(), model, t, metered.cost_usd);
     crate::usage::meter_charged(app, cid, model, t, metered.cost_usd, charge, "gateway");
@@ -711,15 +712,14 @@ fn bill_call(
             &app.bus,
             cid,
             0,
-            "model_charge_shortfall",
-            json!({
-                "model": model,
-                "task": task,
-                "wanted": settled.wanted,
-                "charged": settled.charged,
-                "available": available,
-                "error": settled.error,
-            }),
+            crate::transcript::Entry::ModelChargeShortfall {
+                model: model.to_string(),
+                task: task.map(str::to_string),
+                wanted: settled.wanted,
+                charged: settled.charged,
+                available,
+                error: settled.error.clone(),
+            },
         );
     }
 }

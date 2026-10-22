@@ -195,13 +195,12 @@ pub(crate) fn agent_decision(app: &App, cid: u64, req: &Request) -> Response {
         &app.bus,
         cid,
         work,
-        "decision",
-        json!({
-            "provider": pick.provider,
-            "model": pick.model,
-            "questions": request.questions.len(),
-            "input_tokens": resp.usage.input_tokens,
-        }),
+        crate::transcript::Entry::Decision {
+            provider: pick.provider.clone(),
+            model: pick.model.clone(),
+            questions: request.questions.len(),
+            input_tokens: resp.usage.input_tokens,
+        },
     );
     Response::json(200, &answered(&pick, &resp))
 }

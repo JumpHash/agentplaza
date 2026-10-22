@@ -277,15 +277,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
                     &app.bus,
                     cid,
                     0,
-                    "egress",
-                    json!({
-                        "host": egress.host,
-                        "port": egress.port,
-                        "allowed": egress.allowed,
-                        "bytes_up": egress.bytes_up,
-                        "bytes_down": egress.bytes_down,
-                        "ms": egress.ms,
-                    }),
+                    crate::transcript::Entry::Egress {
+                        host: egress.host,
+                        port: egress.port,
+                        allowed: egress.allowed,
+                        bytes_up: egress.bytes_up,
+                        bytes_down: egress.bytes_down,
+                        ms: egress.ms,
+                    },
                 );
                 Ok(Response::json(200, &json!({})))
             })
@@ -606,16 +605,20 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                     &app.bus,
                     cid,
                     work,
-                    "error",
-                    json!({ "message": format!("tool_package: {err}") }),
+                    crate::transcript::Entry::Error {
+                        message: format!("tool_package: {err}"),
+                    },
                 );
             }
             app.transcripts.record(
                 &app.bus,
                 cid,
                 work,
-                "tool_result",
-                json!({ "call": call, "ok": ok, "output": cap_output(&output, REPORT_OUTPUT_BYTES) }),
+                crate::transcript::Entry::ToolResult {
+                    call,
+                    ok,
+                    output: cap_output(&output, REPORT_OUTPUT_BYTES),
+                },
             );
             None
         }
@@ -642,8 +645,12 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 }),
             );
             for entry in entries {
-                app.transcripts
-                    .record(&app.bus, cid, work, "engine_update", entry);
+                app.transcripts.record(
+                    &app.bus,
+                    cid,
+                    work,
+                    crate::transcript::Entry::EngineUpdate(entry),
+                );
             }
             None
         }
@@ -660,8 +667,12 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             }
             // The engine calls under this work item end with it: their buffered text, plan and usage.
             for entry in app.engine_feed.finish(cid, work) {
-                app.transcripts
-                    .record(&app.bus, cid, work, "engine_update", entry);
+                app.transcripts.record(
+                    &app.bus,
+                    cid,
+                    work,
+                    crate::transcript::Entry::EngineUpdate(entry),
+                );
             }
             app.work.complete(app, cid, work, status, &summary);
             crate::harness_control::work_ended(app, cid, work, &summary);
@@ -681,8 +692,12 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 &app.bus,
                 cid,
                 work,
-                "compressed",
-                json!({ "before": before, "after": after, "folded": folded, "reason": reason }),
+                crate::transcript::Entry::Compressed {
+                    before,
+                    after,
+                    folded,
+                    reason,
+                },
             );
             record_compaction(app, cid, before, after);
             app.context.on_compaction(cid, work);
@@ -717,8 +732,12 @@ fn model_call(
         crate::membership::held(app, agent)
     };
     if let Some(e) = held {
-        app.transcripts
-            .record(&app.bus, cid, work, "error", json!({ "message": e }));
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            crate::transcript::Entry::Error { message: e.clone() },
+        );
         return HostMessage::ModelResult {
             req,
             ok: false,
@@ -731,8 +750,12 @@ fn model_call(
         crate::context_track::chat_model(app, cid, work).unwrap_or_else(|| model_of(app, agent));
     let settings = app.settings.get();
     if let Err(e) = app.settings.allowed(tier_of(&agent.role), &model) {
-        app.transcripts
-            .record(&app.bus, cid, work, "error", json!({ "message": e }));
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            crate::transcript::Entry::Error { message: e.clone() },
+        );
         return HostMessage::ModelResult {
             req,
             ok: false,
@@ -754,7 +777,6 @@ fn model_call(
         &app.bus,
         cid,
         work,
-        "model_request",
         request_summary(&model, &request.messages, &tool_names),
     );
 
@@ -785,9 +807,15 @@ fn model_call(
     collect::agent_state(app, cid, "tools");
     match result {
         Ok(resp) => {
-            let full = serde_json::to_value(&resp).unwrap_or(Value::Null);
-            app.transcripts
-                .record(&app.bus, cid, work, "model_response", full);
+            let answer = crate::transcript::Entry::ModelResponse {
+                via: None,
+                model: resp.model.clone(),
+                content: Some(serde_json::to_value(&resp.content).unwrap_or(Value::Null)),
+                stop: Some(serde_json::to_value(&resp.stop).unwrap_or(Value::Null)),
+                usage: crate::transcript::Usage::from(&resp.usage),
+                cost_usd: None,
+            };
+            app.transcripts.record(&app.bus, cid, work, answer);
             let usage = &resp.usage;
             let task = app.work.current(cid).and_then(|item| item.origin.task);
             let tokens = crate::prices::Tokens {
@@ -867,8 +895,14 @@ fn model_call(
         }
         Err(e) => {
             let message = e.to_string();
-            app.transcripts
-                .record(&app.bus, cid, work, "error", json!({ "message": message }));
+            app.transcripts.record(
+                &app.bus,
+                cid,
+                work,
+                crate::transcript::Entry::Error {
+                    message: message.clone(),
+                },
+            );
             HostMessage::ModelResult {
                 req,
                 ok: false,
@@ -909,8 +943,14 @@ pub(crate) fn meter(
     match charge {
         Some(settled) if settled.charged < settled.wanted => {
             let message = "budget exhausted";
-            app.transcripts
-                .record(&app.bus, cid, work, "error", json!({ "message": message }));
+            app.transcripts.record(
+                &app.bus,
+                cid,
+                work,
+                crate::transcript::Entry::Error {
+                    message: message.to_string(),
+                },
+            );
             app.work.cancel(app, cid, message);
             Err(message.to_string())
         }
@@ -932,8 +972,11 @@ fn tool_request(
         &app.bus,
         cid,
         work,
-        "tool_request",
-        json!({ "call": call, "name": name, "input": input }),
+        crate::transcript::Entry::ToolRequest {
+            call: call.clone(),
+            name: name.to_string(),
+            input: input.clone(),
+        },
     );
     let granted: Vec<String> = profile(app, agent)
         .tools
@@ -1022,12 +1065,11 @@ fn tool_request(
         &app.bus,
         cid,
         work,
-        "tool_decision",
-        json!({
-            "call": call,
-            "decision": decision,
-            "output": cap_output(&output, DECISION_OUTPUT_BYTES),
-        }),
+        crate::transcript::Entry::ToolDecision {
+            call: call.clone(),
+            decision: decision.into(),
+            output: cap_output(&output, DECISION_OUTPUT_BYTES),
+        },
     );
     // An allowed engine call on an instance the owner configured carries how to start it.
     let engine = (name == "code_engine" && matches!(decision, Decision::Allow))
@@ -1098,19 +1140,19 @@ fn decide(granted: &[String], name: &str, runs: Option<Runs>) -> Result<Runs, &'
 
 /// The bounded summary of a model request kept in the transcript: counts, tool names
 /// and the last user turn clipped to `LAST_USER_CHARS`, never the full body.
-fn request_summary(model: &str, messages: &[Message], tools: &[&str]) -> Value {
+fn request_summary(model: &str, messages: &[Message], tools: &[&str]) -> crate::transcript::Entry {
     let last_user: String = messages
         .iter()
         .rev()
         .find(|m| matches!(m.role, Role::User))
         .map(|m| m.text().chars().take(LAST_USER_CHARS).collect())
         .unwrap_or_default();
-    json!({
-        "model": model,
-        "messages": messages.len(),
-        "tools": tools,
-        "last_user": last_user,
-    })
+    crate::transcript::Entry::ModelRequest {
+        model: model.to_string(),
+        messages: messages.len(),
+        tools: json!(tools),
+        last_user,
+    }
 }
 
 #[cfg(test)]
@@ -1193,7 +1235,9 @@ mod tests {
                 Message::user_text(long),
                 Message::assistant(vec![]),
             ];
-            let summary = request_summary("m", &messages, &["read", "calc"]);
+            let summary = serde_json::to_value(request_summary("m", &messages, &["read", "calc"]))
+                .unwrap()["data"]
+                .clone();
             assert_eq!(summary["messages"], 3);
             assert_eq!(summary["tools"], json!(["read", "calc"]));
             assert_eq!(
@@ -1204,7 +1248,10 @@ mod tests {
         {
             // request_summary_is_empty_without_a_user_turn: with no user turn the last user text is
             // empty, and the message count is still kept.
-            let summary = request_summary("m", &[Message::assistant(vec![])], &[]);
+            let summary =
+                serde_json::to_value(request_summary("m", &[Message::assistant(vec![])], &[]))
+                    .unwrap()["data"]
+                    .clone();
             assert_eq!(summary["last_user"], "");
             assert_eq!(summary["messages"], 1);
         }

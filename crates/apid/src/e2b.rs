@@ -1009,20 +1009,21 @@ fn destroy_run(app: &App, run: &str) {
     }
 }
 
-/// Records one sandbox event: a transcript entry under the sandbox's CID, and an `e2b` bus event.
-fn audit(app: &App, sandbox: &Sandbox, kind: &'static str, event: &str, actor: &str, extra: Value) {
-    let mut record = json!({
-        "event": event,
-        "sandbox": sandbox.id,
-        "cid": sandbox.cid,
-        "template": sandbox.template,
-        "by": actor,
-    });
-    if let (Value::Object(base), Value::Object(extra)) = (&mut record, extra) {
-        base.extend(extra);
+/// The base of a sandbox event: its event, the sandbox, its CID, its template, and who acted.
+fn sandbox_base(sandbox: &Sandbox, event: &str, actor: &str) -> crate::transcript::SandboxBase {
+    crate::transcript::SandboxBase {
+        event: event.to_string(),
+        sandbox: sandbox.id.clone(),
+        cid: sandbox.cid,
+        template: sandbox.template.clone(),
+        by: actor.to_string(),
     }
-    app.transcripts
-        .record(&app.bus, sandbox.cid, 0, kind, record.clone());
+}
+
+/// Records one sandbox event: a transcript entry under the sandbox's CID, and an `e2b` bus event.
+fn audit(app: &App, sandbox: &Sandbox, entry: crate::transcript::Entry) {
+    let record = serde_json::to_value(&entry).map_or(Value::Null, |mut value| value["data"].take());
+    app.transcripts.record(&app.bus, sandbox.cid, 0, entry);
     app.bus.publish("e2b", &record);
 }
 
@@ -1277,10 +1278,11 @@ pub(crate) fn admit(
     audit(
         app,
         &sandbox,
-        "sandbox_create",
-        "create",
-        actor,
-        json!({"timeout": spec.timeout_s, "allow_internet_access": spec.allow_internet}),
+        crate::transcript::Entry::SandboxCreate {
+            base: sandbox_base(&sandbox, "create", actor),
+            timeout: spec.timeout_s,
+            allow_internet_access: spec.allow_internet,
+        },
     );
     Ok(sandbox)
 }
@@ -1312,10 +1314,11 @@ pub(crate) fn destroy(
         audit(
             app,
             sandbox,
-            "sandbox_kill",
-            "kill",
-            actor,
-            json!({"reason": reason, "kept_for_snapshots": sandbox.snapshots.len()}),
+            crate::transcript::Entry::SandboxKill {
+                base: sandbox_base(sandbox, "kill", actor),
+                reason: reason.to_string(),
+                kept_for_snapshots: Some(sandbox.snapshots.len()),
+            },
         );
         return Ok(());
     }
@@ -1324,10 +1327,11 @@ pub(crate) fn destroy(
     audit(
         app,
         sandbox,
-        "sandbox_kill",
-        "kill",
-        actor,
-        json!({"reason": reason}),
+        crate::transcript::Entry::SandboxKill {
+            base: sandbox_base(sandbox, "kill", actor),
+            reason: reason.to_string(),
+            kept_for_snapshots: None,
+        },
     );
     Ok(())
 }
@@ -1402,10 +1406,10 @@ fn pause_sandbox(
     audit(
         app,
         sandbox,
-        "sandbox_pause",
-        "pause",
-        actor,
-        json!({"reason": reason}),
+        crate::transcript::Entry::SandboxPause {
+            base: sandbox_base(sandbox, "pause", actor),
+            reason: reason.to_string(),
+        },
     );
     Ok(())
 }
@@ -1459,10 +1463,10 @@ fn wake(app: &App, id: &str, timeout_s: u32, actor: &str, cold: bool) -> Result<
     audit(
         app,
         &woken,
-        "sandbox_resume",
-        "resume",
-        actor,
-        json!({"timeout": timeout_s}),
+        crate::transcript::Entry::SandboxResume {
+            base: sandbox_base(&woken, "resume", actor),
+            timeout: timeout_s,
+        },
     );
     Ok(woken)
 }
@@ -1669,10 +1673,10 @@ pub(crate) fn take_snapshot(
     audit(
         app,
         sandbox,
-        "sandbox_snapshot",
-        "snapshot",
-        key,
-        json!({"snapshot": snap.id}),
+        crate::transcript::Entry::SandboxSnapshot {
+            base: sandbox_base(sandbox, "snapshot", key),
+            snapshot: snap.id.clone(),
+        },
     );
     Ok(snap)
 }
@@ -1816,18 +1820,27 @@ fn network(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Re
             break;
         }
     }
-    let record = json!({"allowOut": updated.allow_out, "denyOut": updated.deny_out, "allow_internet_access": allow_internet});
+    let record = crate::transcript::Entry::SandboxNetwork {
+        base: sandbox_base(&updated, "network", key),
+        allow_out: json!(updated.allow_out),
+        deny_out: json!(updated.deny_out),
+        allow_internet_access: allow_internet,
+        why: None,
+    };
     let Err(why) = forgot else {
-        audit(app, &updated, "sandbox_network", "network", key, record);
+        audit(app, &updated, record);
         return Ok(no_content());
     };
     audit(
         app,
         &updated,
-        "sandbox_network",
-        "network_pending",
-        key,
-        json!({"allowOut": updated.allow_out, "denyOut": updated.deny_out, "allow_internet_access": allow_internet, "why": why.clone()}),
+        crate::transcript::Entry::SandboxNetwork {
+            base: sandbox_base(&updated, "network_pending", key),
+            allow_out: json!(updated.allow_out),
+            deny_out: json!(updated.deny_out),
+            allow_internet_access: allow_internet,
+            why: Some(why.clone()),
+        },
     );
     Err(Refused::new(
         502,
@@ -1935,10 +1948,10 @@ pub(crate) fn delete_snapshot(app: &App, template: &str, key: &str) -> Result<Re
     audit(
         app,
         &updated,
-        "sandbox_snapshot",
-        "snapshot_delete",
-        key,
-        json!({"snapshot": snap.id}),
+        crate::transcript::Entry::SandboxSnapshot {
+            base: sandbox_base(&updated, "snapshot_delete", key),
+            snapshot: snap.id.clone(),
+        },
     );
     if updated.retired && updated.snapshots.is_empty() {
         end_run(app, &updated)?;

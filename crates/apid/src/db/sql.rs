@@ -9,12 +9,6 @@ pub const STATE_UPSERT: &str = include_str!("../../sql/queries/state_upsert.sql"
 #[cfg(test)]
 pub const STATE_DELETE: &str = include_str!("../../sql/queries/state_delete.sql");
 
-// The transcripts (`transcript`).
-pub const TRANSCRIPT_APPEND: &str = include_str!("../../sql/queries/transcript_append.sql");
-pub const TRANSCRIPT_PAGE: &str = include_str!("../../sql/queries/transcript_page.sql");
-pub const TRANSCRIPT_CIDS: &str = include_str!("../../sql/queries/transcript_cids.sql");
-pub const TRANSCRIPT_DELETE: &str = include_str!("../../sql/queries/transcript_delete.sql");
-
 // The IDE audit (`ide_audit`, migration 0008; ide.rs owner actions).
 pub const IDE_AUDIT_APPEND: &str = include_str!("../../sql/queries/ide_audit_append.sql");
 pub const IDE_AUDIT_PAGE: &str = include_str!("../../sql/queries/ide_audit_page.sql");
