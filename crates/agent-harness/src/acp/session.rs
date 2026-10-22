@@ -828,10 +828,12 @@ mod tests {
         CLAUDE.get_or_init(|| Instance::from_catalogue("claude").expect("the claude engine"))
     }
 
-    /// A folder of the test's own, for its script and its log.
+    /// A folder of the test's own, for its script and its log. The engine writes in it, so under root it is
+    /// given to the engine user, as `run` gives a call's folder to the engine before it starts.
     fn scratch(name: &str) -> PathBuf {
         let dir = env::temp_dir().join(format!("apz-acp-session-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a scratch folder");
+        layout::give_to_engine(&dir, &dir).expect("the engine's folder");
         dir
     }
 
