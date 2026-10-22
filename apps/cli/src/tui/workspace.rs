@@ -718,7 +718,7 @@ pub struct Workspace {
     /// The filter while it is typed (it applies as it is typed).
     pub filtering: Option<String>,
     pub composer: Option<Composer>,
-    /// Each chat's context as the hub last answered it, by its owner (the agent's, or the conversation's).
+    /// Each agent's chat context as the hub last answered it, by its owner.
     pub contexts: HashMap<Owner, Context>,
     /// Seconds since each chat's context was asked for, for the chat on screen (absent: never asked).
     pub context_since: HashMap<Owner, f32>,
@@ -1047,9 +1047,8 @@ impl Workspace {
                 let owners: Vec<Owner> = self
                     .contexts
                     .iter()
-                    .filter(|(owner, context)| match owner {
+                    .filter(|(owner, _)| match owner {
                         Owner::Agent(own) => *own == cid,
-                        Owner::Conversation(_) => context.cid == cid,
                     })
                     .map(|(owner, _)| owner.clone())
                     .collect();

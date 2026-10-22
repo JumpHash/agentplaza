@@ -42,19 +42,19 @@ pub const TOUR: [TourStep; 6] = [
         ],
     },
     TourStep {
-        title: "Agents",
-        tab: Some(Tab::Agents),
+        title: "Sessions",
+        tab: Some(Tab::Sessions),
         lines: &[
-            "Every agent and its state. Enter opens its details; t sends it a message.",
-            "Command: `agentplaza agents`.",
+            "The work engine's sessions, live first: each one's state, seat, model and cost. Enter opens it.",
+            "Command: `agentplaza sessions`.",
         ],
     },
     TourStep {
         title: "Projects & Tasks",
         tab: Some(Tab::Tasks),
         lines: &[
-            "Each task is in a project; p switches the project Agents and Tasks show.",
-            "Talk a project into being on the Chat tab (c), or `agentplaza chat`.",
+            "Each task is in a project; p switches the project Sessions and Tasks show.",
+            "Talk to a project's planner on the Chat tab (c), or `agentplaza chats`.",
         ],
     },
     TourStep {
