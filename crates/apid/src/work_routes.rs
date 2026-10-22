@@ -280,7 +280,8 @@ struct BudgetBody {
 
 fn put_project_budget(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let id = p.get("id");
-    if app.projects.get(id).is_none() {
+    // The plaza's own budget (`plaza`): what the main orchestrator and VMs that run no session spend from.
+    if id != crate::work_loop::PLAZA && app.projects.get(id).is_none() {
         return Response::error(404, &format!("no project {id}"));
     }
     let body: BudgetBody = match req.json() {

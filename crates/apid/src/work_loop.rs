@@ -762,6 +762,9 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
             subject_of(*owner_kind, owner),
             match owner_kind {
                 OwnerKind::Task => format!("Task {owner} reached its budget"),
+                OwnerKind::Project if owner == PLAZA => {
+                    "The plaza's own budget cannot fund more work".into()
+                }
                 OwnerKind::Project => format!("Project {owner} cannot fund more work"),
             },
             format!(
@@ -1252,10 +1255,11 @@ pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> boo
 
 // ── model calls against budgets (Engine 0.5) ─────────────────────────────────────────────────────────────────────
 
-/// A session's model call held on its budget: given by [`before_call`], returned to [`after_call`].
+/// A model call held on its budget: given by [`before_call`], returned to [`after_call`]. `session` is `None` for a VM
+/// that runs no session, whose calls are held on the plaza's own budget.
 pub struct CallHold {
     hold: crate::budgets::Hold,
-    session: String,
+    session: Option<String>,
     model: String,
 }
 
@@ -1273,20 +1277,18 @@ fn call_cost(app: &App, model: &str, tokens: crate::prices::Tokens) -> Amount {
     )
 }
 
-/// Before a model call of `cid`: when `cid` is a session's VM, the call's worst case (the request's size and its answer's
-/// cap, at the model's price) is held on the session's task, or on its project for a long-lived session. A budget that
-/// cannot take it pauses the session and asks the owner (one card per budget); the `Err` is the harness's
-/// `paused:` answer ([`apz_proto::wire::MODEL_PAUSED`]), which makes the turn wait and ask again. `Ok(None)`: not a
-/// session's call, nothing held.
+/// Before a model call of `cid`: the call's worst case (the request's size and its answer's cap, at the model's price)
+/// is held on the session's task, or on its project for a long-lived session; a VM that runs no session (one the owner
+/// spawned, a fork) spends from the plaza's own budget, so no call goes unmetered. A budget that cannot take it pauses
+/// the session and asks the owner (one card per budget); the `Err` is the harness's `paused:` answer
+/// ([`apz_proto::wire::MODEL_PAUSED`]), which makes the turn wait and ask again.
 pub fn before_call(
     app: &App,
     cid: u64,
     model: &str,
     request: &apz_proto::chat::ChatRequest,
 ) -> Result<Option<CallHold>, String> {
-    let Some(session) = app.sessions.by_cid(cid) else {
-        return Ok(None);
-    };
+    let session = app.sessions.by_cid(cid);
     let now = now();
     let size = serde_json::to_string(&request.messages).map_or(0, |t| t.len())
         + serde_json::to_string(&request.tools).map_or(0, |t| t.len());
@@ -1304,31 +1306,40 @@ pub fn before_call(
             cache_write: 0,
         },
     );
+    let (task, project) = match &session {
+        Some(session) => (session.task.as_deref(), session.project.as_str()),
+        None => (None, PLAZA),
+    };
     match app.budgets.hold(
-        session.task.as_deref(),
-        &session.project,
+        task,
+        project,
         worst,
-        Some(&session.id),
+        session.as_ref().map(|s| s.id.as_str()),
         Some(model),
         now,
     ) {
         Ok(hold) => {
-            if session.state == State::Paused && session.paused_by == Some(PausedBy::Budget) {
+            if let Some(session) = &session
+                && session.state == State::Paused
+                && session.paused_by == Some(PausedBy::Budget)
+            {
                 let _ = app.sessions.set_state(&session.id, State::Running, now);
                 app.bus.publish("session", &app.sessions.get(&session.id));
             }
             Ok(Some(CallHold {
                 hold,
-                session: session.id,
+                session: session.map(|s| s.id),
                 model: model.to_string(),
             }))
         }
         Err(short) => {
-            if session.state != State::Paused {
+            if let Some(session) = &session
+                && session.state != State::Paused
+            {
                 let _ = app.sessions.pause(&session.id, PausedBy::Budget, now);
                 app.bus.publish("session", &app.sessions.get(&session.id));
             }
-            ask_budget(app, &short, session.task.as_deref(), &session.project, now);
+            ask_budget(app, &short, task, project, now);
             Err(format!(
                 "{}{}",
                 apz_proto::wire::MODEL_PAUSED,
@@ -1367,7 +1378,7 @@ pub fn after_call(app: &App, cid: u64, held: CallHold, usage: Option<&apz_proto:
     let notices = app.budgets.settle(
         &held.hold,
         actual,
-        Some(&held.session),
+        held.session.as_deref(),
         Some(&held.model),
         now,
     );
