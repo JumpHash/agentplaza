@@ -11,6 +11,8 @@ apz-metrics = { path = "../apz-metrics" }
 apz-view = { path = "../apz-view" }
 serde.workspace = true
 serde_json.workspace = true
+# The owner's dashboards are a typed table (model::Saved).
+apz-store = { path = "../apz-store" }
 
 [lints]
 workspace = true

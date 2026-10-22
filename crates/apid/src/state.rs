@@ -312,10 +312,7 @@ impl App {
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::default(),
             metrics: crate::metrics::Metrics::open(
-                &config.state_dir,
-                env.get("APZ_DATABASE_URL")
-                    .map(String::as_str)
-                    .filter(|u| !u.trim().is_empty()),
+                Arc::clone(store.db(crate::store::METRICS)),
                 apz_plaza::now_ms(),
             ),
             foundry: crate::foundry::store::Foundry::open(foundry_dir, apz_plaza::now_ms()),
@@ -408,7 +405,8 @@ impl App {
             eprintln!("apid: store: {problem}");
         }
         // A budget hold is written through to plaza.db, acknowledged before its call is sent (budgets.rs).
-        app.budgets.attach(Arc::clone(app.store.db(crate::store::PLAZA)));
+        app.budgets
+            .attach(Arc::clone(app.store.db(crate::store::PLAZA)));
         // Postgres, for the components not yet in the store.
         crate::db::restore_all(&app);
         // The built-in skills join the skill library (one the library already holds is left alone).

@@ -9,6 +9,8 @@ publish = false
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# The typed tables the hub keeps these values in (derive Column on the enums, Table on the alert rules).
+apz-store = { path = "../apz-store" }
 
 [dev-dependencies]
 base64.workspace = true

@@ -264,9 +264,14 @@ mod tests {
     use apz_metrics::Tier;
     use apz_metrics::wire::encode_gauge;
 
-    fn open(name: &str) -> Metrics {
-        let dir = std::env::temp_dir().join(format!("apid-ingest-{name}-{}", std::process::id()));
-        Metrics::open(&dir, None, 1_000_000)
+    /// Metrics over a fresh metrics file; the store is returned too, so it stays open while the test runs.
+    fn open(name: &str) -> (apz_store::Store, Metrics) {
+        let files = crate::metrics::sqlite::scratch_store(name);
+        let m = Metrics::open(
+            std::sync::Arc::clone(files.db(crate::store::METRICS)),
+            1_000_000,
+        );
+        (files, m)
     }
 
     fn hist_count(samples: &[Sample], metric: &str, run: &str) -> Option<u64> {
@@ -280,7 +285,7 @@ mod tests {
 
     #[test]
     fn a_batch_gauge_column_lands_in_latest_with_times_shifted_by_the_clock_offset() {
-        let m = open("offset");
+        let (_files, m) = open("offset");
         let key = SeriesKey::new("cpu.used", EntityKind::Node, "n1");
         let column = encode_gauge(key.clone(), 1_010_000, 10_000, &[0.5, 0.75]);
         let b = Batch {
@@ -299,7 +304,7 @@ mod tests {
 
     #[test]
     fn a_wake_event_records_its_duration_and_parts_and_is_stored() {
-        let m = open("wake");
+        let (_files, m) = open("wake");
         let event = Event {
             t_ms: 5_000,
             kind: "wake".to_string(),
@@ -326,7 +331,7 @@ mod tests {
 
     #[test]
     fn samples_that_close_a_window_reach_the_store() {
-        let m = open("windows");
+        let (_files, m) = open("windows");
         let key = SeriesKey::new("cpu.used", EntityKind::Vm, "vm-1");
         let at = |t_ms: u64| Sample {
             key: key.clone(),

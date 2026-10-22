@@ -631,6 +631,7 @@ dependencies = [
 name = "apz-metrics"
 version = "0.1.0"
 dependencies = [
+ "apz-store",
  "base64 0.22.1",
  "flate2",
  "serde",
@@ -642,6 +643,7 @@ name = "apz-metrics-view"
 version = "0.1.0"
 dependencies = [
  "apz-metrics",
+ "apz-store",
  "apz-view",
  "serde",
  "serde_json",
