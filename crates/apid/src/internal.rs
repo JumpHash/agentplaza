@@ -750,7 +750,7 @@ fn model_call(
             error: Some(e),
         };
     }
-    // A chat's own choice (one message's, or its owner conversation's) before the agent's model.
+    // The model of the chat the call is for (one message's choice, else the chat's own) before the agent's model.
     let model =
         crate::context_track::chat_model(app, cid, work).unwrap_or_else(|| model_of(app, agent));
     let settings = app.settings.get();

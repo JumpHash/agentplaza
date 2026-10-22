@@ -152,11 +152,25 @@ pub struct Project {
     /// How the project is worked: one of [`MODES`] (`build` unless the owner changed it).
     #[serde(default = "build_mode")]
     pub mode: String,
+    /// How the project meets GitHub: one of [`GITHUB_MODES`] (`none` unless the owner chose one).
+    #[serde(default = "github_none")]
+    pub github: String,
+    /// The disk the project's files may take, in bytes; none means no quota.
+    #[serde(default)]
+    pub disk_quota_bytes: Option<u64>,
 }
 
 fn build_mode() -> String {
     "build".into()
 }
+
+pub(crate) fn github_none() -> String {
+    "none".into()
+}
+
+/// How a project meets GitHub (PLAN 21.5): `mirror` exports Weft's landings to the repository, `ci` lands through
+/// GitHub, `none` is neither. The modes themselves are built in phase 4.7; a project only records its choice.
+pub const GITHUB_MODES: &[&str] = &["none", "mirror", "ci"];
 
 /// A way of working a project: its id, its name in the consoles, and what it means for the agents.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -358,9 +372,73 @@ impl Store {
                 paused: false,
                 archived: false,
                 mode: build_mode(),
+                github: github_none(),
+                disk_quota_bytes: None,
             };
             items.push(project.clone());
             Ok(project)
+        })
+    }
+
+    /// Sets the fields of draft project `id` from its draft's revision: title, goal, kind, GitHub mode and disk quota.
+    /// Only a draft (at "brief", not archived) changes: a started project keeps what it started with.
+    pub fn set_draft(
+        &self,
+        id: &str,
+        title: &str,
+        goal: &str,
+        kind: &str,
+        github: &str,
+        disk_quota_bytes: Option<u64>,
+    ) -> Result<Project, String> {
+        let title = bounded("title", title, 1, 120)?;
+        let goal = bounded("goal", goal, 1, 8000)?;
+        if kind != "code" && kind != "other" {
+            return Err("kind must be code or other".into());
+        }
+        if !GITHUB_MODES.contains(&github) {
+            return Err(format!("github must be one of {}", GITHUB_MODES.join(", ")));
+        }
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if p.archived {
+                return Err(format!("project {id} is archived"));
+            }
+            if p.stage != "brief" {
+                return Err(format!("project {id} is at {}, not a draft", p.stage));
+            }
+            p.title = title.clone();
+            p.goal = goal.clone();
+            p.kind = kind.into();
+            p.github = github.into();
+            p.disk_quota_bytes = disk_quota_bytes;
+            p.updated_ms = now_ms();
+            Ok(p.clone())
+        })
+    }
+
+    /// Starts draft project `id` for the owner: its plan is theirs, so it moves to "implementation" (the stage that runs
+    /// tasks), approved by the owner. Only a draft starts, and not an archived one.
+    pub fn start_draft(&self, id: &str) -> Result<Project, String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if p.archived {
+                return Err(format!("project {id} is archived"));
+            }
+            if p.stage != "brief" {
+                return Err(format!("project {id} is at {}, not a draft", p.stage));
+            }
+            let now = now_ms();
+            p.stage = "implementation".into();
+            p.approved_by = Some("owner".into());
+            p.history.push(event(
+                &Actor::owner(),
+                "approved",
+                "started by the owner from its draft",
+                now,
+            ));
+            p.updated_ms = now;
+            Ok(p.clone())
         })
     }
 
@@ -382,17 +460,6 @@ impl Store {
                 now,
             ));
             p.updated_ms = now;
-            Ok(p.clone())
-        })
-    }
-
-    /// Makes agent `cid` project `id`'s lead: the orchestrator a conversation started it from, told of its tasks to
-    /// replan.
-    pub fn set_lead(&self, id: &str, cid: u64) -> Result<Project, String> {
-        self.mutate(|items| {
-            let p = find_mut(items, id)?;
-            p.lead_cid = cid;
-            p.updated_ms = now_ms();
             Ok(p.clone())
         })
     }
@@ -1476,6 +1543,54 @@ mod tests {
 
     fn fresh() -> Store {
         Store::default()
+    }
+
+    #[test]
+    fn a_draft_sets_its_fields_until_it_starts_and_starts_once() {
+        let store = fresh();
+        let p = store
+            .open(&lead(), "Release", "Goal", "code", true)
+            .unwrap();
+        assert_eq!(
+            (p.stage.as_str(), p.github.as_str(), p.disk_quota_bytes),
+            ("brief", "none", None)
+        );
+        let set = store
+            .set_draft(
+                &p.id,
+                "Release 0.9",
+                "Goal, then tag",
+                "code",
+                "mirror",
+                Some(1 << 30),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                set.title.as_str(),
+                set.github.as_str(),
+                set.disk_quota_bytes
+            ),
+            ("Release 0.9", "mirror", Some(1 << 30))
+        );
+        let refused = store.set_draft(&p.id, "Title", "Goal", "code", "gitlab", None);
+        assert!(refused.unwrap_err().contains("github"));
+        let started = store.start_draft(&p.id).unwrap();
+        assert_eq!(
+            (started.stage.as_str(), started.approved_by.as_deref()),
+            ("implementation", Some("owner"))
+        );
+        assert!(
+            store
+                .start_draft(&p.id)
+                .unwrap_err()
+                .contains("not a draft")
+        );
+        let late = store.set_draft(&p.id, "Late", "Goal", "code", "none", None);
+        assert!(late.unwrap_err().contains("not a draft"));
+        let old = store.open(&lead(), "Old", "Goal", "other", false).unwrap();
+        store.archive(&old.id).unwrap();
+        assert!(store.start_draft(&old.id).unwrap_err().contains("archived"));
     }
 
     /// The store's rows written to an in-memory plaza.db and loaded into a fresh store, as a restart does.

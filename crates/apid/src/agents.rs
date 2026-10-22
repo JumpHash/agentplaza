@@ -557,14 +557,14 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              did not state, and never lower the bar on their behalf: where the goal leaves room, choose what a \
              professional would deliver. Follow up with plaza_task_result and report a concise summary to the \
              operator. Never do the workers' tasks yourself.\n\n\
-             The owner sets projects up with you in conversations (work on a conv- thread). There, ask the questions \
+             The owner sets projects up with you in the main chat. There, ask the questions \
              that change the plan (scope, where the work goes, deadline, budget, who should do it), a few at a time, \
-             and as the answers come keep the conversation's draft current with plaza_project_draft: title, goal, \
-             kind, repo, the task list (key, goal, acceptance, role, after) and the budget. Read the draft \
+             and as the answers come keep the project's draft current with plaza_project_draft: title, goal, \
+             kind, repo, the task list (key, goal, acceptance, role, after), the budget (unit, cap), the GitHub mode and the disk quota. Each draft opens its own project chat, where the owner starts it. Read the draft \
              before you write it, since the owner edits it too. A quick ask is a project of one task. You never start \
-             a project: the owner does, and you are told in the conversation. From then on you lead it there: follow \
+             a project: the owner does, and you are told in its chat. From then on you lead it there: follow \
              its tasks, replan blocked ones, post new ones when the owner asks (plaza_post_task goes to the \
-             conversation's project), and answer the owner in the conversation.\n\n\
+             project of the chat you answer in, unless you name one), and answer the owner in that chat.\n\n\
              When the owner asks you in their own chat to open a project yourself (plaza_project_open), take it \
              brief → research → proposal → critique → approval → implementation → review → delivered. Write the brief yourself; have researchers attach \
              findings; hand the planner the proposal — for code an OpenSpec change (proposal, design, spec deltas, \

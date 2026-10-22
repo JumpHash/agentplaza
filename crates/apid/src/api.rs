@@ -105,7 +105,6 @@ pub fn router() -> Router<App> {
     let router = crate::maintenance::routes(router);
     let router = crate::environments::routes(router);
     let router = crate::project_files::routes(router);
-    let router = crate::conversations::routes(router);
     let router = crate::drafts::routes(router);
     let router = crate::project_settings::routes(router);
     let router = crate::harness_control::routes(router);

@@ -39,10 +39,8 @@ pub trait Plaza: Sync {
     fn station_call(&self, _name: &str, _args: &Value) -> Result<Value, String> {
         Err("workstations are not available here".to_string())
     }
-    /// The owner's message to the orchestrator: in conversation `conversation` when one is named, else on the
-    /// owner's own thread.
-    fn message_orchestrator(&self, text: &str, conversation: Option<&str>)
-    -> Result<Value, String>;
+    /// The owner's message to the orchestrator: in chat `chat` when one is named, else in the main chat.
+    fn message_orchestrator(&self, text: &str, chat: Option<&str>) -> Result<Value, String>;
     fn tell_agent(&self, cid: u64, text: &str) -> Result<Value, String>;
     fn stop_agent(&self, cid: u64, reason: &str) -> Result<Value, String>;
     fn search_library(&self, query: &str, limit: usize) -> Vec<Value>;

@@ -352,7 +352,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
 /// The owner's attachments: at most this big.
 const MAX_ATTACHMENT: usize = 100 << 20;
 
-/// `PUT /v1/files?name=&title=`: a file the owner attaches to a chat or a conversation. It is private (only the
+/// `PUT /v1/files?name=&title=`: a file the owner attaches to a chat. It is private (only the
 /// owner reads it) until a message carries it: then the agent it goes to may read it ([`attach`]).
 fn owner_put_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     let Some(raw) = req.query_param("name") else {
@@ -423,10 +423,10 @@ pub fn attach(app: &App, ids: &[String], cid: u64) -> Result<String, String> {
 }
 
 /// The attachments as the console shows them on a message: `{id, name, size, type}` each.
-pub fn attachment_views(app: &App, ids: &[String]) -> Vec<crate::conversations::Attachment> {
+pub fn attachment_views(app: &App, ids: &[String]) -> Vec<crate::chats::Attachment> {
     ids.iter()
         .filter_map(|id| app.deliverables.meta(id))
-        .map(|m| crate::conversations::Attachment {
+        .map(|m| crate::chats::Attachment {
             id: m.id,
             name: m.title,
             size: m.size,

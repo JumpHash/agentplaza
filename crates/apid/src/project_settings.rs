@@ -314,16 +314,6 @@ pub fn permission_mode(app: &App, cid: u64) -> Mode {
 
 // ---- The budget ---------------------------------------------------------------------------------------------------
 
-/// Sets `credits` of the plaza's budget aside for project `pid` (the owner's operation).
-pub fn fund(app: &App, pid: &str, credits: u64) -> Result<(), String> {
-    let amount = i64::try_from(credits).map_err(|_| "too many credits".to_string())?;
-    app.plaza
-        .treasury
-        .move_budget(PLAZA_OWNER, pid, amount)
-        .map(|_| ())
-        .map_err(|e| format!("the plaza's budget could not set {credits} credits aside: {e}"))
-}
-
 /// Gives the rest of project `pid`'s budget back to the plaza (it is over); nothing when it has none.
 pub fn return_rest(app: &App, pid: &str) {
     if let Err(e) = app.plaza.treasury.return_town_budget(pid) {
