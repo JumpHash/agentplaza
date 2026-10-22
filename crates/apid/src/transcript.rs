@@ -711,7 +711,7 @@ mod tests {
             Entry::ModelRequest {
                 model: "m".into(),
                 messages: 3,
-                tools: json!(["read", "bash"]),
+                tools: json!(["read", "run"]),
                 last_user: "hi".into(),
             },
             Entry::ModelResponse {

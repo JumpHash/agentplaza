@@ -2,16 +2,17 @@
   "roles": {
     "builder": {
       "tools": [
-        "bash",
-        "read_file",
-        "write_file",
-        "edit_file"
+        "run",
+        "run_tests",
+        "read",
+        "edit"
       ]
     },
     "reviewer": {
       "tools": [
-        "bash",
-        "read_file",
+        "run",
+        "run_tests",
+        "read",
         "plaza_verdict"
       ]
     }

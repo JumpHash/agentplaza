@@ -130,7 +130,8 @@ fn a_draft_in_the_main_chat_becomes_a_project_the_owner_starts() {
         (BUILDER, "builder".to_string()),
     ]));
     let (noded, gateway) = daemons(&vms);
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "builder": role("builder", "Builder"),

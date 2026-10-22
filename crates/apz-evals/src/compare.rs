@@ -92,7 +92,7 @@ mod tests {
                 cached: 0,
             },
             tools: vec![ToolLatency {
-                tool: "bash".into(),
+                tool: "run".into(),
                 calls,
                 errors: 0,
                 p50_ms: 1,

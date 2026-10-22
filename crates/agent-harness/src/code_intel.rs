@@ -5,7 +5,6 @@
 //! lane's revision answers. A file outside every lane, in a language no index covers, is refused with the reason.
 //! Lines are one-based and columns one-based in UTF-16 units, as the protocol counts them.
 
-use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -134,7 +133,7 @@ fn lane_of(workspace: &Workspace, label: &str) -> Option<Lane> {
 }
 
 /// The lane and the lane-relative path of a file, or why there is no index for it.
-fn indexed<'f>(f: &'f File) -> Result<(&'f Lane, String), ToolError> {
+fn indexed(f: &File) -> Result<(&Lane, String), ToolError> {
     match &f.lane {
         Some(lane) => Ok((lane, lane.rel.clone())),
         None => Err(ToolError::NotFound {
@@ -653,6 +652,7 @@ mod tests {
     use super::*;
     use apz_lsp::fake::{self, Script};
     use apz_lsp::{Location, Range, path_to_uri};
+    use std::cell::RefCell;
 
     const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../apz-lsp/testdata/repo");
 

@@ -16,7 +16,8 @@ const WAIT: Duration = Duration::from_secs(20);
 
 /// The roles the projects need: a project's planner and a task's builder.
 fn roles() -> Value {
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
     json!({ "roles": {
         "builder": role("builder", "Builder"),
         "planner": role("planner", "Planner"),

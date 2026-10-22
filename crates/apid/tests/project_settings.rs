@@ -90,7 +90,7 @@ fn a_projects_settings_reach_its_agents_and_its_budget_funds_its_tasks() {
     let vms: Vms = Arc::new(Mutex::new(vec![(BUILDER, "builder".to_string())]));
     let (noded, gateway) = daemons(&vms);
     let roles = json!({ "roles": {
-        "builder": { "role": "builder", "title": "Builder", "tools": ["bash", "read_file"] },
+        "builder": { "role": "builder", "title": "Builder", "tools": ["run", "read"] },
     } });
     let scratch = Scratch::new("project-settings");
     let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
@@ -206,7 +206,7 @@ fn a_projects_settings_reach_its_agents_and_its_budget_funds_its_tasks() {
         (mode["mode"].clone(), mode["source"].clone()),
         (json!("ask"), json!("project"))
     );
-    let request = json!({ "type": "tool_request", "work": 1, "call": "toolu_1", "name": "bash", "input": { "command": "ls" } });
+    let request = json!({ "type": "tool_request", "work": 1, "call": "toolu_1", "name": "run", "input": { "command": "ls" } });
     let (_, decided) = hub.guest(cid, "message", request);
     assert!(
         text(&decided["reply"]["output"]).contains("approval"),

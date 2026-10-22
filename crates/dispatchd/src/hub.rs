@@ -162,7 +162,7 @@ mod tests {
         let (target, requests, served) = stub(vec![
             (
                 200,
-                r#"{"ok":true,"output":"{\"path\":\"build-notes.txt\",\"bytes\":7}"}"#,
+                r#"{"ok":true,"output":"{\"files\":[{\"path\":\"build-notes.txt\",\"ok\":true}]}"}"#,
             ),
             (200, r#"{"ok":false,"output":"denied: nope"}"#),
         ]);
@@ -174,8 +174,8 @@ mod tests {
         let answer = hub
             .tell(
                 300,
-                "write_file",
-                &serde_json::json!({ "path": "build-notes.txt" }),
+                "edit",
+                &serde_json::json!({ "create": [{ "path": "build-notes.txt", "content": "x" }] }),
                 5_000,
             )
             .expect("the hub answers");
@@ -183,20 +183,23 @@ mod tests {
             answer,
             Tell::Answered {
                 ok: true,
-                output: r#"{"path":"build-notes.txt","bytes":7}"#.to_string(),
+                output: r#"{"files":[{"path":"build-notes.txt","ok":true}]}"#.to_string(),
             }
         );
         let sent: serde_json::Value =
             serde_json::from_str(&requests.recv().expect("a request")).expect("the body is JSON");
         assert_eq!(sent["cid"], serde_json::json!(300));
-        assert_eq!(sent["name"], serde_json::json!("write_file"));
-        assert_eq!(sent["args"]["path"], serde_json::json!("build-notes.txt"));
+        assert_eq!(sent["name"], serde_json::json!("edit"));
+        assert_eq!(
+            sent["args"]["create"][0]["path"],
+            serde_json::json!("build-notes.txt")
+        );
         assert_eq!(sent["timeout_ms"], serde_json::json!(5_000));
 
         // A refusal is an *answer*: the agent said no, and the dispatcher
         // hears it.
         let answer = hub
-            .tell(300, "write_file", &serde_json::json!({}), 5_000)
+            .tell(300, "edit", &serde_json::json!({}), 5_000)
             .expect("the hub answers");
         assert_eq!(
             answer,
@@ -253,7 +256,7 @@ mod tests {
         {
             let (target, _requests, served) = stub(vec![(
                 403,
-                r#"{"ok":false,"output":"role librarian does not grant write_file"}"#,
+                r#"{"ok":false,"output":"role librarian does not grant edit"}"#,
             )]);
             let hub = Hub {
                 target,
@@ -262,15 +265,15 @@ mod tests {
             let answer = hub
                 .tell(
                     310,
-                    "write_file",
-                    &serde_json::json!({ "path": "index.txt" }),
+                    "edit",
+                    &serde_json::json!({ "create": [{ "path": "index.txt", "content": "x" }] }),
                     5_000,
                 )
                 .expect("the refusal is an answer");
             assert_eq!(
                 answer,
                 Tell::Refused {
-                    reason: "role librarian does not grant write_file".to_string(),
+                    reason: "role librarian does not grant edit".to_string(),
                 }
             );
             served.join().expect("the stub surface finishes");

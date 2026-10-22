@@ -113,7 +113,7 @@ mod tests {
 
     fn offered() -> Vec<ToolSpec> {
         vec![
-            tool("bash", "run a command", false),
+            tool("run", "run a command", false),
             tool("ledger_rows", "read the ledger rows", true),
         ]
     }
@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(before[1].input_schema, json!({"type": "object"}));
         assert!(before[1].deferred);
         assert!(deferred.refusal("ledger_rows").is_some());
-        assert!(deferred.refusal("bash").is_none());
+        assert!(deferred.refusal("run").is_none());
     }
 
     #[test]

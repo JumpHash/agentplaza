@@ -312,15 +312,18 @@ mod tests {
             host.send(WELCOME).unwrap();
             let calls = [
                 (
-                    r#"{"name":"write_file","args":{"path":"notes.txt","content":"one\ntwo\n"}}"#,
+                    r#"{"name":"edit","args":{"create":[{"path":"notes.txt","content":"one\ntwo\n"}]}}"#,
                     true,
                 ),
                 (
-                    r#"{"name":"edit_file","args":{"path":"notes.txt","find":"two","replace":"TWO"}}"#,
+                    r#"{"name":"edit","args":{"edits":[{"path":"notes.txt","old":"two","new":"TWO"}]}}"#,
                     true,
                 ),
-                (r#"{"name":"read_file","args":{"path":"notes.txt"}}"#, true),
-                (r#"{"name":"read_file","args":{"path":"../escape"}}"#, false),
+                (
+                    r#"{"name":"read","args":{"files":[{"path":"notes.txt"}]}}"#,
+                    true,
+                ),
+                (r#"{"name":"read","args":{"files":"../escape"}}"#, false),
                 (
                     r#"{"name":"conversation","args":{"from_role":"builder","from_cid":100,"text":"hi"}}"#,
                     true,
@@ -341,7 +344,8 @@ mod tests {
                 if index == 2 {
                     let output: serde_json::Value =
                         serde_json::from_str(answer["output"].as_str().unwrap()).unwrap();
-                    assert_eq!(output["content"], "     1\tone\n     2\tTWO\n");
+                    // The edit before it recorded the file as read, so the read is answered without the content.
+                    assert_eq!(output["files"][0]["unchanged_since"], 2, "{output}");
                 }
             }
             host.send(r#"{"type":"stop","reason":"done"}"#).unwrap();

@@ -341,7 +341,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         // Both calls were received at the same moment; the first runs for longer than the expiry.
         let received = Instant::now();
-        for (call, name) in [(1, "slow"), (2, "write_file")] {
+        for (call, name) in [(1, "slow"), (2, "edit")] {
             tx.send(OperatorCall {
                 call,
                 name: name.to_string(),

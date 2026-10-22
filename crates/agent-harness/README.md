@@ -66,35 +66,43 @@ does not show it.
 
 ### Caps
 
+The v2 tools ([`src/v2`](src/v2)) each carry a budget for their output, and a
+result cut short by it says where to continue (`continue`, as a call of the tool
+that resumes it). The shared caps:
+
 | cap | value |
 |-----|-------|
-| `read_file` default `limit` | 2000 lines (a line over 2000 characters is cut) |
-| any file the tools read or grow | 1 MiB |
-| one write/append payload, one edit replacement | 256 KiB |
+| any file the tools read or grow | 8 MiB read (`read`), 1 MiB edited (`edit`) |
+| one write, or one edit's replacement | 256 KiB |
 | a `conversation` message's `text` | 2 KiB |
-| a `search` pattern or `edit_file` needle | 4 KiB |
-| `list` entries returned / read | 1024 / 65536 |
-| `search` matches / files / bytes / depth | 256 / 4096 / 8 MiB / 16 |
-| bytes of a matching line `search` returns | 256 |
+| an edit's `old` text, a `search` pattern | 4 KiB |
+| `read`: files per call, output per call | 32 files, 48 KiB |
+| `find`: entries (`max`), output per call | 200 by default, 2000 at most, 16 KiB |
+| `search`: matches (`max`), output per call | 100 by default, 1000 at most, 24 KiB; context 20 lines at most |
+| `run`: output per command | 32 KiB (the head and the tail are kept) |
+| `run_tests`: failures per call | 16 KiB |
 
 Nothing is silently clamped: a request over a cap is `limit exceeded`, and a
 result cut short by a bound carries `"truncated": true`.
 
 ### The tools
 
-Each tool's `output` is one JSON object (as a string):
+Each tool's `output` is one JSON object (as a string), except `echo` and
+`uptime`. A result carries `notes` when something arrived since the last one:
+a file the agent read changed underneath it (`"<path> changed since you read it"`),
+or a background job ended (its exit status and last lines).
 
-| tool | arguments | output fields |
-|------|-----------|---------------|
-| `echo` | `text` (string) | the text itself (not JSON) |
+| tool | arguments | output |
+|------|-----------|--------|
+| `echo` | `text` | the text itself (not JSON) |
 | `uptime` | — | `/proc/uptime`'s first two fields (not JSON) |
 | `conversation` | `from_role`, `text`, `from_cid`? | `received`, `log`, `lines`, `size` |
-| `read_file` | `path`, `offset`?, `limit`?, `max_bytes`? | `path`, `size`, `bytes`, `truncated`, `content` |
-| `write_file` | `path`, `content` | `path`, `bytes`, `created` |
-| `edit_file` | `path`, `old` (or `find`), `new` (or `replace`), `replace_all`? | `path`, `replacements`, `size`, `snippet` |
-| `append_file` | `path`, `content` | `path`, `bytes`, `size` |
-| `list` | `path`? (default the root) | `path`, `entries[{name,kind,size}]`, `truncated`, `skipped` |
-| `search` | `pattern`, `path`? | `pattern`, `path`, `matches[{file,line,text}]`, `files_scanned`, `bytes_scanned`, `skipped`, `truncated` |
+| `read` | `files: [{path, start?, end?}]` | `files: [{path, lines, content, outline?, continue?, unchanged_since?, binary?, error?}]` |
+| `edit` | `edits: [{path, old, new, replace_all?}]`, `create: [{path, content}]` | `files: [{path, ok, lines_changed, created?, replacements?, error?}]` |
+| `find` | `glob?`, `content?`, `path?`, `max?`, `after?` | `files`, `matches: [{path, line, text}]` (with `content`), `truncated?`, `continue?` |
+| `search` | `pattern`, `path?`, `glob?`, `context?`, `max?`, `after?` | `matches: [{path, line, text, before, after}]`, `skipped`, `truncated?`, `continue?` |
+| `run` | `command`, `cwd?`, `timeout_s?`, `background?` | `output`, `exit`, `timed_out?`, `truncated?`, `continue?`, `job?` |
+| `run_tests` | `command?`, `filter?` | `runner`, `command`, `exit`, `passed`, `failed`, `parsed`, `failures: [{name, file?, line?, message, output}]` |
 | `fetch_url` | `url` | the page's text, prefixed `Fetched <url>:` (not JSON) |
 | `download` | `url`, `path` | `path`, `bytes`, `created` |
 
@@ -105,39 +113,34 @@ Each tool's `output` is one JSON object (as a string):
   omitted when the wire carried no `from_cid`. The stamp is **this guest's own
   clock** (UTC); the role and the text have every control character escaped
   (`\x0a`), so one message is one line and a hostile text cannot forge a line
-  from another agent. `text` is capped at 2 KiB (the direct-message cap) and
-  the log at the usual 1 MiB, both refused rather than truncated. The output is
-  `{"received":true,"log":"messages.log","lines":N,"size":M}` — the log's line
-  count and size after the append. The agent never touches the peer: the hub
-  delivered the message, and the harness only writes it down.
-* **`read_file`** returns the file's lines, numbered like `cat -n`; `offset` and
-  `limit` take a window of lines, and a read that is cut says so. A file that is
-  not UTF-8 is refused ("is not UTF-8 text") rather than returned as mojibake. A `max_bytes` cut that
-  lands inside a multi-byte character drops that character and sets
-  `truncated` (a whole-file read of a valid file stays valid).
-* **`write_file`** creates or replaces, atomically (a sibling temp file, flushed,
-  renamed over the target). Missing parent folders are created.
-* **`edit_file`** replaces the literal `old` with `new`. Without `replace_all` it
-  requires **exactly one** match. Zero occurrences is `not found`; more than one
-  is `invalid input` ("the text to replace appears N times …; add surrounding
-  context … or set \"replace_all\""). It never guesses which occurrence was meant;
-  `replace_all: true` replaces every match. `new` may be empty (a deletion).
-* **`append_file`** appends, creating the file if needed, and refuses an append
-  that would grow the file past 1 MiB rather than truncating it.
-* **`list`** is one directory, sorted by name, with `kind` one of `file`, `dir`,
-  `symlink`, `other` and `size` for files only (`null` otherwise). Names that are
-  not UTF-8 are counted in `skipped`, never mangled.
-* **`search`** is a literal substring search, depth-first in sorted name order
-  (so the same tree gives the same answer). Non-UTF-8 files are skipped and
-  counted. `truncated` is true when any bound — matches, files, bytes, depth, an
-  oversized file, or a line cut to 256 bytes — ended the search early.
+  from another agent. The agent never touches the peer: the hub delivered the
+  message, and the harness only writes it down.
+* **`read`** numbers lines like `cat -n`. A file over 400 lines read without a
+  range returns its outline (top-level definitions, by per-language patterns) and
+  its first 200 lines. A file read again while unchanged, for lines already shown,
+  answers `unchanged_since` with no content. Tracking is per work item.
+* **`edit`** applies each file's edits together or not at all; an `old` that does
+  not occur, or occurs more than once without `replace_all`, refuses that file and
+  says why. A written file is recorded as read, so no re-read is needed to edit on.
+* **`find`** lists files by glob and/or searches their contents by regex, from an
+  index of the workspace that honours `.gitignore` and is rebuilt when a directory
+  changes. **`search`** returns the matches with their context lines.
+* **`run`** is one persistent shell per work item: its directory and exported
+  variables carry from one call to the next, and a command past its timeout kills
+  it. `background: true` starts a job that reports its end in a later result; its
+  output is in `.plaza/jobs/<n>.log`.
+* **`run_tests`** picks the runner from the workspace root (Cargo.toml: cargo
+  test, or nextest when installed; go.mod; pytest.ini or conftest.py; package.json
+  with jest or vitest), runs it through `run`, and parses the failures of cargo
+  test, nextest, go test, pytest, jest and vitest.
 
 ## Notes for the hub side
 
 * The harness holds no secrets. Its sockets are the one to the hub and the egress
   shim's loopback proxy (`src/egress.rs`), which `fetch_url` and `download` go
   through. The file tools are plain `std::fs` calls in the harness process (no
-  shell, no subprocess), confined to `/workspace` by the rules above.
+  shell, no subprocess), confined to `/workspace` by the rules above; `run`
+  is the one tool that starts a process, and it runs as the VM's agent.
 * `conversation` is a **basis** tool, like `echo` and `uptime`: the grant table
   (`TOOL_GRANTS` in `crates/dispatchd/src/roles.rs`) gives it no grant source,
   so a role cannot be refused the message channel by the manifest. A role that can be
@@ -147,6 +150,6 @@ Each tool's `output` is one JSON object (as a string):
 * A tool call is served exactly once per `tool_call` frame. The keepalive session
   has no per-call journal yet, so a `tool_call` redelivered after a reconnect is
   served again — idempotent for `echo`/`uptime`/reads, *not* for appends (a
-  redelivered `append_file` appends twice, and a redelivered `conversation`
+  redelivered `edit` that creates a file writes it again, and a redelivered `conversation`
   writes the message a second time: both are one fsynced line, and neither is
   deduped). The journal is the fleet contract's later slice.

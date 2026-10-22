@@ -1417,7 +1417,7 @@ mod tests {
             let granted = vec!["read".to_string(), "calc".to_string()];
             // An ungranted tool is denied even when a runner exists for it.
             assert!(matches!(
-                decide(&granted, "bash", Some(Runs::Guest)),
+                decide(&granted, "run", Some(Runs::Guest)),
                 Err("not granted to this agent")
             ));
             // A granted guest tool may run in the VM.
@@ -1580,7 +1580,7 @@ mod egress_check_tests {
         remember_tool(9_001, "call-a", "read");
         assert_eq!(take_tool(9_001, "call-a"), "read");
         assert_eq!(take_tool(9_001, "call-a"), "unknown");
-        remember_tool(9_001, "call-b", "bash");
+        remember_tool(9_001, "call-b", "run");
         forget_tools(9_001);
         assert_eq!(take_tool(9_001, "call-b"), "unknown");
     }
@@ -1729,7 +1729,7 @@ mod law_gate_tests {
   forbid tool.call
   principal is Agent
   resource is Tool
-  when resource.name == "read_file"
+  when resource.name == "read"
 }
 "#;
 
@@ -1747,7 +1747,7 @@ mod law_gate_tests {
             let laws = Laws::builtin();
             let granted = crate::tools::offered_names("builder");
             let input = json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
-            let reason = gate_call(&laws, 7, "builder", &granted, "bash", &input).unwrap_err();
+            let reason = gate_call(&laws, 7, "builder", &granted, "run", &input).unwrap_err();
             assert!(
                 reason.starts_with("refused by law ") && reason.contains("C-002b"),
                 "{reason}"
@@ -1764,7 +1764,7 @@ mod law_gate_tests {
                     7,
                     "builder",
                     &granted,
-                    "read_file",
+                    "read",
                     &json!({"path": "a.md"})
                 ),
                 Ok(Runs::Guest)
@@ -1812,12 +1812,11 @@ mod law_gate_tests {
             let mut with_rule = compiled_in();
             with_rule.push(("owner.jhrl".to_string(), OWNER_RULE.to_string()));
             let added = Laws::from_files(with_rule);
-            let reason =
-                gate_call(&added, 7, "builder", &granted, "read_file", &input).unwrap_err();
+            let reason = gate_call(&added, 7, "builder", &granted, "read", &input).unwrap_err();
             assert!(reason.contains("O-001"), "{reason}");
             let removed = Laws::from_files(compiled_in());
             assert_eq!(
-                gate_call(&removed, 7, "builder", &granted, "read_file", &input),
+                gate_call(&removed, 7, "builder", &granted, "read", &input),
                 Ok(Runs::Guest)
             );
         }
@@ -1836,7 +1835,7 @@ mod hold_tests {
         // The harness did not advertise acp (an older one): refused as before.
         assert!(!holds_for_owner(&[], "engine.edit"));
         // Not an engine call, even from an ACP harness: the plaza's own tools behave as they did.
-        assert!(!holds_for_owner(&acp, "write_file"));
+        assert!(!holds_for_owner(&acp, "edit"));
         assert!(!holds_for_owner(&acp, "code_engine"));
     }
 }
@@ -1852,7 +1851,7 @@ mod stream_tests {
             Delta::Text { text: "a".into() },
             Delta::Text { text: "b".into() },
             Delta::ToolUse {
-                name: "read_file".into(),
+                name: "read".into(),
                 index: 1,
                 id: "t1".into(),
             },
@@ -1882,7 +1881,7 @@ mod stream_tests {
             lines,
             vec![
                 json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "text", "text": "ab"}}}),
-                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "tool_use", "name": "read_file", "index": 1, "id": "t1"}}}),
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "tool_use", "name": "read", "index": 1, "id": "t1"}}}),
                 json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "tool_input", "index": 1, "json": "{\"path\": \"x\"}"}}}),
                 json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "block_end", "index": 1}}}),
                 json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "text", "text": "c"}}}),

@@ -194,7 +194,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
     let (noded, gateway) = daemons(&vms);
     // The deploy hooks of the shop's environments (a CI's deploy URL, say).
     let hook = FakeDaemon::serve(|_, _, _| (200, r#"{"queued":true}"#.into()));
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "planner": role("planner", "Planner"),

@@ -680,7 +680,7 @@ mod tests {
         evals.begin("s1", "change", "build", 2);
         evals.hello(501, &["acp".to_string()]);
         evals.tool(501, "read", 30, true);
-        evals.tool(501, "bash", 12, false);
+        evals.tool(501, "run", 12, false);
         let ended = sessions.finish("s1", "the step ended", false, 900).unwrap();
 
         let (begun, vm) = evals.take(&ended);
@@ -759,23 +759,23 @@ mod tests {
         for ms in [10, 40, 20, 30] {
             evals.tool(1, "read", ms, true);
         }
-        evals.tool(2, "bash", 500, false);
+        evals.tool(2, "run", 500, false);
         assert_eq!(
             evals.tool_latency(),
             vec![
-                ToolLatency {
-                    tool: "bash".into(),
-                    calls: 1,
-                    errors: 1,
-                    p50_ms: 500,
-                    p95_ms: 500,
-                },
                 ToolLatency {
                     tool: "read".into(),
                     calls: 4,
                     errors: 0,
                     p50_ms: 20,
                     p95_ms: 40,
+                },
+                ToolLatency {
+                    tool: "run".into(),
+                    calls: 1,
+                    errors: 1,
+                    p50_ms: 500,
+                    p95_ms: 500,
                 },
             ]
         );

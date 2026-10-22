@@ -21,19 +21,25 @@ pub enum Touch {
     Path { path: PathBuf, write: bool },
     /// A shell command in this directory: it may read or write anything under it.
     Command(PathBuf),
+    /// Several of the above, for a call that names more than one file (a `read` of several, an `edit` of several).
+    Many(Vec<Touch>),
     /// A call that names nothing the harness can order: it runs alone, in order.
     Other,
 }
 
 impl Touch {
-    /// Whether the call only reads a path.
+    /// Whether the call only reads paths.
     pub fn reads_only(&self) -> bool {
-        matches!(self, Touch::Path { write: false, .. })
+        match self {
+            Touch::Path { write, .. } => !write,
+            Touch::Many(touches) => !touches.is_empty() && touches.iter().all(Touch::reads_only),
+            Touch::Command(_) | Touch::Other => false,
+        }
     }
 }
 
-/// What the call `name` with `input` touches: the workspace path a file tool names, or the directory a shell command
-/// runs in. A file tool whose path does not resolve touches [`Touch::Other`].
+/// What the call `name` with `input` touches: the workspace paths the call names, or the directory a shell command
+/// runs in. A call whose path does not resolve touches [`Touch::Other`].
 pub fn touch(workspace: &Workspace, name: &str, input: &Value) -> Touch {
     // The call's `path`: required, or the workspace root when it may be absent.
     let at = |optional: bool, write: bool| {
@@ -42,19 +48,55 @@ pub fn touch(workspace: &Workspace, name: &str, input: &Value) -> Touch {
             None | Some(Value::Null) if optional => "",
             _ => return Touch::Other,
         };
-        match workspace.resolve(raw) {
-            Ok((path, _)) => Touch::Path { path, write },
-            Err(_) => Touch::Other,
-        }
+        resolved(workspace, raw, write)
+    };
+    // The `path` of each entry of the array `key`, when there is an array with entries.
+    let entries = |key: &str, write: bool| -> Vec<Touch> {
+        input
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|entry| match entry.get("path").and_then(Value::as_str) {
+                Some(raw) => resolved(workspace, raw, write),
+                None => Touch::Other,
+            })
+            .collect()
     };
     match name {
-        "read_file" => at(false, false),
-        "list" | "search" | "glob" | "grep" => at(true, false),
+        "read" => many(entries("files", false)),
+        "edit" => many([entries("edits", true), entries("create", true)].concat()),
+        "find" | "search" => at(true, false),
         // Code intelligence reads the files it names (its language server only indexes them).
         "symbols" | "definition" | "references" | "diagnostics" | "outline" => at(true, false),
-        "edit_file" | "multi_edit" | "write_file" | "append_file" => at(false, true),
-        "bash" => Touch::Command(workspace.dir().to_path_buf()),
+        // A command runs in its `cwd`, or the workspace root: a `cd` it makes holds for the commands after it.
+        "run" | "run_tests" => match input.get("cwd") {
+            None | Some(Value::Null) => Touch::Command(workspace.dir().to_path_buf()),
+            Some(Value::String(raw)) => match workspace.resolve(raw) {
+                Ok((path, _)) => Touch::Command(path),
+                Err(_) => Touch::Other,
+            },
+            Some(_) => Touch::Other,
+        },
         _ => Touch::Other,
+    }
+}
+
+/// The touch of a workspace path a call names, or [`Touch::Other`] when the path does not resolve.
+fn resolved(workspace: &Workspace, raw: &str, write: bool) -> Touch {
+    match workspace.resolve(raw) {
+        Ok((path, _)) => Touch::Path { path, write },
+        Err(_) => Touch::Other,
+    }
+}
+
+/// The touch of the files a call names: one touch per file. A call that names no file, or one of whose files does not
+/// resolve, touches [`Touch::Other`].
+fn many(touches: Vec<Touch>) -> Touch {
+    if touches.is_empty() || touches.contains(&Touch::Other) {
+        Touch::Other
+    } else {
+        Touch::Many(touches)
     }
 }
 
@@ -62,6 +104,9 @@ pub fn touch(workspace: &Workspace, name: &str, input: &Value) -> Touch {
 pub fn conflicts(a: &Touch, b: &Touch) -> bool {
     match (a, b) {
         (Touch::Other, _) | (_, Touch::Other) => true,
+        (Touch::Many(touches), other) | (other, Touch::Many(touches)) => {
+            touches.iter().any(|touch| conflicts(touch, other))
+        }
         (Touch::Command(dir), Touch::Command(other)) => overlaps(dir, other),
         (Touch::Command(dir), Touch::Path { path, .. })
         | (Touch::Path { path, .. }, Touch::Command(dir)) => overlaps(dir, path),
@@ -278,44 +323,48 @@ mod tests {
         assert_eq!(
             touch(
                 &ws,
-                "edit_file",
-                &json!({"path": "a.txt", "old": "x", "new": "y"})
+                "edit",
+                &json!({"edits": [{"path": "a.txt", "old": "x", "new": "y"}]})
             ),
-            Touch::Path {
+            Touch::Many(vec![Touch::Path {
                 path: file.clone(),
                 write: true
-            }
+            }])
         );
         assert_eq!(
-            touch(&ws, "read_file", &json!({"path": "a.txt"})),
-            Touch::Path {
+            touch(&ws, "read", &json!({"files": [{"path": "a.txt"}]})),
+            Touch::Many(vec![Touch::Path {
                 path: file,
                 write: false
-            }
+            }])
         );
         // A directory tool with no path reads the whole workspace.
         assert_eq!(
-            touch(&ws, "grep", &json!({"pattern": "x"})),
+            touch(&ws, "search", &json!({"pattern": "x"})),
             Touch::Path {
                 path: root,
                 write: false
             }
         );
         assert_eq!(
-            touch(&ws, "definition", &json!({"path": "a.txt", "line": 1, "column": 1})),
+            touch(
+                &ws,
+                "definition",
+                &json!({"path": "a.txt", "line": 1, "column": 1})
+            ),
             Touch::Path {
                 path: ws.resolve("a.txt").expect("a path").0,
                 write: false
             }
         );
         assert_eq!(
-            touch(&ws, "bash", &json!({"command": "ls"})),
+            touch(&ws, "run", &json!({"command": "ls"})),
             Touch::Command(ws.dir().to_path_buf())
         );
         // A file tool without its path, a path outside the workspace, and a tool the harness does not order.
-        assert_eq!(touch(&ws, "read_file", &json!({})), Touch::Other);
+        assert_eq!(touch(&ws, "read", &json!({})), Touch::Other);
         assert_eq!(
-            touch(&ws, "read_file", &json!({"path": "../outside"})),
+            touch(&ws, "read", &json!({"files": [{"path": "../outside"}]})),
             Touch::Other
         );
         assert_eq!(
@@ -331,14 +380,14 @@ mod tests {
         let ahead = feed(
             &mut streamed,
             &ws,
-            call(0, "r1", "read_file", "{\"path\": \"a.txt\"}"),
+            call(0, "r1", "read", "{\"files\": [{\"path\": \"a.txt\"}]}"),
         );
         assert_eq!(
             ahead,
             vec![Whole {
                 id: "r1".into(),
-                name: "read_file".into(),
-                input: json!({"path": "a.txt"}),
+                name: "read".into(),
+                input: json!({"files": [{"path": "a.txt"}]}),
             }]
         );
         assert!(
@@ -348,8 +397,8 @@ mod tests {
                 call(
                     1,
                     "w1",
-                    "edit_file",
-                    "{\"path\": \"a.txt\", \"old\": \"x\", \"new\": \"y\"}"
+                    "edit",
+                    "{\"edits\": [{\"path\": \"a.txt\", \"old\": \"x\", \"new\": \"y\"}]}"
                 ),
             )
             .is_empty()
@@ -367,8 +416,8 @@ mod tests {
                 call(
                     0,
                     "w1",
-                    "edit_file",
-                    "{\"path\": \"a.txt\", \"old\": \"x\", \"new\": \"y\"}"
+                    "edit",
+                    "{\"edits\": [{\"path\": \"a.txt\", \"old\": \"x\", \"new\": \"y\"}]}"
                 ),
             )
             .is_empty()
@@ -378,7 +427,7 @@ mod tests {
             feed(
                 &mut streamed,
                 &ws,
-                call(1, "r1", "read_file", "{\"path\": \"a.txt\"}")
+                call(1, "r1", "read", "{\"files\": [{\"path\": \"a.txt\"}]}")
             )
             .is_empty()
         );
@@ -387,7 +436,7 @@ mod tests {
             feed(
                 &mut streamed,
                 &ws,
-                call(2, "r2", "read_file", "{\"path\": \"b.txt\"}")
+                call(2, "r2", "read", "{\"files\": [{\"path\": \"b.txt\"}]}")
             )
             .iter()
             .map(|whole| whole.id.as_str())
@@ -406,7 +455,7 @@ mod tests {
                 &mut streamed,
                 &ws,
                 vec![Delta::ToolUse {
-                    name: "read_file".into(),
+                    name: "read".into(),
                     index: 0,
                     id: "r0".into(),
                 }],
@@ -417,7 +466,7 @@ mod tests {
             feed(
                 &mut streamed,
                 &ws,
-                call(1, "r1", "read_file", "{\"path\": \"a.txt\"}")
+                call(1, "r1", "read", "{\"files\": [{\"path\": \"a.txt\"}]}")
             )
             .is_empty()
         );
@@ -430,7 +479,7 @@ mod tests {
             feed(
                 &mut Streamed::default(),
                 &ws,
-                call(0, "", "read_file", "{\"path\": \"a.txt\"}")
+                call(0, "", "read", "{\"files\": [{\"path\": \"a.txt\"}]}")
             )
             .is_empty()
         );
@@ -438,7 +487,7 @@ mod tests {
             feed(
                 &mut Streamed::default(),
                 &ws,
-                call(0, "r1", "read_file", "[\"a.txt\"]")
+                call(0, "r1", "read", "[\"a.txt\"]")
             )
             .is_empty()
         );
@@ -446,7 +495,7 @@ mod tests {
             feed(
                 &mut Streamed::default(),
                 &ws,
-                call(0, "r1", "read_file", "{\"path\": \"a.txt\"")
+                call(0, "r1", "read", "{\"path\": \"a.txt\"")
             )
             .is_empty()
         );
@@ -461,29 +510,29 @@ mod tests {
             &ws,
             vec![
                 Delta::ToolUse {
-                    name: "read_file".into(),
+                    name: "read".into(),
                     index: 3,
                     id: "r3".into(),
                 },
                 Delta::ToolInput {
                     index: 3,
-                    json: "{\"path\":".into(),
+                    json: "{\"files\":".into(),
                 },
                 Delta::Text { text: "…".into() },
                 Delta::ToolInput {
                     index: 3,
-                    json: " \"a.txt\"}".into(),
+                    json: " [{\"path\": \"a.txt\"}]}".into(),
                 },
                 Delta::BlockEnd { index: 3 },
             ],
         );
-        assert_eq!(ahead[0].input, json!({"path": "a.txt"}));
+        assert_eq!(ahead[0].input, json!({"files": [{"path": "a.txt"}]}));
         let listing = feed(
             &mut streamed,
             &ws,
             vec![
                 Delta::ToolUse {
-                    name: "list".into(),
+                    name: "find".into(),
                     index: 4,
                     id: "l4".into(),
                 },

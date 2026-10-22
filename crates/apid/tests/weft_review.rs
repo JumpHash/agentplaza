@@ -41,7 +41,7 @@ type Vms = Arc<Mutex<Vec<(u64, String)>>>;
 
 /// The roles the seats run: a builder and a reviewer.
 fn roles() -> Value {
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     json!({ "roles": {
         "builder": role("builder", "Builder"),
         "reviewer": role("reviewer", "Reviewer"),

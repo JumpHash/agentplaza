@@ -74,54 +74,111 @@ pub enum DiffLine {
     Del(String),
 }
 
-/// What a held write would change in its file.
+/// What a held edit would change in one of its files.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileDiff {
+    pub path: String,
+    pub lines: Vec<DiffLine>,
+    /// Says when there was no copy of the file to compare with.
+    pub note: Option<String>,
+}
+
+/// A file a held edit names, with the copy the hub gave of it: its path, and the read or why it failed.
+pub type FileCopy = (String, Result<FileView, String>);
+
+/// What a held write would change in its files.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Preview {
-    /// The file's current text is on its way.
+    /// The files' current text is on its way.
     Loading,
-    /// The file now against the text the write would leave. `note` says when there was no copy to compare with.
-    Diff {
-        path: String,
-        lines: Vec<DiffLine>,
-        note: Option<String>,
-    },
-    /// No diff can be drawn: an edit that does not match the file, or a file that is not text.
+    /// One diff per file the edit names, each against the text the edit would leave there.
+    Diff { files: Vec<FileDiff> },
+    /// No diff can be drawn: an edit that does not match its file, or a file that is not text.
     Unavailable(String),
 }
 
-/// Whether `tool` writes a file the panel can preview.
+/// Whether `tool` writes files the panel can preview: the `edit` tool.
 pub fn is_write(tool: &str) -> bool {
-    matches!(tool, "write_file" | "edit_file" | "append_file")
+    tool == "edit"
 }
 
-/// The file a held write changes, from its input.
-fn write_path(held: &Held) -> Option<String> {
-    held.input
-        .get("path")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-/// The text a held write leaves in its file, given the file's current text. None for a call that is not
-/// a write; `Err` for an edit that does not apply to the file as it is now.
-pub fn proposed(tool: &str, input: &Value, current: &str) -> Option<Result<String, String>> {
-    let text = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
-    match tool {
-        "write_file" => {
-            Some(text("content").ok_or_else(|| "The write has no content.".to_string()))
+/// The files a held edit changes, in the order its call names them: its `create`
+/// entries, then its `edits`.
+fn write_paths(held: &Held) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for key in ["create", "edits"] {
+        for entry in held
+            .input
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(path) = entry.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            if !paths.iter().any(|known| known == path) {
+                paths.push(path.to_string());
+            }
         }
-        "append_file" => Some(
-            text("content")
-                .map(|add| format!("{current}{add}"))
-                .ok_or_else(|| "The append has no content.".to_string()),
-        ),
-        "edit_file" => Some(edit(current, text("old"), text("new"))),
-        _ => None,
     }
+    paths
 }
 
-/// The result of an edit: its old text must occur exactly once in the file.
-fn edit(current: &str, old: Option<String>, new: Option<String>) -> Result<String, String> {
+/// The text a held edit leaves in one of its files, given the file's current text. None for a call that
+/// is not an edit; `Err` for an entry that does not apply to the file as it is now. A `create` replaces the
+/// file's text with its whole content, and the `edits` for that path then apply in order.
+pub fn proposed(
+    tool: &str,
+    input: &Value,
+    path: &str,
+    current: &str,
+) -> Option<Result<String, String>> {
+    if !is_write(tool) {
+        return None;
+    }
+    let mut text = current.to_string();
+    if let Some(create) = path_entries(input, "create", path).last() {
+        match create.get("content").and_then(Value::as_str) {
+            Some(content) => text = content.to_string(),
+            None => return Some(Err("The write has no content.".to_string())),
+        }
+    }
+    for entry in path_entries(input, "edits", path) {
+        let part = |key: &str| entry.get(key).and_then(Value::as_str).map(str::to_string);
+        let replace_all = entry
+            .get("replace_all")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        match edit(&text, part("old"), part("new"), replace_all) {
+            Ok(next) => text = next,
+            Err(reason) => return Some(Err(reason)),
+        }
+    }
+    Some(Ok(text))
+}
+
+/// The entries of an edit's `key` list (`create` or `edits`) that name `path`, in call order.
+fn path_entries<'a>(input: &'a Value, key: &str, path: &str) -> Vec<&'a Value> {
+    input
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|entry| entry.get("path").and_then(Value::as_str) == Some(path))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The result of an edit: its old text must occur exactly once in the file, unless the edit replaces all.
+fn edit(
+    current: &str,
+    old: Option<String>,
+    new: Option<String>,
+    replace_all: bool,
+) -> Result<String, String> {
     let (Some(old), Some(new)) = (old, new) else {
         return Err("The edit has no old or new text.".to_string());
     };
@@ -131,6 +188,7 @@ fn edit(current: &str, old: Option<String>, new: Option<String>) -> Result<Strin
     match current.matches(&old).count() {
         0 => Err("The text to replace is not in the file.".to_string()),
         1 => Ok(current.replacen(&old, &new, 1)),
+        _ if replace_all => Ok(current.replace(&old, &new)),
         n => Err(format!(
             "The text to replace occurs {n} times; an edit needs exactly one match."
         )),
@@ -203,34 +261,44 @@ fn pending_for(list: &Value, cid: u64) -> Vec<Held> {
         .unwrap_or_default()
 }
 
-/// The preview of a held write, from the file's copy the hub gave (`res`).
-fn preview_of(held: &Held, res: Result<FileView, String>) -> Preview {
-    let path = write_path(held).unwrap_or_default();
-    let (current, note) = match res {
-        Ok(file) => match file.text {
-            Some(text) => (text, None),
-            None => {
-                return Preview::Unavailable(
-                    "The file is not text, so it has no diff.".to_string(),
-                );
-            }
-        },
-        Err(e) => (
-            String::new(),
-            Some(format!(
-                "No readable copy of the file ({e}); the diff shows the whole text as new."
-            )),
-        ),
+/// The preview of a held edit, from the copies the hub gave of each file it names (`copies`).
+fn preview_of(held: &Held, copies: Result<Vec<FileCopy>, String>) -> Preview {
+    let copies = match copies {
+        Ok(copies) => copies,
+        Err(e) => return Preview::Unavailable(e),
     };
-    match proposed(&held.tool, &held.input, &current) {
-        Some(Ok(text)) => Preview::Diff {
-            path,
-            lines: line_diff(&current, &text),
-            note,
-        },
-        Some(Err(e)) => Preview::Unavailable(e),
-        None => Preview::Unavailable("This call does not write a file.".to_string()),
+    let mut files = Vec::new();
+    for (path, res) in copies {
+        let (current, note) = match res {
+            Ok(file) => match file.text {
+                Some(text) => (text, None),
+                None => {
+                    return Preview::Unavailable(
+                        "The file is not text, so it has no diff.".to_string(),
+                    );
+                }
+            },
+            Err(e) => (
+                String::new(),
+                Some(format!(
+                    "No readable copy of the file ({e}); the diff shows the whole text as new."
+                )),
+            ),
+        };
+        match proposed(&held.tool, &held.input, &path, &current) {
+            Some(Ok(text)) => files.push(FileDiff {
+                path,
+                lines: line_diff(&current, &text),
+                note,
+            }),
+            Some(Err(e)) => return Preview::Unavailable(e),
+            None => return Preview::Unavailable("This call does not write a file.".to_string()),
+        }
     }
+    if files.is_empty() {
+        return Preview::Unavailable("This call does not write a file.".to_string());
+    }
+    Preview::Diff { files }
 }
 
 // ---- Run --------------------------------------------------------------------------------------
@@ -466,11 +534,11 @@ pub enum Msg {
         ws: String,
         res: Result<Value, String>,
     },
-    /// The file a held write changes, as the hub reads it now.
+    /// The files a held edit changes, as the hub reads them now.
     Current {
         ws: String,
         id: String,
-        res: Result<FileView, String>,
+        res: Result<Vec<FileCopy>, String>,
     },
     Reason(String, String),
     Decide {
@@ -571,13 +639,21 @@ pub fn approvals_task(client: &Client, ws: &WorkspaceId) -> Task<Msg> {
     )
 }
 
-fn file_task(client: &Client, ws: &WorkspaceId, id: String, path: String) -> Task<Msg> {
+fn file_task(client: &Client, ws: &WorkspaceId, id: String, paths: Vec<String>) -> Task<Msg> {
     let c = client.clone();
     let w = ws.clone();
     let key = ws.to_string();
     let shown_id = id.clone();
     client::task(
-        move || ide::fetch_file(&c, &w, &path),
+        move || {
+            Ok(paths
+                .into_iter()
+                .map(|path| {
+                    let res = ide::fetch_file(&c, &w, &path);
+                    (path, res)
+                })
+                .collect::<Vec<FileCopy>>())
+        },
         move |res| Msg::Current {
             ws: key.clone(),
             id: shown_id.clone(),
@@ -792,16 +868,17 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
                     st.previews
                         .retain(|id, _| st.held.iter().any(|h| &h.id == id));
                     // Each held write reads its file now, for its diff.
-                    let jobs: Vec<(String, String)> = st
+                    let jobs: Vec<(String, Vec<String>)> = st
                         .held
                         .iter()
                         .filter(|h| is_write(&h.tool))
-                        .filter_map(|h| write_path(h).map(|path| (h.id.clone(), path)))
+                        .map(|h| (h.id.clone(), write_paths(h)))
+                        .filter(|(_, paths)| !paths.is_empty())
                         .collect();
                     let mut tasks = Vec::new();
-                    for (id, path) in jobs {
+                    for (id, paths) in jobs {
                         st.previews.insert(id.clone(), Preview::Loading);
-                        tasks.push(file_task(client, ws, id, path));
+                        tasks.push(file_task(client, ws, id, paths));
                     }
                     Task::batch(tasks)
                 }
@@ -985,11 +1062,15 @@ fn held_card<'a>(st: &'a State, held: &'a Held) -> Element<'a, Msg> {
     let busy = st.busy.contains(&held.id);
     let detail: Element<'a, Msg> = match st.previews.get(&held.id) {
         Some(Preview::Loading) => ui::faint("Reading the file…").into(),
-        Some(Preview::Diff { path, lines, note }) => column![
-            ui::mono(path.as_str(), 11.5, p.ink_2),
-            diff_view(lines, note.as_deref())
-        ]
-        .spacing(6)
+        Some(Preview::Diff { files }) => column(files.iter().map(|file| {
+            column![
+                ui::mono(file.path.as_str(), 11.5, p.ink_2),
+                diff_view(&file.lines, file.note.as_deref())
+            ]
+            .spacing(6)
+            .into()
+        }))
+        .spacing(10)
         .into(),
         Some(Preview::Unavailable(message)) => ui::faint(message.as_str()).into(),
         None => {
@@ -1344,54 +1425,80 @@ mod tests {
 
     #[test]
     fn a_write_previews_its_content_and_an_edit_needs_one_match() {
-        let write = json!({"path": "a.txt", "content": "new\n"});
+        let create = json!({"create": [{"path": "a.txt", "content": "new\n"}]});
         assert_eq!(
-            proposed("write_file", &write, "old\n"),
+            proposed("edit", &create, "a.txt", "old\n"),
             Some(Ok("new\n".to_string()))
         );
-        let append = json!({"path": "a.txt", "content": "more\n"});
+        let edit_ok = json!({"edits": [{"path": "a.txt", "old": "two", "new": "2"}]});
         assert_eq!(
-            proposed("append_file", &append, "one\n"),
-            Some(Ok("one\nmore\n".to_string()))
-        );
-        let edit_ok = json!({"path": "a.txt", "old": "two", "new": "2"});
-        assert_eq!(
-            proposed("edit_file", &edit_ok, "one two three\n"),
+            proposed("edit", &edit_ok, "a.txt", "one two three\n"),
             Some(Ok("one 2 three\n".to_string()))
         );
         assert!(
-            proposed("edit_file", &edit_ok, "nothing here\n")
+            proposed("edit", &edit_ok, "a.txt", "nothing here\n")
                 .unwrap()
                 .is_err()
         );
         assert!(
             proposed(
-                "edit_file",
-                &json!({"path": "a", "old": "a", "new": "b"}),
+                "edit",
+                &json!({"edits": [{"path": "a", "old": "a", "new": "b"}]}),
+                "a",
                 "a a\n"
             )
             .unwrap()
             .is_err()
         );
+        let all = json!({"edits": [{"path": "a", "old": "a", "new": "b", "replace_all": true}]});
         assert_eq!(
-            proposed("bash", &json!({}), ""),
+            proposed("edit", &all, "a", "a a\n"),
+            Some(Ok("b b\n".to_string()))
+        );
+        assert_eq!(
+            proposed("run", &json!({"command": "ls"}), "a.txt", ""),
             None,
-            "a call that is not a write has no preview"
+            "a call that is not an edit has no preview"
+        );
+    }
+
+    #[test]
+    fn an_edit_previews_each_file_it_names() {
+        let call = json!({
+            "create": [{"path": "b.txt", "content": "x\n"}],
+            "edits": [
+                {"path": "a.txt", "old": "one", "new": "1"},
+                {"path": "a.txt", "old": "two", "new": "2"},
+            ],
+        });
+        let held = Held {
+            id: "h1".to_string(),
+            tool: "edit".to_string(),
+            input: call,
+        };
+        assert_eq!(write_paths(&held), vec!["b.txt", "a.txt"]);
+        assert_eq!(
+            proposed("edit", &held.input, "a.txt", "one two\n"),
+            Some(Ok("1 2\n".to_string()))
+        );
+        assert_eq!(
+            proposed("edit", &held.input, "b.txt", "old\n"),
+            Some(Ok("x\n".to_string()))
         );
     }
 
     #[test]
     fn the_pending_list_keeps_this_agents_tool_calls() {
         let list = json!([
-            {"id": "a1", "cid": 7, "state": "pending", "tool": "write_file", "input": {"path": "x"}},
-            {"id": "a2", "cid": 8, "state": "pending", "tool": "bash", "input": {}},
-            {"id": "a3", "cid": 7, "state": "approved", "tool": "bash", "input": {}},
+            {"id": "a1", "cid": 7, "state": "pending", "tool": "edit", "input": {"create": [{"path": "x"}]}},
+            {"id": "a2", "cid": 8, "state": "pending", "tool": "run", "input": {}},
+            {"id": "a3", "cid": 7, "state": "approved", "tool": "run", "input": {}},
             {"id": "a4", "cid": 7, "state": "pending", "kind": "payment", "tool": "", "input": {}},
         ]);
         let held = pending_for(&list, 7);
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].id, "a1");
-        assert_eq!(held[0].tool, "write_file");
+        assert_eq!(held[0].tool, "edit");
     }
 
     #[test]

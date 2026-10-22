@@ -108,7 +108,7 @@ fn a_message_from_an_agent_that_never_said_hello_is_refused() {
     let reply = message(
         &hub,
         cid,
-        json!({ "type": "tool_request", "work": 1, "call": "toolu_0", "name": "bash", "input": {} }),
+        json!({ "type": "tool_request", "work": 1, "call": "toolu_0", "name": "run", "input": {} }),
     );
     assert_eq!(reply["reply"]["type"], "tool_decision", "{reply}");
     assert_eq!(reply["reply"]["decision"], "deny", "{reply}");
@@ -123,7 +123,7 @@ fn a_message_from_an_agent_that_never_said_hello_is_refused() {
 fn each_guest_message_type_is_answered() {
     let (noded, gateway) = daemons();
     let roles = json!({ "roles": {
-        "planner": { "role": "planner", "title": "Planner", "tools": ["bash", "read_file"] },
+        "planner": { "role": "planner", "title": "Planner", "tools": ["run", "read"] },
     } });
     let scratch = Scratch::new("internal-messages");
     let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
@@ -167,7 +167,7 @@ fn each_guest_message_type_is_answered() {
     let reply = message(
         &hub,
         PLANNER,
-        json!({ "type": "tool_request", "work": 1, "call": "toolu_2", "name": "bash", "input": {} }),
+        json!({ "type": "tool_request", "work": 1, "call": "toolu_2", "name": "run", "input": {} }),
     );
     assert_eq!(reply["reply"]["type"], "tool_decision", "{reply}");
     assert_eq!(reply["reply"]["call"], "toolu_2", "{reply}");
@@ -283,8 +283,8 @@ fn a_turn_is_one_batch_decided_as_each_of_its_calls_would_be() {
     // The five calls of one turn: decided one request at a time, then as one batch. The batch answers once, with the
     // same decision for each call, in the calls' order.
     let calls = [
-        ("toolu_b1", "bash", json!({"command": "ls"})),
-        ("toolu_b2", "read_file", json!({"path": "a.txt"})),
+        ("toolu_b1", "run", json!({"command": "ls"})),
+        ("toolu_b2", "read", json!({"path": "a.txt"})),
         ("toolu_b3", "search", json!({"pattern": "x"})),
         ("toolu_b4", "plaza_tasks", json!({})),
         ("toolu_b5", "no_such_tool", json!({})),
@@ -351,7 +351,7 @@ fn a_session_starts_with_its_policy_and_a_report_outside_it_is_a_violation() {
             .as_array()
             .is_some_and(|allow| allow.iter().any(|t| t == tool))
     };
-    assert!(allowed("read_file") && !allowed("bash"), "{body}");
+    assert!(allowed("read") && !allowed("run"), "{body}");
     assert_eq!(text(&policy["id"]).len(), 64, "{body}");
     assert!(!text(&policy["signature"]).is_empty(), "{body}");
     let id = text(&policy["id"]);
@@ -363,7 +363,7 @@ fn a_session_starts_with_its_policy_and_a_report_outside_it_is_a_violation() {
         cid,
         json!({
             "type": "tool_report", "work": 1, "call": "toolu_p1", "ok": true, "output": "ran",
-            "policy": id, "name": "bash", "input": {"command": "ls"},
+            "policy": id, "name": "run", "input": {"command": "ls"},
         }),
     );
     assert!(reply["reply"].is_null(), "{reply}");
@@ -379,7 +379,7 @@ fn a_session_starts_with_its_policy_and_a_report_outside_it_is_a_violation() {
         "{transcript}"
     );
     assert!(
-        mentions(&transcript, "policy violation: bash ran under policy"),
+        mentions(&transcript, "policy violation: run ran under policy"),
         "{transcript}"
     );
 
@@ -389,14 +389,14 @@ fn a_session_starts_with_its_policy_and_a_report_outside_it_is_a_violation() {
         cid,
         json!({
             "type": "tool_report", "work": 1, "call": "toolu_p2", "ok": true, "output": "ran",
-            "policy": "not-issued", "name": "glob", "input": {},
+            "policy": "not-issued", "name": "find", "input": {},
         }),
     );
     let (_, transcript) = hub.call("GET", &format!("/v1/agents/{cid}/transcript"), None);
     assert!(
         mentions(
             &transcript,
-            "glob was decided under policy not-issued, which the hub never issued"
+            "find was decided under policy not-issued, which the hub never issued"
         ),
         "{transcript}"
     );

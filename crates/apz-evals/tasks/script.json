@@ -2,21 +2,29 @@
   "fix-test": {
     "builder": [
       {
-        "name": "read_file",
+        "name": "read",
         "input": {
-          "path": "src/lib.rs"
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
         }
       },
       {
-        "name": "edit_file",
+        "name": "edit",
         "input": {
-          "path": "src/lib.rs",
-          "old": "a - b",
-          "new": "a + b"
+          "edits": [
+            {
+              "path": "src/lib.rs",
+              "old": "a - b",
+              "new": "a + b"
+            }
+          ]
         }
       },
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "rustc --edition 2021 --test src/lib.rs -o /tmp/apz-builder-check && /tmp/apz-builder-check"
         }
@@ -27,7 +35,7 @@
     ],
     "reviewer": [
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check"
         }
@@ -48,20 +56,28 @@
   "add-function": {
     "builder": [
       {
-        "name": "read_file",
+        "name": "read",
         "input": {
-          "path": "src/lib.rs"
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
         }
       },
       {
-        "name": "write_file",
+        "name": "edit",
         "input": {
-          "path": "src/lib.rs",
-          "content": "pub fn sub(a: i32, b: i32) -> i32 {\n    a - b\n}\n\npub fn mul(a: i32, b: i32) -> i32 {\n    a * b\n}\n\n#[cfg(test)]\nmod tests {\n    use super::{mul, sub};\n\n    #[test]\n    fn sub_subtracts() {\n        assert_eq!(sub(5, 3), 2);\n    }\n\n    #[test]\n    fn mul_multiplies() {\n        assert_eq!(mul(3, 4), 12);\n    }\n}\n"
+          "create": [
+            {
+              "path": "src/lib.rs",
+              "content": "pub fn sub(a: i32, b: i32) -> i32 {\n    a - b\n}\n\npub fn mul(a: i32, b: i32) -> i32 {\n    a * b\n}\n\n#[cfg(test)]\nmod tests {\n    use super::{mul, sub};\n\n    #[test]\n    fn sub_subtracts() {\n        assert_eq!(sub(5, 3), 2);\n    }\n\n    #[test]\n    fn mul_multiplies() {\n        assert_eq!(mul(3, 4), 12);\n    }\n}\n"
+            }
+          ]
         }
       },
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "rustc --edition 2021 --test src/lib.rs -o /tmp/apz-builder-check && /tmp/apz-builder-check"
         }
@@ -72,7 +88,7 @@
     ],
     "reviewer": [
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "grep -q 'pub fn mul(' src/lib.rs && rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check tests::mul_multiplies --exact"
         }
@@ -93,45 +109,65 @@
   "rename-symbol": {
     "builder": [
       {
-        "name": "read_file",
+        "name": "read",
         "input": {
-          "path": "src/lib.rs"
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
         }
       },
       {
-        "name": "edit_file",
+        "name": "edit",
         "input": {
-          "path": "src/lib.rs",
-          "old": "pub fn compute_total(",
-          "new": "pub fn sum_total("
+          "edits": [
+            {
+              "path": "src/lib.rs",
+              "old": "pub fn compute_total(",
+              "new": "pub fn sum_total("
+            }
+          ]
         }
       },
       {
-        "name": "edit_file",
+        "name": "edit",
         "input": {
-          "path": "src/lib.rs",
-          "old": "use super::compute_total;",
-          "new": "use super::sum_total;"
+          "edits": [
+            {
+              "path": "src/lib.rs",
+              "old": "use super::compute_total;",
+              "new": "use super::sum_total;"
+            }
+          ]
         }
       },
       {
-        "name": "edit_file",
+        "name": "edit",
         "input": {
-          "path": "src/lib.rs",
-          "old": "compute_total(&[1, 2, 3])",
-          "new": "sum_total(&[1, 2, 3])"
+          "edits": [
+            {
+              "path": "src/lib.rs",
+              "old": "compute_total(&[1, 2, 3])",
+              "new": "sum_total(&[1, 2, 3])"
+            }
+          ]
         }
       },
       {
-        "name": "edit_file",
+        "name": "edit",
         "input": {
-          "path": "README.md",
-          "old": "compute_total",
-          "new": "sum_total"
+          "edits": [
+            {
+              "path": "README.md",
+              "old": "compute_total",
+              "new": "sum_total"
+            }
+          ]
         }
       },
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "! grep -rq compute_total . && echo renamed"
         }
@@ -142,7 +178,7 @@
     ],
     "reviewer": [
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "! grep -rq compute_total . && rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check"
         }
@@ -163,17 +199,25 @@
   "fix-typo": {
     "builder": [
       {
-        "name": "read_file",
+        "name": "read",
         "input": {
-          "path": "README.md"
+          "files": [
+            {
+              "path": "README.md"
+            }
+          ]
         }
       },
       {
-        "name": "edit_file",
+        "name": "edit",
         "input": {
-          "path": "README.md",
-          "old": "recieve",
-          "new": "receive"
+          "edits": [
+            {
+              "path": "README.md",
+              "old": "recieve",
+              "new": "receive"
+            }
+          ]
         }
       },
       {
@@ -182,7 +226,7 @@
     ],
     "reviewer": [
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "grep -q 'receive' README.md && ! grep -q 'recieve' README.md"
         }
@@ -203,22 +247,34 @@
   "answer-question": {
     "builder": [
       {
-        "name": "read_file",
+        "name": "read",
         "input": {
-          "path": "QUESTION.md"
+          "files": [
+            {
+              "path": "QUESTION.md"
+            }
+          ]
         }
       },
       {
-        "name": "read_file",
+        "name": "read",
         "input": {
-          "path": "src/lib.rs"
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
         }
       },
       {
-        "name": "write_file",
+        "name": "edit",
         "input": {
-          "path": "ANSWER.txt",
-          "content": "3\n"
+          "create": [
+            {
+              "path": "ANSWER.txt",
+              "content": "3\n"
+            }
+          ]
         }
       },
       {
@@ -227,7 +283,7 @@
     ],
     "reviewer": [
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "[ \"$(tr -d ' \\n' < ANSWER.txt)\" = 3 ]"
         }
@@ -248,16 +304,20 @@
   "survey": {
     "builder": [
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "grep -rn TODO src | wc -l"
         }
       },
       {
-        "name": "write_file",
+        "name": "edit",
         "input": {
-          "path": "SURVEY.txt",
-          "content": "4\n"
+          "create": [
+            {
+              "path": "SURVEY.txt",
+              "content": "4\n"
+            }
+          ]
         }
       },
       {
@@ -266,7 +326,7 @@
     ],
     "reviewer": [
       {
-        "name": "bash",
+        "name": "run",
         "input": {
           "command": "grep -rn TODO src | wc -l"
         }

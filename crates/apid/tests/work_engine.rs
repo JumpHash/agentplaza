@@ -129,7 +129,7 @@ fn sessions(hub: &Hub, task: &str) -> Vec<Value> {
 fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_raises_it() {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "builder": role("builder", "Builder"),
@@ -317,7 +317,7 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         "call": "toolu_9",
         "ok": true,
         "output": "ok",
-        "name": "bash",
+        "name": "run",
         "input": { "command": "true" },
         "duration_ms": 30,
     });
@@ -326,7 +326,7 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
     let (_, tools) = hub.call("GET", "/v1/evals/tools", None);
     assert_eq!(
         tools,
-        json!([{ "tool": "bash", "calls": 1, "errors": 0, "p50_ms": 30, "p95_ms": 30 }]),
+        json!([{ "tool": "run", "calls": 1, "errors": 0, "p50_ms": 30, "p95_ms": 30 }]),
         "the hub keeps the tool's duration"
     );
 
@@ -474,7 +474,8 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
 fn a_second_session_on_a_task_starts_from_the_journal_and_the_handover_its_builder_left() {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "builder": role("builder", "Builder"),
@@ -655,7 +656,7 @@ const ORCHESTRATOR: u64 = 109;
 fn the_main_orchestrator_and_a_projects_planner_are_long_sessions_their_chats_talk_to() {
     let vms: Vms = Arc::new(Mutex::new(vec![(ORCHESTRATOR, "orchestrator".to_string())]));
     let (noded, gateway) = daemons(&vms);
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "planner": role("planner", "Planner"),
@@ -783,7 +784,7 @@ fn a_vm_with_no_session_spends_from_the_plazas_own_budget() {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
     let roles = json!({ "roles": {
-        "builder": { "role": "builder", "title": "Builder", "tools": ["bash", "read_file"] },
+        "builder": { "role": "builder", "title": "Builder", "tools": ["run", "read"] },
     } });
     let scratch = Scratch::new("work-engine-no-session");
     let no_weft = scratch.0.join("no-weft");

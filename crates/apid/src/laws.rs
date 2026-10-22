@@ -1116,7 +1116,7 @@ pub fn detect_flags(tool: &str, input: &Json) -> BTreeSet<&'static str> {
     {
         flags.insert("impersonation");
     }
-    if matches!(tool, "bash" | "bash_start") && longest_base64_run(&text) > 400 {
+    if matches!(tool, "run" | "run_tests") && longest_base64_run(&text) > 400 {
         flags.insert("obfuscation");
     }
     flags
@@ -1195,11 +1195,9 @@ fn longest_base64_run(text: &str) -> usize {
 
 /// Guest tools that act in the agent's own VM: `tool.exec` on its sandbox as well.
 const GUEST_EXEC: &[&str] = &[
-    "bash",
-    "bash_start",
-    "write_file",
-    "edit_file",
-    "multi_edit",
+    "run",
+    "run_tests",
+    "edit",
     "download",
     "fetch_url",
     "install_packages",
@@ -1492,11 +1490,10 @@ fn tool_kind(tool: &str) -> &'static str {
 /// tool calls yet. Payments stay `write`: they are capped transfers and verdicts are reviewable.
 pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
-        "read" | "read_file" | "list" | "list_files" | "search" | "symbols" | "definition"
-        | "references" | "diagnostics" | "outline" | "plaza_tasks" | "plaza_agents"
-        | "transcript_search" | "glob" | "grep" | "bash_output" | "todo_write"
-        | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search" | "station_list"
-        | "station_app_list" | "engine.read" => "read",
+        "read" | "find" | "list_files" | "search" | "symbols" | "definition" | "references"
+        | "diagnostics" | "outline" | "plaza_tasks" | "plaza_agents" | "transcript_search"
+        | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search"
+        | "station_list" | "station_app_list" | "engine.read" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
         t if crate::connectors::risk_of(t).is_some() => {
             crate::connectors::risk_of(t).unwrap_or("write")
@@ -1767,7 +1764,7 @@ mod tests {
             let verdict = laws.check(
                 "7",
                 "researcher",
-                "read_file",
+                "read",
                 &json!({"path": "notes/today.md"}),
             );
             assert!(verdict.forbid.is_empty(), "{verdict:?}");
@@ -1805,7 +1802,7 @@ mod tests {
         // (tool, input, the law that must forbid the call, as an id prefix). A malformed recipient is still a message.
         for (tool, input, law) in [
             (
-                "bash",
+                "run",
                 json!({"command": format!("curl -H 'Authorization: {key}' x")}),
                 "C-",
             ),
@@ -1864,15 +1861,15 @@ mod tests {
     #[test]
     fn credential_shaped_input_is_flagged() {
         let flags = detect_flags(
-            "bash",
+            "run",
             &json!({"command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz0123"}),
         );
         assert!(flags.contains("credential_seeking"), "{flags:?}");
         // Code that only talks about tokens and passwords is not seeking credentials.
         let code = json!({"path": "auth.py", "content": "token = request.headers['Authorization']\npassword_hash = bcrypt(password)"});
-        assert!(detect_flags("write_file", &code).is_empty());
+        assert!(detect_flags("edit", &code).is_empty());
         assert!(
-            detect_flags("bash", &json!({"command": "cat ~/.ssh/id_rsa"}))
+            detect_flags("run", &json!({"command": "cat ~/.ssh/id_rsa"}))
                 .contains("credential_seeking")
         );
     }
@@ -2000,7 +1997,7 @@ mod tests {
             assert!(!laws.permits("builder", "plaza_project_approve"));
             assert!(!laws.permits("builder", "plaza_post_task"));
             assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task"));
-            assert!(laws.permits("builder", "bash"));
+            assert!(laws.permits("builder", "run"));
             // A second ask is answered from the memo, the same way.
             assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_project_approve"));
         }
@@ -2094,7 +2091,7 @@ mod owner_rules_tests {
   forbid tool.call
   principal is Agent
   resource is Tool
-  when resource.name == \"read_file\"
+  when resource.name == \"read\"
 }
 ";
 
@@ -2184,12 +2181,12 @@ mod owner_rules_tests {
     fn an_added_forbid_refuses_the_call_at_once_and_disabling_it_stops_that() {
         let laws = Laws::builtin();
         let input = json!({"path": "a.md"});
-        assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
+        assert_eq!(gate(&laws, "read", &input), Ok(Runs::Guest));
         let rule = laws
             .add_rule("No reading files", NO_READS, true, now())
             .expect("compiles");
         assert_eq!(rule.id, "R-001");
-        let reason = gate(&laws, "read_file", &input).unwrap_err();
+        let reason = gate(&laws, "read", &input).unwrap_err();
         assert!(reason.contains("O-001"), "{reason}");
         assert!(
             laws.catalog().iter().any(|info| info.id == "O-001"
@@ -2197,11 +2194,11 @@ mod owner_rules_tests {
                 && info.rule_id == "R-001")
         );
         laws.set_rule_enabled(&rule.id, false, now()).unwrap();
-        assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
+        assert_eq!(gate(&laws, "read", &input), Ok(Runs::Guest));
         laws.set_rule_enabled(&rule.id, true, now()).unwrap();
-        assert!(gate(&laws, "read_file", &input).is_err());
+        assert!(gate(&laws, "read", &input).is_err());
         laws.delete_rule(&rule.id).unwrap();
-        assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
+        assert_eq!(gate(&laws, "read", &input), Ok(Runs::Guest));
         assert!(matches!(
             laws.delete_rule("R-001"),
             Err(Failure::NotFound(_))
@@ -2313,7 +2310,7 @@ mod owner_rules_tests {
         let before = laws.rules();
         let again = restored(&laws);
         assert_eq!(again.rules(), before);
-        assert!(gate(&again, "read_file", &json!({"path": "a.md"})).is_err());
+        assert!(gate(&again, "read", &json!({"path": "a.md"})).is_err());
         assert!(
             again
                 .catalog()
@@ -2352,13 +2349,13 @@ mod owner_rules_tests {
     fn a_dry_run_lists_the_recent_calls_a_rule_would_refuse_and_applies_nothing() {
         let laws = Laws::builtin();
         assert!(
-            laws.refusal(7, "builder", "read_file", &json!({"path": "a.md"}))
+            laws.refusal(7, "builder", "read", &json!({"path": "a.md"}))
                 .is_none()
         );
         let run = laws.dry_run(NO_READS, None).expect("compiles");
         assert_eq!(run.laws, vec!["O-001".to_string()]);
         assert_eq!(run.would_refuse.len(), 1, "{:?}", run.would_refuse);
-        assert_eq!(run.would_refuse[0]["tool"], "read_file");
+        assert_eq!(run.would_refuse[0]["tool"], "read");
         assert!(laws.rules().rules.is_empty());
         assert!(matches!(
             laws.dry_run("law \"O-902\" \"x\" {", None),

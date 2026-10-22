@@ -1,12 +1,12 @@
-//! The `bash` tool: one shell command in the workspace; and `install_packages`,
-//! which installs system packages in the VM with apk (as root, in the VM only).
+//! The shell commands the harness runs itself: [`execute`], which runs a program to its end with its output
+//! captured and capped, and `install_packages`, which installs system packages in the VM with apk (as root, in
+//! the VM only). The agent's own shell tool is [`crate::v2::run`], which runs on [`command`] and [`environment`].
 //!
 //! `/bin/sh -c <command>` runs in the workspace root with a cleared environment
 //! (`HOME` the workspace, `PATH` the system bins), stdin closed and its own
 //! process group. A root guest drops to uid and gid 1000 first. A coding engine's
 //! process (see [`Privilege::Engine`]) runs as `apz-engine`, uid and gid 1100, with
-//! its own home, so Unix permissions bound what the engine's own tools can do. Stdout
-//! and stderr are captured together and capped; the result ends with `exit <code>`.
+//! its own home, so Unix permissions bound what the engine's own tools can do.
 //!
 //! A command that outlives its timeout is killed with its whole process group (the
 //! shell and everything it started), through kill(1) since the crate forbids `unsafe`.
@@ -28,8 +28,6 @@ use serde_json::Value;
 use crate::files::Workspace;
 use crate::trust;
 
-const DEFAULT_TIMEOUT_S: u64 = 60;
-const MAX_TIMEOUT_S: u64 = 300;
 pub(crate) const SHELL: &str = "/bin/sh";
 /// The agent's PATH: the system bins, then what it installs for itself (pip
 /// `--user`, `go install`, npm's global prefix under its home).
@@ -63,34 +61,6 @@ const EXIT_RESERVE: usize = 256;
 const POLL: Duration = Duration::from_millis(20);
 /// How long the output is awaited once the shell is gone.
 const DRAIN: Duration = Duration::from_millis(500);
-
-/// Runs `input`'s `command` in the workspace. `Ok` when it exits 0; otherwise
-/// `Err` with the output and the status, so a failure is data the model can act
-/// on and counts toward the stuck check.
-pub fn run(workspace: &Workspace, input: &Value) -> Result<String, String> {
-    let script = match input.get("command").and_then(Value::as_str) {
-        Some(script) if !script.trim().is_empty() => script,
-        _ => return Err("invalid input: \"command\" must be a non-empty string".to_string()),
-    };
-    let timeout_s = match input.get("timeout_s") {
-        None | Some(Value::Null) => DEFAULT_TIMEOUT_S,
-        Some(value) => value
-            .as_u64()
-            .filter(|secs| *secs >= 1)
-            .ok_or_else(|| {
-                "invalid input: \"timeout_s\" must be a whole number of seconds".to_string()
-            })?
-            .min(MAX_TIMEOUT_S),
-    };
-
-    execute(
-        workspace.dir(),
-        SHELL,
-        &["-c", script],
-        timeout_s,
-        Privilege::Agent,
-    )
-}
 
 /// `install_packages`: installs system packages in this VM with Alpine's apk,
 /// as root — inside the agent's own VM only; the host is never touched. Names
@@ -505,7 +475,6 @@ pub(crate) fn group_alive(child: &mut std::process::Child) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn scratch(name: &str) -> Workspace {
         let dir =
@@ -513,17 +482,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch workspace");
         Workspace::at(dir)
-    }
-
-    #[test]
-    fn a_command_runs_in_the_workspace_with_a_clean_environment() {
-        let workspace = scratch("env");
-        let script = "echo \"$HOME\"; echo \"$PATH\"; cat; echo hi";
-        let output = run(&workspace, &json!({ "command": script })).expect("exit 0");
-        assert_eq!(
-            output,
-            format!("{}\n{AGENT_PATH}\nhi\nexit 0", workspace.dir().display())
-        );
     }
 
     #[test]
@@ -569,49 +527,6 @@ mod tests {
             );
             assert_eq!(env["HTTPS_PROXY"], PROXY_URL, "the proxy stays set");
         }
-    }
-
-    #[test]
-    fn a_nonzero_exit_is_an_error_that_carries_its_status() {
-        let workspace = scratch("exit");
-        let err = run(&workspace, &json!({ "command": "echo bye; exit 3" })).expect_err("exit 3");
-        assert_eq!(err, "bye\nexit 3");
-    }
-
-    #[test]
-    fn a_command_past_its_timeout_is_killed() {
-        let workspace = scratch("timeout");
-        let started = Instant::now();
-        let err = run(
-            &workspace,
-            &json!({ "command": "sleep 30", "timeout_s": 1 }),
-        )
-        .expect_err("timed out");
-        assert!(
-            err.ends_with("[timed out after 1 s; the shell was killed]"),
-            "{err}"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "{:?}",
-            started.elapsed()
-        );
-    }
-
-    #[test]
-    fn the_output_is_capped_to_the_tool_limit() {
-        let workspace = scratch("cap");
-        let output = run(
-            &workspace,
-            &json!({ "command": "head -c 300000 /dev/zero | tr '\\0' a" }),
-        )
-        .expect("exit 0");
-        assert!(output.len() <= MAX_TOOL_OUTPUT, "{}", output.len());
-        assert!(
-            output.contains("bytes cut") && output.ends_with("exit 0"),
-            "{}",
-            output.len()
-        );
     }
 
     #[test]

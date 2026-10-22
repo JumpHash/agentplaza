@@ -442,7 +442,7 @@ fn calls_of(entry: &Value) -> Vec<String> {
         .collect()
 }
 
-/// "3 steps · bash, edit_file": the step line's text. A run of one reads "1 step".
+/// "3 steps · run, edit": the step line's text. A run of one reads "1 step".
 /// One tool call in a run of steps, as the web's chat lists it: its name, the argument that names what it acted on,
 /// its outcome ("running", "ok", "failed" or "denied") and how long it took.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -463,22 +463,28 @@ fn clip_line(s: &str) -> String {
 fn detail_of(input: Option<&Value>) -> String {
     match input {
         Some(Value::String(s)) => clip_line(s),
-        Some(v @ Value::Object(_)) => [
-            "path",
-            "file_path",
-            "file",
-            "command",
-            "query",
-            "pattern",
-            "url",
-            "title",
-            "name",
-        ]
-        .iter()
-        .map(|key| text_of(v, key))
-        .find(|s| !s.is_empty())
-        .map(clip_line)
-        .unwrap_or_default(),
+        Some(v @ Value::Object(_)) => {
+            let direct = [
+                "path",
+                "file_path",
+                "file",
+                "command",
+                "query",
+                "pattern",
+                "url",
+                "title",
+                "name",
+            ]
+            .iter()
+            .map(|key| text_of(v, key))
+            .find(|s| !s.is_empty());
+            // The edit tools name their file in the first entry of their list.
+            let listed = ["files", "create", "edits"].iter().find_map(|key| {
+                let path = text_of(v.get(key)?.as_array()?.first()?, "path");
+                (!path.is_empty()).then_some(path)
+            });
+            direct.or(listed).map(clip_line).unwrap_or_default()
+        }
         _ => String::new(),
     }
 }
@@ -576,7 +582,7 @@ pub fn step_label(step: &StepRow) -> String {
     if n.contains("board") && (n.contains("post") || n.contains("write")) {
         return "Posted to board".into();
     }
-    if n == "bash"
+    if n == "run"
         || n == "shell"
         || n.contains("command")
         || n.contains("exec")
@@ -1230,9 +1236,9 @@ mod step_tests {
     #[test]
     fn a_run_of_steps_is_labelled_by_its_last_step_and_the_outcome_of_all() {
         let entries = vec![
-            json!({"kind": "tool_request", "at_ms": 0, "data": {"id": "a", "name": "read_file", "input": {"path": "src/main.rs"}}}),
+            json!({"kind": "tool_request", "at_ms": 0, "data": {"id": "a", "name": "read", "input": {"files": [{"path": "src/main.rs"}]}}}),
             json!({"kind": "tool_result", "at_ms": 420, "data": {"id": "a"}}),
-            json!({"kind": "tool_request", "at_ms": 500, "data": {"id": "b", "name": "bash", "input": {"command": "cargo test\nmore"}}}),
+            json!({"kind": "tool_request", "at_ms": 500, "data": {"id": "b", "name": "run", "input": {"command": "cargo test\nmore"}}}),
             json!({"kind": "tool_result", "at_ms": 2600, "data": {"id": "b", "is_error": true}}),
         ];
         let steps = steps_of(&entries);

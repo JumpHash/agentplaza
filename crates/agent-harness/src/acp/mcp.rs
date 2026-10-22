@@ -507,10 +507,10 @@ mod tests {
         let profile = [
             spec("board_list"),
             spec("task_list"),
-            spec("bash"),
-            spec("list"),
+            spec("run"),
+            spec("find"),
             spec("fetch_url"),
-            spec("edit_file"),
+            spec("edit"),
             spec("ide_read"),
             spec("code_engine"),
         ];
@@ -611,7 +611,7 @@ mod tests {
 
         let refused = handle(
             &json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-                    "params": {"name": "bash", "arguments": {}}}),
+                    "params": {"name": "run", "arguments": {}}}),
             &tools,
             &Fake,
             deadline,

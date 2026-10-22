@@ -1188,10 +1188,10 @@ sectionEnd('machine views tests: ok');
 
   const chat = buildChat([
     en(1, 0, 'work_start', { kind: 'chat', prompt: 'hello' }),
-    en(2, 10, 'model_response', { content: [{ type: 'text', text: 'On it.' }, { type: 'tool_use', id: 'c1', name: 'read_file', input: { path: 'a.rs' } }] }),
-    en(3, 20, 'tool_request', { id: 'c1', name: 'read_file', input: { path: 'src/main.rs' } }),
+    en(2, 10, 'model_response', { content: [{ type: 'text', text: 'On it.' }, { type: 'tool_use', id: 'c1', name: 'read', input: { files: [{ path: 'a.rs' }] } }] }),
+    en(3, 20, 'tool_request', { id: 'c1', name: 'read', input: { files: [{ path: 'src/main.rs' }] } }),
     en(4, 30, 'tool_result', { id: 'c1', is_error: false, content: 'fn main' }),
-    en(5, 40, 'tool_request', { id: 'c2', name: 'bash', input: { command: 'cargo test' } }),
+    en(5, 40, 'tool_request', { id: 'c2', name: 'run', input: { command: 'cargo test' } }),
     en(6, 50, 'tool_result', { id: 'c2', is_error: true, content: 'boom' }),
     en(7, 60, 'model_response', { content: [{ type: 'text', text: 'Done.' }] }),
   ], true);
@@ -1216,11 +1216,11 @@ sectionEnd('machine views tests: ok');
     ev(8, 17, 'tool_request', { call: 'k1.e2', name: 'engine.exec', input: { engine: 'claude-code', title: 'Run cargo test', locations: [], raw: {} } }),
     ev(9, 18, 'tool_decision', { call: 'k1.e2', decision: 'pending', output: "waiting for the owner's approval (a42)" }),
     ev(10, 19, 'engine_update', { call: 'k1', item: 'message', text: 'Fixed the parser.' }),
-    ev(11, 20, 'tool_request', { id: 'c9', name: 'bash', input: { command: 'ls' } }),
+    ev(11, 20, 'tool_request', { id: 'c9', name: 'run', input: { command: 'ls' } }),
     ev(12, 21, 'tool_result', { id: 'c9', is_error: false }),
     ev(13, 22, 'tool_result', { call: 'k1', ok: true, output: 'Fixed in one edit.' }),
   ], false);
-  eq(engineRun.map((c) => c.kind).join(','), 'engine,steps', 'buildChat: one engine item, then the plaza\'s own bash call as steps');
+  eq(engineRun.map((c) => c.kind).join(','), 'engine,steps', 'buildChat: one engine item, then the plaza\'s own run call as steps');
   const block = engineRun[0];
   eq(block?.kind === 'engine' ? block.engine : '', 'claude-code', 'buildChat: the engine block names the engine');
   eq(block?.kind === 'engine' ? block.session ?? '' : '', 'sess-12345678', 'buildChat: the engine block keeps the session');
@@ -1235,7 +1235,7 @@ sectionEnd('machine views tests: ok');
   eq(approvalIdIn("waiting for the owner's approval (a42)") ?? '', 'a42', 'approvals: a hub id is read from the held output');
   eq(approvalIdIn("waiting for the owner's approval (a42 b)") ?? '', '', 'approvals: an id of another shape is not read');
   eq(approvalIdIn("waiting for the owner's approval (appr-42)") ?? '', '', 'approvals: an id that is not the hub shape is not read');
-  eq(engineRun[1]?.kind === 'steps' ? engineRun[1].steps.length : -1, 1, 'buildChat: nested checks make no steps, only the bash call does');
+  eq(engineRun[1]?.kind === 'steps' ? engineRun[1].steps.length : -1, 1, 'buildChat: nested checks make no steps, only the run call does');
 
   const deniedRun = buildChat([
     ev(1, 10, 'tool_request', { call: 'k2', name: 'code_engine', input: { engine: 'codex', prompt: 'drop the table' } }),
@@ -1246,7 +1246,7 @@ sectionEnd('machine views tests: ok');
   const act = activitySplit([
     en(1, 0, 'model_request'),
     en(2, 100, 'model_response'),
-    en(3, 110, 'tool_request', { id: 'c1', name: 'bash', input: { command: 'ls' } }),
+    en(3, 110, 'tool_request', { id: 'c1', name: 'run', input: { command: 'ls' } }),
     en(4, 150, 'tool_result', { id: 'c1', is_error: false }),
     en(5, 160, 'model_request'),
     en(6, 300, 'model_response'),
@@ -1254,7 +1254,7 @@ sectionEnd('machine views tests: ok');
   eq(act.thinkingMs, 240, 'activitySplit: thinking is request to response, summed');
   eq(act.toolMs, 40, 'activitySplit: tool time is request to result');
   eq(act.totalMs, 300, 'activitySplit: total is last minus first');
-  eq(act.calls.length === 1 && act.calls[0].ms === 40 && act.calls[0].outcome === 'ok' && act.calls[0].name === 'bash', true, 'activitySplit: one call with name, ms and outcome');
+  eq(act.calls.length === 1 && act.calls[0].ms === 40 && act.calls[0].outcome === 'ok' && act.calls[0].name === 'run', true, 'activitySplit: one call with name, ms and outcome');
   eq(activitySplit([en(1, 5, 'work_start')]).totalMs, 0, 'activitySplit: no span with one entry');
 
   const pal: PaletteItem[] = [

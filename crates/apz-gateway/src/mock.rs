@@ -4,8 +4,8 @@
 //! * `echo` replies with the last user text.
 //! * `agent` (the default) acts like a tiny competent agent: given a new
 //!   prompt it calls the first sensible tool it was offered — `plaza_vote`
-//!   when the prompt names a motion (`m3`), else `write_file` (a note under
-//!   `notes/`), else `bash` (`ls -la /workspace`) — and once it sees that
+//!   when the prompt names a motion (`m3`), else `edit` (a note under
+//!   `notes/`, created), else `run` (`ls -la /workspace`) — and once it sees that
 //!   tool's result it ends the turn with a summary of what it did.
 //! * `script` and `script-review` answer from a script: the file the
 //!   `APZ_MOCK_SCRIPT` variable names (the eval suite's tasks, see
@@ -107,7 +107,7 @@ fn agent(req: &ChatRequest) -> (String, Option<(String, Value)>) {
             Some(("plaza_vote".into(), input)),
         );
     }
-    if offered("write_file") {
+    if offered("edit") {
         let path = format!("notes/{}.md", slug(&prompt));
         let content = format!(
             "# Notes\n\nTask: {}\n\nThe mock agent wrote this note.\n",
@@ -116,15 +116,15 @@ fn agent(req: &ChatRequest) -> (String, Option<(String, Value)>) {
         return (
             format!("I'll write a note to {path}."),
             Some((
-                "write_file".into(),
-                json!({"path": path, "content": content}),
+                "edit".into(),
+                json!({"create": [{"path": path, "content": content}]}),
             )),
         );
     }
-    if offered("bash") {
+    if offered("run") {
         return (
             "I'll look at the workspace.".into(),
-            Some(("bash".into(), json!({"command": "ls -la /workspace"}))),
+            Some(("run".into(), json!({"command": "ls -la /workspace"}))),
         );
     }
     (
@@ -151,8 +151,11 @@ fn summary(messages: &[Message], id: &str, output: &str, failed: bool) -> String
             _ => None,
         });
     let did = match call {
-        Some(("write_file", input)) => {
-            format!("wrote {}", input["path"].as_str().unwrap_or("a note"))
+        Some(("edit", input)) => {
+            format!(
+                "wrote {}",
+                input["create"][0]["path"].as_str().unwrap_or("a note")
+            )
         }
         Some(("plaza_vote", input)) => {
             format!(
@@ -161,7 +164,7 @@ fn summary(messages: &[Message], id: &str, output: &str, failed: bool) -> String
                 input["motion"].as_str().unwrap_or("the motion")
             )
         }
-        Some(("bash", input)) => {
+        Some(("run", input)) => {
             format!("ran `{}`", input["command"].as_str().unwrap_or("a command"))
         }
         Some((name, _)) => format!("used {name}"),
@@ -360,7 +363,7 @@ mod tests {
             system_parts: Vec::new(),
             cache_last_message: false,
             model: "mock/agent".into(),
-            tools: vec![tool("bash"), tool("write_file")],
+            tools: vec![tool("run"), tool("edit")],
             ..request("Summarise the Q3 plan for the council")
         };
         let mut deltas = Vec::new();
@@ -368,15 +371,18 @@ mod tests {
         assert_eq!(first.model, "mock/agent");
         assert_eq!(first.stop, StopReason::ToolUse);
         let (id, name, input) = first.tool_uses().next().unwrap();
-        assert_eq!(name, "write_file");
-        assert_eq!(input["path"], "notes/summarise-the-q3-plan-for-the.md");
+        assert_eq!(name, "edit");
+        assert_eq!(
+            input["create"][0]["path"],
+            "notes/summarise-the-q3-plan-for-the.md"
+        );
         assert!(first.usage.input_tokens > 0 && first.usage.output_tokens > 0);
         assert!(
             deltas.iter().any(|d| matches!(d, Delta::Text { .. }))
                 && deltas.iter().any(|d| matches!(
                     d,
                     Delta::ToolUse { name, id: started, .. }
-                        if name == "write_file" && started.as_str() == id
+                        if name == "edit" && started.as_str() == id
                 ))
         );
 
@@ -400,7 +406,7 @@ mod tests {
         let vote = ChatRequest {
             system_parts: Vec::new(),
             cache_last_message: false,
-            tools: vec![tool("write_file"), tool("plaza_vote")],
+            tools: vec![tool("edit"), tool("plaza_vote")],
             ..request("Council: vote on m3 please")
         };
         let vote = gw
@@ -446,7 +452,7 @@ mod tests {
             r#"[
                 {"when": ["Task t9:", "this task's reviewer"], "turns": [
                     {"name": "plaza_verdict", "input": {"pass": true}}, {"text": "Passed."}]},
-                {"when": ["Task t9:"], "turns": [{"name": "bash", "input": {"command": "ls"}}]}
+                {"when": ["Task t9:"], "turns": [{"name": "run", "input": {"command": "ls"}}]}
             ]"#,
         )
         .unwrap();
@@ -472,7 +478,7 @@ mod tests {
             answer(&entries, &builder),
             (
                 String::new(),
-                Some(("bash".into(), json!({"command": "ls"})))
+                Some(("run".into(), json!({"command": "ls"})))
             )
         );
         let unscripted = request("Task t8: nothing scripted");
