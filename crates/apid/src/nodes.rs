@@ -5,7 +5,7 @@
 //! queue it long-polls (it dials out, so NAT and firewalls do not matter). Each node owns a
 //! disjoint guest-CID range so agent ids stay unique across the plaza. The local node (the one on
 //! the hub's own machine, `n0`) needs no join and no queue: apid talks to it over loopback.
-//! Saved in Postgres ("nodes"); join-code secrets are never stored, only their SHA-256.
+//! Saved in plaza.db (the `nodes` tables); join-code secrets are never stored, only their SHA-256.
 //!
 //! Owner routes (owner auth applies):
 //!   GET    /v1/nodes                      → [NodeView]
@@ -34,6 +34,8 @@ use std::time::{Duration, Instant};
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_metrics::wire::Batch;
 use apz_metrics::{EntityKind, SeriesKey};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use apz_trust::node::{H_NODE, H_NONCE, H_SIG, H_TS, MAX_SKEW_SECS, NONCE_TTL_SECS};
 use base64::Engine as _;
 use flate2::read::DeflateDecoder;
@@ -69,7 +71,8 @@ pub(crate) fn source_of(req: &Request) -> String {
 pub(crate) const JOIN_WINDOW_MS: u64 = 60_000;
 pub(crate) const DEFAULT_TTL_MINUTES: u64 = 15;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A joined node, as the hub keeps it (`node` rows; its machine as one child row).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Node {
     /// `n<seq>`; `n0` is the hub's own machine.
     pub id: String,
@@ -80,9 +83,10 @@ pub struct Node {
     pub cid_count: u64,
     pub joined_ms: u64,
     pub last_seen_ms: u64,
-    /// The machine summary the node last reported (cpus, memory, host, version).
+    /// The machine the node last reported: its summary, and on a heartbeat noded's facts with its live stats.
     #[serde(default)]
-    pub machine: Value,
+    #[table(child = "node_machine")]
+    pub machine: Machine,
     /// Out of service: the owner stopped it (`mover`). Its agents move off and no agent is placed on it
     /// until it is resumed. The field keeps its first name, from when this was only a drain.
     #[serde(default)]
@@ -92,6 +96,149 @@ pub struct Node {
     /// Where it last called from (for the owner's eyes only).
     #[serde(default)]
     pub address: String,
+}
+
+/// The machine a node reports, typed (`node_machine`). A joining node sends the summary (`cpus`, `memory_mib`, `host`,
+/// `version`); a heartbeat sends noded's facts (`apz-link`'s machine report: the fields of noded's `GET /v1/machine`
+/// that a heartbeat carries, with its live `stats`). The hub's own machine (`n0`) carries noded's whole view. A field a
+/// node does not send is absent, or null where the node sends null; the consoles read this JSON as it is.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
+pub struct Machine {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Sent by the hub's own machine only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub arch: Option<String>,
+    #[serde(default)]
+    pub os: Option<String>,
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Sent by the hub's own machine only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub irqchip: Option<String>,
+    /// Sent by the hub's own machine only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub vendor: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// A Mac's Apple Silicon details; null elsewhere.
+    #[serde(default)]
+    #[table(flatten)]
+    pub apple: Option<MachineApple>,
+    #[serde(default)]
+    #[table(flatten)]
+    pub cpu: Option<MachineCpu>,
+    #[serde(default)]
+    #[table(child = "node_machine_gpu")]
+    pub gpus: Vec<MachineGpu>,
+    #[serde(default)]
+    #[table(child = "node_machine_accelerator")]
+    pub accelerators: Vec<MachineAccelerator>,
+    #[serde(default)]
+    #[table(flatten)]
+    pub trainer: Option<MachineTrainer>,
+    #[serde(default)]
+    #[table(list = "node_machine_fabric")]
+    pub fabric: Vec<String>,
+    #[serde(default)]
+    pub storage_gib: Option<u64>,
+    /// Sent by the hub's own machine only (a heartbeat does not carry it): the launch backends the node runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list = "node_machine_workstation_backend")]
+    pub workstation_backends: Vec<String>,
+    /// Sent by the hub's own machine only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vsock_mode: Option<String>,
+    /// Sent by the hub's own machine only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    /// The node's live load, from its last heartbeat (`cpu_pct`, `mem_used_mib`); null until it has a sample.
+    #[serde(default)]
+    #[table(flatten)]
+    pub stats: Option<MachineStats>,
+}
+
+/// A Mac's Apple Silicon details (noded's `apple`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+pub struct MachineApple {
+    pub chip: String,
+    pub p_cores: Option<u32>,
+    pub e_cores: Option<u32>,
+    pub gpu_cores: Option<u32>,
+    pub neural_cores: u32,
+    pub unified_memory_gib: Option<u64>,
+}
+
+/// The CPU: the model name, the physical cores and the logical CPUs (noded's `cpu`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+pub struct MachineCpu {
+    pub model: String,
+    pub cores: u32,
+    pub threads: u32,
+}
+
+/// A GPU the host has (noded's `gpus`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+pub struct MachineGpu {
+    pub vendor: String,
+    pub name: String,
+    pub memory_mib: Option<u64>,
+}
+
+/// A device that runs trainers (noded's `accelerators`): a GPU, or Apple Silicon's GPU.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+pub struct MachineAccelerator {
+    pub index: u32,
+    pub vendor: String,
+    pub name: String,
+    pub memory_mib: Option<u64>,
+    pub backend: String,
+    pub capability: Option<String>,
+    pub link: String,
+    pub busy: bool,
+    pub util_pct: Option<u32>,
+    pub mem_used_mib: Option<u64>,
+}
+
+/// The trainer runtime the node can run jobs in (noded's `trainer`): `runtime` is null when none applies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+pub struct MachineTrainer {
+    pub runtime: Option<String>,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// The live load a heartbeat carries (`stats`): the CPU percentage and the memory in use, each null until sampled.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+pub struct MachineStats {
+    pub cpu_pct: Option<f64>,
+    pub mem_used_mib: Option<u64>,
+}
+
+impl Machine {
+    /// Lays noded's facts under this summary: a field the summary sets (`cpus`, `memory_mib`, `host`, `version`)
+    /// stays, and every other field comes from the facts.
+    fn overlay(&mut self, facts: Machine) {
+        let summary = std::mem::take(self);
+        let mut merged = facts;
+        merged.cpus = summary.cpus.or(merged.cpus);
+        merged.memory_mib = summary.memory_mib.or(merged.memory_mib);
+        merged.host = summary.host.or(merged.host);
+        merged.version = summary.version.or(merged.version);
+        *self = merged;
+    }
 }
 
 /// A node as the console lists it: the record plus "online", its agents' count and its service state.
@@ -125,7 +272,8 @@ pub struct Hosted {
     pub offline: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A join code: its hash of the secret (never the secret), its expiry and what it made. The stations use it too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Code {
     /// `c<seq>`.
     pub id: String,
@@ -180,17 +328,36 @@ pub struct CommandResult {
     pub body: Value,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+/// The nodes' state of record: the one `nodes` row, with the joined nodes (`node`), their join codes (`node_code`)
+/// and the moved agents (`node_override`) as child tables.
+#[derive(Default, apz_store::Table)]
+#[table(name = "nodes")]
 struct Persisted {
+    #[table(child = "node")]
     nodes: Vec<Node>,
+    #[table(child = "node_code")]
     codes: Vec<Code>,
     /// Agents moved off their CID range: cid → the node that runs them now (`placement::move_agent`).
     /// Saved with the rest, so a restart keeps every moved agent on its node.
-    #[serde(default)]
+    #[table(map_value = "node_override")]
     overrides: BTreeMap<u64, String>,
     /// `n0` is out of service. The hub's own machine has no record here, so its flag has its own field.
-    #[serde(default)]
     local_stopped: bool,
+}
+
+/// The nodes' tables: `nodes`, with its nodes, join codes and moved agents, and each node's machine as a child row.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Persisted)
+}
+
+#[cfg(test)]
+impl Store {
+    /// A store holding `nodes` and nothing else: what plaza.db would hold at start (for tests in other modules).
+    pub fn holding(nodes: Vec<Node>) -> Store {
+        let store = Store::default();
+        store.inner.lock().unwrap().nodes = nodes;
+        store
+    }
 }
 
 #[derive(Default)]
@@ -211,16 +378,15 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn snapshot(&self) -> String {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|p| serde_json::to_string(&*p).ok())
-            .unwrap_or_default()
+    /// The nodes' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let p = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        RowSet::one(def(), &*p)
     }
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let p: Persisted = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        *self.inner.lock().map_err(|e| e.to_string())? = p;
+    /// Replaces the nodes with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored = apz_store::table::load_one::<Persisted>(conn, def())?.unwrap_or_default();
+        *self.inner.lock().unwrap_or_else(|e| e.into_inner()) = stored;
         Ok(())
     }
     pub fn list(&self) -> Vec<Node> {
@@ -330,7 +496,7 @@ impl Store {
         secret_b64: &str,
         public_key: &str,
         name: &str,
-        machine: Value,
+        machine: Machine,
         now_ms: u64,
     ) -> Result<Node, String> {
         self.admit(source, now_ms)?;
@@ -582,8 +748,8 @@ impl Store {
                 .0;
         }
     }
-    /// Records the machine summary a node reported with its heartbeat.
-    pub fn set_machine(&self, id: &str, machine: Value) -> Result<(), String> {
+    /// Records the machine a node reported (its join's summary, or its heartbeat's facts).
+    pub fn set_machine(&self, id: &str, machine: Machine) -> Result<(), String> {
         let mut persisted = self.inner.lock().map_err(|e| e.to_string())?;
         let node = persisted
             .nodes
@@ -764,12 +930,8 @@ pub(crate) fn local_node(app: &App) -> Node {
     let noded = crate::probes::latest(app).machine;
     let local_up = noded.is_some();
     let mut node = local_record(app, local_up);
-    if let (Some(serde_json::Value::Object(facts)), serde_json::Value::Object(summary)) =
-        (noded, &mut node.machine)
-    {
-        for (key, value) in facts {
-            summary.entry(key).or_insert(value);
-        }
+    if let Some(facts) = noded.and_then(|view| serde_json::from_value::<Machine>(view).ok()) {
+        node.machine.overlay(facts);
     }
     node
 }
@@ -782,18 +944,19 @@ fn local_up(app: &App) -> bool {
 /// `n0`'s record with the hub's own summary as its machine: seen now while its noded answers
 /// (`up`), out of service when the owner stopped it.
 fn local_record(app: &App, up: bool) -> Node {
+    let machine = local_summary();
     Node {
         id: crate::fleet::LOCAL.into(),
-        name: local_summary()["host"]
-            .as_str()
-            .unwrap_or("this hub")
-            .to_string(),
+        name: machine
+            .host
+            .clone()
+            .unwrap_or_else(|| "this hub".to_string()),
         public_key: String::new(),
         cid_base: 0,
         cid_count: REMOTE_CID_BASE,
         joined_ms: 0,
         last_seen_ms: if up { apz_plaza::now_ms() } else { 0 },
-        machine: local_summary(),
+        machine,
         draining: app.nodes.is_stopped(crate::fleet::LOCAL),
         revoked: false,
         address: "loopback".into(),
@@ -815,8 +978,8 @@ pub(crate) fn views(app: &App) -> Vec<NodeView> {
 }
 
 /// This machine's summary, as a joined node reports its own: cpus, memory_mib, host, version.
-/// `memory_mib` comes from /proc on Linux; elsewhere it is null, which the consoles show as unknown.
-pub(crate) fn local_summary() -> Value {
+/// `memory_mib` comes from /proc on Linux; elsewhere it is unknown (absent), which the consoles show as unknown.
+pub(crate) fn local_summary() -> Machine {
     let cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
     let host = std::fs::read_to_string("/etc/hostname")
         .ok()
@@ -827,24 +990,28 @@ pub(crate) fn local_summary() -> Value {
         })
         .map(|h| h.trim().to_string())
         .unwrap_or_default();
-    serde_json::json!({"cpus": cpus, "memory_mib": memory_mib(), "host": host, "version": env!("CARGO_PKG_VERSION")})
+    Machine {
+        cpus: Some(cpus as u64),
+        memory_mib: memory_mib(),
+        host: Some(host),
+        version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        ..Machine::default()
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn memory_mib() -> Value {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|t| {
-            t.lines()
-                .find(|l| l.starts_with("MemTotal:"))
-                .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
-        })
-        .map_or(Value::from(0), |kb| Value::from(kb / 1024))
+fn memory_mib() -> Option<u64> {
+    let kb = std::fs::read_to_string("/proc/meminfo").ok().and_then(|t| {
+        t.lines()
+            .find(|l| l.starts_with("MemTotal:"))
+            .and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+    });
+    Some(kb.map_or(0, |kb| kb / 1024))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn memory_mib() -> Value {
-    Value::Null
+fn memory_mib() -> Option<u64> {
+    None
 }
 
 #[derive(Default, Deserialize)]
@@ -859,7 +1026,7 @@ struct JoinBody {
     public_key: String,
     name: String,
     #[serde(default)]
-    machine: Value,
+    machine: Machine,
 }
 
 pub(crate) fn parse<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
@@ -979,7 +1146,7 @@ fn results_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 
 #[derive(Deserialize)]
 struct Heartbeat {
-    machine: Value,
+    machine: Machine,
     /// The node's vsockd `GET /v1/status`.
     #[serde(default)]
     status: Value,
@@ -1174,7 +1341,7 @@ mod tests {
             &apz_trust::b64(secret),
             &apz_trust::b64(&KEY),
             name,
-            Value::Null,
+            Machine::default(),
             now,
         )
     }
@@ -1331,7 +1498,7 @@ mod tests {
             cid_count: CIDS_PER_NODE,
             joined_ms: NOW,
             last_seen_ms: NOW,
-            machine: Value::Null,
+            machine: Machine::default(),
             draining: false,
             revoked: false,
             address: String::new(),
@@ -1460,15 +1627,10 @@ mod tests {
         let store = Store::default();
         let mut revoked = node("n2");
         revoked.revoked = true;
-        store
-            .restore(
-                &serde_json::to_string(&serde_json::json!({
-                    "nodes": [node("n1"), revoked],
-                    "codes": [],
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+        *store.inner.lock().unwrap() = Persisted {
+            nodes: vec![node("n1"), revoked],
+            ..Persisted::default()
+        };
         assert!(store.stopped_ids().is_empty());
         assert_eq!(store.set_stopped("n1", true), Ok(true));
         assert_eq!(store.set_stopped("n1", true), Ok(false), "no change");
@@ -1480,22 +1642,64 @@ mod tests {
         );
         assert_eq!(store.set_stopped("n2", true).map_err(|e| e.0), Err(409));
         assert_eq!(store.set_stopped("n9", true).map_err(|e| e.0), Err(404));
-        // n0's flag is saved with the rest, and a snapshot from before it reads as in service.
-        let saved = store.snapshot();
-        let again = Store::default();
-        again.restore(&saved).unwrap();
+        // n0's flag is saved with the rest: it comes back from the tables as it was, and an empty store reads as
+        // in service.
+        let again = loaded(&store);
         assert!(again.is_stopped("n0"));
         assert_eq!(again.set_stopped("n0", false), Ok(true));
         assert!(!again.is_stopped("n0"));
-        let before = Store::default();
-        before.restore(r#"{"nodes": [], "codes": []}"#).unwrap();
-        assert!(!before.is_stopped("n0"));
+        assert!(!loaded(&Store::default()).is_stopped("n0"));
+    }
+
+    /// The store's rows saved to their tables and loaded into a fresh store.
+    fn loaded(store: &Store) -> Store {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let again = Store::default();
+        again.load(&conn).unwrap();
+        again
     }
 
     #[test]
     fn the_hub_reports_its_memory_in_mib_or_as_unknown_never_as_text() {
-        let memory = &local_summary()["memory_mib"];
-        assert!(memory.is_u64() || memory.is_null(), "{memory}");
+        let memory = local_summary().memory_mib;
+        assert_eq!(memory.is_some(), cfg!(target_os = "linux"), "{memory:?}");
+    }
+
+    /// A node's machine as the heartbeat of noded sends it, and the same node's join summary, both come back from the
+    /// tables whole (the nested facts with their nulls, the accelerators, the stats).
+    #[test]
+    fn a_nodes_machine_comes_back_from_its_tables_as_it_was_reported() {
+        let store = Store::default();
+        let input = serde_json::json!({
+            "cpus": 8, "memory_mib": 16384, "host": "box", "version": "0.1.0",
+            "kind": "server", "vendor": null, "model": null, "apple": null,
+            "os": "linux", "arch": "x86_64", "backend": "cuda",
+            "cpu": {"model": "EPYC", "cores": 4, "threads": 8},
+            "gpus": [{"vendor": "nvidia", "name": "A10", "memory_mib": null}],
+            "accelerators": [{"index": 0, "vendor": "nvidia", "name": "A10", "memory_mib": 24576,
+                "backend": "cuda", "capability": "8.6", "link": "pcie", "busy": true,
+                "util_pct": 40, "mem_used_mib": null}],
+            "trainer": {"runtime": "cuda", "ok": true, "detail": ""},
+            "fabric": ["10.0.0.5"], "storage_gib": null,
+            "stats": {"cpu_pct": 7.5, "mem_used_mib": 1800}
+        });
+        let heartbeat: Machine = serde_json::from_value(input.clone()).unwrap();
+        *store.inner.lock().unwrap() = Persisted {
+            nodes: vec![Node {
+                machine: heartbeat.clone(),
+                ..node("n1")
+            }],
+            ..Persisted::default()
+        };
+        let again = loaded(&store);
+        assert_eq!(again.get("n1").unwrap().machine, heartbeat);
+        assert_eq!(
+            serde_json::to_value(&again.get("n1").unwrap().machine).unwrap(),
+            input,
+            "the JSON the consoles read is the JSON the node sent"
+        );
     }
 
     /// End to end with real crypto: token → redeem → node. Needs apz-trust's `JoinToken` (T1),
@@ -1605,6 +1809,6 @@ mod queue_tests {
     #[test]
     fn set_machine_stores_for_known_node_only() {
         let store = Store::default();
-        assert!(store.set_machine("n9", Value::Null).is_err());
+        assert!(store.set_machine("n9", Machine::default()).is_err());
     }
 }

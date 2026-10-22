@@ -52,7 +52,7 @@ const LINK_BACK_WAIT: Duration = Duration::from_secs(240);
 const LINK_POLL: Duration = Duration::from_millis(500);
 
 /// A workstation VM the hub knows: where it runs on its node, and the station it enrolled as.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct VmRecord {
     /// `v<seq>`.
     pub id: String,
@@ -469,11 +469,7 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
     if node.revoked {
         return Err((409, format!("node {} is revoked", node.id)));
     }
-    let apple = node.machine.get("vendor").and_then(Value::as_str) == Some("apple")
-        || node
-            .machine
-            .get("apple")
-            .is_some_and(|apple| !apple.is_null());
+    let apple = node.machine.vendor.as_deref() == Some("apple") || node.machine.apple.is_some();
     let macos = app
         .stations
         .vms()
@@ -483,9 +479,9 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
     check(request, apple, macos).map_err(|reason| (400, reason))?;
     let node_has_qemu = node
         .machine
-        .get("workstation_backends")
-        .and_then(Value::as_array)
-        .is_some_and(|backends| backends.iter().any(|b| b.as_str() == Some("qemu")));
+        .workstation_backends
+        .iter()
+        .any(|b| b == "qemu");
     let backend = backend_for(request, node_has_qemu).map_err(|reason| (400, reason))?;
 
     // The hub's address and its certificate pin: the node relays the VM's link to the hub and hands the VM the pin,

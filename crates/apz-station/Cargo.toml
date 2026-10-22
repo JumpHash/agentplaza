@@ -9,6 +9,11 @@ publish = false
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# The hub's store derives its tables on the facts and settings. Off by default: a daemon does not link SQLite.
+apz-store = { path = "../apz-store", optional = true }
+
+[features]
+store = ["dep:apz-store"]
 
 [lints]
 workspace = true

@@ -1,41 +1,49 @@
 //! Roles the owner defines (the spawn wizard) or approves (an orchestrator's proposal), beside
 //! the built-in roles from the manifest. A role is what an agent is for: its purpose,
 //! responsibilities, what it delivers, how it works with others, its tools and its budget.
-//! The agent's prompt is written from those fields (and may be edited). Saved in Postgres
-//! ("custom_roles").
+//! The agent's prompt is written from those fields (and may be edited). Saved in plaza.db (the `custom_role`
+//! tables, saved by the store's saver).
 //!
 //! GET    /v1/roles        → [RoleView] — built-in and custom, with their definitions
 //! POST   /v1/roles        body RoleDef → the saved RoleDef (create or update a custom role)
 //! DELETE /v1/roles/{id}   → refused while agents of that role run
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_plaza::tasks::MIN_TASK_BUDGET;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::agents::{self, Status};
 use crate::state::App;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "custom_role")]
 pub struct RoleDef {
     /// a-z, 0-9 and '-', 2..=32 characters; not a built-in role's id.
+    #[table(key)]
     pub id: String,
     pub title: String,
     /// One or two sentences: what this agent is for.
     pub purpose: String,
+    #[table(list)]
     pub responsibilities: Vec<String>,
     /// What it hands in when its work is done.
+    #[table(list)]
     pub deliverables: Vec<String>,
     /// Who it works with and how (who it takes work from, who reviews it).
     #[serde(default)]
     pub collaboration: String,
     /// What it must not do, beyond the plaza's laws.
     #[serde(default)]
+    #[table(list)]
     pub boundaries: Vec<String>,
     /// Tool names granted beyond what every agent gets (the laws still decide).
     #[serde(default)]
+    #[table(list)]
     pub tools: Vec<String>,
     /// Default task budget for its work, credits.
     #[serde(default)]
@@ -100,14 +108,25 @@ impl Store {
         roles.remove(i);
         Ok(())
     }
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&self.list()).unwrap_or_default()
+    /// Every role's rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::list(def(), lock(&self.roles).iter())
     }
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let roles: Vec<RoleDef> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        *self.roles.lock().map_err(|e| e.to_string())? = roles;
+    /// Replaces the roles with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<RoleDef> = apz_store::table::load_list(conn, def())?;
+        *lock(&self.roles) = stored;
         Ok(())
     }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The custom roles' table: `custom_role`, one row a role, its lists as child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(RoleDef)
 }
 
 /// The checks a definition must pass before it is saved (the built-in-id check is the route's,
@@ -412,5 +431,26 @@ mod tests {
         assert_eq!(saved.created_ms, 7);
         assert_eq!(saved.created_by, "owner");
         assert_eq!(store.get("scout").unwrap().title, "Scout Two");
+    }
+
+    #[test]
+    fn the_roles_come_back_whole_from_their_tables() {
+        let store = Store::default();
+        store.save(sample("scout")).unwrap();
+        let mut analyst = sample("analyst");
+        analyst.tools = vec!["web.search".into(), "files.read".into()];
+        analyst.model = "anthropic/claude@high".into();
+        store.save(analyst).unwrap();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+
+        let restored = Store::default();
+        restored.load(&conn).unwrap();
+        assert_eq!(
+            serde_json::to_value(restored.list()).unwrap(),
+            serde_json::to_value(store.list()).unwrap()
+        );
+        assert_eq!(restored.list().len(), 2, "the order is kept");
     }
 }

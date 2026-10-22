@@ -1427,13 +1427,11 @@ mod egress_check_tests {
 
     #[test]
     fn a_researcher_at_the_hub_git_is_refused_by_the_real_law() {
-        let dir = std::env::temp_dir().join(format!("apid-egress-check-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
         let files: Vec<(String, String)> = LAW_FILES
             .iter()
             .map(|(name, text)| (name.to_string(), text.to_string()))
             .collect();
-        let laws = Laws::from_files(&dir, files);
+        let laws = Laws::from_files(files);
         let resource = jhrl::authz::Entity {
             ty: "Host".into(),
             id: "git.hub.local".into(),
@@ -1484,12 +1482,6 @@ mod law_gate_tests {
 }
 "#;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-gate-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     fn compiled_in() -> Vec<(String, String)> {
         LAW_FILES
             .iter()
@@ -1501,7 +1493,7 @@ mod law_gate_tests {
     fn gate_call_follows_the_laws_for_each_kind_of_call() {
         {
             // a_forbidden_call_is_refused_with_its_law: a forbidden call is refused with its law.
-            let laws = Laws::load(&scratch("forbidden"));
+            let laws = Laws::builtin();
             let granted = crate::tools::offered_names("builder");
             let input = json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
             let reason = gate_call(&laws, 7, "builder", &granted, "bash", &input).unwrap_err();
@@ -1513,7 +1505,7 @@ mod law_gate_tests {
         {
             // a_permitted_call_runs_where_its_tool_runs: a permitted call runs where its tool runs
             // (guest or host).
-            let laws = Laws::load(&scratch("permitted"));
+            let laws = Laws::builtin();
             let granted = crate::tools::offered_names("builder");
             assert_eq!(
                 gate_call(
@@ -1533,7 +1525,7 @@ mod law_gate_tests {
         }
         {
             // an_unknown_tool_is_denied_by_default: an unknown tool is denied by default.
-            let laws = Laws::load(&scratch("unknown"));
+            let laws = Laws::builtin();
             let granted = vec!["launch_missiles".to_string()];
             let reason = gate_call(&laws, 7, "builder", &granted, "launch_missiles", &json!({}))
                 .unwrap_err();
@@ -1545,7 +1537,7 @@ mod law_gate_tests {
         {
             // a_tool_the_laws_withhold_is_neither_offered_nor_run_even_if_granted: a tool the laws
             // withhold is not offered to the role, and the gate refuses it even when granted.
-            let laws = Laws::load(&scratch("withheld"));
+            let laws = Laws::builtin();
             // Posting a task is the orchestrator's (T-003): a builder is not offered it.
             assert!(
                 !crate::tools::offered_names("builder")
@@ -1568,11 +1560,11 @@ mod law_gate_tests {
             let input = json!({"path": "notes.md"});
             let mut with_rule = compiled_in();
             with_rule.push(("owner.jhrl".to_string(), OWNER_RULE.to_string()));
-            let added = Laws::from_files(&scratch("rule-added"), with_rule);
+            let added = Laws::from_files(with_rule);
             let reason =
                 gate_call(&added, 7, "builder", &granted, "read_file", &input).unwrap_err();
             assert!(reason.contains("O-001"), "{reason}");
-            let removed = Laws::from_files(&scratch("rule-removed"), compiled_in());
+            let removed = Laws::from_files(compiled_in());
             assert_eq!(
                 gate_call(&removed, 7, "builder", &granted, "read_file", &input),
                 Ok(Runs::Guest)

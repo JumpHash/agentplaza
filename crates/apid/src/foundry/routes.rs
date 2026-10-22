@@ -225,6 +225,7 @@ fn upload(app: &App, req: &Request) -> Response {
 pub fn machines(app: &App) -> (Vec<Machine>, Reach) {
     let mut all = Vec::new();
     if let Ok((200, facts)) = app.noded.get("/v1/machine") {
+        let facts: crate::nodes::Machine = serde_json::from_value(facts).unwrap_or_default();
         all.push(machine_of(fleet::LOCAL, &facts, true));
     }
     let now = apz_plaza::now_ms();
@@ -239,14 +240,36 @@ pub fn machines(app: &App) -> (Vec<Machine>, Reach) {
 }
 
 /// A planner machine from noded's facts (`accelerators`, `trainer`, `fabric`).
-fn machine_of(id: &str, facts: &Value, online: bool) -> Machine {
+fn machine_of(id: &str, facts: &crate::nodes::Machine, online: bool) -> Machine {
     Machine {
         id: id.into(),
         online,
-        accelerators: serde_json::from_value(facts["accelerators"].clone()).unwrap_or_default(),
-        trainer_ok: facts["trainer"]["ok"].as_bool().unwrap_or(false),
-        fabric: serde_json::from_value(facts["fabric"].clone()).unwrap_or_default(),
+        accelerators: planner_accelerators(&facts.accelerators),
+        trainer_ok: facts.trainer.as_ref().is_some_and(|trainer| trainer.ok),
+        fabric: facts.fabric.clone(),
     }
+}
+
+/// The planner's accelerators from a node's: a device that lacks a figure the planner reads makes the whole list
+/// empty, as the planner has always read it.
+fn planner_accelerators(devices: &[crate::nodes::MachineAccelerator]) -> Vec<Accelerator> {
+    devices
+        .iter()
+        .map(|device| {
+            Some(Accelerator {
+                index: device.index,
+                vendor: device.vendor.clone(),
+                name: device.name.clone(),
+                memory_mib: device.memory_mib?,
+                backend: device.backend.clone(),
+                link: device.link.clone(),
+                busy: device.busy,
+                util_pct: device.util_pct?,
+                mem_used_mib: device.mem_used_mib?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 /// `GET /v1/foundry/devices`: every accelerator, with the job whose running run holds it.

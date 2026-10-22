@@ -223,6 +223,7 @@ pub struct ProgramFile {
 
 /// A task's lane in Weft: the change the worker writes, and the repo it is in (checked out at `<workspace>/<repo>`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub struct WorkLane {
     pub change: String,
     pub repo: String,
@@ -367,6 +368,7 @@ pub struct AgentProfile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 pub enum WorkKind {
     /// A plaza task assigned to this agent.
     Task,

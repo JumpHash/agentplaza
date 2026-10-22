@@ -1402,8 +1402,8 @@ mod tests {
         value
     }
 
-    fn law_refusal(root: &Path, cid: u64, role: &str, tool: &str, input: &Value) -> Option<String> {
-        crate::laws::Laws::load(root).refusal(cid, role, tool, input)
+    fn law_refusal(cid: u64, role: &str, tool: &str, input: &Value) -> Option<String> {
+        crate::laws::Laws::builtin().refusal(cid, role, tool, input)
     }
 
     #[test]
@@ -1428,18 +1428,17 @@ mod tests {
             .card
             .id;
         let input = |id: &str| json!({ "model": id, "input": { "x0": 1.0, "x1": 0.0, "x2": 0.0 } });
-        let refused = law_refusal(&root, 7, "builder", "invoke_model", &input(&for_breeders))
-            .expect("no permit");
+        let refused =
+            law_refusal(7, "builder", "invoke_model", &input(&for_breeders)).expect("no permit");
         assert!(
             refused.contains("S-006h") || refused.contains("no law permits"),
             "{refused}"
         );
         let card_refused =
-            law_refusal(&root, 7, "breeder", "invoke_model", &input(&only_reviewers))
-                .expect("the card");
+            law_refusal(7, "breeder", "invoke_model", &input(&only_reviewers)).expect("the card");
         assert!(card_refused.contains("S-006h"), "{card_refused}");
         assert_eq!(
-            law_refusal(&root, 7, "breeder", "invoke_model", &input(&for_breeders)),
+            law_refusal(7, "breeder", "invoke_model", &input(&for_breeders)),
             None
         );
         let _ = fs::remove_dir_all(&root);
@@ -1449,21 +1448,20 @@ mod tests {
     fn a_breeder_job_over_eight_gpu_hours_is_refused_and_eight_is_not() {
         let root = scratch("laws-gpu");
         let big = json!({ "job": { "budget_gpu_hours": 9.0 } });
-        let refused =
-            law_refusal(&root, 8, "breeder", "foundry_submit_job", &big).expect("over 8 hours");
+        let refused = law_refusal(8, "breeder", "foundry_submit_job", &big).expect("over 8 hours");
         assert!(refused.contains("S-006d"), "{refused}");
         let eight = json!({ "job": { "budget_gpu_hours": 8.0 } });
         assert_eq!(
-            law_refusal(&root, 8, "breeder", "foundry_submit_job", &eight),
+            law_refusal(8, "breeder", "foundry_submit_job", &eight),
             None
         );
         let missing = json!({ "job": {} });
         assert!(
-            law_refusal(&root, 8, "breeder", "foundry_submit_job", &missing).is_some(),
+            law_refusal(8, "breeder", "foundry_submit_job", &missing).is_some(),
             "no budget: refused"
         );
-        let other = law_refusal(&root, 9, "mayor", "foundry_submit_job", &eight)
-            .expect("only breeders submit");
+        let other =
+            law_refusal(9, "mayor", "foundry_submit_job", &eight).expect("only breeders submit");
         assert!(other.contains("no law permits"), "{other}");
         let _ = fs::remove_dir_all(&root);
     }
@@ -1472,7 +1470,6 @@ mod tests {
     fn a_model_agent_cannot_be_tasked_or_messaged() {
         let root = scratch("laws-model-agent");
         let assign = law_refusal(
-            &root,
             3,
             "mayor",
             "plaza_assign",
@@ -1481,7 +1478,6 @@ mod tests {
         .expect("a model agent is not tasked");
         assert!(assign.contains("S-006f"), "{assign}");
         let message = law_refusal(
-            &root,
             3,
             "mayor",
             "plaza_send_message",
@@ -1490,7 +1486,6 @@ mod tests {
         .expect("a model agent is not messaged");
         assert!(message.contains("S-006g"), "{message}");
         let plain = law_refusal(
-            &root,
             3,
             "mayor",
             "plaza_assign",

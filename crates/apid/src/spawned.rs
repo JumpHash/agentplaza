@@ -1,12 +1,12 @@
-//! Operator-spawned agents and every agent's model override, kept at
-//! `<state-dir>/spawned.json` (written atomically). A restart respawns each
-//! spawned agent under its old CID, so its wallet and workspace line up.
+//! Operator-spawned agents and every agent's model override, kept in plaza.db (the `spawned` tables, saved by the
+//! store's saver). A restart respawns each spawned agent under its old CID, so its wallet and workspace line up.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -14,7 +14,7 @@ use crate::agents::Status;
 use crate::state::App;
 
 /// One agent the operator spawned. `cid` is its identity.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Entry {
     pub cid: u64,
     pub role: String,
@@ -22,12 +22,15 @@ pub struct Entry {
     pub model: Option<String>,
 }
 
-/// The file: the spawned agents, and the model overrides keyed by CID.
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+/// The registry: the spawned agents, and the model overrides keyed by CID. One document, so one row of `spawned`.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "spawned")]
 pub struct Registry {
     #[serde(default)]
+    #[table(child = "spawned_entry")]
     pub spawned: Vec<Entry>,
     #[serde(default)]
+    #[table(map_value = "spawned_model")]
     pub models: BTreeMap<u64, String>,
 }
 
@@ -49,9 +52,9 @@ pub struct Arrival {
     pub project: Option<String>,
 }
 
-/// The registry and its file, plus the spawns still waiting for their hello.
+/// The registry, plus the spawns still waiting for their hello.
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     registry: Mutex<Registry>,
     /// One per spawned run, matched by role in arrival order.
     pending: Mutex<VecDeque<Pending>>,
@@ -61,20 +64,6 @@ pub struct Store {
 }
 
 impl Store {
-    /// Loads the file; a missing or unreadable file starts empty.
-    pub fn load(path: PathBuf) -> Self {
-        let registry = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            registry: Mutex::new(registry),
-            pending: Mutex::new(VecDeque::new()),
-            fleet: Mutex::new(BTreeMap::new()),
-        }
-    }
-
     /// Every spawned agent, in the order they were spawned.
     pub fn entries(&self) -> Vec<Entry> {
         self.guard().spawned.clone()
@@ -153,15 +142,12 @@ impl Store {
                     role: spawned_role,
                     model: model.clone(),
                 };
-                let saved = self.mutate(|registry| {
+                self.mutate(|registry| {
                     registry.spawned.push(entry);
                     if let Some(model) = &model {
                         registry.models.insert(cid, model.clone());
                     }
                 });
-                if let Err(e) = saved {
-                    eprintln!("apid: spawned.json not saved: {e}");
-                }
             }
         }
         Arrival {
@@ -170,7 +156,8 @@ impl Store {
         }
     }
 
-    /// Sets (or clears) the model override of `cid`, and its spawned entry's model.
+    /// Sets (or clears) the model override of `cid`, and its spawned entry's model. The saver writes it on its next
+    /// pass; the result is always `Ok` (the callers report a failure of the change, which no longer happens here).
     pub fn set_model(&self, cid: u64, model: Option<&str>) -> std::io::Result<()> {
         self.mutate(|registry| {
             match model {
@@ -180,28 +167,22 @@ impl Store {
             for entry in registry.spawned.iter_mut().filter(|entry| entry.cid == cid) {
                 entry.model = model.map(str::to_owned);
             }
-        })
+        });
+        Ok(())
     }
 
-    /// Forgets agent `cid` (it was deleted): no respawn, no override.
+    /// Forgets agent `cid` (it was deleted): no respawn, no override. As [`Store::set_model`], always `Ok`.
     pub fn forget(&self, cid: u64) -> std::io::Result<()> {
         self.mutate(|registry| {
             registry.spawned.retain(|entry| entry.cid != cid);
             registry.models.remove(&cid);
-        })
+        });
+        Ok(())
     }
 
-    /// Applies `change` to a copy, writes the copy atomically, then keeps it.
-    fn mutate(&self, change: impl FnOnce(&mut Registry)) -> std::io::Result<()> {
-        let mut current = self.guard();
-        let mut next = current.clone();
-        change(&mut next);
-        let text = serde_json::to_string_pretty(&next).map_err(std::io::Error::other)?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &self.path)?;
-        *current = next;
-        Ok(())
+    /// Applies `change` to the registry in memory.
+    fn mutate(&self, change: impl FnOnce(&mut Registry)) {
+        change(&mut self.guard());
     }
 
     fn guard(&self) -> MutexGuard<'_, Registry> {
@@ -246,37 +227,44 @@ pub fn spawn_respawn(app: Arc<App>) {
 }
 
 impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string_pretty(&*self.guard()).unwrap_or_default()
+    /// The registry's rows, as it is now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::one(def(), &*self.guard())
     }
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let registry: Registry = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        self.mutate(|current| *current = registry)
-            .map_err(|e| e.to_string())
+    /// Replaces the registry with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored = apz_store::table::load_one::<Registry>(conn, def())?;
+        *self.guard() = stored.unwrap_or_default();
+        Ok(())
     }
+}
+
+/// The registry's tables: `spawned`, with its spawned agents and model overrides as child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Registry)
 }
 
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
 
+    /// A registry saved to its tables and loaded into a fresh store is the same registry.
     #[test]
-    fn snapshot_restores_into_a_fresh_store() {
-        let dir = std::env::temp_dir().join(format!("apid-spawned-snap-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::load(dir.join("spawned.json"));
+    fn the_registry_comes_back_whole_from_its_tables() {
+        let store = Store::default();
         store.expect_cid(42, "worker", Some("model-a".into()), None);
         store.hello(42, "worker");
-        let json = store.snapshot();
+        store.set_model(7, Some("model-b")).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
 
-        let other = Store::load(dir.join("other.json"));
-        other.restore(&json).unwrap();
-        assert_eq!(other.snapshot(), json);
+        let other = Store::default();
+        other.load(&conn).unwrap();
+        assert_eq!(*other.guard(), *store.guard());
         assert_eq!(other.model_for(42).as_deref(), Some("model-a"));
-        assert!(other.restore("not json").is_err());
+        assert_eq!(other.model_for(7).as_deref(), Some("model-b"));
     }
 }
 
@@ -286,9 +274,7 @@ mod tests {
 
     #[test]
     fn a_fleet_role_comes_from_noded_and_a_spawn_wins() {
-        let dir = std::env::temp_dir().join(format!("apid-spawned-fleet-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::load(dir.join("spawned.json"));
+        let store = Store::default();
         // A guest's own claim never gives it a role; noded's report does.
         store.hello(200, "orchestrator");
         assert_eq!(store.role_of(200), None);
@@ -300,14 +286,11 @@ mod tests {
         store.hello(201, "builder");
         store.note_fleet_role(201, "qa");
         assert_eq!(store.role_of(201).as_deref(), Some("builder"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_spawn_for_a_project_brings_it_on_the_first_hello_only() {
-        let dir = std::env::temp_dir().join(format!("apid-spawned-project-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::load(dir.join("spawned.json"));
+        let store = Store::default();
         store.expect_cid(301, "builder", None, Some("pr2".into()));
         store.expect_cid(300, "qa", None, None);
         assert_eq!(
@@ -321,14 +304,11 @@ mod tests {
             None,
             "a reconnect joins nothing again"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_fork_is_matched_by_its_cid_and_a_role_never_takes_it() {
-        let dir = std::env::temp_dir().join(format!("apid-spawned-fork-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::load(dir.join("spawned.json"));
+        let store = Store::default();
         store.expect_cid(501, "builder", Some("model-b".into()), None);
         assert_eq!(
             store.hello(502, "builder"),
@@ -354,22 +334,25 @@ mod tests {
             "the spawn's own CID takes it whatever role its hello claims"
         );
         assert_eq!(store.role_of(503).as_deref(), Some("orchestrator"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The registry is kept in its tables: a spawn, an override and a forget come back from the store as they were.
     #[test]
     fn registry_survives_a_round_trip() {
-        let dir = std::env::temp_dir().join(format!("apid-spawned-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("spawned.json");
-        let _ = std::fs::remove_file(&path);
-
-        let store = Store::load(path.clone());
+        let store = Store::default();
         store.expect_cid(42, "worker", Some("model-a".into()), None);
         assert_eq!(store.hello(42, "worker").model.as_deref(), Some("model-a"));
         store.set_model(7, Some("model-b")).unwrap();
+        let saved = |store: &Store| {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(&def().ddl()).unwrap();
+            apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+            let reloaded = Store::default();
+            reloaded.load(&conn).unwrap();
+            reloaded
+        };
 
-        let reloaded = Store::load(path.clone());
+        let reloaded = saved(&store);
         assert_eq!(
             reloaded.entries(),
             vec![Entry {
@@ -381,9 +364,9 @@ mod tests {
         assert_eq!(reloaded.model_for(7).as_deref(), Some("model-b"));
 
         reloaded.forget(42).unwrap();
-        let after = Store::load(path);
+        let after = saved(&reloaded);
         assert!(after.entries().is_empty());
         assert_eq!(after.model_for(42), None);
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(after.model_for(7).as_deref(), Some("model-b"));
     }
 }

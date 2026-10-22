@@ -79,6 +79,60 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.providers.load(conn),
         },
         // batch C4
+        Component {
+            name: "spawned",
+            def: crate::spawned::def,
+            rows: |app| app.spawned.rows(),
+            load: |app, conn| app.spawned.load(conn),
+        },
+        Component {
+            name: "rules",
+            def: crate::laws::def,
+            rows: |app| app.laws.rows(),
+            load: |app, conn| app.laws.load(conn),
+        },
+        Component {
+            name: "work",
+            def: crate::scheduler::def,
+            rows: |app| app.work.rows(),
+            load: |app, conn| app.work.load(conn, app.store.db(crate::store::PLAZA)),
+        },
+        Component {
+            name: "control",
+            def: crate::control::def,
+            rows: |app| app.control.rows(),
+            load: |app, conn| app.control.load(conn),
+        },
+        Component {
+            name: "custom_roles",
+            def: crate::roles_custom::def,
+            rows: |app| app.custom_roles.rows(),
+            load: |app, conn| app.custom_roles.load(conn),
+        },
+        Component {
+            name: "agent_proposals",
+            def: crate::agent_proposals::def,
+            rows: |app| app.agent_proposals.rows(),
+            load: |app, conn| app.agent_proposals.load(conn),
+        },
+        Component {
+            name: "nodes",
+            def: crate::nodes::def,
+            rows: |app| app.nodes.rows(),
+            load: |app, conn| app.nodes.load(conn),
+        },
+        Component {
+            name: "stations",
+            def: crate::stations::store_def,
+            rows: |app| app.stations.rows(),
+            load: |app, conn| app.stations.load(conn),
+        },
+        Component {
+            name: "social",
+            def: apz_plaza::social::def,
+            rows: |app| app.plaza.social.rows(),
+            load: |app, conn| app.plaza.social.load(conn),
+        },
         // batch C5
         // The work engine's records (phase 0).
         Component {

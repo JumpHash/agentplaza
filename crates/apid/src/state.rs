@@ -208,7 +208,7 @@ pub struct App {
     pub models: crate::foundry::registry::Models,
     /// The Hugging Face import queue and the owner's token (foundry/hf_import.rs).
     pub hf: crate::foundry::hf_import::Imports,
-    /// Operator-spawned agents and model overrides, at `<state-dir>/spawned.json`.
+    /// Operator-spawned agents and model overrides (plaza.db, the `spawned` table).
     pub spawned: spawned::Store,
     pub transcripts: transcript::Store,
     pub work: scheduler::Queues,
@@ -270,7 +270,7 @@ impl App {
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
-            laws: attached_laws(&config.state_dir),
+            laws: crate::laws::global(),
             connectors: crate::connectors::Store::new(Arc::clone(&vault)),
             approvals: crate::approvals::Store::load(&config.state_dir),
             acp_sessions: crate::acp::store::Sessions::default(),
@@ -358,7 +358,7 @@ impl App {
             engines: crate::engine_instances::Store::load(&config.state_dir)?,
             usage_providers: crate::usage_providers::Store::load(&config.state_dir)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
-            spawned: spawned::Store::load(config.state_dir.join("spawned.json")),
+            spawned: spawned::Store::default(),
             agents: agents::Roster::with_db(roster_db),
             models: crate::foundry::registry::Models::open(&config.state_dir),
             hf: crate::foundry::hf_import::Imports::open(&config.state_dir),
@@ -376,7 +376,6 @@ impl App {
         agents::spawn_reconcile(Arc::clone(&app));
         crate::sleep::spawn_sweeper(Arc::clone(&app));
         crate::e2b::start(&app);
-        spawned::spawn_respawn(Arc::clone(&app));
         scheduler::spawn(Arc::clone(&app));
         crate::mover::spawn(Arc::clone(&app));
         crate::steps::spawn(Arc::clone(&app));
@@ -402,6 +401,8 @@ impl App {
         for problem in crate::store::saver::load(&app) {
             eprintln!("apid: store: {problem}");
         }
+        // Once the spawned agents are loaded: the respawn reads them as it starts.
+        spawned::spawn_respawn(Arc::clone(&app));
         // A budget hold is written through to plaza.db, acknowledged before its call is sent (budgets.rs).
         app.budgets
             .attach(Arc::clone(app.store.db(crate::store::PLAZA)));
@@ -532,13 +533,6 @@ impl App {
 /// Reads `KEY=VALUE` lines (blank lines and `#` comments skipped; an
 /// `export ` prefix and surrounding quotes allowed). The values are provider
 /// credentials: they are handed to the gateway, never logged.
-/// The plaza's one law set (`laws::global`), made to read and write the state directory.
-fn attached_laws(state_dir: &Path) -> &'static crate::laws::Laws {
-    let laws = crate::laws::global();
-    laws.attach(state_dir);
-    laws
-}
-
 fn read_env_file(path: &Path) -> BTreeMap<String, String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return BTreeMap::new();

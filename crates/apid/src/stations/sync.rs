@@ -91,9 +91,10 @@ pub const MASS_DELETE_FILES: usize = 20;
 
 /// Why a station's sync is paused: what the pass found, the deletions it would have made, and when the pause began
 /// (kept on the station's record, see `registry::Station::sync_pause`).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, apz_store::Table)]
 pub struct SyncPause {
     pub reason: String,
+    #[table(list = "station_sync_pause_deletion")]
     pub deletions: Vec<String>,
     #[serde(default)]
     pub since_ms: u64,
