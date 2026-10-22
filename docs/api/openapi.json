@@ -9998,6 +9998,76 @@
         }
       }
     },
+    "/v1/storage": {
+      "get": {
+        "operationId": "get_v1_storage",
+        "tags": [
+          "storage"
+        ],
+        "summary": "The hub's object store: its blobs and their bytes on disk",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/storage/sweep": {
+      "post": {
+        "operationId": "post_v1_storage_sweep",
+        "tags": [
+          "storage"
+        ],
+        "summary": "Free the blobs nothing references; answers the bytes freed",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The hub failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/toolbox": {
       "get": {
         "operationId": "get_v1_toolbox",

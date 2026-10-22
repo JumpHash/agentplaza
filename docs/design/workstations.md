@@ -173,10 +173,10 @@ through the hub with an owner token.
 - Live view: `WS /v1/stations/{id}/screen` streams frames to the owner (WebSockets only, project rule): compressed
   tiles for the first version, H.264 through WebCodecs later. `WS /v1/stations/{id}/control` carries the owner's
   takeover input.
-- Recordings: per lease, screenshots and actions with timestamps, stored as blobs in Garage with an index row in
-  Postgres, and each frame's capture time in `station_recording_frames`, which playback runs on. Settings on the hub: on or
-  off, retention days, frame rate (1 to 5 a second, the hub's sampler cap), and whether to record the owner's takeovers.
-  Edited from the web, the desktop app and the CLI/TUI (`agentplaza stations recordings ...`).
+- Recordings: per lease, screenshots and actions with timestamps, stored as blobs in the hub's object store (`apz-blobs`)
+  with an index row in Postgres, and each frame's capture time in `station_recording_frames`, which playback runs on.
+  Settings on the hub: on or off, retention days, frame rate (1 to 5 a second, the hub's sampler cap), and whether to
+  record the owner's takeovers. Edited from the web, the desktop app and the CLI/TUI (`agentplaza stations recordings ...`).
 - Workstation setup on the hub (per workstation, edited from the web, the desktop app and the CLI/TUI): the agent OS
   account (chosen at enrollment), recording on or off and retention, the work folder, snapshot-and-reset for VMs, and
   the **takeover policy**: when the owner takes over a pixel session, either the agent waits and resumes when the
@@ -192,8 +192,8 @@ through the hub with an owner token.
 
 Both paths the owner chose:
 
-- **Deliverables:** an agent marks a file as a deliverable and it is copied into the plaza Library (Garage), exactly
-  as files from agent VMs are today.
+- **Deliverables:** an agent marks a file as a deliverable and it is copied into the plaza Library, which keeps it in the
+  hub's object store (`apz-blobs`), exactly as files from agent VMs are today.
 - **Work folder sync, both ways:** each workstation has a work folder (default `~/AgentPlaza` under the agent's OS
   user, changeable in the workstation's setup) that syncs with the hub continuously in both directions,
   content-addressed, so outputs land in the plaza even if nobody marks them, and files the owner or other agents put

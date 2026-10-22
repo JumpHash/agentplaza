@@ -98,6 +98,7 @@ mod spawned;
 mod state;
 mod stations;
 mod steps;
+mod storage;
 mod store;
 mod task_graph;
 mod task_plan;

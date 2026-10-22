@@ -427,7 +427,7 @@ export interface ProcessUsage { name: string; pid: number; cpu_percent: number; 
 /** An agent VM's process, and its guest memory as the balloon reports it. */
 export interface VmUsage extends ProcessUsage { run: string; vm: number; cid: number | null; role: string | null; usable_mib: number | null; guest_used_mib: number | null }
 export interface PlazaUsage {
-  /** apid, the hub (vsockd), noded, garage — whichever run on this machine. */
+  /** apid, the hub (vsockd), noded — whichever run on this machine. */
   services: ProcessUsage[];
   vms: VmUsage[];
   total: { cpu_percent: number; rss_mib: number; services_cpu_percent: number; services_rss_mib: number; vms_cpu_percent: number; vms_rss_mib: number };
@@ -477,9 +477,7 @@ export type UnfurlCard = { kind: string; url?: string | null } & Record<string, 
 /** A deliverable in the Library: a file an agent handed in with deliver_file. */
 export interface Deliverable {
   id: string; name: string; title: string; description: string | null; content_type: string; size: number;
-  author_cid: number; author: string; task: string | null; created_ms: number; sha256: string;
-  /** Where it is stored: "garage" (S3) or "local". */
-  store: string;
+  author_cid: number; author: string; task: string | null; created_ms: number; hash: string;
   /** A deliverable the owner asked for, or a file an agent shared. */
   kind: 'deliverable' | 'shared';
   /** public: every agent (and the board); private: its author, the agents in `allowed`, and the owner. */
@@ -1500,10 +1498,10 @@ export interface SkillSummary {
 }
 /** The editable parts of a skill (PUT /v1/skills/{id}): its title and tags. */
 export interface SkillMeta { title: string; tags: string[] }
-export interface SkillFile { path: string; sha256: string; size: number; executable: boolean }
+export interface SkillFile { path: string; hash: string; size: number; executable: boolean }
 export interface SkillVersionMeta {
   version: number; note: string; author: string; created_ms: number; score: number; errors: number; warnings: number;
-  infos: number; rules_version: number; sha256: string; file_count: number; total_bytes: number; source_commit: string | null;
+  infos: number; rules_version: number; hash: string; file_count: number; total_bytes: number; source_commit: string | null;
 }
 /** A whole version. `stale` when scored under an older rule set; `recheck` is then today's report. */
 export interface SkillVersion extends SkillVersionMeta {
@@ -1518,8 +1516,8 @@ export type SkillAction = 'create' | 'version' | 'publish' | 'unpublish' | 'edit
 export interface SkillEvent { id: number; skill_id: string; action: SkillAction; version: number | null; actor: string; at_ms: number }
 export interface SkillRule { id: string; severity: SkillSeverity; title: string; why: string }
 export interface SkillRules { rules_version: number; rules: SkillRule[]; template: string }
-/** A file to save: new bytes (base64), or an unchanged file by its sha256. */
-export type SkillFileIn = { path: string; executable: boolean } & ({ content_b64: string } | { sha256: string });
+/** A file to save: new bytes (base64), or an unchanged file by its hash. */
+export type SkillFileIn = { path: string; executable: boolean } & ({ content_b64: string } | { hash: string });
 /** An import preview (15 minutes): the skills found, each checked. `exists` names a live skill with the same name. */
 export interface SkillPreview {
   preview_id: string; source: SkillSource; expires_ms: number;

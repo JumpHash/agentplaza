@@ -75,7 +75,7 @@ pub struct Summary {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileMeta {
     path: String,
-    sha256: String,
+    hash: String,
     size: u64,
     executable: bool,
 }
@@ -269,7 +269,7 @@ enum Body {
     Binary(Vec<u8>),
 }
 
-/// One file of the draft. `saved` is the saved file's (sha256, size); None for a file this draft adds or restores.
+/// One file of the draft. `saved` is the saved file's (hash, size); None for a file this draft adds or restores.
 #[derive(Debug)]
 pub struct Entry {
     path: String,
@@ -1192,7 +1192,7 @@ fn history(id: &str, ctx: &Ctx) -> Task<Msg> {
     )
 }
 
-/// The draft as a new version on top of the latest one. Unchanged files go by their sha256, the rest by their bytes.
+/// The draft as a new version on top of the latest one. Unchanged files go by their hash, the rest by their bytes.
 fn save(id: &str, l: &Loaded, ctx: &Ctx) -> Task<Msg> {
     let (c, id) = (ctx.client.clone(), id.to_string());
     let skill_md = source_text(&l.skill_md);
@@ -1281,7 +1281,7 @@ fn build(detail: Detail, version: Version, files: Vec<Vec<u8>>) -> Loaded {
         .map(|(f, bytes)| Entry {
             path: f.path.clone(),
             executable: f.executable,
-            saved: Some((f.sha256.clone(), f.size)),
+            saved: Some((f.hash.clone(), f.size)),
             body: body_of(bytes),
         })
         .collect();
@@ -1333,11 +1333,11 @@ fn body_of(bytes: Vec<u8>) -> Body {
     }
 }
 
-/// The JSON of one file in a save: its sha256 when unchanged, its bytes (base64) otherwise.
+/// The JSON of one file in a save: its hash when unchanged, its bytes (base64) otherwise.
 fn file_in(e: &Entry) -> Value {
     match &e.saved {
-        Some((sha256, _)) if !e.text_changed() => {
-            json!({ "path": e.path, "executable": e.executable, "sha256": sha256 })
+        Some((hash, _)) if !e.text_changed() => {
+            json!({ "path": e.path, "executable": e.executable, "hash": hash })
         }
         _ => {
             json!({ "path": e.path, "executable": e.executable, "content_b64": STANDARD.encode(e.bytes()) })

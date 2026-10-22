@@ -1,22 +1,17 @@
-//! The Library: deliverables agents hand in (files they were asked to produce), kept in the
-//! plaza's object store — Garage over S3 when configured, a local folder otherwise.
+//! The Library: deliverables agents hand in (files they were asked to produce), kept in the hub's object store (apz-blobs),
+//! by BLAKE3 hash.
 
 use std::collections::BTreeMap;
-use std::io;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use apz_gateway::s3::S3;
+use apz_blobs::Hash;
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 use crate::internal::authorized;
-use crate::providers::write_atomic;
 use crate::state::App;
-use crate::vault::OnBehalf;
 
 /// The longest name a deliverable may carry.
 const NAME_CAP: usize = 120;
@@ -36,9 +31,8 @@ pub struct Deliverable {
     pub author: String,
     pub task: Option<String>,
     pub created_ms: u64,
-    pub sha256: String,
-    /// "garage" or "local".
-    pub store: String,
+    /// The bytes' BLAKE3 hash (lower-case hex): where the object store holds them.
+    pub hash: String,
     /// "deliverable" (handed in with deliver_file) or "shared" (share_file).
     #[serde(default = "deliverable_kind")]
     pub kind: String,
@@ -74,12 +68,8 @@ pub struct Upload {
 }
 
 pub struct Store {
-    /// `<state-dir>/files`: the blobs (and objects) when they are kept locally.
-    dir: PathBuf,
-    /// Garage's address (endpoint, bucket, region), when configured. Its key pair is the vault's (`tool:garage`).
-    garage: Option<Garage>,
-    /// The vault the Garage keys are read from, per use (it may be sealed at load).
-    vault: Arc<crate::vault::Store>,
+    /// The hub's object store: the bytes of every file, by hash.
+    blobs: Arc<apz_blobs::Blobs>,
     /// Every deliverable, oldest first. The saver keeps it in `plaza.db` (see `rows` and `load`).
     index: Mutex<Vec<Deliverable>>,
 }
@@ -135,34 +125,18 @@ impl Store {
         Ok(())
     }
 
-    /// Opens the library in `<state-dir>/files`, empty until `load` fills it from `plaza.db` at start, and picks the
-    /// store: Garage when the environment configures it, else a local folder.
-    pub fn open(
-        state_dir: &Path,
-        env: &BTreeMap<String, String>,
-        vault: Arc<crate::vault::Store>,
-    ) -> io::Result<Self> {
-        let dir = state_dir.join("files");
-        std::fs::create_dir_all(&dir)?;
-        for name in GARAGE_KEYS {
-            vault.register_consumer(GARAGE_BINDING, "Garage object store", name);
-        }
-        Ok(Self {
-            dir,
-            garage: garage_from(env),
-            vault,
+    /// Opens the library over the object store, empty until `load` fills it from `plaza.db` at start.
+    pub fn open(blobs: Arc<apz_blobs::Blobs>) -> Self {
+        Self {
+            blobs,
             index: Mutex::new(Vec::new()),
-        })
+        }
     }
 
-    /// Stores the bytes and indexes them. The bytes go first, so an index entry never names a missing object. The index
+    /// Stores the bytes and indexes them. The bytes go first, so an index entry never names a missing blob. The index
     /// is saved by the saver (an owner's upload is saved at once: `owner_put_route`).
     pub fn add(&self, upload: Upload, body: &[u8]) -> Result<Deliverable, String> {
-        let store = if self.garage.is_some() && self.keys().is_some() {
-            "garage"
-        } else {
-            "local"
-        };
+        let hash = self.blobs.put(body)?;
         let item = Deliverable {
             id: new_id(),
             name: upload.name,
@@ -174,13 +148,11 @@ impl Store {
             author: upload.author,
             task: upload.task,
             created_ms: now_ms(),
-            sha256: sha256_hex(body),
-            store: store.to_string(),
+            hash: hash.to_string(),
             kind: upload.kind,
             audience: upload.audience,
             allowed: upload.allowed,
         };
-        self.write_blob(&item, body)?;
         lock(&self.index).push(item.clone());
         Ok(item)
     }
@@ -194,127 +166,25 @@ impl Store {
         lock(&self.index).iter().find(|d| d.id == id).cloned()
     }
 
-    /// The bytes of one deliverable, from wherever it is kept.
+    /// The bytes of one deliverable, from the object store.
     pub fn read_blob(&self, item: &Deliverable) -> Result<Vec<u8>, String> {
-        if item.store == "garage" {
-            return self.garage()?.get(&object_key(item));
-        }
-        std::fs::read(self.blob_path(&item.id)).map_err(|e| e.to_string())
+        self.blobs.get(&item.hash.parse::<Hash>()?)
     }
 
-    /// Removes a deliverable's bytes, then its entry. Returns the entry, or None when unknown.
-    pub fn remove(&self, id: &str) -> Result<Option<Deliverable>, String> {
-        let Some(item) = self.find(id) else {
-            return Ok(None);
-        };
-        self.delete_blob(&item)?;
-        lock(&self.index).retain(|d| d.id != id);
-        Ok(Some(item))
+    /// The hashes of every file's bytes: the sweep keeps them (storage.rs).
+    pub fn hashes(&self) -> Vec<Hash> {
+        lock(&self.index)
+            .iter()
+            .filter_map(|d| d.hash.parse().ok())
+            .collect()
     }
 
-    /// Garage's key pair from the vault (`tool:garage`), or the process environment when no entry of that name is
-    /// bound to it. Read per use.
-    fn keys(&self) -> Option<(String, String)> {
-        let access = self
-            .vault
-            .value_for(GARAGE_KEYS[0], GARAGE_BINDING, &OnBehalf::Hub)?;
-        let secret = self
-            .vault
-            .value_for(GARAGE_KEYS[1], GARAGE_BINDING, &OnBehalf::Hub)?;
-        Some((access, secret))
-    }
-
-    /// A client for Garage: the address from the settings, the keys from the vault.
-    fn garage(&self) -> Result<S3, String> {
-        let address = self
-            .garage
-            .as_ref()
-            .ok_or_else(|| "the file is in Garage, which is not configured".to_string())?;
-        let (access_key, secret_key) = self.keys().ok_or_else(|| {
-            "the Garage keys are not in the vault (or the vault is sealed)".to_string()
-        })?;
-        Ok(S3 {
-            endpoint: address.endpoint.clone(),
-            bucket: address.bucket.clone(),
-            region: address.region.clone(),
-            access_key,
-            secret_key,
-        })
-    }
-
-    /// Whether Garage is configured; then the objects below are kept there.
-    pub fn has_garage(&self) -> bool {
-        self.garage.is_some()
-    }
-
-    /// Writes an object that is not a deliverable (skill files): Garage when it is configured, else
-    /// `<dir>/objects/<key>`. Not indexed.
-    pub fn put_object(&self, key: &str, bytes: &[u8]) -> Result<(), String> {
-        if self.garage.is_some() {
-            return self.garage()?.put(key, bytes, "application/octet-stream");
-        }
-        let path = self.object_path(key)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        write_atomic(&path, bytes, 0o600).map_err(|e| e.to_string())
-    }
-
-    /// Reads an object `put_object` wrote.
-    pub fn get_object(&self, key: &str) -> Result<Vec<u8>, String> {
-        if self.garage.is_some() {
-            return self.garage()?.get(key);
-        }
-        std::fs::read(self.object_path(key)?).map_err(|e| e.to_string())
-    }
-
-    /// Deletes an object `put_object` wrote. A missing one is not an error.
-    pub fn delete_object(&self, key: &str) -> Result<(), String> {
-        if self.garage.is_some() {
-            return self.garage()?.delete(key);
-        }
-        match std::fs::remove_file(self.object_path(key)?) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// `<dir>/objects/<key>`, for a key of plain segments only.
-    fn object_path(&self, key: &str) -> Result<PathBuf, String> {
-        if key.is_empty()
-            || key
-                .split('/')
-                .any(|s| s.is_empty() || s == "." || s == "..")
-        {
-            return Err(format!("{key:?} is not an object key"));
-        }
-        Ok(self.dir.join("objects").join(key))
-    }
-
-    fn blob_path(&self, id: &str) -> PathBuf {
-        self.dir.join("blobs").join(id)
-    }
-
-    fn write_blob(&self, item: &Deliverable, body: &[u8]) -> Result<(), String> {
-        if item.store == "garage" {
-            return self
-                .garage()?
-                .put(&object_key(item), body, &item.content_type);
-        }
-        std::fs::create_dir_all(self.dir.join("blobs")).map_err(|e| e.to_string())?;
-        write_atomic(&self.blob_path(&item.id), body, 0o600).map_err(|e| e.to_string())
-    }
-
-    fn delete_blob(&self, item: &Deliverable) -> Result<(), String> {
-        if item.store == "garage" {
-            return self.garage()?.delete(&object_key(item));
-        }
-        match std::fs::remove_file(self.blob_path(&item.id)) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
+    /// Removes a deliverable's entry, returning it, or None when unknown. Its bytes stay in the object store until the
+    /// sweep finds that nothing names them.
+    pub fn remove(&self, id: &str) -> Option<Deliverable> {
+        let mut index = lock(&self.index);
+        let pos = index.iter().position(|d| d.id == id)?;
+        Some(index.remove(pos))
     }
 }
 
@@ -456,21 +326,20 @@ fn meta_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
 
 fn content_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     match app.deliverables.find(p.get("id")) {
-        Some(item) => serve(app, &item, req.query_param("download") == Some("1")),
+        Some(item) => serve(app, req, &item, req.query_param("download") == Some("1")),
         None => Response::error(404, "no such file"),
     }
 }
 
 fn delete_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     match app.deliverables.remove(p.get("id")) {
-        Ok(Some(item)) => {
+        Some(item) => {
             crate::store::saver::save_now(app, "deliverables");
             app.bus
                 .publish("file", &json!({ "id": item.id, "deleted": true }));
             Response::json(200, &json!({ "deleted": item.id }))
         }
-        Ok(None) => Response::error(404, "no such file"),
-        Err(e) => Response::error(500, &e),
+        None => Response::error(404, "no such file"),
     }
 }
 
@@ -486,7 +355,7 @@ fn put_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 fn agent_get_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     authorized(app, req, p.get("cid"), |cid| {
         Ok(match app.deliverables.find(p.get("id")) {
-            Some(item) if app.deliverables.can_read(&item.id, cid) => serve(app, &item, false),
+            Some(item) if app.deliverables.can_read(&item.id, cid) => serve(app, req, &item, false),
             _ => Response::error(404, "no such file"),
         })
     })
@@ -621,17 +490,10 @@ pub(crate) fn served(
     (served_type, headers)
 }
 
-/// The bytes with their content type and headers (see `served`).
-fn serve(app: &App, item: &Deliverable, download: bool) -> Response {
-    let bytes = match app.deliverables.read_blob(item) {
-        Ok(bytes) => bytes,
-        Err(e) => return Response::error(500, &e),
-    };
+/// The bytes with their content type and headers (see `served`), a Range request included (`storage::blob_response`).
+fn serve(app: &App, req: &Request, item: &Deliverable, download: bool) -> Response {
     let (content_type, headers) = served(&item.content_type, &item.name, download);
-    headers.into_iter().fold(
-        Response::new(200, &content_type, bytes),
-        |response, (name, value)| response.with_header(name, &value),
-    )
+    crate::storage::blob_response(&app.blobs, req, &item.hash, &content_type, headers)
 }
 
 /// The name as stored: its basename, with anything outside `[A-Za-z0-9._-]` made `_`. A name
@@ -685,37 +547,6 @@ pub fn guess_type(name: &str) -> &'static str {
     }
 }
 
-/// The garage object key of a deliverable.
-fn object_key(item: &Deliverable) -> String {
-    format!("deliverables/{}/{}", item.id, item.name)
-}
-
-/// Garage's keys are the vault's entries of these names, bound to `tool:garage`.
-const GARAGE_KEYS: [&str; 2] = ["APZ_S3_ACCESS_KEY", "APZ_S3_SECRET_KEY"];
-const GARAGE_BINDING: &str = "tool:garage";
-
-/// Garage's address: the settings that are not secrets.
-struct Garage {
-    endpoint: String,
-    bucket: String,
-    region: String,
-}
-
-/// Garage's address, when `APZ_S3_ENDPOINT` and `APZ_S3_BUCKET` are set (in the env file or the process).
-fn garage_from(env: &BTreeMap<String, String>) -> Option<Garage> {
-    let get = |key: &str| {
-        env.get(key)
-            .cloned()
-            .or_else(|| std::env::var(key).ok())
-            .filter(|v| !v.is_empty())
-    };
-    Some(Garage {
-        endpoint: get("APZ_S3_ENDPOINT")?,
-        bucket: get("APZ_S3_BUCKET")?,
-        region: get("APZ_S3_REGION").unwrap_or_else(|| "garage".to_string()),
-    })
-}
-
 /// `f` and twelve hex digits from the OS random source (the clock if that is unreadable).
 fn new_id() -> String {
     let mut bytes = [0u8; 6];
@@ -736,13 +567,6 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 /// A query value, percent-decoded (`+` is a space), trimmed; `None` when absent or empty.
@@ -829,12 +653,11 @@ pub fn def() -> &'static apz_store::TableDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
-    /// A booted vault in `dir`, as the hub has it at start.
-    fn vault_in(dir: &Path) -> Arc<crate::vault::Store> {
-        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
-        vault.boot(apz_plaza::now_ms()).expect("boot");
-        Arc::new(vault)
+    /// The object store in `<dir>/blobs`, as the hub opens it at start.
+    fn blobs_in(dir: &Path) -> Arc<apz_blobs::Blobs> {
+        Arc::new(apz_blobs::Blobs::open(&dir.join("blobs")).expect("the object store opens"))
     }
 
     #[test]
@@ -847,9 +670,7 @@ mod tests {
 
     #[test]
     fn rows_load_back_whole_from_their_tables() {
-        let env = BTreeMap::new();
-        let dir = scratch("rows");
-        let a = Store::open(&dir, &env, vault_in(&scratch("rows-vault"))).unwrap();
+        let a = Store::open(blobs_in(&scratch("rows")));
         a.add(upload("report.txt"), b"hello").unwrap();
         let mut private = upload("notes.md");
         private.description = Some("Working notes".to_string());
@@ -857,16 +678,10 @@ mod tests {
         private.allowed = vec![2, 3];
         a.add(private, b"private bytes").unwrap();
         // The index is the rows in `plaza.db`, not a file.
-        assert!(!dir.join("files").join("index.json").exists());
         let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(&def().ddl()).unwrap();
         apz_store::table::replace(&conn, def(), &a.rows().unwrap()).unwrap();
-        let b = Store::open(
-            &scratch("rows-restored"),
-            &env,
-            vault_in(&scratch("rows-restored-vault")),
-        )
-        .unwrap();
+        let b = Store::open(blobs_in(&scratch("rows-restored")));
         b.load(&conn).unwrap();
         assert_eq!(
             serde_json::to_value(b.list()).unwrap(),
@@ -903,33 +718,36 @@ mod tests {
     #[test]
     fn put_list_get_delete_round_trip() {
         let dir = scratch("roundtrip");
-        let env = BTreeMap::new();
-        let store = Store::open(&dir, &env, vault_in(&dir)).unwrap();
+        let store = Store::open(blobs_in(&dir));
         let body = b"hello deliverable".to_vec();
         let item = store.add(upload("report.txt"), &body).unwrap();
         assert!(item.id.starts_with('f') && item.id.len() == 13);
-        assert_eq!(item.store, "local");
         assert_eq!(item.size, body.len() as u64);
-        assert_eq!(item.sha256, sha256_hex(&body));
+        // The row names the bytes by their BLAKE3 hash, and the object store holds them under it.
+        assert_eq!(item.hash, Hash::of(&body).to_string());
         assert_eq!(store.list().len(), 1);
         let found = store.find(&item.id).unwrap();
         assert_eq!(store.read_blob(&found).unwrap(), body);
-        // A restart loads the rows the saver wrote; the first store (and its vault, which holds the folder) goes first.
+        assert_eq!(store.hashes(), vec![Hash::of(&body)]);
+        // A restart loads the rows the saver wrote, over the same object store.
         let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(&def().ddl()).unwrap();
         apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
         drop(store);
-        let reloaded = Store::open(&dir, &env, vault_in(&dir)).unwrap();
+        let reloaded = Store::open(blobs_in(&dir));
         reloaded.load(&conn).unwrap();
         assert_eq!(reloaded.list()[0].id, item.id);
-        assert!(reloaded.remove(&item.id).unwrap().is_some());
+        assert_eq!(reloaded.read_blob(&item).unwrap(), body);
+        // A removal drops the entry; its bytes stay until the sweep finds that nothing names them.
+        assert!(reloaded.remove(&item.id).is_some());
         assert!(reloaded.list().is_empty());
         assert!(reloaded.find(&item.id).is_none());
-        assert!(!dir.join("files").join("blobs").join(&item.id).exists());
+        assert!(reloaded.hashes().is_empty());
+        assert_eq!(reloaded.blobs.get(&Hash::of(&body)).unwrap(), body);
         // The removal is saved as a removal.
         apz_store::table::replace(&conn, def(), &reloaded.rows().unwrap()).unwrap();
         drop(reloaded);
-        let emptied = Store::open(&dir, &env, vault_in(&dir)).unwrap();
+        let emptied = Store::open(blobs_in(&dir));
         emptied.load(&conn).unwrap();
         assert!(emptied.list().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1039,7 +857,7 @@ mod tests {
     #[test]
     fn private_files_are_readable_by_author_and_grantees_only() {
         let dir = scratch("access");
-        let store = Store::open(&dir, &BTreeMap::new(), vault_in(&dir)).unwrap();
+        let store = Store::open(blobs_in(&dir));
         let mut up = upload("secret.txt");
         up.author_cid = 1;
         up.audience = "private".to_string();

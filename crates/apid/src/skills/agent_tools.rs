@@ -152,7 +152,7 @@ fn read(
         .iter()
         .find(|file| &file.path == path)
         .ok_or_else(|| format!("{name} has no file {path}"))?;
-    let bytes = skills.blobs().get(&file.sha256)?;
+    let bytes = skills.blobs().get(&file.hash)?;
     Ok(match String::from_utf8(bytes) {
         Ok(text) => cap(text),
         Err(err) => {

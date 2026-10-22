@@ -620,8 +620,7 @@ CREATE TABLE "deliverable" (
     "author" TEXT NOT NULL,
     "task" TEXT,
     "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
-    "sha256" TEXT NOT NULL,
-    "store" TEXT NOT NULL,
+    "hash" TEXT NOT NULL,
     "kind" TEXT NOT NULL,
     "audience" TEXT NOT NULL,
     PRIMARY KEY ("id")
@@ -2725,6 +2724,7 @@ CREATE TABLE "station_recording_frame" (
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
     "ts_ms" INTEGER NOT NULL CHECK ("ts_ms" >= 0),
     "bytes" INTEGER NOT NULL CHECK ("bytes" >= 0),
+    "hash" TEXT NOT NULL,
     PRIMARY KEY ("recording", "seq")
 ) STRICT;
 

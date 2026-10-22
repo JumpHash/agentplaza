@@ -45,8 +45,7 @@ pub struct Deliverable {
     #[serde(default)]
     pub task: Option<String>,
     pub created_ms: i64,
-    pub sha256: String,
-    pub store: String,
+    pub hash: String,
     pub kind: String,
     pub audience: String,
     #[serde(default)]
@@ -1087,7 +1086,7 @@ fn glyph_for(name: &str, group: Group) -> (&'static str, Tint) {
     }
 }
 
-/// A tile's preview box: the tint's ground, its content centred, and an optional tag at the top right (the store).
+/// A tile's preview box: the tint's ground, its content centred, and an optional tag at the top right.
 fn thumb_box<'a>(tint: Tint, content: Element<'a, Msg>, tag: Option<&str>) -> Element<'a, Msg> {
     let (ground, _) = tint.colours();
     let body = container(content)
@@ -1152,8 +1151,8 @@ fn file_tiles<'a>(state: &'a State) -> Vec<Element<'a, Msg>> {
         .collect()
 }
 
-/// One file's tile, as the web's `.lib-tile`: its preview with the store tag, the title, the name, who and when, and
-/// the size with its task and audience.
+/// One file's tile, as the web's `.lib-tile`: its preview, the title, the name, who and when, and the size with its
+/// task and audience.
 fn tile<'a>(d: &'a Deliverable, open: bool, picked: bool) -> Element<'a, Msg> {
     let p = crate::theme::palette();
     let title = if d.title.is_empty() {
@@ -1171,7 +1170,7 @@ fn tile<'a>(d: &'a Deliverable, open: bool, picked: bool) -> Element<'a, Msg> {
         .spacing(6)
         .align_x(Alignment::Center)
         .into(),
-        Some(d.store.as_str()),
+        None,
     );
     let mut size_line = human_size(d.size);
     if let Some(task) = &d.task {
@@ -1371,10 +1370,9 @@ fn facts<'a>(d: &'a Deliverable) -> Element<'a, Msg> {
             format!("{} ({} bytes)", human_size(d.size), d.size),
             false,
         ),
-        fact("sha256", d.sha256.clone(), true),
+        fact("Hash", d.hash.clone(), true),
         fact("Handed in by", d.author.clone(), false),
         fact("When", when(d.created_ms), false),
-        fact("Store", d.store.clone(), false),
         fact("Audience", audience, false),
     ];
     if let Some(task) = &d.task {

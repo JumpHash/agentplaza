@@ -134,7 +134,8 @@ latest. A ref with one (`artifact:<id>@<n>`) pins that version. Owners list vers
 ### Blobs
 
 A blob is a file attached to one artifact. Blobs are written to the deliverables store (`crates/apid/src/deliverables.rs`),
-which keeps objects on Garage or on disk. `Store::put_blob` (`artifacts/mod.rs`) writes the bytes and returns a
+which keeps them in the hub's object store (`apz-blobs`, by BLAKE3 hash).
+`Store::put_blob` (`artifacts/mod.rs`) writes the bytes and returns a
 `BlobRef` (`apz-view/src/model.rs`, line 187). A blob's id (`b1`, `b2`, ...) is local to its artifact, so `b1` in one
 artifact is not `b1` in another. `Store::artifact_blob` reads a blob by artifact and id.
 

@@ -154,7 +154,7 @@ impl Tool for SkillPropose {
                         "properties": {
                             "path": { "type": "string", "minLength": 1 },
                             "content_b64": { "type": "string" },
-                            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                            "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
                             "executable": { "type": "boolean" },
                         },
                         "required": ["path"],

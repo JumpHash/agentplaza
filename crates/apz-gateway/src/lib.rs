@@ -29,7 +29,6 @@ mod http;
 mod mock;
 mod openai;
 mod responses;
-pub mod s3;
 mod sigv4;
 #[cfg(test)]
 mod testutil;

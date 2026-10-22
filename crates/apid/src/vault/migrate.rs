@@ -23,7 +23,6 @@ const SECRETS: &str = "secrets.json";
 const CONNECTOR_SECRETS: &str = "connector-secrets.json";
 const HF_TOKEN_FILE: &str = "token";
 const HF_NAME: &str = "HF_TOKEN";
-const GARAGE_KEYS: [&str; 2] = ["APZ_S3_ACCESS_KEY", "APZ_S3_SECRET_KEY"];
 const ZERO_CHUNK: usize = 64 * 1024;
 const BOUND_LABEL: &str = "moved from a plaintext file";
 const UNBOUND_LABEL: &str = "imported, not used by anything yet";
@@ -80,8 +79,8 @@ pub(super) fn run(
     import_process_env(store, provider_refs, env, now)
 }
 
-/// The vault names the hub reads from the environment: each provider's credential, each connector field's `env`,
-/// the Hugging Face token, and the object store's keys.
+/// The vault names the hub reads from the environment: each provider's credential, each connector field's `env`, and
+/// the Hugging Face token.
 fn candidate_names(provider_refs: &[(String, String)]) -> BTreeSet<String> {
     let mut names: BTreeSet<String> = provider_refs.iter().map(|(_, name)| name.clone()).collect();
     names.extend(
@@ -90,7 +89,6 @@ fn candidate_names(provider_refs: &[(String, String)]) -> BTreeSet<String> {
             .flat_map(|c| c.fields.iter().map(|f| f.env.to_string())),
     );
     names.insert(HF_NAME.to_string());
-    names.extend(GARAGE_KEYS.iter().map(|n| n.to_string()));
     names
 }
 
@@ -429,7 +427,7 @@ fn parse_token(text: &str) -> Result<Parsed, String> {
 }
 
 /// The bindings that read the vault name `name`: the providers that reference it, the connector fields with
-/// that env name, the Hugging Face token, and the object store's keys.
+/// that env name, and the Hugging Face token.
 fn bindings_for(name: &str, provider_refs: &[(String, String)]) -> Vec<String> {
     let mut out: Vec<String> = provider_refs
         .iter()
@@ -443,9 +441,6 @@ fn bindings_for(name: &str, provider_refs: &[(String, String)]) -> Vec<String> {
     }
     if name == HF_NAME {
         out.push("hf".into());
-    }
-    if GARAGE_KEYS.contains(&name) {
-        out.push("tool:garage".into());
     }
     out.sort();
     out.dedup();
