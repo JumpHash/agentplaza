@@ -12,7 +12,6 @@ import { type IdeCtx } from './ide-ctx';
 import { chatPane } from './ide-chat';
 import { prewake } from '../prewake';
 import { ideEmbeds } from './ide-rich';
-import { openAgentWizard } from './agent-wizard';
 import type { CentreView, RightView } from './ide-frame';
 
 /**
@@ -105,11 +104,6 @@ export function selectWorkspace(c: IdeCtx, info: IdeWorkspaceInfo): void {
   c.dom.sidebar.setSelected(`ws:${info.id}`);
   void setWorkspace(c, info);
   c.act.renderAll();
-}
-
-/** The sidebar's "+ New agent": the agent wizard, in a modal over the IDE. */
-export function newAgent(): void {
-  openAgentWizard();
 }
 
 /**

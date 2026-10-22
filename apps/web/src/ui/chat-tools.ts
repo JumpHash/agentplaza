@@ -8,9 +8,9 @@ import '../styles/proto/chat-tools.css';
 import { api, type Tier } from '../api';
 import { contextApi, CONTEXT_PARTS, type ContextPart, type ContextView } from '../api-context';
 import { providersApi } from '../api-providers';
-import { tierChoices } from '../views/agent-detail';
 import { agents, on } from '../store';
 import { brandLogo, button, toast } from './components';
+import { tierChoices } from './tier-choices';
 import { h, lu, replace } from './dom';
 import { modelPicker, type ModelChoice, type ModelPicker } from './model-picker';
 

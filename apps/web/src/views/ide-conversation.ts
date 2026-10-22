@@ -263,7 +263,7 @@ export function mountConversation(root: HTMLElement, id: string): Cleanup {
               'div.ic-acts',
               null,
               h('a.btn', { href: hrefIn(c.project!, 'work', c.project!) }, 'Open in Work'),
-              h('a.btn', { href: hrefIn(c.project!, 'agents') }, 'Its agents'),
+              h('a.btn', { href: hrefIn(c.project!, 'sessions') }, 'Its agents'),
             ),
           )
         : h(

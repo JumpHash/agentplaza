@@ -775,7 +775,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       share: shareOf(w.balance, posTotal),
     }));
     const cols: Col<WalletRow>[] = [
-      { key: 'name', label: 'Agent', value: (r) => r.name, cell: (r) => h('a', { href: href('agents', r.cid) }, r.name) },
+      { key: 'name', label: 'Agent', value: (r) => r.name, cell: (r) => h('a', { href: href('sessions', r.cid) }, r.name) },
       { key: 'role', label: 'Role', value: (r) => r.role, cell: (r) => r.role },
       { key: 'balance', label: 'Balance', num: true, value: (r) => r.balance, cell: (r) => money(r.balance) },
       { key: 'share', label: 'Share', num: true, cellNum: false, value: (r) => r.share, cell: (r) => shareBar(r.share) },

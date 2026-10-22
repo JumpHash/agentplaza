@@ -340,9 +340,9 @@ export interface ProjectSettings {
 }
 /** A setting the project's agents get, and where it comes from. */
 export interface EffectiveValue { value: unknown; source: 'project' | 'plaza' }
-/** A project's budget: its own `town_budget` account (once credits are set aside), and the plaza's. */
-export interface ProjectBudget { project: string; own: boolean; balance: number; plaza: number }
-export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue>; budget: ProjectBudget }
+/** The credits view of a project's budget (the settings answer keeps it): its own account once credits are set aside, and the plaza's. */
+export interface CreditsBudget { project: string; own: boolean; balance: number; plaza: number }
+export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue>; budget: CreditsBudget }
 /** An agent that holds tasks of a project from before membership, with those tasks. */
 export type SuggestedMember = Agent & { tasks: string[] };
 /** A message of the owner's conversation with the orchestrator: the owner's, the orchestrator's answer (with how its
@@ -747,9 +747,6 @@ export const api = {
   /** A field set to `null` goes back to the plaza's; `role_models` merge role by role. */
   patchProjectSettings: (id: string, change: Record<string, unknown>) => patch<ProjectSettings>(`/v1/projects/${id}/settings`, change),
   effectiveSettings: (id: string) => get<EffectiveSettings>(`/v1/projects/${id}/settings/effective`),
-  projectBudget: (id: string) => get<ProjectBudget>(`/v1/projects/${id}/budget`),
-  /** Positive sets credits aside from the plaza's budget; negative gives some back. */
-  moveProjectBudget: (id: string, credits: number) => post<ProjectBudget>(`/v1/projects/${id}/budget`, { credits }),
   ownerConversations: (archived = false) => get<OwnerConversationSummary[]>(`/v1/owner/conversations${archived ? '?archived=true' : ''}`),
   ownerConversation: (id: string) => get<OwnerConversation>(`/v1/owner/conversations/${id}`),
   /** Starts a conversation with the orchestrator, `text` its first message. */

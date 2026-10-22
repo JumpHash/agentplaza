@@ -1,6 +1,5 @@
 // A project's team: the agents working on it, the bench to add from, and the agents that held its tasks before it had
-// members (one step to put them all on it). New agents can be spawned for it; they join at their first hello. The
-// markup is the prototype's Team tab (styles/proto/projects.css).
+// members (one step to put them all on it). The markup is the prototype's Team tab (styles/proto/projects.css).
 
 import { api, type Agent, type Project, type SuggestedMember } from '../api';
 import { href } from '../router';
@@ -9,8 +8,7 @@ import { isLive } from '../scope';
 import { refreshAgents } from '../store';
 import { attempt, badge, button, card } from '../ui/components';
 import { h, replace } from '../ui/dom';
-import { openAgentWizard } from './agent-wizard';
-import { statusPill } from './agent-list';
+import { statusPill } from './agent-status';
 
 const cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -23,7 +21,7 @@ function row(a: Agent, action: HTMLElement | null, note?: string): HTMLElement {
     h(
       'div.pj-mrow-main',
       null,
-      h('a.pj-clip', { href: href('agents', a.cid) }, h('strong', null, agentName(a))),
+      h('a.pj-clip', { href: href('sessions', a.cid) }, h('strong', null, agentName(a))),
       h('div.pj-faint', null, roleLabel(a.role), note ? ` · ${note}` : ''),
     ),
     badge(pill.word ?? cap(a.status), pill.tone, true),
@@ -66,12 +64,7 @@ export function teamTab(p: Project, changed: () => void): HTMLElement {
         `Working on it (${working.length})`,
         working.length
           ? working.map((a) => row(a, live ? remove(a) : null, a.held ?? undefined))
-          : h('p.muted', null, live ? 'Nobody yet: add agents from the bench, or spawn new ones for this project.' : 'Nobody: the project is over, and its agents went back to the bench.'),
-        {
-          actions: live
-            ? [button('New agents for this project', () => openAgentWizard({ project: p.id, onDone: moved }), { size: 'sm', icon: 'plus' })]
-            : [],
-        },
+          : h('p.muted', null, live ? 'Nobody yet: add agents from the bench.' : 'Nobody: the project is over, and its agents went back to the bench.'),
       ),
     ];
     if (suggested?.length) {

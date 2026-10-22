@@ -1,0 +1,23 @@
+/* The sessions screens (views/sessions.ts, views/session.ts): the list's state cell, one session's facts and its log. The
+   context reads the chat's bar and rows (chat-tools.css). Square corners and the console's tokens throughout. */
+.se-id { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-3); }
+.se-state { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.se-reason { font-size: var(--fs-xs); color: var(--ink-3); }
+.se-note { margin: 0; font-size: var(--fs-xs); color: var(--ink-3); }
+.se-foot { padding: 12px 16px; border-top: 1px solid var(--rule); }
+.se-wide { grid-column: 1 / -1; }
+.se-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.se-tr { display: flex; flex-direction: column; max-height: 60vh; overflow: auto; min-width: 0; }
+.se-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 4px 12px; padding: 10px 0; min-width: 0; font-size: var(--fs-sm); }
+.se-row + .se-row { border-top: 1px solid var(--rule-faint); }
+.se-time { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--ink-3); padding-top: 2px; }
+.se-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.se-label { font-weight: 500; }
+.se-label.se-alert { color: var(--crit); }
+.se-label.se-faint { color: var(--ink-3); font-weight: 400; }
+.se-out {
+  margin: 6px 0 0; padding: 8px 10px; max-height: 240px; overflow: auto; background: var(--sheet-2);
+  font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.se-raw { color: var(--ink-3); }
