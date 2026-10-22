@@ -178,6 +178,28 @@
     "submit_plan"
    ]
   },
+  "curator": {
+   "role": "curator",
+   "slot": 17,
+   "title": "Curator",
+   "permits": [
+    "statutes/S-003"
+   ],
+   "toolsets": [
+    "git"
+   ],
+   "budget": 500,
+   "variant": null,
+   "tools": [
+    "bash",
+    "read_file",
+    "list",
+    "search",
+    "memory_search",
+    "memory_get",
+    "memory_land"
+   ]
+  },
   "qa": {
    "role": "qa",
    "slot": 11,

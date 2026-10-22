@@ -89,6 +89,8 @@ const ALWAYS: &[&str] = &[
     "memory_search",
     "memory_get",
     "memory_propose",
+    "memory_record_decision",
+    "memory_land",
 ];
 
 /// The tools a seat uses on most steps: offered with their schemas. Every other tool is deferred: the model sees its name
@@ -210,6 +212,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::harness_control::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::project_memory::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::curator::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::journal::TOOLS.contains(&name) => Some(Runs::Host),
@@ -1034,6 +1037,7 @@ fn host_call(
         other if crate::project_memory::TOOLS.contains(&other) => {
             crate::project_memory::run(app, agent, other, input)
         }
+        other if crate::curator::TOOLS.contains(&other) => crate::curator::run(app, agent, input),
         "plaza_project_draft" => crate::drafts::run(app, agent, input),
         other if crate::review_graph::tools::TOOLS.contains(&other) => {
             crate::review_graph::tools::run(app, agent, work, other, input)

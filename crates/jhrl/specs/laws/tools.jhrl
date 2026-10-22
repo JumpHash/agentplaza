@@ -257,3 +257,27 @@ law "T-028" "Agents read and propose project memory" {
   resource is Tool
   when resource.name in ["memory_search", "memory_get", "memory_propose"]
 }
+
+law "T-029" "The curator lands project memory" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only a project's curator may land memory: its entries, its rejections and its contradictions, once per run. What it lands reaches the project's main as one change, and the owner can edit or retire any entry."
+  rationale "The curator is what keeps the memory to one fact per entry and out of the code's own record (PLAN 9.4). Landing it as a change, not in place, keeps the owner's review and Weft's history over it."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "memory_land" and principal.role == "curator"
+}
+
+law "T-030" "The planner records decisions" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only a project's planner may record a decision in its memory, with its reason. The decision lands at once, the project's chat is told, and the owner may keep or retire it."
+  rationale "A decision is the planner's to record: it is the one who weighs the work, and only a recorded decision is kept as one (PLAN 9.4). Other agents propose what they found, and the curator decides what lands."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "memory_record_decision" and principal.role == "planner"
+}

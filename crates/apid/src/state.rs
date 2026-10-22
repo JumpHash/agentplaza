@@ -172,6 +172,8 @@ pub struct App {
     pub agent_proposals: crate::agent_proposals::Store,
     /// The project memory: the entries read from each project's main, and the proposals agents made.
     pub project_memory: crate::project_memory::Store,
+    /// The projects' curations: the finished tasks whose journals wait for the curator, and its runs (curator.rs).
+    pub curator: crate::curator::Store,
     /// The hub's nodes, join codes and command queues.
     pub nodes: crate::nodes::Store,
     /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
@@ -311,6 +313,7 @@ impl App {
             custom_roles: crate::roles_custom::Store::default(),
             agent_proposals: crate::agent_proposals::Store::default(),
             project_memory: crate::project_memory::Store::default(),
+            curator: crate::curator::Store::default(),
             nodes: crate::nodes::Store::default(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
