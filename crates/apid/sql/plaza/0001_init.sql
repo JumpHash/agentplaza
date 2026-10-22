@@ -1257,6 +1257,28 @@ CREATE TABLE "memory_proposal_anchors" (
     FOREIGN KEY ("memory_proposal_id") REFERENCES "memory_proposal" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component memory_curations
+CREATE TABLE "memory_curation" (
+    "project" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "started_ms" INTEGER NOT NULL CHECK ("started_ms" >= 0),
+    PRIMARY KEY ("project")
+) STRICT;
+CREATE TABLE "memory_curation_tasks" (
+    "memory_curation_project" TEXT NOT NULL,
+    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("memory_curation_project", "tasks_pos"),
+    FOREIGN KEY ("memory_curation_project") REFERENCES "memory_curation" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "memory_curation_reading" (
+    "memory_curation_project" TEXT NOT NULL,
+    "reading_pos" INTEGER NOT NULL CHECK ("reading_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("memory_curation_project", "reading_pos"),
+    FOREIGN KEY ("memory_curation_project") REFERENCES "memory_curation" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component nodes
 CREATE TABLE "nodes" (
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
