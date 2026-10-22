@@ -390,7 +390,10 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
     assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
     let task = hub.wait_for(&format!("/v1/tasks/{tid}"), WAIT, |t| t["state"] == "done");
     assert_eq!(task["state"], "done", "{task}");
-    let (_, seats) = hub.call("GET", &format!("/v1/tasks/{tid}/seats"), None);
+    // Its seats close as it ends (a moment after the task reads done).
+    let seats = hub.wait_for(&format!("/v1/tasks/{tid}/seats"), WAIT, |s| {
+        s.as_array().is_some_and(Vec::is_empty)
+    });
     assert_eq!(seats.as_array().map(Vec::len), Some(0), "{seats}");
     assert!(
         sessions(&hub, &tid)
