@@ -51,7 +51,6 @@ pub const COMPONENTS: &[&str] = &[
     "usage",
     "foundry",
     "models",
-    "vault",
     "mcp",
 ];
 
@@ -91,7 +90,6 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "usage" => app.usage.snapshot(),
         "foundry" => app.foundry.snapshot(),
         "models" => app.models.snapshot(),
-        "vault" => app.vault.snapshot(),
         "mcp" => app.mcp.store.snapshot(),
         _ => String::new(),
     }
@@ -122,7 +120,6 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "usage" => app.usage.restore(json),
         "foundry" => app.foundry.restore(json),
         "models" => app.models.restore(json),
-        "vault" => app.vault.restore(json),
         "mcp" => app.mcp.store.restore(json),
         other => Err(format!("unknown component {other}")),
     }

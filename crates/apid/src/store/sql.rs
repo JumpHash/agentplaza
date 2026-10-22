@@ -6,6 +6,9 @@
 // The budgets' ledger (budgets.rs).
 pub const BUDGET_LEDGER: &str = include_str!("../../sql/queries/budget_ledger.sql");
 
+// A page of the vault's audit log (vault/audit.rs).
+pub const VAULT_AUDIT_PAGE: &str = include_str!("../../sql/queries/vault_audit_page.sql");
+
 // The metrics store (metrics/sqlite.rs): samples, windows, events, model calls, kept traces, and the size of
 // each table (`metric_size`).
 pub const METRIC_AGG_1H_BUCKET_CLEAR: &str =
@@ -62,6 +65,7 @@ pub const TRANSCRIPT_DELETE: &str = include_str!("../../sql/queries/transcript_d
 #[cfg(test)]
 pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "budget_ledger", BUDGET_LEDGER),
+    ("plaza", "vault_audit_page", VAULT_AUDIT_PAGE),
     (
         "metrics",
         "metric_agg_1h_bucket_clear",

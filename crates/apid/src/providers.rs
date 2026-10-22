@@ -1275,7 +1275,7 @@ mod tests {
     /// A booted vault in `dir`, as `App` starts one (the key file is created at boot).
     fn vault_in(dir: &Path) -> Arc<crate::vault::Store> {
         std::fs::create_dir_all(dir).unwrap();
-        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
         vault.boot(apz_plaza::now_ms()).unwrap();
         Arc::new(vault)
     }
@@ -1351,19 +1351,21 @@ mod tests {
         conn
     }
 
-    /// A vault in `dir` as it is after a restart: boot refuses a tampered file, and the vault stays up to say why.
+    /// A vault in `dir` as it is after a restart: boot refuses a tampered store, and the vault stays up to say why.
     fn reopen(dir: &Path) -> Arc<crate::vault::Store> {
-        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
         let _ = vault.boot(apz_plaza::now_ms());
         Arc::new(vault)
     }
 
-    /// Changes `from` to `to` in the vault file outside the API, so its index MAC no longer matches.
-    fn tamper_with_the_vault_file(dir: &Path, from: &str, to: &str) {
-        let path = dir.join("vault.json");
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains(from), "the vault file names {from}");
-        std::fs::write(&path, text.replacen(from, to, 1)).unwrap();
+    /// Changes the binding `from` to `to` in the stored vault outside the API, so its index MAC no longer matches.
+    fn tamper_with_the_stored_vault(dir: &Path, from: &str, to: &str) {
+        let edited = crate::vault::tamper_rows(
+            dir,
+            "UPDATE vault_entry_binding SET value = ?2 WHERE value = ?1",
+            &[from, to],
+        );
+        assert_eq!(edited, 1, "the stored vault names {from}");
     }
 
     #[test]
@@ -1519,10 +1521,10 @@ mod tests {
         assert_eq!(entry["bindings"], json!(["provider:mock"]));
         assert_eq!(entry["scope"]["kind"], "plaza");
         assert!(!dir.join("secrets.json").exists());
-        // The vault's file is private (0600), as the secrets file was.
+        // The key file is private (0600), as the secrets file was: the vault's rows are in plaza.db.
         #[cfg(unix)]
         assert_eq!(
-            std::fs::metadata(dir.join("vault.json"))
+            std::fs::metadata(dir.join("vault.key"))
                 .unwrap()
                 .permissions()
                 .mode()
@@ -2061,7 +2063,7 @@ mod tests {
         save_to(&conn, &store);
         drop(store);
         drop(vault);
-        tamper_with_the_vault_file(&dir, "provider:tamp-env", "provider:tamp-xxx");
+        tamper_with_the_stored_vault(&dir, "provider:tamp-env", "provider:tamp-xxx");
         let vault = reopen(&dir);
         let store = load_from(&conn, Arc::clone(&vault));
         let caller = Caller::Agent {
@@ -2128,10 +2130,12 @@ mod tests {
     }
 
     /// The deny lines in the vault's audit log.
-    fn deny_lines(dir: &Path) -> usize {
-        let text = std::fs::read_to_string(dir.join("vault-audit.jsonl")).unwrap_or_default();
-        text.lines()
-            .filter(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["event"] == "deny"))
+    fn deny_lines(vault: &crate::vault::Store) -> usize {
+        vault
+            .audit_page(0, usize::MAX)
+            .unwrap_or_default()
+            .iter()
+            .filter(|line| line["event"] == "deny")
             .count()
     }
 
@@ -2158,14 +2162,14 @@ mod tests {
             node: Some("n4".to_string()),
         };
         // The upstream path: one lookup, one deny line.
-        let before = deny_lines(&dir);
+        let before = deny_lines(&vault);
         assert_eq!(
             store.upstream("n3-env", &on_n4).unwrap_err(),
             VaultError::OutOfScope
         );
-        assert_eq!(deny_lines(&dir) - before, 1);
+        assert_eq!(deny_lines(&vault) - before, 1);
         // The gateway path: one refused call, one lookup, one deny line.
-        let before = deny_lines(&dir);
+        let before = deny_lines(&vault);
         let err = store
             .gateway()
             .list_models_for("n3-env", &on_n4)
@@ -2174,7 +2178,7 @@ mod tests {
             matches!(err, apz_gateway::GatewayError::Vault { status: 403, .. }),
             "{err:?}"
         );
-        assert_eq!(deny_lines(&dir) - before, 1);
+        assert_eq!(deny_lines(&vault) - before, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -133,5 +133,9 @@ pub fn all() -> Vec<Component> {
 /// Tables written through as things happen rather than by the saver (append-only ledgers and logs); they are in
 /// `0001_init.sql` beside the components' and the same checks hold for them.
 pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
-    vec![("budget ledger", crate::budgets::entries_def)]
+    vec![
+        ("budget ledger", crate::budgets::entries_def),
+        ("vault", crate::vault::def),
+        ("vault audit", crate::vault::audit::def),
+    ]
 }

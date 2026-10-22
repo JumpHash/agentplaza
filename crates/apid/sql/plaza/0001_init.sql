@@ -953,3 +953,113 @@ CREATE TABLE "budget_entry" (
 ) STRICT;
 CREATE INDEX "budget_entry_owner" ON "budget_entry" ("owner");
 
+-- vault (written through)
+CREATE TABLE "vault" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "format" INTEGER NOT NULL CHECK ("format" >= 0),
+    "vault_id" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "index_mac" TEXT NOT NULL,
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "vault_slot" (
+    "vault_pos" INTEGER NOT NULL CHECK ("vault_pos" >= 0),
+    "slots_pos" INTEGER NOT NULL CHECK ("slots_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "kdf_present" INTEGER NOT NULL CHECK ("kdf_present" IN (0, 1)),
+    "kdf_alg" TEXT,
+    "kdf_salt" TEXT,
+    "kdf_memory_kib" INTEGER CHECK ("kdf_memory_kib" >= 0),
+    "kdf_passes" INTEGER CHECK ("kdf_passes" >= 0),
+    "kdf_lanes" INTEGER CHECK ("kdf_lanes" >= 0),
+    "wrap_nonce" TEXT NOT NULL,
+    "wrap_ct" TEXT NOT NULL,
+    PRIMARY KEY ("vault_pos", "slots_pos"),
+    FOREIGN KEY ("vault_pos") REFERENCES "vault" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "vault_entry" (
+    "vault_pos" INTEGER NOT NULL CHECK ("vault_pos" >= 0),
+    "entries_pos" INTEGER NOT NULL CHECK ("entries_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    "created_by" TEXT NOT NULL,
+    "current" INTEGER NOT NULL CHECK ("current" >= 0),
+    "last_used_ms" INTEGER NOT NULL CHECK ("last_used_ms" >= 0),
+    "use_count" INTEGER NOT NULL CHECK ("use_count" >= 0),
+    PRIMARY KEY ("vault_pos", "entries_pos"),
+    FOREIGN KEY ("vault_pos") REFERENCES "vault" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "vault_entry_scope" (
+    "vault_pos" INTEGER NOT NULL CHECK ("vault_pos" >= 0),
+    "entries_pos" INTEGER NOT NULL CHECK ("entries_pos" >= 0),
+    "kind" TEXT NOT NULL CHECK ("kind" IN ('plaza', 'nodes')),
+    PRIMARY KEY ("vault_pos", "entries_pos"),
+    FOREIGN KEY ("vault_pos", "entries_pos") REFERENCES "vault_entry" ("vault_pos", "entries_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "vault_scope_node" (
+    "vault_pos" INTEGER NOT NULL CHECK ("vault_pos" >= 0),
+    "entries_pos" INTEGER NOT NULL CHECK ("entries_pos" >= 0),
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("vault_pos", "entries_pos", "nodes_pos"),
+    FOREIGN KEY ("vault_pos", "entries_pos") REFERENCES "vault_entry_scope" ("vault_pos", "entries_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "vault_entry_binding" (
+    "vault_pos" INTEGER NOT NULL CHECK ("vault_pos" >= 0),
+    "entries_pos" INTEGER NOT NULL CHECK ("entries_pos" >= 0),
+    "bindings_pos" INTEGER NOT NULL CHECK ("bindings_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("vault_pos", "entries_pos", "bindings_pos"),
+    FOREIGN KEY ("vault_pos", "entries_pos") REFERENCES "vault_entry" ("vault_pos", "entries_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "vault_version" (
+    "vault_pos" INTEGER NOT NULL CHECK ("vault_pos" >= 0),
+    "entries_pos" INTEGER NOT NULL CHECK ("entries_pos" >= 0),
+    "versions_pos" INTEGER NOT NULL CHECK ("versions_pos" >= 0),
+    "v" INTEGER NOT NULL CHECK ("v" >= 0),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "nonce" TEXT NOT NULL,
+    "ct" TEXT NOT NULL,
+    "dek_nonce" TEXT NOT NULL,
+    "dek_ct" TEXT NOT NULL,
+    "fp" TEXT NOT NULL,
+    "hint_nonce" TEXT,
+    "hint_ct" TEXT,
+    "legacy_hint" TEXT,
+    PRIMARY KEY ("vault_pos", "entries_pos", "versions_pos"),
+    FOREIGN KEY ("vault_pos", "entries_pos") REFERENCES "vault_entry" ("vault_pos", "entries_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "vault_tombstone" (
+    "vault_pos" INTEGER NOT NULL CHECK ("vault_pos" >= 0),
+    "tombstones_pos" INTEGER NOT NULL CHECK ("tombstones_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("vault_pos", "tombstones_pos"),
+    FOREIGN KEY ("vault_pos") REFERENCES "vault" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- vault audit (written through)
+CREATE TABLE "vault_audit" (
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "ts_ms" INTEGER NOT NULL CHECK ("ts_ms" >= 0),
+    "prev" TEXT NOT NULL,
+    "mac" TEXT NOT NULL,
+    "event" TEXT NOT NULL,
+    "actor" TEXT NOT NULL,
+    "entry" TEXT,
+    "name" TEXT,
+    "binding" TEXT,
+    "node" TEXT,
+    "cid" INTEGER CHECK ("cid" >= 0),
+    "detail" TEXT,
+    PRIMARY KEY ("seq")
+) STRICT;
+

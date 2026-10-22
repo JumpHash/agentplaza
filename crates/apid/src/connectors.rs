@@ -1567,7 +1567,7 @@ fn action_view(a: &Action) -> Value {
 /// A booted vault in `dir`, as the hub has it at start (unsealed by its key file).
 #[cfg(test)]
 fn vault_for(dir: &Path) -> Arc<crate::vault::Store> {
-    let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+    let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
     vault.boot(apz_plaza::now_ms()).expect("boot");
     Arc::new(vault)
 }
@@ -1636,8 +1636,11 @@ mod tests {
             !dir.join("connector-secrets.json").exists(),
             "no plaintext connector file is written"
         );
-        let vault_file = std::fs::read(dir.join("vault.json")).unwrap();
-        assert!(!String::from_utf8_lossy(&vault_file).contains("SENTINEL-CONN-4417"));
+        // The vault's rows are in plaza.db (and its write-ahead log): no file in the folder holds the value.
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap_or_default();
+            assert!(!String::from_utf8_lossy(&bytes).contains("SENTINEL-CONN-4417"));
+        }
         assert_eq!(
             store
                 .values(connector("unsplash"), &OnBehalf::Hub)
@@ -2416,7 +2419,8 @@ mod proposal_tests {
     #[test]
     fn approved_proposals_join_the_catalog_and_persist() {
         let dir = scratch("proposals");
-        let store = Store::new(vault_for(&dir));
+        let vault = vault_for(&dir);
+        let store = Store::new(Arc::clone(&vault));
         let mut bad_spec = sample("acme-bad");
         bad_spec.base_url = "http://api.acme-test.example".to_string();
         let bad = store.submit(7, "scout", bad_spec).unwrap();
@@ -2449,7 +2453,7 @@ mod proposal_tests {
         let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(&def().ddl()).unwrap();
         apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
-        let reloaded = Store::new(vault_for(&dir));
+        let reloaded = Store::new(vault);
         reloaded.load(&conn).unwrap();
         let listed = reloaded.proposals_newest_first();
         assert_eq!(listed.len(), 2);

@@ -846,7 +846,7 @@ mod tests {
 
     /// A booted vault in `dir`, as the hub has it at start.
     fn vault_in(dir: &Path) -> Arc<crate::vault::Store> {
-        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
         vault.boot(apz_plaza::now_ms()).expect("boot");
         Arc::new(vault)
     }
@@ -916,6 +916,8 @@ mod tests {
         assert_eq!(store.list().len(), 1);
         let found = store.find(&item.id).unwrap();
         assert_eq!(store.read_blob(&found).unwrap(), body);
+        // A restart: the first store (and its vault, which holds the folder) is dropped before the reload.
+        drop(store);
         let reloaded = Store::load(&dir, &env, vault_in(&dir)).unwrap();
         assert_eq!(reloaded.list()[0].id, item.id);
         assert!(reloaded.remove(&item.id).unwrap().is_some());

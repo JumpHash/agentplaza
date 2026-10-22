@@ -244,7 +244,6 @@ impl App {
         // The store first: it takes the folder's lock, so a second hub on this folder stops here.
         let store = Arc::new(crate::store::open(&config.state_dir).map_err(std::io::Error::other)?);
         let db = Arc::new(crate::db::Db::connect(&env));
-        let vault_db = db.enabled().then(|| Arc::clone(&db));
         let roster_db = db.enabled().then(|| Arc::clone(&db));
         let hub_mcp_db = db.enabled().then(|| Arc::clone(&db));
         let prompt_store: Arc<dyn crate::prompts::PromptStore> = if db.enabled() {
@@ -255,9 +254,8 @@ impl App {
             ))
         };
         let vault = Arc::new(crate::vault::Store::open(
-            &config.state_dir,
             &config.vault_key,
-            vault_db,
+            Arc::clone(store.db(crate::store::PLAZA)),
         ));
         // The vendor bindings (Auggie's session) show in the console's vault screen from boot.
         crate::vendor_relay::register(&vault);

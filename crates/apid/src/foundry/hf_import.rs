@@ -1465,7 +1465,7 @@ mod tests {
 
     /// A booted vault in `dir`, as the hub has it at start.
     fn vault_in(dir: &Path) -> crate::vault::Store {
-        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
         vault.boot(apz_plaza::now_ms()).expect("boot");
         vault
     }
