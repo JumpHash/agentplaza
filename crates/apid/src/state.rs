@@ -174,6 +174,8 @@ pub struct App {
     pub project_memory: crate::project_memory::Store,
     /// The projects' curations: the finished tasks whose journals wait for the curator, and its runs (curator.rs).
     pub curator: crate::curator::Store,
+    /// The projects' verifiers: when each last started (verifier.rs).
+    pub verifier: crate::verifier::Store,
     /// The hub's nodes, join codes and command queues.
     pub nodes: crate::nodes::Store,
     /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
@@ -314,6 +316,7 @@ impl App {
             agent_proposals: crate::agent_proposals::Store::default(),
             project_memory: crate::project_memory::Store::default(),
             curator: crate::curator::Store::default(),
+            verifier: crate::verifier::Store::default(),
             nodes: crate::nodes::Store::default(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),

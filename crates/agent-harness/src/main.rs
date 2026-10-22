@@ -52,6 +52,8 @@ mod acp;
 #[cfg(target_os = "linux")]
 mod agent;
 #[cfg(target_os = "linux")]
+mod anchors;
+#[cfg(target_os = "linux")]
 mod bash;
 #[cfg(target_os = "linux")]
 mod checkpoints;

@@ -119,6 +119,7 @@ mod usage;
 mod usage_providers;
 mod vault;
 mod vendor_relay;
+mod verifier;
 mod vm_snapshots;
 mod weft_hub;
 mod work_loop;

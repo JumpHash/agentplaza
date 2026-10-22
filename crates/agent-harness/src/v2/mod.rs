@@ -53,6 +53,8 @@ pub(crate) struct Lane {
     pub(crate) index: Mutex<Option<Arc<find::Index>>>,
     /// Notes for the next result: changed files and ended jobs, in the order they happened.
     pub(crate) notes: Mutex<Vec<String>>,
+    /// The project memory each work item was shown, by work item (anchors.rs).
+    pub(crate) anchored: Mutex<BTreeMap<u64, crate::anchors::Memo>>,
 }
 
 impl Lane {
@@ -63,6 +65,7 @@ impl Lane {
             jobs: Mutex::new(run::Jobs::default()),
             index: Mutex::new(None),
             notes: Mutex::new(Vec::new()),
+            anchored: Mutex::new(BTreeMap::new()),
         }
     }
 
