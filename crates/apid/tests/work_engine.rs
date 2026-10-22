@@ -129,7 +129,7 @@ fn sessions(hub: &Hub, task: &str) -> Vec<Value> {
 fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_raises_it() {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "builder": role("builder", "Builder"),
@@ -404,7 +404,7 @@ const ORCHESTRATOR: u64 = 109;
 fn the_main_orchestrator_and_a_projects_planner_are_long_sessions_their_chats_talk_to() {
     let vms: Vms = Arc::new(Mutex::new(vec![(ORCHESTRATOR, "orchestrator".to_string())]));
     let (noded, gateway) = daemons(&vms);
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "planner": role("planner", "Planner"),

@@ -533,11 +533,11 @@ mod tests {
                     .nested()
                     .route(tool_decision("toolu_1.e1", Decision::Allow, "", false));
             });
-            link.call("bash", &json!({}), Instant::now() + Duration::from_secs(5))
+            link.call("run", &json!({}), Instant::now() + Duration::from_secs(5))
         });
         assert_eq!(
             verdict,
-            Err("bash runs in the VM, not through the plaza's MCP server".to_string())
+            Err("run runs in the VM, not through the plaza's MCP server".to_string())
         );
     }
 

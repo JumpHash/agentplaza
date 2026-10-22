@@ -1,105 +1,54 @@
 {
-  "bash": {
-    "description": "Run a shell command in your VM and return its output.",
+  "read": {
+    "description": "Read files in your VM: several files, or line ranges of them, in one call. A file over 400 lines without a range returns its outline and its first 200 lines. A cut result says `continue`: read it from there. Reading a file again that has not changed says so without its content.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "command": {
-          "type": "string"
-        },
-        "timeout_s": {
-          "type": "integer",
-          "minimum": 1
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "read_file": {
-    "description": "Read a file in your VM. Lines come numbered (like cat -n); for long files pass offset (0-based line) and limit to read a window.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "offset": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "limit": {
-          "type": "integer",
-          "minimum": 1
-        }
-      },
-      "required": [
-        "path"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "write_file": {
-    "description": "Write a file in your VM, replacing its contents.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "content": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "path",
-        "content"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "edit_file": {
-    "description": "Replace an exact string in a file in your VM. `old` must match exactly once unless replace_all is true; include enough surrounding lines to make it unique.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "old": {
-          "type": "string"
-        },
-        "new": {
-          "type": "string"
-        },
-        "replace_all": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "path",
-        "old",
-        "new"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "multi_edit": {
-    "description": "Apply several exact-string edits to one file in order, all or nothing.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "edits": {
+        "files": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 32,
           "items": {
             "type": "object",
             "properties": {
+              "path": {
+                "type": "string"
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "edit": {
+    "description": "Edit files in your VM. `edits` replace exact text: `old` must occur once unless replace_all is true, so include enough surrounding lines to make it unique. `create` writes whole files. The edits to one file apply together or not at all; the result says per file what changed or why it failed. Files you edit need no re-read.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
               "old": {
                 "type": "string"
               },
@@ -111,39 +60,63 @@
               }
             },
             "required": [
+              "path",
               "old",
               "new"
-            ]
+            ],
+            "additionalProperties": false
+          }
+        },
+        "create": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "additionalProperties": false
           }
         }
       },
-      "required": [
-        "path",
-        "edits"
-      ],
       "additionalProperties": false
     }
   },
-  "glob": {
-    "description": "Find files by glob pattern (e.g. **/*.rs, src/**/test_*.py), newest first.",
+  "find": {
+    "description": "Find files in your VM by a glob (`**/*.rs`, `src/*.toml`) over their paths, by a regular expression over their contents, or both. Honours .gitignore. Results are sorted by path; a cut result says `continue` with `after` set to resume it.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "pattern": {
+        "glob": {
+          "type": "string"
+        },
+        "content": {
           "type": "string"
         },
         "path": {
           "type": "string"
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "after": {
+          "type": "string"
         }
       },
-      "required": [
-        "pattern"
-      ],
       "additionalProperties": false
     }
   },
-  "grep": {
-    "description": "Search file contents with a regular expression (ripgrep-like). output_mode: files_with_matches (default), content (matching lines with numbers), or count. Filter files with glob; add context lines; case_insensitive; head_limit caps results.",
+  "search": {
+    "description": "Search the contents of files in your VM for a regular expression, with lines of context around each match. `glob` limits the files searched. A cut result says `continue` with `after` set to resume it.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -156,25 +129,17 @@
         "glob": {
           "type": "string"
         },
-        "output_mode": {
-          "type": "string",
-          "enum": [
-            "files_with_matches",
-            "content",
-            "count"
-          ]
-        },
         "context": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 10
+          "maximum": 20
         },
-        "case_insensitive": {
-          "type": "boolean"
-        },
-        "head_limit": {
+        "max": {
           "type": "integer",
           "minimum": 1
+        },
+        "after": {
+          "type": "string"
         }
       },
       "required": [
@@ -183,13 +148,23 @@
       "additionalProperties": false
     }
   },
-  "bash_start": {
-    "description": "Start a long-running shell command in the background (a dev server, a build, a watcher); returns its id at once.",
+  "run": {
+    "description": "Run a shell command in your VM and return its output. Your shell keeps its directory and exported variables from one call to the next. `background: true` starts a command that keeps running and returns a job id at once; when it ends, its end is reported in a later result.",
     "input_schema": {
       "type": "object",
       "properties": {
         "command": {
           "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "background": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -198,38 +173,18 @@
       "additionalProperties": false
     }
   },
-  "bash_output": {
-    "description": "Read what a background command printed since you last looked, and whether it is still running. wait_s waits up to that long for more output.",
+  "run_tests": {
+    "description": "Run this workspace's tests and return the failures, parsed: each with its name, file and line, and message. The runner is picked from the workspace's files (cargo test or nextest, go test, pytest, jest or vitest). `filter` narrows the run; `command` replaces the runner.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "id": {
+        "command": {
           "type": "string"
         },
-        "wait_s": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 60
-        }
-      },
-      "required": [
-        "id"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "bash_kill": {
-    "description": "Stop a background command.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "id": {
+        "filter": {
           "type": "string"
         }
       },
-      "required": [
-        "id"
-      ],
       "additionalProperties": false
     }
   },
@@ -638,37 +593,6 @@
       },
       "required": [
         "todos"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "list": {
-    "description": "List the entries of a directory in your VM.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        }
-      },
-      "required": [],
-      "additionalProperties": false
-    }
-  },
-  "search": {
-    "description": "Search files in your VM for a pattern.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "pattern": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "pattern"
       ],
       "additionalProperties": false
     }

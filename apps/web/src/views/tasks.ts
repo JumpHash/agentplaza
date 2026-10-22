@@ -105,7 +105,7 @@ const toolOf = (e: Entry): string => str(e.data.tool) || str(e.data.name) || 'to
 /** The shell command of a bash tool request, or null for any other tool. */
 function commandOf(e: Entry): string | null {
   const inp = (e.data.input ?? {}) as Record<string, unknown>;
-  return toolOf(e).toLowerCase() === 'bash' && typeof inp.command === 'string' ? inp.command : null;
+  return toolOf(e).toLowerCase() === 'run' && typeof inp.command === 'string' ? inp.command : null;
 }
 
 /** What one transcript entry says the agent is doing now, or null when it says nothing new. */

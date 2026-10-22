@@ -115,7 +115,7 @@ export function stepLabel(step: Step): string {
   const verb = (word: string, bare: string): string => (d ? `${word} ${d}` : bare);
   if (n.includes('board') && n.includes('read')) return 'Read board message';
   if (n.includes('board') && (n.includes('post') || n.includes('write'))) return 'Posted to board';
-  if (n === 'bash' || n === 'shell' || n.includes('command') || n.includes('exec') || n.includes('run')) return 'Ran command';
+  if (n === 'run' || n === 'shell' || n.includes('command') || n.includes('exec') || n.includes('run')) return 'Ran command';
   if (/^(read|view|open)/.test(n)) return verb('Read', 'Read file');
   if (/(edit|patch|replace)/.test(n)) return verb('Edited', 'Edited file');
   if (/(write|create)/.test(n)) return verb('Wrote', 'Wrote file');

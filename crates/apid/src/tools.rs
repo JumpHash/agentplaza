@@ -50,12 +50,6 @@ const ALWAYS: &[&str] = &[
     "fetch_url",
     "download",
     "install_packages",
-    "glob",
-    "grep",
-    "multi_edit",
-    "bash_start",
-    "bash_output",
-    "bash_kill",
     "todo_write",
     "code_engine",
     "deliver_file",
@@ -92,12 +86,12 @@ const ALWAYS: &[&str] = &[
 
 /// The guest tools that act only inside the agent's own VM, offered to every role.
 const IN_VM: &[&str] = &[
-    "bash",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list",
+    "read",
+    "edit",
+    "find",
     "search",
+    "run",
+    "run_tests",
     "symbols",
     "definition",
     "references",
@@ -136,22 +130,16 @@ const GATED: &[&str] = &[
 pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
-        "bash"
-        | "read_file"
-        | "write_file"
-        | "edit_file"
-        | "list"
+        "read"
+        | "edit"
+        | "find"
         | "search"
+        | "run"
+        | "run_tests"
         | "share_file"
         | "fetch_url"
         | "download"
         | "install_packages"
-        | "glob"
-        | "grep"
-        | "multi_edit"
-        | "bash_start"
-        | "bash_output"
-        | "bash_kill"
         | "todo_write"
         | "code_engine"
         | "deliver_file"
@@ -1278,10 +1266,10 @@ mod tests {
                 ["budget"]["minimum"],
             floor
         );
-        assert_eq!(
-            serde_json::to_string(&build_spec("bash")).expect("bash spec serializes"),
-            r#"{"name":"bash","description":"Run a shell command in your VM and return its output.","input_schema":{"type":"object","properties":{"command":{"type":"string"},"timeout_s":{"type":"integer","minimum":1}},"required":["command"],"additionalProperties":false}}"#
-        );
+        let run = build_spec("run").expect("the run spec");
+        assert_eq!(run.name, "run");
+        assert_eq!(run.description, BUILTIN["run"].description);
+        assert_eq!(run.input_schema, BUILTIN["run"].input_schema);
     }
 
     use super::*;
@@ -1563,13 +1551,13 @@ mod tests {
             assert!(refusal("builder", "plaza_task_link").is_some());
             assert!(refusal(ORCHESTRATOR_ROLE, "plaza_task_link").is_none());
             assert!(refusal("planner", "plaza_tasks_post").is_some());
-            assert!(refusal("worker", "bash").is_some());
+            assert!(refusal("worker", "run").is_some());
         }
     }
 
     #[test]
     fn a_tool_spec_is_the_same_on_every_call_and_as_a_fresh_build() {
-        for name in ["bash", "read_file", "code_engine", "artifact_create"] {
+        for name in ["run", "read", "code_engine", "artifact_create"] {
             let first = spec(name).expect("a spec for each named tool");
             assert_eq!(first, spec(name).expect("the same spec again"));
             assert_eq!(
@@ -1587,7 +1575,7 @@ mod tests {
                 assert!(offered.iter().any(|n| n == name), "{role} lacks {name}");
             }
         }
-        assert!(runs("bash") == Some(Runs::Guest));
+        assert!(runs("run") == Some(Runs::Guest));
     }
 
     #[test]

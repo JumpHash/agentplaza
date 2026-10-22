@@ -19,13 +19,32 @@ export interface Panel {
 /** The poll interval for a run's output, in milliseconds. */
 const RUN_POLL_MS = 500;
 /** The tools whose input carries a file change: the Approvals tab shows it as a diff. */
-const WRITES = new Set(['write_file', 'edit_file']);
+const WRITES = new Set(['edit']);
 /** Unchanged lines kept on each side of a change; a longer run of them collapses. */
 const CONTEXT = 3;
 /** Above this many cells (lines of before times lines of after) the diff is not computed. */
 const DIFF_CELLS = 2_000_000;
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/** The entries of an edit's `create` or `edits` list that name `path`, in call order. */
+function entriesFor(args: Record<string, unknown>, key: 'create' | 'edits', path: string): Record<string, unknown>[] {
+  const list = Array.isArray(args[key]) ? (args[key] as Record<string, unknown>[]) : [];
+  return list.filter((entry) => entry && entry['path'] === path);
+}
+
+/** The files an edit names, each once, in the order its call names them. */
+function editPaths(args: Record<string, unknown>): string[] {
+  const names: string[] = [];
+  for (const key of ['create', 'edits'] as const) {
+    const list = Array.isArray(args[key]) ? (args[key] as Record<string, unknown>[]) : [];
+    for (const entry of list) {
+      const path = entry && typeof entry['path'] === 'string' ? entry['path'] : null;
+      if (path !== null && !names.includes(path)) names.push(path);
+    }
+  }
+  return names;
+}
 
 // ---- Agent ------------------------------------------------------------------
 
@@ -124,7 +143,7 @@ export function approvalsPanel(opts: { wsId: string; cid: number; onCount(n: num
 
   function card(a: Approval): HTMLElement {
     const args = (a.input && typeof a.input === 'object' ? a.input : {}) as Record<string, unknown>;
-    const path = typeof args['path'] === 'string' ? args['path'] : null;
+    const paths = WRITES.has(a.tool) ? editPaths(args) : [];
     const body = h('div.ided-appr-body');
     const reason = textarea({ rows: 2, placeholder: 'Reason (optional)', 'aria-label': 'Reason' });
     const approve = button('Approve', () => void decide(true), { kind: 'primary', size: 'sm', icon: 'check' });
@@ -132,13 +151,19 @@ export function approvalsPanel(opts: { wsId: string; cid: number; onCount(n: num
     const node = h(
       'article.ided-appr',
       null,
-      h('header.ided-appr-h', null, badge(a.tool, 'info'), path !== null ? h('code', null, path) : null, h('span.sp'), h('span.muted', null, ago(a.created_ms))),
+      h('header.ided-appr-h', null, badge(a.tool, 'info'), paths.length ? h('code', null, paths.join(', ')) : null, h('span.sp'), h('span.muted', null, ago(a.created_ms))),
       body,
       reason,
       h('div.ided-appr-acts', null, deny, approve),
     );
-    if (WRITES.has(a.tool) && path !== null) void showChange(body, path, a.tool, args);
-    else replace(body, h('pre.ided-pre', null, JSON.stringify(a.input, null, 2)));
+    if (paths.length) {
+      // One diff per file the edit names.
+      for (const path of paths) {
+        const block = h('div.ided-appr-file');
+        body.append(block);
+        void showChange(block, path, args);
+      }
+    } else replace(body, h('pre.ided-pre', null, JSON.stringify(a.input, null, 2)));
 
     async function decide(ok: boolean): Promise<void> {
       approve.disabled = true;
@@ -157,38 +182,48 @@ export function approvalsPanel(opts: { wsId: string; cid: number; onCount(n: num
     return node;
   }
 
-  /** The proposed change against the file as it is now: a write's content, or an edit's old and new text. */
-  async function showChange(host: HTMLElement, path: string, tool: string, args: Record<string, unknown>): Promise<void> {
+  /** The proposed change to one file against its text as it is now: a create's content, or the edits' old and new text in turn. */
+  async function showChange(host: HTMLElement, path: string, args: Record<string, unknown>): Promise<void> {
     replace(host, h('p.muted', null, 'Reading the current file…'));
+    const creates = entriesFor(args, 'create', path);
+    const edits = entriesFor(args, 'edits', path);
     let before: string;
     try {
       before = (await ideApi.file(wsId, path)).text;
     } catch (err) {
-      // A write may create the file: a missing file is an empty one for a write only.
-      if (tool !== 'write_file' || !(err instanceof ApiError && err.status === 404)) {
+      // A create may make the file: a missing file is an empty one for a create only.
+      if (creates.length === 0 || !(err instanceof ApiError && err.status === 404)) {
         if (alive) replace(host, h('p.ide-note.error', null, `The current file did not load: ${message(err)}`), h('pre.ided-pre', null, JSON.stringify(args, null, 2)));
         return;
       }
       before = '';
     }
     if (!alive) return;
-    let pair: [string, string] | null;
+    let pair: [string, string] | null = null;
     let note = '';
-    if (tool === 'write_file') {
-      pair = typeof args['content'] === 'string' ? [before, args['content']] : null;
-      if (!pair) note = 'The write carries no content.';
+    const create = creates[creates.length - 1];
+    if (create) {
+      if (typeof create['content'] === 'string') pair = [before, create['content']];
+      else note = 'The write carries no content.';
     } else {
-      const oldText = typeof args['old'] === 'string' ? args['old'] : '';
-      const newText = typeof args['new'] === 'string' ? args['new'] : '';
-      const hits = oldText === '' ? 0 : before.split(oldText).length - 1;
-      if (hits > 0) {
-        pair = [before, before.replace(oldText, newText)];
-        if (hits > 1) note = `The old text appears ${hits} times; the diff shows the first.`;
-      } else {
-        // The edit cannot apply to this file now: show the text it would change, not the file.
-        pair = [oldText, newText];
-        note = 'The old text is not in the current file, so this edit would fail.';
+      let text = before;
+      let fails = false;
+      for (const edit of edits) {
+        const oldText = typeof edit['old'] === 'string' ? edit['old'] : '';
+        const newText = typeof edit['new'] === 'string' ? edit['new'] : '';
+        const all = edit['replace_all'] === true;
+        const hits = oldText === '' ? 0 : text.split(oldText).length - 1;
+        if (hits === 0) {
+          // The edit cannot apply to this file now: show the text it would change, not the file.
+          pair = [oldText, newText];
+          note = 'The old text is not in the current file, so this edit would fail.';
+          fails = true;
+          break;
+        }
+        if (hits > 1 && !all) note = `The old text appears ${hits} times; the diff shows the first.`;
+        text = all ? text.split(oldText).join(newText) : text.replace(oldText, newText);
       }
+      if (!fails) pair = [before, text];
     }
     if (!pair) {
       replace(host, h('p.ide-note', null, note));

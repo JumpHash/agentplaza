@@ -19,12 +19,13 @@
 //!
 //! The manifest's names are the codex's; the harness
 //! (`crates/agent-harness/src/tools.rs`) serves a subset, and [`TOOL_GRANTS`]
-//! is the translation — `read_file`/`write_file`/`edit_file`/`list`/`search` by
-//! their own names, `append_file` by the `write_file` grant, and every file
-//! tool by a `bash` grant, because a shell can do what those tools do. `echo`
-//! and `uptime` are diagnostics: they touch nothing and need no grant. A tool
-//! this table does not know — one the harness does not serve, or a codex grant
-//! it cannot honour — maps to no granted name.
+//! is the translation — `read`/`edit`/`find`/`search`/`run`/`run_tests` by
+//! their own names, and every one of them but `run` also by a `run` grant,
+//! because a shell can do what those tools do (`run_tests` is granted by its
+//! own name or by `run`). `echo` and `uptime` are diagnostics: they touch
+//! nothing and need no grant. A tool this table does not know — one the
+//! harness does not serve, or a codex grant it cannot honour — maps to no
+//! granted name.
 //!
 //! `dispatchd` cannot depend on `vsockd` (neither is a library), so this is a
 //! deliberate sibling of `crates/vsockd/src/roles.rs` and the two stay in step
@@ -44,12 +45,12 @@ use serde::Deserialize;
 pub const TOOL_GRANTS: &[(&str, &[&str])] = &[
     ("echo", &[]),
     ("uptime", &[]),
-    ("read_file", &["read_file", "bash"]),
-    ("write_file", &["write_file", "bash"]),
-    ("edit_file", &["edit_file", "bash"]),
-    ("append_file", &["write_file", "bash"]),
-    ("list", &["list", "bash"]),
-    ("search", &["search", "bash"]),
+    ("read", &["read", "run"]),
+    ("edit", &["edit", "run"]),
+    ("find", &["find", "run"]),
+    ("search", &["search", "run"]),
+    ("run", &["run"]),
+    ("run_tests", &["run_tests", "run"]),
 ];
 
 /// The manifest tool names any one of which grants harness tool `tool`:
@@ -281,14 +282,7 @@ mod tests {
 
     /// The codex's own declarations, as
     /// `docs/agents/initial-roles.json` carries them.
-    const BUILDER: &[&str] = &[
-        "bash",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list",
-        "search",
-    ];
+    const BUILDER: &[&str] = &["run", "run_tests", "read", "edit", "find", "search"];
     const LIBRARIAN: &[&str] = &["read_memory", "search", "transcript_search"];
 
     /// The table is the harness's tool table, which is what makes `grants` a
@@ -299,19 +293,19 @@ mod tests {
         let harness = [
             "echo",
             "uptime",
-            "read_file",
-            "write_file",
-            "edit_file",
-            "append_file",
-            "list",
+            "read",
+            "edit",
+            "find",
             "search",
+            "run",
+            "run_tests",
         ];
         let table: Vec<&str> = TOOL_GRANTS.iter().map(|(name, _)| *name).collect();
         assert_eq!(table, harness);
         assert_eq!(
             grant_sources("bash"),
             None,
-            "a shell is a source, not a tool"
+            "the retired bash tool is not a harness tool"
         );
     }
 
@@ -324,38 +318,25 @@ mod tests {
         assert!(roles.knows("builder") && roles.knows("librarian"));
         assert!(!roles.knows("Builder") && !roles.knows("") && !roles.knows("architect"));
 
-        for tool in [
-            "read_file",
-            "write_file",
-            "edit_file",
-            "append_file",
-            "list",
-            "search",
-        ] {
+        for tool in ["read", "edit", "find", "search"] {
             assert!(roles.grants("builder", tool), "builder/{tool}");
         }
         assert!(roles.grants("librarian", "search"));
-        for tool in [
-            "read_file",
-            "write_file",
-            "edit_file",
-            "append_file",
-            "list",
-        ] {
+        for tool in ["read", "edit", "find"] {
             assert!(!roles.grants("librarian", tool), "librarian/{tool}");
         }
         for tool in [
             "read_memory",
             "transcript_search",
             "submit_memory_change",
-            "bash",
+            "run",
         ] {
             assert!(!roles.grants("librarian", tool), "librarian/{tool}");
         }
         // A diagnostic needs no grant, and an unknown role has none.
         assert!(roles.grants("librarian", "uptime"));
-        assert!(!roles.grants("intruder", "read_file"));
-        assert!(!roles.grants("", "read_file"));
+        assert!(!roles.grants("intruder", "read"));
+        assert!(!roles.grants("", "read"));
     }
 
     /// A manifest is read whole or refused whole: one the dispatcher cannot
@@ -372,8 +353,8 @@ mod tests {
                 r#"{"roles": {}}"#,
                 r#"{"roles": {"builder": {"role": "builder"}}}"#,
                 r#"{"roles": {"builder": {"role": "builder", "tools": []}}}"#,
-                r#"{"roles": {"builder": {"tools": ["bash"]}}}"#,
-                r#"{"roles": {"builder": {"role": "builer", "tools": ["bash"]}}}"#,
+                r#"{"roles": {"builder": {"tools": ["run"]}}}"#,
+                r#"{"roles": {"builder": {"role": "builer", "tools": ["run"]}}}"#,
             ] {
                 let err = Manifest::parse(text).expect_err("outside the contract");
                 assert!(!err.to_string().is_empty(), "{text}");
@@ -410,15 +391,15 @@ mod tests {
                     "toolsets": ["repo"],
                     "budget": 2000,
                     "variant": null,
-                    "tools": ["bash", "read_file", "write_file"]
+                    "tools": ["run", "run_tests", "read", "edit"]
                 },
                 "librarian": { "role": "librarian", "title": "Librarian", "tools": ["search"] }
             }
         }"#;
             let roles = Manifest::parse(text).expect("the manifest reads");
             assert_eq!(roles.len(), 2);
-            assert_eq!(roles.decide("builder", "write_file"), Decision::Allow);
-            assert_eq!(roles.decide("librarian", "write_file"), Decision::Ungranted);
+            assert_eq!(roles.decide("builder", "edit"), Decision::Allow);
+            assert_eq!(roles.decide("librarian", "edit"), Decision::Ungranted);
             assert_eq!(roles.decide("librarian", "search"), Decision::Allow);
         }
     }

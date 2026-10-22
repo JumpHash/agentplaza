@@ -4,8 +4,8 @@
 //! * `echo` replies with the last user text.
 //! * `agent` (the default) acts like a tiny competent agent: given a new
 //!   prompt it calls the first sensible tool it was offered — `plaza_vote`
-//!   when the prompt names a motion (`m3`), else `write_file` (a note under
-//!   `notes/`), else `bash` (`ls -la /workspace`) — and once it sees that
+//!   when the prompt names a motion (`m3`), else `edit` (a note under
+//!   `notes/`, created whole), else `run` (`ls -la /workspace`) — and once it sees that
 //!   tool's result it ends the turn with a summary of what it did.
 
 use apz_proto::chat::{Block, ChatRequest, ChatResponse, Delta, Message, Role, StopReason, Usage};
@@ -90,7 +90,7 @@ fn agent(req: &ChatRequest) -> (String, Option<(&'static str, Value)>) {
             Some(("plaza_vote", input)),
         );
     }
-    if offered("write_file") {
+    if offered("edit") {
         let path = format!("notes/{}.md", slug(&prompt));
         let content = format!(
             "# Notes\n\nTask: {}\n\nThe mock agent wrote this note.\n",
@@ -98,13 +98,16 @@ fn agent(req: &ChatRequest) -> (String, Option<(&'static str, Value)>) {
         );
         return (
             format!("I'll write a note to {path}."),
-            Some(("write_file", json!({"path": path, "content": content}))),
+            Some((
+                "edit",
+                json!({"create": [{"path": path, "content": content}]}),
+            )),
         );
     }
-    if offered("bash") {
+    if offered("run") {
         return (
             "I'll look at the workspace.".into(),
-            Some(("bash", json!({"command": "ls -la /workspace"}))),
+            Some(("run", json!({"command": "ls -la /workspace"}))),
         );
     }
     (
@@ -131,8 +134,11 @@ fn summary(messages: &[Message], id: &str, output: &str, failed: bool) -> String
             _ => None,
         });
     let did = match call {
-        Some(("write_file", input)) => {
-            format!("wrote {}", input["path"].as_str().unwrap_or("a note"))
+        Some(("edit", input)) => {
+            format!(
+                "wrote {}",
+                input["create"][0]["path"].as_str().unwrap_or("a note")
+            )
         }
         Some(("plaza_vote", input)) => {
             format!(
@@ -141,7 +147,7 @@ fn summary(messages: &[Message], id: &str, output: &str, failed: bool) -> String
                 input["motion"].as_str().unwrap_or("the motion")
             )
         }
-        Some(("bash", input)) => {
+        Some(("run", input)) => {
             format!("ran `{}`", input["command"].as_str().unwrap_or("a command"))
         }
         Some((name, _)) => format!("used {name}"),
@@ -247,7 +253,7 @@ mod tests {
         let gw = mock();
         let mut req = ChatRequest {
             model: "mock/agent".into(),
-            tools: vec![tool("bash"), tool("write_file")],
+            tools: vec![tool("run"), tool("edit")],
             ..request("Summarise the Q3 plan for the council")
         };
         let mut deltas = Vec::new();
@@ -255,13 +261,16 @@ mod tests {
         assert_eq!(first.model, "mock/agent");
         assert_eq!(first.stop, StopReason::ToolUse);
         let (id, name, input) = first.tool_uses().next().unwrap();
-        assert_eq!(name, "write_file");
-        assert_eq!(input["path"], "notes/summarise-the-q3-plan-for-the.md");
+        assert_eq!(name, "edit");
+        assert_eq!(
+            input["create"][0]["path"],
+            "notes/summarise-the-q3-plan-for-the.md"
+        );
         assert!(first.usage.input_tokens > 0 && first.usage.output_tokens > 0);
         assert!(
             deltas.iter().any(|d| matches!(d, Delta::Text { .. }))
                 && deltas.contains(&Delta::ToolUse {
-                    name: "write_file".into()
+                    name: "edit".into()
                 })
         );
 
@@ -283,7 +292,7 @@ mod tests {
         );
 
         let vote = ChatRequest {
-            tools: vec![tool("write_file"), tool("plaza_vote")],
+            tools: vec![tool("edit"), tool("plaza_vote")],
             ..request("Council: vote on m3 please")
         };
         let vote = gw

@@ -1802,7 +1802,7 @@ mod tests {
         apply_delta(
             &mut live,
             7,
-            &json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "tool_use", "name": "read_file"}}),
+            &json!({"cid": 7, "work": 3, "req": 1, "delta": {"type": "tool_use", "name": "read"}}),
         );
         apply_delta(
             &mut live,
@@ -1813,7 +1813,7 @@ mod tests {
             live[0].pieces,
             vec![
                 Piece::Text("Let me look. ".into()),
-                Piece::Tool("read_file".into()),
+                Piece::Tool("read".into()),
                 Piece::Text("Done.".into())
             ]
         );

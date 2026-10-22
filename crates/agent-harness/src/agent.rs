@@ -40,7 +40,8 @@ use crate::files::{self, Workspace};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
 use crate::session::{SessionError, escape_for_transcript, kind_of};
 use crate::tools;
-use crate::{checkpoints, library, plan, search_tools, shells};
+use crate::v2;
+use crate::{checkpoints, library, plan};
 
 /// A chat thread whose history serializes past this is closed: its next work
 /// starts a new conversation, opened with the thread's last summary.
@@ -320,8 +321,11 @@ pub fn serve<S: Duplex, W: Write + Send>(
     let outcome = thread::scope(|scope| {
         scope.spawn(move || read_host(lines, shared_ref, inbox_tx, operator_tx));
         scope.spawn(move || {
-            let exec = |name: &str, args: &Value| {
-                tools::serve(workspace, name, args).map_err(|err| err.to_string())
+            let exec = |name: &str, args: &Value| match name {
+                "read" | "edit" | "find" | "search" | "run" | "run_tests" => {
+                    v2::serve(workspace, OPERATOR_WORK, name, args).map_err(|err| err.to_string())
+                }
+                _ => tools::serve(workspace, name, args).map_err(|err| err.to_string()),
             };
             serve_operators(operator_rx, shared_ref, exec, OPERATOR_EXPIRY)
         });
@@ -502,7 +506,7 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             HostMessage::Stop { reason } => {
                 // A stop ends the agent's background shells too; a cancel of one work item
                 // leaves them running.
-                crate::shells::stop_all(self.workspace);
+                v2::stop_all(self.workspace);
                 Incoming::Stop(reason)
             }
             HostMessage::Work {
@@ -1211,7 +1215,7 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                     crate::acp::run::run(workspace, input, &link, protocol, engine.as_ref())
                 })?
             }
-            None => self.run_local(move || run_guest_tool(workspace, name, input))?,
+            None => self.run_local(move || run_guest_tool(workspace, work, name, input))?,
         };
         let (ok, output) = match outcome {
             Ok(output) => (true, output),
@@ -1245,16 +1249,19 @@ fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
     None
 }
 
-/// The names [`run_guest_tool`] serves itself, besides the file tools of [`tools::serve`].
-const GUEST_TOOLS: [&str; 26] = [
-    "bash",
+/// The work id the owner's operator calls run under in the v2 tools: a work item of its own, so the reads and
+/// shell of the agent's work items are not mixed with the owner's.
+const OPERATOR_WORK: u64 = 0;
+
+/// The names [`run_guest_tool`] serves itself, besides the tools of [`tools::serve`].
+const GUEST_TOOLS: [&str; 24] = [
+    "read",
+    "edit",
+    "find",
+    "search",
+    "run",
+    "run_tests",
     "install_packages",
-    "multi_edit",
-    "glob",
-    "grep",
-    "bash_start",
-    "bash_output",
-    "bash_kill",
     "todo_write",
     "code_engine",
     "tool_package",
@@ -1267,7 +1274,6 @@ const GUEST_TOOLS: [&str; 26] = [
     "checkpoint_diff",
     "checkpoint_restore",
     "checkpoint_list",
-    "edit_file",
     "symbols",
     "definition",
     "references",
@@ -1284,16 +1290,12 @@ pub(crate) fn is_guest_tool(name: &str) -> bool {
 /// Runs a tool the host allowed, under the names the model knows. `edit_file`
 /// takes `old` and `new` from the model, which the file tool calls `find` and
 /// `replace`.
-fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
+fn run_guest_tool(workspace: &Workspace, work: u64, name: &str, input: &Value) -> Outcome {
     match name {
-        "bash" => bash::run(workspace, input),
+        "read" | "edit" | "find" | "search" | "run" | "run_tests" => {
+            v2::serve(workspace, work, name, input).map_err(|err| err.to_string())
+        }
         "install_packages" => bash::install_packages(workspace, input),
-        "multi_edit" => files::multi_edit(workspace, input),
-        "glob" => search_tools::glob(workspace, input),
-        "grep" => search_tools::grep(workspace, input),
-        "bash_start" => shells::start(workspace, input),
-        "bash_output" => shells::output(workspace, input),
-        "bash_kill" => shells::kill(workspace, input),
         "todo_write" => plan::todo_write(workspace, input),
         "tool_package" => library::package(workspace, input),
         "deliver_file" => library::deliver(workspace, input),
@@ -1308,30 +1310,12 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "symbols" | "definition" | "references" | "diagnostics" | "outline" => {
             crate::code_intel::run(workspace, name, input)
         }
-        "edit_file" => {
-            let args = edit_args(input)?;
-            tools::serve(workspace, name, &args).map_err(|err| err.to_string())
-        }
         // The owner's IDE tools come from the hub's operator, never from the model's own calls.
         name if name.starts_with("ide_") => Err(format!(
             "denied: {name} is an owner tool; the model is not offered it"
         )),
         _ => tools::serve(workspace, name, input).map_err(|err| err.to_string()),
     }
-}
-
-/// The file tool's arguments for the model's `{path, old, new}`.
-fn edit_args(input: &Value) -> Result<Value, String> {
-    let (Some(old), Some(new)) = (
-        input.get("old").and_then(Value::as_str),
-        input.get("new").and_then(Value::as_str),
-    ) else {
-        return Err("invalid input: edit_file needs string \"old\" and \"new\"".to_string());
-    };
-    let mut args = input.clone();
-    args["find"] = json!(old);
-    args["replace"] = json!(new);
-    Ok(args)
 }
 
 /// The size of a conversation as it is sent, in bytes.
@@ -1539,6 +1523,7 @@ mod tests {
         let workspace = scratch("ide-guard");
         let err = run_guest_tool(
             &workspace,
+            1,
             "ide_write",
             &json!({"path": "a.txt", "text": "x", "expected_hash": null}),
         )
@@ -1552,7 +1537,7 @@ mod tests {
             "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
             "profile": {
                 "name": "ada", "role": "builder", "model": "anthropic/x", "system": "be brief",
-                "tools": [{"name": "bash", "description": "run", "input_schema": {"type": "object"}}],
+                "tools": [{"name": "run", "description": "run", "input_schema": {"type": "object"}}],
                 "max_turns": max_turns,
             },
         })
@@ -1669,7 +1654,7 @@ mod tests {
                 );
                 host.send(&answer(
                     1,
-                    json!([tool_use("t1", "bash", json!({"command": "echo hi"}))]),
+                    json!([tool_use("t1", "run", json!({"command": "echo hi"}))]),
                     "tool_use",
                 ))
                 .unwrap();
@@ -1679,18 +1664,18 @@ mod tests {
                         batch["calls"][0]["call"].clone(),
                         batch["calls"][0]["name"].clone()
                     ),
-                    (json!("t1"), json!("bash"))
+                    (json!("t1"), json!("run"))
                 );
                 host.send(&decision("t1", "allow", "", false)).unwrap();
                 let report = expect_type(host, "tool_report");
                 assert_eq!(
                     (report["ok"].clone(), report["output"].clone()),
-                    (json!(true), json!("hi\nexit 0"))
+                    (json!(true), json!(r#"{"exit":0,"output":"hi\n"}"#))
                 );
                 let second = expect_type(host, "model_call");
                 assert_eq!(
                     second["request"]["messages"][2]["content"][0]["content"],
-                    "hi\nexit 0"
+                    r#"{"exit":0,"output":"hi\n"}"#
                 );
                 host.send(&answer(2, json!([text("all done")]), "end_turn"))
                     .unwrap();
@@ -1741,7 +1726,7 @@ mod tests {
                 expect_type(host, "model_call");
                 host.send(&answer(
                     1,
-                    json!([tool_use("d1", "bash", json!({"command": "rm -rf /"}))]),
+                    json!([tool_use("d1", "run", json!({"command": "rm -rf /"}))]),
                     "tool_use",
                 ))
                 .unwrap();
@@ -1773,7 +1758,7 @@ mod tests {
                 .map(|n| {
                     tool_use(
                         &format!("f{n}"),
-                        "bash",
+                        "run",
                         json!({"command": format!("echo {n}")}),
                     )
                 })
@@ -1798,7 +1783,10 @@ mod tests {
                 let report = expect_type(host, "tool_report");
                 assert_eq!(
                     (report["call"].clone(), report["output"].clone()),
-                    (json!(format!("f{n}")), json!(format!("{n}\nexit 0"))),
+                    (
+                        json!(format!("f{n}")),
+                        json!(format!(r#"{{"exit":0,"output":"{n}\n"}}"#))
+                    ),
                     "{report}"
                 );
                 assert!(report.get("policy").is_none(), "{report}");
@@ -1822,14 +1810,14 @@ mod tests {
         let workspace = scratch("local");
         run_hub(&workspace, |host| {
             host.send(&welcome(10)).unwrap();
-            host.send(&policy_line("p1", &["bash"])).unwrap();
+            host.send(&policy_line("p1", &["run"])).unwrap();
             host.send(&work(1, "task", "t", "five things")).unwrap();
             expect_type(host, "model_call");
             let calls: Vec<Value> = (1..=5)
                 .map(|n| {
                     tool_use(
                         &format!("l{n}"),
-                        "bash",
+                        "run",
                         json!({"command": format!("echo {n}")}),
                     )
                 })
@@ -1849,9 +1837,9 @@ mod tests {
                     ),
                     (
                         json!(format!("l{n}")),
-                        json!(format!("{n}\nexit 0")),
+                        json!(format!(r#"{{"exit":0,"output":"{n}\n"}}"#)),
                         json!("p1"),
-                        json!("bash"),
+                        json!("run"),
                         json!({"command": format!("echo {n}")}),
                     ),
                     "{report}"
@@ -1870,15 +1858,15 @@ mod tests {
         let workspace = scratch("mixed");
         run_hub(&workspace, |host| {
             host.send(&welcome(10)).unwrap();
-            host.send(&policy_line("p2", &["bash"])).unwrap();
+            host.send(&policy_line("p2", &["run"])).unwrap();
             host.send(&work(1, "task", "t", "mixed")).unwrap();
             expect_type(host, "model_call");
             host.send(&answer(
                 1,
                 json!([
-                    tool_use("m1", "bash", json!({"command": "echo 1"})),
+                    tool_use("m1", "run", json!({"command": "echo 1"})),
                     tool_use("m2", "search", json!({"pattern": "x"})),
-                    tool_use("m3", "bash", json!({"command": "echo 3"})),
+                    tool_use("m3", "run", json!({"command": "echo 3"})),
                 ]),
                 "tool_use",
             ))
@@ -1890,7 +1878,10 @@ mod tests {
             host.send(&batch_answer(1, vec![entry("m2", "done", "3 hits", false)]))
                 .unwrap();
             // The two bash calls run after the answer, in order, each reported under the policy.
-            for (call, output) in [("m1", "1\nexit 0"), ("m3", "3\nexit 0")] {
+            for (call, output) in [
+                ("m1", r#"{"exit":0,"output":"1\n"}"#),
+                ("m3", r#"{"exit":0,"output":"3\n"}"#),
+            ] {
                 let report = expect_type(host, "tool_report");
                 assert_eq!(
                     (
@@ -1912,7 +1903,11 @@ mod tests {
                 .collect();
             assert_eq!(
                 contents,
-                vec![json!("1\nexit 0"), json!("3 hits"), json!("3\nexit 0")],
+                vec![
+                    json!(r#"{"exit":0,"output":"1\n"}"#),
+                    json!("3 hits"),
+                    json!(r#"{"exit":0,"output":"3\n"}"#)
+                ],
                 "{results}"
             );
             host.send(&answer(2, json!([text("done")]), "end_turn"))
@@ -1933,7 +1928,7 @@ mod tests {
             expect_type(host, "model_call");
             host.send(&answer(
                 1,
-                json!([tool_use("h1", "bash", json!({"command": "echo 1"}))]),
+                json!([tool_use("h1", "run", json!({"command": "echo 1"}))]),
                 "tool_use",
             ))
             .unwrap();
@@ -2090,8 +2085,8 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "go")).unwrap();
             expect_type(host, "model_call");
-            let not_an_object = tool_use("i1", "bash", json!("ls"));
-            let gateway_meta = json!({"type": "tool_use", "id": "i2", "name": "bash", "input": {},
+            let not_an_object = tool_use("i1", "run", json!("ls"));
+            let gateway_meta = json!({"type": "tool_use", "id": "i2", "name": "run", "input": {},
                                       "meta": {"kind": "gateway", "error": "INVALID_JSON"}});
             host.send(&answer(1, json!([not_an_object, gateway_meta]), "tool_use"))
                 .unwrap();
@@ -2204,7 +2199,7 @@ mod tests {
                     let call = format!("s{req}");
                     host.send(&answer(
                         req,
-                        json!([tool_use(&call, "bash", json!({"command": "x"}))]),
+                        json!([tool_use(&call, "run", json!({"command": "x"}))]),
                         "tool_use",
                     ))
                     .unwrap();
@@ -2216,7 +2211,7 @@ mod tests {
                     (done["status"].clone(), done["summary"].clone()),
                     (
                         json!("stopped"),
-                        json!("stuck: bash failed 3 times in a row with the same input")
+                        json!("stuck: run failed 3 times in a row with the same input")
                     )
                 );
                 stop(host);
@@ -2237,7 +2232,7 @@ mod tests {
                     .unwrap();
                 host.send(&answer(
                     1,
-                    json!([tool_use("c1", "bash", json!({"command": "echo hi"}))]),
+                    json!([tool_use("c1", "run", json!({"command": "echo hi"}))]),
                     "tool_use",
                 ))
                 .unwrap();
@@ -2261,7 +2256,7 @@ mod tests {
                 expect_type(host, "model_call");
                 host.send(&answer(
                     1,
-                    json!([tool_use("c1", "bash", json!({"command": "sleep 1"}))]),
+                    json!([tool_use("c1", "run", json!({"command": "sleep 1"}))]),
                     "tool_use",
                 ))
                 .unwrap();
@@ -2419,7 +2414,7 @@ mod tests {
             expect_type(host, "model_call");
             host.send(&answer(
                 1,
-                json!([tool_use("slow", "bash", json!({"command": "sleep 1"}))]),
+                json!([tool_use("slow", "run", json!({"command": "sleep 1"}))]),
                 "tool_use",
             ))
             .unwrap();
@@ -2476,17 +2471,21 @@ mod tests {
     }
 
     #[test]
-    fn the_model_edit_arguments_map_onto_the_file_tools_names() {
-        let mapped = edit_args(&json!({"path": "a.txt", "old": "x", "new": "y"})).unwrap();
-        assert_eq!(
-            (mapped["find"].clone(), mapped["replace"].clone()),
-            (json!("x"), json!("y"))
-        );
-        assert!(
-            edit_args(&json!({"path": "a.txt", "old": "x"}))
-                .unwrap_err()
-                .starts_with("invalid input:")
-        );
+    fn the_v2_tools_are_served_here_and_the_v1_names_are_not() {
+        let workspace = scratch("v2-served");
+        std::fs::write(workspace.dir().join("a.txt"), "one\ntwo\n").expect("a scratch file");
+        let out = run_guest_tool(
+            &workspace,
+            1,
+            "read",
+            &json!({"files": [{"path": "a.txt"}]}),
+        )
+        .expect("a read");
+        let reply: Value = serde_json::from_str(&out).expect("JSON");
+        assert_eq!(reply["files"][0]["lines"], 2, "{reply}");
+        let err = run_guest_tool(&workspace, 1, "read_file", &json!({"path": "a.txt"}))
+            .expect_err("read_file is gone");
+        assert_eq!(err, "no such tool: read_file");
     }
 
     /// A `/proc/<pid>/stat` line as the kernel writes it, with a name that holds a space and a bracket.

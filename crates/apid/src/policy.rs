@@ -228,19 +228,13 @@ mod tests {
     fn a_tool_whose_input_a_law_reads_is_not_allowed_locally() {
         let laws = laws();
         // Commands and file writes are checked for the flags of their input (C-001c, C-002b).
-        for tool in [
-            "bash",
-            "write_file",
-            "edit_file",
-            "install_packages",
-            "fetch_url",
-        ] {
+        for tool in ["run", "edit", "install_packages", "fetch_url"] {
             assert!(laws.tests_input(tool), "{tool} tests its input");
         }
         // A message reads its recipient, and a read-only tool no law reads the input of.
         assert!(laws.tests_input("plaza_send_message"));
-        assert!(!laws.tests_input("glob"));
-        assert!(!laws.tests_input("grep"));
+        assert!(!laws.tests_input("find"));
+        assert!(!laws.tests_input("search"));
         let local = allowed(
             &laws,
             7,
@@ -249,19 +243,13 @@ mod tests {
             Mode::Autonomous,
             false,
         );
-        for tool in [
-            "bash",
-            "write_file",
-            "edit_file",
-            "install_packages",
-            "fetch_url",
-        ] {
+        for tool in ["run", "edit", "install_packages", "fetch_url"] {
             assert!(
                 !local.iter().any(|t| t == tool),
                 "{tool} is decided by the hub"
             );
         }
-        assert!(local.iter().any(|t| t == "glob"), "{local:?}");
+        assert!(local.iter().any(|t| t == "find"), "{local:?}");
     }
 
     #[test]
@@ -307,7 +295,7 @@ mod tests {
 
     #[test]
     fn the_snapshot_id_binds_the_agent_the_time_and_the_list() {
-        let list = vec!["glob".to_string(), "grep".to_string()];
+        let list = vec!["find".to_string(), "find".to_string()];
         let id = id_of(7, 100, &list);
         assert_eq!(id.len(), 64, "{id}");
         assert_eq!(
@@ -325,24 +313,24 @@ mod tests {
         let snapshot = PolicySnapshot {
             id: "policy-a".into(),
             issued_ms: 1,
-            allow: vec!["glob".into()],
+            allow: vec!["find".into()],
             signature: "sig".into(),
         };
         keep(9, snapshot);
-        assert_eq!(violation(9, "policy-a", "glob"), None);
+        assert_eq!(violation(9, "policy-a", "find"), None);
         assert!(
-            violation(9, "policy-a", "bash")
+            violation(9, "policy-a", "run")
                 .unwrap()
                 .contains("does not allow")
         );
         assert!(
-            violation(9, "policy-b", "glob")
+            violation(9, "policy-b", "find")
                 .unwrap()
                 .contains("never issued")
         );
         // Another agent's snapshot is not this agent's.
         assert!(
-            violation(8, "policy-a", "glob")
+            violation(8, "policy-a", "find")
                 .unwrap()
                 .contains("never issued")
         );
@@ -363,13 +351,13 @@ mod tests {
         }
         // The oldest are gone, so a report under one of them is "never issued"; the newest still names a snapshot.
         assert!(
-            violation(11, "p0", "glob")
+            violation(11, "p0", "find")
                 .unwrap()
                 .contains("never issued")
         );
         let newest = format!("p{}", KEPT as u64 + 2);
         assert!(
-            violation(11, &newest, "glob")
+            violation(11, &newest, "find")
                 .unwrap()
                 .contains("does not allow")
         );

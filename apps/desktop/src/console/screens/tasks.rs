@@ -864,9 +864,9 @@ fn str_field<'v>(v: &'v Value, key: &str) -> Option<&'v str> {
     v.get(key).and_then(Value::as_str)
 }
 
-/// The shell command of a bash tool request, or None for any other tool.
+/// The shell command of a run tool request, or None for any other tool.
 fn command_of(e: &EntryRecord) -> Option<String> {
-    if tool_of(e).to_lowercase() != "bash" {
+    if tool_of(e).to_lowercase() != "run" {
         return None;
     }
     e.data

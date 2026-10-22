@@ -16,9 +16,10 @@
 //!   `stop`, which is answered with `bye`. This mode never exits on its own
 //!   account: any failure is printed and retried with a jittered backoff, and
 //!   the guest's `init` keeps the VM up when it does end. The tools it serves
-//!   are `echo` and `uptime` plus the file tools (`read_file`, `write_file`,
-//!   `edit_file`, `append_file`, `list`, `search`) over the guest's writable
-//!   `/workspace` volume — see [`crate::tools`] and [`crate::files`].
+//!   are `echo` and `uptime`, the download into the guest's writable `/workspace`
+//!   volume, and the agent's own shell and file tools (`read`, `edit`, `find`,
+//!   `search`, `run`, `run_tests`) — see [`crate::tools`], [`crate::files`] and
+//!   [`crate::v2`].
 //!
 //! There is no NIC and no other network path: the plaza rule is that a guest
 //! reaches the orchestrator over vsock only. The harness holds no secrets and
@@ -80,17 +81,15 @@ mod plan;
 #[cfg(target_os = "linux")]
 mod restore;
 #[cfg(target_os = "linux")]
-mod search_tools;
-#[cfg(target_os = "linux")]
 mod session;
-#[cfg(target_os = "linux")]
-mod shells;
 #[cfg(target_os = "linux")]
 mod term;
 #[cfg(target_os = "linux")]
 mod tools;
 #[cfg(target_os = "linux")]
 mod trust;
+#[cfg(target_os = "linux")]
+mod v2;
 #[cfg(target_os = "linux")]
 mod vsock;
 #[cfg(target_os = "linux")]

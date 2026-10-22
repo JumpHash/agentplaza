@@ -506,10 +506,10 @@ mod tests {
         let profile = [
             spec("board_list"),
             spec("task_list"),
-            spec("bash"),
-            spec("list"),
+            spec("run"),
+            spec("find"),
             spec("fetch_url"),
-            spec("edit_file"),
+            spec("edit"),
             spec("ide_read"),
             spec("code_engine"),
         ];

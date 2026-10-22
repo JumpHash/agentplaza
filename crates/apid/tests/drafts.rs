@@ -80,7 +80,7 @@ fn a_draft_the_owner_starts_becomes_a_staffed_project_with_its_tasks() {
             (200, r#"{"ok":true}"#.into())
         }
     });
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "builder": role("builder", "Builder"),

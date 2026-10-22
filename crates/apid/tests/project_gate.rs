@@ -270,7 +270,7 @@ fn a_member_sent_back_to_the_bench_leaves_its_waiting_tasks_open_for_others() {
             (200, r#"{"ok":true}"#.into())
         }
     });
-    let roles = json!({ "roles": { "builder": { "role": "builder", "title": "Builder", "tools": ["bash"] } } });
+    let roles = json!({ "roles": { "builder": { "role": "builder", "title": "Builder", "tools": ["run", "run_tests"] } } });
     let scratch = Scratch::new("project-gate-leave");
     let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
     let agent = hub.wait_for("/v1/agents/300", Duration::from_secs(20), |a| {

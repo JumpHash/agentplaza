@@ -4,10 +4,12 @@
 //! the guest ask for them, because the point of that session was the wire
 //! rather than the work. In the agent fleet the direction is the other way
 //! round: the hub asks, the agent serves, and these are the tools it serves
-//! today — `echo` and `uptime`, the message channel (`conversation`, which
-//! writes the message to the agent's own `/workspace/messages.log`), and the
-//! file tools that work on the guest's writable `/workspace` volume (see
-//! [`crate::files`]).
+//! here — `echo` and `uptime`, the message channel (`conversation`, which
+//! writes the message to the agent's own `/workspace/messages.log`), the
+//! download that saves a file into the guest's writable `/workspace` volume
+//! (see [`crate::files`]), and the owner's IDE tools. The file, search and shell
+//! tools are the v2 tools (see [`crate::v2`]), which the agent loop serves
+//! itself.
 //!
 //! A tool's failure is data, not a protocol error: it is answered as
 //! `{"ok":false,"output":"<why>"}`, so the hub can tell an agent that refused
@@ -31,8 +33,9 @@ use crate::files::{self, Workspace};
 use crate::ide;
 use crate::term;
 
-/// The tools, by name. The `ide_*` tools are the owner's (see [`crate::ide`]); the model never gets them.
-const TOOLS: [Tool; 27] = [
+/// The tools this table serves, by name. The `ide_*` tools are the owner's (see [`crate::ide`]); the model never
+/// gets them.
+const TOOLS: [Tool; 21] = [
     Tool {
         name: "echo",
         run: echo,
@@ -44,30 +47,6 @@ const TOOLS: [Tool; 27] = [
     Tool {
         name: "conversation",
         run: files::conversation,
-    },
-    Tool {
-        name: "read_file",
-        run: files::read_file,
-    },
-    Tool {
-        name: "write_file",
-        run: files::write_file,
-    },
-    Tool {
-        name: "edit_file",
-        run: files::edit_file,
-    },
-    Tool {
-        name: "append_file",
-        run: files::append_file,
-    },
-    Tool {
-        name: "list",
-        run: files::list,
-    },
-    Tool {
-        name: "search",
-        run: files::search,
     },
     Tool {
         name: "fetch_url",

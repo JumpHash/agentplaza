@@ -207,7 +207,7 @@ fn text_update(session_update: &str, text: &str) -> Value {
 /// The tool's kind for the editor, from the law operation the plaza checks the call as.
 fn tool_kind(name: &str) -> apz_acp::types::ToolKind {
     let operation = match name {
-        "bash" | "bash_start" | "code_engine" => "tool.exec",
+        "run" | "run_tests" | "code_engine" => "tool.exec",
         "fetch_url" | "download" => "tool.fetch",
         _ if crate::laws::risk_class(name) == "read" => "tool.read",
         _ => "tool.write",
@@ -350,7 +350,8 @@ mod tests {
                 json!({"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "hm"}})
             ]
         );
-        let tool_use = json!({"cid": 7, "work": 3, "req": "r1", "delta": {"type": "tool_use", "name": "bash"}});
+        let tool_use =
+            json!({"cid": 7, "work": 3, "req": "r1", "delta": {"type": "tool_use", "name": "run"}});
         assert!(feed.frame("delta", &tool_use).is_empty());
     }
 
@@ -366,15 +367,18 @@ mod tests {
             )
         };
         assert_eq!(
-            feed.frame("transcript", &request("read_file", json!({"path": "a.rs"}))),
+            feed.frame(
+                "transcript",
+                &request("read", json!({"files": [{"path": "a.rs"}]}))
+            ),
             vec![json!({
-                "sessionUpdate": "tool_call", "toolCallId": "c1", "title": "read_file",
-                "kind": "read", "status": "pending", "rawInput": {"path": "a.rs"}
+                "sessionUpdate": "tool_call", "toolCallId": "c1", "title": "read",
+                "kind": "read", "status": "pending", "rawInput": {"files": [{"path": "a.rs"}]}
             })]
         );
         let kinds = [
-            ("write_file", "edit"),
-            ("bash", "execute"),
+            ("edit", "edit"),
+            ("run", "execute"),
             ("code_engine", "execute"),
             ("fetch_url", "fetch"),
         ];
@@ -540,7 +544,7 @@ mod tests {
             7,
             4,
             "tool_request",
-            json!({"call": "c2", "name": "bash", "input": {}}),
+            json!({"call": "c2", "name": "run", "input": {}}),
         );
         assert!(feed.frame("delta", &other_agent).is_empty());
         assert!(feed.frame("engine", &other_work).is_empty());
@@ -613,7 +617,7 @@ mod tests {
             entry(
                 WORK,
                 "tool_request",
-                json!({"call": "c1", "name": "read_file", "input": {"path": "a.rs"}}),
+                json!({"call": "c1", "name": "read", "input": {"files": [{"path": "a.rs"}]}}),
             ),
             entry(
                 WORK,
@@ -654,7 +658,7 @@ mod tests {
             vec![
                 json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "fix it"}}),
                 json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "On it."}}),
-                json!({"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "read_file", "kind": "read", "status": "pending", "rawInput": {"path": "a.rs"}}),
+                json!({"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "read", "kind": "read", "status": "pending", "rawInput": {"files": [{"path": "a.rs"}]}}),
                 json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "in_progress"}),
                 json!({
                     "sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "completed",
