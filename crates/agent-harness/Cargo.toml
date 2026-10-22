@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 apz-acp = { path = "../apz-acp" }
 apz-ide = { path = "../apz-ide" }
+apz-lsp = { path = "../apz-lsp" }
 apz-ops = { path = "../apz-ops" }
 apz-proto.workspace = true
 base64.workspace = true

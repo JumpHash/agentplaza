@@ -1369,8 +1369,9 @@ fn tool_kind(tool: &str) -> &'static str {
 /// tool calls yet. Payments stay `write`: they are capped transfers and verdicts are reviewable.
 pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
-        "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks"
-        | "plaza_agents" | "transcript_search" | "glob" | "grep" | "bash_output" | "todo_write"
+        "read" | "read_file" | "list" | "list_files" | "search" | "symbols" | "definition"
+        | "references" | "diagnostics" | "outline" | "plaza_tasks" | "plaza_agents"
+        | "transcript_search" | "glob" | "grep" | "bash_output" | "todo_write"
         | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search" | "station_list"
         | "station_app_list" | "engine.read" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",

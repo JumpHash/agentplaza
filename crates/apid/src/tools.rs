@@ -98,6 +98,11 @@ const IN_VM: &[&str] = &[
     "edit_file",
     "list",
     "search",
+    "symbols",
+    "definition",
+    "references",
+    "diagnostics",
+    "outline",
 ];
 
 /// Host tools offered only by tier (see [`permitted`]).
@@ -157,7 +162,12 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "tool_package"
         | "checkpoint_diff"
         | "checkpoint_restore"
-        | "checkpoint_list" => Some(Runs::Guest),
+        | "checkpoint_list"
+        | "symbols"
+        | "definition"
+        | "references"
+        | "diagnostics"
+        | "outline" => Some(Runs::Guest),
         "transcript_search"
         | "submit_claim"
         | "plaza_tasks"

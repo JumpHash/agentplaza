@@ -31,6 +31,7 @@ pub const USAGE: &str = "weft: AgentPlaza's version control
   weft done [--model M]
   weft log [query] [--repo R] [--limit N]    weft show <change>    weft tree <revision>
   weft blame <path>[::symbol] [--repo R] [--at REV]    weft history <path::symbol> [--repo R]
+  weft symbols <path> [--rev R]    weft names <name> | weft names --find <text> [--rev R]   (default rev: the lane's)
   weft op log [--since N]    weft undo <seq> [--reason R]
   weft verify [subject] [--deep]
   weft pack ls | pack add <pack dir> [--wasm F]
@@ -366,6 +367,8 @@ pub fn run_in(raw: Vec<String>, cwd: PathBuf, env: BTreeMap<String, String>) -> 
             Ok(())
         }
         ("blame", _) => blame(&cx),
+        ("symbols", _) => symbols(&cx),
+        ("names", _) => names(&cx),
         ("history", _) => {
             let c = cx.client()?;
             let id = cx.args.arg(1, "a definition (path::symbol) or lineage")?;
@@ -1264,6 +1267,74 @@ fn blame(cx: &Ctx) -> Result<(), String> {
         out
     });
     Ok(())
+}
+
+/// `weft symbols <path>`: the symbols and references of a file at the lane's revision (or `--rev`).
+fn symbols(cx: &Ctx) -> Result<(), String> {
+    let c = cx.client()?;
+    let path = cx.args.arg(1, "a path")?;
+    let v = c.get(&format!(
+        "/revisions/{}/symbols?path={}",
+        revision_of(cx)?,
+        crate::server::percent_encode(&path)
+    ))?;
+    cx.print(&v, |v| {
+        let mut out = String::new();
+        for s in v["symbols"].as_array().into_iter().flatten() {
+            out.push_str(&format!(
+                "{:>5}-{:<5} {:<10} {}\n",
+                s["start_line"],
+                s["end_line"],
+                s["kind"].as_str().unwrap_or(""),
+                s["qualified"].as_str().unwrap_or("")
+            ));
+        }
+        out
+    });
+    Ok(())
+}
+
+/// `weft names <name>` (or `--find <text>` for every name containing the text): where the names are defined and used
+/// at the lane's revision (or `--rev`).
+fn names(cx: &Ctx) -> Result<(), String> {
+    let c = cx.client()?;
+    let query = match (cx.args.opt("find"), cx.args.pos.get(1)) {
+        (Some(text), _) => format!("find={}", crate::server::percent_encode(&text)),
+        (None, Some(name)) => format!("name={}", crate::server::percent_encode(name)),
+        (None, None) => return Err("a name is required (or --find <text>)".into()),
+    };
+    let v = c.get(&format!("/revisions/{}/names?{query}", revision_of(cx)?))?;
+    cx.print(&v, |v| {
+        let mut out = String::new();
+        for d in v["definitions"].as_array().into_iter().flatten() {
+            out.push_str(&format!(
+                "def {}:{}-{} {} {}\n",
+                d["path"].as_str().unwrap_or(""),
+                d["start_line"],
+                d["end_line"],
+                d["kind"].as_str().unwrap_or(""),
+                d["qualified"].as_str().unwrap_or("")
+            ));
+        }
+        for r in v["references"].as_array().into_iter().flatten() {
+            out.push_str(&format!(
+                "ref {}:{} {}\n",
+                r["path"].as_str().unwrap_or(""),
+                r["line"],
+                r["name"].as_str().unwrap_or("")
+            ));
+        }
+        out
+    });
+    Ok(())
+}
+
+/// The revision a code query asks about: `--rev`, else the lane's (the command runs in the lane's directory).
+fn revision_of(cx: &Ctx) -> Result<String, String> {
+    match cx.args.opt("rev") {
+        Some(rev) => Ok(rev),
+        None => Ok(cx.workdir()?.lane()?.at),
+    }
 }
 
 fn verify(cx: &Ctx) -> Result<(), String> {
