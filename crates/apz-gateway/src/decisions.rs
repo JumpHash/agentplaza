@@ -693,6 +693,8 @@ mod tests {
         ]);
         let chat = gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "ts/jev-latest".into(),
                 ..request("hi")
             },

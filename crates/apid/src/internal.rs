@@ -74,7 +74,7 @@ fn forget_tools(cid: u64) {
 /// `attachments` stays 0: the chat model has no image or file block.
 pub(crate) fn context_split(request: &ChatRequest, input_tokens: u64) -> Vec<(String, u64)> {
     let mut bytes = [0u64; 6];
-    bytes[0] = request.system.as_ref().map_or(0, |s| s.len() as u64);
+    bytes[0] = request.system_text().map_or(0, |s| s.len() as u64);
     bytes[1] = serde_json::to_vec(&request.tools).map_or(0, |v| v.len() as u64);
     for message in &request.messages {
         let is_summary = message
@@ -1515,6 +1515,8 @@ mod egress_check_tests {
 
     fn request_of(system: Option<&str>, messages: Vec<Message>) -> ChatRequest {
         ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: String::new(),
             system: system.map(str::to_string),
             messages,

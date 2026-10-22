@@ -42,6 +42,7 @@ use crate::files::{self, Workspace};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
 use crate::session::{SessionError, escape_for_transcript, kind_of};
 use crate::tool_batch::{self, Streamed, Touch};
+use crate::tool_search::{self, Deferred};
 use crate::tools;
 use crate::{checkpoints, library, plan, search_tools, shells};
 
@@ -86,6 +87,8 @@ impl Timed {
 enum Route {
     /// Refused for its input: the text the model sees, without asking the hub.
     Refused(String),
+    /// Answered here, not run: `tool_search`'s text, which the model sees as a success.
+    Answered(String),
     /// Allowed by the policy with this id: it runs here.
     Local(String),
     /// Left to the hub, in the turn's batch.
@@ -231,6 +234,8 @@ struct Agent<'a, 'l, S, W> {
     /// The last model call's request id.
     req: u64,
     profile: Option<AgentProfile>,
+    /// The work item's deferred tools, and which of them the model has fetched.
+    deferred: Deferred,
     /// The hub's signed policy: the tools this agent runs without asking. None until the hub sends one, and then
     /// every call goes to the hub.
     policy: Option<PolicySnapshot>,
@@ -407,6 +412,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
             seq: 0,
             req: 0,
             profile,
+            deferred: Deferred::default(),
             policy: None,
             early: HashMap::new(),
             queue: VecDeque::new(),
@@ -845,6 +851,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         self.compress_requested = false;
         self.compressed_size = 0;
         self.extra_turns = 0;
+        self.deferred = Deferred::new(&profile.tools);
         let result = self.drive(job.work, &profile, &mut messages);
         // The last state, so the seal has it.
         if let Some(lane) = self.lane.take()
@@ -1150,9 +1157,12 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         let req = self.req;
         let request = ChatRequest {
             model: String::new(),
-            system: (!profile.system.is_empty()).then(|| profile.system.clone()),
+            system: None,
+            system_parts: profile.system_parts.clone(),
             messages: messages.to_vec(),
-            tools: profile.tools.clone(),
+            tools: self.deferred.request_tools(&profile.tools),
+            // The whole prefix of the conversation is cached for the next call (PLAN 13.3).
+            cache_last_message: true,
             max_tokens: 0,
             temperature: None,
             effort: None,
@@ -1174,10 +1184,11 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                         let Some(whole) = streamed.push(workspace, delta) else {
                             continue;
                         };
-                        let allowed = self
-                            .policy
-                            .as_ref()
-                            .filter(|policy| policy.allow.contains(&whole.name));
+                        // A deferred tool the model has not fetched runs in no way, not even ahead of the answer.
+                        let allowed = self.policy.as_ref().filter(|policy| {
+                            policy.allow.contains(&whole.name)
+                                && self.deferred.refusal(&whole.name).is_none()
+                        });
                         let Some(policy) = allowed.map(|policy| policy.id.clone()) else {
                             continue;
                         };
@@ -1249,20 +1260,27 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
     ) -> Result<Vec<(String, bool)>, Halt> {
         let policy = self.policy.clone();
         let mut early = std::mem::take(&mut self.early);
-        let routes: Vec<Route> = uses
-            .iter()
-            .map(|(_, name, input, meta)| {
-                if let Some(reason) = invalid_input(input, meta.as_ref()) {
-                    return Route::Refused(format!("INVALID_INPUT: {reason}"));
+        let mut routes: Vec<Route> = Vec::with_capacity(uses.len());
+        for (_, name, input, meta) in uses {
+            let route = if let Some(reason) = invalid_input(input, meta.as_ref()) {
+                Route::Refused(format!("INVALID_INPUT: {reason}"))
+            } else if name == tool_search::TOOL {
+                match input["query"].as_str() {
+                    Some(query) => Route::Answered(self.deferred.search(query)),
+                    None => Route::Refused("INVALID_INPUT: tool_search needs a query".into()),
                 }
+            } else if let Some(reason) = self.deferred.refusal(name) {
+                Route::Refused(reason)
+            } else {
                 match &policy {
                     Some(policy) if policy.allow.iter().any(|tool| tool == name) => {
                         Route::Local(policy.id.clone())
                     }
                     _ => Route::Hub,
                 }
-            })
-            .collect();
+            };
+            routes.push(route);
+        }
         let calls: Vec<BatchCall> = uses
             .iter()
             .zip(&routes)
@@ -1293,6 +1311,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             .zip(routes)
             .map(|((id, name, input, _), route)| match route {
                 Route::Refused(text) => Step::Settled(text, true),
+                Route::Answered(text) => Step::Settled(text, false),
                 Route::Local(policy) => run_step(
                     self.workspace,
                     id,
@@ -1443,10 +1462,14 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 let call = run.id.clone();
                 let engine = run.allowance.engine.clone();
                 // The engine's MCP server offers the profile's plaza tools, through the hub.
-                let tools = self
-                    .profile
-                    .as_ref()
-                    .map_or_else(Vec::new, |profile| profile.tools.clone());
+                let tools = self.profile.as_ref().map_or_else(Vec::new, |profile| {
+                    profile
+                        .tools
+                        .iter()
+                        .filter(|tool| tool.name != tool_search::TOOL)
+                        .cloned()
+                        .collect()
+                });
                 let protocol = self.profile.as_ref().map_or(1, |profile| {
                     crate::acp::run::protocol_offer(&profile.engine_transport)
                 });
@@ -1841,9 +1864,32 @@ mod tests {
         json!({
             "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
             "profile": {
-                "name": "ada", "role": "builder", "model": "anthropic/x", "system": "be brief",
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system_parts": [{"text": "be brief", "cache": true}],
                 "tools": [{"name": "bash", "description": "run", "input_schema": {"type": "object"}}],
                 "max_turns": max_turns,
+            },
+        })
+        .to_string()
+    }
+
+    /// The tools of a profile that defers one: `bash` in full, `ledger_rows` by name, and `tool_search`.
+    fn deferred_tools() -> Value {
+        json!([
+            {"name": "bash", "description": "run", "input_schema": {"type": "object"}},
+            {"name": "ledger_rows", "description": "read the ledger rows", "deferred": true,
+             "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}},
+            {"name": "tool_search", "description": "fetch the schemas of deferred tools", "input_schema": {"type": "object"}},
+        ])
+    }
+
+    /// A welcome whose profile offers `tools`, with the system prompt of [`welcome`].
+    fn welcome_with_tools(tools: Value) -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x",
+                "system_parts": [{"text": "be brief", "cache": true}],
+                "tools": tools, "max_turns": 10,
             },
         })
         .to_string()
@@ -1950,7 +1996,10 @@ mod tests {
                 host.send(&work(1, "task", "t", "say hi")).unwrap();
                 let first = expect_type(host, "model_call");
                 assert_eq!(
-                    (first["req"].clone(), first["request"]["system"].clone()),
+                    (
+                        first["req"].clone(),
+                        first["request"]["system_parts"][0]["text"].clone()
+                    ),
                     (json!(1), json!("be brief"))
                 );
                 assert_eq!(
@@ -2241,6 +2290,79 @@ mod tests {
     }
 
     #[test]
+    fn a_deferred_tool_is_fetched_through_tool_search_and_then_offered_in_full() {
+        let workspace = scratch("tool-search");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(deferred_tools())).unwrap();
+            host.send(&work(1, "task", "t", "find the rows")).unwrap();
+            let first = expect_type(host, "model_call");
+            // The index: the deferred tool by name with an empty schema, the others as they are.
+            assert_eq!(first["request"]["tools"][1]["name"], "ledger_rows");
+            assert_eq!(
+                first["request"]["tools"][1]["input_schema"],
+                json!({"type": "object"})
+            );
+            assert_eq!(first["request"]["cache_last_message"], true);
+            host.send(&answer(
+                1,
+                json!([tool_use("s1", "tool_search", json!({"query": "ledger"}))]),
+                "tool_use",
+            ))
+            .unwrap();
+            // The harness answers the search itself: no tool batch goes to the hub.
+            let second = expect_type(host, "model_call");
+            let result = &second["request"]["messages"][2]["content"][0];
+            assert_eq!(result["is_error"], false, "{second}");
+            assert!(
+                result["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(r#""path""#)),
+                "{second}"
+            );
+            // From now on the schema is in the request.
+            assert_eq!(
+                second["request"]["tools"][1]["input_schema"]["properties"]["path"]["type"],
+                "string"
+            );
+            assert!(second["request"]["tools"][1].get("deferred").is_none());
+            host.send(&answer(2, json!([text("found")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_deferred_tool_called_before_its_fetch_is_refused_here() {
+        let workspace = scratch("tool-search-refused");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(deferred_tools())).unwrap();
+            host.send(&work(1, "task", "t", "read the rows")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(
+                1,
+                json!([tool_use("d1", "ledger_rows", json!({"path": "rows.csv"}))]),
+                "tool_use",
+            ))
+            .unwrap();
+            // Refused without a batch to the hub, and the model reads why.
+            let second = expect_type(host, "model_call");
+            let result = &second["request"]["messages"][2]["content"][0];
+            assert_eq!(result["is_error"], true, "{second}");
+            assert!(
+                result["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("fetch its schema with tool_search first")),
+                "{second}"
+            );
+            host.send(&answer(2, json!([text("gave up")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
     fn work_that_arrives_before_the_profile_waits_for_it_and_then_runs() {
         let workspace = scratch("profile-wait");
         run_hub(&workspace, |host| {
@@ -2260,7 +2382,10 @@ mod tests {
             host.send(&json!({"type": "profile", "profile": profile}).to_string())
                 .unwrap();
             let call = expect_type(host, "model_call");
-            assert_eq!(call["request"]["system"], "be brief", "{call}");
+            assert_eq!(
+                call["request"]["system_parts"][0]["text"], "be brief",
+                "{call}"
+            );
             host.send(&answer(1, json!([text("hi back")]), "end_turn"))
                 .unwrap();
             let done = expect_type(host, "work_done");
@@ -2281,7 +2406,7 @@ mod tests {
         json!({
             "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
             "profile": {
-                "name": "ada", "role": "builder", "model": "anthropic/x", "system": "be brief",
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system_parts": [{"text": "be brief", "cache": true}],
                 "tools": [{"name": "search", "description": "find", "input_schema": {"type": "object"}}],
                 "max_turns": 10, "compress_at": 1, "keep_recent": 1,
             },

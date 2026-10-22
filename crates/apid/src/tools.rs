@@ -90,6 +90,28 @@ const ALWAYS: &[&str] = &[
     "plaza_deploy",
 ];
 
+/// The tools a seat uses on most steps: offered with their schemas. Every other tool is deferred: the model sees its name
+/// and one line, and fetches its schema through `tool_search` before it calls the tool.
+const CORE: &[&str] = &[
+    "bash",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list",
+    "search",
+    "glob",
+    "grep",
+    "submit_claim",
+    "plaza_tasks",
+    "plaza_board_read",
+    "plaza_send_message",
+    "plaza_message_seat",
+    "plaza_task_result",
+];
+
+/// The tool the harness serves itself: it returns the full schemas of the deferred tools that match its query.
+pub const TOOL_SEARCH: &str = "tool_search";
+
 /// The guest tools that act only inside the agent's own VM, offered to every role.
 const IN_VM: &[&str] = &[
     "bash",
@@ -249,6 +271,29 @@ pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
     for spec in specs.iter_mut().filter(|spec| spec.name == "code_engine") {
         restrict_engines(&mut spec.input_schema, &enabled);
     }
+    specs
+}
+
+/// The tools agent `agent` is offered, as its profile carries them: `specs_for_agent`, with every tool outside `CORE`
+/// deferred, and `tool_search` for the deferred ones.
+pub fn offered_to(app: &App, agent: &Agent) -> Vec<ToolSpec> {
+    let mut specs = specs_for_agent(app, agent);
+    for spec in &mut specs {
+        spec.deferred = !CORE.contains(&spec.name.as_str());
+    }
+    specs.push(ToolSpec {
+        deferred: false,
+        name: TOOL_SEARCH.to_string(),
+        description: "Fetch the full schemas of tools you were offered by name only. Give a query that matches their names or \
+            what they do; each match comes back with its input schema, and from then on you may call it. Call it before you \
+            call a deferred tool."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {"query": {"type": "string", "minLength": 1}},
+            "required": ["query"],
+        }),
+    });
     specs
 }
 
@@ -510,6 +555,7 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
     }
     if let Some(builtin) = BUILTIN.get(name) {
         return Some(ToolSpec {
+            deferred: false,
             name: name.to_string(),
             description: builtin.description.clone(),
             input_schema: builtin.input_schema.clone(),
@@ -526,6 +572,7 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
         .or_else(|| crate::skills::agent_tools::spec(name))
         .or_else(|| crate::stations::tools::spec(name))?;
     Some(ToolSpec {
+        deferred: false,
         name: name.to_string(),
         description: description.to_string(),
         input_schema,

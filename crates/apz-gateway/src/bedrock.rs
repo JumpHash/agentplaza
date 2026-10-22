@@ -102,7 +102,7 @@ fn body(req: &ChatRequest) -> Value {
     if let Some(t) = req.temperature {
         body["inferenceConfig"]["temperature"] = json!((f64::from(t) * 1000.0).round() / 1000.0);
     }
-    if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(system) = req.system_text() {
         body["system"] = json!([{"text": system}]);
     }
     if !req.tools.is_empty() {
@@ -345,9 +345,12 @@ mod tests {
         ];
         let (gw, _) = gateway_with_secrets(vec![p], &pair, &[]);
         let mut req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
             system: Some("sys".into()),
             tools: vec![ToolSpec {
+                deferred: false,
                 name: "bash".into(),
                 description: "d".into(),
                 input_schema: json!({"type": "object"}),
@@ -450,6 +453,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "aws/amazon.nova-pro-v1:0".into(),
                     ..request("hi")
                 },
@@ -483,6 +488,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "bedrock/amazon.nova-pro-v1:0".into(),
                     ..request("hi")
                 },
@@ -522,6 +529,8 @@ mod tests {
             );
             match gw.complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "bedrock/amazon.nova-pro-v1:0".into(),
                     ..request("hi")
                 },
@@ -553,6 +562,8 @@ mod tests {
             );
             match gw.complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "aws-b/amazon.nova-pro-v1:0".into(),
                     ..request("hi")
                 },
@@ -594,6 +605,8 @@ mod tests {
         );
         gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "bedrock-eu/amazon.nova-pro-v1:0".into(),
                 ..request("hi")
             },
@@ -602,6 +615,8 @@ mod tests {
         .unwrap();
         gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "aws/amazon.nova-pro-v1:0".into(),
                 ..request("hi")
             },
@@ -650,6 +665,8 @@ mod tests {
             .build();
         match gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "bedrock/amazon.nova-pro-v1:0".into(),
                 ..request("hi")
             },
