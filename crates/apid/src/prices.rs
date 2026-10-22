@@ -53,7 +53,7 @@ const ALIAS_PROVIDERS: &[&str] = &[
 ];
 
 /// One model's prices in US dollars per million tokens.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct ModelPrice {
     pub input: f64,
     pub output: f64,
@@ -948,7 +948,7 @@ pub struct Priced {
 }
 
 /// What one fetch of one list did.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct SourceStatus {
     pub name: String,
     pub url: String,
@@ -958,17 +958,21 @@ pub struct SourceStatus {
     pub error: Option<String>,
 }
 
-/// The fetched lists, keyed by lower-cased model id.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// The fetched lists, keyed by lower-cased model id: one row of `price_catalog`, its models and sources as children.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "price_catalog")]
 pub struct CatalogState {
     pub fetched_at_ms: u64,
+    #[table(map)]
     pub openrouter: BTreeMap<String, ModelPrice>,
+    #[table(map)]
     pub litellm: BTreeMap<String, ModelPrice>,
+    #[table(child)]
     pub sources: Vec<SourceStatus>,
 }
 
 /// Token counts of one call, as the gateway and the proxy meter them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Tokens {
     /// Input tokens billed at the full input price (cache reads and writes excluded).
     pub input: u64,
@@ -1086,15 +1090,27 @@ impl Catalog {
         self.state.read().map(|s| s.clone()).unwrap_or_default()
     }
 
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&self.state()).unwrap_or_default()
+    /// The catalog as its rows (the saver writes what changed).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
+        apz_store::RowSet::one(def(), &*state)
     }
 
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let state: CatalogState = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        *self.state.write().map_err(|e| e.to_string())? = state;
+    /// Replaces the catalog with what the store holds (at start); an empty store keeps the empty catalog.
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        if let Some(stored) = apz_store::table::load_one::<CatalogState>(conn, def())? {
+            *self.state.write().unwrap_or_else(PoisonError::into_inner) = stored;
+        }
         Ok(())
     }
+}
+
+/// The catalog's tables (`price_catalog`).
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(CatalogState)
 }
 
 /// The estimated cost of `tokens` at `price`, in US dollars.
@@ -1681,5 +1697,27 @@ mod tests {
         assert_eq!(percent_decode_path("openai%2Fgpt-6"), "openai/gpt-6");
         assert_eq!(percent_decode_path("a+b"), "a+b");
         assert_eq!(percent_decode_path("bad%zz%4"), "bad%zz%4");
+    }
+
+    /// The catalog written to its tables and loaded into a fresh catalog, as a restart does.
+    #[test]
+    fn the_catalog_comes_back_whole_from_its_tables() {
+        let before = catalog();
+        before.state.write().unwrap().sources = vec![SourceStatus {
+            name: "litellm".into(),
+            url: LITELLM_URL.into(),
+            models: 2,
+            ok: false,
+            error: Some("timed out".into()),
+        }];
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &before.rows().unwrap()).unwrap();
+        let after = Catalog::default();
+        after.load(&conn).unwrap();
+        assert_eq!(
+            serde_json::to_value(after.state()).unwrap(),
+            serde_json::to_value(before.state()).unwrap()
+        );
     }
 }

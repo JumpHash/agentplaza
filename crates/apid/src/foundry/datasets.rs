@@ -72,7 +72,7 @@ const CATEGORICAL: [&str; 4] = ["task_kind", "domain", "tenant_tier", "requested
 
 /// One dataset: the training file (`file`), its held-out rows (`frozen_file`), and the hygiene
 /// findings. Returned by [`export`] and [`upload`]; the parent stores it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Dataset {
     /// "ds-" + first 16 hex chars of the sha256 of the JSONL file bytes.
     pub id: String,
@@ -88,10 +88,13 @@ pub struct Dataset {
     pub rows: u64,
     pub frozen_rows: u64,
     /// Training rows per class name.
+    #[table(map_value)]
     pub label_balance: BTreeMap<String, u64>,
     /// Hygiene flags, sorted and deduplicated.
+    #[table(list)]
     pub taint: Vec<String>,
-    /// Where the rows came from: sources, counts, filters, the export spec and field notes.
+    /// Where the rows came from: sources, counts, filters, the export spec and field notes (shown verbatim).
+    #[table(content)]
     pub provenance: Value,
     /// Path relative to the foundry data dir, e.g. "datasets/ds-xxxx.jsonl".
     pub file: String,

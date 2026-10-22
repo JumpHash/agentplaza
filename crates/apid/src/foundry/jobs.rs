@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::foundry::datasets::{self, Dataset};
 use crate::foundry::plan::{self, Machine, Mode, Plan, Reach, Request};
-use crate::foundry::store::{Foundry, Job, Run, SERIES_CAP};
+use crate::foundry::store::{Foundry, Job, Point, Run, SERIES_CAP};
 
 /// The most GPU-hours one job may spend (no grant mechanism yet).
 pub const MAX_BUDGET_GPU_HOURS: f64 = 8.0;
@@ -612,19 +612,37 @@ fn running_hours(job: &Job, now: u64) -> f64 {
 /// Folds one trainer event into the job: the series, the metrics, the error.
 pub fn absorb(job: &mut Job, island: &str, event: &Value, now: u64) {
     let ev = event["ev"].as_str().unwrap_or_default();
+    let island = island.to_string();
     let point = match ev {
-        "step" => Some(
-            json!({"kind": "step", "island": island, "step": event["step"], "loss": event["loss"], "lr": event["lr"], "samples": event["samples"], "t": now}),
-        ),
-        "eval" => Some(
-            json!({"kind": "eval", "island": island, "step": event["step"], "split": event["split"], "metrics": event["metrics"], "t": now}),
-        ),
-        "round" => Some(
-            json!({"kind": "round", "island": island, "round": event["round"], "accepted": event["accepted"], "hub_round": event["hub_round"], "step": event["step"], "t": now}),
-        ),
-        "trial" => Some(
-            json!({"kind": "trial", "island": island, "trial": event["trial"], "objective": event["objective"], "t": now}),
-        ),
+        "step" => Some(Point::Step {
+            island,
+            step: event["step"].as_u64(),
+            loss: event["loss"].as_f64(),
+            lr: event["lr"].as_f64(),
+            samples: event["samples"].as_u64(),
+            t: now,
+        }),
+        "eval" => Some(Point::Eval {
+            island,
+            step: event["step"].as_u64(),
+            split: event["split"].as_str().map(str::to_string),
+            metrics: event["metrics"].clone(),
+            t: now,
+        }),
+        "round" => Some(Point::Round {
+            island,
+            round: event["round"].as_u64(),
+            accepted: event["accepted"].as_bool(),
+            hub_round: event["hub_round"].as_u64(),
+            step: event["step"].as_u64(),
+            t: now,
+        }),
+        "trial" => Some(Point::Trial {
+            island,
+            trial: event["trial"].as_u64(),
+            objective: event["objective"].as_f64(),
+            t: now,
+        }),
         _ => None,
     };
     if let Some(point) = point {
@@ -958,7 +976,7 @@ mod tests {
     fn a_polled_exit_marks_the_job_done_and_meters_the_device_time() {
         let dir = std::env::temp_dir().join(format!("foundry-poll-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("jobs/tj-poll")).expect("dir");
-        let store = Foundry::open(dir.clone(), 1);
+        let store = crate::foundry::store::open_for_test(dir.clone());
         let events = json!({"state": "exited", "exit_code": 0, "next": 2, "events": [
             {"ev": "step", "step": 10, "loss": 0.5, "lr": 0.002, "samples": 256, "line": 1},
             {"ev": "done", "metrics": {"val": {"loss": 0.4}}, "line": 2}]});
@@ -995,6 +1013,7 @@ mod tests {
             mode: "single".into(),
             budget_gpu_hours: 1.0,
             gpu_hours: 0.0,
+            agent: None,
             doc: json!({}),
             plan: json!({}),
             runs: vec![Run {
@@ -1057,7 +1076,7 @@ mod tests {
     #[test]
     fn a_finished_job_registers_its_model_once_even_when_polled_twice() {
         let dir = scratch("once");
-        let store = Foundry::open(dir.clone(), 1);
+        let store = crate::foundry::store::open_for_test(dir.clone());
         let models = crate::foundry::registry::Models::open(&dir.join("state"));
         write_outputs(&store, "tj-once", true);
         store
@@ -1114,7 +1133,7 @@ mod tests {
         ];
         for (case, islands, best, candidates) in cases {
             let dir = scratch(&case.replace(' ', "-"));
-            let store = Foundry::open(dir.clone(), 1);
+            let store = crate::foundry::store::open_for_test(dir.clone());
             let models = crate::foundry::registry::Models::open(&dir.join("state"));
             for (island, accuracy) in islands {
                 write_island(&store, "tj-islands", island, *accuracy);
@@ -1144,7 +1163,7 @@ mod tests {
     #[test]
     fn a_failed_job_does_not_register() {
         let dir = scratch("failed");
-        let store = Foundry::open(dir.clone(), 1);
+        let store = crate::foundry::store::open_for_test(dir.clone());
         let models = crate::foundry::registry::Models::open(&dir.join("state"));
         write_outputs(&store, "tj-failed", true);
         store
@@ -1161,7 +1180,7 @@ mod tests {
     #[test]
     fn a_registration_error_is_recorded_and_the_job_stays_done() {
         let dir = scratch("register-error");
-        let store = Foundry::open(dir.clone(), 1);
+        let store = crate::foundry::store::open_for_test(dir.clone());
         let models = crate::foundry::registry::Models::open(&dir.join("state"));
         write_outputs(&store, "tj-noncard", false);
         store
@@ -1184,7 +1203,7 @@ mod tests {
     #[test]
     fn an_untrusted_taint_blocks_a_job_and_a_clean_dataset_passes() {
         let dir = std::env::temp_dir().join(format!("foundry-admit-{}", std::process::id()));
-        let store = Foundry::open(dir.clone(), 1);
+        let store = crate::foundry::store::open_for_test(dir.clone());
         let base = Dataset {
             id: "ds-1".into(),
             rows: 300,
@@ -1211,7 +1230,7 @@ mod tests {
     #[test]
     fn an_unvetted_recipe_is_refused() {
         let dir = std::env::temp_dir().join(format!("foundry-vet-{}", std::process::id()));
-        let store = Foundry::open(dir.clone(), 1);
+        let store = crate::foundry::store::open_for_test(dir.clone());
         store
             .write()
             .recipes

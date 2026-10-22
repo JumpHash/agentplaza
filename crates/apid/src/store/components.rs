@@ -134,6 +134,30 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.plaza.social.load(conn),
         },
         // batch C5
+        Component {
+            name: "prices",
+            def: crate::prices::def,
+            rows: |app| app.prices.rows(),
+            load: |app, conn| app.prices.load(conn),
+        },
+        Component {
+            name: "usage",
+            def: crate::usage::def,
+            rows: |app| app.usage.rows(),
+            load: |app, conn| app.usage.load(conn),
+        },
+        Component {
+            name: "foundry",
+            def: crate::foundry::store::def,
+            rows: |app| app.foundry.rows(),
+            load: |app, conn| app.foundry.load(conn),
+        },
+        Component {
+            name: "models",
+            def: crate::foundry::registry::def,
+            rows: |app| app.models.rows(),
+            load: |app, conn| app.models.load(conn),
+        },
         // The work engine's records (phase 0).
         Component {
             name: "sessions",
@@ -191,5 +215,8 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
         ("budget ledger", crate::budgets::entries_def),
         ("vault", crate::vault::def),
         ("vault audit", crate::vault::audit::def),
+        ("usage calls", crate::usage::call_def),
+        ("usage hours", crate::usage::hour_def),
+        ("usage works", crate::usage::work_def),
     ]
 }

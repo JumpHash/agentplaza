@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 
 use super::text::{self, TextContract, TextModel};
 use crate::agents::{Agent, Roster, Status};
-use crate::inference::{FeatureSpec, LoadedModel, ModelCard, Registry as Loaded, Schema};
+use crate::inference::{FeatureSpec, Labels, LoadedModel, ModelCard, Registry as Loaded, Schema};
 use crate::state::App;
 
 /// The reserved CID range of model agents: `MODEL_CID_BASE ..= MODEL_CID_BASE + MODEL_CID_COUNT - 1`
@@ -41,7 +41,7 @@ pub fn is_model_cid(cid: u64) -> bool {
     (MODEL_CID_BASE..MODEL_CID_BASE + MODEL_CID_COUNT).contains(&cid)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Trained,
@@ -65,7 +65,7 @@ impl State {
 }
 
 /// Where a registered model came from: a Hugging Face repo at a commit (`hf_import.rs`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Source {
     pub hf: String,
     pub revision: String,
@@ -83,7 +83,7 @@ pub struct Source {
 }
 
 /// How often a shadow model agreed with the path it runs beside, and what its use would have saved.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct ShadowStats {
     pub runs: u64,
     pub agreed: u64,
@@ -98,30 +98,48 @@ impl ShadowStats {
     }
 }
 
-/// One registered model, stored as `<state>/foundry/models/<id>/card.json` beside `model.onnx`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One registered model: a row of the `model_registry` tables (its card a child), beside its `model.onnx`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct ModelRecord {
+    #[table(child)]
     pub card: ModelCard,
     pub state: State,
     pub source_job: Option<String>,
     /// The model agent's CID while promoted (kept after retirement for the record).
     pub agent_cid: Option<u64>,
-    /// The data provenance per split, from the job's card.
+    /// The data provenance per split, from the job's card (shown verbatim).
     #[serde(default)]
+    #[table(content)]
     pub provenance: Value,
-    /// Calibration numbers, when the job's card has them.
+    /// Calibration numbers, when the job's card has them (shown verbatim).
     #[serde(default)]
+    #[table(content)]
     pub calibration: Value,
     pub size_bytes: u64,
     #[serde(default)]
     pub parameters: u64,
     #[serde(default)]
+    #[table(flatten)]
     pub shadow: ShadowStats,
     pub created_ms: u64,
     pub state_changed_ms: u64,
     /// The Hugging Face source, for models imported from the hub.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(flatten)]
     pub source: Option<Source>,
+}
+
+/// The registry's tables: `model_registry`, one row, with every record a child keyed by its model id.
+#[derive(Debug, Default, apz_store::Table)]
+#[table(name = "model_registry")]
+struct Stored {
+    #[table(map)]
+    records: BTreeMap<String, ModelRecord>,
+}
+
+/// The registry's tables (`model_registry`).
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Stored)
 }
 
 /// The inference contract a job's card carries under `serving`.
@@ -135,7 +153,8 @@ struct Serving {
     allowed_roles: Vec<String>,
 }
 
-/// The model store and the loaded models. The records live on disk; the compiled graphs in memory.
+/// The model store and the loaded models. The records live in `plaza.db` (the `models` component); the ONNX
+/// files and the compiled graphs live on disk and in memory.
 pub struct Models {
     dir: PathBuf,
     records: Mutex<BTreeMap<String, ModelRecord>>,
@@ -149,28 +168,13 @@ pub struct Models {
 }
 
 impl Models {
-    /// Opens the store under `<state_dir>/foundry/models` and reads every record there. Records
-    /// that do not parse are reported and skipped. Graphs are compiled by [`Models::revive`].
+    /// The store under `<state_dir>/foundry/models` (the ONNX files), with no records until [`Models::load`].
+    /// Graphs are compiled by [`Models::revive`].
     pub fn open(state_dir: &Path) -> Models {
         let dir = state_dir.join("foundry").join("models");
-        let mut records = BTreeMap::new();
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path().join("card.json");
-                match fs::read_to_string(&path)
-                    .map(|text| serde_json::from_str::<ModelRecord>(&text))
-                {
-                    Ok(Ok(record)) => {
-                        records.insert(record.card.id.clone(), record);
-                    }
-                    Ok(Err(e)) => eprintln!("foundry: {} does not parse: {e}", path.display()),
-                    Err(_) => {}
-                }
-            }
-        }
         Models {
             dir,
-            records: Mutex::new(records),
+            records: Mutex::new(BTreeMap::new()),
             loaded: Loaded::default(),
             generation: std::sync::atomic::AtomicU64::new(0),
             derived: Mutex::new(None),
@@ -359,7 +363,6 @@ impl Models {
             state_changed_ms: now,
             source: Some(source),
         };
-        save(&self.model_dir(id), &record)?;
         records.insert(id.to_string(), record.clone());
         Ok(record)
     }
@@ -368,7 +371,6 @@ impl Models {
         let mut records = self.records_mut();
         let record = records.get_mut(id).ok_or_else(|| no_model(id))?;
         record.source = Some(source);
-        save(&self.model_dir(id), record)?;
         Ok(record.clone())
     }
 
@@ -400,7 +402,7 @@ impl Models {
             input,
             output,
             features: Vec::new(),
-            labels: contract.labels.clone(),
+            labels: contract.labels.clone().map(|names| Labels { names }),
             allowed_roles: vec!["breeder".into()],
             onnx_sha256: sha256_hex(&onnx),
             created_ms: now,
@@ -421,7 +423,6 @@ impl Models {
             state_changed_ms: now,
             source: Some(source.clone()),
         };
-        save(&self.model_dir(id), &record)?;
         self.text_insert(id, model);
         records.insert(id.to_string(), record.clone());
         Ok(record)
@@ -508,7 +509,7 @@ impl Models {
             input: serving.input,
             output: serving.output,
             features: serving.features,
-            labels: serving.labels,
+            labels: serving.labels.map(|names| Labels { names }),
             allowed_roles: serving.allowed_roles,
             onnx_sha256: sha,
             created_ms: apz_plaza::now_ms(),
@@ -550,29 +551,28 @@ impl Models {
         let target = self.model_dir(&id);
         fs::create_dir_all(&target).map_err(|e| format!("creating {}: {e}", target.display()))?;
         write_atomic(&target.join("model.onnx"), &onnx)?;
-        save(&target, &record)?;
         self.loaded.insert(compiled);
         remember(&record.card);
         records.insert(id, record.clone());
         Ok(record)
     }
 
-    /// The registry's state of record for Postgres (component `models`): every record by id, with
-    /// its card, state and shadow stats. The ONNX files stay on disk.
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&*self.records()).unwrap_or_default()
+    /// The records as rows, as they are now (the saver writes what changed). The ONNX files stay on disk.
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        let stored = Stored {
+            records: (*self.records()).clone(),
+        };
+        apz_store::RowSet::one(def(), &stored)
     }
 
-    /// Replaces the records with a stored snapshot; one that does not parse changes nothing. Graphs
-    /// are not compiled here: startup calls [`Models::revive`] after the restore, as it always did.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let restored: BTreeMap<String, ModelRecord> =
-            serde_json::from_str(json).map_err(|e| e.to_string())?;
-        // The card files follow the restored records, so the list also survives a restart without Postgres.
-        for record in restored.values() {
-            save(&self.model_dir(&record.card.id), record)?;
-        }
-        *self.records_mut() = restored;
+    /// Replaces the records with what the store holds (at start). Graphs are not compiled here: startup
+    /// calls [`Models::revive`] after the load.
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let stored = apz_store::table::load_one::<Stored>(conn, def())?.unwrap_or_default();
+        *self.records_mut() = stored.records;
         Ok(())
     }
 
@@ -604,7 +604,6 @@ impl Models {
         record.state = State::Promoted;
         record.agent_cid = Some(cid);
         record.state_changed_ms = now;
-        save(&self.model_dir(id), &record)?;
         records.insert(id.to_string(), record.clone());
         Ok(record)
     }
@@ -623,7 +622,6 @@ impl Models {
         self.loaded.remove(id);
         record.state = State::Retired;
         record.state_changed_ms = apz_plaza::now_ms();
-        save(&self.model_dir(id), &record)?;
         records.insert(id.to_string(), record.clone());
         Ok(record)
     }
@@ -641,7 +639,6 @@ impl Models {
         let mut record = current.clone();
         record.state = to;
         record.state_changed_ms = apz_plaza::now_ms();
-        save(&self.model_dir(id), &record)?;
         records.insert(id.to_string(), record.clone());
         Ok(record)
     }
@@ -660,7 +657,6 @@ impl Models {
         record.shadow.agreed += u64::from(agreed);
         record.shadow.cost_saved_usd += cost_saved_usd;
         record.shadow.updated_ms = apz_plaza::now_ms();
-        save(&self.model_dir(id), record)?;
         Ok(record.shadow.clone())
     }
 }
@@ -814,12 +810,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn save(dir: &Path, record: &ModelRecord) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
-    let text = serde_json::to_string_pretty(record).map_err(|e| e.to_string())?;
-    write_atomic(&dir.join("card.json"), text.as_bytes())
-}
-
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, bytes).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
@@ -964,6 +954,16 @@ mod tests {
     }
 
     /// A job directory as the trainer leaves it, with the serving contract the registry reads.
+    /// The registry as a restart leaves it: its rows written to a store, and a fresh registry over `root` loaded from it.
+    fn restarted(models: &Models, root: &Path) -> Models {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &models.rows().unwrap()).unwrap();
+        let reopened = Models::open(root);
+        reopened.load(&conn).unwrap();
+        reopened
+    }
+
     fn job_dir(root: &Path, job: &str, serving: Option<Value>) -> PathBuf {
         let dir = root.join(job);
         fs::create_dir_all(&dir).unwrap();
@@ -1121,7 +1121,7 @@ mod tests {
             .id;
         models.shadow(&id).unwrap();
         let cid = models.promote(&roster, &id).unwrap().agent_cid.unwrap();
-        let reopened = Models::open(&root);
+        let reopened = restarted(&models, &root);
         let roster2 = fresh_roster();
         reopened.revive(&roster2);
         assert_eq!(roster2.get(cid).map(|a| a.kind), Some("model".to_string()));
@@ -1130,8 +1130,8 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_restores_cards_states_and_shadow_stats() {
-        let root = scratch("snapshot");
+    fn the_rows_restore_cards_states_and_shadow_stats() {
+        let root = scratch("rows");
         let models = Models::open(&root);
         let roster = fresh_roster();
         let dir = job_dir(&root, "job-s", Some(serving()));
@@ -1144,27 +1144,26 @@ mod tests {
         models.record_shadow(&id, true, 0.5).unwrap();
         models.record_shadow(&id, false, 0.25).unwrap();
         models.promote(&roster, &id).unwrap();
-        let json = models.snapshot();
 
-        let other_root = scratch("snapshot-other");
-        let other = Models::open(&other_root);
-        other.restore(&json).unwrap();
+        let other_root = scratch("rows-other");
+        let other = restarted(&models, &other_root);
         assert_eq!(other.list(), models.list());
         let stats = other.get(&id).unwrap().shadow;
         assert_eq!((stats.runs, stats.agreed), (2, 1));
-        assert_eq!(other.snapshot(), json);
-        assert!(other.restore("not json").is_err());
-        assert_eq!(other.list().len(), 1, "a refused snapshot changes nothing");
-        other.restore("{}").unwrap();
-        assert!(other.list().is_empty());
+        // A store with no rows loads an empty registry.
+        let empty = Models::open(&other_root);
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        empty.load(&conn).unwrap();
+        assert!(empty.list().is_empty());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&other_root);
     }
 
-    /// The list survives a restart with no database: every record is on disk as its card.json, and a
-    /// reopen reads the same records, the promoted one with its shadow stats, parameters and provenance.
+    /// The list survives a restart through the store: its rows are loaded into a fresh registry, and the
+    /// promoted record comes back with its shadow stats, parameters and provenance.
     #[test]
-    fn the_model_list_survives_a_restart_without_the_database() {
+    fn the_model_list_survives_a_restart_through_the_store() {
         let root = scratch("list-restart");
         let models = Models::open(&root);
         let roster = fresh_roster();
@@ -1177,58 +1176,15 @@ mod tests {
         models.record_shadow(&id, true, 0.5).unwrap();
         models.promote(&roster, &id).unwrap();
         let before = models.list();
-        drop(models);
-        let reopened = Models::open(&root);
+        let reopened = restarted(&models, &root);
         assert_eq!(reopened.list(), before);
         assert_eq!(reopened.list().len(), 1);
-        let record = reopened.get(&id).expect("the record is on disk");
+        let record = reopened.get(&id).expect("the record is in the store");
         assert_eq!(record.state, State::Promoted);
         assert_eq!(record.shadow.runs, 1);
         assert_eq!(record.parameters, 12);
         assert_eq!(record.provenance["train"]["rows"], 10);
         let _ = fs::remove_dir_all(&root);
-    }
-
-    /// Runs only with APZ_TEST_DATABASE_URL set (as db.rs's round trip does). Stores under a
-    /// test-only component name, never `models`, and removes its row afterwards.
-    #[test]
-    fn models_round_trip_through_postgres() {
-        let url = match std::env::var("APZ_TEST_DATABASE_URL") {
-            Ok(url) => url,
-            Err(_) => {
-                eprintln!("registry: APZ_TEST_DATABASE_URL not set; skipping");
-                return;
-            }
-        };
-        let root = scratch("db");
-        let models = Models::open(&root);
-        let dir = job_dir(&root, "job-db", Some(serving()));
-        let id = models
-            .register_from_job(&dir, Some("job-db"))
-            .unwrap()
-            .card
-            .id;
-        models.shadow(&id).unwrap();
-        models.record_shadow(&id, true, 2.0).unwrap();
-
-        let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url.clone())]);
-        let db = crate::db::Db::connect(&env);
-        assert!(db.enabled());
-        let component = "apz_test_models";
-        assert_eq!(db.store(component, &models.snapshot()), Ok(true));
-        let loaded = db.load(component).expect("stored row");
-
-        let other_root = scratch("db-other");
-        let other = Models::open(&other_root);
-        other.restore(&loaded).unwrap();
-        assert_eq!(other.list(), models.list());
-
-        let mut client = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-        client
-            .execute(crate::db::sql::STATE_DELETE, &[&component])
-            .unwrap();
-        let _ = fs::remove_dir_all(&root);
-        let _ = fs::remove_dir_all(&other_root);
     }
 
     #[test]

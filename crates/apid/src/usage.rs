@@ -1,12 +1,16 @@
 //! The model-usage ledger: every model call an agent makes (through the harness or the gateway
 //! proxy), with its tokens, cache hits and cost, so the owner can see what the plaza spends.
-//! Saved in Postgres ("usage").
 //!
-//! Two records, both bounded:
-//! - `calls`: the newest calls, one row each (at most `settings.retention.usage_calls_max`);
-//! - `hours`: per-hour totals by (hour, model, cid), kept for `settings.retention.usage_days`
-//!   (0 = forever). Series and summaries are computed from the hours, so they cover the whole
-//!   kept period even after the call rows are gone.
+//! The ledger is a stream in `plaza.db`, written through as each call is metered and read by the
+//! queries in `sql/queries/usage_*.sql`:
+//! - `usage_call`: one row per call (the newest kept: `settings.retention.usage_calls_max`);
+//! - `usage_hour`: per-hour totals by (hour, model, cid), kept for `settings.retention.usage_days`
+//!   (0 = forever). Series and summaries are read from the hours, so they cover the whole kept
+//!   period even after the call rows are gone;
+//! - `usage_work`: the totals of every work item that made a metered call, by (cid, work), capped at
+//!   [`WORKS_MAX`] rows (the newest work items kept).
+//!
+//! The one component (`usage_state`) keeps only the counter the next call's id comes from.
 //!
 //! Cost: `cost_usd` is what the provider reported for the call (OpenRouter's `usage.cost`), when
 //! it did; `est_usd` is the catalog's estimate ([`crate::prices`]) at the time of the call
@@ -19,14 +23,18 @@
 //!
 //! `from`/`to` are unix milliseconds; `before` is a call id.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use apz_http::{Request, Response, RouteDoc, Router};
+use apz_store::rusqlite::{Connection, OptionalExtension, Row, params};
+use apz_store::table::Value;
+use apz_store::{RowSet, StoreError, Table, TableDef};
 use serde::{Deserialize, Serialize};
 
 use crate::prices::Tokens;
 use crate::state::App;
+use crate::store::sql;
 
 pub const HOUR_MS: u64 = 60 * 60 * 1000;
 pub const DAY_MS: u64 = 24 * HOUR_MS;
@@ -34,12 +42,17 @@ pub const CALLS_PAGE: usize = 50;
 pub const CALLS_LIMIT: usize = 200;
 /// The most points one series returns; a longer window starts later than asked.
 pub const SERIES_MAX_POINTS: usize = 2000;
+/// The most work items whose usage the ledger keeps.
+pub const WORKS_MAX: usize = 20_000;
 
-/// One model call.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// One model call (a row of `usage_call`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "usage_call")]
 pub struct Call {
     /// Assigned by the ledger, increasing from 1.
+    #[table(key)]
     pub id: u64,
+    #[table(index)]
     pub at_ms: u64,
     pub cid: u64,
     pub role: String,
@@ -48,6 +61,7 @@ pub struct Call {
     /// The provider id that served it (the part before the first `/` when unknown).
     pub provider: String,
     #[serde(flatten)]
+    #[table(flatten)]
     pub tokens: Tokens,
     /// What the provider reported the call cost, in US dollars.
     #[serde(default)]
@@ -56,6 +70,7 @@ pub struct Call {
     pub est_usd: f64,
     /// The task the call was charged to, if any.
     #[serde(default)]
+    #[table(index)]
     pub task: Option<String>,
     /// The work item the call ran under, 0 for none. The gateway's engine calls carry theirs, so
     /// [`Ledger::work_totals`] can give a work's usage.
@@ -74,10 +89,11 @@ pub struct Call {
 }
 
 /// Totals over some calls.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Totals {
     pub calls: u64,
     #[serde(flatten)]
+    #[table(flatten)]
     pub tokens: Tokens,
     /// Sum of provider-reported costs.
     pub cost_usd: f64,
@@ -85,18 +101,37 @@ pub struct Totals {
     pub est_usd: f64,
     /// Reported cost where known, the estimate otherwise.
     pub usd: f64,
-    /// cache_read / (input + cache_read + cache_write); 0 when there was no input.
+    /// cache_read / (input + cache_read + cache_write); 0 when there was no input. Computed from the
+    /// tokens when totals are read, so it is not stored.
+    #[table(skip)]
     pub cache_hit_rate: f64,
 }
 
-/// One hour's totals for one model and one agent.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// One hour's totals for one model and one agent (a row of `usage_hour`, written as calls are metered).
+#[derive(Debug, Clone, Default, PartialEq, apz_store::Table)]
+#[table(name = "usage_hour")]
 pub struct HourRow {
+    #[table(key)]
     pub hour_ms: u64,
+    #[table(key)]
     pub model: String,
-    pub provider: String,
+    #[table(key)]
     pub cid: u64,
+    pub provider: String,
     pub role: String,
+    #[table(flatten)]
+    pub totals: Totals,
+}
+
+/// One work item's usage: the calls made under it that carry a work id (a row of `usage_work`).
+#[derive(Debug, Clone, Default, PartialEq, apz_store::Table)]
+#[table(name = "usage_work")]
+pub struct WorkRow {
+    #[table(key)]
+    pub cid: u64,
+    #[table(key, index)]
+    pub work: u64,
+    #[table(flatten)]
     pub totals: Totals,
 }
 
@@ -146,193 +181,118 @@ pub struct CallsPage {
     pub next_before: Option<u64>,
 }
 
-/// An hour row's key: (hour start, model, cid).
-pub type HourKey = (u64, String, u64);
-
-/// One work item's usage: the calls made under it that carry a work id.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct WorkRow {
-    pub cid: u64,
-    pub work: u64,
-    pub totals: Totals,
-}
-
-/// The most work items whose usage the ledger keeps.
-pub const WORKS_MAX: usize = 20_000;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct LedgerState {
+/// The usage component's one row: the id the next call gets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "usage_state")]
+pub struct UsageState {
     pub next_id: u64,
-    pub calls: VecDeque<Call>,
-    #[serde(with = "hour_list", default)]
-    pub hours: BTreeMap<HourKey, HourRow>,
-    /// The totals of every work item that made a metered call, by (cid, work). Not pruned with the
-    /// call rows (a work's usage must not shrink while the plaza keeps the work), only capped at
-    /// [`WORKS_MAX`] rows, the newest work items kept.
-    #[serde(with = "work_list", default)]
-    pub works: BTreeMap<(u64, u64), WorkRow>,
 }
 
-/// The hour rows live in a map internally and are saved as a list.
-mod hour_list {
-    use std::collections::BTreeMap;
-
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use super::{HourKey, HourRow};
-
-    pub fn serialize<S: Serializer>(
-        hours: &BTreeMap<HourKey, HourRow>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
-        s.collect_seq(hours.values())
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<BTreeMap<HourKey, HourRow>, D::Error> {
-        let rows = Vec::<HourRow>::deserialize(d)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| ((row.hour_ms, row.model.clone(), row.cid), row))
-            .collect())
-    }
-}
-
-/// The work rows live in a map internally and are saved as a list (JSON keys are strings).
-mod work_list {
-    use std::collections::BTreeMap;
-
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    use super::WorkRow;
-
-    pub fn serialize<S: Serializer>(
-        works: &BTreeMap<(u64, u64), WorkRow>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
-        s.collect_seq(works.values())
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<BTreeMap<(u64, u64), WorkRow>, D::Error> {
-        let rows = Vec::<WorkRow>::deserialize(d)?;
-        Ok(rows
-            .into_iter()
-            .map(|row| ((row.cid, row.work), row))
-            .collect())
-    }
-}
-
-#[derive(Default)]
+/// The ledger: writes calls, hours and work items through `plaza.db` and reads them back from it. Its only
+/// memory is the id counter, which the usage component saves.
 pub struct Ledger {
-    state: Mutex<LedgerState>,
+    db: Arc<apz_store::Db>,
+    /// The id the last call got. Held across each call's write, so ids and commits go in the same order.
+    last_id: Mutex<u64>,
 }
 
 impl Ledger {
-    fn lock(&self) -> MutexGuard<'_, LedgerState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Files `call` (its `id` is assigned here, its `at_ms` kept) into the call rows and its hour,
-    /// publishes `usage` on the bus with the stored call, and returns the id.
-    pub fn record(&self, app: &App, call: Call) -> u64 {
-        let stored = self.file(call);
-        app.bus.publish("usage", &stored);
-        stored.id
-    }
-
-    /// The storing half of [`Ledger::record`]: no bus, so tests can file calls without an app.
-    fn file(&self, mut call: Call) -> Call {
-        let mut state = self.lock();
-        call.escalated = escalates(&state.calls, &call);
-        state.next_id += 1;
-        call.id = state.next_id;
-        let hour_ms = call.at_ms - call.at_ms % HOUR_MS;
-        let row = state
-            .hours
-            .entry((hour_ms, call.model.clone(), call.cid))
-            .or_insert_with(|| HourRow {
-                hour_ms,
-                model: call.model.clone(),
-                provider: call.provider.clone(),
-                cid: call.cid,
-                role: call.role.clone(),
-                totals: Totals::default(),
-            });
-        row.totals.add_call(&call);
-        if call.work > 0 {
-            state
-                .works
-                .entry((call.cid, call.work))
-                .or_insert_with(|| WorkRow {
-                    cid: call.cid,
-                    work: call.work,
-                    totals: Totals::default(),
-                })
-                .totals
-                .add_call(&call);
+    /// A ledger over the hub's `plaza.db`; its counter starts at 0 until [`Ledger::load`].
+    pub fn new(db: Arc<apz_store::Db>) -> Ledger {
+        Ledger {
+            db,
+            last_id: Mutex::new(0),
         }
-        state.calls.push_back(call.clone());
-        call
+    }
+
+    fn last(&self) -> MutexGuard<'_, u64> {
+        self.last_id.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Files `call` (its `id` is assigned here, its `at_ms` kept), publishes `usage` on the bus with the
+    /// stored call, and returns the id (0 when the store refused the call, which is logged).
+    pub fn record(&self, app: &App, call: Call) -> u64 {
+        match self.file(call) {
+            Ok(stored) => {
+                app.bus.publish("usage", &stored);
+                stored.id
+            }
+            Err(e) => {
+                eprintln!("apid: usage: a model call was not recorded: {e}");
+                0
+            }
+        }
+    }
+
+    /// The storing half of [`Ledger::record`]: the call, its hour and its work item are written in one
+    /// transaction, which also decides the escalation. No bus, so tests can file calls without an app.
+    fn file(&self, call: Call) -> Result<Call, StoreError> {
+        let mut last = self.last();
+        let id = *last + 1;
+        let call = Call { id, ..call };
+        let written = self.db.write(move |conn| {
+            let mut call = call;
+            call.escalated = escalates(conn, &call)?;
+            insert_call(conn, &call)?;
+            add_to_hour(conn, &call)?;
+            if call.work > 0 {
+                add_to_work(conn, &call)?;
+            }
+            Ok(call)
+        })?;
+        *last = id;
+        Ok(written.value)
     }
 
     /// The totals of the calls filed under work `work` of agent `cid` (zero when it made none).
     pub fn work_totals(&self, cid: u64, work: u64) -> Totals {
-        self.lock()
-            .works
-            .get(&(cid, work))
-            .map(|row| row.totals)
-            .unwrap_or_default()
+        let read = self.db.read(|conn| {
+            let found = conn
+                .prepare_cached(sql::USAGE_WORK_TOTALS)?
+                .query_row(params![bound(cid), bound(work)], |r| totals_at(r, 0))
+                .optional()?;
+            Ok(found.unwrap_or_default())
+        });
+        read.unwrap_or_else(|e| {
+            eprintln!("apid: usage: cannot read a work's totals: {e}");
+            Totals::default()
+        })
     }
 
     /// Totals over the hours overlapping [from, to), grouped four ways.
     pub fn summary(&self, from_ms: u64, to_ms: u64) -> Summary {
-        let state = self.lock();
-        let mut total = Totals::default();
-        let mut models: BTreeMap<String, Totals> = BTreeMap::new();
-        let mut agents: BTreeMap<String, Totals> = BTreeMap::new();
-        let mut roles: BTreeMap<String, Totals> = BTreeMap::new();
-        let mut providers: BTreeMap<String, Totals> = BTreeMap::new();
-        for row in state
-            .hours
-            .values()
-            .filter(|row| overlaps(row.hour_ms, from_ms, to_ms))
-        {
-            total.merge(&row.totals);
-            models
-                .entry(row.model.clone())
-                .or_default()
-                .merge(&row.totals);
-            agents
-                .entry(row.cid.to_string())
-                .or_default()
-                .merge(&row.totals);
-            roles
-                .entry(row.role.clone())
-                .or_default()
-                .merge(&row.totals);
-            providers
-                .entry(row.provider.clone())
-                .or_default()
-                .merge(&row.totals);
-        }
-        let unpriced = models
-            .iter()
-            .filter(|(_, t)| t.est_usd == 0.0 && t.cost_usd == 0.0 && tokens_total(&t.tokens) > 0)
-            .map(|(model, _)| model.clone())
-            .collect();
-        Summary {
-            from_ms,
-            to_ms,
-            totals: total,
-            by_model: groups(models),
-            by_agent: groups(agents),
-            by_role: groups(roles),
-            by_provider: groups(providers),
-            unpriced,
-        }
+        let read = self.db.read(|conn| {
+            let models = grouped(conn, "model", from_ms, to_ms)?;
+            let mut totals = Totals::default();
+            for group in models.values() {
+                totals.merge(group);
+            }
+            let unpriced = models
+                .iter()
+                .filter(|(_, t)| {
+                    t.est_usd == 0.0 && t.cost_usd == 0.0 && tokens_total(&t.tokens) > 0
+                })
+                .map(|(model, _)| model.clone())
+                .collect();
+            Ok(Summary {
+                from_ms,
+                to_ms,
+                totals,
+                by_model: groups(models),
+                by_agent: groups(grouped(conn, "agent", from_ms, to_ms)?),
+                by_role: groups(grouped(conn, "role", from_ms, to_ms)?),
+                by_provider: groups(grouped(conn, "provider", from_ms, to_ms)?),
+                unpriced,
+            })
+        });
+        read.unwrap_or_else(|e| {
+            eprintln!("apid: usage: cannot read the summary: {e}");
+            Summary {
+                from_ms,
+                to_ms,
+                ..Summary::default()
+            }
+        })
     }
 
     /// `by` is one of model, agent, role, provider; `bucket_ms` is HOUR_MS or DAY_MS.
@@ -355,19 +315,32 @@ impl Ledger {
                     ..Point::default()
                 })
                 .collect::<Vec<Point>>();
-            let state = self.lock();
-            for row in state
-                .hours
-                .values()
-                .filter(|row| row.hour_ms >= start && row.hour_ms < to_ms)
-            {
-                let point = &mut points[((row.hour_ms - start) / bucket_ms) as usize];
-                point.totals.merge(&row.totals);
-                point
-                    .groups
-                    .entry(group_of(row, by))
-                    .or_default()
-                    .merge(&row.totals);
+            let read = self.db.read(|conn| {
+                let mut stmt = conn.prepare_cached(sql::USAGE_SERIES)?;
+                let rows = stmt.query_map(
+                    params![by, bound(start), bound(bucket_ms), bound(to_ms)],
+                    |r| {
+                        Ok((
+                            r.get::<_, u64>(0)?,
+                            r.get::<_, String>(1)?,
+                            totals_at(r, 2)?,
+                        ))
+                    },
+                )?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            });
+            match read {
+                Ok(rows) => {
+                    for (idx, group, totals) in rows {
+                        if let Some(point) =
+                            usize::try_from(idx).ok().and_then(|i| points.get_mut(i))
+                        {
+                            point.totals.merge(&totals);
+                            point.groups.entry(group).or_default().merge(&totals);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("apid: usage: cannot read the series: {e}"),
             }
         }
         Series {
@@ -395,86 +368,243 @@ impl Ledger {
         } else {
             limit.min(CALLS_LIMIT)
         };
-        let state = self.lock();
-        let matches = |call: &&Call| {
-            model.is_none_or(|m| call.model == m) && cid.is_none_or(|id| call.cid == id)
-        };
-        let total = state.calls.iter().filter(matches).count();
-        let mut calls = Vec::new();
-        let mut more = false;
-        for call in state
-            .calls
-            .iter()
-            .rev()
-            .filter(matches)
-            .filter(|c| before.is_none_or(|b| c.id < b))
-        {
-            if calls.len() == limit {
-                more = true;
-                break;
-            }
-            calls.push(call.clone());
-        }
-        let next_before = if more {
-            calls.last().map(|c| c.id)
-        } else {
-            None
-        };
-        CallsPage {
-            calls,
-            total,
-            next_before,
-        }
+        let read = self.db.read(|conn| {
+            let total: i64 = conn
+                .prepare_cached(sql::USAGE_CALLS_COUNT)?
+                .query_row(params![model, cid.map(bound)], |r| r.get(0))?;
+            let mut stmt = conn.prepare_cached(sql::USAGE_CALLS_PAGE)?;
+            let mut calls = stmt
+                .query_map(
+                    params![
+                        model,
+                        cid.map(bound),
+                        before.map(bound),
+                        bound(limit as u64 + 1)
+                    ],
+                    call_at,
+                )?
+                .collect::<Result<Vec<Call>, _>>()?;
+            // One row past the page says whether more matching calls remain.
+            let more = calls.len() > limit;
+            calls.truncate(limit);
+            let next_before = if more {
+                calls.last().map(|c| c.id)
+            } else {
+                None
+            };
+            Ok(CallsPage {
+                calls,
+                total: usize::try_from(total).unwrap_or(0),
+                next_before,
+            })
+        });
+        read.unwrap_or_else(|e| {
+            eprintln!("apid: usage: cannot read the calls: {e}");
+            CallsPage::default()
+        })
     }
 
     /// Drops call rows beyond `calls_max` (oldest first), hour rows older than `days` (0 = keep),
-    /// relative to `now_ms`, and work rows beyond [`WORKS_MAX`] (the oldest work items first).
+    /// relative to `now_ms`, and work rows beyond [`WORKS_MAX`] (the oldest work items first). Sent to
+    /// the writer; the next read sees it once committed.
     pub fn prune(&self, now_ms: u64, calls_max: usize, days: u32) {
-        let mut state = self.lock();
-        while state.calls.len() > calls_max {
-            state.calls.pop_front();
-        }
-        if state.works.len() > WORKS_MAX {
-            // Work ids grow over the plaza's life, so the lowest are the oldest.
-            let mut ids: Vec<u64> = state.works.keys().map(|key| key.1).collect();
-            ids.sort_unstable();
-            let cutoff = ids[ids.len() - WORKS_MAX];
-            state.works.retain(|key, _| key.1 >= cutoff);
-        }
-        if days > 0 {
-            let cutoff = now_ms.saturating_sub(u64::from(days) * DAY_MS);
-            state.hours.retain(|key, _| key.0 >= cutoff);
+        let hours_before = (days > 0).then(|| now_ms.saturating_sub(u64::from(days) * DAY_MS));
+        let sent = self.db.send(move |conn| {
+            if calls_max == 0 {
+                conn.execute(sql::USAGE_CALLS_CLEAR, [])?;
+            } else {
+                conn.execute(sql::USAGE_CALLS_PRUNE, [bound((calls_max - 1) as u64)])?;
+            }
+            if let Some(cutoff) = hours_before {
+                conn.execute(sql::USAGE_HOURS_PRUNE, [bound(cutoff)])?;
+            }
+            conn.execute(sql::USAGE_WORKS_PRUNE, [bound(WORKS_MAX as u64 - 1)])?;
+            Ok(())
+        });
+        if let Err(e) = sent {
+            eprintln!("apid: usage: cannot prune the ledger: {e}");
         }
     }
 
-    pub fn snapshot(&self) -> String {
-        self.state
-            .lock()
-            .ok()
-            .and_then(|s| serde_json::to_string(&*s).ok())
-            .unwrap_or_default()
+    /// The counter as its row, as it is now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let next_id = *self.last();
+        RowSet::one(def(), &UsageState { next_id })
     }
 
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let state: LedgerState = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        *self.state.lock().map_err(|e| e.to_string())? = state;
+    /// Restores the counter at start, never below the id of the newest stored call.
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored =
+            apz_store::table::load_one::<UsageState>(conn, def())?.map_or(0, |state| state.next_id);
+        let newest: u64 = conn.query_row(sql::USAGE_NEWEST_ID, [], |r| r.get(0))?;
+        *self.last() = stored.max(newest);
         Ok(())
     }
 }
 
-impl Totals {
-    /// Adds one call to these totals.
-    fn add_call(&mut self, call: &Call) {
-        self.merge(&Totals {
-            calls: 1,
-            tokens: call.tokens,
-            cost_usd: call.cost_usd.unwrap_or(0.0),
-            est_usd: call.est_usd,
-            usd: call.cost_usd.unwrap_or(call.est_usd),
-            cache_hit_rate: 0.0,
-        });
-    }
+/// The counter's table (`usage_state`).
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(UsageState)
+}
 
+/// The calls' table (`usage_call`), written through.
+pub fn call_def() -> &'static TableDef {
+    apz_store::root_def!(Call)
+}
+
+/// The hours' table (`usage_hour`), written through.
+pub fn hour_def() -> &'static TableDef {
+    apz_store::root_def!(HourRow)
+}
+
+/// The work items' table (`usage_work`), written through.
+pub fn work_def() -> &'static TableDef {
+    apz_store::root_def!(WorkRow)
+}
+
+/// A count or an id as a SQL parameter (values past i64 are clamped; no row holds them).
+fn bound(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// Writes one call as a row of `usage_call`, keyed by its id (the table's `pos` takes the id too: a stream has no list
+/// position of its own).
+fn insert_call(conn: &Connection, call: &Call) -> Result<(), StoreError> {
+    let def = call_def();
+    let mut rows = RowSet::new();
+    call.put(def, vec![Value::Integer(bound(call.id))], &mut rows)?;
+    let mut changes = apz_store::table::Changes::default();
+    changes.upserts = rows
+        .tables
+        .remove(&def.name)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| (def.name.clone(), row))
+        .collect();
+    apz_store::table::apply(conn, def, &changes)
+}
+
+/// The totals one call adds: its cost, its estimate and what it counts as (reported cost where known).
+fn call_totals(call: &Call) -> (f64, f64, f64) {
+    (
+        call.cost_usd.unwrap_or(0.0),
+        call.est_usd,
+        call.cost_usd.unwrap_or(call.est_usd),
+    )
+}
+
+/// Adds one call to its hour's row, made when it is new.
+fn add_to_hour(conn: &Connection, call: &Call) -> Result<(), StoreError> {
+    let hour = call.at_ms - call.at_ms % HOUR_MS;
+    let t = call.tokens;
+    let (cost, est, usd) = call_totals(call);
+    conn.prepare_cached(sql::USAGE_HOUR_ADD)?.execute(params![
+        hour,
+        call.model,
+        call.cid,
+        call.provider,
+        call.role,
+        1u64,
+        t.input,
+        t.output,
+        t.cache_read,
+        t.cache_write,
+        cost,
+        est,
+        usd
+    ])?;
+    Ok(())
+}
+
+/// Adds one call to its work item's row, made when it is new.
+fn add_to_work(conn: &Connection, call: &Call) -> Result<(), StoreError> {
+    let t = call.tokens;
+    let (cost, est, usd) = call_totals(call);
+    conn.prepare_cached(sql::USAGE_WORK_ADD)?.execute(params![
+        call.cid,
+        call.work,
+        1u64,
+        t.input,
+        t.output,
+        t.cache_read,
+        t.cache_write,
+        cost,
+        est,
+        usd
+    ])?;
+    Ok(())
+}
+
+/// Whether `call` escalates its task: an earlier retained call of the same task ran on a lower rung.
+fn escalates(conn: &Connection, call: &Call) -> Result<bool, StoreError> {
+    let (Some(task), Some(rank)) = (call.task.as_deref(), rung_rank(call.rung.as_deref())) else {
+        return Ok(false);
+    };
+    Ok(conn
+        .prepare_cached(sql::USAGE_ESCALATED)?
+        .query_row(params![task, i64::from(rank)], |r| r.get(0))?)
+}
+
+/// The usage of the hours overlapping [from, to), by one grouping (`model`, `agent`, `role` or `provider`).
+fn grouped(
+    conn: &Connection,
+    by: &str,
+    from_ms: u64,
+    to_ms: u64,
+) -> Result<BTreeMap<String, Totals>, StoreError> {
+    let mut stmt = conn.prepare_cached(sql::USAGE_SUMMARY)?;
+    let rows = stmt.query_map(
+        params![by, bound(from_ms), bound(to_ms), bound(HOUR_MS)],
+        |r| Ok((r.get::<_, String>(0)?, totals_at(r, 1)?)),
+    )?;
+    Ok(rows.collect::<Result<BTreeMap<_, _>, _>>()?)
+}
+
+/// One call row of `usage_call`, in the column order of `usage_calls_page.sql`.
+fn call_at(r: &Row<'_>) -> apz_store::rusqlite::Result<Call> {
+    Ok(Call {
+        id: r.get(0)?,
+        at_ms: r.get(1)?,
+        cid: r.get(2)?,
+        role: r.get(3)?,
+        model: r.get(4)?,
+        provider: r.get(5)?,
+        tokens: Tokens {
+            input: r.get(6)?,
+            output: r.get(7)?,
+            cache_read: r.get(8)?,
+            cache_write: r.get(9)?,
+        },
+        cost_usd: r.get(10)?,
+        est_usd: r.get(11)?,
+        task: r.get(12)?,
+        work: r.get(13)?,
+        via: r.get(14)?,
+        rung: r.get(15)?,
+        escalated: r.get(16)?,
+    })
+}
+
+/// Totals read from eight columns starting at `at`: calls, input, output, cache read, cache write, reported cost,
+/// estimate, usd (the order of the usage queries' sums).
+fn totals_at(r: &Row<'_>, at: usize) -> apz_store::rusqlite::Result<Totals> {
+    let tokens = Tokens {
+        input: r.get(at + 1)?,
+        output: r.get(at + 2)?,
+        cache_read: r.get(at + 3)?,
+        cache_write: r.get(at + 4)?,
+    };
+    Ok(Totals {
+        calls: r.get(at)?,
+        cache_hit_rate: hit_rate(&tokens),
+        tokens,
+        cost_usd: r.get(at + 5)?,
+        est_usd: r.get(at + 6)?,
+        usd: r.get(at + 7)?,
+    })
+}
+
+impl Totals {
     /// Adds `other` to these totals and recomputes the cache hit rate.
     fn merge(&mut self, other: &Totals) {
         self.calls += other.calls;
@@ -497,17 +627,6 @@ fn rung_rank(rung: Option<&str>) -> Option<u8> {
         "frontier" => Some(2),
         _ => None,
     }
-}
-
-/// Whether `call` escalates its task: an earlier call of the same task ran on a lower rung.
-fn escalates(earlier: &VecDeque<Call>, call: &Call) -> bool {
-    let (Some(task), Some(rung)) = (call.task.as_deref(), rung_rank(call.rung.as_deref())) else {
-        return false;
-    };
-    earlier.iter().rev().any(|c| {
-        c.task.as_deref() == Some(task)
-            && rung_rank(c.rung.as_deref()).is_some_and(|lower| lower < rung)
-    })
 }
 
 /// The shadow models that run on the cascade: those whose card id starts with `rung` and that are
@@ -592,21 +711,6 @@ fn hit_rate(tokens: &Tokens) -> f64 {
 
 fn tokens_total(tokens: &Tokens) -> u64 {
     tokens.input + tokens.output + tokens.cache_read + tokens.cache_write
-}
-
-/// Whether the hour starting at `hour_ms` overlaps [from, to).
-fn overlaps(hour_ms: u64, from_ms: u64, to_ms: u64) -> bool {
-    hour_ms < to_ms && hour_ms + HOUR_MS > from_ms
-}
-
-/// The key a row falls under for a series' or summary's grouping.
-fn group_of(row: &HourRow, by: &str) -> String {
-    match by {
-        "agent" => row.cid.to_string(),
-        "role" => row.role.clone(),
-        "provider" => row.provider.clone(),
-        _ => row.model.clone(),
-    }
 }
 
 /// The groups, biggest spend first (then by key).
@@ -796,6 +900,7 @@ fn param_u64(req: &Request, name: &str) -> Result<Option<u64>, Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::PLAZA;
 
     /// The start of an hour, far enough from zero that windows can reach back.
     const H: u64 = 1_000 * HOUR_MS;
@@ -835,18 +940,44 @@ mod tests {
         }
     }
 
+    /// A ledger over a fresh plaza.db in a temporary folder. The ledger's tables are made here when the migration
+    /// does not hold them yet (the migration is regenerated from these definitions by `apid schema`).
+    fn fixture() -> (tempfile::TempDir, apz_store::Store, Ledger) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = apz_store::Store::open(dir.path(), crate::store::FILES).unwrap();
+        let db = Arc::clone(store.db(PLAZA));
+        db.write(|conn| {
+            for table in [def(), call_def(), hour_def(), work_def()] {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [&table.name],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    conn.execute_batch(&table.ddl())?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+        let ledger = Ledger::new(db);
+        (dir, store, ledger)
+    }
+
     #[test]
     fn a_works_calls_are_summed_per_cid_and_work_and_survive_pruning() {
-        let ledger = Ledger::default();
+        let (_dir, store, ledger) = fixture();
         let on_work = |cid, work, input| Call {
             work,
             ..call(H, cid, "a/x", tok(input, 1, 0, 0), None, 0.0)
         };
-        ledger.file(on_work(1, 3, 10));
-        ledger.file(on_work(1, 3, 5));
-        ledger.file(on_work(1, 4, 7));
-        ledger.file(on_work(2, 3, 100));
-        ledger.file(call(H, 1, "a/x", tok(1000, 0, 0, 0), None, 0.0));
+        ledger.file(on_work(1, 3, 10)).unwrap();
+        ledger.file(on_work(1, 3, 5)).unwrap();
+        ledger.file(on_work(1, 4, 7)).unwrap();
+        ledger.file(on_work(2, 3, 100)).unwrap();
+        ledger
+            .file(call(H, 1, "a/x", tok(1000, 0, 0, 0), None, 0.0))
+            .unwrap();
 
         let mine = ledger.work_totals(1, 3);
         assert_eq!(mine.calls, 2);
@@ -856,49 +987,55 @@ mod tests {
         assert_eq!(ledger.work_totals(2, 3).tokens.input, 100);
         assert_eq!(ledger.work_totals(1, 9), Totals::default());
 
-        let restored = Ledger::default();
-        restored.restore(&ledger.snapshot()).unwrap();
-        assert_eq!(restored.work_totals(1, 3), mine);
-
+        // Pruning the calls keeps the work rows.
         ledger.prune(H + HOUR_MS, 0, 0);
+        store.db(PLAZA).flush().unwrap();
         assert_eq!(ledger.work_totals(1, 3), mine);
     }
 
     #[test]
     fn summary_totals_the_hours_in_the_window() {
-        let ledger = Ledger::default();
-        ledger.file(call(
-            H + 5,
-            1,
-            "anthropic/a",
-            tok(100, 10, 300, 0),
-            Some(0.5),
-            0.4,
-        ));
-        ledger.file(call(
-            H + 9 * 60_000,
-            2,
-            "anthropic/a",
-            tok(100, 20, 0, 100),
-            None,
-            0.25,
-        ));
-        ledger.file(call(
-            H + HOUR_MS + 1,
-            1,
-            "openai/b",
-            tok(50, 5, 0, 0),
-            None,
-            0.0,
-        ));
-        ledger.file(call(
-            H + HOUR_MS + 2,
-            3,
-            "free/c",
-            tok(10, 1, 0, 0),
-            None,
-            0.0,
-        ));
+        let (_dir, _store, ledger) = fixture();
+        ledger
+            .file(call(
+                H + 5,
+                1,
+                "anthropic/a",
+                tok(100, 10, 300, 0),
+                Some(0.5),
+                0.4,
+            ))
+            .unwrap();
+        ledger
+            .file(call(
+                H + 9 * 60_000,
+                2,
+                "anthropic/a",
+                tok(100, 20, 0, 100),
+                None,
+                0.25,
+            ))
+            .unwrap();
+        ledger
+            .file(call(
+                H + HOUR_MS + 1,
+                1,
+                "openai/b",
+                tok(50, 5, 0, 0),
+                None,
+                0.0,
+            ))
+            .unwrap();
+        ledger
+            .file(call(
+                H + HOUR_MS + 2,
+                3,
+                "free/c",
+                tok(10, 1, 0, 0),
+                None,
+                0.0,
+            ))
+            .unwrap();
 
         let s = ledger.summary(H, H + 2 * HOUR_MS);
         assert_eq!(s.totals.calls, 4);
@@ -929,16 +1066,20 @@ mod tests {
 
     #[test]
     fn series_emits_empty_buckets_and_caps_points() {
-        let ledger = Ledger::default();
-        ledger.file(call(H, 1, "a/x", tok(10, 0, 0, 0), None, 1.0));
-        ledger.file(call(
-            H + 2 * HOUR_MS + 5,
-            2,
-            "b/y",
-            tok(10, 0, 0, 0),
-            None,
-            2.0,
-        ));
+        let (_dir, _store, ledger) = fixture();
+        ledger
+            .file(call(H, 1, "a/x", tok(10, 0, 0, 0), None, 1.0))
+            .unwrap();
+        ledger
+            .file(call(
+                H + 2 * HOUR_MS + 5,
+                2,
+                "b/y",
+                tok(10, 0, 0, 0),
+                None,
+                2.0,
+            ))
+            .unwrap();
 
         let s = ledger.series(H + 7 * 60_000, H + 4 * HOUR_MS, HOUR_MS, "model");
         assert_eq!(s.from_ms, H);
@@ -962,10 +1103,12 @@ mod tests {
 
     #[test]
     fn calls_page_newest_first_with_filters() {
-        let ledger = Ledger::default();
+        let (_dir, _store, ledger) = fixture();
         for i in 0..5 {
             let cid = if i % 2 == 0 { 1 } else { 2 };
-            ledger.file(call(H + i, cid, "a/x", tok(1, 0, 0, 0), None, 0.0));
+            ledger
+                .file(call(H + i, cid, "a/x", tok(1, 0, 0, 0), None, 0.0))
+                .unwrap();
         }
         let ids = |page: &CallsPage| page.calls.iter().map(|c| c.id).collect::<Vec<_>>();
 
@@ -999,42 +1142,59 @@ mod tests {
 
     #[test]
     fn prune_keeps_the_newest_work_rows_only() {
-        let ledger = Ledger::default();
-        {
-            let mut state = ledger.lock();
-            for work in 1..=(WORKS_MAX as u64 + 2) {
-                state.works.insert(
-                    (7, work),
-                    WorkRow {
-                        cid: 7,
-                        work,
-                        totals: Totals::default(),
-                    },
-                );
-            }
-        }
+        let (_dir, store, ledger) = fixture();
+        store
+            .db(PLAZA)
+            .write(|conn| {
+                for work in 1..=(WORKS_MAX as u64 + 2) {
+                    conn.execute(
+                        sql::USAGE_WORK_ADD,
+                        params![
+                            7u64, work, 1u64, 0u64, 0u64, 0u64, 0u64, 0.0f64, 0.0f64, 0.0f64
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
         ledger.prune(H, usize::MAX, 0);
-        let state = ledger.lock();
-        assert_eq!(state.works.len(), WORKS_MAX);
-        assert!(!state.works.contains_key(&(7, 1)) && !state.works.contains_key(&(7, 2)));
-        assert!(state.works.contains_key(&(7, WORKS_MAX as u64 + 2)));
+        store.db(PLAZA).flush().unwrap();
+        let (count, oldest): (i64, i64) = store
+            .db(PLAZA)
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*), MIN(\"work\") FROM \"usage_work\"",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(count, WORKS_MAX as i64);
+        assert_eq!(oldest, 3, "the works 1 and 2 are the oldest and go");
     }
 
     #[test]
     fn prune_drops_oldest_calls_and_hours_past_the_age() {
-        let ledger = Ledger::default();
-        ledger.file(call(H, 1, "a/x", tok(1, 0, 0, 0), None, 1.0));
-        ledger.file(call(H + 2 * DAY_MS, 1, "a/x", tok(1, 0, 0, 0), None, 1.0));
-        ledger.file(call(
-            H + 2 * DAY_MS + 1,
-            2,
-            "a/x",
-            tok(1, 0, 0, 0),
-            None,
-            1.0,
-        ));
+        let (_dir, store, ledger) = fixture();
+        ledger
+            .file(call(H, 1, "a/x", tok(1, 0, 0, 0), None, 1.0))
+            .unwrap();
+        ledger
+            .file(call(H + 2 * DAY_MS, 1, "a/x", tok(1, 0, 0, 0), None, 1.0))
+            .unwrap();
+        ledger
+            .file(call(
+                H + 2 * DAY_MS + 1,
+                2,
+                "a/x",
+                tok(1, 0, 0, 0),
+                None,
+                1.0,
+            ))
+            .unwrap();
 
         ledger.prune(H + 2 * DAY_MS + 2, 2, 0);
+        store.db(PLAZA).flush().unwrap();
         let kept: Vec<u64> = ledger
             .calls(None, 50, None, None)
             .calls
@@ -1045,30 +1205,38 @@ mod tests {
         assert_eq!(ledger.summary(0, u64::MAX).totals.calls, 3);
 
         ledger.prune(H + 2 * DAY_MS, 2, 1);
+        store.db(PLAZA).flush().unwrap();
         assert_eq!(ledger.summary(0, u64::MAX).totals.calls, 2);
     }
 
     #[test]
-    fn snapshot_round_trips_and_numbering_continues() {
-        let ledger = Ledger::default();
-        ledger.file(call(H, 1, "a/x", tok(10, 2, 5, 1), Some(0.1), 0.2));
-        ledger.file(call(H + HOUR_MS, 2, "b/y", tok(3, 0, 0, 0), None, 0.0));
+    fn the_counter_continues_from_the_stored_calls() {
+        let (_dir, store, ledger) = fixture();
+        ledger
+            .file(call(H, 1, "a/x", tok(10, 2, 5, 1), Some(0.1), 0.2))
+            .unwrap();
+        ledger
+            .file(call(H + HOUR_MS, 2, "b/y", tok(3, 0, 0, 0), None, 0.0))
+            .unwrap();
 
-        let restored = Ledger::default();
-        restored.restore(&ledger.snapshot()).unwrap();
-        assert_eq!(restored.summary(0, u64::MAX), ledger.summary(0, u64::MAX));
+        // A restart: a fresh ledger over the same store, loaded from it, numbers on from the stored calls.
+        let restarted = Ledger::new(Arc::clone(store.db(PLAZA)));
+        store.db(PLAZA).read(|conn| restarted.load(conn)).unwrap();
+        assert_eq!(restarted.summary(0, u64::MAX), ledger.summary(0, u64::MAX));
         assert_eq!(
-            restored.calls(None, 50, None, None),
+            restarted.calls(None, 50, None, None),
             ledger.calls(None, 50, None, None)
         );
         assert_eq!(
-            restored.series(H, H + 2 * HOUR_MS, HOUR_MS, "role"),
+            restarted.series(H, H + 2 * HOUR_MS, HOUR_MS, "role"),
             ledger.series(H, H + 2 * HOUR_MS, HOUR_MS, "role")
         );
 
-        let next = restored.file(call(H + 3, 1, "a/x", tok(1, 0, 0, 0), None, 0.0));
+        let next = restarted
+            .file(call(H + 3, 1, "a/x", tok(1, 0, 0, 0), None, 0.0))
+            .unwrap();
         assert_eq!(next.id, 3);
-        assert_eq!(restored.summary(H, H + HOUR_MS).totals.calls, 2);
+        assert_eq!(restarted.summary(H, H + HOUR_MS).totals.calls, 2);
     }
 
     fn rung_call(task: Option<&str>, rung: Option<&str>) -> Call {
@@ -1081,13 +1249,15 @@ mod tests {
 
     #[test]
     fn a_call_records_its_rung_and_a_later_higher_rung_call_of_its_task_escalates() {
-        let ledger = Ledger::default();
-        let first = ledger.file(rung_call(Some("t1"), Some("cheap")));
+        let (_dir, _store, ledger) = fixture();
+        let first = ledger.file(rung_call(Some("t1"), Some("cheap"))).unwrap();
         assert_eq!(
             (first.rung.as_deref(), first.escalated),
             (Some("cheap"), false)
         );
-        let second = ledger.file(rung_call(Some("t1"), Some("frontier")));
+        let second = ledger
+            .file(rung_call(Some("t1"), Some("frontier")))
+            .unwrap();
         assert_eq!(
             (second.rung.as_deref(), second.escalated),
             (Some("frontier"), true)
@@ -1096,20 +1266,39 @@ mod tests {
         assert!(
             ledger
                 .file(rung_call(Some("t1"), Some("frontier")))
+                .unwrap()
                 .escalated
         );
         // Another task, no task, and a same-rung repeat with no lower call before are not.
         assert!(
             !ledger
                 .file(rung_call(Some("t2"), Some("frontier")))
+                .unwrap()
                 .escalated
         );
-        assert!(!ledger.file(rung_call(None, Some("mid"))).escalated);
-        assert!(!ledger.file(rung_call(Some("t3"), Some("mid"))).escalated);
-        assert!(!ledger.file(rung_call(Some("t3"), Some("mid"))).escalated);
+        assert!(!ledger.file(rung_call(None, Some("mid"))).unwrap().escalated);
+        assert!(
+            !ledger
+                .file(rung_call(Some("t3"), Some("mid")))
+                .unwrap()
+                .escalated
+        );
+        assert!(
+            !ledger
+                .file(rung_call(Some("t3"), Some("mid")))
+                .unwrap()
+                .escalated
+        );
         // A lower rung after a higher one is not an escalation.
-        ledger.file(rung_call(Some("t4"), Some("frontier")));
-        assert!(!ledger.file(rung_call(Some("t4"), Some("cheap"))).escalated);
+        ledger
+            .file(rung_call(Some("t4"), Some("frontier")))
+            .unwrap();
+        assert!(
+            !ledger
+                .file(rung_call(Some("t4"), Some("cheap")))
+                .unwrap()
+                .escalated
+        );
 
         let page = ledger.calls(None, 50, None, None);
         assert_eq!(

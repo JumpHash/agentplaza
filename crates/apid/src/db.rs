@@ -38,10 +38,6 @@ pub const COMPONENTS: &[&str] = &[
     "acp_sessions",
     "library",
     "deliverables",
-    "prices",
-    "usage",
-    "foundry",
-    "models",
     "mcp",
 ];
 
@@ -68,10 +64,6 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "acp_sessions" => app.acp_sessions.snapshot(),
         "library" => app.library.snapshot(),
         "deliverables" => app.deliverables.snapshot(),
-        "prices" => app.prices.snapshot(),
-        "usage" => app.usage.snapshot(),
-        "foundry" => app.foundry.snapshot(),
-        "models" => app.models.snapshot(),
         "mcp" => app.mcp.store.snapshot(),
         _ => String::new(),
     }
@@ -89,10 +81,6 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "acp_sessions" => app.acp_sessions.restore(json),
         "library" => app.library.restore(json),
         "deliverables" => app.deliverables.restore(json),
-        "prices" => app.prices.restore(json),
-        "usage" => app.usage.restore(json),
-        "foundry" => app.foundry.restore(json),
-        "models" => app.models.restore(json),
         "mcp" => app.mcp.store.restore(json),
         other => Err(format!("unknown component {other}")),
     }
@@ -818,12 +806,6 @@ mod tests {
         let stranded = stranded_escrows(&tasks);
         let ids: Vec<&str> = stranded.iter().map(|(id, _, _)| id.as_str()).collect();
         assert_eq!(ids, ["t1", "t4"]);
-    }
-
-    /// The registry is a snapshotted component: restored at start and written by the writer.
-    #[test]
-    fn models_is_a_component() {
-        assert!(COMPONENTS.contains(&"models"));
     }
 
     #[test]
