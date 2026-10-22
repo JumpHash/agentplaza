@@ -55,7 +55,7 @@ pub fn owns(app: &App, task: &str) -> bool {
 pub fn tick(app: &App) {
     let now = now();
     ensure_planners(app, now);
-    start_ready_tasks(app, now);
+    assign_tasks(app, now);
     for seat in app.seats.ready() {
         start_seat(app, &seat, now);
     }
@@ -91,7 +91,9 @@ fn reserve_for(app: &App, task: &str, project: &str) -> u64 {
     }
 }
 
-fn start_ready_tasks(app: &App, now: u64) {
+/// Fills the seats of every ready task (PLAN 0.4: `assign_tasks` fills seats): a task that is ready to run gets its
+/// recipe's seats and reserves its budget; its seats get sessions on the loop's next steps.
+fn assign_tasks(app: &App, now: u64) {
     for task in app.plaza.tasks.list() {
         if !task.is_open() || !task.is_ready() {
             continue;
