@@ -77,6 +77,10 @@ pub struct VmMeta {
     pub balloon_usable_mib: Option<u32>,
     /// The VM's kernel command line.
     pub cmdline: String,
+    /// The names of the shared data volumes the VM carries (see [`crate::volumes`]). The target must hold
+    /// each one: its snapshot's devices name them, and a restore needs the same devices.
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 /// One file of a transfer: its name, its length and the SHA-256 of its bytes, in lowercase hex.
@@ -306,6 +310,11 @@ pub fn export_vm(
             .map_err(|_| MigrateError::Failed("the VM's memory is too large to export".into()))?,
         balloon_usable_mib: spec.balloon,
         cmdline: spec.cmdline.clone(),
+        volumes: spec
+            .volumes
+            .iter()
+            .map(|volume| volume.name.clone())
+            .collect(),
     };
     let entries = files.iter().map(|file| file.entry.clone()).collect();
     let mut state = migrations.lock();
@@ -641,6 +650,7 @@ fn place(found: &Import, registry: &Registry) -> Result<Arc<Run>, MigrateError> 
         cmdline: meta.cmdline.clone(),
         sleep_dir: sleep,
         workspace: has_workspace.then(|| found.staging.join(WORKSPACE_FILE)),
+        volumes: meta.volumes.clone(),
     })?)
 }
 
@@ -710,8 +720,10 @@ fn hash_file(file: &mut File) -> io::Result<String> {
 mod tests {
     use super::*;
     use crate::events::EventBus;
-    use crate::registry::{VmImages, VmState};
+    use crate::registry::{Detail, VmImages, VmOpError, VmState};
     use crate::snapshots::SnapshotStore;
+    use crate::volumes::VolumeStore;
+    use vmm::spawner::VmSpec;
 
     /// A scratch directory unique to this process and test.
     fn scratch(name: &str) -> PathBuf {
@@ -761,6 +773,7 @@ mod tests {
                 cmdline: "console=ttyS0 plaza.vm=0".to_string(),
                 sleep_dir,
                 workspace: Some(image),
+                volumes: Vec::new(),
             })
             .expect("the VM is imported asleep");
         assert_eq!(run.id(), "r1");
@@ -784,6 +797,7 @@ mod tests {
             cmdline: "console=ttyS0 plaza.vm=0".to_string(),
             sleep_dir,
             workspace: None,
+            volumes: Vec::new(),
         })
         .expect("the VM is imported asleep");
         node
@@ -864,6 +878,7 @@ mod tests {
                 memory_mib: 256,
                 balloon_usable_mib: Some(128),
                 cmdline: "console=ttyS0 plaza.vm=0".to_string(),
+                volumes: Vec::new(),
             }
         );
 
@@ -1213,6 +1228,191 @@ mod tests {
         assert_eq!(full.status(), 503);
         abort_import(&migrations, &ids[0]).expect("an import is aborted");
         let _ = start_import(&migrations, &target, &export);
+        let _ = fs::remove_dir_all(&src_root);
+        let _ = fs::remove_dir_all(&dst_root);
+    }
+
+    /// A node rooted at `root` whose volume store holds one volume `name`, cloned from a stand-in image.
+    fn node_with_volume(root: &Path, name: &str) -> Registry {
+        let store = VolumeStore::open(root.join("volumes")).expect("a volume store");
+        let image = root.join(format!("{name}-in.ext4"));
+        fs::write(&image, pattern(64 << 10, 11)).expect("a stand-in image");
+        store.create(name, &image).expect("the volume is made");
+        node_at(root).with_volumes(Some(store))
+    }
+
+    /// A stand-in sleep directory under `root` holding `memory` bytes of memory and a state file.
+    fn stand_in_sleep(root: &Path, memory: usize) -> PathBuf {
+        let sleep_dir = root.join("sleep-in");
+        fs::create_dir_all(&sleep_dir).expect("the stand-in sleep directory");
+        fs::write(sleep_dir.join(MEMORY_FILE), pattern(memory, 3)).expect("memory");
+        fs::write(sleep_dir.join(STATE_FILE), br#"{"meta":{"format":1}}"#).expect("state");
+        sleep_dir
+    }
+
+    /// The names of a VM's data volumes, as its spec carries them.
+    fn volume_names(spec: &VmSpec) -> Vec<&str> {
+        spec.volumes
+            .iter()
+            .map(|volume| volume.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn an_imported_vm_keeps_the_data_volumes_its_snapshot_carries() {
+        let root = scratch("volumes-import");
+        let node = node_with_volume(&root, "data");
+        let run = node
+            .import_run(ImportedVm {
+                cid: 50,
+                role: Some("planner".to_string()),
+                vcpus: 1,
+                memory_mib: 256,
+                balloon_usable_mib: None,
+                cmdline: "console=ttyS0 plaza.vm=0".to_string(),
+                sleep_dir: stand_in_sleep(&root, 4096),
+                workspace: None,
+                volumes: vec!["data".to_string()],
+            })
+            .expect("the VM is imported asleep");
+        let arrived = node
+            .asleep_vm(run.id(), 0)
+            .expect("the imported VM is asleep");
+        assert_eq!(
+            volume_names(&arrived.spec),
+            ["data"],
+            "the restore needs the devices the snapshot names"
+        );
+        assert_eq!(
+            run.view(Detail::Summary).volumes,
+            ["data"],
+            "the run reports its volume"
+        );
+        assert_eq!(
+            node.volumes_in_use().get("data"),
+            Some(&vec![50]),
+            "the node holds the volume for the VM"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_node_without_a_volume_refuses_a_vm_that_carries_it_and_keeps_no_cid() {
+        let root = scratch("volumes-missing");
+        let node = node_at(&root);
+        let refusal = node
+            .import_run(ImportedVm {
+                cid: 50,
+                role: None,
+                vcpus: 1,
+                memory_mib: 256,
+                balloon_usable_mib: None,
+                cmdline: "console=ttyS0 plaza.vm=0".to_string(),
+                sleep_dir: stand_in_sleep(&root, 4096),
+                workspace: None,
+                volumes: vec!["data".to_string()],
+            })
+            .err()
+            .expect("the import is refused");
+        assert!(
+            matches!(&refusal, VmOpError::Invalid(why) if why.contains("data")),
+            "the refusal names the volume"
+        );
+        assert!(!node.cid_in_use(50), "a refused import holds no CID");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_vm_with_data_volumes_moves_with_them_to_a_node_that_holds_them() {
+        let (src_root, dst_root) = (scratch("volumes-src"), scratch("volumes-dst"));
+        let source = node_with_volume(&src_root, "data");
+        let run = source
+            .import_run(ImportedVm {
+                cid: 51,
+                role: Some("planner".to_string()),
+                vcpus: 1,
+                memory_mib: 256,
+                balloon_usable_mib: None,
+                cmdline: "console=ttyS0 plaza.vm=0".to_string(),
+                sleep_dir: stand_in_sleep(&src_root, 9000),
+                workspace: None,
+                volumes: vec!["data".to_string()],
+            })
+            .expect("the VM is imported asleep on the source");
+        let source_migrations = Migrations::new();
+        let export =
+            export_vm(&source_migrations, &source, run.id(), 0).expect("an asleep VM exports");
+        assert_eq!(export.meta.volumes, ["data"], "the export names the volume");
+
+        let target = node_with_volume(&dst_root, "data");
+        let target_migrations = Migrations::new();
+        let import = start_import(&target_migrations, &target, &export);
+        relay(
+            &source_migrations,
+            &export,
+            &target_migrations,
+            &import,
+            None,
+            None,
+        );
+        let done =
+            finish_import(&target_migrations, &target, &import).expect("the import finishes");
+        let arrived = target
+            .asleep_vm(&done.run, 0)
+            .expect("the moved VM is asleep");
+        assert_eq!(
+            volume_names(&arrived.spec),
+            ["data"],
+            "the moved VM keeps its data volume"
+        );
+        assert_eq!(target.volumes_in_use().get("data"), Some(&vec![51]));
+        let _ = fs::remove_dir_all(&src_root);
+        let _ = fs::remove_dir_all(&dst_root);
+    }
+
+    #[test]
+    fn a_move_to_a_node_without_the_volume_fails_and_the_source_keeps_the_vm() {
+        let (src_root, dst_root) = (
+            scratch("volumes-refused-src"),
+            scratch("volumes-refused-dst"),
+        );
+        let source = node_with_volume(&src_root, "data");
+        let run = source
+            .import_run(ImportedVm {
+                cid: 52,
+                role: None,
+                vcpus: 1,
+                memory_mib: 256,
+                balloon_usable_mib: None,
+                cmdline: "console=ttyS0 plaza.vm=0".to_string(),
+                sleep_dir: stand_in_sleep(&src_root, 4096),
+                workspace: None,
+                volumes: vec!["data".to_string()],
+            })
+            .expect("the VM is imported asleep on the source");
+        let source_migrations = Migrations::new();
+        let export =
+            export_vm(&source_migrations, &source, run.id(), 0).expect("an asleep VM exports");
+        let target = node_at(&dst_root);
+        let target_migrations = Migrations::new();
+        let import = start_import(&target_migrations, &target, &export);
+        relay(
+            &source_migrations,
+            &export,
+            &target_migrations,
+            &import,
+            None,
+            None,
+        );
+        assert!(
+            finish_import(&target_migrations, &target, &import).is_err(),
+            "the target refuses the VM without its volume"
+        );
+        assert!(!target.cid_in_use(52), "the target holds no CID for it");
+        assert!(
+            source.asleep_vm(run.id(), 0).is_ok(),
+            "the source keeps the VM asleep"
+        );
         let _ = fs::remove_dir_all(&src_root);
         let _ = fs::remove_dir_all(&dst_root);
     }
