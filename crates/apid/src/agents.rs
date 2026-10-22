@@ -1196,7 +1196,7 @@ fn delete(app: &App, params: &Params<'_>) -> Response {
         Some(&json!({})),
     );
     if let Err(e) = app.spawned.forget(agent.cid) {
-        eprintln!("apid: spawned.json not saved: {e}");
+        eprintln!("apid: agent {} not forgotten: {e}", agent.cid);
     }
     let run_status = agent.run.as_ref().and_then(|run| {
         crate::fleet::noded_for(app, agent.cid, "DELETE", &format!("/v1/runs/{run}"), None)

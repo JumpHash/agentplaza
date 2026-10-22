@@ -126,12 +126,18 @@ fn save_one(app: &App, c: &Component) -> Result<bool, StoreError> {
     Ok(true)
 }
 
-/// Writes component `name` now (an owner's message, a card answer): its write commits before this returns.
-pub fn save_now(app: &App, name: &str) {
-    if let Some(c) = components::all().into_iter().find(|c| c.name == name)
-        && let Err(e) = save_one(app, &c)
-    {
-        eprintln!("store: saving {name} failed (retried on the next pass): {e}");
+/// Writes component `name` now (an owner's message, a card answer, a rule): its write commits before this returns.
+/// Whether it is saved (false when the write failed; the next pass tries again).
+pub fn save_now(app: &App, name: &str) -> bool {
+    let Some(c) = components::all().into_iter().find(|c| c.name == name) else {
+        return false;
+    };
+    match save_one(app, &c) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("store: saving {name} failed (retried on the next pass): {e}");
+            false
+        }
     }
 }
 

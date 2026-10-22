@@ -44,15 +44,18 @@ fn rules_list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
             "strict_permits": app.laws.strict(),
             "constitutional_off": app.laws.constitutional_off(),
             "history": set.history,
+            // Set when the stored rules did not compile at start: only the built-in laws apply until a change does.
+            "not_applied": app.laws.not_applied(),
         }),
     )
 }
 
-/// A rule change's answer with `saved` added: the change applies at once, and the store's saver keeps it in plaza.db
-/// within a second.
-fn with_saved(mut body: Value) -> Value {
+/// A rule change's answer with `saved` added: the change applies at once, and is written to plaza.db before this
+/// answers (`saved` false when that write failed; the saver tries again within a second).
+fn with_saved(app: &App, mut body: Value) -> Value {
+    let saved = crate::store::saver::save_now(app, "rules");
     if let Some(map) = body.as_object_mut() {
-        map.insert("saved".into(), json!(true));
+        map.insert("saved".into(), json!(saved));
     }
     body
 }
@@ -70,7 +73,7 @@ fn rule_create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         enabled,
         apz_plaza::now_ms(),
     ) {
-        Ok(rule) => Response::json(201, &with_saved(json!(rule))),
+        Ok(rule) => Response::json(201, &with_saved(app, json!(rule))),
         Err(failure) => failure_response(failure),
     }
 }
@@ -88,7 +91,7 @@ fn rule_update_route(app: &App, req: &Request, params: &Params<'_>) -> Response 
         source,
         apz_plaza::now_ms(),
     ) {
-        Ok(rule) => Response::json(200, &with_saved(json!(rule))),
+        Ok(rule) => Response::json(200, &with_saved(app, json!(rule))),
         Err(failure) => failure_response(failure),
     }
 }
@@ -103,14 +106,17 @@ fn rule_disable_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
 
 fn set_enabled(app: &App, id: &str, enabled: bool) -> Response {
     match app.laws.set_rule_enabled(id, enabled, apz_plaza::now_ms()) {
-        Ok(rule) => Response::json(200, &with_saved(json!(rule))),
+        Ok(rule) => Response::json(200, &with_saved(app, json!(rule))),
         Err(failure) => failure_response(failure),
     }
 }
 
 fn rule_delete_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
     match app.laws.delete_rule(params.get("id")) {
-        Ok(()) => Response::json(200, &with_saved(json!({ "deleted": params.get("id") }))),
+        Ok(()) => Response::json(
+            200,
+            &with_saved(app, json!({ "deleted": params.get("id") })),
+        ),
         Err(failure) => failure_response(failure),
     }
 }
@@ -151,18 +157,20 @@ fn override_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
         params.get("law"),
         &body,
         apz_plaza::now_ms(),
+        || crate::store::saver::save_now(app, "rules"),
     )
 }
 
 /// Sets or clears one built-in override from a request body (`disabled`, `reason`, and `confirm`,
 /// the typed law id a constitutional law needs to be switched off). A constitutional law's change
-/// goes out on the event stream as `law`, with the laws now off.
+/// goes out on the event stream as `law`, with the laws now off. `save` writes the change and says whether it did.
 fn set_override_answer(
     laws: &crate::laws::Laws,
     bus: &crate::events::Bus,
     law: &str,
     body: &Value,
     now_ms: u64,
+    save: impl FnOnce() -> bool,
 ) -> Response {
     let disabled = body
         .get("disabled")
@@ -178,7 +186,11 @@ fn set_override_answer(
         Ok(made) => {
             let made: Option<Override> = made;
             announce_constitutional(laws, bus, law, now_ms);
-            Response::json(200, &with_saved(json!({ "law": law, "override": made })))
+            let saved = save();
+            Response::json(
+                200,
+                &json!({ "law": law, "override": made, "saved": saved }),
+            )
         }
         Err(failure) => failure_response(failure),
     }
@@ -280,7 +292,7 @@ mod tests {
     const C: &str = "C-002b";
 
     fn answer(laws: &Laws, bus: &Bus, law: &str, body: Value) -> Response {
-        set_override_answer(laws, bus, law, &body, 5_000)
+        set_override_answer(laws, bus, law, &body, 5_000, || true)
     }
 
     fn json_of(response: &Response) -> Value {

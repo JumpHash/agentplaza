@@ -315,6 +315,8 @@ pub struct Laws {
     strict: AtomicBool,
     /// The most recent tool calls checked, for the dry run.
     seen: Mutex<VecDeque<Seen>>,
+    /// Why the stored owner rules were not applied at start, until a change applies them.
+    not_applied: Mutex<Option<String>>,
 }
 
 impl Laws {
@@ -342,6 +344,7 @@ impl Laws {
             permitted: Mutex::new(HashMap::new()),
             strict: AtomicBool::new(false),
             seen: Mutex::new(VecDeque::new()),
+            not_applied: Mutex::new(None),
         }
     }
 
@@ -865,13 +868,21 @@ impl Laws {
         let mut slot = lock(&self.rules);
         match compile(&self.base, &stored) {
             Ok(compiled) => self.swap(compiled),
-            Err(failure) => eprintln!(
-                "laws: the owner's rules are not applied: {}",
-                failure.message()
-            ),
+            Err(failure) => {
+                eprintln!(
+                    "laws: the owner's rules are not applied: {}",
+                    failure.message()
+                );
+                *lock(&self.not_applied) = Some(failure.message());
+            }
         }
         *slot = stored;
         Ok(())
+    }
+
+    /// Why the owner's stored rules are not applied (they did not compile at start), until a change applies them.
+    pub fn not_applied(&self) -> Option<String> {
+        lock(&self.not_applied).clone()
     }
 
     /// Applies a change to one rule: the change is compiled first, and nothing is applied unless it compiles.
@@ -905,6 +916,7 @@ impl Laws {
     /// Swaps in a compiled set. The memo lock is held so that no answer computed under the old set
     /// is remembered after the swap.
     fn swap(&self, next: Compiled) {
+        *lock(&self.not_applied) = None;
         let mut memo = lock(&self.permitted);
         *self.live.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
         memo.clear();
@@ -2263,6 +2275,10 @@ mod owner_rules_tests {
         assert!(
             !loaded.catalog().iter().any(|info| info.id == "O-001"),
             "not applied"
+        );
+        assert!(
+            loaded.not_applied().is_some(),
+            "and the Rules view says why"
         );
     }
 
