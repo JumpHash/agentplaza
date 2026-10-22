@@ -118,7 +118,8 @@ pub fn on_decided(app: &App, approval: &Approval) -> Result<(), String> {
             let id = plan.target.id.clone();
             let share = app
                 .shares
-                .create(plan.target, plan.title, plan.options, &plan.created_by);
+                .create(plan.target, plan.title, plan.options, &plan.created_by)
+                .map_err(|e| format!("the share of {title} could not be saved: {e}"))?;
             app.artifacts.set_shared(&id, true);
             crate::shares::relay::claim(&share.id);
             format!("The owner approved sharing {title}.")
@@ -337,10 +338,7 @@ mod tests {
 
     #[test]
     fn an_approved_request_creates_exactly_one_live_share() {
-        let dir = std::env::temp_dir().join(format!("apid-share-request-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the test folder");
-        let store = Store::load(&dir);
+        let store = Store::for_tests();
         let detail = sales_detail(30);
 
         // The denial plans nothing, so nothing is created.
@@ -348,17 +346,18 @@ mod tests {
         assert!(store.live().is_empty());
 
         let planned = plan(&detail, true, unix_ms()).expect("an approval plans a share");
-        let share = store.create(
-            planned.target,
-            planned.title,
-            planned.options,
-            &planned.created_by,
-        );
+        let share = store
+            .create(
+                planned.target,
+                planned.title,
+                planned.options,
+                &planned.created_by,
+            )
+            .expect("the share is saved");
         let live = store.live();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].id, share.id);
         assert_eq!(live[0].target.id, "ar1");
         assert!(live[0].expires_ms.is_some());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -59,8 +59,9 @@ pub struct FileInfo {
     pub text: Option<String>,
 }
 
-/// One thing a check found.
+/// One thing a check found (a row of a version's findings in the store).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub struct Finding {
     pub rule: String,
     pub severity: Severity,

@@ -108,7 +108,10 @@ fn create(app: &App, req: &Request) -> Response {
         expires_ms,
         allow_download: body.allow_download.unwrap_or(false),
     };
-    let share = app.shares.create(body.target, title, opts, "owner");
+    let share = match app.shares.create(body.target, title, opts, "owner") {
+        Ok(share) => share,
+        Err(_) => return Response::error(500, "the share could not be saved; try again"),
+    };
     crate::shares::relay::claim(&share.id);
     if share.target.kind == "artifact" {
         app.artifacts.set_shared(&share.target.id, true);
@@ -136,8 +139,9 @@ fn change(app: &App, req: &Request, id: &str) -> Response {
         .shares
         .change(id, password, expires_ms, allow_download, version)
     {
-        Some(share) => Response::json(200, &view(app, &share, req.header("Host"))),
-        None => Response::error(404, "no such share"),
+        Ok(Some(share)) => Response::json(200, &view(app, &share, req.header("Host"))),
+        Ok(None) => Response::error(404, "no such share"),
+        Err(_) => Response::error(500, "the change could not be saved; try again"),
     }
 }
 

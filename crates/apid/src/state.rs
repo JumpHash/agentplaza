@@ -162,7 +162,7 @@ pub struct App {
     pub disk: crate::disk::Disk,
     pub chats: crate::chats::Chats,
     pub threads: crate::threads::Threads,
-    /// The unfurl answers for the references clients show as chips (unfurl/mod.rs); the memory fallback when there is no Postgres.
+    /// The unfurl answers for the references clients show as chips, kept in `plaza.db` (unfurl/mod.rs).
     pub unfurl: crate::unfurl::Cache,
     /// STOP ALL / resume.
     pub control: crate::control::Control,
@@ -252,15 +252,9 @@ impl App {
                 .map_err(std::io::Error::other)?,
         );
         let db = Arc::new(crate::db::Db::connect(&env));
-        let roster_db = db.enabled().then(|| Arc::clone(&db));
-        let hub_mcp_db = db.enabled().then(|| Arc::clone(&db));
-        let prompt_store: Arc<dyn crate::prompts::PromptStore> = if db.enabled() {
-            Arc::new(crate::prompts::store_db::DbPrompts::new(Arc::clone(&db)))
-        } else {
-            Arc::new(crate::prompts::store_mem::MemoryPrompts::open(
-                &config.state_dir,
-            ))
-        };
+        let prompt_store: Arc<dyn crate::prompts::PromptStore> = Arc::new(
+            crate::prompts::store::SqlitePrompts::new(Arc::clone(store.db(crate::store::PLAZA))),
+        );
         let vault = Arc::new(crate::vault::Store::open(
             &config.vault_key,
             Arc::clone(store.db(crate::store::PLAZA)),
@@ -301,7 +295,7 @@ impl App {
             disk: Default::default(),
             chats: Default::default(),
             threads: Default::default(),
-            unfurl: crate::unfurl::Cache::default(),
+            unfurl: crate::unfurl::Cache::new(Arc::clone(store.db(crate::store::PLAZA))),
             vault: Arc::clone(&vault),
             control: crate::control::Control::default(),
             custom_roles: crate::roles_custom::Store::default(),
@@ -324,7 +318,7 @@ impl App {
                     config.tls || !config.bind.is_loopback(),
                 ),
                 config.tls || !config.bind.is_loopback(),
-                hub_mcp_db,
+                Arc::clone(store.db(crate::store::PLAZA)),
             ),
             prompts: crate::prompts::Prompts::new(prompt_store),
             skills: {
@@ -332,30 +326,28 @@ impl App {
                 let skill_blobs: Arc<dyn crate::skills::Blobs> =
                     Arc::new(crate::skills::blobs::StoreBlobs::new(Arc::clone(&blobs)));
                 crate::skills::Skills::new(
-                    if db.enabled() {
-                        Arc::new(crate::skills::store_db::DbSkills::new(Arc::clone(&db)))
-                            as Arc<dyn crate::skills::SkillStore>
-                    } else {
-                        Arc::new(crate::skills::store_mem::MemorySkills::open(
-                            &config.state_dir,
-                        ))
-                    },
+                    Arc::new(crate::skills::store_db::DbSkills::new(Arc::clone(
+                        store.db(crate::store::PLAZA),
+                    ))),
                     skill_blobs,
                 )
             },
             settings: settings::Store::new(config.dev_models),
             appearance: crate::appearance::Store::new(),
-            artifacts: Arc::new(crate::artifacts::Store::load(
-                &config.state_dir,
+            artifacts: Arc::new(crate::artifacts::Store::new(
+                Arc::clone(store.db(crate::store::PLAZA)),
                 Arc::clone(&blobs),
             )),
-            shares: Arc::new(crate::shares::Store::load(&config.state_dir)),
+            shares: Arc::new(crate::shares::Store::open(
+                Arc::clone(store.db(crate::store::PLAZA)),
+                &config.state_dir,
+            )),
             providers: providers::Store::new(Arc::clone(&vault)),
             engines: crate::engine_instances::Store::load(&config.state_dir)?,
             usage_providers: crate::usage_providers::Store::load(&config.state_dir)?,
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
             spawned: spawned::Store::default(),
-            agents: agents::Roster::with_db(roster_db),
+            agents: agents::Roster::default(),
             models: crate::foundry::registry::Models::open(&config.state_dir),
             hf: crate::foundry::hf_import::Imports::open(&config.state_dir),
             transcripts: transcript::Store::default(),
@@ -366,8 +358,6 @@ impl App {
             token,
             config,
         });
-        // The roster starts from the agents table before reconcile looks at the agents.
-        agents::load_roster(&app);
         events::spawn_relays(Arc::clone(&app));
         agents::spawn_reconcile(Arc::clone(&app));
         crate::sleep::spawn_sweeper(Arc::clone(&app));
