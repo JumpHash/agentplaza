@@ -50,6 +50,8 @@ pub fn touch(workspace: &Workspace, name: &str, input: &Value) -> Touch {
     match name {
         "read_file" => at(false, false),
         "list" | "search" | "glob" | "grep" => at(true, false),
+        // Code intelligence reads the files it names (its language server only indexes them).
+        "symbols" | "definition" | "references" | "diagnostics" | "outline" => at(true, false),
         "edit_file" | "multi_edit" | "write_file" | "append_file" => at(false, true),
         "bash" => Touch::Command(workspace.dir().to_path_buf()),
         _ => Touch::Other,
@@ -296,6 +298,13 @@ mod tests {
             touch(&ws, "grep", &json!({"pattern": "x"})),
             Touch::Path {
                 path: root,
+                write: false
+            }
+        );
+        assert_eq!(
+            touch(&ws, "definition", &json!({"path": "a.txt", "line": 1, "column": 1})),
+            Touch::Path {
+                path: ws.resolve("a.txt").expect("a path").0,
                 write: false
             }
         );
