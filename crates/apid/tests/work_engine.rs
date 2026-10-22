@@ -193,6 +193,11 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         "a builder and a reviewer: {seats}\n{}",
         hub.log()
     );
+    // The seat is filled when its session is made; the session has its VM once noded's start returns.
+    hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+        s.as_array()
+            .is_some_and(|s| s.iter().any(|s| s["cid"].as_u64().is_some()))
+    });
     let builder = sessions(&hub, &tid)
         .into_iter()
         .next()

@@ -62,10 +62,13 @@ pub fn tick(app: &App) {
     reap(app, now);
 }
 
-/// Whether project `id` takes work: it exists, is not paused or archived, and is in a stage that runs tasks.
+/// Whether project `id` takes work: it exists, is not paused or archived, and is in a stage that runs tasks, or in
+/// maintenance (its planner sweeps it, and the tasks the owner picks from its proposals run).
 fn project_active(app: &App, id: &str) -> bool {
     app.projects.get(id).is_some_and(|p| {
-        !p.paused && !p.archived && matches!(p.stage.as_str(), "implementation" | "review")
+        !p.paused
+            && !p.archived
+            && (p.in_maintenance() || matches!(p.stage.as_str(), "implementation" | "review"))
     })
 }
 
@@ -1635,8 +1638,9 @@ fn live_long(app: &App, project: &str) -> Vec<Session> {
         .collect()
 }
 
-/// Every active project has its planner, a long-lived session, when the plaza has the planner role: one that has none
-/// gets one, unless its last one failed within [`PLANNER_BACKOFF_MS`].
+/// Every active project has its planner, a long-lived session, when the plaza has the planner role (in maintenance the
+/// planner is the one who sweeps it, `maintenance.rs`): one that has none gets one, unless its last one failed within
+/// [`PLANNER_BACKOFF_MS`].
 fn ensure_planners(app: &App, now: u64) {
     if !crate::roles_custom::exists(app, PLANNER_ROLE) {
         return;
