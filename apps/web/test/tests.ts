@@ -1,8 +1,8 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href, hrefIn, movedTo, setLinkScope } from '../src/router';
 import { inScope, isLive, liveProjects } from '../src/scope';
-import { afterText, budgetText, isConversationId, settingsLine, startBlock, streamed } from '../src/ide/conversation-model';
-import type { ProjectDraft } from '../src/api';
+import { afterText, budgetText, chatOfWorkspace, draftBudgetOf, isTalkWorkspace, settingsLine, startBlock, streamed, talkWorkspace } from '../src/ide/talk-model';
+import type { ProjectDraft } from '../src/api-work';
 import { machinesRoute, viewHash } from '../src/views/machines';
 import { parseStyle, STYLES } from '../src/views/machine-style';
 import { finiteValues, gpuCardLine, latestValue, metricValues, parseGpuCards, vmRows } from '../src/views/machine-view-model';
@@ -177,20 +177,31 @@ eq([easeOut(0), easeOut(1)], [0, 1], 'ease out: the ends are fixed');
 eq(parse('#/hardware-lab?model=hub&lod=1'), { screen: 'hardware-lab', params: [], project: null }, 'a query is not part of the route');
 eq(parse('#/p/pr2/work?task=t3').project, 'pr2', 'a scoped route keeps its project before a query');
 
-// ---- The IDE's conversation view (ide/conversation-model.ts) ----
+// ---- The IDE's talk view (ide/talk-model.ts): a chat's workspace, its draft, its budget field ----
 {
-  eq(isConversationId('conv-12'), true, 'a conversation workspace id');
-  eq(isConversationId('agent:7'), false, 'an agent workspace is not one');
-  eq(isConversationId(null), false, 'nothing open is not one');
+  eq(talkWorkspace('main'), 'chat:main', 'a chat workspace id');
+  eq(chatOfWorkspace('chat:ch12'), 'ch12', 'a chat workspace opens its chat');
+  eq(isTalkWorkspace('chat:main'), true, 'the orchestrator chat is a workspace');
+  eq(isTalkWorkspace('chat:'), false, 'a chat workspace with no chat is not one');
+  eq(isTalkWorkspace('agent:7'), false, 'an agent workspace is not one');
+  eq(isTalkWorkspace(null), false, 'nothing open is not one');
   eq(afterText({ after: ['1', '2'] }), 'after 1, 2', 'a task that runs after others');
   eq(afterText({}), '', 'one that runs at once');
-  const draft = { problems: [] as string[], budget: 15000 } as unknown as ProjectDraft;
-  eq(startBlock({ draft, project: undefined, archived: false }), null, 'a draft with no problems starts');
-  eq(startBlock({ draft: { ...draft, problems: ['the draft has no tasks yet'] }, project: undefined, archived: false }), 'Before it can start: the draft has no tasks yet.', 'its problems stop it');
-  eq(startBlock({ draft, project: 'pr2', archived: false }), 'The project is started.', 'a started one does not start again');
-  eq(startBlock({ draft: undefined, project: undefined, archived: false })?.startsWith('There is no draft yet'), true, 'no draft yet');
-  eq(budgetText({ budget: 15000 }), '15,000 credits', 'a budget');
-  eq(budgetText({}), 'From the plaza’s budget', 'no budget of its own');
+  const draft = { problems: [] as string[], revision: 1, budget: { unit: 'usd', cap: 15_000_000 } } as unknown as ProjectDraft;
+  eq(startBlock({ archived: false }, draft), null, 'a draft with no problems starts');
+  eq(startBlock({ archived: false }, { ...draft, problems: ['the draft has no tasks yet'] }), 'Before it can start: the draft has no tasks yet.', 'its problems stop it');
+  eq(startBlock({ archived: false }, { ...draft, started_ms: 9 }), 'The project is started.', 'a started draft does not start again');
+  eq(startBlock({ archived: true }, draft), 'The chat is archived.', 'an archived chat does not start');
+  eq(startBlock({ archived: false }, null)?.startsWith('There is no draft yet'), true, 'no draft yet');
+  eq(budgetText({ unit: 'usd', cap: 15_000_000 }), '$15.00', 'a dollar budget');
+  eq(budgetText({ unit: 'tokens', cap: 500_000, monthly_cap: 100_000 }), '500,000 tokens · 100,000 tokens a month', 'a token budget with a monthly cap');
+  eq(budgetText(undefined), 'From the plaza’s budget', 'no budget of its own');
+  // The budget field is sent whole (the edit replaces it): dollars become micro-dollars, the monthly cap is kept.
+  eq(draftBudgetOf('usd', '2.5', 3_000_000), { ok: true, value: { unit: 'usd', cap: 2_500_000, monthly_cap: 3_000_000 } }, 'dollars typed, the monthly cap kept');
+  eq(draftBudgetOf('tokens', '500,000'), { ok: true, value: { unit: 'tokens', cap: 500_000 } }, 'tokens typed, grouped');
+  eq(draftBudgetOf('usd', '  '), { ok: true, value: undefined }, 'a blank field sends no budget');
+  eq(draftBudgetOf('usd', '0').ok, false, 'a budget of zero is refused');
+  eq(draftBudgetOf('tokens', 'lots').ok, false, 'a budget that is no number is refused');
   eq(
     settingsLine({ role_models: { builder: 'anthropic/claude-sonnet-5-5' }, effort: 'high', permission_mode: 'ask' }),
     'Builder model: anthropic/claude-sonnet-5-5 · effort high · permission: ask',

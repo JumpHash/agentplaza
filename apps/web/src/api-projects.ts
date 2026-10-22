@@ -164,7 +164,7 @@ export const projectsApi = {
   /** Uploaded files land on main as one change of the owner's. `folder` prefixes every path. */
   addFiles: (id: string, files: { path: string; hash: string }[], opts: { title?: string; folder?: string } = {}) =>
     call<FilesAdded>('POST', `/v1/projects/${enc(id)}/files`, { files, ...opts }),
-  /** A file to attach to a chat or conversation message: private until a message carries it. */
+  /** A file to attach to a chat message: private until a message carries it. */
   attach: async (file: Blob, name: string): Promise<Attachment> => {
     const res = await raw('PUT', `/v1/files?name=${enc(name)}`, file, file.type || 'application/octet-stream');
     const d = (await res.json()) as { id: string; title: string; size: number; content_type: string };

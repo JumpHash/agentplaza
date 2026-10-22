@@ -1,11 +1,12 @@
 // The work engine's API: sessions (a fresh context working one seat's step, a project's planner, or the main
 // orchestrator), a task's seats, the budgets of a project and of a task with their ledgers, the cards waiting for the
-// owner, and the chats. Same origin and the same `call` as the rest of the console. The routes are listed in
-// crates/apid/src/work_routes.rs; the shapes are the structs those handlers serialize (sessions.rs, seats.rs,
-// budgets.rs, cards.rs, chats.rs, transcript.rs, context_track.rs). Amounts: micro-dollars for a `usd` budget, tokens
-// for a `tokens` one.
+// owner, and the chats (the orchestrator's, a project's with its planner's draft, a task's). Same origin and the same
+// `call` as the rest of the console. The routes are listed in crates/apid/src/work_routes.rs and drafts.rs; the shapes
+// are the structs those handlers serialize (sessions.rs, seats.rs, budgets.rs, cards.rs, chats.rs, drafts.rs,
+// transcript.rs, context_track.rs). Amounts: micro-dollars for a `usd` budget, tokens for a `tokens` one.
 
-import { call, readableAt } from './api';
+import { call, readableAt, type ProjectSettings } from './api';
+import type { Attachment } from './api-projects';
 
 const seg = (text: string): string => encodeURIComponent(text);
 
@@ -326,11 +327,58 @@ export interface ChatMessage {
   /** The card of a question. */
   card: string | null;
   at_ms: number;
+  /** The files the owner attached; the hub leaves the field out when there are none. */
+  attachments?: Attachment[];
+}
+
+/** A budget as a draft sets it: its unit, its cap in that unit (never zero) and optionally the planner's monthly cap. */
+export interface DraftBudget {
+  unit: BudgetUnit;
+  cap: number;
+  monthly_cap?: number;
+}
+
+/** A task of a draft, as the planner writes it: `after` names the keys of the tasks it runs after. */
+export interface DraftTask { key: string; goal: string; acceptance?: string; role?: string; budget?: number; after?: string[] }
+
+/** A project's draft as the chat holds it (the chat's `draft`, without what still stops Start). */
+export interface ChatDraft {
+  revision: number;
+  title: string;
+  goal: string;
+  kind: 'code' | 'other';
+  repo?: string;
+  tasks: DraftTask[];
+  budget?: DraftBudget;
+  /** How the project meets GitHub: one of the hub's modes. */
+  github: string;
+  /** The disk the project's files may take, in bytes; none means no quota. */
+  disk_quota_bytes?: number;
+  settings?: ProjectSettings;
+  /** `orchestrator` or `owner`: who made the last edit. */
+  updated_by: 'owner' | 'orchestrator';
+  updated_ms: number;
+  /** When the owner started it; a started draft is not edited again. */
+  started_ms?: number;
+}
+
+/** A draft as `GET /v1/chats/{id}/draft` answers it: the draft and what still stops Start. */
+export interface ProjectDraft extends ChatDraft {
+  problems: string[];
+}
+
+/** The fields of a draft edit (`PATCH /v1/chats/{id}/draft`): the revision read, and the fields to replace. */
+export interface DraftEdit {
+  revision: number;
+  title?: string;
+  goal?: string;
+  repo?: string;
+  budget?: DraftBudget;
 }
 
 /** A chat. The lists leave `messages` empty; a read has its last messages. */
 export interface Chat {
-  /** `main` for the orchestrator's chat. */
+  /** `main` for the orchestrator's chat; a project's and a task's chats have their own ids. */
   id: string;
   kind: ChatKind;
   project: string | null;
@@ -340,6 +388,12 @@ export interface Chat {
   next_seq: number;
   created_ms: number;
   updated_ms: number;
+  /** The model the chat's turns run on (`provider/model[@effort]`); absent: the agent's own. */
+  model?: string | null;
+  /** A project chat's draft, while it holds one (`started_ms` once the owner started it). */
+  draft?: ChatDraft;
+  /** The work items the owner's messages queued here, oldest first. */
+  works: number[];
   messages: ChatMessage[];
 }
 
@@ -379,6 +433,13 @@ export const workApi = {
   chat: readableAt<[id: string, limit?: number], Chat>((id, limit) => `/v1/chats/${seg(id)}${qs({ limit })}`),
   messages: (id: string, after = 0, limit = 200) => call<ChatMessage[]>('GET', `/v1/chats/${seg(id)}/messages${qs({ after, limit })}`),
   openChat: (project: string, title?: string) => call<Chat>('POST', '/v1/chats', title ? { project, title } : { project }),
-  say: (id: string, text: string) => call<ChatMessage>('POST', `/v1/chats/${seg(id)}/messages`, { text }),
-  editChat: (id: string, body: { title?: string; archived?: boolean }) => call<Chat>('PATCH', `/v1/chats/${seg(id)}`, body),
+  /** Says `text` (and the files `attachments`, ids from `PUT /v1/files`) in a chat; the hub delivers it to the chat's session. */
+  say: (id: string, text: string, attachments: string[] = []) =>
+    call<ChatMessage>('POST', `/v1/chats/${seg(id)}/messages`, attachments.length ? { text, attachments } : { text }),
+  /** Renames, archives or sets the model of a chat (`model` null goes back to the agent's own). */
+  editChat: (id: string, body: { title?: string; archived?: boolean; model?: string | null }) => call<Chat>('PATCH', `/v1/chats/${seg(id)}`, body),
+  /** A project chat's draft, and what still stops Start. A chat with no draft answers 404. */
+  draft: readableAt<[id: string], ProjectDraft>((id) => `/v1/chats/${seg(id)}/draft`),
+  /** Edits the draft at the revision read; the hub answers the draft one revision on. */
+  editDraft: (id: string, edit: DraftEdit) => call<ProjectDraft>('PATCH', `/v1/chats/${seg(id)}/draft`, edit),
 };

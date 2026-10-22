@@ -72,7 +72,7 @@ export function tasksPanel(opts: { project: Project | null; onCount(done: number
   );
 
   if (!project) {
-    replace(body, empty('list-checks', 'Not in a project', 'Open an agent, a conversation or a repository of a project to see its tasks.'));
+    replace(body, empty('list-checks', 'Not in a project', 'Open an agent, a chat or a repository of a project to see its tasks.'));
     return { el, show() {}, dispose() {} };
   }
 
