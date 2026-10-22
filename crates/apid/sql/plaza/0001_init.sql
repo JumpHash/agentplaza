@@ -1389,6 +1389,11 @@ CREATE TABLE "node_machine" (
     "stats_present" INTEGER NOT NULL CHECK ("stats_present" IN (0, 1)),
     "stats_cpu_pct" REAL,
     "stats_mem_used_mib" INTEGER CHECK ("stats_mem_used_mib" >= 0),
+    "mac_present" INTEGER NOT NULL CHECK ("mac_present" IN (0, 1)),
+    "mac_builds" INTEGER CHECK ("mac_builds" >= 0),
+    "mac_simulators" INTEGER CHECK ("mac_simulators" >= 0),
+    "mac_builds_running" INTEGER CHECK ("mac_builds_running" >= 0),
+    "mac_simulators_running" INTEGER CHECK ("mac_simulators_running" >= 0),
     PRIMARY KEY ("nodes_pos", "nodes_pos_2"),
     FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
