@@ -1,8 +1,8 @@
-//! The IDE's left sidebar: a search field, the owner's conversations with the orchestrator, the projects as
+//! The IDE's left sidebar: a search field, the owner's chats (each opens its page), the projects as
 //! collapsible groups of agents and repos (Coral's grouping), each agent's status dot, label, current task and unread
 //! count, a hover card with what the agent is, and "+ New conversation" and "+ New agent" at the foot. In project
 //! mode (the IDE opened under a project) it is that project's: its head with the way to its tasks, board, work and
-//! settings, its conversation, and its agents and repo only. Rows come from the roster `ide.rs` loads (`ide_model`
+//! settings, its chats, and its agents and repo only. Rows come from the roster `ide.rs` loads (`ide_model`
 //! groups and reads them).
 
 // The IDE's own helpers and state, for the messages this area takes (moved from `ide.rs`).
@@ -19,11 +19,11 @@ use std::str::FromStr;
 use super::Id;
 use super::ide::{self, Msg, State};
 use super::ide_model::{self, AgentRow, Dot, Group};
+use crate::console::work_api::Chat;
 use crate::console::{scope, shell, ui};
 use crate::theme;
-use serde_json::Value;
 
-/// How many conversations the sidebar lists.
+/// How many chats the sidebar lists.
 const CONVERSATIONS: usize = 6;
 
 /// The status dot's diameter, and the rule drawn through a finished agent's label.
@@ -202,21 +202,14 @@ pub fn view(st: &State) -> Element<'_, Msg> {
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    let foot = container(
-        row![
-            hub,
-            Space::new().width(Length::Fill),
-            ide_chrome::tool_btn("user-plus", Msg::NewAgent, false),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .width(Length::Fill)
-    .padding(Padding {
-        top: 8.0,
-        right: 8.0,
-        bottom: 8.0,
-        left: 16.0,
-    });
+    let foot = container(row![hub, Space::new().width(Length::Fill),].align_y(Alignment::Center))
+        .width(Length::Fill)
+        .padding(Padding {
+            top: 8.0,
+            right: 8.0,
+            bottom: 8.0,
+            left: 16.0,
+        });
 
     let head_text = if st.project.is_some() {
         "Project"
@@ -400,30 +393,25 @@ fn project_head(project: &str) -> Element<'static, Msg> {
     .into()
 }
 
-/// The conversations: the newest few (in project mode, the ones of the project), under their own heading.
+/// The chats: the newest few (in project mode, the ones of the project), under their own heading. A row opens the
+/// chat's page.
 fn conversation_rows(st: &State) -> Vec<Element<'static, Msg>> {
     let q = st.sidebar_query.trim().to_lowercase();
-    let shown: Vec<&Value> = st
+    let shown: Vec<&Chat> = st
         .conversations
         .iter()
         .filter(|c| {
             st.project
                 .as_deref()
-                .is_none_or(|p| c["project"].as_str() == Some(p))
+                .is_none_or(|p| c.project.as_deref() == Some(p))
         })
-        .filter(|c| {
-            q.is_empty()
-                || c["title"]
-                    .as_str()
-                    .is_some_and(|t| t.to_lowercase().contains(&q))
-        })
+        .filter(|c| q.is_empty() || c.title.to_lowercase().contains(&q))
         .take(CONVERSATIONS)
         .collect();
     if shown.is_empty() {
         return Vec::new();
     }
-    let open = st.conversation.as_ref().map(|c| c.id.as_str());
-    let heading = container(ui::label("Conversations"))
+    let heading = container(ui::label("Chats"))
         .width(Length::Fill)
         .padding(Padding {
             top: 12.0,
@@ -433,22 +421,17 @@ fn conversation_rows(st: &State) -> Vec<Element<'static, Msg>> {
         });
     let mut rows: Vec<Element<'static, Msg>> = vec![heading.into()];
     for c in shown {
-        let id = c["id"].as_str().unwrap_or("").to_string();
-        let pending = c["pending"].as_u64().unwrap_or(0) > 0;
-        let meta = if pending {
-            "answering…".to_string()
-        } else if let Some(p) = c["project"].as_str() {
-            scope::title(p)
-        } else if let Some(r) = c["draft"]["revision"].as_u64() {
-            format!("draft · revision {r}")
-        } else {
-            ide_model::ago(ide::now_ms(), c["updated_ms"].as_u64().unwrap_or(0))
+        // A chat without a title shows its id.
+        let title = if c.title.is_empty() { &c.id } else { &c.title };
+        // The project it belongs to, else when it last moved.
+        let meta = match &c.project {
+            Some(p) => scope::title(p),
+            None => ide_model::ago(ide::now_ms(), c.updated_ms),
         };
-        let dot = if pending { Dot::Working } else { Dot::Idle };
         let body = column![
             row![
-                dot_mark(dot),
-                text(ui::ellipsize(c["title"].as_str().unwrap_or(&id), 34))
+                dot_mark(Dot::Idle),
+                text(ui::ellipsize(title, 34))
                     .font(Font {
                         weight: Weight::Medium,
                         ..theme::SANS
@@ -461,13 +444,12 @@ fn conversation_rows(st: &State) -> Vec<Element<'static, Msg>> {
             ui::faint(meta).size(11.5),
         ]
         .spacing(2);
-        let selected = open == Some(id.as_str());
         rows.push(
             button(body)
-                .on_press(Msg::OpenConversation(id))
+                .on_press(Msg::OpenConversation(c.id.clone()))
                 .width(Length::Fill)
                 .padding(8.0)
-                .style(row_style(selected))
+                .style(row_style(false))
                 .into(),
         );
     }
@@ -750,11 +732,7 @@ fn hover_card(agent: &AgentRow, last: Option<&str>) -> Element<'static, Msg> {
 pub(super) fn handles(msg: &Msg) -> bool {
     matches!(
         msg,
-        Msg::Pick(..)
-            | Msg::SidebarQuery(..)
-            | Msg::ToggleGroup(..)
-            | Msg::NewAgent
-            | Msg::Roster(..)
+        Msg::Pick(..) | Msg::SidebarQuery(..) | Msg::ToggleGroup(..) | Msg::Roster(..)
     )
 }
 
@@ -778,7 +756,6 @@ pub(super) fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
-        Msg::NewAgent => Task::none(),
         Msg::Roster(res) => {
             match res {
                 Ok(roster) => {
