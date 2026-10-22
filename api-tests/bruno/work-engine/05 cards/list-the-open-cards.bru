@@ -1,0 +1,24 @@
+meta {
+  name: List the open cards: every one is open
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/cards?open=true
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("only open cards are listed", function () {
+    const cards = res.getBody();
+    expect(cards).to.be.an("array");
+    cards.forEach((c) => expect(c.state).to.equal("open"));
+  });
+}

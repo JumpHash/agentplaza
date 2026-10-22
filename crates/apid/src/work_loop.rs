@@ -60,6 +60,7 @@ pub fn tick(app: &App) {
         start_seat(app, &seat, now);
     }
     reap(app, now);
+    crate::disk::tick(app, now);
 }
 
 /// Whether project `id` takes work: it exists, is not paused or archived, and is in a stage that runs tasks.
@@ -673,6 +674,7 @@ pub fn on_gone(app: &App, cid: u64) {
 /// Retires a session's VM: its lane is cleared and noded stops it.
 fn retire(app: &App, cid: u64) {
     app.work.clear(cid);
+    app.disk.forget(cid);
     unread_back_to_seats(app, cid);
     if let Some(agent) = app.agents.get(cid)
         && let (Some(run), Some(vm)) = (agent.run.clone(), agent.vm)
@@ -716,6 +718,40 @@ pub fn notice(app: &App, chat: &str, text: &str, now: u64) {
             &serde_json::json!({ "chat": chat, "message": message }),
         );
     }
+}
+
+/// Opens a card, and when it is new posts its question in its chat and publishes it. An open card of the same kind and
+/// subject is the one kept, and nothing more is posted for it.
+pub fn open_card(app: &App, new: NewCard, now: u64) {
+    let chat = new.chat.clone();
+    let (card, created) = app.cards.open(new, now);
+    if !created {
+        return;
+    }
+    let text = match &card.body {
+        Some(body) => format!("{}. {body}", card.title),
+        None => card.title.clone(),
+    };
+    if let Some(chat) = chat
+        && let Some(message) = app.chats.post(
+            &chat,
+            Post {
+                author: Author::System,
+                session: None,
+                seat: None,
+                kind: MessageKind::Question,
+                text,
+                card: Some(card.id.clone()),
+            },
+            now,
+        )
+    {
+        app.bus.publish(
+            "chat",
+            &serde_json::json!({ "chat": chat, "message": message }),
+        );
+    }
+    app.bus.publish("card", &card);
 }
 
 /// A budget limit reached: one card per subject, in the task's chat (or the project's when it is the project's).
@@ -920,6 +956,7 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
                                 b.cap,
                                 b.warn_at_pct,
                                 Some(to),
+                                b.disk_quota_bytes,
                                 now,
                             );
                             resume_budget(app, OwnerKind::Project, project);
@@ -991,6 +1028,9 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
             // The seat is still ready: the next tick looks for a model again (and asks again if it finds none).
             _ => "looking for a model again".into(),
         },
+        cards::Kind::ToolCall | cards::Kind::Review => crate::approvals::card_answered(app, card),
+        cards::Kind::Proposal => crate::agent_proposals::card_answered(app, card),
+        cards::Kind::Disk => crate::disk::card_answered(app, card),
         _ => "recorded".into(),
     }
 }

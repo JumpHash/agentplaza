@@ -642,7 +642,7 @@ impl Queues {
                     waited,
                 );
                 if let Some(item) = escalation {
-                    app.bus.publish("approval", &item);
+                    crate::approvals::announce(app, &item);
                 }
             }
         }
@@ -1153,11 +1153,12 @@ fn withdraw_orphaned_reviews(
         .collect()
 }
 
-/// Publishes the approvals that were withdrawn, so the owner's view drops them.
+/// Publishes the approvals that were withdrawn, so the owner's view drops them, and withdraws their cards.
 fn publish_withdrawn(app: &App, withdrawn: &[Approval]) {
     for item in withdrawn {
         app.bus.publish("approval", item);
     }
+    crate::approvals::withdraw_cards(app, withdrawn);
 }
 
 /// Withdraws the pending review cards whose task no longer awaits review, whichever path ended it.
