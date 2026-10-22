@@ -1449,11 +1449,7 @@ mod tests {
 
     #[test]
     fn a_task_no_reviewer_takes_in_time_asks_the_owner_once() {
-        let dir =
-            std::env::temp_dir().join(format!("apid-review-escalation-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = ApprovalStore::load(&dir);
+        let store = ApprovalStore::default();
 
         // Nothing is asked before the timeout; at it, the owner is.
         assert!(!review_overdue(29 * 60_000, 30 * 60_000));
@@ -1483,15 +1479,11 @@ mod tests {
                 .count(),
             2
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_reviewers_ruling_withdraws_the_owners_pending_card_and_only_that_one() {
-        let dir = std::env::temp_dir().join(format!("apid-review-withdraw-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = ApprovalStore::load(&dir);
+        let store = ApprovalStore::default();
         let asked = escalate_review(&store, "t7", 4, "agent4", "ship it", "done", 30 * 60_000)
             .expect("asked");
         let other = escalate_review(&store, "t8", 4, "agent4", "other", "done", 30 * 60_000)
@@ -1522,15 +1514,11 @@ mod tests {
             .find(|a| a.id == other.id)
             .expect("kept");
         assert_eq!(still.state, ApprovalState::Pending);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_card_whose_task_ended_by_another_path_is_withdrawn_too() {
-        let dir = std::env::temp_dir().join(format!("apid-review-orphan-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = ApprovalStore::load(&dir);
+        let store = ApprovalStore::default();
         escalate_review(&store, "t7", 4, "agent4", "a", "done", 30 * 60_000).expect("asked");
         let live =
             escalate_review(&store, "t8", 4, "agent4", "b", "done", 30 * 60_000).expect("asked");
@@ -1550,7 +1538,6 @@ mod tests {
             .find(|a| a.id == live.id)
             .expect("kept");
         assert_eq!(kept.state, ApprovalState::Pending);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

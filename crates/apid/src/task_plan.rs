@@ -27,8 +27,8 @@ pub const MAX_PLANNED: usize = 64;
 /// The most bytes of a `tasks` document that are read to check it.
 const MAX_DOC_BYTES: usize = 256 * 1024;
 
-/// One task of a plan's list.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One task of a plan's list (a row of a draft's task table, `conversation_draft_tasks`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Planned {
     /// The task's key in the list (`1.3`), which other tasks' `after` names.
     pub key: String,
@@ -46,6 +46,7 @@ pub struct Planned {
     /// The keys of the tasks of the list it runs after (or, when posting, the ids of tasks that
     /// exist already).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list)]
     pub after: Vec<String>,
 }
 

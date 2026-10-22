@@ -41,7 +41,7 @@ use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
 /// One project's overrides. Every field is optional: unset, the plaza's value holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProjectSettings {
     /// The model of the project's agents when their role has none here.
@@ -49,6 +49,7 @@ pub struct ProjectSettings {
     pub default_model: Option<String>,
     /// The model of each role's agents.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[table(map_value)]
     pub role_models: BTreeMap<String, String>,
     /// The reasoning effort of their model calls.
     #[serde(skip_serializing_if = "Option::is_none")]

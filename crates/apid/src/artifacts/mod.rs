@@ -1163,7 +1163,7 @@ mod tests {
         let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
         vault.boot(apz_plaza::now_ms()).expect("boot");
         let objects = Arc::new(
-            deliverables::Store::load(dir, &BTreeMap::new(), Arc::new(vault)).expect("objects"),
+            deliverables::Store::open(dir, &BTreeMap::new(), Arc::new(vault)).expect("objects"),
         );
         (Store::load(dir, objects.clone()), objects)
     }

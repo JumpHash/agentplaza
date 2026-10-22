@@ -145,10 +145,10 @@ impl Hub for AppHub<'_> {
     fn set_mode(&self, cid: u64, mode: &str) -> Result<(), String> {
         let mode = parse_mode(mode)
             .ok_or_else(|| format!("no mode {mode}: use autonomous, ask or read_only"))?;
-        self.app
-            .approvals
-            .set_mode(cid, mode)
-            .map_err(|e| format!("could not save the permission mode: {e}"))
+        self.app.approvals.set_mode(cid, mode);
+        // The editor's change is written before the answer.
+        crate::store::saver::save_now(self.app, "approvals");
+        Ok(())
     }
 
     fn usage(&self, cid: u64, work: u64) -> Option<Value> {

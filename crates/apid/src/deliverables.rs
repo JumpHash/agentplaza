@@ -20,12 +20,12 @@ use crate::vault::OnBehalf;
 
 /// The longest name a deliverable may carry.
 const NAME_CAP: usize = 120;
-/// The index file, under `<state-dir>/files/`.
-const INDEX: &str = "index.json";
 
-/// One file an agent handed in.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One file an agent handed in: a row of `deliverable` (its `allowed` agents are rows of `deliverable_allowed`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "deliverable")]
 pub struct Deliverable {
+    #[table(key)]
     pub id: String,
     pub name: String,
     pub title: String,
@@ -47,6 +47,7 @@ pub struct Deliverable {
     pub audience: String,
     /// Agents a private file is shared with.
     #[serde(default)]
+    #[table(list)]
     pub allowed: Vec<u64>,
 }
 
@@ -73,12 +74,13 @@ pub struct Upload {
 }
 
 pub struct Store {
-    /// `<state-dir>/files`: the index, and the blobs when they are kept locally.
+    /// `<state-dir>/files`: the blobs (and objects) when they are kept locally.
     dir: PathBuf,
     /// Garage's address (endpoint, bucket, region), when configured. Its key pair is the vault's (`tool:garage`).
     garage: Option<Garage>,
     /// The vault the Garage keys are read from, per use (it may be sealed at load).
     vault: Arc<crate::vault::Store>,
+    /// Every deliverable, oldest first. The saver keeps it in `plaza.db` (see `rows` and `load`).
     index: Mutex<Vec<Deliverable>>,
 }
 
@@ -98,64 +100,50 @@ impl Store {
     /// Makes file `id` public (attached to a board post or comment). Only its author may.
     pub fn publish(&self, id: &str, by: u64) -> Result<(), String> {
         let mut index = lock(&self.index);
-        let pos = index
-            .iter()
-            .position(|d| d.id == id)
+        let item = index
+            .iter_mut()
+            .find(|d| d.id == id)
             .ok_or_else(|| "no such file".to_string())?;
-        if index[pos].audience == "public" {
+        if item.audience == "public" {
             return Ok(());
         }
-        if by != index[pos].author_cid {
+        if by != item.author_cid {
             return Err("only the file's author can make it public".to_string());
         }
-        let mut next = index.to_vec();
-        next[pos].audience = "public".to_string();
-        self.save(&next)
-            .map_err(|e| format!("cannot save the index: {e}"))?;
-        *index = next;
+        item.audience = "public".to_string();
         Ok(())
     }
 
     /// Gives agents `to` access to file `id` (attached to a direct message). Only its author may.
     pub fn grant(&self, id: &str, by: u64, to: &[u64]) -> Result<(), String> {
         let mut index = lock(&self.index);
-        let pos = index
-            .iter()
-            .position(|d| d.id == id)
+        let item = index
+            .iter_mut()
+            .find(|d| d.id == id)
             .ok_or_else(|| "no such file".to_string())?;
-        if index[pos].audience == "public" {
+        if item.audience == "public" {
             return Ok(());
         }
-        if by != index[pos].author_cid {
+        if by != item.author_cid {
             return Err("only the file's author can share it".to_string());
         }
-        let mut next = index.to_vec();
         for cid in to {
-            if !next[pos].allowed.contains(cid) {
-                next[pos].allowed.push(*cid);
+            if !item.allowed.contains(cid) {
+                item.allowed.push(*cid);
             }
         }
-        self.save(&next)
-            .map_err(|e| format!("cannot save the index: {e}"))?;
-        *index = next;
         Ok(())
     }
 
-    /// Loads `<state-dir>/files/index.json` (a missing file is an empty library) and picks
-    /// the store: Garage when the environment configures it, else a local folder.
-    pub fn load(
+    /// Opens the library in `<state-dir>/files`, empty until `load` fills it from `plaza.db` at start, and picks the
+    /// store: Garage when the environment configures it, else a local folder.
+    pub fn open(
         state_dir: &Path,
         env: &BTreeMap<String, String>,
         vault: Arc<crate::vault::Store>,
     ) -> io::Result<Self> {
         let dir = state_dir.join("files");
         std::fs::create_dir_all(&dir)?;
-        let index: Vec<Deliverable> = match std::fs::read(dir.join(INDEX)) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e),
-        };
         for name in GARAGE_KEYS {
             vault.register_consumer(GARAGE_BINDING, "Garage object store", name);
         }
@@ -163,12 +151,12 @@ impl Store {
             dir,
             garage: garage_from(env),
             vault,
-            index: Mutex::new(index),
+            index: Mutex::new(Vec::new()),
         })
     }
 
-    /// Stores the bytes and indexes them. The bytes go first, so an index entry never names
-    /// a missing object; a failed index save removes them again.
+    /// Stores the bytes and indexes them. The bytes go first, so an index entry never names a missing object. The index
+    /// is saved by the saver (an owner's upload is saved at once: `owner_put_route`).
     pub fn add(&self, upload: Upload, body: &[u8]) -> Result<Deliverable, String> {
         let store = if self.garage.is_some() && self.keys().is_some() {
             "garage"
@@ -193,14 +181,7 @@ impl Store {
             allowed: upload.allowed,
         };
         self.write_blob(&item, body)?;
-        let mut index = lock(&self.index);
-        let mut next = index.to_vec();
-        next.push(item.clone());
-        if let Err(e) = self.save(&next) {
-            let _ = self.delete_blob(&item);
-            return Err(format!("cannot save the index: {e}"));
-        }
-        *index = next;
+        lock(&self.index).push(item.clone());
         Ok(item)
     }
 
@@ -227,11 +208,7 @@ impl Store {
             return Ok(None);
         };
         self.delete_blob(&item)?;
-        let mut index = lock(&self.index);
-        let next: Vec<Deliverable> = index.iter().filter(|d| d.id != id).cloned().collect();
-        self.save(&next)
-            .map_err(|e| format!("cannot save the index: {e}"))?;
-        *index = next;
+        lock(&self.index).retain(|d| d.id != id);
         Ok(Some(item))
     }
 
@@ -263,12 +240,6 @@ impl Store {
             access_key,
             secret_key,
         })
-    }
-
-    fn save(&self, index: &[Deliverable]) -> io::Result<()> {
-        let bytes = serde_json::to_vec_pretty(index)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        write_atomic(&self.dir.join(INDEX), &bytes, 0o600)
     }
 
     /// Whether Garage is configured; then the objects below are kept there.
@@ -416,6 +387,7 @@ fn owner_put_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     };
     match app.deliverables.add(upload, &req.body) {
         Ok(item) => {
+            crate::store::saver::save_now(app, "deliverables");
             app.bus.publish("file", &item);
             Response::json(201, &item)
         }
@@ -450,11 +422,16 @@ pub fn attach(app: &App, ids: &[String], cid: u64) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
-/// The attachments as the console shows them on a message: `[{id, name, size, type}]`.
-pub fn attachment_views(app: &App, ids: &[String]) -> Vec<serde_json::Value> {
+/// The attachments as the console shows them on a message: `{id, name, size, type}` each.
+pub fn attachment_views(app: &App, ids: &[String]) -> Vec<crate::conversations::Attachment> {
     ids.iter()
         .filter_map(|id| app.deliverables.meta(id))
-        .map(|m| json!({ "id": m.id, "name": m.title, "size": m.size, "type": m.content_type }))
+        .map(|m| crate::conversations::Attachment {
+            id: m.id,
+            name: m.title,
+            size: m.size,
+            mime: m.content_type,
+        })
         .collect()
 }
 
@@ -487,6 +464,7 @@ fn content_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 fn delete_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     match app.deliverables.remove(p.get("id")) {
         Ok(Some(item)) => {
+            crate::store::saver::save_now(app, "deliverables");
             app.bus
                 .publish("file", &json!({ "id": item.id, "deleted": true }));
             Response::json(200, &json!({ "deleted": item.id }))
@@ -583,6 +561,7 @@ fn put_file(app: &App, req: &Request, cid: u64) -> Response {
     };
     match app.deliverables.add(upload, &req.body) {
         Ok(item) => {
+            crate::store::saver::save_now(app, "deliverables");
             app.bus.publish("file", &item);
             Response::json(
                 201,
@@ -825,19 +804,26 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string_pretty(&*lock(&self.index)).unwrap_or_default()
+    /// The library's rows, as its index is now (the saver writes what changed).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        let items = lock(&self.index);
+        apz_store::RowSet::list(def(), items.iter())
     }
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let next: Vec<Deliverable> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut index = lock(&self.index);
-        self.save(&next).map_err(|e| e.to_string())?;
-        *index = next;
+    /// Replaces the index with what `plaza.db` holds (at start).
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let items: Vec<Deliverable> = apz_store::table::load_list(conn, def())?;
+        *lock(&self.index) = items;
         Ok(())
     }
+}
+
+/// The library's tables: `deliverable`, with the agents a private file is shared with as `deliverable_allowed`.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Deliverable)
 }
 
 #[cfg(test)]
@@ -860,24 +846,36 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_restores_into_a_fresh_store() {
+    fn rows_load_back_whole_from_their_tables() {
         let env = BTreeMap::new();
-        let a = Store::load(
-            &scratch("snapshot"),
-            &env,
-            vault_in(&scratch("snapshot-vault")),
-        )
-        .unwrap();
+        let dir = scratch("rows");
+        let a = Store::open(&dir, &env, vault_in(&scratch("rows-vault"))).unwrap();
         a.add(upload("report.txt"), b"hello").unwrap();
-        let b = Store::load(
-            &scratch("snapshot-restored"),
+        let mut private = upload("notes.md");
+        private.description = Some("Working notes".to_string());
+        private.audience = "private".to_string();
+        private.allowed = vec![2, 3];
+        a.add(private, b"private bytes").unwrap();
+        // The index is the rows in `plaza.db`, not a file.
+        assert!(!dir.join("files").join("index.json").exists());
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &a.rows().unwrap()).unwrap();
+        let b = Store::open(
+            &scratch("rows-restored"),
             &env,
-            vault_in(&scratch("snapshot-restored-vault")),
+            vault_in(&scratch("rows-restored-vault")),
         )
         .unwrap();
-        b.restore(&a.snapshot()).unwrap();
-        assert_eq!(b.snapshot(), a.snapshot());
-        assert_eq!(b.list().len(), 1);
+        b.load(&conn).unwrap();
+        assert_eq!(
+            serde_json::to_value(b.list()).unwrap(),
+            serde_json::to_value(a.list()).unwrap()
+        );
+        let listed = b.list();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].description.as_deref(), Some("Working notes"));
+        assert_eq!(listed[0].allowed, vec![2, 3]);
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -906,7 +904,7 @@ mod tests {
     fn put_list_get_delete_round_trip() {
         let dir = scratch("roundtrip");
         let env = BTreeMap::new();
-        let store = Store::load(&dir, &env, vault_in(&dir)).unwrap();
+        let store = Store::open(&dir, &env, vault_in(&dir)).unwrap();
         let body = b"hello deliverable".to_vec();
         let item = store.add(upload("report.txt"), &body).unwrap();
         assert!(item.id.starts_with('f') && item.id.len() == 13);
@@ -916,12 +914,22 @@ mod tests {
         assert_eq!(store.list().len(), 1);
         let found = store.find(&item.id).unwrap();
         assert_eq!(store.read_blob(&found).unwrap(), body);
-        let reloaded = Store::load(&dir, &env, vault_in(&dir)).unwrap();
+        // A restart loads the rows the saver wrote.
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let reloaded = Store::open(&dir, &env, vault_in(&dir)).unwrap();
+        reloaded.load(&conn).unwrap();
         assert_eq!(reloaded.list()[0].id, item.id);
         assert!(reloaded.remove(&item.id).unwrap().is_some());
         assert!(reloaded.list().is_empty());
         assert!(reloaded.find(&item.id).is_none());
         assert!(!dir.join("files").join("blobs").join(&item.id).exists());
+        // The removal is saved as a removal.
+        apz_store::table::replace(&conn, def(), &reloaded.rows().unwrap()).unwrap();
+        let emptied = Store::open(&dir, &env, vault_in(&dir)).unwrap();
+        emptied.load(&conn).unwrap();
+        assert!(emptied.list().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1029,7 +1037,7 @@ mod tests {
     #[test]
     fn private_files_are_readable_by_author_and_grantees_only() {
         let dir = scratch("access");
-        let store = Store::load(&dir, &BTreeMap::new(), vault_in(&dir)).unwrap();
+        let store = Store::open(&dir, &BTreeMap::new(), vault_in(&dir)).unwrap();
         let mut up = upload("secret.txt");
         up.author_cid = 1;
         up.audience = "private".to_string();

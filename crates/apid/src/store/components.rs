@@ -53,6 +53,48 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.environments.load(conn),
         },
         // batch C2
+        Component {
+            name: "conversations",
+            def: crate::conversations::def,
+            rows: |app| app.conversations.rows(),
+            load: |app, conn| app.conversations.load(conn),
+        },
+        Component {
+            name: "toolbox",
+            def: crate::toolbox::def,
+            rows: |app| app.toolbox.rows(),
+            load: |app, conn| app.toolbox.load(conn),
+        },
+        Component {
+            name: "harness",
+            def: crate::harness_control::def,
+            rows: |app| app.harness.rows(),
+            load: |app, conn| app.harness.load(conn),
+        },
+        Component {
+            name: "approvals",
+            def: crate::approvals::def,
+            rows: |app| app.approvals.rows(),
+            load: |app, conn| app.approvals.load(conn),
+        },
+        Component {
+            name: "acp_sessions",
+            def: crate::acp::store::def,
+            rows: |app| app.acp_sessions.rows(),
+            load: |app, conn| app.acp_sessions.load(conn),
+        },
+        Component {
+            name: "library",
+            def: crate::library::def,
+            rows: |app| app.library.rows(),
+            load: |app, conn| app.library.load(conn),
+        },
+        Component {
+            name: "deliverables",
+            def: crate::deliverables::def,
+            rows: |app| app.deliverables.rows(),
+            load: |app, conn| app.deliverables.load(conn),
+        },
         // batch C3
         Component {
             name: "connectors",

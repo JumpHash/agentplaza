@@ -29,8 +29,8 @@ fn default_schema() -> Value {
     json!({ "type": "object", "properties": {} })
 }
 
-/// One file of a stored version.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// One file of a stored version (a row of the entry's `library_entry_files` child table).
+#[derive(Clone, Debug, Serialize, Deserialize, apz_store::Table)]
 pub struct FileInfo {
     pub path: String,
     pub size: u64,
@@ -38,20 +38,28 @@ pub struct FileInfo {
     pub executable: bool,
 }
 
-/// One stored version of a library tool.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// One stored version of a library tool: a row of `library_entry`, keyed by its name and version.
+#[derive(Clone, Debug, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "library_entry")]
 pub struct Entry {
+    #[table(key)]
     pub name: String,
+    #[table(key)]
     pub version: u32,
     pub author_cid: u64,
     pub author: String,
     pub description: String,
+    #[table(list)]
     pub command: Vec<String>,
     #[serde(default)]
+    #[table(list)]
     pub requires: Vec<String>,
+    /// The tool's JSON Schema, kept as written.
+    #[table(content)]
     pub input_schema: Value,
     /// "private", "pending", "published" or "rejected".
     pub state: String,
+    #[table(child)]
     pub files: Vec<FileInfo>,
     pub hash: String,
     pub created_ms: u64,
@@ -92,34 +100,24 @@ struct Report {
     package: Package,
 }
 
-/// The library: the index in memory, mirrored to `<state>/library/index.json`.
+/// The library: its entries in memory, kept in the hub's store (`library_entry`). The tool files stay under
+/// `<state>/library/<name>/<version>/files`.
 pub struct Store {
     root: PathBuf,
     entries: Mutex<Vec<Entry>>,
 }
 
 impl Store {
-    pub fn load(state_dir: impl AsRef<Path>) -> Store {
-        let root = state_dir.as_ref().join("library");
-        let entries: Vec<Entry> = fs::read(root.join("index.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+    /// An empty library whose tool files live under `<state_dir>/library`; [`Store::load`] fills it at start.
+    pub fn open(state_dir: impl AsRef<Path>) -> Store {
         Store {
-            root,
-            entries: Mutex::new(entries),
+            root: state_dir.as_ref().join("library"),
+            entries: Mutex::new(Vec::new()),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, Vec<Entry>> {
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn save(&self, entries: &[Entry]) -> Result<(), String> {
-        fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
-        let bytes = serde_json::to_vec_pretty(entries).map_err(|e| e.to_string())?;
-        crate::providers::write_atomic(&self.root.join("index.json"), &bytes, 0o644)
-            .map_err(|e| e.to_string())
     }
 
     fn files_dir(&self, name: &str, version: u32) -> PathBuf {
@@ -192,10 +190,6 @@ impl Store {
             review_note: String::new(),
         };
         entries.push(entry.clone());
-        if let Err(e) = self.save(&entries) {
-            entries.pop();
-            return Err(e);
-        }
         Ok(entry)
     }
 
@@ -217,9 +211,7 @@ impl Store {
         }
         entry.state = if approve { "published" } else { "rejected" }.to_string();
         entry.review_note = note.to_string();
-        let state = entry.state.clone();
-        self.save(&entries)?;
-        Ok(state)
+        Ok(entry.state.clone())
     }
 
     /// Removes one version and its files.
@@ -230,7 +222,6 @@ impl Store {
         if entries.len() == before {
             return Err("no such version".to_string());
         }
-        self.save(&entries)?;
         let _ = fs::remove_dir_all(self.root.join(name).join(version.to_string()));
         Ok(())
     }
@@ -296,7 +287,6 @@ impl Store {
             .iter()
             .position(|e| e.name == entry.name && e.version == entry.version)?;
         entries[idx].calls += 1;
-        let _ = self.save(&entries);
         drop(entries);
 
         let dir = self.files_dir(&entry.name, entry.version);
@@ -588,19 +578,26 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
 }
 
 impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string_pretty(&*self.lock()).unwrap_or_default()
+    /// The entries as they are now (the hub's saver writes what changed).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        let entries = self.lock();
+        apz_store::RowSet::list(def(), entries.iter())
     }
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let next: Vec<Entry> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut entries = self.lock();
-        self.save(&next)?;
-        *entries = next;
+    /// Replaces the entries with what the hub's store holds (at start), in their stored order.
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let stored: Vec<Entry> = apz_store::table::load_list(conn, def())?;
+        *self.lock() = stored;
         Ok(())
     }
+}
+
+/// The library's tables: `library_entry`, with its files and its command and requires lists as child tables.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Entry)
 }
 
 #[cfg(test)]
@@ -608,15 +605,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_restores_into_a_fresh_store() {
-        let dir = std::env::temp_dir().join(format!("apid-library-rt-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let a = Store::load(dir.join("a"));
-        a.insert(1, "alpha", package("tool", true)).unwrap();
-        let b = Store::load(dir.join("b"));
-        b.restore(&a.snapshot()).unwrap();
-        assert_eq!(b.snapshot(), a.snapshot());
-        assert_ne!(b.snapshot(), "[]");
+    fn the_entries_come_back_whole_from_their_table() {
+        let a = store("roundtrip-a");
+        let mut tool = package("tool", true);
+        tool.requires = vec!["requests".to_string()];
+        tool.input_schema =
+            json!({ "type": "object", "properties": { "n": { "type": "integer" } } });
+        tool.files.push(PackageFile {
+            path: "lib/util.py".to_string(),
+            content_b64: base64_encode(b"def twice(n): return 2 * n"),
+            executable: true,
+        });
+        a.insert(1, "alpha", tool).unwrap();
+        a.review("tool", 1, true, "fine").unwrap();
+        a.insert(2, "beta", package("tool", false)).unwrap();
+        assert!(a.program(1, "x_tool").is_some());
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &a.rows().unwrap()).unwrap();
+        let b = store("roundtrip-b");
+        b.load(&conn).unwrap();
+        assert_eq!(b.all().len(), 2);
+        assert_eq!(
+            serde_json::to_value(&*b.lock()).unwrap(),
+            serde_json::to_value(&*a.lock()).unwrap()
+        );
     }
 
     fn store(tag: &str) -> Store {
@@ -624,7 +637,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        Store::load(std::env::temp_dir().join(format!("apid-library-{tag}-{nanos}")))
+        Store::open(std::env::temp_dir().join(format!("apid-library-{tag}-{nanos}")))
     }
 
     fn package(name: &str, publish: bool) -> Package {
