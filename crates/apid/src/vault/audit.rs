@@ -292,7 +292,6 @@ pub struct Verdict {
     pub ok: bool,
     /// The 1-based line that broke the chain, when it did.
     pub broken_at: Option<u64>,
-    pub head: Head,
     /// The timestamp of the last rekey line, when there is one.
     pub last_rekey_ms: Option<u64>,
     /// The entries that verified before the first broken one (all of them when the chain is intact).
@@ -313,7 +312,6 @@ pub fn verify(lines: &[Value], key: &[u8; 32]) -> Verdict {
         .find(|l| l["event"] == "rekey")
         .and_then(|l| l["ts_ms"].as_u64());
     let mut prev = GENESIS.to_string();
-    let mut head = Head::genesis();
     for (i, line) in lines.iter().enumerate() {
         let number = i as u64 + 1;
         let (Some(seq), Some(line_prev), Some(mac)) = (
@@ -326,12 +324,11 @@ pub fn verify(lines: &[Value], key: &[u8; 32]) -> Verdict {
                 line["seq"].as_u64(),
                 &prev,
                 line["prev"].as_str().unwrap_or(""),
-                head,
                 last_rekey_ms,
             );
         };
         if seq != number || line_prev != prev {
-            return broken(i, Some(seq), &prev, line_prev, head, last_rekey_ms);
+            return broken(i, Some(seq), &prev, line_prev, last_rekey_ms);
         }
         if i >= keyed_from {
             let mut unsigned = line.as_object().cloned().unwrap_or_default();
@@ -344,19 +341,14 @@ pub fn verify(lines: &[Value], key: &[u8; 32]) -> Verdict {
                 ],
             );
             if expected != mac {
-                return broken(i, Some(seq), &expected, mac, head, last_rekey_ms);
+                return broken(i, Some(seq), &expected, mac, last_rekey_ms);
             }
         }
         prev = mac.to_string();
-        head = Head {
-            seq,
-            mac: mac.to_string(),
-        };
     }
     Verdict {
         ok: true,
         broken_at: None,
-        head,
         last_rekey_ms,
         verified: lines.len() as u64,
         first_broken: None,
@@ -374,14 +366,12 @@ fn broken(
     seq: Option<u64>,
     expected: &str,
     found: &str,
-    head: Head,
     last_rekey_ms: Option<u64>,
 ) -> Verdict {
     let index = index as u64;
     Verdict {
         ok: false,
         broken_at: Some(index + 1),
-        head,
         last_rekey_ms,
         verified: index,
         first_broken: Some(Broken {
@@ -429,8 +419,7 @@ mod tests {
         let mut lines = chained(&five_steps());
         let verdict = verify(&lines, &KEY);
         assert!(verdict.ok, "a clean chain verifies");
-        assert_eq!(verdict.head.seq, 5);
-        assert_eq!(tail(&lines).mac, verdict.head.mac, "the tail is the head");
+        assert_eq!(tail(&lines).seq, 5, "the tail is the last line");
         assert!(!verify(&lines, &[4; 32]).ok, "another key does not verify");
 
         // Edit the third line's detail: the MAC of line 3 no longer matches.
