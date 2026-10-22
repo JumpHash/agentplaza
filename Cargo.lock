@@ -688,6 +688,7 @@ dependencies = [
 name = "apz-plaza"
 version = "0.1.0"
 dependencies = [
+ "apz-store",
  "serde",
  "serde_json",
 ]

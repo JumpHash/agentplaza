@@ -29,18 +29,13 @@ use serde_json::Value;
 
 use crate::state::App;
 
-/// Every snapshotted component, by name, in restore order (the treasury before the task
-/// ledger, whose escrows live in it).
+/// Every component still snapshotted into Postgres, by name, in restore order. The task ledger and the components of
+/// `plaza.db` are not here: `store` keeps them.
 pub const COMPONENTS: &[&str] = &[
     "treasury",
-    "tasks",
     "social",
-    "projects",
-    "maintenance",
-    "environments",
     "members",
     "conversations",
-    "project_settings",
     "toolbox",
     "harness",
     "approvals",
@@ -82,12 +77,9 @@ const MINUTE: Duration = Duration::from_secs(60);
 pub fn snapshot_of(app: &App, component: &str) -> String {
     match component {
         "treasury" => app.plaza.treasury.snapshot(),
-        "tasks" => app.plaza.tasks.snapshot(),
         "social" => app.plaza.social.snapshot(),
-        "projects" => app.projects.snapshot(),
         "members" => app.members.snapshot(),
         "conversations" => app.conversations.snapshot(),
-        "project_settings" => app.project_settings.snapshot(),
         "toolbox" => app.toolbox.snapshot(),
         "harness" => app.harness.snapshot(),
         "approvals" => app.approvals.snapshot(),
@@ -104,8 +96,6 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
         "control" => app.control.snapshot(),
         "custom_roles" => app.custom_roles.snapshot(),
         "agent_proposals" => app.agent_proposals.snapshot(),
-        "maintenance" => app.maintenance.snapshot(),
-        "environments" => app.environments.snapshot(),
         "nodes" => app.nodes.snapshot(),
         "stations" => app.stations.snapshot(),
         "prices" => app.prices.snapshot(),
@@ -122,12 +112,9 @@ pub fn snapshot_of(app: &App, component: &str) -> String {
 pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String> {
     match component {
         "treasury" => app.plaza.treasury.restore(json),
-        "tasks" => app.plaza.tasks.restore(json),
         "social" => app.plaza.social.restore(json),
-        "projects" => app.projects.restore(json),
         "members" => app.members.restore(json),
         "conversations" => app.conversations.restore(json),
-        "project_settings" => app.project_settings.restore(json),
         "toolbox" => app.toolbox.restore(json),
         "harness" => app.harness.restore(json),
         "approvals" => app.approvals.restore(json),
@@ -144,8 +131,6 @@ pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String
         "control" => app.control.restore(json),
         "custom_roles" => app.custom_roles.restore(json),
         "agent_proposals" => app.agent_proposals.restore(json),
-        "maintenance" => app.maintenance.restore(json),
-        "environments" => app.environments.restore(json),
         "nodes" => app.nodes.restore(json),
         "stations" => app.stations.restore(json),
         "prices" => app.prices.restore(json),
@@ -1289,9 +1274,9 @@ fn write_pass_with(app: &App, mut on_error: impl FnMut(&str, &str)) {
     app.db.flush_transcripts();
     // A run without Postgres has no component stores to write; its files are only synced.
     let components: &[&str] = if app.db.enabled() { COMPONENTS } else { &[] };
-    // The ledgers name each other (a task names its escrow in the treasury), so they are snapshotted back to
-    // back, before any store, and stored in one transaction: a stop cannot persist them from different instants.
-    const LEDGERS: &[&str] = &["treasury", "tasks"];
+    // The treasury is snapshotted before the other stores and stored alone in its transaction: the escrows of the
+    // tasks live in it, and the task ledger is in `plaza.db` now.
+    const LEDGERS: &[&str] = &["treasury"];
     let ledgers: Vec<(&str, String)> = components
         .iter()
         .copied()

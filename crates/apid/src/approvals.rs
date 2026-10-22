@@ -24,7 +24,7 @@ use crate::state::App;
 /// How many approvals the queue keeps; the oldest drop first.
 const QUEUE_CAP: usize = 500;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     #[default]

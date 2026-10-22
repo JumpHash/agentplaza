@@ -278,20 +278,18 @@ impl App {
             library: crate::library::Store::load(&config.state_dir),
             deliverables: Arc::clone(&library),
             toolbox: crate::toolbox::Store::load(&config.state_dir),
-            projects: crate::projects::Store::load(&config.state_dir),
+            projects: Default::default(),
             members: crate::membership::Members::load(config.state_dir.join("members.json")),
             context: Default::default(),
             conversations: crate::conversations::Store::load(
                 config.state_dir.join("conversations.json"),
             ),
-            project_settings: crate::project_settings::Store::load(
-                config.state_dir.join("project-settings.json"),
-            ),
+            project_settings: Default::default(),
             harness: crate::harness_control::Store::load(&config.state_dir),
             weft: crate::weft_hub::Weft::default(),
             platforms: crate::platforms::Store::load(&config.state_dir),
-            maintenance: crate::maintenance::Store::load(&config.state_dir),
-            environments: crate::environments::Store::load(&config.state_dir),
+            maintenance: Default::default(),
+            environments: Default::default(),
             reviews: crate::review_graph::Reviews::load(&config.state_dir),
             db: Arc::clone(&db),
             store: Arc::clone(&store),
@@ -408,7 +406,8 @@ impl App {
             eprintln!("apid: store: {problem}");
         }
         // A budget hold is written through to plaza.db, acknowledged before its call is sent (budgets.rs).
-        app.budgets.attach(Arc::clone(app.store.db(crate::store::PLAZA)));
+        app.budgets
+            .attach(Arc::clone(app.store.db(crate::store::PLAZA)));
         // Postgres, for the components not yet in the store.
         crate::db::restore_all(&app);
         // The built-in skills join the skill library (one the library already holds is left alone).

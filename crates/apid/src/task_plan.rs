@@ -549,12 +549,7 @@ mod tests {
     /// posted and claimed in order.
     #[test]
     fn a_planned_project_is_posted_whole_and_its_tasks_are_claimed_in_order() {
-        let dir = std::env::temp_dir().join(format!(
-            "apid-task-plan-{}-{}",
-            std::process::id(),
-            apz_plaza::now_ms()
-        ));
-        let projects = Store::load(&dir);
+        let projects = Store::default();
         let ledger = TaskLedger::new(EventBus::new());
         let orchestrator = actor(1, "orchestrator");
         let planner = actor(2, "planner");
@@ -659,17 +654,11 @@ mod tests {
             task.finish(FinishOutcome::Done, None).expect("done");
         }
         assert_eq!(claimed, vec!["t1", "t2", "t3", "t4"]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_list_that_cannot_be_posted_creates_nothing_and_names_the_task() {
-        let dir = std::env::temp_dir().join(format!(
-            "apid-task-plan-refused-{}-{}",
-            std::process::id(),
-            apz_plaza::now_ms()
-        ));
-        let projects = Store::load(&dir);
+        let projects = Store::default();
         let ledger = TaskLedger::new(EventBus::new());
         let owner = Actor::owner();
         let project = projects
@@ -722,6 +711,5 @@ mod tests {
         let ids: Vec<&str> = posted.iter().map(|task| task.id.as_str()).collect();
         assert_eq!(ids, vec!["t1", "t2"], "the refused lists took no ids");
         assert_eq!(posted[1].after, vec!["t1"]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

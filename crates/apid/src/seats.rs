@@ -156,7 +156,11 @@ impl Seats {
                 step: step.id.to_string(),
                 role: step.role.to_string(),
                 model_policy: step.model_policy,
-                state: if i == 0 { SeatState::Ready } else { SeatState::Waiting },
+                state: if i == 0 {
+                    SeatState::Ready
+                } else {
+                    SeatState::Waiting
+                },
                 session: None,
                 last_model: None,
                 attempts: 0,
@@ -171,7 +175,9 @@ impl Seats {
     }
 
     pub fn get(&self, task: &str, name: &str) -> Option<Seat> {
-        self.lock().get(&(task.to_string(), name.to_string())).cloned()
+        self.lock()
+            .get(&(task.to_string(), name.to_string()))
+            .cloned()
     }
 
     /// The seats of `task`, in their recipe's order.
@@ -206,7 +212,14 @@ impl Seats {
     }
 
     /// Records that `session` (on `model`) fills the seat.
-    pub fn fill(&self, task: &str, name: &str, session: &str, model: Option<&str>, now_ms: u64) -> Option<Seat> {
+    pub fn fill(
+        &self,
+        task: &str,
+        name: &str,
+        session: &str,
+        model: Option<&str>,
+        now_ms: u64,
+    ) -> Option<Seat> {
         let mut seats = self.lock();
         let seat = seats.get_mut(&(task.to_string(), name.to_string()))?;
         seat.state = SeatState::Filled;
@@ -236,13 +249,14 @@ impl Seats {
         let seat = seats.get(&key)?.clone();
         let recipe = recipe(&seat.recipe)?;
         let index = recipe.steps.iter().position(|s| s.id == seat.step)?;
-        let set = |seats: &mut BTreeMap<(String, String), Seat>, name: &str, f: &dyn Fn(&mut Seat)| {
-            if let Some(s) = seats.get_mut(&(task.to_string(), name.to_string())) {
-                f(s);
-                s.session = None;
-                s.updated_ms = now_ms;
-            }
-        };
+        let set =
+            |seats: &mut BTreeMap<(String, String), Seat>, name: &str, f: &dyn Fn(&mut Seat)| {
+                if let Some(s) = seats.get_mut(&(task.to_string(), name.to_string())) {
+                    f(s);
+                    s.session = None;
+                    s.updated_ms = now_ms;
+                }
+            };
         if crashed {
             if seat.attempts >= ATTEMPTS {
                 set(&mut seats, name, &|s| s.state = SeatState::Failed);
@@ -269,7 +283,10 @@ impl Seats {
         // The step failed. The first step failing is the task failing; a later step sends it back to the first.
         if index == 0 {
             set(&mut seats, name, &|s| s.state = SeatState::Failed);
-            return Some(Next::Failed(format!("the {} step failed: {said}", seat.step)));
+            return Some(Next::Failed(format!(
+                "the {} step failed: {said}",
+                seat.step
+            )));
         }
         let first = recipe.steps[0].seat;
         let round = seats
@@ -309,7 +326,10 @@ impl Seats {
 
     /// Replaces the seats with what the store holds (at start). A seat that was filled is ready again: its session did
     /// not survive the hub.
-    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), apz_store::StoreError> {
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
         let stored: Vec<Seat> = apz_store::table::load_list(conn, def())?;
         let mut seats = BTreeMap::new();
         for mut seat in stored {
@@ -338,12 +358,28 @@ mod tests {
         let seats = Seats::default();
         let opened = seats.open("t1", &CHANGE, 1);
         assert_eq!(opened.len(), 2);
-        assert_eq!(seats.ready().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["builder"]);
+        assert_eq!(
+            seats
+                .ready()
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["builder"]
+        );
         seats.fill("t1", "builder", "s1", Some("a/m1"), 2).unwrap();
-        assert_eq!(seats.ended("t1", "builder", true, false, "done", 3), Some(Next::Ready("reviewer".into())));
-        assert_eq!(seats.models_to_avoid("t1", "reviewer"), vec!["a/m1".to_string()]);
+        assert_eq!(
+            seats.ended("t1", "builder", true, false, "done", 3),
+            Some(Next::Ready("reviewer".into()))
+        );
+        assert_eq!(
+            seats.models_to_avoid("t1", "reviewer"),
+            vec!["a/m1".to_string()]
+        );
         seats.fill("t1", "reviewer", "s2", Some("b/m2"), 4).unwrap();
-        assert_eq!(seats.ended("t1", "reviewer", true, false, "looks right", 5), Some(Next::Done));
+        assert_eq!(
+            seats.ended("t1", "reviewer", true, false, "looks right", 5),
+            Some(Next::Done)
+        );
     }
 
     #[test]
@@ -351,19 +387,40 @@ mod tests {
         let seats = Seats::default();
         seats.open("t1", &CHANGE, 1);
         for round in 1..CHANGE_ROUNDS {
-            seats.fill("t1", "builder", &format!("b{round}"), Some("a/m1"), 2).unwrap();
-            seats.ended("t1", "builder", true, false, "done", 3).unwrap();
-            seats.fill("t1", "reviewer", &format!("r{round}"), Some("b/m2"), 4).unwrap();
-            let next = seats.ended("t1", "reviewer", false, false, "the date filter is ignored", 5);
+            seats
+                .fill("t1", "builder", &format!("b{round}"), Some("a/m1"), 2)
+                .unwrap();
+            seats
+                .ended("t1", "builder", true, false, "done", 3)
+                .unwrap();
+            seats
+                .fill("t1", "reviewer", &format!("r{round}"), Some("b/m2"), 4)
+                .unwrap();
+            let next = seats.ended(
+                "t1",
+                "reviewer",
+                false,
+                false,
+                "the date filter is ignored",
+                5,
+            );
             assert_eq!(next, Some(Next::Back("builder".into())));
             let builder = seats.get("t1", "builder").unwrap();
-            assert_eq!(builder.returned_with.as_deref(), Some("the date filter is ignored"));
+            assert_eq!(
+                builder.returned_with.as_deref(),
+                Some("the date filter is ignored")
+            );
             assert_eq!(builder.round, round + 1);
         }
         seats.fill("t1", "builder", "bn", Some("a/m1"), 2).unwrap();
-        seats.ended("t1", "builder", true, false, "done", 3).unwrap();
+        seats
+            .ended("t1", "builder", true, false, "done", 3)
+            .unwrap();
         seats.fill("t1", "reviewer", "rn", Some("b/m2"), 4).unwrap();
-        assert!(matches!(seats.ended("t1", "reviewer", false, false, "still wrong", 5), Some(Next::Failed(_))));
+        assert!(matches!(
+            seats.ended("t1", "reviewer", false, false, "still wrong", 5),
+            Some(Next::Failed(_))
+        ));
     }
 
     #[test]
@@ -371,11 +428,19 @@ mod tests {
         let seats = Seats::default();
         seats.open("t1", &CHANGE, 1);
         for i in 1..ATTEMPTS {
-            seats.fill("t1", "builder", &format!("s{i}"), None, 2).unwrap();
-            assert_eq!(seats.ended("t1", "builder", false, true, "", 3), Some(Next::Retry("builder".into())));
+            seats
+                .fill("t1", "builder", &format!("s{i}"), None, 2)
+                .unwrap();
+            assert_eq!(
+                seats.ended("t1", "builder", false, true, "", 3),
+                Some(Next::Retry("builder".into()))
+            );
         }
         seats.fill("t1", "builder", "sx", None, 2).unwrap();
-        assert!(matches!(seats.ended("t1", "builder", false, true, "", 3), Some(Next::Failed(_))));
+        assert!(matches!(
+            seats.ended("t1", "builder", false, true, "", 3),
+            Some(Next::Failed(_))
+        ));
     }
 
     #[test]
@@ -389,7 +454,10 @@ mod tests {
         let loaded = Seats::default();
         loaded.load(&conn).unwrap();
         let builder = loaded.get("t1", "builder").unwrap();
-        assert_eq!((builder.state, builder.session.clone()), (SeatState::Ready, None));
+        assert_eq!(
+            (builder.state, builder.session.clone()),
+            (SeatState::Ready, None)
+        );
         assert_eq!(builder.last_model.as_deref(), Some("a/m1"));
     }
 }

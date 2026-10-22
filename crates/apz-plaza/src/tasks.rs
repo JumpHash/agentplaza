@@ -49,11 +49,12 @@
 //!   accepts the finish from anyone who can reach the loopback API. The
 //!   identity slice (device keys, agent certificates) is what turns that into
 //!   an enforced check.
-//! * **Persistence is apid's job.** The ledger is held in memory and apid
-//!   snapshots it (`snapshot` / `restore`) into Postgres when it has one
-//!   (without, the ledger lasts as long as the process); a task's links and
-//!   project are in its record, and a record from before them loads with none. The schema's tables (`task_deps` among them), its
-//!   `updated_at` trigger and its append-only `task_events` are a later slice.
+//! * **Persistence is apid's job.** The ledger is held in memory; apid keeps it
+//!   in `plaza.db` through [`TaskLedger::rows`] and [`TaskLedger::load`]: one
+//!   `task_ledger` row (the id counter) and a `ledger_task` row per task, with
+//!   each task's links in `ledger_task_after`. The schema's tables (`task_deps`
+//!   among them), its `updated_at` trigger and its append-only `task_events` are
+//!   a later slice.
 //!   Every transition does publish to the event bus, so the console sees the
 //!   ledger live, and [`MAX_TASKS`] bounds what the process holds.
 //!
@@ -112,7 +113,8 @@ pub const MAX_PROJECT: usize = 64;
 pub const MAX_AFTER: usize = 32;
 
 /// The states noded v0 gives a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
+#[column(rename_all = "snake_case")]
 pub enum TaskState {
     /// Created and claimable.
     Open,
@@ -1163,7 +1165,7 @@ impl TaskLedger {
         Self::with_treasury(events, treasury)
     }
 
-    /// A ledger over `treasury`, which may be one restored from a snapshot.
+    /// A ledger over `treasury`, which may be one loaded from the store.
     pub fn with_treasury(events: Arc<EventBus>, treasury: Arc<Treasury>) -> Self {
         Self {
             treasury,
@@ -1695,19 +1697,22 @@ fn cycle_through(task: &Task, after: &[Link]) -> Option<Vec<String>> {
     None
 }
 
-/// The ledger's state as a snapshot holds it: the id counter and every task's
-/// record, oldest first. The `Arc`s a live task holds (the bus and the treasury)
-/// are not state, so they are not in it; restore hands them back.
-#[derive(Debug, Serialize, Deserialize)]
+/// The ledger as the store holds it (table `task_ledger`): the id counter, and
+/// every task's record (table `ledger_task`), oldest first. The `Arc`s a live
+/// task holds (the bus and the treasury) are not state, so they are not in it;
+/// [`TaskLedger::load`] hands them back.
+#[derive(Debug, Clone, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "task_ledger")]
 struct LedgerSnapshot {
     next_seq: u64,
+    #[table(child = "ledger_task")]
     tasks: Vec<TaskRecord>,
 }
 
-/// One task as a snapshot holds it. The outcome is not stored: it is the
+/// One task as the store holds it. The outcome is not stored: it is the
 /// state's own (see [`TaskState::outcome`]), so a record cannot disagree with
 /// its state.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, apz_store::Table)]
 struct TaskRecord {
     id: String,
     goal: String,
@@ -1722,16 +1727,22 @@ struct TaskRecord {
     agent_cid: Option<u64>,
     note: Option<String>,
     updated_at: u64,
-    /// The task's project; none in a record from before tasks had one.
+    /// The task's project.
     #[serde(default)]
     project: Option<String>,
-    /// The ids of the tasks it runs after; none in a record from before links.
+    /// The ids of the tasks it runs after.
     #[serde(default)]
+    #[table(list)]
     after: Vec<String>,
 }
 
+/// The table of the task ledger: `task_ledger`, with each task as a `ledger_task` row.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(LedgerSnapshot)
+}
+
 impl Task {
-    /// The task's state as a snapshot record.
+    /// The task's state as a stored record.
     fn record(&self) -> TaskRecord {
         let inner = self.lock();
         TaskRecord {
@@ -1892,23 +1903,37 @@ fn never_ready(records: &[TaskRecord]) -> Option<&str> {
 }
 
 impl TaskLedger {
-    /// The whole state as JSON: the id counter and every task's record. Restore
-    /// reads it back with [`TaskLedger::restore`].
-    pub fn snapshot(&self) -> String {
+    /// The ledger's state as the store holds it: the id counter and every task's record, oldest first.
+    fn state(&self) -> LedgerSnapshot {
         let inner = self.lock();
-        let snapshot = LedgerSnapshot {
+        LedgerSnapshot {
             next_seq: inner.next_seq,
             tasks: inner.tasks.iter().map(|task| task.record()).collect(),
-        };
-        serde_json::to_string(&snapshot).expect("the ledger state serializes")
+        }
     }
 
-    /// Replaces the state with a [`TaskLedger::snapshot`]; a refusal changes
-    /// nothing. The tasks are rebuilt over this ledger's own bus and treasury,
-    /// and neither is touched: a restore posts nothing and publishes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let snapshot: LedgerSnapshot = serde_json::from_str(json)
-            .map_err(|err| format!("the snapshot does not parse: {err}"))?;
+    /// The ledger's rows, as its state is now (apid's saver writes what changed).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        apz_store::RowSet::one(def(), &self.state())
+    }
+
+    /// Replaces the ledger with what the store holds (at start). A stored ledger that breaks the ledger's rules is
+    /// refused, and the ledger stays as it was.
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let stored =
+            apz_store::table::load_one::<LedgerSnapshot>(conn, def())?.unwrap_or(LedgerSnapshot {
+                next_seq: 0,
+                tasks: Vec::new(),
+            });
+        self.install(stored).map_err(apz_store::StoreError::invalid)
+    }
+
+    /// Replaces the state with `snapshot`; a refusal changes nothing. The tasks are rebuilt over this ledger's own bus
+    /// and treasury, and neither is touched: a load posts nothing and publishes nothing.
+    fn install(&self, snapshot: LedgerSnapshot) -> Result<(), String> {
         check_ledger_snapshot(&snapshot)?;
         // The tasks first, then their links: a record names its links by id,
         // and a link holds the task it names.
@@ -2689,8 +2714,23 @@ mod tests {
             .collect()
     }
 
+    /// A ledger as the store keeps it: its rows written to the table set `def()` defines, then loaded into a ledger
+    /// over `treasury`.
+    fn stored_and_loaded(
+        ledger: &TaskLedger,
+        events: &Arc<EventBus>,
+        treasury: &Arc<Treasury>,
+    ) -> TaskLedger {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &ledger.rows().unwrap()).unwrap();
+        let loaded = TaskLedger::with_treasury(Arc::clone(events), Arc::clone(treasury));
+        loaded.load(&conn).expect("a stored ledger loads");
+        loaded
+    }
+
     #[test]
-    fn a_snapshot_restores_the_same_task_views_over_the_same_treasury() {
+    fn a_stored_ledger_loads_the_same_task_views_over_the_same_treasury() {
         let events = EventBus::new();
         let ledger = TaskLedger::new(Arc::clone(&events));
         let open = budgeted(&ledger, "still open", 10);
@@ -2715,21 +2755,17 @@ mod tests {
 
         let before = views(&ledger);
         assert_eq!(before.len(), 5);
-        let json = ledger.snapshot();
 
-        // Restored over the same treasury, as the daemon does: the treasury is
+        // Loaded over the same treasury, as the daemon does: the treasury is
         // restored first and the ledger keeps its link to it.
         let treasury = Arc::clone(ledger.treasury());
         let version = treasury.version();
-        let restored = TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(&treasury));
-        restored
-            .restore(&json)
-            .expect("a snapshot of a ledger restores");
+        let restored = stored_and_loaded(&ledger, &events, &treasury);
         assert_eq!(views(&restored), before);
         assert_eq!(
             treasury.version(),
             version,
-            "a restore posts nothing to the treasury"
+            "a load posts nothing to the treasury"
         );
         assert!(Arc::ptr_eq(restored.treasury(), &treasury));
         // The id counter came back too: the next task is t6, never a reused id.
@@ -2737,31 +2773,21 @@ mod tests {
     }
 
     #[test]
-    fn a_garbage_snapshot_is_refused_and_changes_nothing() {
+    fn a_stored_ledger_that_breaks_the_rules_is_refused_and_changes_nothing() {
         let ledger = TaskLedger::new(EventBus::new());
         let kept = create(&ledger, "keep me");
         kept.claim(&agent(100, "builder")).expect("open -> claimed");
         let before = views(&ledger);
-        let value: serde_json::Value =
-            serde_json::from_str(&ledger.snapshot()).expect("the snapshot is JSON");
 
-        let mut duplicated = value.clone();
-        let first = duplicated["tasks"][0].clone();
-        duplicated["tasks"]
-            .as_array_mut()
-            .expect("a task list")
-            .push(first);
-        let mut behind = value.clone();
-        behind["next_seq"] = serde_json::json!(0);
+        let mut duplicated = ledger.state();
+        let first = duplicated.tasks[0].clone();
+        duplicated.tasks.push(first);
+        let mut behind = ledger.state();
+        behind.next_seq = 0;
 
-        for garbage in [
-            "not json".to_string(),
-            "{\"tasks\": 3}".to_string(),
-            duplicated.to_string(),
-            behind.to_string(),
-        ] {
-            assert!(ledger.restore(&garbage).is_err(), "{garbage}");
-            assert_eq!(views(&ledger), before, "a refused restore changes nothing");
+        for garbage in [duplicated, behind] {
+            ledger.install(garbage).expect_err("refused");
+            assert_eq!(views(&ledger), before, "a refused load changes nothing");
         }
     }
 
@@ -3016,9 +3042,12 @@ mod tests {
         );
         assert_eq!(ledger.adopt("t4", " ").expect_err("blank").status(), 400);
 
-        // The move is in the snapshot.
+        // The move is in the stored ledger.
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &ledger.rows().unwrap()).unwrap();
         let restored = TaskLedger::new(EventBus::new());
-        restored.restore(&ledger.snapshot()).expect("restores");
+        restored.load(&conn).expect("loads");
         assert_eq!(restored.find("t2").expect("t2").project(), Some("pr2"));
         assert_eq!(restored.find("t4").expect("t4").project(), None);
     }
@@ -3170,7 +3199,7 @@ mod tests {
     }
 
     #[test]
-    fn links_survive_a_snapshot_and_link_the_restored_tasks() {
+    fn links_survive_a_store_round_trip_and_link_the_loaded_tasks() {
         let events = EventBus::new();
         let ledger = TaskLedger::new(Arc::clone(&events));
         linked(&ledger, "plan", &[], Some("pr1")).expect("a project's task");
@@ -3182,12 +3211,10 @@ mod tests {
         assert_eq!(before[1]["project"], "pr1");
         assert_eq!(before[1]["waiting_on"], serde_json::json!(["t1"]));
 
-        let restored =
-            TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(ledger.treasury()));
-        restored.restore(&ledger.snapshot()).expect("restores");
+        let restored = stored_and_loaded(&ledger, &events, ledger.treasury());
         assert_eq!(views(&restored), before);
 
-        // The restored link holds the restored task, not the old ledger's.
+        // The loaded link holds the loaded task, not the old ledger's.
         run(&restored.find("t1").expect("t1"), FinishOutcome::Done);
         assert!(restored.find("t2").expect("t2").is_ready());
         assert!(
@@ -3197,60 +3224,28 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_from_before_links_loads_with_none() {
-        let ledger = TaskLedger::new(EventBus::new());
-        create(&ledger, "old work");
-        let mut value: serde_json::Value =
-            serde_json::from_str(&ledger.snapshot()).expect("the snapshot is JSON");
-        let record = value["tasks"][0].as_object_mut().expect("a record");
-        record.remove("after");
-        record.remove("project");
-
-        let restored = TaskLedger::new(EventBus::new());
-        restored
-            .restore(&value.to_string())
-            .expect("an old record restores");
-        let task = restored.find("t1").expect("t1");
-        let view = task.view();
-        assert!(view.after.is_empty());
-        assert_eq!(view.project, None);
-        assert!(view.ready);
-    }
-
-    #[test]
-    fn a_snapshot_whose_links_break_the_rules_is_refused() {
+    fn a_stored_ledger_whose_links_break_the_rules_is_refused() {
         let ledger = TaskLedger::new(EventBus::new());
         create(&ledger, "first");
         linked(&ledger, "second", &["t1"], None).expect("linked");
         linked(&ledger, "third", &[], Some("pr1")).expect("a project's task");
         let before = views(&ledger);
-        let value: serde_json::Value =
-            serde_json::from_str(&ledger.snapshot()).expect("the snapshot is JSON");
-        let with = |task: usize, after: serde_json::Value| {
-            let mut changed = value.clone();
-            changed["tasks"][task]["after"] = after;
-            changed.to_string()
+        let with = |task: usize, after: &[&str]| {
+            let mut changed = ledger.state();
+            changed.tasks[task].after = after.iter().map(|id| id.to_string()).collect();
+            changed
         };
 
         for (garbage, refusal) in [
-            (
-                with(1, serde_json::json!(["t9"])),
-                "which the snapshot does not hold",
-            ),
-            (
-                with(1, serde_json::json!(["t3"])),
-                "which is in another project",
-            ),
-            (
-                with(1, serde_json::json!(["t1", "t1"])),
-                "after names t1 twice",
-            ),
-            (with(0, serde_json::json!(["t2"])), "close a cycle"),
-            (with(1, serde_json::json!(["t2"])), "close a cycle"),
+            (with(1, &["t9"]), "which the snapshot does not hold"),
+            (with(1, &["t3"]), "which is in another project"),
+            (with(1, &["t1", "t1"]), "after names t1 twice"),
+            (with(0, &["t2"]), "close a cycle"),
+            (with(1, &["t2"]), "close a cycle"),
         ] {
-            let refused = ledger.restore(&garbage).expect_err("refused");
+            let refused = ledger.install(garbage).expect_err("refused");
             assert!(refused.contains(refusal), "{refused}");
-            assert_eq!(views(&ledger), before, "a refused restore changes nothing");
+            assert_eq!(views(&ledger), before, "a refused load changes nothing");
         }
     }
 
@@ -3344,14 +3339,12 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_task_announces_the_tasks_that_run_after_it() {
+    fn a_loaded_task_announces_the_tasks_that_run_after_it() {
         let events = EventBus::new();
         let ledger = TaskLedger::new(Arc::clone(&events));
         create(&ledger, "first");
         linked(&ledger, "second", &["t1"], None).expect("linked");
-        let restored =
-            TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(ledger.treasury()));
-        restored.restore(&ledger.snapshot()).expect("restores");
+        let restored = stored_and_loaded(&ledger, &events, ledger.treasury());
         let receiver = events.subscribe();
 
         run(&restored.find("t1").expect("t1"), FinishOutcome::Done);

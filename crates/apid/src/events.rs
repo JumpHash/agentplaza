@@ -446,7 +446,11 @@ mod tests {
             r#"{"event":"run","seq":1,"data":{"id":"r1","state":"running"}}"#
         );
         bus.publish_raw("run", "{}".to_string());
-        assert_eq!(rx.try_recv().unwrap().seq, 2, "each event gets the next number");
+        assert_eq!(
+            rx.try_recv().unwrap().seq,
+            2,
+            "each event gets the next number"
+        );
         let (_late, after) = bus.subscribe_from();
         assert_eq!(after, 2, "a subscriber learns the seq it starts after");
     }
@@ -486,4 +490,3 @@ mod tests {
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
     }
 }
-

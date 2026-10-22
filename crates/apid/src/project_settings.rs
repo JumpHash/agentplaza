@@ -17,7 +17,7 @@
 //! them from the plaza's budget as the owner's operation, the project's tasks are funded from it (and refunded to it),
 //! and when the project is over the rest goes back to the plaza.
 //!
-//! Kept in `project-settings.json` under the state dir, and with the plaza state (component `project_settings`).
+//! Kept in plaza.db (table `project_setting`: a row per project that has overrides, its role models a child table).
 //!
 //! GET   /v1/projects/{id}/settings            → the project's overrides
 //! PATCH /v1/projects/{id}/settings {…}        → the overrides (a field set to null goes back to the plaza's)
@@ -26,11 +26,12 @@
 //! POST  /v1/projects/{id}/budget {credits}    → sets more aside (or, negative, gives some back)
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_plaza::treasury::PLAZA_OWNER;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -74,24 +75,12 @@ pub struct ProjectSettings {
 }
 
 /// Every project's overrides, by project id.
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     by_project: Mutex<BTreeMap<String, ProjectSettings>>,
 }
 
 impl Store {
-    /// Loads the store; a missing or unreadable file starts empty.
-    pub fn load(path: PathBuf) -> Self {
-        let by_project = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            by_project: Mutex::new(by_project),
-        }
-    }
-
     fn guard(&self) -> MutexGuard<'_, BTreeMap<String, ProjectSettings>> {
         self.by_project
             .lock()
@@ -103,46 +92,93 @@ impl Store {
         self.guard().get(id).cloned().unwrap_or_default()
     }
 
-    /// Replaces project `id`'s overrides, and writes the file; on failure nothing changes.
+    /// Replaces project `id`'s overrides; a project with none keeps no entry. The change is kept in memory and the
+    /// saver writes it to plaza.db, so this does not fail.
     pub fn set(&self, id: &str, settings: ProjectSettings) -> std::io::Result<()> {
         let mut by_project = self.guard();
-        let mut next = by_project.clone();
         if settings == ProjectSettings::default() {
-            next.remove(id);
+            by_project.remove(id);
         } else {
-            next.insert(id.to_string(), settings);
+            by_project.insert(id.to_string(), settings);
         }
-        self.save(&next)?;
-        *by_project = next;
         Ok(())
     }
 
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let by_project = self.guard();
-        if by_project.is_empty() {
-            return String::new();
-        }
-        serde_json::to_string(&*by_project).unwrap_or_default()
+    /// The overrides' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let rows: Vec<SettingsRow> = self
+            .guard()
+            .iter()
+            .map(|(id, settings)| SettingsRow::of(id, settings))
+            .collect();
+        RowSet::list(def(), &rows)
     }
 
-    /// Replaces the state with a [`Store::snapshot`] and writes the file; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let restored: BTreeMap<String, ProjectSettings> =
-            serde_json::from_str(json).map_err(|e| format!("project_settings: {e}"))?;
-        let mut by_project = self.guard();
-        self.save(&restored)
-            .map_err(|e| format!("project_settings: {e}"))?;
-        *by_project = restored;
+    /// Replaces the overrides with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<SettingsRow> = apz_store::table::load_list(conn, def())?;
+        *self.guard() = stored.into_iter().map(SettingsRow::into_entry).collect();
         Ok(())
     }
+}
 
-    fn save(&self, by_project: &BTreeMap<String, ProjectSettings>) -> std::io::Result<()> {
-        let text = serde_json::to_string_pretty(by_project).map_err(std::io::Error::other)?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &self.path)
+/// One project's overrides as a row of `project_setting`: the project is the key and each setting a column (the role
+/// models are a child table).
+#[derive(Debug, Clone, PartialEq, Eq, apz_store::Table)]
+#[table(name = "project_setting")]
+struct SettingsRow {
+    #[table(key)]
+    project: String,
+    default_model: Option<String>,
+    effort: Option<String>,
+    max_tokens: Option<u32>,
+    max_turns: Option<u32>,
+    compress_at: Option<u64>,
+    keep_recent: Option<u32>,
+    task_budget: Option<u64>,
+    permission_mode: Option<Mode>,
+    review_timeout_minutes: Option<u32>,
+    #[table(map_value)]
+    role_models: BTreeMap<String, String>,
+}
+
+impl SettingsRow {
+    fn of(project: &str, settings: &ProjectSettings) -> Self {
+        SettingsRow {
+            project: project.to_string(),
+            default_model: settings.default_model.clone(),
+            effort: settings.effort.clone(),
+            max_tokens: settings.max_tokens,
+            max_turns: settings.max_turns,
+            compress_at: settings.compress_at,
+            keep_recent: settings.keep_recent,
+            task_budget: settings.task_budget,
+            permission_mode: settings.permission_mode,
+            review_timeout_minutes: settings.review_timeout_minutes,
+            role_models: settings.role_models.clone(),
+        }
     }
+
+    fn into_entry(self) -> (String, ProjectSettings) {
+        let settings = ProjectSettings {
+            default_model: self.default_model,
+            role_models: self.role_models,
+            effort: self.effort,
+            max_tokens: self.max_tokens,
+            max_turns: self.max_turns,
+            compress_at: self.compress_at,
+            keep_recent: self.keep_recent,
+            task_budget: self.task_budget,
+            permission_mode: self.permission_mode,
+            review_timeout_minutes: self.review_timeout_minutes,
+        };
+        (self.project, settings)
+    }
+}
+
+/// The table of the projects' overrides: `project_setting`.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(SettingsRow)
 }
 
 /// Checks a project's overrides against the plaza: models the roles may run (the plaza's model policy), roles it
@@ -501,29 +537,25 @@ mod tests {
     }
 
     #[test]
-    fn settings_survive_a_restart_and_a_snapshot_and_an_empty_one_is_dropped() {
-        let dir =
-            std::env::temp_dir().join(format!("apid-project-settings-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::load(dir.join("project-settings.json"));
+    fn settings_come_back_from_their_table_and_an_empty_one_is_dropped() {
+        let store = Store::default();
         let settings = ProjectSettings {
             task_budget: Some(3000),
+            permission_mode: Some(Mode::ReadOnly),
+            role_models: BTreeMap::from([("builder".into(), "anthropic/claude-sonnet-5-5".into())]),
             ..ProjectSettings::default()
         };
         store.set("pr1", settings.clone()).unwrap();
-        assert_eq!(
-            Store::load(dir.join("project-settings.json")).get("pr1"),
-            settings
-        );
-        let other = Store::load(dir.join("other.json"));
-        other.restore(&store.snapshot()).unwrap();
-        assert_eq!(other.get("pr1").task_budget, Some(3000));
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let loaded = Store::default();
+        loaded.load(&conn).unwrap();
+        assert_eq!(loaded.get("pr1"), settings);
         store.set("pr1", ProjectSettings::default()).unwrap();
         assert!(
-            store.snapshot().is_empty(),
-            "a project with no overrides keeps no entry"
+            store.rows().unwrap().tables["project_setting"].is_empty(),
+            "a project with no overrides keeps no row"
         );
-        assert!(other.restore("not json").is_err());
     }
 }

@@ -196,10 +196,19 @@ impl Cards {
     }
 
     /// Records the owner's answer.
-    pub fn answer(&self, id: &str, choice: &str, amount: Option<u64>, now_ms: u64) -> Result<Card, Refused> {
+    pub fn answer(
+        &self,
+        id: &str,
+        choice: &str,
+        amount: Option<u64>,
+        now_ms: u64,
+    ) -> Result<Card, Refused> {
         let seq = seq_of(id).ok_or_else(|| Refused::NotFound(id.to_string()))?;
         let mut inner = self.lock();
-        let card = inner.cards.get_mut(&seq).ok_or_else(|| Refused::NotFound(id.to_string()))?;
+        let card = inner
+            .cards
+            .get_mut(&seq)
+            .ok_or_else(|| Refused::NotFound(id.to_string()))?;
         if card.state != State::Open {
             return Err(Refused::NotOpen(id.to_string()));
         }
@@ -239,7 +248,10 @@ impl Cards {
     }
 
     /// Replaces the cards with what the store holds (at start).
-    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), apz_store::StoreError> {
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
         let stored: Vec<Card> = apz_store::table::load_list(conn, def())?;
         let mut inner = Inner::default();
         for card in stored {
@@ -317,13 +329,30 @@ mod tests {
         let (again, created) = cards.open(budget_card("t1"), 2);
         assert!(!created);
         assert_eq!(again.id, first.id, "a second refusal does not ask again");
-        assert!(matches!(cards.answer(&first.id, "nope", None, 3), Err(Refused::NoSuchChoice(_))));
-        assert!(matches!(cards.answer(&first.id, "raise_to", None, 3), Err(Refused::AmountNeeded(_))));
-        let answered = cards.answer(&first.id, "raise_to", Some(9_000_000), 3).unwrap();
-        assert_eq!((answered.state, answered.amount), (State::Answered, Some(9_000_000)));
-        assert!(matches!(cards.answer(&first.id, "stop", None, 4), Err(Refused::NotOpen(_))));
+        assert!(matches!(
+            cards.answer(&first.id, "nope", None, 3),
+            Err(Refused::NoSuchChoice(_))
+        ));
+        assert!(matches!(
+            cards.answer(&first.id, "raise_to", None, 3),
+            Err(Refused::AmountNeeded(_))
+        ));
+        let answered = cards
+            .answer(&first.id, "raise_to", Some(9_000_000), 3)
+            .unwrap();
+        assert_eq!(
+            (answered.state, answered.amount),
+            (State::Answered, Some(9_000_000))
+        );
+        assert!(matches!(
+            cards.answer(&first.id, "stop", None, 4),
+            Err(Refused::NotOpen(_))
+        ));
         let (next, created) = cards.open(budget_card("t1"), 5);
-        assert!(created && next.id != first.id, "once answered, a new limit asks again");
+        assert!(
+            created && next.id != first.id,
+            "once answered, a new limit asks again"
+        );
     }
 
     #[test]

@@ -56,7 +56,10 @@ pub fn pass(app: &App) -> usize {
         match save_one(app, &c) {
             Ok(true) => written += 1,
             Ok(false) => {}
-            Err(e) => eprintln!("store: saving {} failed (retried on the next pass): {e}", c.name),
+            Err(e) => eprintln!(
+                "store: saving {} failed (retried on the next pass): {e}",
+                c.name
+            ),
         }
     }
     written
@@ -66,8 +69,16 @@ fn save_one(app: &App, c: &Component) -> Result<bool, StoreError> {
     let def = (c.def)();
     let rows = (c.rows)(app)?;
     let changes = {
-        let saved = app.saved.saved.lock().unwrap_or_else(PoisonError::into_inner);
-        saved.get(c.name).cloned().unwrap_or_default().diff(def, &rows)
+        let saved = app
+            .saved
+            .saved
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        saved
+            .get(c.name)
+            .cloned()
+            .unwrap_or_default()
+            .diff(def, &rows)
     };
     if changes.is_empty() {
         return Ok(false);

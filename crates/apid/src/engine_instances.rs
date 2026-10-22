@@ -732,7 +732,10 @@ impl Store {
                     })
                 })
                 .collect();
-            running.into_iter().filter_map(|t| t.join().ok().flatten()).collect()
+            running
+                .into_iter()
+                .filter_map(|t| t.join().ok().flatten())
+                .collect()
         });
         let now = Instant::now();
         let mut latest = lock(&self.latest);
