@@ -168,6 +168,20 @@ pub struct Machine {
     #[serde(default)]
     #[table(flatten)]
     pub stats: Option<MachineStats>,
+    /// A Mac node's build and simulator caps and what it runs now (noded's `mac`); null elsewhere.
+    #[serde(default)]
+    #[table(flatten)]
+    pub mac: Option<MachineMac>,
+}
+
+/// A Mac node's caps on builds and simulators at once, by its cores and memory, with what it runs now (noded's
+/// `mac`). Placement refuses a unit of work the node is at its cap for (`placement::mac_refusal`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct MachineMac {
+    pub builds: u32,
+    pub simulators: u32,
+    pub builds_running: u32,
+    pub simulators_running: u32,
 }
 
 /// A Mac's Apple Silicon details (noded's `apple`).
@@ -1683,7 +1697,8 @@ mod tests {
                 "util_pct": 40, "mem_used_mib": null}],
             "trainer": {"runtime": "cuda", "ok": true, "detail": ""},
             "fabric": ["10.0.0.5"], "storage_gib": null,
-            "stats": {"cpu_pct": 7.5, "mem_used_mib": 1800}
+            "stats": {"cpu_pct": 7.5, "mem_used_mib": 1800},
+            "mac": null
         });
         let heartbeat: Machine = serde_json::from_value(input.clone()).unwrap();
         *store.inner.lock().unwrap() = Persisted {

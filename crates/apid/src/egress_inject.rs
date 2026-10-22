@@ -625,7 +625,11 @@ fn ymd_of(day: i64) -> (i32, u8, u8) {
 
 /// The role of agent `cid`; `None` when the roster does not know it.
 fn role_of(app: &App, cid: u64) -> Option<String> {
-    app.agents.get(cid).map(|agent| agent.role)
+    match app.agents.get(cid) {
+        Some(agent) => Some(agent.role),
+        None => crate::project_egress::project_of(app, cid)
+            .map(|_| crate::project_egress::PROJECT_ROLE.to_string()),
+    }
 }
 
 /// Whether agent `cid` may have a rule for `host` (and `port`, when given).

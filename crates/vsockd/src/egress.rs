@@ -11,8 +11,9 @@
 //! gateway for the agent's CID ([`gateway`]); nothing is resolved for it.
 
 use std::collections::BTreeMap;
+use std::io;
 use std::io::{Read, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -29,6 +30,8 @@ use crate::sys;
 #[path = "egress_tls.rs"]
 mod egress_tls;
 
+/// How often [`serve_tcp`] checks for a connection and for its stop request.
+const ACCEPT_POLL: Duration = Duration::from_millis(20);
 /// The vsock port the guest's proxy traffic arrives on.
 pub const EGRESS_PORT: u32 = 5001;
 /// The request head (request line and headers) is capped at this many bytes.
@@ -181,6 +184,14 @@ impl Policy {
             extra_ports,
             allow_loopback: false,
         }
+    }
+
+    /// Lets loopback destinations through: a test's stand-in internet is a local server. Only tests and the
+    /// `test-support` feature (the node's tests) build it; no daemon does.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn allow_loopback(mut self) -> Self {
+        self.allow_loopback = true;
+        self
     }
 
     fn port_allowed(&self, port: u16) -> bool {
@@ -342,6 +353,66 @@ pub fn accept_loop(
             }
         }
     }
+}
+
+/// Serves the proxy on a TCP listener for party `cid`. The Mac node runs one per project account: its sessions are
+/// sandboxed processes that reach the proxy on loopback rather than over vsock. Each connection is bridged to a
+/// socket pair, and [`serve_conn`] serves the pair's other end, so the checks, the TLS intercept and the audit are
+/// the guest's own. Returns when `stop` is set; connections already served finish on their own.
+pub fn serve_tcp(
+    listener: TcpListener,
+    cid: u32,
+    policy: Arc<Policy>,
+    apid: Apid,
+    stop: Arc<AtomicBool>,
+) {
+    if let Err(err) = listener.set_nonblocking(true) {
+        eprintln!("vsockd: egress listener for cid {cid} cannot be polled: {err}");
+        return;
+    }
+    while !stop.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let (policy, apid) = (Arc::clone(&policy), apid.clone());
+                thread::spawn(move || serve_bridged(stream, cid, &policy, &apid));
+            }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => thread::sleep(ACCEPT_POLL),
+            Err(err) => {
+                eprintln!("vsockd: egress accept failed: {err}");
+                thread::sleep(ACCEPT_POLL);
+            }
+        }
+    }
+}
+
+/// Bridges one TCP connection to a socket pair and serves the pair's other end. The TCP stream is shut down when the
+/// connection is served, which ends both copies.
+fn serve_bridged(tcp: TcpStream, cid: u32, policy: &Policy, apid: &Apid) {
+    let Ok((ours, theirs)) = UnixStream::pair() else {
+        return;
+    };
+    if tcp.set_nonblocking(false).is_err() {
+        return;
+    }
+    let (Ok(mut client_in), Ok(mut guest_out), Ok(mut guest_in), Ok(mut client_out), Ok(client)) = (
+        tcp.try_clone(),
+        ours.try_clone(),
+        ours.try_clone(),
+        tcp.try_clone(),
+        tcp.try_clone(),
+    ) else {
+        return;
+    };
+    thread::spawn(move || {
+        let _ = io::copy(&mut client_in, &mut guest_out);
+        let _ = guest_out.shutdown(Shutdown::Write);
+    });
+    thread::spawn(move || {
+        let _ = io::copy(&mut guest_in, &mut client_out);
+        let _ = client_out.shutdown(Shutdown::Write);
+    });
+    serve_conn(theirs, cid, policy, apid);
+    let _ = client.shutdown(Shutdown::Both);
 }
 
 /// Serves one guest connection, audits it, and returns what it did.
