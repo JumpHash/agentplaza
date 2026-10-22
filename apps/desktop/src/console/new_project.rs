@@ -1,7 +1,8 @@
-//! New project (the web's `ui/new-project.ts`): talk it through with the orchestrator (a conversation, opened in the
-//! IDE, where it drafts the project beside the chat and the owner starts it), open one directly with a title and
-//! a goal, or bring in a project that exists (finished, or nearly: its history and environments come with it). The
-//! shell lays it over the screen; the top bar's switcher, the Projects screen and the IDE open it.
+//! New project (the web's `ui/new-project.ts`): talk it through with the orchestrator in its main chat (the owner's
+//! words are said there and the chat opens, where the orchestrator drafts the project and the owner starts it from its
+//! card), open one directly with a title and a goal, or bring in a project that exists (finished, or nearly: its history
+//! and environments come with it). The shell lays it over the screen; the top bar's switcher, the Projects screen and
+//! the IDE open it.
 
 use std::fmt;
 
@@ -11,13 +12,14 @@ use iced::{Alignment, Background, Border, Element, Length, Padding, Task, Theme}
 use serde_json::{Value, json};
 
 use super::screens::project_environments::{EnvKind, NAME_RULE, is_web_url, valid_name};
+use super::work_api::{self, ChatMessage};
 use super::{Ctx, client, ui};
 use crate::theme::{self, SANS_MEDIUM, SANS_SEMIBOLD};
 
 /// The dialog's fields, and the call in flight.
 #[derive(Debug)]
 pub struct Form {
-    /// What the owner wants done: the conversation's first message.
+    /// What the owner wants done: the first words said to the orchestrator's main chat.
     pub ask: Content,
     pub title: String,
     pub goal: Content,
@@ -187,12 +189,12 @@ pub enum Msg {
     Goal(text_editor::Action),
     /// The kind: code (true) or other.
     Code(bool),
-    /// Start a conversation with the orchestrator, the goal its first message.
+    /// Says the goal to the orchestrator's main chat.
     Talk,
     /// Open the project directly.
     Open,
     Cancel,
-    Talked(Result<Value, String>),
+    Talked(Result<ChatMessage, String>),
     Opened(Result<Value, String>),
     AdoptTitle(String),
     AdoptGoal(text_editor::Action),
@@ -217,12 +219,13 @@ pub enum Msg {
     Platforms(Result<Value, String>),
 }
 
-/// What the shell does after a message: nothing more, close the dialog, open the new conversation in the IDE, or
+/// What the shell does after a message: nothing more, close the dialog, open a chat (the main chat after a talk), or
 /// scope the console to the new project and open its page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     None,
     Close,
+    /// Opens the chat with this id.
     Conversation(String),
     Project(String),
 }
@@ -243,12 +246,8 @@ pub fn update(form: &mut Form, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Effect) {
             form.busy = true;
             form.error = None;
             let c = ctx.client.clone();
-            let body = json!({ "text": text });
             return (
-                client::task(
-                    move || c.post::<Value>("/v1/owner/conversations", &body),
-                    Msg::Talked,
-                ),
+                client::task(move || work_api::say(&c, "main", &text), Msg::Talked),
                 Effect::None,
             );
         }
@@ -274,15 +273,10 @@ pub fn update(form: &mut Form, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Effect) {
             form.busy = false;
             form.error = Some(e);
         }
-        Msg::Talked(Ok(conversation)) => {
+        // The words are in the main chat: it opens there, where the orchestrator answers.
+        Msg::Talked(Ok(_)) => {
             form.busy = false;
-            return match conversation["id"].as_str() {
-                Some(id) => (Task::none(), Effect::Conversation(id.to_string())),
-                None => {
-                    form.error = Some("The hub answered without a conversation.".into());
-                    (Task::none(), Effect::None)
-                }
-            };
+            return (Task::none(), Effect::Conversation("main".into()));
         }
         Msg::Opened(Ok(project)) => {
             form.busy = false;
@@ -951,14 +945,29 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_opens_the_conversation_or_the_project() {
-        let mut form = Form::default();
-        let (_, effect) = update(
-            &mut form,
-            Msg::Talked(Ok(json!({ "id": "conv-4" }))),
-            &ctx(),
-        );
-        assert_eq!(effect, Effect::Conversation("conv-4".into()));
+    fn a_talk_with_words_waits_for_the_main_chat_to_take_them() {
+        let mut form = Form {
+            ask: Content::with_text("Build a weather app"),
+            ..Default::default()
+        };
+        let (_, effect) = update(&mut form, Msg::Talk, &ctx());
+        assert_eq!(effect, Effect::None);
+        assert!(form.busy);
+        assert!(form.error.is_none());
+    }
+
+    #[test]
+    fn an_answer_opens_the_main_chat_or_the_project() {
+        let mut form = Form {
+            busy: true,
+            ..Default::default()
+        };
+        let (_, effect) = update(&mut form, Msg::Talked(Ok(ChatMessage::default())), &ctx());
+        assert_eq!(effect, Effect::Conversation("main".into()));
+        assert!(!form.busy);
+        let (_, effect) = update(&mut form, Msg::Talked(Err("down".into())), &ctx());
+        assert_eq!(effect, Effect::None);
+        assert_eq!(form.error.as_deref(), Some("down"));
         let (_, effect) = update(&mut form, Msg::Opened(Ok(json!({ "id": "pr7" }))), &ctx());
         assert_eq!(effect, Effect::Project("pr7".into()));
         let (_, effect) = update(&mut form, Msg::Opened(Err("no".into())), &ctx());
