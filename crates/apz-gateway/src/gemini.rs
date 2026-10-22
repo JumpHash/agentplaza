@@ -60,7 +60,7 @@ fn body(req: &ChatRequest) -> Value {
         generation["temperature"] = json!((f64::from(t) * 1000.0).round() / 1000.0);
     }
     let mut body = json!({"contents": contents(&req.messages), "generationConfig": generation});
-    if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(system) = req.system_text() {
         body["systemInstruction"] = json!({"parts": [{"text": system}]});
     }
     if !req.tools.is_empty() {
@@ -400,15 +400,19 @@ mod tests {
             "required": ["command"],
         });
         let mut req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "g/gemini-3-pro".into(),
             system: Some("sys".into()),
             tools: vec![
                 ToolSpec {
+                    deferred: false,
                     name: "bash".into(),
                     description: "run".into(),
                     input_schema: schema,
                 },
                 ToolSpec {
+                    deferred: false,
                     name: "list".into(),
                     description: "ls".into(),
                     input_schema: json!({"type": "object", "properties": {}}),
@@ -568,6 +572,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "vg/gemini-2.5-pro".into(),
                     ..request("hi")
                 },

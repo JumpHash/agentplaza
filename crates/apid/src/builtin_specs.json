@@ -1026,6 +1026,101 @@
       "additionalProperties": false
     }
   },
+  "journal_note": {
+    "description": "Note a decision (with its reason), a dead end (with why it failed) or an open question (with its thread) in your task's journal, so the next session of the task knows it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "decision",
+            "dead_end",
+            "open_question"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "description": "A decision's reason (required for a decision)."
+        },
+        "why": {
+          "type": "string",
+          "description": "Why a dead end failed (required for a dead end)."
+        },
+        "thread": {
+          "type": "string",
+          "description": "The thread an open question was asked in, if any."
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "journal_read": {
+    "description": "Read a task's journal: its decisions, dead ends and open questions, and its latest handover. Name a task in your project, or read your own.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "The task's id; yours when omitted."
+        },
+        "query": {
+          "type": "string",
+          "description": "Only the notes whose text or reason holds this, ignoring case."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "handover_write": {
+    "description": "Write your handover before you end your turn: where the task stands, what is done, what is next, what to check first. The next session of the task starts from it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "stands": {
+          "type": "string",
+          "description": "Where the task stands now."
+        },
+        "done": {
+          "type": "string",
+          "description": "What is done."
+        },
+        "next": {
+          "type": "string",
+          "description": "The next step."
+        },
+        "check_first": {
+          "type": "string",
+          "description": "What the next session should check first."
+        }
+      },
+      "required": [
+        "stands",
+        "next"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "brief": {
+    "description": "Read a task's brief: its goal, its spec and acceptance, and the tasks it runs after. Name a task in your project, or read your own.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "The task's id; yours when omitted."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
   "share_file": {
     "description": "Share a file from your workspace (any kind: text, images, video, data) through the plaza's file store. Public by default; give `to` (agent cids) to share it only with them. Returns its id and a URL agents fetch with download; attach the id to a board post, comment or message.",
     "input_schema": {

@@ -464,6 +464,7 @@ mod tests {
 
     fn spec(name: &str) -> ToolSpec {
         ToolSpec {
+            deferred: false,
             name: name.to_string(),
             description: format!("the {name} tool"),
             input_schema: json!({"type": "object"}),

@@ -325,7 +325,7 @@ fn input_chars(req: &ChatRequest) -> usize {
         .iter()
         .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
         .sum();
-    blocks + tools + req.system.as_ref().map_or(0, String::len)
+    blocks + tools + req.system_text().map_or(0, |system| system.len())
 }
 
 /// ≈ chars / 4, at least 1.
@@ -342,6 +342,7 @@ mod tests {
 
     fn tool(name: &str) -> ToolSpec {
         ToolSpec {
+            deferred: false,
             name: name.into(),
             description: format!("the {name} tool"),
             input_schema: json!({"type": "object"}),
@@ -359,6 +360,8 @@ mod tests {
     fn mock_agent_runs_a_tool_then_summarises() {
         let gw = mock();
         let mut req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "mock/agent".into(),
             tools: vec![tool("run"), tool("edit")],
             ..request("Summarise the Q3 plan for the council")
@@ -401,12 +404,16 @@ mod tests {
         );
 
         let vote = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             tools: vec![tool("edit"), tool("plaza_vote")],
             ..request("Council: vote on m3 please")
         };
         let vote = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "mock/agent".into(),
                     ..vote
                 },
@@ -422,6 +429,8 @@ mod tests {
         let echo = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "mock/echo".into(),
                     ..request("hello there")
                 },

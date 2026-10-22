@@ -389,14 +389,14 @@ fn a_session_starts_with_its_policy_and_a_report_outside_it_is_a_violation() {
         cid,
         json!({
             "type": "tool_report", "work": 1, "call": "toolu_p2", "ok": true, "output": "ran",
-            "policy": "not-issued", "name": "glob", "input": {},
+            "policy": "not-issued", "name": "find", "input": {},
         }),
     );
     let (_, transcript) = hub.call("GET", &format!("/v1/agents/{cid}/transcript"), None);
     assert!(
         mentions(
             &transcript,
-            "glob was decided under policy not-issued, which the hub never issued"
+            "find was decided under policy not-issued, which the hub never issued"
         ),
         "{transcript}"
     );

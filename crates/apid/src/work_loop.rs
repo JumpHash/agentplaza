@@ -25,6 +25,7 @@ use apz_proto::wire::{WorkKind, WorkStatus};
 use crate::budgets::{Amount, Notice, OwnerKind, Short, Unit};
 use crate::cards::{self, NewCard};
 use crate::chats::{Author, MessageKind, Post};
+use crate::journal;
 use crate::scheduler::Origin;
 use crate::seats::{self, Next, Seat};
 use crate::sessions::{Kind, NewSession, PausedBy, Session, State};
@@ -264,7 +265,8 @@ fn reap(app: &App, now: u64) {
     }
 }
 
-/// The step's prompt for a session that just started.
+/// The step's prompt for a session that just started: the brief, the journal's notes, the handover the seat starts from
+/// (the builder's for a reviewer, the seat's own last one otherwise), the seat's instructions and the messages waiting.
 fn step_prompt(app: &App, session: &Session) -> String {
     let Some(task_id) = &session.task else {
         return String::new();
@@ -273,23 +275,31 @@ fn step_prompt(app: &App, session: &Session) -> String {
         return String::new();
     };
     let seat = session.seat.as_deref().unwrap_or("builder");
-    let mut prompt = format!("Task {task_id}: {}\n", task.goal());
-    if let Some(acceptance) = task.acceptance() {
-        prompt.push_str(&format!("\nAcceptance:\n{acceptance}\n"));
+    let mut prompt = journal::brief_text(&task);
+    if let Some(journal) = app.journal.get(task_id)
+        && !journal.notes.is_empty()
+    {
+        prompt.push_str(&format!(
+            "\nThe task's journal:\n{}",
+            journal::notes_text(&journal.notes)
+        ));
     }
+    // The newest handover of the seat this one starts from (the builder's for a reviewer), by an earlier session.
+    let source = if seat == "reviewer" { "builder" } else { seat };
+    let handover = app
+        .sessions
+        .list(&crate::sessions::Filter {
+            task: Some(task_id.clone()),
+            ..Default::default()
+        })
+        .into_iter()
+        .filter(|s| s.id != session.id && s.seat.as_deref() == Some(source))
+        .filter_map(|s| s.handover.map(|h| (s.created_ms, h)))
+        .max_by_key(|(created, _)| *created)
+        .map(|(_, handover)| handover);
     match seat {
         "reviewer" => {
-            // The builder's newest session (its seat let go of it when its step ended).
-            let builder = app
-                .sessions
-                .list(&crate::sessions::Filter {
-                    task: Some(task_id.clone()),
-                    ..Default::default()
-                })
-                .into_iter()
-                .filter(|s| s.seat.as_deref() == Some("builder"))
-                .max_by_key(|s| s.created_ms);
-            if let Some(handover) = builder.and_then(|s| s.handover) {
+            if let Some(handover) = handover {
                 prompt.push_str(&format!("\nThe builder's handover:\n{handover}\n"));
             }
             prompt.push_str(
@@ -299,12 +309,18 @@ fn step_prompt(app: &App, session: &Session) -> String {
             );
         }
         _ => {
+            if let Some(handover) = handover {
+                prompt.push_str(&format!("\nYour last handover on this task:\n{handover}\n"));
+            }
             if let Some(back) = app.seats.get(task_id, seat).and_then(|s| s.returned_with) {
                 prompt.push_str(&format!("\nThe review sent the change back:\n{back}\n"));
             }
             prompt.push_str(
-                "\nYou are this task's builder. Do the work, check it against the acceptance, then end your turn with \
-                 a handover: what you did, what you checked, what is left. The reviewer reads it.\n",
+                "\nYou are this task's builder. Do the work and check it against the acceptance. Write each decision \
+                 with its reason, each dead end with why it failed and each open question with journal_note as you \
+                 go. Then end with handover_write: where the task stands, what is done, what is next, what to check \
+                 first. The reviewer reads it. If nothing is left for another session, end your turn with the line \
+                 TASK DONE instead.\n",
             );
         }
     }

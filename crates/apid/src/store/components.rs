@@ -238,6 +238,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.threads.load(conn),
         },
         Component {
+            name: "journal",
+            def: crate::journal::def,
+            rows: |app| app.journal.rows(),
+            load: |app, conn| app.journal.load(conn),
+        },
+        Component {
             name: "provider_listings",
             def: crate::provider_listings::def,
             rows: |app| {
