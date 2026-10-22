@@ -54,6 +54,8 @@ mod agent;
 mod bash;
 #[cfg(target_os = "linux")]
 mod checkpoints;
+#[cfg(target_os = "linux")]
+mod code_intel;
 // Pure parsing, built on every host so its tests run anywhere; only the Linux guest calls it.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod cmdline;

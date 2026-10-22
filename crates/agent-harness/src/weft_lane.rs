@@ -9,7 +9,7 @@ use std::process::Command;
 use apz_proto::wire::WorkLane;
 
 /// The CLI, when the VM image has it.
-fn cli() -> Option<PathBuf> {
+pub(crate) fn cli() -> Option<PathBuf> {
     [
         "/usr/local/bin/weft",
         "/usr/bin/weft",
@@ -29,7 +29,8 @@ pub fn dir(workspace: &Path, lane: &WorkLane) -> PathBuf {
     workspace.join(&lane.repo)
 }
 
-fn run(bin: &Path, cwd: &Path, args: &[&str]) -> Result<String, String> {
+/// Runs the CLI in `cwd` through the hub, and returns its trimmed stdout (its stderr when it fails).
+pub(crate) fn run(bin: &Path, cwd: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new(bin)
         .args(args)
         .current_dir(cwd)

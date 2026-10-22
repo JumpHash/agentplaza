@@ -28,11 +28,7 @@ use crate::state::App;
 
 /// Every component still snapshotted into Postgres, by name, in restore order. The task ledger and the components of
 /// `plaza.db` are not here: `store` keeps them.
-pub const COMPONENTS: &[&str] = &[
-    "treasury",
-    "members",
-    "mcp",
-];
+pub const COMPONENTS: &[&str] = &["treasury", "members", "mcp"];
 
 pub mod data_migrate;
 pub mod files;

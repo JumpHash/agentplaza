@@ -1246,7 +1246,7 @@ fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
 }
 
 /// The names [`run_guest_tool`] serves itself, besides the file tools of [`tools::serve`].
-const GUEST_TOOLS: [&str; 21] = [
+const GUEST_TOOLS: [&str; 26] = [
     "bash",
     "install_packages",
     "multi_edit",
@@ -1268,6 +1268,11 @@ const GUEST_TOOLS: [&str; 21] = [
     "checkpoint_restore",
     "checkpoint_list",
     "edit_file",
+    "symbols",
+    "definition",
+    "references",
+    "diagnostics",
+    "outline",
 ];
 
 /// True for a tool the harness runs itself, so the VM's own tools: the ones an engine's plaza MCP
@@ -1300,6 +1305,9 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "checkpoint_diff" => checkpoints::diff(workspace, input),
         "checkpoint_restore" => checkpoints::restore(workspace, input),
         "checkpoint_list" => checkpoints::list(workspace, input),
+        "symbols" | "definition" | "references" | "diagnostics" | "outline" => {
+            crate::code_intel::run(workspace, name, input)
+        }
         "edit_file" => {
             let args = edit_args(input)?;
             tools::serve(workspace, name, &args).map_err(|err| err.to_string())

@@ -17,6 +17,7 @@
 //! | `GET repos/{repo}/symbols/{id}?ref=` | a definition's history across renames and moves |
 //! | `GET changes/{change}` | a change: revisions, intents, records, queue and export state |
 //! | `GET revisions/{rev}`, `…/files`, `…/file?path=`, `…/tree`, `…/diff?path=` | a revision, its files, its change tree, its diff |
+//! | `GET revisions/{rev}/symbols?path=`, `…/names?name=` or `…?find=` | a file's symbols and references, a name's definitions and references (the code-intelligence fallback) |
 //! | `GET ops?since=&limit=`, `GET packs`, `GET keys`, `GET records?subject=` | the op log, packs, keys, signed records |
 //! | `GET verify?subject=&deep=` | the verification report |
 //! | `GET events` | what happens, as server-sent events |
@@ -939,6 +940,67 @@ fn revision_routes(router: Router<H>) -> Router<H> {
                     let st = h.store.state();
                     t.files.retain(|f| h.may_read(&st, &who, &repo, &f.path));
                     ok(json!(t))
+                }
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/revisions/{rev}/symbols", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let Some(path) = q(req, "path") else { return fail(400, "symbols needs ?path=") };
+            let repo = match rev_repo(h, p.get("rev")) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            if !h.may_read(&h.store.state(), &who, &repo, &path) {
+                return fail(404, "no such file");
+            }
+            let tree = match h.store.tree(p.get("rev")) {
+                Ok(t) => t,
+                Err(e) => return fail(404, e),
+            };
+            let Some(entry) = tree.get(&path) else { return fail(404, "no such file") };
+            let parsed = h.derived.parse(&h.store, &path, &entry.hash);
+            ok(json!({
+                "revision": p.get("rev"),
+                "repo": repo,
+                "path": path,
+                "pack": parsed.pack,
+                "error": parsed.error,
+                "symbols": parsed.symbols,
+                "references": parsed.references,
+            }))
+        })
+        .get("/v1/revisions/{rev}/names", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let rev = p.get("rev");
+            let repo = match rev_repo(h, rev) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            // `name` is one name; `find` is every name containing the text, without case.
+            let (want, asked): (Box<dyn Fn(&str) -> bool>, Value) = match (q(req, "name"), q(req, "find")) {
+                (Some(name), _) => {
+                    let wanted = name.clone();
+                    (Box::new(move |n: &str| n == wanted), json!({ "name": name }))
+                }
+                (None, Some(text)) => {
+                    let wanted = text.to_lowercase();
+                    (Box::new(move |n: &str| n.to_lowercase().contains(&wanted)), json!({ "find": text }))
+                }
+                (None, None) => return fail(400, "names needs ?name= or ?find="),
+            };
+            match h.derived.find_names(&h.store, rev, want) {
+                Ok((defs, refs)) => {
+                    let st = h.store.state();
+                    let defs: Vec<_> = defs.into_iter().filter(|d| h.may_read(&st, &who, &repo, &d.path)).collect();
+                    let refs: Vec<_> = refs.into_iter().filter(|r| h.may_read(&st, &who, &repo, &r.path)).collect();
+                    ok(json!({ "revision": rev, "repo": repo, "query": asked, "definitions": defs, "references": refs }))
                 }
                 Err(e) => fail(404, e),
             }

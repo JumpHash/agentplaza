@@ -73,6 +73,7 @@ version = "0.1.0"
 dependencies = [
  "apz-acp",
  "apz-ide",
+ "apz-lsp",
  "apz-ops",
  "apz-proto",
  "base64 0.22.1",
@@ -626,6 +627,14 @@ dependencies = [
  "serde",
  "serde_json",
  "weft",
+]
+
+[[package]]
+name = "apz-lsp"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
 ]
 
 [[package]]

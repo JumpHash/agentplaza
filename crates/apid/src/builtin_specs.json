@@ -1226,5 +1226,110 @@
       ],
       "additionalProperties": false
     }
+  },
+  "symbols": {
+    "description": "Find code symbols. With `path`: the symbols of that file, nested by their parents. With `query`: the definitions whose names contain it, across the lanes. A language server answers when one is installed in this VM for the file's language; otherwise Weft's tree-sitter index of the lane's revision does, and the answer names which.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A file, relative to the workspace (the lane's repo directory first)."
+        },
+        "query": {
+          "type": "string",
+          "description": "Part of a symbol's name."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "definition": {
+    "description": "Find where the symbol at a position is defined. A language server answers when one is installed for the file's language; otherwise Weft's index answers for the name at that position.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A file, relative to the workspace."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The one-based line of the symbol."
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The one-based column of the symbol, counted in UTF-16 units."
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "column"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "references": {
+    "description": "Find the uses of the symbol at a position, its definition included. Answered the same way as definition.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A file, relative to the workspace."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The one-based line of the symbol."
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The one-based column of the symbol, counted in UTF-16 units."
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "column"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "diagnostics": {
+    "description": "Check files for problems. A language server's diagnostics when one is installed for the file's language; otherwise whether Weft's parser finds a syntax error. Without `paths`, checks the files the lanes have changed.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Files, relative to the workspace."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "outline": {
+    "description": "The outline of one file: its symbols as a tree. Answered the same way as symbols with a path.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A file, relative to the workspace (the lane's repo directory first)."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
   }
 }
