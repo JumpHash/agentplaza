@@ -51,9 +51,9 @@ pub fn tick(app: &App) {
 
 /// Whether project `id` takes work: it exists, is not paused or archived, and is in a stage that runs tasks.
 fn project_active(app: &App, id: &str) -> bool {
-    app.projects
-        .get(id)
-        .is_some_and(|p| !p.paused && !p.archived && matches!(p.stage.as_str(), "implementation" | "review"))
+    app.projects.get(id).is_some_and(|p| {
+        !p.paused && !p.archived && matches!(p.stage.as_str(), "implementation" | "review")
+    })
 }
 
 /// What a task reserves from its project: its own cap when it has one in the project's unit, else the project's
@@ -98,7 +98,10 @@ fn start_ready_tasks(app: &App, now: u64) {
         notice(
             app,
             &task_chat(app, task.id(), &project, now),
-            &format!("Task {} starts: a builder, then a review on another model.", task.id()),
+            &format!(
+                "Task {} starts: a builder, then a review on another model.",
+                task.id()
+            ),
             now,
         );
     }
@@ -138,7 +141,11 @@ pub fn pick_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
     if seat.model_policy == seats::ModelPolicy::Any {
         return all.into_iter().next();
     }
-    let avoid: HashSet<String> = app.seats.models_to_avoid(&seat.task, &seat.name).into_iter().collect();
+    let avoid: HashSet<String> = app
+        .seats
+        .models_to_avoid(&seat.task, &seat.name)
+        .into_iter()
+        .collect();
     let avoid_providers: HashSet<&str> = avoid.iter().map(|m| provider_of(m)).collect();
     let free: Vec<&String> = all.iter().filter(|m| !avoid.contains(*m)).collect();
     free.iter()
@@ -174,7 +181,8 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
         },
         now,
     );
-    app.seats.fill(&seat.task, &seat.name, &session.id, Some(&model), now);
+    app.seats
+        .fill(&seat.task, &seat.name, &session.id, Some(&model), now);
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
     match crate::agents::spawn_agents(app, &seat.role, 1, Some(&model), None, Some(&project)) {
         Ok(started) => {
@@ -307,9 +315,14 @@ pub fn on_hello(app: &App, cid: u64) -> bool {
             },
         ),
     };
-    let work = app
-        .work
-        .enqueue(app, cid, WorkKind::Task, format!("task-{task_id}"), prompt, origin);
+    let work = app.work.enqueue(
+        app,
+        cid,
+        WorkKind::Task,
+        format!("task-{task_id}"),
+        prompt,
+        origin,
+    );
     let _ = app.sessions.update(&session.id, |s| s.work = Some(work));
     app.bus.publish("session", &app.sessions.get(&session.id));
     true
@@ -333,7 +346,14 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
         if session.verdict.is_some() {
             None
         } else {
-            app.seats.ended(&task, &seat, false, true, "the review ended without a verdict", now)
+            app.seats.ended(
+                &task,
+                &seat,
+                false,
+                true,
+                "the review ended without a verdict",
+                now,
+            )
         }
     } else {
         let passed = status == WorkStatus::Done;
@@ -365,14 +385,19 @@ pub fn on_verdict(app: &App, cid: u64, task: &str, pass: bool, notes: &str) -> O
     Some(if pass {
         format!("Recorded: task {task} passes. End your turn now.")
     } else {
-        format!("Recorded: task {task} goes back to its builder with your findings. End your turn now.")
+        format!(
+            "Recorded: task {task} goes back to its builder with your findings. End your turn now."
+        )
     })
 }
 
 /// What the seats said, applied to the task.
 fn apply(app: &App, task_id: &str, next: Next, now: u64) {
     let task = app.plaza.tasks.find(task_id);
-    let project = task.as_ref().and_then(|t| t.project().map(str::to_string)).unwrap_or_default();
+    let project = task
+        .as_ref()
+        .and_then(|t| t.project().map(str::to_string))
+        .unwrap_or_default();
     let chat = task_chat(app, task_id, &project, now);
     match next {
         Next::Ready(_) | Next::Retry(_) => {}
@@ -380,25 +405,45 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
             if let Some(t) = &task {
                 let _ = t.rework(None);
             }
-            let said = app.seats.get(task_id, "builder").and_then(|s| s.returned_with).unwrap_or_default();
-            notice(app, &chat, &format!("The review sent task {task_id} back to its builder: {said}"), now);
+            let said = app
+                .seats
+                .get(task_id, "builder")
+                .and_then(|s| s.returned_with)
+                .unwrap_or_default();
+            notice(
+                app,
+                &chat,
+                &format!("The review sent task {task_id} back to its builder: {said}"),
+                now,
+            );
         }
         Next::Done => {
             if let Some(t) = &task {
                 let _ = t.finish(FinishOutcome::Done, Some("passed review".into()));
             }
             close_task(app, task_id, now);
-            notice(app, &chat, &format!("Task {task_id} is done: it passed review."), now);
+            notice(
+                app,
+                &chat,
+                &format!("Task {task_id} is done: it passed review."),
+                now,
+            );
         }
         Next::Failed(why) => {
             if let Some(t) = &task {
                 let _ = t.finish(FinishOutcome::Failed, Some(why.clone()));
             }
             close_task(app, task_id, now);
-            notice(app, &chat, &format!("Task {task_id} failed: {why}. The planner decides what follows."), now);
+            notice(
+                app,
+                &chat,
+                &format!("Task {task_id} failed: {why}. The planner decides what follows."),
+                now,
+            );
         }
     }
-    app.bus.publish("task", &serde_json::json!({ "id": task_id }));
+    app.bus
+        .publish("task", &serde_json::json!({ "id": task_id }));
 }
 
 fn close_task(app: &App, task: &str, now: u64) {
@@ -425,14 +470,21 @@ fn end_session(app: &App, session: &Session, handover: &str, failed: bool, now: 
     if let Some(cid) = session.cid {
         retire(app, cid);
     }
-    let outcome = if failed { "the step failed" } else { "the step ended" };
+    let outcome = if failed {
+        "the step failed"
+    } else {
+        "the step ended"
+    };
     let _ = app.sessions.finish(&session.id, outcome, failed, now);
     app.bus.publish("session", &app.sessions.get(&session.id));
 }
 
 /// Stops a session by hand (the owner, `POST /v1/sessions/{id}/stop`): it ends and its seat goes again.
 pub fn stop(app: &App, id: &str) -> Result<Session, String> {
-    let session = app.sessions.get(id).ok_or_else(|| format!("no session {id}"))?;
+    let session = app
+        .sessions
+        .get(id)
+        .ok_or_else(|| format!("no session {id}"))?;
     if session.state.is_final() {
         return Ok(session);
     }
@@ -442,18 +494,25 @@ pub fn stop(app: &App, id: &str) -> Result<Session, String> {
     }
     end_session(app, &session, "", false, now);
     if let (Some(task), Some(seat)) = (&session.task, &session.seat)
-        && let Some(next) = app.seats.ended(task, seat, false, true, "stopped by the owner", now)
+        && let Some(next) = app
+            .seats
+            .ended(task, seat, false, true, "stopped by the owner", now)
     {
         apply(app, task, next, now);
     }
-    app.sessions.get(id).ok_or_else(|| format!("no session {id}"))
+    app.sessions
+        .get(id)
+        .ok_or_else(|| format!("no session {id}"))
 }
 
 /// The VM of `cid` went away (its node stopped answering, it crashed). Its session fails and its seat goes again.
 pub fn on_gone(app: &App, cid: u64) {
     // A session that is handing over or ending retired its own VM: that is not a VM going away.
     if let Some(session) = app.sessions.by_cid(cid)
-        && matches!(session.state, State::Placing | State::Forking | State::Running | State::Paused | State::Compacting)
+        && matches!(
+            session.state,
+            State::Placing | State::Forking | State::Running | State::Paused | State::Compacting
+        )
     {
         fail_session(app, &session, "its VM went away", now());
     }
@@ -479,7 +538,9 @@ fn retire(app: &App, cid: u64) {
 
 /// The chat of `task` (made on first use).
 pub fn task_chat(app: &App, task: &str, project: &str, now: u64) -> String {
-    app.chats.of_task(task, project, &format!("Task {task}"), now).id
+    app.chats
+        .of_task(task, project, &format!("Task {task}"), now)
+        .id
 }
 
 /// Posts a notice (what the AIs decided or did) into `chat`.
@@ -497,25 +558,46 @@ pub fn notice(app: &App, chat: &str, text: &str, now: u64) {
         now,
     );
     if let Some(message) = posted {
-        app.bus.publish("chat", &serde_json::json!({ "chat": chat, "message": message }));
+        app.bus.publish(
+            "chat",
+            &serde_json::json!({ "chat": chat, "message": message }),
+        );
     }
 }
 
 /// A budget limit reached: one card per subject, in the task's chat (or the project's when it is the project's).
 pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, now: u64) {
     let (subject, title, body) = match short {
-        Short::Cap { owner_kind, owner, unit, needed, left } => (
+        Short::Cap {
+            owner_kind,
+            owner,
+            unit,
+            needed,
+            left,
+        } => (
             subject_of(*owner_kind, owner),
             match owner_kind {
                 OwnerKind::Task => format!("Task {owner} reached its budget"),
                 OwnerKind::Project => format!("Project {owner} cannot fund more work"),
             },
-            format!("It needs {} and has {} left ({unit:?}).", amount(*needed, *unit), amount(*left, *unit)),
+            format!(
+                "It needs {} and has {} left ({unit:?}).",
+                amount(*needed, *unit),
+                amount(*left, *unit)
+            ),
         ),
-        Short::Monthly { project, needed, left } => (
+        Short::Monthly {
+            project,
+            needed,
+            left,
+        } => (
             format!("monthly:{project}"),
             format!("Project {project}'s planner reached its monthly budget"),
-            format!("It needs {} and has {} left this month.", amount(*needed, Unit::Usd), amount(*left, Unit::Usd)),
+            format!(
+                "It needs {} and has {} left this month.",
+                amount(*needed, Unit::Usd),
+                amount(*left, Unit::Usd)
+            ),
         ),
         Short::Paused { owner_kind, owner } => (
             subject_of(*owner_kind, owner),
@@ -556,7 +638,10 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
         );
         app.bus.publish("card", &card);
         if let Some(message) = posted {
-            app.bus.publish("chat", &serde_json::json!({ "chat": chat, "message": message }));
+            app.bus.publish(
+                "chat",
+                &serde_json::json!({ "chat": chat, "message": message }),
+            );
         }
     }
 }
@@ -666,7 +751,14 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
                 return match (choice, card.amount) {
                     ("raise_to", Some(to)) => match app.budgets.get(OwnerKind::Project, project) {
                         Some(b) => {
-                            let _ = app.budgets.set_project(project, b.unit, b.cap, b.warn_at_pct, Some(to), now);
+                            let _ = app.budgets.set_project(
+                                project,
+                                b.unit,
+                                b.cap,
+                                b.warn_at_pct,
+                                Some(to),
+                                now,
+                            );
                             resume_budget(app, OwnerKind::Project, project);
                             format!("the planner's monthly budget is now {}", amount(to, b.unit))
                         }
@@ -680,11 +772,18 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
             };
             match choice {
                 "raise_to" | "raise_by" => {
-                    let (by, to) = if choice == "raise_to" { (None, card.amount) } else { (card.amount, None) };
+                    let (by, to) = if choice == "raise_to" {
+                        (None, card.amount)
+                    } else {
+                        (card.amount, None)
+                    };
                     match app.budgets.raise(kind, owner, by, to, now) {
                         Some(b) => {
                             resume_budget(app, kind, owner);
-                            format!("raised to {}", b.cap.map_or("no cap".into(), |c| amount(c, b.unit)))
+                            format!(
+                                "raised to {}",
+                                b.cap.map_or("no cap".into(), |c| amount(c, b.unit))
+                            )
                         }
                         None => "no such budget".into(),
                     }
@@ -702,7 +801,13 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
                 "replan" => {
                     let project = card.project.clone().unwrap_or_default();
                     let what = card.task.clone().unwrap_or_else(|| owner.to_string());
-                    to_planner(app, &project, &format!("The owner asks you to replan {what}: it reached its budget. Split or shrink it."));
+                    to_planner(
+                        app,
+                        &project,
+                        &format!(
+                            "The owner asks you to replan {what}: it reached its budget. Split or shrink it."
+                        ),
+                    );
                     "the planner replans it".into()
                 }
                 _ => "recorded".into(),
@@ -711,7 +816,12 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
         cards::Kind::Seat => match choice {
             "stop" => {
                 if let Some(task) = &card.task {
-                    stop_task(app, task, "stopped by the owner: no second model for its review", now);
+                    stop_task(
+                        app,
+                        task,
+                        "stopped by the owner: no second model for its review",
+                        now,
+                    );
                 }
                 "stopped".into()
             }
@@ -734,7 +844,12 @@ pub fn stop_task(app: &App, task_id: &str, why: &str, now: u64) {
         .find(task_id)
         .and_then(|t| t.project().map(str::to_string))
         .unwrap_or_default();
-    notice(app, &task_chat(app, task_id, &project, now), &format!("Task {task_id}: {why}."), now);
+    notice(
+        app,
+        &task_chat(app, task_id, &project, now),
+        &format!("Task {task_id}: {why}."),
+        now,
+    );
 }
 
 /// The live long-lived session of `project` (its planner), if one runs.
@@ -757,7 +872,10 @@ fn orchestrator_cid(app: &App) -> Option<u64> {
     app.agents
         .list()
         .into_iter()
-        .find(|a| a.role == crate::settings::ORCHESTRATOR_ROLE && a.status != crate::agents::Status::Offline)
+        .find(|a| {
+            a.role == crate::settings::ORCHESTRATOR_ROLE
+                && a.status != crate::agents::Status::Offline
+        })
         .map(|a| a.cid)
 }
 
@@ -794,22 +912,55 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
     match c.kind {
         crate::chats::Kind::Main => {
             if let Some(cid) = orchestrator_cid(app) {
-                app.work.enqueue(app, cid, WorkKind::Chat, thread, text.to_string(), Origin { owner: true, ..Origin::default() });
+                app.work.enqueue(
+                    app,
+                    cid,
+                    WorkKind::Chat,
+                    thread,
+                    text.to_string(),
+                    Origin {
+                        owner: true,
+                        ..Origin::default()
+                    },
+                );
             } else {
-                notice(app, chat, "The orchestrator is not running: it reads this when it starts.", now);
+                notice(
+                    app,
+                    chat,
+                    "The orchestrator is not running: it reads this when it starts.",
+                    now,
+                );
             }
         }
         crate::chats::Kind::Project => {
             let project = c.project.clone().unwrap_or_default();
             let (cid, prompt) = match planner_of(app, &project) {
                 Some(s) => (s.cid, text.to_string()),
-                None => (orchestrator_cid(app), format!("[project {project}, chat {chat}] {text}")),
+                None => (
+                    orchestrator_cid(app),
+                    format!("[project {project}, chat {chat}] {text}"),
+                ),
             };
             match cid {
                 Some(cid) => {
-                    app.work.enqueue(app, cid, WorkKind::Chat, thread, prompt, Origin { owner: true, ..Origin::default() });
+                    app.work.enqueue(
+                        app,
+                        cid,
+                        WorkKind::Chat,
+                        thread,
+                        prompt,
+                        Origin {
+                            owner: true,
+                            ..Origin::default()
+                        },
+                    );
                 }
-                None => notice(app, chat, "No planner is running for this project yet.", now),
+                None => notice(
+                    app,
+                    chat,
+                    "No planner is running for this project yet.",
+                    now,
+                ),
             }
         }
         crate::chats::Kind::Task => {
@@ -832,12 +983,30 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
                         WorkKind::Message,
                         format!("task-{task}"),
                         format!("The owner says: {text}"),
-                        Origin { task: Some(task.clone()), owner: true, ..Origin::default() },
+                        Origin {
+                            task: Some(task.clone()),
+                            owner: true,
+                            ..Origin::default()
+                        },
                     );
                 }
                 None => {
-                    let _ = app.threads.send(&task, None, "owner", None, "builder", text, Some("from the owner"), now);
-                    notice(app, chat, "No session works on this task now: the next one reads this first.", now);
+                    let _ = app.threads.send(
+                        &task,
+                        None,
+                        "owner",
+                        None,
+                        "builder",
+                        text,
+                        Some("from the owner"),
+                        now,
+                    );
+                    notice(
+                        app,
+                        chat,
+                        "No session works on this task now: the next one reads this first.",
+                        now,
+                    );
                 }
             }
         }
@@ -851,7 +1020,12 @@ pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> boo
     };
     // `chat:project:<id>` items (to_planner) answer in the project's newest chat.
     let chat = match chat.strip_prefix("project:") {
-        Some(project) => match app.chats.list(Some(project), false).into_iter().find(|c| c.kind == crate::chats::Kind::Project) {
+        Some(project) => match app
+            .chats
+            .list(Some(project), false)
+            .into_iter()
+            .find(|c| c.kind == crate::chats::Kind::Project)
+        {
             Some(c) => c.id,
             None => return true,
         },
@@ -863,7 +1037,10 @@ pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> boo
         Post {
             author: Author::Session,
             session: session.as_ref().map(|s| s.id.clone()),
-            seat: session.as_ref().and_then(|s| s.seat.clone()).or_else(|| Some("orchestrator".into())),
+            seat: session
+                .as_ref()
+                .and_then(|s| s.seat.clone())
+                .or_else(|| Some("orchestrator".into())),
             kind: MessageKind::Message,
             text: summary.to_string(),
             card: None,
@@ -871,7 +1048,10 @@ pub fn on_chat_work_end(app: &App, cid: u64, thread: &str, summary: &str) -> boo
         now(),
     );
     if let Some(message) = posted {
-        app.bus.publish("chat", &serde_json::json!({ "chat": chat, "message": message }));
+        app.bus.publish(
+            "chat",
+            &serde_json::json!({ "chat": chat, "message": message }),
+        );
     }
     true
 }

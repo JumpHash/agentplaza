@@ -766,7 +766,10 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                     turns -= 1;
                     let wait = paused_wait(paused_waits);
                     paused_waits += 1;
-                    self.shared.note(&format!("agent-harness: {reason}; asking again in {}s", wait.as_secs()));
+                    self.shared.note(&format!(
+                        "agent-harness: {reason}; asking again in {}s",
+                        wait.as_secs()
+                    ));
                     self.wait_paused(wait)?;
                     continue;
                 }
@@ -2022,8 +2025,12 @@ mod tests {
             // The same turn asks again (a new request id), and its answer ends the work as done.
             let again = expect_type(host, "model_call");
             assert_eq!(again["req"], 2, "{again}");
-            host.send(&answer(2, json!([text("finished after the raise")]), "end_turn"))
-                .unwrap();
+            host.send(&answer(
+                2,
+                json!([text("finished after the raise")]),
+                "end_turn",
+            ))
+            .unwrap();
             let done = expect_type(host, "work_done");
             assert_eq!(done["status"], "done", "{done}");
             stop(host);

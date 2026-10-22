@@ -198,7 +198,12 @@ fn a_change_goes_from_lane_to_landed_with_signed_records() {
     let report = s.verify_deep().unwrap();
     assert!(report.records > 10);
     // One process per store folder: the first copy closes before the reopen.
-    let Plaza { dir, store, hub_seed, .. } = p;
+    let Plaza {
+        dir,
+        store,
+        hub_seed,
+        ..
+    } = p;
     drop(store);
     let reopened = Store::open(&dir, Some(KeyPair::from_hex(&hub_seed).unwrap())).unwrap();
     assert_eq!(

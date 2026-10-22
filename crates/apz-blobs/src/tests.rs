@@ -163,7 +163,10 @@ fn a_sweep_compacts_a_mostly_dead_pack_and_removes_it() {
         !pack_path(dir.path(), 1).exists(),
         "the compacted pack is gone"
     );
-    assert!(report.freed_bytes > old_size / 2, "{report:?} of a {old_size}-byte pack");
+    assert!(
+        report.freed_bytes > old_size / 2,
+        "{report:?} of a {old_size}-byte pack"
+    );
     assert_eq!(
         blobs.get(&keep).unwrap(),
         big(100_000, 1),

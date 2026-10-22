@@ -246,7 +246,7 @@ pub struct Instrument {
 }
 
 /// Work the watchers propose; the owner picks it or not.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Proposal {
     /// `mp<n>`.
     pub id: String,
@@ -258,14 +258,19 @@ pub struct Proposal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area: Option<String>,
     #[serde(default)]
+    #[table(child)]
     pub impact: Impact,
     #[serde(default, rename = "value")]
+    #[table(flatten)]
     pub worth: Worth,
     #[serde(default)]
+    #[table(flatten)]
     pub effort: Effort,
     #[serde(default)]
+    #[table(child)]
     pub evidence: Vec<Evidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(flatten)]
     pub instrument: Option<Instrument>,
     /// The role that would do it.
     #[serde(default = "builder")]
@@ -332,19 +337,27 @@ pub struct Sweep {
     pub seen_seq: u64,
 }
 
-/// One project's maintenance.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// One project's maintenance: a row of `maintenance_book`; its settings, map, signals and proposals are child
+/// tables.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "maintenance_book")]
 pub struct Book {
+    #[table(key)]
     pub project: String,
     #[serde(default)]
+    #[table(child)]
     pub config: Config,
     #[serde(default)]
+    #[table(child)]
     pub map: Map,
     #[serde(default)]
+    #[table(child)]
     pub signals: Vec<Signal>,
     #[serde(default)]
+    #[table(child)]
     pub proposals: Vec<Proposal>,
     #[serde(default)]
+    #[table(flatten)]
     pub sweep: Sweep,
     /// The last id handed out, for signals and proposals alike.
     #[serde(default)]
@@ -403,146 +416,9 @@ impl Book {
 
 // ---- Store ---------------------------------------------------------------------------------------------------------
 
-// ---- Storage -------------------------------------------------------------------------------------------------------
-
-// A book is one row of `maintenance_book`, its signals and proposals child rows. The settings and the map are
-// optional children, and a proposal's impact too, because a struct that holds a list cannot be flattened into its
-// parent's row: the mirrors below hold the same fields in that shape, and convert at the boundary.
-
-/// A book as a row of `maintenance_book`.
-#[derive(Debug, Clone, PartialEq, Eq, apz_store::Table)]
-#[table(name = "maintenance_book")]
-struct BookRow {
-    #[table(key)]
-    project: String,
-    #[table(child)]
-    config: Option<Config>,
-    #[table(child)]
-    map: Option<Map>,
-    #[table(child)]
-    signals: Vec<Signal>,
-    #[table(child)]
-    proposals: Vec<ProposalRow>,
-    #[table(flatten)]
-    sweep: Sweep,
-    seq: u64,
-    ingest: Option<String>,
-}
-
-/// A proposal as a child row of a book.
-#[derive(Debug, Clone, PartialEq, Eq, apz_store::Table)]
-struct ProposalRow {
-    id: String,
-    kind: String,
-    title: String,
-    summary: String,
-    area: Option<String>,
-    #[table(child)]
-    impact: Option<Impact>,
-    #[table(flatten)]
-    worth: Worth,
-    #[table(flatten)]
-    effort: Effort,
-    #[table(child)]
-    evidence: Vec<Evidence>,
-    #[table(flatten)]
-    instrument: Option<Instrument>,
-    role: String,
-    acceptance: String,
-    state: String,
-    by_cid: u64,
-    by: String,
-    created_ms: u64,
-    decided_ms: u64,
-    note: String,
-    task: Option<String>,
-}
-
-impl From<&Book> for BookRow {
-    fn from(book: &Book) -> Self {
-        BookRow {
-            project: book.project.clone(),
-            config: Some(book.config.clone()),
-            map: Some(book.map.clone()),
-            signals: book.signals.clone(),
-            proposals: book.proposals.iter().map(ProposalRow::from).collect(),
-            sweep: book.sweep.clone(),
-            seq: book.seq,
-            ingest: book.ingest.clone(),
-        }
-    }
-}
-
-impl From<BookRow> for Book {
-    fn from(row: BookRow) -> Self {
-        Book {
-            project: row.project,
-            config: row.config.unwrap_or_default(),
-            map: row.map.unwrap_or_default(),
-            signals: row.signals,
-            proposals: row.proposals.into_iter().map(Proposal::from).collect(),
-            sweep: row.sweep,
-            seq: row.seq,
-            ingest: row.ingest,
-        }
-    }
-}
-
-impl From<&Proposal> for ProposalRow {
-    fn from(p: &Proposal) -> Self {
-        ProposalRow {
-            id: p.id.clone(),
-            kind: p.kind.clone(),
-            title: p.title.clone(),
-            summary: p.summary.clone(),
-            area: p.area.clone(),
-            impact: Some(p.impact.clone()),
-            worth: p.worth.clone(),
-            effort: p.effort.clone(),
-            evidence: p.evidence.clone(),
-            instrument: p.instrument.clone(),
-            role: p.role.clone(),
-            acceptance: p.acceptance.clone(),
-            state: p.state.clone(),
-            by_cid: p.by_cid,
-            by: p.by.clone(),
-            created_ms: p.created_ms,
-            decided_ms: p.decided_ms,
-            note: p.note.clone(),
-            task: p.task.clone(),
-        }
-    }
-}
-
-impl From<ProposalRow> for Proposal {
-    fn from(row: ProposalRow) -> Self {
-        Proposal {
-            id: row.id,
-            kind: row.kind,
-            title: row.title,
-            summary: row.summary,
-            area: row.area,
-            impact: row.impact.unwrap_or_default(),
-            worth: row.worth,
-            effort: row.effort,
-            evidence: row.evidence,
-            instrument: row.instrument,
-            role: row.role,
-            acceptance: row.acceptance,
-            state: row.state,
-            by_cid: row.by_cid,
-            by: row.by,
-            created_ms: row.created_ms,
-            decided_ms: row.decided_ms,
-            note: row.note,
-            task: row.task,
-        }
-    }
-}
-
 /// The table of the maintenance books: `maintenance_book`, one row per project.
 pub fn def() -> &'static TableDef {
-    apz_store::root_def!(BookRow)
+    apz_store::root_def!(Book)
 }
 
 /// The ingest posts a project may take a minute: the rest are refused until its first post ages out.
@@ -626,14 +502,12 @@ impl Store {
 
     /// The books' rows, as they are now (the saver writes what changed).
     pub fn rows(&self) -> Result<RowSet, StoreError> {
-        let rows: Vec<BookRow> = lock(&self.books).iter().map(BookRow::from).collect();
-        RowSet::list(def(), &rows)
+        RowSet::list(def(), lock(&self.books).iter())
     }
 
     /// Replaces the books with what plaza.db holds (at start).
     pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
-        let stored: Vec<BookRow> = apz_store::table::load_list(conn, def())?;
-        *lock(&self.books) = stored.into_iter().map(Book::from).collect();
+        *lock(&self.books) = apz_store::table::load_list(conn, def())?;
         Ok(())
     }
 }
