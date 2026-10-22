@@ -16,6 +16,8 @@ apz-prompt = { path = "../apz-prompt" }
 apz-skill = { path = "../apz-skill" }
 jhrl = { path = "../jhrl" }
 apz-acp = { path = "../apz-acp" }
+# The W40 languages and their servers (PLAN 15.2): a base's recipe starts them (base_recipe.rs).
+apz-lsp = { path = "../apz-lsp" }
 apz-proto = { workspace = true, features = ["store"] }
 apz-http = { path = "../apz-http" }
 weft = { path = "../weft" }
