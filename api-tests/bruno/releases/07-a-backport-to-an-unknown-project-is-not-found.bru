@@ -1,0 +1,15 @@
+meta {
+  name: A backport to an unknown project is not found
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/no-such-project/backports
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

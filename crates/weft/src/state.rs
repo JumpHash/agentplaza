@@ -274,6 +274,7 @@ const HUB_KINDS: &[&str] = &[
     "release.publish",
     "release.promote",
     "release.yank",
+    "release.lane",
 ];
 
 /// The digest of a revision: its base and its deltas.
@@ -1476,6 +1477,40 @@ impl State {
                     let life = &mut self.release_mut(&m.repo, &m.version)?.life;
                     life.state = "yanked".into();
                     life.yanked = Some((m.reason, seq));
+                }
+                s
+            }
+            "release.lane" => {
+                let c: ReleaseLaneCut = parse(&stmt.body, kind)?;
+                let rel = self.release(&c.repo, &c.version)?;
+                if !matches!(
+                    rel.life.state.as_str(),
+                    "published" | "promoted" | "superseded"
+                ) {
+                    return Err(format!(
+                        "{} is {}; a lane is cut from a published release",
+                        c.version, rel.life.state
+                    ));
+                }
+                let line = rel
+                    .propose
+                    .line
+                    .clone()
+                    .unwrap_or_else(|| format!("release/{}", line_of(&c.version)));
+                let from = rel.propose.from.clone();
+                let chain = self
+                    .repo(&c.repo)?
+                    .refs
+                    .get(&line)
+                    .cloned()
+                    .unwrap_or_default();
+                // A lane is cut once: a cut again is a no-op while the line still starts at the release.
+                if !chain.is_empty() && !chain.contains(&from) {
+                    return Err(format!("{line} exists and does not start at {from}"));
+                }
+                let s = format!("{} {line} cut at {from} from {}", c.repo, c.version);
+                if !dry && chain.is_empty() {
+                    self.repo_mut(&c.repo)?.refs.insert(line, vec![from]);
                 }
                 s
             }

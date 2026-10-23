@@ -13,12 +13,18 @@
 //! | `POST /v1/releases/{id}/yank` | `{reason}`: withdraws a published release |
 //! | `GET /v1/releases/{id}/report` | the release, its run and its life as Weft holds it |
 //! | `GET /v1/releases/{id}/artifacts/{target}` | one target's artifact, with Weft's record of it |
+//! | `POST /v1/releases/{id}/lane` | cuts the release's line (`release/1.4`) at a published release |
+//! | `POST /v1/projects/{id}/backports` | `{change, line, worker}`: backports a landed fix to a line, with its review |
+//! | `POST /v1/projects/{id}/backports/{change}/land` | lands a backport whose review passed |
+//! | `GET /v1/release-channels` | the built-in channels, their qualification depth and store tracks |
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
+use super::channels;
 use super::entity::Release;
 use super::flow::{self, Builder, Cut, Deps, NoPools};
+use super::lanes::{self, Agents};
 use crate::state::App;
 
 fn deps(app: &App) -> Deps<'_> {
@@ -27,6 +33,15 @@ fn deps(app: &App) -> Deps<'_> {
         runs: &app.recipe_runs,
         reviews: &app.reviews,
         releases: &app.releases,
+    }
+}
+
+/// The production agents: a statement of an agent is signed with the agent's own key (`weft_hub::sign_as_agent`).
+struct AppAgents<'a>(&'a App);
+
+impl Agents for AppAgents<'_> {
+    fn sign(&self, worker: u64, kind: &str, body: Value) -> Result<Value, String> {
+        crate::weft_hub::sign_as_agent(self.0, worker, kind, body)
     }
 }
 
@@ -207,6 +222,71 @@ pub fn routes(router: Router<App>) -> Router<App> {
         )
         .doc(
             RouteDoc::new("Withdraw a published release, with the reason").errors(&[400, 404, 409]),
+        )
+        .post("/v1/releases/{id}/lane", |app, _, p: &Params<'_>| {
+            answer(lanes::cut_lane(&deps(app), p.get("id")))
+        })
+        .doc(
+            RouteDoc::new(
+                "Cut the release's line (`release/1.4`) at a published release, so its maintenance releases and backports land on it",
+            )
+            .errors(&[404, 409, 503]),
+        )
+        .post(
+            "/v1/projects/{id}/backports",
+            |app, req: &Request, p: &Params<'_>| {
+                let project = p.get("id");
+                if project_missing(app, project) {
+                    return Response::error(404, "no such project");
+                }
+                let v = match body(req) {
+                    Ok(v) => v,
+                    Err(r) => return r,
+                };
+                let (Some(fix), Some(line), Some(worker)) =
+                    (v["change"].as_str(), v["line"].as_str(), v["worker"].as_u64())
+                else {
+                    return Response::error(
+                        400,
+                        "a backport names its change, its release line and the worker that writes it",
+                    );
+                };
+                match lanes::backport(&deps(app), &AppAgents(app), project, line, fix, worker) {
+                    Ok(backport) => Response::json(201, &backport),
+                    Err(e) => refusal(&e),
+                }
+            },
+        )
+        .doc(
+            RouteDoc::new(
+                "Backport a fix that landed on main to a release line: a change on the line, written by the worker's agent, with its own review",
+            )
+            .errors(&[400, 404, 409, 503]),
+        )
+        .post(
+            "/v1/projects/{id}/backports/{change}/land",
+            |app, _, p: &Params<'_>| {
+                if project_missing(app, p.get("id")) {
+                    return Response::error(404, "no such project");
+                }
+                match lanes::land_backport(&deps(app), p.get("id"), p.get("change")) {
+                    Ok(landing) => Response::json(200, &landing),
+                    Err(e) => refusal(&e),
+                }
+            },
+        )
+        .doc(
+            RouteDoc::new(
+                "Land a backport whose review passed: it is queued on its line and the line's queue lands it",
+            )
+            .errors(&[404, 409, 503]),
+        )
+        .get("/v1/release-channels", |_, _, _| {
+            Response::json(200, &json!({ "channels": channels::builtin() }))
+        })
+        .doc(
+            RouteDoc::new("The built-in release channels, with their qualification depth and store tracks")
+                .errors(&[]),
         )
         .get("/v1/releases/{id}/report", |app, _, p: &Params<'_>| {
             let d = deps(app);

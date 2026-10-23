@@ -176,11 +176,27 @@ pub fn targets(store: &Store, rev: &str) -> Result<Vec<Target>, String> {
 
 /// Release notes in plain words: the intents landed after `since` up to `upto`, by kind.
 pub fn notes(st: &State, repo: &str, since: Option<&str>, upto: &str) -> Result<String, String> {
-    let chain = st.repo(repo)?.refs.get("main").cloned().unwrap_or_default();
+    notes_on(st, repo, "main", since, upto)
+}
+
+/// The notes of the revisions landed on `reference` after `since`, up to `upto` (a release line walks its own line).
+pub fn notes_on(
+    st: &State,
+    repo: &str,
+    reference: &str,
+    since: Option<&str>,
+    upto: &str,
+) -> Result<String, String> {
+    let chain = st
+        .repo(repo)?
+        .refs
+        .get(reference)
+        .cloned()
+        .unwrap_or_default();
     let end = chain
         .iter()
         .position(|r| r == upto)
-        .ok_or_else(|| format!("{upto} is not on main"))?;
+        .ok_or_else(|| format!("{upto} is not on {reference}"))?;
     let begin = match since {
         Some(s) => chain
             .iter()
@@ -269,16 +285,20 @@ pub fn proposal(
 ) -> Result<Value, String> {
     let st = store.state();
     let r = st.repo(repo)?;
-    let from = from.map(str::to_string).unwrap_or_else(|| r.head("main"));
+    // A release of main walks main; a maintenance release walks its release line (PLAN 22.3), `release/1.4`.
+    let reference = line.filter(|l| *l != "main").unwrap_or("main");
+    let from = from
+        .map(str::to_string)
+        .unwrap_or_else(|| r.head(reference));
     if from == "root" {
         return Err("nothing has landed to release".into());
     }
-    // The last release cut from main before this one.
-    let chain = r.refs.get("main").cloned().unwrap_or_default();
+    // The last release cut from this line before this one.
+    let chain = r.refs.get(reference).cloned().unwrap_or_default();
     let at = chain
         .iter()
         .position(|x| *x == from)
-        .ok_or_else(|| format!("{from} is not on main"))?;
+        .ok_or_else(|| format!("{from} is not on {reference}"))?;
     let previous = r
         .releases
         .values()
@@ -291,7 +311,7 @@ pub fn proposal(
         })
         .max_by_key(|x| x.0)
         .map(|x| x.1);
-    let notes = notes(&st, repo, previous.as_deref(), &from)?;
+    let notes = notes_on(&st, repo, reference, previous.as_deref(), &from)?;
     drop(st);
     let targets: Vec<String> = targets(store, &from)?
         .into_iter()
