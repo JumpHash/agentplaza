@@ -34,6 +34,10 @@ pub struct Pool {
     launch: Box<Launch>,
     servers: Mutex<HashMap<(&'static str, PathBuf), Arc<Server>>>,
     starts: AtomicU64,
+    /// Where the warm servers listen (PLAN 3.8), and the workspace root they were started in: a server for that root is
+    /// reached on its socket instead of launched.
+    warm: Option<(PathBuf, PathBuf)>,
+    warmed: AtomicU64,
 }
 
 /// A started, initialized server, and the documents it has open.
@@ -71,7 +75,21 @@ impl Pool {
             launch: Box::new(launch),
             servers: Mutex::new(HashMap::new()),
             starts: AtomicU64::new(0),
+            warm: None,
+            warmed: AtomicU64::new(0),
         }
+    }
+
+    /// Reaches the warm servers (`dir` holds their sockets, see [`crate::bridge`]) for the workspace `root`: a server
+    /// for `root` is taken from its socket when one listens there, and only launched when none does.
+    pub fn with_warm(mut self, dir: impl Into<PathBuf>, root: impl Into<PathBuf>) -> Pool {
+        self.warm = Some((dir.into(), root.into()));
+        self
+    }
+
+    /// How many servers were reached on their warm sockets rather than launched.
+    pub fn warmed(&self) -> u64 {
+        self.warmed.load(Ordering::SeqCst)
     }
 
     /// How many servers have been started since the pool was made.
@@ -196,13 +214,24 @@ impl Pool {
         {
             return Ok(existing.clone());
         }
-        let transport = (self.launch)(spec, root).map_err(|e| match e {
-            LspError::NoServer { command, .. } => LspError::NoServer {
-                language: language.name().to_string(),
-                command,
-            },
-            other => other,
-        })?;
+        let warm = self
+            .warm
+            .as_ref()
+            .filter(|(_, warm_root)| warm_root.as_path() == root)
+            .and_then(|(dir, _)| crate::bridge::connect(&crate::bridge::socket_path(dir, spec.id)));
+        let transport = match warm {
+            Some(transport) => {
+                self.warmed.fetch_add(1, Ordering::SeqCst);
+                transport
+            }
+            None => (self.launch)(spec, root).map_err(|e| match e {
+                LspError::NoServer { command, .. } => LspError::NoServer {
+                    language: language.name().to_string(),
+                    command,
+                },
+                other => other,
+            })?,
+        };
         let client = Client::start(spec.id, transport)?;
         client.request(
             "initialize",
@@ -289,7 +318,7 @@ fn position_params(uri: &str, at: Position) -> Value {
     json!({ "textDocument": { "uri": uri }, "position": position_json(at) })
 }
 
-fn initialize_params(root: &Path, spec: &ServerSpec) -> Value {
+pub(crate) fn initialize_params(root: &Path, spec: &ServerSpec) -> Value {
     let name = root
         .file_name()
         .and_then(|n| n.to_str())
@@ -321,7 +350,7 @@ fn hash_of(text: &str) -> u64 {
 }
 
 /// Starts the installed server as a child process in `root`, with its limits, and keeps its stderr's tail.
-fn process(spec: &ServerSpec, root: &Path) -> Result<Transport, LspError> {
+pub(crate) fn process(spec: &ServerSpec, root: &Path) -> Result<Transport, LspError> {
     let exe = servers::which(spec.command).ok_or_else(|| LspError::NoServer {
         language: String::new(),
         command: spec.command.to_string(),

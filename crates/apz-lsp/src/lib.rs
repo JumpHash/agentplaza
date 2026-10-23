@@ -5,11 +5,12 @@
 //!   requests answered so that it never waits on us.
 //! - [`servers`]: the W40 languages, the server each uses, and how a path picks its language.
 //! - [`pool`]: one server per (server, workspace root), started on the first query for its language and kept up until
-//!   the pool drops.
+//!   the pool drops, or reached on its warm socket when a base started it ([`bridge`], PLAN 3.8).
 //! - [`limits`]: a memory and CPU cap per server where the OS has one: Linux sets `RLIMIT_AS` and `RLIMIT_CPU`; on
 //!   macOS the cap does not bind, so servers run uncapped there ([`limits::ENFORCED`]).
 //! - [`fake`]: a scripted server in this process, for the protocol tests here and for the tools' tests.
 
+pub mod bridge;
 pub mod client;
 pub mod fake;
 pub mod frame;
