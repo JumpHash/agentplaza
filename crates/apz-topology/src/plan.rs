@@ -15,7 +15,7 @@ use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::spec::{Data, Observe, Serve, Topology, Traffic};
+use crate::spec::{Data, Health, Kind, Observe, Serve, Topology, Traffic, Volume};
 
 /// The bridge inside the guest.
 pub const BRIDGE: &str = "apz0";
@@ -62,6 +62,15 @@ pub struct Container {
     /// The service's environment, with the proxy variables set by the plan (they are not the service's to change).
     pub env: BTreeMap<String, String>,
     pub data: Option<Data>,
+    /// The services this one waits for (the runner starts them first, and waits for their ports).
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// The named volumes it mounts; each is one directory shared by the services that name it.
+    #[serde(default)]
+    pub volumes: Vec<Volume>,
+    /// The health check the guest's runtime runs in the container, as the spec gives it.
+    #[serde(default)]
+    pub health: Option<Health>,
 }
 
 /// What a container runs: an image the runtime pulls from the lab base, or an artifact of the release, by its path in
@@ -80,6 +89,12 @@ pub fn plan(
     artifacts: &BTreeMap<String, String>,
 ) -> Result<GuestPlan, String> {
     topology.check()?;
+    if topology.kind != Kind::Services {
+        return Err(format!(
+            "topology {} is a k3s cluster: its guest config is k3s::guest_files, not a service plan",
+            topology.name
+        ));
+    }
     let services: BTreeSet<&str> = topology.services.iter().map(|s| s.name.as_str()).collect();
     let no_proxy = std::iter::once("localhost".to_string())
         .chain(std::iter::once("127.0.0.1".to_string()))
@@ -125,6 +140,9 @@ pub fn plan(
                 ports: service.ports.clone(),
                 env,
                 data: service.data.clone(),
+                depends_on: service.depends_on.clone(),
+                volumes: service.volumes.clone(),
+                health: service.health.clone(),
             });
         }
     }

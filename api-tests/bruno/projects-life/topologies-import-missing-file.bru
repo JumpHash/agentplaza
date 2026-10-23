@@ -1,0 +1,24 @@
+meta {
+  name: A Compose file that is not on main is not imported
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/topologies/import
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"source": "compose", "path": "docker-compose.yml", "dry_run": true}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

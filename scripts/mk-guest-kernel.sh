@@ -23,12 +23,12 @@ case "$arch" in
   aarch64) karch=arm64; image=arch/arm64/boot/Image; target=Image ;;
   *) echo "mk-guest-kernel: unknown architecture $arch (x86_64 or aarch64)" >&2; exit 1 ;;
 esac
-# The fragments the kernel is built from; a lab VM's kernel adds lab.config (PLAN 22.6).
+# The fragments the kernel is built from; a lab VM's kernel adds lab.config and k3s.config (PLAN 22.6).
 fragments=(scripts/guest/common.config "scripts/guest/$arch.config")
 out_dir="target/guest/$arch"
 suffix=""
 if [ "${LAB_KERNEL:-0}" = 1 ]; then
-  fragments+=(scripts/guest/lab.config)
+  fragments+=(scripts/guest/lab.config scripts/guest/k3s.config)
   out_dir="target/guest/$arch-lab"
   suffix="-lab"
 fi

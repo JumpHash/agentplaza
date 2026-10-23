@@ -1,0 +1,47 @@
+# Compose features a topology does not carry: each one is an item of the report, none is dropped silently.
+name: legacy
+x-note: kept by Compose, not by a topology
+services:
+  worker:
+    build: ./worker
+    command: ["./run.sh", "--once"]
+    env_file: .env
+    privileged: true
+    network_mode: host
+    restart: always
+    secrets: [token]
+    labels:
+      team: ops
+    environment:
+      REGION:
+      LOG_LEVEL: ${LOG_LEVEL}
+      TIMEOUT: ${TIMEOUT-30}
+    ports:
+      - "9000:9000/udp"
+      - "127.0.0.1:9100:9100"
+      - target: 9200
+        published: 9200
+        protocol: tcp
+    volumes:
+      - ./data:/data
+      - scratch:/scratch
+      - /anonymous
+    depends_on:
+      cache:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1"
+  cache:
+    image: redis
+    profiles: [dev]
+    healthcheck:
+      test: ["NONE"]
+volumes:
+  scratch:
+    driver: local
+secrets:
+  token:
+    file: ./token.txt
