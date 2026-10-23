@@ -1,0 +1,35 @@
+# The intake recipe (PLAN 21.1, 14.5). Stub: its steps need the intake phase (14.5); none runs yet. The steps are the
+# plan's: classify the item, map it to a project, then start a spec or a task.
+id = "intake"
+name = "Intake"
+description = "Stub until the intake phase (14.5): declares its steps, none runs yet."
+version = 1
+inputs = ["item"]
+outputs = ["spec", "task"]
+triggers = ["item.received"]
+
+[[steps]]
+id = "classify"
+engine = "intake"
+gate = ["passed"]
+
+[[steps]]
+id = "map"
+engine = "intake"
+gate = ["passed"]
+
+[[steps]]
+id = "start"
+engine = "intake"
+gate = ["passed"]
+output = "task"
+
+[[edges]]
+from = "classify"
+to = "map"
+when = "passed"
+
+[[edges]]
+from = "map"
+to = "start"
+when = "passed"

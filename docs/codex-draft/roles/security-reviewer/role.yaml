@@ -1,7 +1,6 @@
 # Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
 role: security-reviewer
 variant: ''
-council_seat: false
 permits:
 - statutes/S-011
 model:
@@ -25,7 +24,7 @@ tools:
 outputs:
 - security-review
 budget:
-  default_credits: 1200
+  default_budget: 1200
 compaction:
   trigger_fraction: 0.75
   keep_recent_turns: 10

@@ -2,7 +2,7 @@
 //!
 //! GET   /v1/sessions[?project=&task=&state=&live=true]     → [Session], newest first
 //! GET   /v1/sessions/{id}                                   → Session
-//! GET   /v1/sessions/{id}/transcript[?after=&limit=]        → [Entry] of the session, oldest first
+//! GET   /v1/sessions/{id}/transcript[?before=&after=&limit=]  → {entries, more}: the newest page before a seq, or the oldest after one
 //! GET   /v1/sessions/{id}/context[?work=]                   → the session's context (its last call's, or work's)
 //! POST  /v1/sessions/{id}/stop                              → Session (ended; its seat goes again)
 //! GET   /v1/tasks/{id}/seats                                → [Seat]
@@ -22,7 +22,7 @@
 //! GET   /v1/chats/{id}[?limit=]                             → Chat with its last messages (`main`: the orchestrator's)
 //! GET   /v1/chats/{id}/messages?after=&limit=               → [Message]
 //! POST  /v1/chats/{id}/messages {text, attachments?}        → 201 Message (the owner's; delivered to the chat's session)
-//! GET   /v1/chats/{id}/transcript[?after=&limit=]           → [Entry]: the turns the session the chat is with took on it
+//! GET   /v1/chats/{id}/transcript[?before=&after=&limit=]     → {entries, more}: the turns the chat's session took on it
 //! PATCH /v1/chats/{id} {title?, archived?, model?}          → Chat (`model`: the chat's turns run on it; null goes back)
 //! The owner's project drafts are the project chats' (`drafts.rs`).
 //!
@@ -32,10 +32,11 @@ use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::budgets::{Budget, OwnerKind, Unit};
+use crate::budgets::{OwnerKind, Refused, Unit};
 use crate::chats::{Author, Message, MessageKind, Post};
 use crate::sessions::{Filter, State};
 use crate::state::App;
+use crate::transcript::{Page, Scope};
 
 fn now() -> u64 {
     apz_plaza::now_ms()
@@ -53,7 +54,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Read a session").errors(&[404]))
         .get("/v1/sessions/{id}/transcript", session_transcript)
-        .doc(RouteDoc::new("Read a session's transcript").errors(&[404]))
+        .doc(RouteDoc::new("Read a session's transcript").errors(&[400, 404, 500]))
         .get("/v1/sessions/{id}/context", session_context)
         .doc(RouteDoc::new("Read a session's context").errors(&[400, 404]))
         .post(
@@ -87,7 +88,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Read a project's budget"))
         .route("PUT", "/v1/projects/{id}/budget", put_project_budget)
-        .doc(RouteDoc::new("Set a project's budget").errors(&[400, 404]))
+        .doc(RouteDoc::new("Set a project's budget").errors(&[400, 404, 409]))
         .get("/v1/projects/{id}/budget/ledger", |app, req, p| {
             ledger_view(app, req, OwnerKind::Project, p.get("id"))
         })
@@ -97,7 +98,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Read a task's budget"))
         .route("PUT", "/v1/tasks/{id}/budget", put_task_budget)
-        .doc(RouteDoc::new("Set a task's budget").errors(&[400, 404]))
+        .doc(RouteDoc::new("Set a task's budget").errors(&[400, 404, 409]))
         .get("/v1/tasks/{id}/budget/ledger", |app, req, p| {
             ledger_view(app, req, OwnerKind::Task, p.get("id"))
         })
@@ -151,7 +152,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/chats/{id}/messages", post_message)
         .doc(RouteDoc::new("Say something in a chat").errors(&[400, 404, 409]))
         .get("/v1/chats/{id}/transcript", chat_transcript)
-        .doc(RouteDoc::new("Read the turns a chat's session took on its thread").errors(&[404]))
+        .doc(
+            RouteDoc::new("Read the turns a chat's session took on its thread")
+                .errors(&[400, 404, 500]),
+        )
         .route("PATCH", "/v1/chats/{id}", edit_chat)
         .doc(RouteDoc::new("Rename, archive or set the model of a chat").errors(&[400, 404, 409]))
 }
@@ -180,20 +184,52 @@ fn session_transcript(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let Some(session) = app.sessions.get(id) else {
         return Response::error(404, &format!("no session {id}"));
     };
-    let Some(cid) = session.cid else {
-        return Response::json(200, &json!([]));
+    transcript_page(app, req, session.cid, Scope::Session(id))
+}
+
+/// A page of a transcript (`?before=&after=&limit=`): with `before` (a seq), the newest `limit` entries before it; else
+/// the oldest `limit` after `after` (0 by default). Limit: 200 by default, 500 at most. The answer is `{entries, more}`,
+/// the entries oldest first, and whether more lie beyond the page in the direction it was paged. `cid` is none for a
+/// session or chat with no VM yet: an empty page.
+fn transcript_page(app: &App, req: &Request, cid: Option<u64>, scope: Scope<'_>) -> Response {
+    let limit = req
+        .query_param("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200)
+        .clamp(1, 500);
+    let before = match req.query_param("before").map(str::parse::<u64>) {
+        None => None,
+        Some(Ok(before)) => Some(before),
+        Some(Err(_)) => return Response::error(400, "before must be an entry's seq"),
     };
-    let number = |key: &str, default: u64| {
-        req.query_param(key)
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(default)
+    let Some(cid) = cid else {
+        return Response::json(200, &json!({ "entries": [], "more": false }));
     };
-    let limit = usize::try_from(number("limit", 200).min(1000)).unwrap_or(1000);
-    Response::json(
-        200,
-        &app.transcripts
-            .of_session(cid, id, number("after", 0), limit),
-    )
+    let page = match before {
+        Some(before) => match app.transcripts.before(cid, scope, before, limit) {
+            Ok(page) => page,
+            Err(e) => {
+                return Response::error(500, &format!("the transcript cannot be read: {e}"));
+            }
+        },
+        None => {
+            let after = req
+                .query_param("after")
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            // One more than the page, to know whether more follow.
+            let mut entries = match scope {
+                Scope::Session(session) => {
+                    app.transcripts.of_session(cid, session, after, limit + 1)
+                }
+                Scope::Thread(thread) => app.transcripts.on_thread(cid, thread, after, limit + 1),
+            };
+            let more = entries.len() > limit;
+            entries.truncate(limit);
+            Page { entries, more }
+        }
+    };
+    Response::json(200, &json!({ "entries": page.entries, "more": page.more }))
 }
 
 fn session_context(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -214,21 +250,9 @@ fn session_context(app: &App, req: &Request, p: &Params<'_>) -> Response {
     Response::json(200, &view)
 }
 
-/// A budget as the consoles read it: the record, what is left, and the share spent.
-fn budget_json(b: &Budget) -> Value {
-    let mut v = serde_json::to_value(b).unwrap_or(Value::Null);
-    v["left"] = json!(b.left());
-    v["spent_pct"] = json!(
-        b.cap
-            .filter(|c| *c > 0)
-            .map(|c| (b.spent as f64 * 100.0 / c as f64).round())
-    );
-    v
-}
-
 fn budget_view(app: &App, kind: OwnerKind, id: &str) -> Response {
     match app.budgets.get(kind, id) {
-        Some(b) => Response::json(200, &budget_json(&b)),
+        Some(b) => Response::json(200, &b.view()),
         None => Response::json(
             200,
             &json!({ "owner": id, "cap": null, "spent": 0, "unit": null }),
@@ -241,7 +265,7 @@ fn project_budget_view(app: &App, id: &str) -> Response {
     let budget = app.budgets.get(OwnerKind::Project, id);
     let quota = budget.as_ref().and_then(|b| b.disk_quota_bytes);
     let mut view = match budget {
-        Some(b) => budget_json(&b),
+        Some(b) => b.view(),
         None => json!({ "owner": id, "cap": null, "spent": 0, "unit": null }),
     };
     view["tasks"] = app
@@ -249,7 +273,7 @@ fn project_budget_view(app: &App, id: &str) -> Response {
         .of_project(id)
         .iter()
         .filter(|b| b.owner_kind == OwnerKind::Task)
-        .map(budget_json)
+        .map(|b| b.view())
         .collect();
     view["disk"] = crate::disk::view(app, id, quota);
     Response::json(200, &view)
@@ -329,10 +353,18 @@ fn put_project_budget(app: &App, req: &Request, p: &Params<'_>) -> Response {
                 crate::disk::quota_changed(app, id, now());
             }
             crate::work_loop::resume_budget(app, OwnerKind::Project, id);
-            app.bus.publish("budget", &budget_json(&b));
-            Response::json(200, &budget_json(&b))
+            Response::json(200, &b.view())
         }
-        Err(e) => Response::error(400, &e),
+        Err(e) => set_refusal(&e),
+    }
+}
+
+/// The response to a budget that could not be set: a unit that has spend cannot change (409), a store that refused
+/// the write is a failure of the hub's (500).
+fn set_refusal(e: &Refused) -> Response {
+    match e {
+        Refused::UnitLocked { .. } => Response::error(409, &e.to_string()),
+        Refused::Store(_) => Response::error(500, &e.to_string()),
     }
 }
 
@@ -357,10 +389,9 @@ fn put_task_budget(app: &App, req: &Request, p: &Params<'_>) -> Response {
     {
         Ok(b) => {
             crate::work_loop::resume_budget(app, OwnerKind::Task, id);
-            app.bus.publish("budget", &budget_json(&b));
-            Response::json(200, &budget_json(&b))
+            Response::json(200, &b.view())
         }
-        Err(e) => Response::error(400, &e),
+        Err(e) => set_refusal(&e),
     }
 }
 
@@ -529,28 +560,14 @@ pub fn say(
     Ok(message)
 }
 
-/// `?after=<seq>&limit=<n>` (at most 1000, default 200): the turns the session of the chat took on its thread.
+/// `?before=&after=&limit=` (see [`transcript_page`]): the turns the session of the chat took on its thread.
 fn chat_transcript(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let id = p.get("id");
     let Some(chat) = app.chats.get(id) else {
         return Response::error(404, &format!("no chat {id}"));
     };
-    let after = req
-        .query_param("after")
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    let limit = req
-        .query_param("limit")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(200)
-        .min(1000);
-    let entries = match crate::work_loop::chat_cid(app, &chat) {
-        Some(cid) => app
-            .transcripts
-            .on_thread(cid, &format!("chat:{id}"), after, limit),
-        None => Vec::new(),
-    };
-    Response::json(200, &entries)
+    let cid = crate::work_loop::chat_cid(app, &chat);
+    transcript_page(app, req, cid, Scope::Thread(&format!("chat:{id}")))
 }
 
 #[derive(Deserialize)]

@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(collection_name("CREDIT_LINE"), "credit_lines");
         assert_eq!(collection_name("OPINION"), "opinions");
         assert_eq!(collection_name("WorkGroup"), "work_groups");
-        assert_eq!(collection_name("Town"), "towns");
+        assert_eq!(collection_name("Plaza"), "plazas");
         assert_eq!(collection_name("Run"), "runs");
         assert_eq!(collection_name("SUCCESSOR_OF"), "successor_ofs");
     }

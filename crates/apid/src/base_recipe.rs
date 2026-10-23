@@ -10,12 +10,21 @@
 //! The recipe engine (4.1) takes this list over as the built-in `base` recipe (21.1): the steps and their order move
 //! there unchanged. Its caller is base_builds.rs, the hub's build of a base on a landing (16.4).
 
+use std::path::Path;
+
+use apz_lsp::bridge::{self, WARM_DIR};
 use apz_lsp::{Language, ServerSpec};
 
 use crate::project_stack::{Stack, Toolchain};
 
 /// The guest image a base starts from: the OS template every node has (noded's workspace image).
 pub const OS_TEMPLATE: &str = "workspace";
+/// The harness binary in the guest (`hooks.rs` names it the same way). Its `lsp-serve` and `lsp-warm` commands run a
+/// base's language servers behind their sockets, and warm them (PLAN 3.8).
+pub const HARNESS: &str = "/usr/bin/agent-harness";
+/// How long a base's warm-up waits for each server to index, in seconds: a server that has not indexed by then is
+/// snapshotted as it is, and the fork's first query waits for it as it would on any cold server.
+pub const WARM_WAIT_S: &str = "300";
 /// The checkout's directory in the VM: the agent's `/workspace`.
 pub const WORKSPACE: &str = "/workspace";
 /// How long one command may run before its step fails (30 minutes).
@@ -157,6 +166,14 @@ pub fn steps(stack: &Stack, kind: BaseKind, repo: &str, commit: &str) -> Vec<Ste
             steps.push(Step::Run(command(&label, &argv_refs(&argv))));
         }
     }
+    if stack.toolchains.contains_key(&Toolchain::Rust) {
+        // Rust's build daemon (PLAN 3.8): sccache's server, started on a fresh VM before anything compiles, so it is
+        // up when the base is snapshotted and every fork's compiles reach it.
+        steps.push(Step::Run(command(
+            "start sccache",
+            &["sccache", "--start-server"],
+        )));
+    }
     steps.push(Step::Checkout {
         repo: repo.to_string(),
         commit: commit.to_string(),
@@ -168,9 +185,22 @@ pub fn steps(stack: &Stack, kind: BaseKind, repo: &str, commit: &str) -> Vec<Ste
     for argv in commands(stack.build.build.as_ref(), stack, Toolchain::build) {
         steps.push(Step::Run(command("build", &argv_refs(&argv))));
     }
-    for spec in servers(&stack.languages) {
+    // Each server runs behind its socket for the VM's life (PLAN 3.8), and is warmed before the snapshot: the warm-up
+    // waits until the server has indexed, so a fork restored from the base finds it running and indexed.
+    let servers = servers(&stack.languages);
+    for spec in &servers {
         let label = format!("start {}", spec.id);
-        steps.push(Step::Background(command(&label, &server_argv(spec))));
+        steps.push(Step::Background(command(
+            &label,
+            &argv_refs(&harness_argv("lsp-serve", spec, &[])),
+        )));
+    }
+    for spec in &servers {
+        let label = format!("warm {}", spec.id);
+        steps.push(Step::Run(command(
+            &label,
+            &argv_refs(&harness_argv("lsp-warm", spec, &["--wait", WARM_WAIT_S])),
+        )));
     }
     if kind == BaseKind::Test {
         for service in &stack.services {
@@ -226,10 +256,24 @@ fn servers(languages: &[Language]) -> Vec<&'static ServerSpec> {
     specs
 }
 
-fn server_argv(spec: &ServerSpec) -> Vec<&str> {
-    std::iter::once(spec.command)
-        .chain(spec.args.iter().copied())
-        .collect()
+/// The harness's command for a server (PLAN 3.8): `lsp-serve` runs the server behind its socket, `lsp-warm` warms it.
+/// Both name the server by its id, and the socket it listens on in the VM's warm directory.
+fn harness_argv(verb: &str, spec: &ServerSpec, rest: &[&str]) -> Vec<String> {
+    let socket = bridge::socket_path(Path::new(WARM_DIR), spec.id)
+        .to_string_lossy()
+        .into_owned();
+    let mut argv = vec![
+        HARNESS,
+        verb,
+        "--id",
+        spec.id,
+        "--socket",
+        socket.as_str(),
+        "--root",
+        WORKSPACE,
+    ];
+    argv.extend_from_slice(rest);
+    argv.into_iter().map(str::to_string).collect()
 }
 
 fn argv_refs(argv: &[String]) -> Vec<&str> {
@@ -339,10 +383,6 @@ setup = [["make", "seed"]]
         Step::Background(cached(label, argv))
     }
 
-    fn plain_background(label: &str, argv: &[&str]) -> Step {
-        Step::Background(Command::new(label, argv))
-    }
-
     /// Records every step it is given; fails at step `fail_at` (0-based) when set.
     #[derive(Default)]
     struct FakeRunner {
@@ -388,6 +428,7 @@ setup = [["make", "seed"]]
                 run("install rust 1.88.0", &["rustup", "default", "1.88.0"]),
                 run("install node 24", &["fnm", "install", "24"]),
                 run("install node 24", &["fnm", "default", "24"]),
+                run("start sccache", &["sccache", "--start-server"]),
                 Step::Checkout {
                     repo: "repo-1".into(),
                     commit: "abc123".into(),
@@ -397,16 +438,59 @@ setup = [["make", "seed"]]
                 run("fetch dependencies", &["npm", "ci"]),
                 run("build", &["cargo", "build", "--all-targets"]),
                 run("build", &["npm", "run", "build", "--if-present"]),
-                background("start rust-analyzer", &["rust-analyzer"]),
-                background(
+                background_owned("start rust-analyzer", &serve("rust-analyzer")),
+                background_owned(
                     "start typescript-language-server",
-                    &["typescript-language-server", "--stdio"],
+                    &serve("typescript-language-server"),
+                ),
+                run_owned("warm rust-analyzer", &warm("rust-analyzer")),
+                run_owned(
+                    "warm typescript-language-server",
+                    &warm("typescript-language-server"),
                 ),
                 Step::Snapshot {
                     kind: BaseKind::Build,
                 },
             ]
         );
+    }
+
+    /// The harness command that runs server `id` behind its socket in the VM.
+    fn serve(id: &str) -> Vec<String> {
+        lsp("lsp-serve", id, &[])
+    }
+
+    /// The harness command that warms server `id`, waiting the recipe's time for it to index.
+    fn warm(id: &str) -> Vec<String> {
+        lsp("lsp-warm", id, &["--wait", "300"])
+    }
+
+    fn lsp(verb: &str, id: &str, rest: &[&str]) -> Vec<String> {
+        let socket = format!("/workspace/.plaza/lsp/{id}.sock");
+        let mut argv = vec![
+            "/usr/bin/agent-harness",
+            verb,
+            "--id",
+            id,
+            "--socket",
+            socket.as_str(),
+            "--root",
+            "/workspace",
+        ];
+        argv.extend_from_slice(rest);
+        argv.into_iter().map(str::to_string).collect()
+    }
+
+    fn refs(argv: &[String]) -> Vec<&str> {
+        argv.iter().map(String::as_str).collect()
+    }
+
+    fn run_owned(label: &str, argv: &[String]) -> Step {
+        run(label, &refs(argv))
+    }
+
+    fn background_owned(label: &str, argv: &[String]) -> Step {
+        background(label, &refs(argv))
     }
 
     #[test]
@@ -448,7 +532,7 @@ setup = [["make", "seed"]]
         let steps = steps(&stack, BaseKind::Build, "r", "c");
         let phases: Vec<Step> = steps
             .iter()
-            .filter(|s| matches!(s, Step::Run(c) if c.label != "install rust 1.88.0"))
+            .filter(|s| matches!(s, Step::Run(c) if c.label == "fetch dependencies" || c.label == "build"))
             .cloned()
             .collect();
         assert_eq!(phases, vec![run("fetch dependencies", &["just", "fetch"])]);
@@ -468,7 +552,15 @@ setup = [["make", "seed"]]
                 _ => None,
             })
             .collect();
-        assert_eq!(runs, vec!["install python 3.13", "fetch dependencies"]);
+        assert_eq!(
+            runs,
+            vec![
+                "install python 3.13",
+                "fetch dependencies",
+                "warm pyright",
+                "warm typescript-language-server",
+            ]
+        );
         let servers: Vec<Step> = steps
             .iter()
             .filter(|s| matches!(s, Step::Background(_)))
@@ -477,13 +569,15 @@ setup = [["make", "seed"]]
         assert_eq!(
             servers,
             vec![
-                plain_background("start pyright", &["pyright-langserver", "--stdio"]),
-                plain_background(
+                Step::Background(Command::new("start pyright", &refs(&serve("pyright")))),
+                Step::Background(Command::new(
                     "start typescript-language-server",
-                    &["typescript-language-server", "--stdio"],
-                ),
+                    &refs(&serve("typescript-language-server")),
+                )),
             ]
         );
+        // No Rust, so no build daemon to start.
+        assert!(!steps.iter().any(|s| s.label().contains("sccache")));
     }
 
     #[test]
@@ -550,8 +644,8 @@ setup = [["make", "seed"]]
             }
         );
         assert_eq!(
-            checkout, 5,
-            "the checkout follows the toolchains (Start, rust's two, node's two)"
+            checkout, 6,
+            "the checkout follows the toolchains (Start, rust's two, node's two) and sccache's start"
         );
         // The file a fork's checkout gets: git reads the node's objects from the volume, the fork keeps its own.
         assert_eq!(

@@ -22,6 +22,9 @@ pub struct Capabilities {
     pub native_skills: bool,
     /// Whether the engine runs hooks from its settings (PLAN 14.3). Not rendered yet: hooks (PLAN 1.7) are not built.
     pub hooks: bool,
+    /// The environment variable that sets the share of its context window (per cent) at which the engine compacts
+    /// its own conversation, when the engine has one. The plaza sets it from the agent's `compact_at_pct`.
+    pub compaction_env: Option<&'static str>,
 }
 
 /// The capabilities of every engine the catalogue pins. Claude Code reads CLAUDE.md, Gemini CLI GEMINI.md,
@@ -33,6 +36,7 @@ const TABLE: &[Capabilities] = &[
         instructions: Some("CLAUDE.md"),
         native_skills: true,
         hooks: true,
+        compaction_env: Some("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"),
     },
     Capabilities {
         engine: "codex",
@@ -40,6 +44,7 @@ const TABLE: &[Capabilities] = &[
         instructions: Some("AGENTS.md"),
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "opencode",
@@ -47,6 +52,7 @@ const TABLE: &[Capabilities] = &[
         instructions: Some("AGENTS.md"),
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "gemini",
@@ -54,6 +60,7 @@ const TABLE: &[Capabilities] = &[
         instructions: Some("GEMINI.md"),
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "qwen",
@@ -61,6 +68,7 @@ const TABLE: &[Capabilities] = &[
         instructions: None,
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "kilo",
@@ -68,6 +76,7 @@ const TABLE: &[Capabilities] = &[
         instructions: None,
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "cline",
@@ -75,6 +84,7 @@ const TABLE: &[Capabilities] = &[
         instructions: None,
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "copilot",
@@ -82,6 +92,7 @@ const TABLE: &[Capabilities] = &[
         instructions: None,
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "goose",
@@ -89,6 +100,7 @@ const TABLE: &[Capabilities] = &[
         instructions: None,
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "kimi",
@@ -96,6 +108,7 @@ const TABLE: &[Capabilities] = &[
         instructions: None,
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "auggie",
@@ -103,6 +116,7 @@ const TABLE: &[Capabilities] = &[
         instructions: None,
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
     Capabilities {
         engine: "vibe",
@@ -110,6 +124,7 @@ const TABLE: &[Capabilities] = &[
         instructions: None,
         native_skills: false,
         hooks: false,
+        compaction_env: None,
     },
 ];
 
@@ -170,6 +185,7 @@ impl Instructions {
     }
 
     /// The file this wrote.
+    #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }

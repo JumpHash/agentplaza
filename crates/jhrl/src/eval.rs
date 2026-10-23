@@ -1730,7 +1730,8 @@ mod tests {
             ),
             (
                 "t.jhrl".into(),
-                "pack town\nimport k\nconstraint \"Research towns keep fewer contacts\" contacts_max(a) {\n where a.town.template == \"research\"\n value 60\n priority 10\n}\nconstraint \"Loose\" contacts_max(a) { where a.town.template == \"open\"\n value 500 }"
+                "pack project
+import k\nconstraint \"Research projects keep fewer contacts\" contacts_max(a) {\n where a.project.template == \"research\"\n value 60\n priority 10\n}\nconstraint \"Loose\" contacts_max(a) { where a.project.template == \"open\"\n value 500 }"
                     .into(),
             ),
         ]);
@@ -1738,11 +1739,11 @@ mod tests {
             d.iter().all(|x| !x.msg.contains("unknown pack `k`")),
             "{d:?}"
         );
-        assert!(p.set_tier("town", crate::resolve::Tier::Town));
+        assert!(p.set_tier("project", crate::resolve::Tier::Plaza));
         let kp = p.pack_by_name("k").unwrap();
-        let tp = p.pack_by_name("town").unwrap();
-        let research = ok_in(&p, tp, "{town: {template: \"research\"}}");
-        let open = ok_in(&p, tp, "{town: {template: \"open\"}}");
+        let tp = p.pack_by_name("project").unwrap();
+        let research = ok_in(&p, tp, "{project: {template: \"research\"}}");
+        let open = ok_in(&p, tp, "{project: {template: \"open\"}}");
         let Item::Kind(kd) = p.item(p.lookup_decl(kp, "contacts_max").unwrap()).clone() else {
             panic!()
         };
@@ -1750,12 +1751,12 @@ mod tests {
         assert_eq!(kind_value(&ex, &kd), Value::int(60));
         assert_eq!(
             ex.decided_by,
-            vec!["Research towns keep fewer contacts".to_string()]
+            vec!["Research projects keep fewer contacts".to_string()]
         );
         let ex = resolve_kind(&p, &kd, kp, vec![open], Span::default()).unwrap();
         assert_eq!(kind_value(&ex, &kd), Value::int(150));
         assert_eq!(ex.no_effect, vec!["Loose".to_string()]);
-        // A missing town makes the where unknown, so the town rule doesn't apply.
+        // A missing project makes the where unknown, so the project rule doesn't apply.
         let nobody = ok_in(&p, tp, "{name: \"x\"}");
         let ex = resolve_kind(&p, &kd, kp, vec![nobody], Span::default()).unwrap();
         assert_eq!(kind_value(&ex, &kd), Value::int(150));

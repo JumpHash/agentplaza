@@ -114,8 +114,11 @@ fn save_one(app: &App, c: &Component) -> Result<bool, StoreError> {
     if changes.is_empty() {
         return Ok(false);
     }
+    let name = c.name;
     let written = app.store.db(crate::store::PLAZA).write(move |conn| {
         apz_store::table::apply(conn, def, &changes)?;
+        // The component's full-text index, if it has one, is rebuilt in the same transaction (store/search.rs).
+        crate::store::search::reindex(conn, name)?;
         Ok(changes)
     })?;
     app.saved

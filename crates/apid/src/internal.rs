@@ -544,7 +544,7 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
         ty: "Host".into(),
         id: host.into(),
     };
-    // The host's group is not known here (the towns' host-groups document is not code), so a law
+    // The host's group is not known here (the projects' host-groups document is not code), so a law
     // that names a group sees an empty one.
     let attrs =
         std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str(""))]);
@@ -606,6 +606,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 ok: false,
                 response: None,
                 error: Some("unknown agent".to_string()),
+                window: None,
             }),
             GuestMessage::ToolRequest { call, .. } => Some(HostMessage::ToolDecision {
                 call,
@@ -771,6 +772,10 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             reason,
             summary,
         } => {
+            // The summary also goes into the task's journal, where the next session and the curator read it.
+            if !summary.is_empty() {
+                crate::journal::record_compaction(app, cid, &summary);
+            }
             app.transcripts.record(
                 &app.bus,
                 cid,
@@ -828,6 +833,7 @@ fn model_call(
             ok: false,
             response: None,
             error: Some(e),
+            window: None,
         };
     }
     // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent whose project is
@@ -854,6 +860,7 @@ fn model_call(
             ok: false,
             response: None,
             error: Some(e),
+            window: None,
         };
     }
     // The model of the chat the call is for (one message's choice, else the chat's own) before the agent's model.
@@ -872,6 +879,7 @@ fn model_call(
             ok: false,
             response: None,
             error: Some(e),
+            window: None,
         };
     }
     request.model = model.clone();
@@ -910,6 +918,7 @@ fn model_call(
                 ok: false,
                 response: None,
                 error: Some(paused),
+                window: None,
             };
         }
     };
@@ -1035,6 +1044,7 @@ fn model_call(
                 ok: true,
                 response: Some(resp),
                 error: None,
+                window: crate::providers::context_window(app, &model),
             }
         }
         Err(e) => {
@@ -1052,6 +1062,7 @@ fn model_call(
                 ok: false,
                 response: None,
                 error: Some(message),
+                window: None,
             }
         }
     }

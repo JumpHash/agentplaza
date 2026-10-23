@@ -22,6 +22,7 @@ use flate2::write::DeflateEncoder;
 use serde_json::{Value, json};
 
 use crate::identity::{self, Identity};
+use crate::tunnel::{self, Connect};
 use crate::{forward, join};
 
 /// How often the node reports itself.
@@ -39,6 +40,8 @@ pub struct Local {
     /// The node's internal token, sent on every call to noded and vsockd (`run` sets it to
     /// `node/internal-token`, the file they are started with).
     pub token: InternalToken,
+    /// vsockd's inbound listener, on loopback: the port streams from the hub are handed to it (`inbound.rs`).
+    pub inbound: u16,
 }
 
 impl Default for Local {
@@ -48,6 +51,7 @@ impl Default for Local {
             vsockd: 9180,
             forward: 7701,
             token: InternalToken::none(),
+            inbound: 19095,
         }
     }
 }
@@ -170,7 +174,7 @@ fn hub_request(
     let target = identity
         .signed(key, method, path, body.unwrap_or_default())
         .map_err(Failure::Retry)?;
-    let reply = client::request(&target, method, path, body, timeout)
+    let reply = tunnel::request(&target, method, path, body, timeout)
         .map_err(|err| Failure::Retry(err.to_string()))?;
     match reply.status {
         200..=299 => Ok(reply.body),
@@ -410,32 +414,51 @@ fn deliver(identity: &Identity, key: &NodeKey, path: &str, result: &Value) -> Re
     }
 }
 
+/// The node's link to the hub. The tunnel is opened and served until it ends; a hub that predates it gets one long
+/// poll for commands (results posted as before) between tries at the tunnel. A refused upgrade is a revoked node.
 fn command_loop(identity: &Identity, key: &NodeKey, local: &Local) -> Result<(), String> {
-    let poll_path = format!("/v1/nodes/{}/commands?wait=25", identity.node_id);
-    let results_path = format!("/v1/nodes/{}/results", identity.node_id);
     let mut backoff = BACKOFF_MIN;
-    let mut connected: Option<bool> = None;
+    let mut failing = false;
     loop {
-        match poll_commands(identity, key, &poll_path) {
-            Ok(commands) => {
-                if connected != Some(true) {
-                    eprintln!("connected to the hub");
-                    connected = Some(true);
-                }
+        match tunnel::connect(identity, key) {
+            Ok(mux) => {
+                eprintln!("connected to the hub");
+                failing = false;
                 backoff = BACKOFF_MIN;
-                for command in &commands {
-                    deliver(identity, key, &results_path, &execute(local, command))?;
-                }
+                tunnel::serve(mux, local.clone());
+                eprintln!("the tunnel to the hub ended; reconnecting");
+                thread::sleep(BACKOFF_MIN);
             }
-            Err(Failure::Revoked) => return Err(revoked()),
-            Err(Failure::Retry(message)) => {
-                if connected != Some(false) {
+            Err(Connect::Revoked) => return Err(revoked()),
+            Err(Connect::Legacy) => poll_once(identity, key, local)?,
+            Err(Connect::Failed(message)) => {
+                if !failing {
                     eprintln!("retrying the hub: {message}");
-                    connected = Some(false);
                 }
+                failing = true;
                 thread::sleep(backoff);
                 backoff = (backoff * 2).min(BACKOFF_MAX);
             }
+        }
+    }
+}
+
+/// One long poll of the hub's command queue (a hub that predates the tunnel), with each command's result posted back.
+fn poll_once(identity: &Identity, key: &NodeKey, local: &Local) -> Result<(), String> {
+    let poll_path = format!("/v1/nodes/{}/commands?wait=25", identity.node_id);
+    let results_path = format!("/v1/nodes/{}/results", identity.node_id);
+    match poll_commands(identity, key, &poll_path) {
+        Ok(commands) => {
+            for command in &commands {
+                deliver(identity, key, &results_path, &execute(local, command))?;
+            }
+            Ok(())
+        }
+        Err(Failure::Revoked) => Err(revoked()),
+        Err(Failure::Retry(message)) => {
+            eprintln!("retrying the hub: {message}");
+            thread::sleep(BACKOFF_MIN);
+            Ok(())
         }
     }
 }

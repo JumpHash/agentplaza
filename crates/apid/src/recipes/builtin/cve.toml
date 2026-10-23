@@ -1,0 +1,35 @@
+# The cve recipe (PLAN 21.1, 24). Stub: it needs the security phase (24); none runs yet. A vulnerability is assessed,
+# patched, and released.
+id = "cve"
+name = "Vulnerability"
+description = "Stub until the security phase (24): declares its steps, none runs yet."
+version = 1
+inputs = ["advisory"]
+outputs = ["release"]
+triggers = ["advisory.matched"]
+
+[[steps]]
+id = "assess"
+engine = "cve"
+gate = ["passed"]
+
+[[steps]]
+id = "patch"
+engine = "cve"
+gate = ["passed", "tests green"]
+
+[[steps]]
+id = "release"
+engine = "cve"
+gate = ["passed"]
+output = "release"
+
+[[edges]]
+from = "assess"
+to = "patch"
+when = "passed"
+
+[[edges]]
+from = "patch"
+to = "release"
+when = "passed"

@@ -28,9 +28,10 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use apz_http::mux::Mux;
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_metrics::wire::Batch;
 use apz_metrics::{EntityKind, SeriesKey};
@@ -439,6 +440,8 @@ pub struct Store {
     queue_signal: Condvar,
     results: Mutex<BTreeMap<String, CommandResult>>,
     result_signal: Condvar,
+    /// Per node with a live tunnel: the connection its streams run on (`tunnel.rs`).
+    tunnels: Mutex<BTreeMap<String, Arc<Mux>>>,
     /// The last command sequence number handed out (`k<seq>`).
     seq: AtomicU64,
     /// Nonces seen (node id, nonce) → expiry ms; join attempts per source address.
@@ -793,6 +796,38 @@ impl Store {
             .map(|q| q.drain(..).collect())
             .unwrap_or_default()
     }
+    /// Records the tunnel a node just opened. A tunnel it had before is replaced.
+    pub fn set_tunnel(&self, node: &str, mux: Arc<Mux>) {
+        let mut tunnels = self.tunnels.lock().unwrap_or_else(|e| e.into_inner());
+        tunnels.insert(node.to_string(), mux);
+    }
+    /// Forgets a node's tunnel, when it is still `mux`.
+    pub fn clear_tunnel(&self, node: &str, mux: &Arc<Mux>) {
+        let mut tunnels = self.tunnels.lock().unwrap_or_else(|e| e.into_inner());
+        if tunnels.get(node).is_some_and(|now| Arc::ptr_eq(now, mux)) {
+            tunnels.remove(node);
+        }
+    }
+    /// The node's tunnel, while it is up.
+    #[cfg(test)]
+    pub fn tunnel(&self, node: &str) -> Option<Arc<Mux>> {
+        let tunnels = self.tunnels.lock().unwrap_or_else(|e| e.into_inner());
+        tunnels.get(node).filter(|mux| mux.alive()).cloned()
+    }
+    /// Opens a stream to a fork's port on a node, through the node's tunnel: what is written goes to the fork, and
+    /// what the fork sends comes back on the stream. (Not yet called outside tests: terminals and model calls to remote
+    /// forks are wired by the later PRs.)
+    #[cfg(test)]
+    pub fn open_port(
+        &self,
+        node: &str,
+        cid: u64,
+        port: u16,
+    ) -> Result<apz_http::mux::Stream, String> {
+        let mux = self.tunnel(node).ok_or("the node has no tunnel")?;
+        let header = serde_json::json!({"kind": "port", "cid": cid, "port": port}).to_string();
+        mux.open(header.as_bytes()).map_err(|err| err.to_string())
+    }
     /// Stores a command's result and wakes whoever waits for it.
     pub fn put_result(&self, _node: &str, result: CommandResult) {
         if let Ok(mut results) = self.results.lock() {
@@ -986,6 +1021,13 @@ pub fn routes(router: Router<App>) -> Router<App> {
         )
         .get("/v1/nodes/{id}/commands", commands_route)
         .doc(RouteDoc::new("Long-poll a node for its next commands"))
+        .get("/v1/nodes/{id}/tunnel", tunnel_route)
+        .doc(
+            RouteDoc::new(
+                "Open a node's tunnel: a WebSocket that carries its streams (signed by the node)",
+            )
+            .errors(&[401]),
+        )
         .post("/v1/nodes/{id}/results", results_route)
         .doc(RouteDoc::new("Report the result of a node's command").errors(&[400]))
         .post("/v1/nodes/{id}/heartbeat", heartbeat_route)
@@ -1200,6 +1242,29 @@ fn commands_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         .unwrap_or(25)
         .min(25);
     Response::json(200, &app.nodes.take(&node.id, wait * 1000))
+}
+
+/// The node's tunnel (`tunnel.rs`): authenticated by its signature, then the WebSocket upgrade. The node's requests over
+/// it are answered by the same routes as HTTP requests.
+fn tunnel_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let node = match signed_node(app, req, p) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
+    let Some(router) = app.routes.get().map(Arc::clone) else {
+        return Response::error(503, "the hub is starting");
+    };
+    let weak = app.handle();
+    let dispatch: crate::tunnel::Dispatch = Arc::new(move |request: &Request| {
+        let Some(app) = weak.upgrade() else {
+            return Response::error(503, "the hub is stopping");
+        };
+        match crate::hub_auth::gate(&app, request) {
+            Some(refused) => refused,
+            None => router.handle(&app, request),
+        }
+    });
+    crate::tunnel::open(req, node.id, Arc::clone(&app.nodes), dispatch)
 }
 
 fn results_route(app: &App, req: &Request, p: &Params<'_>) -> Response {

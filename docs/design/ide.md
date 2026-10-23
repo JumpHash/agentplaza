@@ -9,8 +9,8 @@ What differs from this plan:
 
 - **Terminal.** The web uses xterm.js, not Ghostty's wasm build. The desktop draws `apz-vt` (a VT screen over `vte`) on
   an iced canvas. The PTY is always in the VM or on the workstation, never on the desktop (open question 9).
-- **Repo writes.** A repo edit is a commit made through the Forgejo contents API as the admin token, the token the Git
-  screen already uses (open question 2, kept as built).
+- **Repo writes.** A repo edit is the owner's Weft change on `main`, signed for the owner by the hub, and it lands at
+  once (open question 2).
 - **Owner actions skip the laws classifier** (open question 4: no). Each owner write, branch, pull request, restore,
   run and stop is written to the audit (`ide_audit`).
 - **Restore** is for agent workspaces. A repo uses git revert, and a station has no checkpoints.
@@ -32,8 +32,7 @@ desktop, and shared with the web through wasm.
 
 - **Agent workspace.** The `/workspace` of one agent's VM. This is the live working copy of an agent. The agent may
   be writing to it while the owner looks. Its work is saved as checkpoints under `<workspace>/.plaza/checkpoints/`.
-- **Project repo.** The Forgejo repo of a project (org `agentplaza`), at one branch. Edits become commits and pull
-  requests.
+- **Project repo.** The Weft repo of a project, on `main`. An edit lands at once, and a checkpoint is a landing.
 - **Station.** An online workstation's work folder (`station:<id>`, see `docs/design/workstations.md`). Its files,
   runs and terminals go to the workstation's daemon. It has no checkpoints, so no changes, restore or branch.
 
@@ -46,7 +45,7 @@ In scope: view and edit files, see what changed (since a checkpoint, or against 
 pending writes, run a bounded command, and (last) a terminal in the VM.
 
 Out of scope: multi-user live editing, extensions, language servers, debuggers, remote hosts outside the hub, a host
-shell, and any second store for plaza data. The IDE does not replace agent memory or tools.
+shell, and any second store for plaza data. The IDE does not replace the agents' tools.
 
 Entry points: the top bar button; agent detail "Open workspace"; project page "Open repo"; task page "Review changes"
 (the diff since the checkpoint taken when that work began); Git screen "Open in IDE" on a file or pull request diff.
@@ -92,7 +91,7 @@ Reuse these. Do not build a second copy.
 - **Agents, conversations, tasks, projects.** `/v1/agents/{cid}` (`/profile`, `/transcript`, `/control`, `/permissions`),
   `/v1/conversations`, `/v1/tasks/{id}`, `/v1/projects/{id}`. Each has a web view (`views/agent-detail.ts`,
   `views/tasks.ts`, `views/projects.ts`) and a desktop screen (`screens/agent.rs`, `screens/tasks.rs`,
-  `screens/projects.rs`). Each project gets a Forgejo repo when opened.
+  `screens/projects.rs`). Each project gets a Weft repo when opened.
 - **Git.** `/v1/git/repos/{repo}` with `tree`, `file`, `branches`, `commits`, `pulls`, review and merge. A pull's
   `diff` is in its detail (`crates/apid/src/git.rs` around line 778). Web: `views/git.ts`. Desktop: `screens/git.rs`,
   which already browses trees and files read-only.
@@ -294,11 +293,10 @@ UI shows the conflict. Restore brings back a checkpoint.
 Tests: stale-hash and concurrent-write conflict tests; a restore round trip; an audit entry test.
 
 **Phase 3. Repos.** Read through the existing git routes plus compare and single-commit diff. Commit and push with
-the Forgejo contents API as the chosen identity (open question 2). Open a PR from the IDE. Merge and review stay on the
+Weft as the chosen identity (open question 2). Open a PR from the IDE. Merge and review stay on the
 Git screen.
 Done: the owner edits a project file on a branch, commits, opens a PR, and sees it on the Git screen.
-Tests: `git.rs` unit tests with a mock Forgejo, and an integration run against the local Forgejo in Docker
-(`127.0.0.1:3300`). A test checks the commit author.
+Tests: `git.rs` unit tests with a mock Weft server. A test checks the commit author.
 
 **Phase 4. Approvals and runs.** The Approvals tab shows held agent writes with diffs; approve and reject from the IDE.
 The Run tab runs one bounded command in the workspace (timeout, output cap, exit code, stop). The Agent tab shows the
@@ -337,7 +335,7 @@ reloads, theme polish.
 
 1. Owner writes to an agent workspace: allowed silently with a checkpoint and audit (proposed), or does the owner
    have to add a note?
-2. Repo commits: which Forgejo identity? The admin token (as the Git screen uses it now), or a dedicated owner user?
+2. Repo changes: which identity signs them? The hub for the owner (as built), or a dedicated owner key?
 3. Should the IDE open the AgentPlaza source repo itself? Proposed: no. Only agent workspaces and project repos.
 4. Should owner runs and writes pass the laws classifier (`laws.rs`)?
 5. Shortcut `mod+shift+e`: check it against browser and OS shortcuts before we commit.

@@ -344,12 +344,32 @@ impl Board {
         state.next_req
     }
 
-    fn finish(&self, id: u64, report: Report) {
+    /// Ends helper `id` with `report`: its thread calls this, and so does a test that stands in for the dispatcher.
+    pub(crate) fn finish(&self, id: u64, report: Report) {
         if let Some(record) = locked(&self.state).helpers.get_mut(&id) {
             record.phase = Phase::Ended(report);
         }
         self.changed.notify_all();
         let _ = self.send(Event::Ended);
+    }
+}
+
+/// Runs `spawn_helper` or `await_helper` for work item `work` on `board`, as the agent's own loop does, and any
+/// other name is not a helper tool. The agent's loop and the plaza's MCP server (for a vendor engine, through the hub's
+/// gate) both answer through here, so a helper is started and awaited the same way wherever it is asked for.
+pub fn run_tool(
+    board: &Board,
+    work: u64,
+    profile: Option<&AgentProfile>,
+    policy: Option<PolicySnapshot>,
+    name: &str,
+    input: &Value,
+) -> Result<String, String> {
+    match (name, profile) {
+        ("spawn_helper", Some(profile)) => board.spawn(work, profile, policy, input),
+        ("spawn_helper", None) => Err("this agent has no model".to_string()),
+        ("await_helper", _) => board.await_report(input),
+        _ => Err(format!("{name} is not a helper tool")),
     }
 }
 

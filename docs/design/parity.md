@@ -1,194 +1,274 @@
-# Web and desktop parity tracker
+# Work-engine parity: what each console offers
 
-Owner's rule: the web console and the desktop app have 1:1 parity, in full. This file tracks what one side has and the
-other lacks, from an audit on 2026-10-13. The audit compared the hub API calls each screen makes, plus the shared UI
-features. Tick an item off when it lands, with its commit.
+This file says what each console offers for the work engine: sessions, seats, the inbox, budgets, chats, projects, the
+work and task flow, landing through Weft, the change recipe and reviews, nodes and the IDE workspace. It is taken from the
+code as it stands on 2026-10-23 (branch eng/07). It replaces the audit of 2026-10-13 and its later passes.
 
-The 3D views are one Rust engine on both apps. three.js is deleted from the web (`987394f`, the last phase of
-`docs/design/engine.md`, done), so the web's 3D is the engine too. Both apps get the same Floor, Machines thumbnails,
-portraits and labs.
+The owner's rule is 1:1 parity between the web console and the desktop app. The CLI and the terminal UI (TUI) are shown
+for the record; their gaps are not parity gaps.
 
-## Desktop gaps (web has it)
+## How to read it
 
-Audited on 2026-10-13 against the code (each row checked by the hub endpoints both apps call).
+Each feature has one row per console. offered: the console does it end to end. partial: some of it, or read-only; the
+note says which. missing: no way to do it; the note names the route when there is one. The CLI/TUI row is offered only
+when both the CLI and the TUI have the feature.
 
-| # | Screen | What | State |
-|---|---|---|---|
-| 1 | Vault | Unseal and seal, slots (passphrase, key file), recovery code, rekey | done |
-| 2 | Vault | Secret create, update and remove, rollback, test | done |
-| 3 | Vault | `.env` import, audit log with chain verify, consumers per node matrix | done; verify names the first broken entry in both apps (845a960) |
-| 4 | MCP | Catalogue, servers list and detail, start, stop, test, tools, logs | done |
-| 5 | MCP | Add and edit wizard, with secrets and the test step | done |
-| 6 | MCP | *This hub as a server*: modes, tokens, call log | done |
-| 7 | Git | Code browser: branches, commits, tree, file viewer | done |
-| 8 | Git | PR list and detail | done |
-| 9 | Nodes | Node link: status, join by code, leave; per-node machine and runs | done: status, join and leave through `/v1/node-link` (845a960); per-node detail from `/v1/machines`, as on the web. on a remote hub Start and Stop are left to the node's own machine |
-| 10 | Sign-in | Remote hub: owner-token paste, hub identity, sign-out, identity pinned on first use | done in both apps (845a960) |
-| 11 | Machines | Row expands into the live 3D orbit view (engine) | done |
-| 12 | Memory | Memory graph view | done (845a960); both apps seed the layout alike |
-| 13 | Approvals | Action kinds `lift`, `acknowledge`, `retire` | done |
-| 14 | Lab | Model lifecycle `shadow`, `promote`, `retire` | done |
-| 15 | Agent profile | 3D portrait (engine) | done |
-| 16 | Shell | Toasts, a theme switch, conversation search and pagination, task withdraw, connector secret clear | done |
-| 17 | Prompts | The prompt library: list, editor, versions, compare, publish, history, rules | done in both apps (e91d418); the desktop checks locally with the same `apz-prompt` crate |
-| 18 | Skills | The skill library: list, New, Import (zip, .skill; a folder on the desktop), From GitHub, Export, the editor (file tree, preview, findings, versions, compare, history, rules, bindings, publish, GitHub update) | done in both apps (8fb8bab); the desktop checks locally with `apz-skill` |
-| 19 | Work | The project as one flow (`apps/web/src/views/work.ts`, `apps/desktop/src/console/screens/work.rs`): the plan column, the tasks laid out by `crates/apz-graph` in the order their `after` links allow, delivery; Waiting, Blocked and Needs you on the cards; the task drawer; "Only what needs me"; state columns when no task has a link. Beside it: the Overview's flow lines; on the Tasks screen, "waits on" chips, the Ready filter and the ready tasks nobody has claimed, by role | done in both apps (Graph 5/6 and 6/6): the desktop lays the graph out natively with the same crate and the web's card sizes, and a test lays the fixtures out both ways. The CLI prints a project's columns (`agentplaza tasks graph`) |
+Sources are repo-relative. Routes are in `crates/apid/src/work_routes.rs` and the route files named in the notes;
+`docs/api/openapi.json` lists the same paths. The web's screens are registered in `apps/web/src/views/index.ts` (the IDE
+is at `#/ide`, not in the sidebar); the desktop's sidebar is `apps/desktop/src/console/shell.rs`; the CLI's subcommands
+are in `apps/cli/src/main.rs`, and the TUI tabs in `apps/cli/src/tui/app.rs`.
 
-## Web gaps (desktop has it)
+## Sessions
 
-| # | Screen | What | State |
-|---|---|---|---|
-| 1 | Setup | First-run checks | done: `#/setup` runs them through the hub API (845a960) |
-| 2 | Setup | The start-up chooser: start locally, host, join, connect | not applicable: the web console is served by a running hub, so there is nothing to start or choose |
+A session is one run of a step of a task, a project's planner, the orchestrator, or a helper.
 
-## Screen-level audit (2026-10-13, second pass)
-
-The first audit compared the hub endpoints each app calls. This pass compared what each screen offers: actions,
-filters, fields, tabs, form checks, keyboard, empty and error states, and live updates. Every row is being closed.
-
-| Area | Gap | Side to change |
-|---|---|---|
-| Live updates | Projects, tasks (transcripts), approvals, conversations, board, council, treasury, lab datasets, recipes and HF imports refresh on hub events on the web; the desktop waited for its poll. Each desktop screen now has a `subscription` hook | desktop |
-| Projects | "Open" on a document's file | desktop |
-| Tasks, Library | Enter opens the selected row | desktop |
-| Library | video tiles (the desktop opens them in the system player) | desktop |
-| Git | the disabled Merge button says why | desktop |
-| Prompts | clear filters, try again, unsaved-changes guard, reload latest on a conflict, download .md, unpick and clear in compare | desktop |
-| New agent | approve or reject the orchestrator's proposals, a reason required to reject | desktop |
-| Memory | find filters the graph, keyboard on nodes, drag to pin, clickable backlinks with missing chips, live note refresh; a Fit control on the web | both |
-| Treasury | "Where the money goes", task-id filter, clawback kind, sortable tables | desktop |
-| Conversations | clear search, Escape closes a thread | desktop |
-| Board | Ctrl/Cmd+Enter sends a reply on both | desktop |
-| Council | role display names | web |
-| Rules | the Tools and Other groups | web |
-| Society | mean trust in and out | web |
-| Usage, lab | empty states, breeder sorts, model-detail fields, form validation messages | both, as verified |
-| Shell | `[` toggles the sidebar; STOP ALL and RESUME ask first | desktop |
-| Vault | copy-failure hint for the recovery code | desktop |
-| MCP | loading and error states; catalogue, access scopes and hub server wording made identical | both, as verified |
-| Machines | the desktop's diagnostics and live stats on the web | web |
-| Sign-in | sign out on the web | web |
-
-## Third pass (2026-10-14)
-
-What landed on 2026-10-14. Each row gives the file and line where the feature lives in each app.
-
-| Screen | What | Web | Desktop | Commit |
+| Feature | Console | Status | Note | Source |
 |---|---|---|---|---|
-| Usage | "Used by" column: where each model is used (default, orchestrator, role) | `apps/web/src/views/usage.ts:675` (column), `:412` (`settingsUses`) | `apps/desktop/src/console/screens/usage.rs:1217` (header), `:1232` (value), `:598` (`settings_uses`); the desktop had it already | bf6db01 (web) |
-| Usage | An unpriced model links to Models to set a price | `apps/web/src/views/usage.ts:686` (link "set a price under Models") | `apps/desktop/src/console/screens/usage.rs:1235` (the same link, `Msg::Go(Id::Models)`) | bf6db01 (desktop) |
-| Models | Each model's price on a provider's model list | `apps/web/src/views/models-providers.ts:144` (`api.price`), `:145` (rates line); the key is encoded by `apps/web/src/api.ts:579` | `apps/desktop/src/console/screens/models.rs:424` (`model_prices`), `:565-566` (path from `price_path`), `:572-580` (`Msg::Price`), `:1164` (`price_path`, percent-encodes the key), `:1500-1501` (the line) | bf6db01, 2816382 |
-| Treasury | "see usage" link on the real model cost | `apps/web/src/views/treasury.ts:699` (the link under the cost tile) | `apps/desktop/src/console/screens/treasury.rs:687` (`Msg::Go(Id::Usage)` on the cost tile), `:761` (the link) | bf6db01 |
-| Rules | Edit button on an owner rule | `apps/web/src/views/rules.ts:537` (Edit button per rule) | `apps/desktop/src/console/screens/rules.rs:1401` (Edit button in `rule_row`) | bf6db01 |
-| Tools | Connector Docs link opens the docs. The desktop opens https only (`openable`, `apps/desktop/src/console/ui.rs:983`); the web opens http too | `apps/web/src/views/tools.ts:274` (connector link), `:427` (proposal link, http or https) | `apps/desktop/src/console/screens/tools.rs:935` (connector link), `:1053` (proposal link), `:614` (`Msg::OpenDocs`) | bf6db01 |
-| Robot lab | Clips list (shared and species clips), draw-call readout | `apps/web/src/views/robot-lab.ts:106` (`clipsOf`), `:144` (clip choices), `:203` (readout) | `apps/desktop/src/console/screens/engine_lab.rs:352-357` (clip list), `:365` (Clip select), `:431-432` (readout); `apps/desktop/src/console/floor_engine.rs:16`, `:108` (`LAST_DRAW_CALLS`) | bf6db01, 37902f8 |
-| Room lab | Width, depth and seed commit on Enter, and clamp | `apps/web/src/views/room-lab.ts:143-144`, `:152` (commit on change: Enter or blur; an out-of-range value keeps the last one, `readNum` at `:71`, rather than clamping) | `apps/desktop/src/console/screens/engine_lab.rs:380-383` (fields), `:294-300` (`number`, `on_submit`), `:208-215` (`number_value`, clamps to 1 to 12 and rounds to halves) | bf6db01 |
-| Hardware lab | GPU buttons "0 GPUs / 1 GPU / 2 GPUs", open slider step 0.01, params sorted, readout red on errors | `apps/web/src/views/hardware-lab.ts:148` (GPU buttons), `:155` (open step), `:165` (params sorted), `:220` (red on errors) | `apps/desktop/src/console/screens/engine_lab.rs:393` (GPU buttons), `:396` (open step), `:402` (params sorted), `:440` (error flag), `:450` (summary red) | bf6db01 |
+| Session list | Web | offered | The sessions of the project in scope, live ones first. No state or task filter. | `apps/web/src/views/sessions.ts` |
+| | Desktop | offered | Live-only switch; the project comes from the top bar. | `apps/desktop/src/console/screens/sessions.rs` |
+| | CLI/TUI | offered | CLI `sessions` takes `--project`, `--task`, `--state`, `--live`. TUI Sessions tab; `p` and `P` switch the project. | `apps/cli/src/cmd/sessions.rs`, `apps/cli/src/tui/sessions.rs` |
+| Session page | Web | offered | Facts, model and usage. The expert view adds node, VM, run, engine, attempt. | `apps/web/src/views/session.ts` |
+| | Desktop | offered | The same facts on the session screen. | `apps/desktop/src/console/screens/session.rs` |
+| | CLI/TUI | partial | CLI `sessions show <id>`. TUI shows a details popup with no transcript or context. | `apps/cli/src/cmd/sessions.rs`, `apps/cli/src/tui/screens.rs` |
+| Transcript | Web | offered | Oldest first; follows the end while the reader is there. | `apps/web/src/views/session.ts` |
+| | Desktop | offered | Transcript tab. | `apps/desktop/src/console/screens/session.rs` |
+| | CLI/TUI | partial | CLI `sessions transcript <id> --follow`. TUI has none. | `apps/cli/src/cmd/sessions.rs` |
+| Context | Web | offered | What the last model call sent, by part and by tool. | `apps/web/src/views/session.ts` |
+| | Desktop | offered | Context tab. | `apps/desktop/src/console/screens/session.rs` |
+| | CLI/TUI | partial | CLI `sessions context <id>`. TUI has none. | `apps/cli/src/cmd/sessions.rs` |
+| Stop a session | Web | offered | A step stops at once; a planner or the orchestrator asks first. | `apps/web/src/views/session.ts` |
+| | Desktop | offered | The same rule. | `apps/desktop/src/console/screens/session.rs` |
+| | CLI/TUI | partial | CLI `sessions stop <id>`, which asks unless `--yes`. TUI `s` stops the whole plaza (STOP ALL), not one session. | `apps/cli/src/cmd/sessions.rs`, `apps/cli/src/tui/app.rs` |
 
-The desktop screens were checked by self-snapshot (APZ_SNAPSHOT) against a stand-in hub. The robot lab reads 117 draw calls on the default all-species view.
+## Seats and threads
 
-## Fourth pass (2026-10-14): workstations, the IDE workspace, rich content and the board
+A seat is a role in a task (builder, reviewer, and so on). One session fills a seat at a time.
 
-What landed on 2026-10-14, per surface. "Done" means the surface has the feature and the commit is listed. The CLI
-column is the CLI or TUI, which the owner's 1:1 rule does not cover, so its gaps are shown for the record.
-
-| Area | What | Web | Desktop | CLI or TUI | State |
-|---|---|---|---|---|---|
-| Workstations | List, enrol with a join code, facts, leases and the queue, settings (takeover policy, rate, recording), drain, revoke, audit | `apps/web/src/views/workstations.ts` | `apps/desktop/src/console/screens/workstations.rs` | `apps/cli/src/cmd/stations.rs` (list, show, codes, leases, settings, drain, revoke, audit); TUI tab `w` in `apps/cli/src/tui/workstations.rs` | done: `55317f9`, `42aa328`, `4e2ded9`, `f2376a1` |
-| Workstations | Live view, take over and give back | `apps/web/src/views/workstations-live.ts` | `apps/desktop/src/console/screens/workstations_live.rs` | `stations screenshot`, `stations watch`; `stations take` (the commands on stdin, give-back ends it) and `stations input` (one action); TUI `T` on the Workstations tab | web and desktop done (`5d1e3f9`, `0fb259a`); CLI done in `cli: take over a workstation from the terminal, one-shot input, and VM workstations` |
-| Workstations | Workstation VMs: list, New VM (node, OS, size, GPU, backend), delete | `apps/web/src/views/workstations-vms.ts` | `apps/desktop/src/console/screens/workstations_vms.rs` | `agentplaza stations vms` (list, create, delete) | web and desktop done (`53ea125`); CLI done (`6dcd7a9`) |
-| Workstations | Recordings: list, playback, settings | `apps/web/src/views/workstations-recordings.ts` | `apps/desktop/src/console/screens/workstations_rec.rs` | `stations recordings` (list, show, frames, delete, defaults); playback in the apps | done (`a9e0b95`, `edef6b3`, `f2376a1`) |
-| Workstations | Work folder: files, sync state, conflicts, pause and resume | `apps/web/src/views/workstations-sync.ts` | `apps/desktop/src/console/screens/workstations_files.rs` | `stations sync`, `stations files` | done (`ebc360a`, `c789528`) |
-| Machines and the Floor | Workstation kind with its live thumbnail, OS models on the Floor, screen glow by state | `apps/web/src/views/station-machine.ts`, `machine-list.ts` | `apps/desktop/src/console/screens/machines.rs`, `floor.rs` | n/a | done (`0cd7a64`) |
-| Setup | Add as a workstation | not applicable: the web is served by a hub | `apps/desktop/src/console/boot.rs` (`Choice::Workstation`), `workstation_setup.rs` | `agentplaza workstation join`, `status`, `leave` | done (`2b0d692`) |
-| IDE workspace | Agent-first layout: projects and agents, the agent's chat, terminal, editor and diff, the board, files, tasks, approvals and activity | `apps/web/src/ide/`, `apps/web/src/views/ide*.ts` | `apps/desktop/src/console/screens/ide*.rs` | TUI Workspace tab: agent tree, transcript with composer, project board | done (`7c29f76`, `a010773`, `c668a71`) |
-| IDE workspace | Owner file edits with the conflict check, search, checkpoints and restore (agent workspaces) | `apps/web/src/ide/` | `apps/desktop/src/console/screens/ide*.rs` | `agentplaza ide` (`ls`, `cat`, `edit`, `put`, `diff`, `checkpoints`, `restore`, `search`) | done (`235963d`, `33af468`) |
-| IDE workspace | Terminal in a VM or on a workstation | `apps/web/src/views/ide-term-host.ts` (xterm.js) | `apps/desktop/src/console/screens/ide_terminal.rs` (`apz-vt`) | `agentplaza ide term` | done (`728ff11`, `9af2849`, `1719fcf`, `b52d8b4`) |
-| IDE workspace | Runs with timeout and output cap | `apps/web/src/ide/` | `apps/desktop/src/console/screens/ide*.rs` | `agentplaza ide run` | done |
-| IDE workspace | Command palette (Ctrl/Cmd+K): agents, files, tasks, commands | `apps/web/src/views/ide-palette.ts` | `apps/desktop/src/console/screens/ide_palette.rs` | n/a | done |
-| IDE workspace | Station workspaces (`station:<id>`) | `apps/web/src/ide/types.ts` | `apps/desktop/src/console/screens/ide.rs` | `agentplaza ide` with `station:<id>` | done (`33af468`) |
-| Rich content | Chips, hover cards, inline images, video and HTML cards, the unfurl | `apps/web/src/ui/rich.ts`, `ui/embeds.ts` | `apps/desktop/src/console/rich.rs` | `apps/cli/src/rich.rs` (short labels, terminal hyperlinks, plain text when piped); `agentplaza unfurl` | done (`3f00303`, `2212f74`, `7592dce`, `0f5c0e4`, `7b0cad8`); the desktop takes the plaza git host from the overview (`rich.rs`), so plaza git references are chips there too |
-| Board (owner actions) | Post with `@name` and `@all`, pause and resume deliveries, export a thread or the board | `apps/web/src/board/owner.ts` | `apps/desktop/src/console/screens/board.rs` | `agentplaza board post`, `comment`, `pause`, `export` | done (`ddc4951`) |
-
-## Fifth pass (2026-10-15): VM snapshots, egress credentials and E2B
-
-The owner surfaces the snapshot, sleep, egress credential and E2B work added. "Done" means the surface has the
-feature, in the file or command named.
-
-| Surface | Web | Desktop | CLI | State |
+| Feature | Console | Status | Note | Source |
 |---|---|---|---|---|
-| Sleep and wake an agent | `apps/web/src/views/agent-detail.ts` (Sleep, Wake) | `apps/desktop/src/console/screens/agent.rs` (`Act::Sleep`, `Act::Wake`) | `agentplaza agents sleep`, `wake` (`apps/cli/src/cmd/agents/lifecycle.rs`) | Done in all three |
-| Machine checkpoints: list, take, restore, delete | `agent-detail.ts` (Machine checkpoints) | `agent.rs` (the checkpoints card) | `agentplaza agents checkpoints`, `checkpoint`, `rollback`, `checkpoint-delete` | Done in all three |
-| Fork an agent | `agent-detail.ts` (Fork…) | `agent.rs` (Fork) | `agentplaza agents fork` | Done in all three |
-| Move an agent to another node | `agent-detail.ts` (Move…) | `agent.rs` (Move…) | `agentplaza agents move` | Done in all three |
-| Stop and resume a node; rebalance | `apps/web/src/views/nodes.ts` | `apps/desktop/src/console/screens/nodes.rs` | `agentplaza nodes stop`, `resume`, `rebalance` (`drain`, `undrain` kept) | Done in all three |
-| Sleep and checkpoint settings: `idle_sleep_min`, `sleep_never_roles`, `vm_auto_checkpoints` | `apps/web/src/views/models-policy.ts` | `apps/desktop/src/console/screens/models.rs` (Limits) | `agentplaza models policy set --idle-sleep-min --sleep-never-roles --vm-auto-checkpoints` | Done in all three |
-| Egress credential rules: list, create, enable, delete | `apps/web/src/views/egress-credentials.ts` | `apps/desktop/src/console/screens/egress.rs` | `agentplaza egress list`, `add`, `enable`, `disable`, `rm` | Done in all three |
-| E2B keys, sandboxes and templates | `apps/web/src/views/e2b.ts` | `apps/desktop/src/console/screens/e2b.rs` | `agentplaza e2b keys …`, `e2b sandboxes`, `kill`, `pause`, `resume`, `e2b templates`, `delete-template` | Done in all three |
-| Warm templates: list and remove | none | none | `agentplaza templates list`, `rm` | CLI and API (`GET/DELETE /v1/templates`): templates build and rebuild themselves; listing them is a diagnostic |
-| Data volumes: list, create, remove | `apps/web/src/views/volumes.ts` | `apps/desktop/src/console/screens/volumes.rs` | `agentplaza volumes ls`, `create`, `rm` | Done in all three (`GET/POST /v1/volumes`, `DELETE /v1/volumes/{name}`) |
-| Per-role volumes (`role_volumes`) | `volumes.ts` (Roles) | `volumes.rs` (Roles) | `agentplaza volumes roles`, `mount`, `unmount` | Done in all three |
-| Sleep and wake a workstation VM | apps/web/src/views/workstations-vms.ts (Sleep, Wake) | apps/desktop/src/console/screens/workstations_vms.rs (Sleep, Wake) | agentplaza stations vms sleep, wake | Done in all three (plaza VMs) |
+| Seats of a task | Web | offered | One row per seat: role, state, the session filling it, tries, rounds, last model, and what sent the task back. Shown on the task page. | `apps/web/src/views/task-seats.ts`, `apps/web/src/views/tasks.ts` |
+| | Desktop | offered | Panel on the task page. | `apps/desktop/src/console/screens/task_seats.rs` |
+| | CLI/TUI | partial | CLI `seats <task>`. No TUI view. | `apps/cli/src/cmd/seats.rs` |
+| Seat threads (messages addressed to seats) | Web | missing | `/v1/tasks/{id}/threads` and `/v1/threads/{id}` exist in `crates/apid/src/work_routes.rs`; no console calls them. | `crates/apid/src/threads.rs` |
+| | Desktop | missing | The same two routes, not called. | `crates/apid/src/threads.rs` |
+| | CLI/TUI | missing | The same two routes, not called. | `crates/apid/src/threads.rs` |
 
-## Sixth pass (2026-10-18): projects and conversations
+## Inbox, cards and approvals
 
-The project scope (`plaza-tv/PLAN-projects.md`): an agent works only on its project, the console switches between
-projects, and a project is set up in a conversation with the orchestrator. "Done" means the surface has the feature, in
-the file or command named.
+A card is a decision the plaza needs from the owner. The inbox lists the cards; a chat shows the ones it asked.
 
-| Surface | Web | Desktop | CLI or TUI | State |
+| Feature | Console | Status | Note | Source |
 |---|---|---|---|---|
-| The project switcher: All projects, each live project, New project…; remembered | `apps/web/src/ui/scope-switcher.ts`, `scope.ts` (the route carries it, `#/p/<id>/…`) | `apps/desktop/src/console/shell.rs` (the top bar), `scope.rs` (remembered per hub) | TUI `p` and `P`; `--project` on `agents list`, `tasks list` and `tasks create` | web Scope 5/8, desktop Scope 7/8, CLI Scope 8/8 |
-| New project: a conversation with the orchestrator, or a project opened directly | `apps/web/src/ui/new-project.ts` | `apps/desktop/src/console/new_project.rs` | `agentplaza chat`, `agentplaza projects create` | web 5/8, desktop 7/8, CLI 8/8 |
-| Under a project: Overview, Agents, Tasks, Work, Board and Approvals show it; the plaza's setup screens say its own settings override them | `apps/web/src/views/overview.ts`, `agent-list.ts`, `tasks.ts`, `work.ts`, `board.ts`, `approvals.ts`, `main.ts` | `apps/desktop/src/console/screens/overview.rs`, `agents.rs`, `tasks.rs`, `work.rs`, `board.rs`, `approvals.rs`, `shell.rs` (the note) | `agents list --project`, `tasks list --project`; the TUI's Agents and Tasks tabs | web 5/8, desktop 7/8, CLI 8/8 |
-| The bench: who works where, Put on…, Back to the bench; an agent's page says where it works and since when | `agent-list.ts`, `agent-detail.ts` | `agents.rs` (the Project column, the bench card), `agent.rs` | `agents list --bench`, `agents show`, `projects members add`, `remove` | web 5/8, desktop 7/8, CLI 8/8 |
-| Projects: Pause, Resume, Archive; the Team tab (members, the bench, the agents from before, new agents for it); the Settings tab (each setting inherited or overridden, models by role, the budget) | `projects.ts`, `project-team.ts`, `project-settings.ts` | `projects.rs`, `project_team.rs`, `project_settings.rs` | `projects pause`, `resume`, `archive`, `members`, `settings`, `budget` | web 5/8, desktop 7/8, CLI 8/8 |
-| Tasks: a new task names its project, its assignee one of that project's agents; a task from before projects moves into one | `tasks.ts` | `tasks.rs` | `tasks create --project`, `tasks move` | web 5/8, desktop 7/8, CLI 8/8 |
-| The IDE: conversations with the orchestrator, the draft beside the chat, Edit and Start; project mode; the chat composer talks to an idle agent and steers a working one | `apps/web/src/views/ide-conversation.ts`, `ide-sidebar.ts`, `ide-chat.ts`, `apps/web/src/ide/conversation-model.ts` | `apps/desktop/src/console/screens/ide_conversation.rs`, `ide_sidebar.rs`, `ide_panels.rs`, `ide_model.rs` | `agentplaza chat` (`/draft`, `/start`); the TUI's Chat tab | web 6/8, desktop 7/8, CLI 8/8 |
+| Inbox (cards) | Web | offered | Each card with its choices. A choice that takes a budget amount has a field, in the budget's unit. | `apps/web/src/views/inbox.ts` |
+| | Desktop | offered | The same, on the Inbox screen. | `apps/desktop/src/console/screens/inbox.rs` |
+| | CLI/TUI | offered | CLI `inbox`, `inbox answer <card> <choice> [--amount]`. TUI Inbox tab; Enter answers after a confirm. | `apps/cli/src/cmd/inbox.rs`, `apps/cli/src/tui/inbox.rs` |
+| Approvals (calls and agent proposals) | Web | offered | Calls agents ask to make and the orchestrator's proposed agents: approve, deny, reject, send back. | `apps/web/src/views/approvals.ts` |
+| | Desktop | offered | The same list; a rejection asks for its reason in a dialog. | `apps/desktop/src/console/screens/approvals.rs` |
+| | CLI/TUI | partial | CLI `approvals`, `approvals proposals`, `approve-proposal`, `reject-proposal` cover both. TUI Approvals tab decides calls only (`a`, `d`); proposals are not listed. | `apps/cli/src/cmd/approvals.rs`, `apps/cli/src/tui/app.rs` |
 
-## Seventh pass (2026-10-19): themes, backgrounds, artifacts and sharing
+## Budgets
 
-Loom and Graphite replace the old look on both consoles, with palettes, saved and imported themes, background styles,
-agent artifacts and share links (`docs/design/themes.md`, `artifacts.md`, `sharing.md`). Each row names the shared
-source both consoles read and the file that applies it on each side.
+A budget caps a project or a task, in dollars (`usd`) or tokens. A task's budget is reserved from its project when the
+task starts.
 
-| Surface | Shared source | Web | Desktop | State |
+| Feature | Console | Status | Note | Source |
 |---|---|---|---|---|
-| Tokens, skins and built-in palettes (Loom · Clay, Moss, Indigo; Graphite · Cobalt, Violet, Teal), contrast checked | `crates/apz-theme`, `apps/shared/themes/*.apztheme.json`, `themes.gen.json` | `styles/themes.gen.css`, `boot-theme.js`, `ui/theme.ts` | `theme.rs` (`Palette` from the token list, `Skin`, `apply`) | done |
-| Geist and Geist Mono in both skins | `assets/fonts/Geist*` | `styles/tokens.css` (`@font-face`) | `console/mod.rs` (embedded) | done |
-| One global appearance on the hub, a per-device override | `crates/apid/src/appearance.rs`, `apz_theme::appearance` | `ui/theme.ts`, `api-appearance.ts` (localStorage `apz.appearance.device`) | `screens/appearance.rs` (`desktop.json` `appearance_device`) | done |
-| Appearance screen: skin, palette, background, mode, density, code size; "Choose a look" in the first-run wizard | `apps/shared/onboarding.json` (`look`) | `views/appearance.ts`, `ui/onboarding.ts` | `screens/appearance.rs`, `onboard.rs` | done |
-| Theme editor with contrast and Fix; `.apztheme.json` import and export | `apz_theme::{resolve, check_all, color::fix_contrast}`; web through `crates/apz-theme-web` | `views/theme-editor.ts`, `theme/wasm.ts` | `screens/theme_editor.rs` | done |
-| VS Code import: theme JSON (comments, includes) and `.vsix`, with the report | `apz_theme::{vscode, vsix}` | `views/theme-editor.ts` (import) | `screens/theme_editor.rs` (import) | done |
-| Background styles drawn by one shader | `crates/apz-theme/src/backdrop.wgsl`, `backdrop.rs` | `view/backdrop.ts` (WebGPU, WebGL2 via `apz-pack web-backdrop`, CSS fallback) | `console/backdrop.rs` through `apz-engine/src/backdrop.rs` (tiny-skia still frame) | done |
-| Code highlighting with the theme's `syn-*` tokens | `apps/shared/highlight.json`, `apz_view::highlight`, `crates/apz-view/tests/highlight_golden.json` | `view/highlight.ts`, `view/code.ts` (golden checked in `test/tests.ts`) | `console/view/code.rs` | done |
-| Artifact bodies: Metrics panels plus image, graph, dataset, document, code, HTML | `crates/apz-view` (`model.rs`, `artifact.rs`), `apz-graph` (layered, `force.rs`) | `view/artifact.ts`, `bodies.ts`, `graph.ts`, `dataset.ts`, `code.ts`, `frame.ts` | `console/view/{image,document,code,graph,dataset,webview}.rs` | done |
-| `artifact:<id>` references and inline embeds in agent text | `crates/apz-rich` (`Ref::Artifact`, vectors) | `ui/rich.ts`, `ui/markdown.ts`, `views/artifact.ts` (`artifactEmbed`) | `console/rich.rs` | done |
-| Artifact viewer (versions, exports CSV, JSON, PNG, delete) and the Library's Artifacts group | `crates/apid/src/artifacts/` (owner routes, PNG through `apz_view::raster`) | `views/artifact.ts`, `views/files.ts` | `screens/artifact.rs`, `screens/library.rs` | done |
-| Live HTML artifacts: sandboxed frames on the content origin, the bridge, two live frames at a time | `crates/apid/src/content.rs`, `content_bridge.js`, `crates/apz-artifact` (oxc) | `view/frame.ts` (iframe sandbox, opaque origin) | `console/view/webview.rs` (iced_wry; arm64 Linux shows the still) | done |
-| Share dialog: anyone with the link, expiry, password, downloads, version pin, activity | `crates/apid/src/shares/` | `ui/share.ts`, `api-shares.ts` | `console/share.rs` | done |
-| Agents' share requests in Approvals (`artifact.share`) | `crates/apid/src/shares/request.rs` | `views/approvals.ts` | `screens/approvals.rs` | done |
-| The share viewer at `{hub}/artifact/{id}` and `agentplaza.io/artifact/{id}` | `crates/apid/src/shares/public.rs`, `relay.rs`; agentplaza-landing `cloudflare/relay/` | `viewer.ts`, `viewer.html` (served to anyone with the link; the desktop opens links in the browser) | opens the link in the browser | done |
-| Visual parity: fixture screens in every theme and mode, web against desktop | `scripts/parity/` (`.github/workflows/parity.yml`) | headless Chromium | `APZ_SNAPSHOT`, `APZ_APPEARANCE` | done |
+| Project budget | Web | offered | Cap, unit, warn share, monthly cap; what is spent, held and left. Set in a sheet. | `apps/web/src/views/budget.ts`, `apps/web/src/views/project-settings.ts` |
+| | Desktop | offered | Set-budget form with the warn share and the monthly cap. | `apps/desktop/src/console/screens/budget.rs` |
+| | CLI/TUI | partial | CLI `budget project <id> --set UNIT [CAP]`, with the warn and monthly flags. TUI has none. | `apps/cli/src/cmd/budget.rs` |
+| Task budget | Web | offered | Budget card on the task page. | `apps/web/src/views/tasks.ts`, `apps/web/src/views/budget.ts` |
+| | Desktop | offered | Budget panel on the task page. | `apps/desktop/src/console/screens/tasks.rs`, `apps/desktop/src/console/screens/budget.rs` |
+| | CLI/TUI | partial | CLI `budget task <id> --set UNIT [CAP]`. TUI has none. | `apps/cli/src/cmd/budget.rs` |
+| Ledger | Web | offered | Newest first; every column with the expert switch. | `apps/web/src/views/budget.ts` |
+| | Desktop | offered | Ledger section of the budget panel. | `apps/desktop/src/console/screens/budget.rs` |
+| | CLI/TUI | partial | CLI `budget ledger`. TUI has none. | `apps/cli/src/cmd/budget.rs` |
+| Disk quota (project) | Web | missing | The project budget route takes `disk_quota_bytes`; the web never sends it. | `crates/apid/src/work_routes.rs` |
+| | Desktop | missing | The same field, not sent. | `crates/apid/src/work_routes.rs` |
+| | CLI/TUI | missing | The same field, not sent. | `crates/apid/src/work_routes.rs` |
 
-## Eighth pass (2026-10-19): providers, engines and models
+## Chats
 
-The providers manager is one card of instances (API providers, then coding engines) beside the selected one's detail,
-with the usage hubs, the health interval and the decision models below it. The desktop's Models screen now follows
-that layout, so both consoles read the same hub endpoints in the same order. The user's guide is
-`docs/guide/providers.md`. The terminal app's Providers tab (key `m`) is the same data with its own keys.
+A chat is a conversation with the orchestrator (`main`), with a project's planner, or with a task's seats.
 
-| Surface | Shared source | Web | Desktop | TUI | State |
-|---|---|---|---|---|---|
-| API provider instances: label, accent, enabled, several per kind, key in the vault (write-only) | `crates/apid/src/providers.rs`, `apz-gateway` (`ProviderKind`) | `views/models-providers.ts`, `views/provider-wizard.ts`, `api-providers.ts` | `screens/models.rs` (providers card), `screens/provider_wizard.rs`, `screens/providers_api.rs` | `tui/providers.rs` (list, `space`, `k`, `d`, `a`) | done |
-| Coding engines as instances: built-in, ACP registry agents, local ACP commands; version pins; runtime and variables | `crates/apid/src/engine_instances.rs`, `GET /v1/acp/registry`, `GET /v1/provider-catalog` | `views/models-providers.ts` (engine detail), `provider-wizard.ts` (engines) | `screens/models.rs` (`engine_detail`, `runtime_section`, `env_section`), `provider_wizard.rs` | `tui/providers.rs` (`e` runtime, `a` add) | done |
-| Update all: a dry run lists the changes, then the install | `POST /v1/engines/update` (`dry_run`) | `views/models-providers.ts` (`updateAll`) | `screens/models.rs` (Update all) | `u` (plan, then yes) | done |
-| Background health checks every `health_interval_s` (0 off), Check now, `providers.health` on the bus | `crates/apid/src/provider_health.rs`, `settings.rs` | `views/models-providers.ts` (interval step buttons, check buttons) | `screens/models.rs` (interval, `providers.health`) | health shown; `c` and `C` check now | TUI gap: no interval control (CLI has `models settings health-interval`) |
-| Favourite models: they lead every picker; shared across devices | `settings.favourite_models` (max 200) | `views/models-providers.ts` (star), `ui/model-picker.ts` (rail) | `screens/models.rs`, `console/picker.rs` | `f` (star under the cursor), `p` (model list) | done |
-| Usage providers (CLIProxyAPI hubs): totals, models, pooled accounts; management key in the vault | `crates/apid/src/usage_providers.rs`, `/v1/usage-providers` | `views/models-providers.ts` (usage cards) | `screens/models.rs` (`usage_card`, `hub_row`) | `U` (hubs), `h` (add), `d` (remove) | done |
-| Model picker: an instance whose health is crit lists no models, only its message and a link to its setup | `ui/model-picker.ts` | `ui/model-picker.ts` | `console/picker.rs` | n/a | done |
+| Feature | Console | Status | Note | Source |
+|---|---|---|---|---|
+| Chat list | Web | offered | The orchestrator's, each project's and each task's; a switch shows the archived ones. | `apps/web/src/views/chats.ts` |
+| | Desktop | offered | The same list, filtered by project, with archived. | `apps/desktop/src/console/screens/chats.rs` |
+| | CLI/TUI | offered | CLI `chats` with `--project` and `--archived`. TUI Chat tab. | `apps/cli/src/cmd/chats.rs`, `apps/cli/src/tui/chat.rs` |
+| Open a chat with a project's planner | Web | offered | New chat dialog: a live project and a title. | `apps/web/src/views/chats.ts` |
+| | Desktop | offered | New chat dialog ("Start chat"). | `apps/desktop/src/console/screens/chats.rs` |
+| | CLI/TUI | offered | CLI `chats open <project>`. TUI `n` opens one in the project the switcher shows. | `apps/cli/src/cmd/chats.rs`, `apps/cli/src/tui/chat.rs` |
+| Messages | Web | offered | Composer. Files go with a message in the IDE conversation, not on this screen. | `apps/web/src/views/chats.ts`, `apps/web/src/views/ide-talk.ts` |
+| | Desktop | offered | Text composer. | `apps/desktop/src/console/screens/chats.rs` |
+| | CLI/TUI | offered | CLI `chats show <id>`, `chats post <id> <text>`. TUI `t`. | `apps/cli/src/cmd/chats.rs`, `apps/cli/src/tui/chat.rs` |
+| Rename, archive, restore | Web | offered | Rename in place; archive and restore. | `apps/web/src/views/chats.ts` |
+| | Desktop | offered | Rename, archive, restore. | `apps/desktop/src/console/screens/chats.rs` |
+| | CLI/TUI | partial | CLI `chats archive <id>` with `--undo`; no rename. TUI has none. | `apps/cli/src/cmd/chats.rs` |
+| Chat model | Web | partial | A model chip in the IDE conversation sets it. The Chats screen has none. | `apps/web/src/views/ide-talk.ts`, `apps/web/src/api-context.ts` |
+| | Desktop | partial | Set from the IDE chat tools only. | `apps/desktop/src/console/chat_tools.rs` |
+| | CLI/TUI | missing | No command or tab sets it. | `apps/cli/src/cmd/chats.rs` |
+| Project draft and Start | Web | offered | In the IDE conversation: the draft beside the chat, edits to it, and Start, which answers the draft's start card. | `apps/web/src/views/ide-talk.ts` |
+| | Desktop | partial | The New project dialog talks it through; the start card is answered in the Inbox. No draft view. | `apps/desktop/src/console/new_project.rs`, `apps/desktop/src/console/screens/inbox.rs` |
+| | CLI/TUI | partial | `chats` talks it through; the start card is answered with `inbox answer` or the TUI Inbox tab. No draft view. | `apps/cli/src/cmd/projects.rs`, `apps/cli/src/cmd/inbox.rs` |
+| Chat transcript (the turns the session took on a chat) | Web | missing | `GET /v1/chats/{id}/transcript` is not called. | `crates/apid/src/work_routes.rs` |
+| | Desktop | missing | The same route, not called. | `crates/apid/src/work_routes.rs` |
+| | CLI/TUI | missing | The same route, not called. | `crates/apid/src/work_routes.rs` |
 
-## Out of scope
+## Projects
 
-**Hidden labs.** The hardware, robot and room labs are developer tools behind hidden routes on the web and environment
-switches on the desktop. They move into the engine, where both apps get them at once.
+A project is a goal the plaza works on. It goes from brief to plan, then tasks, then delivery.
+
+| Feature | Console | Status | Note | Source |
+|---|---|---|---|---|
+| Project list and New project | Web | offered | The list; New project talks it through with the orchestrator, opens one directly, or adopts an existing one. | `apps/web/src/views/projects.ts`, `apps/web/src/ui/new-project.ts` |
+| | Desktop | offered | The list; the same three ways to start. | `apps/desktop/src/console/screens/projects.rs`, `apps/desktop/src/console/new_project.rs` |
+| | CLI/TUI | partial | CLI `projects` (list, show, create, adopt). TUI has the project switcher only: no list, no create. | `apps/cli/src/cmd/projects.rs`, `apps/cli/src/tui/scope.rs` |
+| Pause, resume, archive | Web | offered | Pause, resume, and archive. | `apps/web/src/views/projects.ts` |
+| | Desktop | offered | Pause, resume; archive asks first. | `apps/desktop/src/console/screens/projects.rs` |
+| | CLI/TUI | partial | CLI `projects pause`, `resume`, `archive`. TUI has none. | `apps/cli/src/cmd/projects.rs` |
+| Plan: approve, send back | Web | offered | "Approve plan" and "Send back" to an earlier stage. | `apps/web/src/views/projects.ts` |
+| | Desktop | offered | "Approve plan" and "Send back". | `apps/desktop/src/console/screens/projects.rs` |
+| | CLI/TUI | partial | CLI `projects approve`, `projects send-back`. TUI has none. | `apps/cli/src/cmd/projects.rs` |
+| Mode (build or maintenance) | Web | offered | Mode chooser on the project page. | `apps/web/src/views/projects.ts` |
+| | Desktop | offered | Mode chip; a change calls the hub's mode route. | `apps/desktop/src/console/screens/projects.rs` |
+| | CLI/TUI | partial | CLI `projects mode`, `projects modes`. TUI has none. | `apps/cli/src/cmd/projects.rs` |
+| Settings (each inherited or overridden) | Web | offered | Models by role, the budget and the other settings; each one inherited or overridden. | `apps/web/src/views/project-settings.ts` |
+| | Desktop | offered | Models by role, review timeout, task budget. | `apps/desktop/src/console/screens/project_settings.rs` |
+| | CLI/TUI | partial | CLI `projects settings`. TUI has none. | `apps/cli/src/cmd/projects/settings.rs` |
+| Maintenance (signals, proposals, sweeps) | Web | offered | Signals; proposals approved, declined or left for later; sweeps. | `apps/web/src/views/project-maintenance.ts` |
+| | Desktop | offered | Signals; approve and decline proposals. | `apps/desktop/src/console/screens/project_maintenance.rs` |
+| | CLI/TUI | partial | CLI `projects maintenance`. TUI has none. | `apps/cli/src/cmd/projects/maintenance.rs` |
+| Environments and deploy hooks | Web | offered | Environments, deploy hooks, their secrets and runs. | `apps/web/src/views/project-environments.ts` |
+| | Desktop | offered | The same, on the project's Environments tab. | `apps/desktop/src/console/screens/project_environments.rs` |
+| | CLI/TUI | partial | CLI `projects env`. TUI has none. | `apps/cli/src/cmd/projects/environments.rs` |
+
+## Work and tasks
+
+A task belongs to one project and goes only to that project's agents. The work view orders a project's tasks by their
+`after` links.
+
+| Feature | Console | Status | Note | Source |
+|---|---|---|---|---|
+| Work (a project as one flow) | Web | offered | Plan, then the tasks in the order their links let them run, then delivery. "Only what needs me" filters the cards. The map is laid out by `apz-graph-web`. | `apps/web/src/views/work.ts`, `apps/web/src/views/work-model.ts`, `apps/web/src/graph/wasm.ts` |
+| | Desktop | offered | The same flow, laid out natively by `apz-graph`. | `apps/desktop/src/console/screens/work.rs` |
+| | CLI/TUI | partial | CLI `tasks graph` prints the columns. TUI Tasks tab shows the "Runs after" links; no map. | `apps/cli/src/cmd/tasks.rs`, `apps/cli/src/tui/app.rs` |
+| Tasks board and one task | Web | offered | Four lanes. A task's goal, result, facts, and a timeline from the assignee's transcript. | `apps/web/src/views/tasks.ts` |
+| | Desktop | offered | Four-lane board; the task page with its timeline. | `apps/desktop/src/console/screens/tasks.rs` |
+| | CLI/TUI | partial | CLI `tasks list`, `tasks show`, `tasks timeline`. TUI Tasks tab, read-only. | `apps/cli/src/cmd/tasks.rs` |
+| New task | Web | offered | "New task" dialog; the task names its project. | `apps/web/src/views/tasks.ts` |
+| | Desktop | offered | "New task"; the task belongs to a project. | `apps/desktop/src/console/screens/tasks.rs` |
+| | CLI/TUI | partial | CLI `tasks create --project`. TUI has none. | `apps/cli/src/cmd/tasks.rs` |
+| Assign, move, withdraw | Web | offered | Assign to an idle agent of the project; move between lanes or into a project; withdraw. | `apps/web/src/views/tasks.ts` |
+| | Desktop | offered | Assign to, Move into a project, Withdraw. | `apps/desktop/src/console/screens/tasks.rs` |
+| | CLI/TUI | partial | CLI `tasks assign`, `tasks move`, `tasks withdraw`. TUI has none. | `apps/cli/src/cmd/tasks.rs` |
+| Claim and finish (`/v1/tasks/{id}/claim`, `/finish`) | Web | missing | The routes exist; no console calls them. | `docs/api/openapi.json` |
+| | Desktop | missing | The same routes, not called. | `docs/api/openapi.json` |
+| | CLI/TUI | missing | The same routes, not called. | `docs/api/openapi.json` |
+
+## Landing through Weft
+
+Weft is the plaza's version control. A change is sealed for review, signed, then landed onto `main` from the landing queue.
+The owner's Weft screen reads the repositories, changes and releases. The CLI passes its words to the Weft command
+(`crates/weft/src/cli.rs`).
+
+| Feature | Console | Status | Note | Source |
+|---|---|---|---|---|
+| Repositories, changes, change page | Web | offered | Repositories; changes as lanes off `main`; a change with its sign-off chain; files at `main` with blame. | `apps/web/src/views/history.ts`, `apps/web/src/views/history-model.ts` |
+| | Desktop | offered | Repositories and changes; a change page with the sign-off dots. The sidebar calls it Weft. | `apps/desktop/src/console/screens/history.rs`, `apps/desktop/src/console/screens/history_map.rs` |
+| | CLI/TUI | partial | CLI `weft ...` runs the Weft command (`log`, `show`, `tree`, `blame`). TUI has none. | `apps/cli/src/cmd/weft.rs` |
+| Landing queue (queue, land) | Web | partial | The queue is read. No land, pause or clash action; the hub has no route for them. | `apps/web/src/views/history.ts` |
+| | Desktop | partial | Read-only "Landing queue" card. | `apps/desktop/src/console/screens/history_ops.rs` |
+| | CLI/TUI | partial | `weft queue`, `weft queue add`, `weft land` through the passthrough. TUI has none. | `apps/cli/src/cmd/weft.rs` |
+| Sign-off and releases | Web | offered | Sign a change or a proposed release; list and propose releases. | `apps/web/src/views/history.ts` |
+| | Desktop | offered | Sign-off chain; releases, with Sign for a proposed one. | `apps/desktop/src/console/screens/history.rs` |
+| | CLI/TUI | partial | `weft release`, `weft release sign`. TUI has none. | `apps/cli/src/cmd/weft.rs` |
+| Export to git, adopt | Web | offered | Export the landed changes to a connection, with a dry run first; adopt a repository. | `apps/web/src/views/history.ts`, `apps/web/src/api-weft.ts` |
+| | Desktop | offered | Export to git; Adopt. | `apps/desktop/src/console/screens/history_ops.rs` |
+| | CLI/TUI | partial | `weft export <repo> [--dry-run]`, `weft adopt <repo>` through the passthrough. TUI has none. | `apps/cli/src/cmd/weft.rs` |
+
+## Change recipe and reviews
+
+The change recipe names the steps a sealed change is reviewed with (for example code, docs, research). A review is one run
+of those steps over one task's change.
+
+| Feature | Console | Status | Note | Source |
+|---|---|---|---|---|
+| Change recipe (steps, edit, proposals) | Web | offered | The steps as a graph by layer; edit the recipe; approve or decline the orchestrator's proposals. | `apps/web/src/views/recipes.ts`, `apps/web/src/api-review.ts` |
+| | Desktop | missing | No recipe screen; `/v1/recipes` is not called. | `apps/desktop/src/console/screens/mod.rs` |
+| | CLI/TUI | partial | CLI `recipes` (list, show, put, proposals, approve, decline). TUI has none. | `apps/cli/src/cmd/recipes.rs` |
+| Review of a task's change | Web | offered | The review graph: intents, the four readings, steps and gate. Shown on the task page and the Approvals screen; the expert view adds the step table and findings. | `apps/web/src/views/review-graph.ts`, `apps/web/src/views/review-model.ts` |
+| | Desktop | partial | "Review changes" opens the change in the IDE diff. No rounds, steps or graph. | `apps/desktop/src/console/screens/tasks.rs` |
+| | CLI/TUI | partial | CLI `tasks review` lists the rounds; `tasks rule` sends the owner's ruling (pass, rework, fail). No graph. TUI has none. | `apps/cli/src/cmd/tasks.rs` |
+
+## Nodes
+
+A node is a machine that runs agents for the plaza. The hub's own node can be stopped and resumed, not revoked.
+
+| Feature | Console | Status | Note | Source |
+|---|---|---|---|---|
+| Node list and state | Web | offered | The machines with their state and runs. | `apps/web/src/views/nodes.ts` |
+| | Desktop | offered | Each machine opens into its runs, VMs and technical details. | `apps/desktop/src/console/screens/nodes.rs` |
+| | CLI/TUI | partial | CLI `nodes list`, `nodes show`. TUI Nodes tab, read-only. | `apps/cli/src/cmd/nodes.rs`, `apps/cli/src/tui/app.rs` |
+| Stop and resume a node | Web | offered | Stop now or after their turns; resume. The agents move to other nodes. | `apps/web/src/views/nodes.ts` |
+| | Desktop | offered | Stop (now or after their turns), Resume. | `apps/desktop/src/console/screens/nodes.rs` |
+| | CLI/TUI | partial | CLI `nodes stop`, `nodes resume`. TUI has only the plaza-wide STOP ALL and resume. | `apps/cli/src/cmd/nodes.rs`, `apps/cli/src/tui/app.rs` |
+| Rebalance | Web | offered | Rebalance spreads the agents over the nodes. | `apps/web/src/views/nodes.ts` |
+| | Desktop | offered | Rebalance. | `apps/desktop/src/console/screens/nodes.rs` |
+| | CLI/TUI | partial | CLI `nodes rebalance`. TUI has none. | `apps/cli/src/cmd/nodes.rs` |
+| Join codes and revoke | Web | offered | Create join codes (each token shown once); revoke a node. | `apps/web/src/views/nodes.ts` |
+| | Desktop | offered | Join codes; revoke. | `apps/desktop/src/console/screens/nodes.rs` |
+| | CLI/TUI | partial | CLI `nodes code`, `nodes codes`, `nodes revoke`. TUI has none. | `apps/cli/src/cmd/nodes.rs` |
+| This machine joins another network | Web | offered | Join card with a code; leave. | `apps/web/src/views/nodes.ts` |
+| | Desktop | offered | Join and Leave through `/v1/node-link`. | `apps/desktop/src/console/screens/nodes.rs` |
+| | CLI/TUI | partial | CLI `node join`, `node status`, `node leave`. TUI has none. | `apps/cli/src/cmd/node.rs` |
+
+## Workspace (the IDE)
+
+The IDE works in an agent's workspace, a project repository at one branch, or a workstation's folder.
+
+| Feature | Console | Status | Note | Source |
+|---|---|---|---|---|
+| Browse, edit, diff, search | Web | offered | Tree, file editor with a conflict check on save, changes against a base, search. | `apps/web/src/views/ide.ts`, `apps/web/src/api.ts` (`ideApi`) |
+| | Desktop | offered | Tree, editor, diff, files and search screens. | `apps/desktop/src/console/screens/ide.rs`, `apps/desktop/src/console/screens/ide_files.rs` |
+| | CLI/TUI | partial | CLI `ide ls`, `cat`, `edit`, `put`, `diff`, `search`. TUI Workspace tab shows the agents, transcript and board; `o` opens the IDE; no file edits. | `apps/cli/src/cmd/ide.rs`, `apps/cli/src/tui/workspace.rs` |
+| Checkpoints and restore | Web | offered | List checkpoints; restore one. | `apps/web/src/views/ide-data.ts` |
+| | Desktop | offered | Same, in the IDE screens. | `apps/desktop/src/console/screens/ide_files.rs` |
+| | CLI/TUI | partial | CLI `ide checkpoints`, `ide restore`. TUI has none. | `apps/cli/src/cmd/ide.rs` |
+| Runs and terminal | Web | offered | Bounded runs with their output, stop; a terminal drawn with xterm.js. | `apps/web/src/views/ide-tabs.ts`, `apps/web/src/views/ide-term-host.ts` |
+| | Desktop | offered | Terminal tabs; Run and Stop in the panels. | `apps/desktop/src/console/screens/ide_terminal.rs`, `apps/desktop/src/console/screens/ide_panels.rs` |
+| | CLI/TUI | partial | CLI `ide run`, `ide term`. TUI has none. | `apps/cli/src/cmd/ide.rs` |
+| Agent chat in the workspace (send, stop, approve or deny a tool call) | Web | offered | The IDE conversation: send, stop, approve or deny. | `apps/web/src/views/ide-chat.ts` |
+| | Desktop | offered | The IDE chat: send, stop, approve or deny. | `apps/desktop/src/console/screens/ide_chat.rs` |
+| | CLI/TUI | partial | CLI `agents tell` sends a message. TUI composer (`t`) on the Workspace tab; tool calls are decided on the Approvals tab. | `apps/cli/src/cmd/agents.rs`, `apps/cli/src/tui/app.rs` |
+| Branches and pull requests (`/branch`, `/pulls`) | Web | missing | The IDE routes exist; no console calls them. | `docs/api/openapi.json` |
+| | Desktop | missing | The same routes, not called. | `docs/api/openapi.json` |
+| | CLI/TUI | missing | The same routes, not called. | `docs/api/openapi.json` |
+
+## The wasm crates
+
+- `apz-engine-web`: part of the web console (its 3D views, through `apps/web/src/views/engine-mount.ts`). Not the work engine.
+- `apz-graph-web`: part of the web console's Work screen (`apps/web/src/graph/wasm.ts`). The desktop lays out the same
+  graphs with `apz-graph` directly.
+- `apz-ide-web`: part of the web IDE (`apps/web/src/ide/wasm.ts`).
+- `apz-theme-web`: part of the web console's theme editor and appearance (`apps/web/src/theme/wasm.ts`).
+
+## Gaps the owner should see
+
+Web console, missing (the hub has the route or the data):
+
+- Seat threads (`/v1/tasks/{id}/threads`, `/v1/threads/{id}`), the chat transcript, and task claim and finish: no console calls them.
+- A disk quota on a project's budget: no console sends it.
+- Branches and pull requests of an IDE workspace (`/branch`, `/pulls`): no console calls them.
+- Landing actions: the landing queue is read-only on the web and the desktop; `weft land` is on the CLI only.
+
+Desktop, beyond those: the change recipe has no screen (`/v1/recipes` is not called); the review graph is replaced by
+the IDE diff ("Review changes"); a chat's model is set only from the IDE chat tools.
+
+The TUI has the Overview, Sessions, Tasks, Approvals, Inbox, Board, Nodes, Machines, Workspace, Workstations, Chat and
+Providers tabs (`apps/cli/src/tui/app.rs`). It reads and answers the work engine; it does not configure it. The CLI
+has a subcommand for nearly every row above.
+
+## Not in this file
+
+The Board, Metrics, Lab, Models, Tools, MCP, Vault, Egress credentials, E2B, Volumes, Prompts, Skills, Library, Rules,
+Git platforms, Appearance, Setup, Machines and Workstations screens are not work-engine features and are not listed.

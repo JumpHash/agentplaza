@@ -138,8 +138,7 @@ Relations (in the anchor's frame; the anchor's rot-0 sizes; the item's own size 
 - `pool`: decor groups with weights `w` and maxima `max`, placed after required and preferred until the density is reached.
 - `desk_facing`: `"wall"` (the default): desk-sets anchor at a wall, the user faces the wall. `"room"`: desk-sets
   prefer a corner (the user faces into the room) and fall back to a wall.
-- Signature groups (all required): orchestrator: podium stage and meeting; mayor, mayor-office: podium stage and
-  counter; architect: drafting table and easel; reviewer: meeting; librarian: storage wall, reading nook and cart bay;
+- Signature groups (all required): orchestrator: podium stage and meeting; architect: drafting table and easel; reviewer: meeting; librarian: storage wall, reading nook and cart bay;
   researcher: lab bench and microscope desk (both with stools); planner: whiteboard and meeting; breeder: plant bed;
   finance, auditor: counter (with its stool) and a safe corner in the pool; builder, QA: workbench; release: crate stack;
   edge operator: server rack; incident: alarm post; security reviewer: guard post.

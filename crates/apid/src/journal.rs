@@ -10,8 +10,8 @@
 //! - The records live in memory, keyed by task; the saver keeps them in `plaza.db` (table `journal`, with its notes and
 //!   handovers as children). A task's journal is kept with the task.
 //!
-//! Search is a case-insensitive match over one task's notes (`journal_read` with `query`). The FTS5 index the plan
-//! names needs a virtual table, which the components' tables cannot express; it is not in the store yet.
+//! Search is a word match over one task's notes (`journal_read` with `query`), best match first: the FTS5 index in
+//! plaza.db answers it (store/search.rs), and a case-insensitive match in memory answers it when the index cannot.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -181,6 +181,8 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
                     ..note
                 },
             );
+            // Saved now, not on the saver's next pass, so the note is in the index before anyone searches for it.
+            crate::store::saver::save_now(app, "journal");
             Ok(format!("Noted: {label} n{seq} on {task}."))
         }
         "handover_write" => {
@@ -203,11 +205,22 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
         }
         "journal_read" => {
             let task = named_task(app, agent, input)?;
-            let query = input.get("query").and_then(Value::as_str);
+            let query = input
+                .get("query")
+                .and_then(Value::as_str)
+                .filter(|query| !query.trim().is_empty());
+            // The index's answer, best match first; when it cannot answer, the notes are matched in memory.
+            let indexed = query.and_then(|query| {
+                app.store
+                    .db(crate::store::PLAZA)
+                    .read(|conn| crate::store::search::journal_notes(conn, task.id(), query))
+                    .ok()
+            });
             Ok(read_text(
                 task.id(),
                 app.journal.get(task.id()).as_ref(),
                 query,
+                indexed.as_deref(),
             ))
         }
         "brief" => {
@@ -215,6 +228,31 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             Ok(brief_text(&task))
         }
         other => Err(format!("{other} is not a journal tool")),
+    }
+}
+
+/// Writes a compaction's summary (the conversation's decisions, dead ends, open questions and where it stood) into the
+/// journal of the task session `cid` works on, as a handover of that session. A session with no task has no journal,
+/// so nothing is written for it; the summary stays in its transcript.
+pub fn record_compaction(app: &App, cid: u64, summary: &str) -> Option<u64> {
+    let session = app.sessions.by_cid(cid)?;
+    let task = session.task.clone()?;
+    Some(app.journal.add_handover(
+        &task,
+        compaction_handover(&session.id, summary, apz_plaza::now_ms()),
+    ))
+}
+
+/// The handover a compaction leaves: the summary is where things stand, and the session goes on from it.
+pub fn compaction_handover(session: &str, summary: &str, at_ms: u64) -> Handover {
+    Handover {
+        seq: 0,
+        session: session.to_string(),
+        stands: summary.trim().to_string(),
+        done: String::new(),
+        next: "The conversation before this summary was compacted: continue from it.".to_string(),
+        check_first: String::new(),
+        at_ms,
     }
 }
 
@@ -372,17 +410,32 @@ pub fn notes_text(notes: &[Note]) -> String {
     out
 }
 
-/// What `journal_read` returns: the notes (those matching `query`, when one is given) and the latest handover.
-pub fn read_text(task: &str, journal: Option<&Journal>, query: Option<&str>) -> String {
+/// What `journal_read` returns: the notes (those matching `query`, when one is given) and the latest handover. The
+/// index's answer comes as `indexed`, the matching notes' numbers best match first; without it, `query` is matched
+/// in memory.
+pub fn read_text(
+    task: &str,
+    journal: Option<&Journal>,
+    query: Option<&str>,
+    indexed: Option<&[u64]>,
+) -> String {
     let Some(journal) = journal else {
         return format!("The journal of {task} is empty.");
     };
-    let notes: Vec<Note> = journal
-        .notes
-        .iter()
-        .filter(|note| query.is_none_or(|q| matches(note, q)))
-        .cloned()
-        .collect();
+    let notes: Vec<Note> = match (query, indexed) {
+        (Some(_), Some(seqs)) => seqs
+            .iter()
+            .filter_map(|seq| journal.notes.iter().find(|note| note.seq == *seq))
+            .cloned()
+            .collect(),
+        (Some(q), None) => journal
+            .notes
+            .iter()
+            .filter(|note| matches(note, q))
+            .cloned()
+            .collect(),
+        (None, _) => journal.notes.clone(),
+    };
     let mut out = if notes.is_empty() {
         format!("No notes on {task} match.\n")
     } else {
@@ -525,7 +578,7 @@ mod tests {
         journals.add_handover("t1", handover("first", "second"));
         journals.add_handover("t1", handover("latest", "last"));
         let journal = journals.get("t1");
-        let all = read_text("t1", journal.as_ref(), None);
+        let all = read_text("t1", journal.as_ref(), None, None);
         assert!(
             all.contains("- decision n1: retry the upload Reason: the lock is slow\n"),
             "{all}"
@@ -540,15 +593,46 @@ mod tests {
             ),
             "{all}"
         );
-        let by_reason = read_text("t1", journal.as_ref(), Some("LOCK"));
+        let by_reason = read_text("t1", journal.as_ref(), Some("LOCK"), None);
         assert!(
             by_reason.contains("n1") && !by_reason.contains("n2"),
             "{by_reason}"
         );
         assert!(
-            read_text("t1", journal.as_ref(), Some("nothing")).starts_with("No notes on t1 match.")
+            read_text("t1", journal.as_ref(), Some("nothing"), None)
+                .starts_with("No notes on t1 match.")
         );
-        assert_eq!(read_text("t9", None, None), "The journal of t9 is empty.");
+        // The index's answer is listed in its order, best match first.
+        let ranked = read_text("t1", journal.as_ref(), Some("lock"), Some(&[2, 1]));
+        assert!(
+            ranked.find("n2").unwrap() < ranked.find("n1").unwrap(),
+            "{ranked}"
+        );
+        assert_eq!(
+            read_text("t9", None, None, None),
+            "The journal of t9 is empty."
+        );
+    }
+
+    #[test]
+    fn a_compaction_leaves_its_summary_as_the_latest_handover_of_the_task() {
+        let journals = Journals::default();
+        journals.add_handover("t1", handover("parser done", "wire it"));
+        let summary = "Decisions: sessions, not agents (reason: a seat is a session).\nWhere it stands: parser done.";
+        journals.add_handover("t1", compaction_handover("s7", summary, 9));
+        let journal = journals.get("t1").expect("t1's journal");
+        let latest = journal.handovers.last().expect("a handover");
+        assert_eq!(
+            (latest.seq, latest.session.as_str()),
+            (2, "s7"),
+            "{latest:?}"
+        );
+        assert_eq!(latest.stands, summary, "{latest:?}");
+        assert!(
+            read_text("t1", Some(&journal), None, None).contains("Latest handover (from session s7):\nWhere things stand: Decisions: sessions, not agents"),
+            "{}",
+            read_text("t1", Some(&journal), None, None)
+        );
     }
 
     #[test]

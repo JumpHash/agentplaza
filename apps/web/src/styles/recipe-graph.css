@@ -22,6 +22,35 @@
 .rg-toml-box summary { cursor: pointer; color: var(--ink-3); font-size: var(--fs-sm); }
 .rg-toml { margin: 8px 0 0; padding: 12px 14px; max-height: 50vh; overflow: auto; background: var(--paper); border: 1px solid var(--rule); font: var(--type-code); white-space: pre; }
 
+/* The run view: the same graph, read-only. A card takes its step's state; a taken link is solid, an open or dead one dashed and faded. */
+.rg-run .wk-card { cursor: default; }
+.rg-run .wk-card:hover { background: var(--raised); }
+.rg-run .wk-card.rr-passed { border-color: var(--ok); }
+.rg-run .wk-card.rr-failed { border-color: var(--crit); }
+.rg-run .wk-card.rr-running { border-color: var(--info); box-shadow: 0 0 0 1px var(--info); }
+.rg-run .wk-card.rr-ready { border-color: var(--signal); }
+.rg-run .wk-card.rr-waiting, .rg-run .wk-card.rr-none { opacity: .7; }
+.rg-run .wk-card.rr-skipped { opacity: .5; border-style: dashed; }
+.rg-run .wk-route.rr-taken { stroke: var(--ink-2); stroke-width: 2px; }
+.rg-run .wk-route.rr-open, .rg-run .wk-route.rr-dead { stroke-dasharray: 4 4; opacity: .45; }
+.rg-run .wk-route.rr-dead { opacity: .2; }
+.rr-outcome { margin: 0; color: var(--ink-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.rr-state { font-size: var(--fs-sm); color: var(--ink-3); }
+.rr-state.rr-passed { color: var(--ok); }
+.rr-state.rr-failed { color: var(--crit); }
+.rr-state.rr-running { color: var(--info); }
+.rr-state.rr-ready { color: var(--signal); }
+.rr-sub { color: var(--ink-3); font-size: var(--fs-xs); }
+.rr { display: grid; gap: 10px; min-width: 0; }
+.rr-link { font-size: var(--fs-sm); }
+.rr-note { margin: 0; color: var(--ink-3); font-size: var(--fs-sm); }
+.rr-rows { display: grid; gap: 6px; min-width: 0; }
+.rr-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; padding: 8px 10px; border: 1px solid var(--rule); border-radius: var(--radius); color: var(--ink); text-decoration: none; }
+.rr-row:hover { background: var(--hover); }
+.rr-row-id { color: var(--ink-3); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.rr-row-what { flex: 1 1 160px; min-width: 0; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.rr-row-when { color: var(--ink-3); font-size: var(--fs-xs); }
+
 @media (max-width: 900px) {
   .rg-main { grid-template-columns: minmax(0, 1fr); }
 }

@@ -275,6 +275,8 @@ pub fn refresh(app: &App, project: &str) -> Result<usize, String> {
     }
     let count = read.len();
     app.project_memory.replace(project, read);
+    // Saved now, so the index holds the entries before the next search reads it.
+    crate::store::saver::save_now(app, "memory_entries");
     Ok(count)
 }
 
@@ -1005,12 +1007,29 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
         .ok_or("project memory belongs to a project: this session is not on one")?;
     match name {
         "memory_search" => {
-            let hits = search(
-                &entries(app, &project),
-                &arg(input, "text"),
-                &arg(input, "type"),
-                &arg(input, "anchor"),
-            );
+            let all = entries(app, &project);
+            let (text, kind, anchor) =
+                (arg(input, "text"), arg(input, "type"), arg(input, "anchor"));
+            // The index answers a text search, best match first; without its answer (or with no text to match) the
+            // entries are filtered in memory.
+            let keys = if text.trim().is_empty() {
+                None
+            } else {
+                app.store
+                    .db(crate::store::PLAZA)
+                    .read(|conn| {
+                        crate::store::search::memory_entries(conn, &project, &text, &kind, &anchor)
+                    })
+                    .ok()
+            };
+            let hits: Vec<Entry> = match keys {
+                Some(keys) => keys
+                    .iter()
+                    .filter_map(|key| all.iter().find(|e| &e.key == key))
+                    .cloned()
+                    .collect(),
+                None => search(&all, &text, &kind, &anchor),
+            };
             if hits.is_empty() {
                 return Ok("No entries match.".into());
             }

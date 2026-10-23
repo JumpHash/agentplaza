@@ -28,9 +28,11 @@ use crate::agents::Agent;
 use crate::budgets::{Amount, Notice, OwnerKind, Short, Unit};
 use crate::cards::{self, NewCard};
 use crate::chats::{Author, MessageKind, Post};
+use crate::evals::Score;
 use crate::journal;
 use crate::placement;
 use crate::project_settings;
+use crate::recipes::model::Model;
 use crate::recipes::{self, Report};
 use crate::scheduler::Origin;
 use crate::seats::{self, Next, Seat};
@@ -371,6 +373,50 @@ pub fn pick_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
         .map(|m| (*m).clone())
 }
 
+/// The model for a seat's session, as its step's recipe says it. `any` and `differ` take the seat's own choice
+/// ([`pick_model`]). A model list takes its first model the project allows for the role. `eval` takes the best scorer
+/// among those the project allows for the step, by the eval results (`evals.rs`), and the seat's choice without any
+/// scored model. A named model is used as it is.
+fn pick_step_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
+    let step_model = app
+        .recipe_runs
+        .step_model(&seat.task, &seat.step)
+        .unwrap_or(Model::Name("any".into()));
+    let all = candidates(app, project, &seat.role);
+    match &step_model {
+        Model::Name(name) if name == "eval" => best_scored(&app.evals.scores(), &seat.step, &all)
+            .or_else(|| pick_model(app, project, seat)),
+        Model::Name(name) if name == "any" || name == "differ" => pick_model(app, project, seat),
+        Model::Name(pinned) => Some(pinned.clone()),
+        Model::List(list) => first_listed(list, &all).or_else(|| pick_model(app, project, seat)),
+    }
+}
+
+/// The first model of `list` that `allowed` (the project's models for the role, best first) has.
+pub fn first_listed(list: &[String], allowed: &[String]) -> Option<String> {
+    list.iter().find(|m| allowed.contains(m)).cloned()
+}
+
+/// The allowed model that did best for `step` in the eval results: the highest success rate over the runs that ran,
+/// then the lower cost per success. None when no allowed model has a run for the step.
+pub fn best_scored(scores: &[Score], step: &str, allowed: &[String]) -> Option<String> {
+    scores
+        .iter()
+        .filter(|s| s.seat == step && s.runs > 0)
+        .filter(|s| s.model.as_ref().is_some_and(|m| allowed.contains(m)))
+        .max_by(|a, b| {
+            a.success_rate
+                .total_cmp(&b.success_rate)
+                .then(cost_of(b).total_cmp(&cost_of(a)))
+        })
+        .and_then(|s| s.model.clone())
+}
+
+/// A score's cost per success, for comparing: a model that never succeeded costs the most.
+fn cost_of(s: &Score) -> f64 {
+    s.cost_per_success_micros.unwrap_or(f64::INFINITY)
+}
+
 /// Starts a session for a ready seat: picks its model, places it and starts its VM.
 fn start_seat(app: &App, seat: &Seat, now: u64) {
     let Some(task) = app.plaza.tasks.find(&seat.task) else {
@@ -388,7 +434,7 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
     if !crate::placement::has_room_for_fork(app, &seat.role, &project) {
         return;
     }
-    let Some(model) = pick_model(app, &project, seat) else {
+    let Some(model) = pick_step_model(app, &project, seat) else {
         ask_seat(app, seat, &project, now);
         return;
     };
@@ -1143,9 +1189,18 @@ pub fn open_card(app: &App, new: NewCard, now: u64) {
     app.bus.publish("card", &card);
 }
 
-/// A budget limit reached: one card per subject, in the task's chat (or the project's when it is the project's).
-pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, now: u64) {
-    let (subject, title, body) = match short {
+/// The unit a budget card's amounts are in: the short budget's own; a monthly or paused limit is the planner's dollars.
+fn card_unit(short: &Short) -> Unit {
+    match short {
+        Short::Cap { unit, .. } => *unit,
+        Short::Monthly { .. } | Short::Paused { .. } => Unit::Usd,
+    }
+}
+
+/// The subject, title and body of the card a budget limit asks the owner about. Every amount is in the unit the
+/// budget counts in: dollars for `usd`, tokens for `tokens` (never micro-dollars).
+pub fn budget_words(short: &Short) -> (String, String, String) {
+    match short {
         Short::Cap {
             owner_kind,
             owner,
@@ -1162,7 +1217,7 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
                 OwnerKind::Project => format!("Project {owner} cannot fund more work"),
             },
             format!(
-                "It needs {} and has {} left ({unit:?}).",
+                "It needs {} and has {} left.",
                 amount(*needed, *unit),
                 amount(*left, *unit)
             ),
@@ -1185,7 +1240,12 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
             format!("{owner_kind:?} {owner} is paused at its budget"),
             "Raise its budget to resume it, or stop it.".to_string(),
         ),
-    };
+    }
+}
+
+/// A budget limit reached: one card per subject, in the task's chat (or the project's when it is the project's).
+pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, now: u64) {
+    let (subject, title, body) = budget_words(short);
     let chat = match task {
         Some(task) => task_chat(app, task, project, now),
         None => app.chats.main(now).id,
@@ -1200,7 +1260,7 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
             subject,
             title: title.clone(),
             body: Some(body.clone()),
-            choices: cards::budget_choices(None, "µ$"),
+            choices: cards::budget_choices(None, card_unit(short)),
         },
         now,
     );
@@ -1297,11 +1357,25 @@ pub fn budget_of_subject(subject: &str) -> Option<(OwnerKind, &str)> {
     }
 }
 
+/// An amount in its budget's unit, for a person: `$1.25` from micro-dollars, `12,400 tokens` for tokens.
 pub fn amount(value: u64, unit: Unit) -> String {
     match unit {
         Unit::Usd => format!("${:.2}", value as f64 / 1_000_000.0),
-        Unit::Tokens => format!("{value} tokens"),
+        Unit::Tokens => format!("{} tokens", thousands(value)),
     }
+}
+
+/// A whole number with a comma every three digits: `12400` is `12,400`.
+fn thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Sessions paused at a budget that `kind`/`owner` covers run again (it was raised or set).
@@ -2359,12 +2433,84 @@ mod tests {
     }
 
     #[test]
+    fn a_model_list_takes_its_first_allowed_model_and_eval_the_best_scored_one() {
+        let allowed = vec!["a/fast".to_string(), "b/strong".to_string()];
+        let listed = ["c/none", "b/strong", "a/fast"].map(String::from);
+        assert_eq!(first_listed(&listed, &allowed), Some("b/strong".into()));
+        assert_eq!(first_listed(&["c/none".to_string()], &allowed), None);
+
+        let score = |model: &str, runs: u64, successes: u64, cost: Option<f64>| Score {
+            seat: "build".into(),
+            model: Some(model.into()),
+            engine: "harness".into(),
+            runs,
+            successes,
+            success_rate: successes as f64 / runs.max(1) as f64,
+            cost_per_success_micros: cost,
+            time_per_success_ms: None,
+        };
+        let scores = vec![
+            score("a/fast", 4, 2, Some(10.0)),
+            score("b/strong", 4, 4, Some(50.0)),
+            // Not an allowed model: it does not count, however well it did.
+            score("c/outside", 4, 4, Some(1.0)),
+        ];
+        assert_eq!(
+            best_scored(&scores, "build", &allowed),
+            Some("b/strong".into())
+        );
+        // The eval results of another step do not count.
+        assert_eq!(best_scored(&scores, "review", &allowed), None);
+        // On a tie the cheaper model wins.
+        let tie = vec![
+            score("a/fast", 2, 2, Some(30.0)),
+            score("b/strong", 2, 2, Some(20.0)),
+        ];
+        assert_eq!(
+            best_scored(&tie, "build", &allowed),
+            Some("b/strong".into())
+        );
+    }
+
+    #[test]
     fn a_call_is_held_at_its_request_size_in_tokens_and_the_answer_cap_it_names() {
         let worst = worst_case(300, 500);
         assert_eq!((worst.input, worst.output), (100, 500));
         // About three bytes a token, rounded up; a call that names no cap holds the largest default answer.
         assert_eq!(worst_case(301, 0).input, 101);
         assert_eq!(worst_case(0, 0).output, UNCAPPED_ANSWER_TOKENS);
+    }
+
+    #[test]
+    fn a_budget_card_names_its_amounts_in_the_budgets_unit() {
+        let tokens = Short::Cap {
+            owner_kind: OwnerKind::Task,
+            owner: "t1".into(),
+            unit: Unit::Tokens,
+            needed: 12_400,
+            left: 300,
+        };
+        let (subject, _, body) = budget_words(&tokens);
+        assert_eq!(subject, "task:t1");
+        assert_eq!(body, "It needs 12,400 tokens and has 300 tokens left.");
+        let dollars = Short::Cap {
+            owner_kind: OwnerKind::Project,
+            owner: "pr1".into(),
+            unit: Unit::Usd,
+            needed: 1_250_000,
+            left: 0,
+        };
+        assert_eq!(
+            budget_words(&dollars).2,
+            "It needs $1.25 and has $0.00 left."
+        );
+        assert_eq!(card_unit(&tokens), Unit::Tokens);
+        let choices = cards::budget_choices(Some(2_000_000), Unit::Tokens);
+        assert_eq!(choices[0].label, "Raise by the estimate (2,000,000 tokens)");
+        assert!(
+            !format!("{body}{}", choices[0].label).contains("µ$"),
+            "no card says micro-dollars for a token budget"
+        );
     }
 }
 

@@ -695,7 +695,7 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<Value, (u16, String)>
         apz_plaza::now_ms(),
     ) {
         undo(app, &pid);
-        return Err((409, e));
+        return Err((409, e.to_string()));
     }
 
     // 3. Its tasks: the ledger creates them all or none.

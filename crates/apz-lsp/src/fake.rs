@@ -31,6 +31,8 @@ pub struct Script {
     pub refuse: Option<String>,
     /// The first this many definition and reference answers are empty, as a server still indexing answers.
     pub empty_answers: u32,
+    /// The first this many `workspace/symbol` answers are empty: a server answers its symbols once it has indexed.
+    pub indexed_after: u32,
 }
 
 /// What the fake was asked, in order.
@@ -65,6 +67,7 @@ pub fn transport(script: Script) -> (Transport, Seen) {
 
 fn serve(mut input: BufReader<PipeReader>, mut output: PipeWriter, script: Script, seen: Seen) {
     let mut empty_left = script.empty_answers;
+    let mut unindexed = script.indexed_after;
     while let Ok(Some(msg)) = frame::read(&mut input) {
         let method = msg["method"].as_str().unwrap_or("").to_string();
         lock(&seen.methods).push(method.clone());
@@ -126,6 +129,18 @@ fn serve(mut input: BufReader<PipeReader>, mut output: PipeWriter, script: Scrip
                     Vec::new()
                 } else {
                     scripted.iter().map(location_json).collect()
+                };
+                json!({"jsonrpc": "2.0", "id": id, "result": items})
+            }
+            (None, "workspace/symbol") => {
+                let items: Vec<Value> = if unindexed > 0 {
+                    unindexed -= 1;
+                    Vec::new()
+                } else {
+                    vec![json!({"name": "indexed", "kind": 12, "location": {
+                        "uri": "file:///ws/a.rs",
+                        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}
+                    }})]
                 };
                 json!({"jsonrpc": "2.0", "id": id, "result": items})
             }

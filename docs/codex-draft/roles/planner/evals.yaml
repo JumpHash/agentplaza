@@ -40,7 +40,7 @@ scenarios:
   - Silently edits running tasks
 - id: budget-too-small
   kind: single
-  situation: The work clearly needs more than the town's budget.
+  situation: The work clearly needs more than the project's budget.
   expect:
   - Says so and escalates; proposes a smaller first slice
   must_not:

@@ -45,6 +45,9 @@ pub struct Recipe {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    /// What the recipe is for, and what of it runs (a stub says which phase fills it).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     pub version: u32,
     #[serde(default)]
     pub scope: Scope,
@@ -199,15 +202,6 @@ impl Recipe {
                 if role.trim().is_empty() {
                     return Err(format!("step {} has an empty role", step.id));
                 }
-                match &step.model {
-                    Model::Name(m) if m == "any" || m == "differ" => {}
-                    _ => {
-                        return Err(format!(
-                            "step {}: a session's model is any or differ for now (pinned models come with phase 4.2)",
-                            step.id
-                        ));
-                    }
-                }
                 let seat = step.seat_name();
                 if let Some(other) = seats.insert(seat, &step.id) {
                     return Err(format!(
@@ -225,6 +219,11 @@ impl Recipe {
                     "step {}: fan_out {named} is not a fan-out",
                     step.id
                 ));
+            }
+            if let Model::Name(name) = &step.model
+                && name.trim().is_empty()
+            {
+                return Err(format!("step {}: the model has no name", step.id));
             }
             if let Model::List(list) = &step.model
                 && list.is_empty()
@@ -289,7 +288,14 @@ pub fn builtin() -> Vec<Recipe> {
         include_str!("builtin/ci.toml"),
         include_str!("builtin/base.toml"),
         include_str!("builtin/distill.toml"),
+        include_str!("builtin/intake.toml"),
+        include_str!("builtin/plan.toml"),
         include_str!("builtin/release.toml"),
+        include_str!("builtin/deploy.toml"),
+        include_str!("builtin/incident.toml"),
+        include_str!("builtin/upgrade.toml"),
+        include_str!("builtin/cve.toml"),
+        include_str!("builtin/engine_watch.toml"),
     ]
     .iter()
     .map(|t| Recipe::parse(t).expect("a built-in recipe parses"))
@@ -360,7 +366,26 @@ max = 2
     #[test]
     fn the_built_in_recipes_check_and_round_trip() {
         let recipes = builtin();
-        assert_eq!(recipes.len(), 6);
+        assert_eq!(recipes.len(), 13);
+        for stub in [
+            "intake",
+            "plan",
+            "deploy",
+            "incident",
+            "upgrade",
+            "cve",
+            "engine-watch",
+        ] {
+            let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
+            assert!(
+                r.description.contains("Stub until"),
+                "{stub} says which phase fills it"
+            );
+            assert!(
+                r.steps.iter().all(|s| s.engine.is_some()),
+                "{stub} runs by its engine"
+            );
+        }
         for r in recipes {
             r.check().unwrap();
             assert_eq!(Recipe::parse(&r.to_toml()).unwrap(), r, "{}", r.id);
@@ -391,8 +416,12 @@ max = 2
         assert!(r.check().unwrap_err().contains("no bound"));
 
         let mut r = Recipe::parse(CHANGE).unwrap();
-        r.steps[1].model = Model::Name("provider/pinned".into());
-        assert!(r.check().unwrap_err().contains("any or differ"));
+        r.steps[1].model = Model::Name(String::new());
+        assert!(r.check().unwrap_err().contains("no name"));
+        r.steps[1].model = Model::List(Vec::new());
+        assert!(r.check().unwrap_err().contains("model list is empty"));
+        r.steps[1].model = Model::List(vec!["a/one".into(), "b/two".into()]);
+        assert!(r.check().is_ok());
 
         let mut r = Recipe::parse(CHANGE).unwrap();
         r.steps[0].gate = vec!["looks good".into()];

@@ -1,0 +1,35 @@
+# The incident recipe (PLAN 21.1, 24). Stub: it needs the incident phase (24); none runs yet. An incident is triaged,
+# mitigated, and written up.
+id = "incident"
+name = "Incident"
+description = "Stub until the incident phase (24): declares its steps, none runs yet."
+version = 1
+inputs = ["alert"]
+outputs = ["postmortem"]
+triggers = ["alert.raised"]
+
+[[steps]]
+id = "triage"
+engine = "incident"
+gate = ["passed"]
+
+[[steps]]
+id = "mitigate"
+engine = "incident"
+gate = ["passed", "owner"]
+
+[[steps]]
+id = "postmortem"
+engine = "incident"
+gate = ["passed"]
+output = "postmortem"
+
+[[edges]]
+from = "triage"
+to = "mitigate"
+when = "passed"
+
+[[edges]]
+from = "mitigate"
+to = "postmortem"
+when = "passed"

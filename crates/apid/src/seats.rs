@@ -1,21 +1,24 @@
 //! Seats (PLAN 4.2, 7.2) and the change recipe's runs (Engine 0.4, 4.1).
 //!
 //! A seat is a step of a task's recipe: `builder`, `reviewer`, … A task's recipe (the built-in `change` recipe, or a
-//! project's copy) gives its seats: one per step, named by the step's seat. Each seat serves its step and is filled by
-//! one session at a time. Messages are addressed to seats, not sessions (threads.rs), so direct talk survives sessions
-//! ending. A session belongs to its task's project by construction.
+//! project's copy) gives its seats: one per step, named by the step's seat, and one per item of a step that runs
+//! several (a fan-out of n attempts, or one per file, target or finding: `builder#1`, `builder#2`, …). Each seat serves
+//! its step and is filled by one session at a time. Messages are addressed to seats, not sessions (threads.rs), so
+//! direct talk survives sessions ending. A session belongs to its task's project by construction.
 //!
 //! What a step's outcome does to the task is decided by the recipe's walk (recipes/graph.rs): the caller passes the
-//! walk's moves to [`Seats::ended`], and the seats follow them: a step that is ready starts, a loop rewinds to its builder
-//! with what the review said, and the run's end or failure ends the task. A crashed session is the seat's own business:
-//! it goes again, at most [`ATTEMPTS`] times.
+//! walk's moves to [`Seats::ended`], and the seats follow them, for every seat of a step: a step that is ready starts,
+//! a loop rewinds to its builder with what the review said, and the run's end or failure ends the task. A crashed
+//! session is the seat's own business: it goes again, at most [`ATTEMPTS`] times.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use crate::recipes::{Move, Recipe, model::Model};
+use crate::recipes::graph::items_of;
+use crate::recipes::model::Model;
+use crate::recipes::{Move, Recipe};
 
 /// Where a seat is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -33,7 +36,8 @@ pub enum SeatState {
     Failed,
 }
 
-/// Which models may fill a seat.
+/// Which models may fill a seat. A step's model list or `eval` is chosen per session (work_loop.rs), so a seat of one
+/// is `any`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelPolicy {
@@ -101,9 +105,21 @@ impl Seats {
         self.seats.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Gives `task` the seats of `recipe`, one per step, the steps that start the recipe ready. A task that has seats
-    /// keeps them. Errors when a step's seat cannot be run yet (a fan-out, or a model that is pinned).
+    /// Gives `task` the seats of `recipe` with no named fan-out counts (see [`Seats::open_with_items`]).
     pub fn open(&self, task: &str, recipe: &Recipe, now_ms: u64) -> Result<Vec<Seat>, String> {
+        self.open_with_items(task, recipe, &BTreeMap::new(), now_ms)
+    }
+
+    /// Gives `task` the seats of `recipe`: one per step, and one per item of a step that runs several (`items` counts a
+    /// named fan-out, as the walk does); the steps that start the recipe are ready. A task that has seats keeps them.
+    /// Errors for a step with no role: it runs by its engine, not in a task.
+    pub fn open_with_items(
+        &self,
+        task: &str,
+        recipe: &Recipe,
+        items: &BTreeMap<String, u32>,
+        now_ms: u64,
+    ) -> Result<Vec<Seat>, String> {
         let mut seats = self.lock();
         if seats.keys().any(|(t, _)| t == task) {
             return Ok(seats.values().filter(|s| s.task == task).cloned().collect());
@@ -113,38 +129,40 @@ impl Seats {
             let Some(role) = &step.role else {
                 return Err(format!("step {} has no role: its engine runs it", step.id));
             };
-            if step.fan_out != crate::recipes::model::Fan::Count(1) {
-                return Err(format!(
-                    "step {}: a seat runs one item (fan-out comes later)",
-                    step.id
-                ));
-            }
             let model_policy = match &step.model {
-                Model::Name(m) if m == "any" => ModelPolicy::Any,
                 Model::Name(m) if m == "differ" => ModelPolicy::Differ,
-                _ => return Err(format!("step {}: a seat's model is any or differ", step.id)),
+                _ => ModelPolicy::Any,
             };
-            let seat = Seat {
-                task: task.to_string(),
-                name: step.seat_name().to_string(),
-                recipe: recipe.id.clone(),
-                step: step.id.clone(),
-                role: role.clone(),
-                model_policy,
-                state: if recipe.has_forward_edge_into(&step.id) {
-                    SeatState::Waiting
+            let count = items_of(step, items);
+            let state = if recipe.has_forward_edge_into(&step.id) {
+                SeatState::Waiting
+            } else {
+                SeatState::Ready
+            };
+            for i in 1..=count {
+                let name = if count == 1 {
+                    step.seat_name().to_string()
                 } else {
-                    SeatState::Ready
-                },
-                session: None,
-                last_model: None,
-                attempts: 0,
-                round: 1,
-                returned_with: None,
-                updated_ms: now_ms,
-            };
-            seats.insert((task.to_string(), seat.name.clone()), seat.clone());
-            out.push(seat);
+                    format!("{}#{i}", step.seat_name())
+                };
+                let seat = Seat {
+                    task: task.to_string(),
+                    name: name.clone(),
+                    recipe: recipe.id.clone(),
+                    step: step.id.clone(),
+                    role: role.clone(),
+                    model_policy,
+                    state,
+                    session: None,
+                    last_model: None,
+                    attempts: 0,
+                    round: 1,
+                    returned_with: None,
+                    updated_ms: now_ms,
+                };
+                seats.insert((task.to_string(), name), seat.clone());
+                out.push(seat);
+            }
         }
         Ok(out)
     }
@@ -204,8 +222,8 @@ impl Seats {
 
     /// The session of a seat ended. `crashed`: the session died or never started (another attempt, not a failed step);
     /// otherwise `passed` says whether the step passed and `moves` are what the recipe's walk did with that (the
-    /// seats follow them). `said` is what the session reported (a failed review's findings go to the builder's next
-    /// session).
+    /// seats follow them, every seat of a step at once). `said` is what the session reported (a failed review's
+    /// findings go to the builder's next session).
     pub fn ended(
         &self,
         task: &str,
@@ -244,39 +262,47 @@ impl Seats {
                 SeatState::Failed
             }
         });
-        let seat_of = |seats: &BTreeMap<(String, String), Seat>, step: &str| {
+        // The seats of a step: one, or one per item.
+        let seats_of = |seats: &BTreeMap<(String, String), Seat>, step: &str| -> Vec<String> {
             seats
                 .values()
-                .find(|s| s.task == task && s.step == step)
+                .filter(|s| s.task == task && s.step == step)
                 .map(|s| s.name.clone())
+                .collect()
         };
         let mut next: Option<Next> = None;
         for m in moves {
             match m {
                 Move::Ready(step) => {
-                    if let Some(to) = seat_of(&seats, step) {
-                        set(&mut seats, &to, &|s| {
+                    let to = seats_of(&seats, step);
+                    for name in &to {
+                        set(&mut seats, name, &|s| {
                             s.state = SeatState::Ready;
                             s.attempts = 0;
                         });
-                        next.get_or_insert(Next::Ready(to));
+                    }
+                    if let Some(first) = to.into_iter().next() {
+                        next.get_or_insert(Next::Ready(first));
                     }
                 }
                 Move::Rewind(step) => {
-                    if let Some(to) = seat_of(&seats, step) {
-                        let said = said.to_string();
-                        set(&mut seats, &to, &|s| {
+                    let to = seats_of(&seats, step);
+                    let said = said.to_string();
+                    for name in &to {
+                        set(&mut seats, name, &|s| {
                             s.state = SeatState::Ready;
                             s.attempts = 0;
                             s.round += 1;
                             s.returned_with = Some(said.clone());
                         });
-                        next = Some(Next::Back(to));
+                    }
+                    if let Some(first) = to.into_iter().next() {
+                        next = Some(Next::Back(first));
                     }
                 }
                 Move::Reset(step) => {
-                    if let Some(to) = seat_of(&seats, step) {
-                        set(&mut seats, &to, &|s| {
+                    for name in seats_of(&seats, step) {
+                        set(&mut seats, &name, &|s| {
                             s.state = SeatState::Waiting;
                             s.attempts = 0;
                         });
@@ -471,24 +497,107 @@ mod tests {
     }
 
     #[test]
-    fn a_recipe_s_steps_with_an_unrunnable_model_or_fan_out_are_refused() {
-        let mut recipe = change();
-        recipe.0.steps[0].fan_out = crate::recipes::model::Fan::Count(2);
+    fn a_fan_out_of_n_attempts_has_a_seat_per_attempt_and_passes_when_every_attempt_passes() {
+        let recipe = Recipe::parse(
+            r#"
+id = "best-of"
+version = 1
+[[steps]]
+id = "build"
+seat = "builder"
+role = "builder"
+fan_out = 3
+[[steps]]
+id = "review"
+seat = "reviewer"
+role = "reviewer"
+model = "differ"
+[[edges]]
+from = "build"
+to = "review"
+when = "passed"
+"#,
+        )
+        .unwrap();
         let seats = Seats::default();
-        assert!(
-            seats
-                .open("t1", &recipe.0, 1)
-                .unwrap_err()
-                .contains("one item")
+        let opened = seats.open("t2", &recipe, 1).unwrap();
+        let names: Vec<&str> = opened.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["builder#1", "builder#2", "builder#3", "reviewer"]);
+        assert_eq!(seats.ready().len(), 3, "all three attempts start at once");
+
+        let (mut walk, _) = Walk::start(&recipe, &BTreeMap::new());
+        let mut moves_of = Vec::new();
+        for i in 1..=3 {
+            let name = format!("builder#{i}");
+            seats.fill("t2", &name, &format!("s{i}"), None, 2).unwrap();
+            walk.started("build");
+            let moves = walk.settle(&recipe, "build", &Report::verdict(true));
+            moves_of.push(seats.ended("t2", &name, true, false, "done", 3, &moves));
+        }
+        // Only the last attempt to pass moves the task on.
+        assert_eq!(moves_of, [None, None, Some(Next::Ready("reviewer".into()))]);
+        assert_eq!(seats.get("t2", "builder#2").unwrap().state, SeatState::Done);
+    }
+
+    #[test]
+    fn a_named_fan_out_takes_the_items_its_run_is_given_and_one_failing_item_fails_the_step() {
+        let recipe = Recipe::parse(
+            r#"
+id = "per-file"
+version = 1
+[[steps]]
+id = "check"
+seat = "checker"
+role = "reviewer"
+fan_out = "per_file"
+"#,
+        )
+        .unwrap();
+        let items = BTreeMap::from([("check".to_string(), 2u32)]);
+        let seats = Seats::default();
+        let opened = seats.open_with_items("t3", &recipe, &items, 1).unwrap();
+        assert_eq!(opened.len(), 2);
+        assert_eq!(opened[1].name, "checker#2");
+
+        let (mut walk, _) = Walk::start(&recipe, &items);
+        seats.fill("t3", "checker#1", "s1", None, 2).unwrap();
+        walk.started("check");
+        let moves = walk.settle(&recipe, "check", &Report::verdict(false));
+        assert_eq!(
+            seats.ended(
+                "t3",
+                "checker#1",
+                false,
+                false,
+                "the file is wrong",
+                3,
+                &moves
+            ),
+            Some(Next::Failed("the check step failed".into()))
         );
-        let mut recipe = change();
-        recipe.0.steps[1].model = Model::Name("provider/pinned".into());
+        assert!(walk.outcome.is_some());
+        assert_eq!(
+            seats.get("t3", "checker#2").unwrap().state,
+            SeatState::Ready
+        );
+    }
+
+    #[test]
+    fn a_recipe_with_an_engine_step_in_a_task_is_refused_and_a_list_model_is_no_refusal() {
+        let mut recipe = builtin_named("change").unwrap();
+        recipe.steps[0].role = None;
+        recipe.steps[0].engine = Some("harness".into());
         assert!(
             Seats::default()
-                .open("t2", &recipe.0, 1)
+                .open("t1", &recipe, 1)
                 .unwrap_err()
-                .contains("any or differ")
+                .contains("no role")
         );
+
+        let mut recipe = builtin_named("change").unwrap();
+        recipe.steps[0].model = Model::List(vec!["a/one".into(), "b/two".into()]);
+        let opened = Seats::default().open("t2", &recipe, 1).unwrap();
+        assert_eq!(opened[0].model_policy, ModelPolicy::Any);
     }
 
     #[test]
@@ -597,7 +706,7 @@ max = 1
             Some(Next::Done)
         );
         let view = runs.view(&run).unwrap();
-        assert_eq!(view.run.state, crate::recipes::runs::RunState::Passed);
+        assert_eq!(view.run.state, RunState::Passed);
         assert_eq!(view.run.recipe, "gated");
 
         // The same file with a checker that never goes green: after its one loop, the run fails the task.

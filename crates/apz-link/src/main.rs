@@ -1,5 +1,5 @@
 //! apz-link [--state DIR] join <token> [--name NAME]
-//! apz-link [--state DIR] run [--noded PORT] [--vsockd PORT] [--forward PORT]
+//! apz-link [--state DIR] run [--noded PORT] [--vsockd PORT] [--forward PORT] [--inbound PORT]
 //! apz-link [--state DIR] show
 //!
 //! The state directory defaults to `~/.local/share/agentplaza/node`.
@@ -11,7 +11,7 @@ use apz_link::{identity, join, run};
 
 const USAGE: &str = "\
 usage: apz-link [--state DIR] join <token> [--name NAME]
-       apz-link [--state DIR] run [--noded PORT] [--vsockd PORT] [--forward PORT]
+       apz-link [--state DIR] run [--noded PORT] [--vsockd PORT] [--forward PORT] [--inbound PORT]
        apz-link [--state DIR] show";
 
 fn main() -> ExitCode {
@@ -64,6 +64,9 @@ fn dispatch(args: &[String]) -> Result<(), String> {
             }
             if let Some(port) = flag(more, "--forward")? {
                 local.forward = port.parse().map_err(|_| "--forward: not a port")?;
+            }
+            if let Some(port) = flag(more, "--inbound")? {
+                local.inbound = port.parse().map_err(|_| "--inbound: not a port")?;
             }
             run::run(&state, local)
         }

@@ -58,10 +58,14 @@ pub struct Ctx<'a> {
     pub installed: &'a dyn Fn(Language) -> bool,
 }
 
-/// The servers of this process: started on the first query for their language, kept up for its life.
-fn shared_pool() -> &'static Pool {
+/// The servers of this process: started on the first query for their language, kept up for its life. A server a base
+/// started and warmed (PLAN 3.8) is reached on its socket in the workspace's plaza directory, for the workspace root.
+fn shared_pool(workspace: &Workspace) -> &'static Pool {
     static POOL: OnceLock<Pool> = OnceLock::new();
-    POOL.get_or_init(|| Pool::new(Timeouts::default()))
+    POOL.get_or_init(|| {
+        Pool::new(Timeouts::default())
+            .with_warm(workspace.plaza_dir().join("lsp"), workspace.weft_root())
+    })
 }
 
 /// Runs one of the tools for the agent, with the VM's servers and Weft's CLI.
@@ -69,7 +73,7 @@ pub fn run(workspace: &Workspace, name: &str, input: &Value) -> Result<String, S
     let installed = apz_lsp::is_installed;
     let cx = Ctx {
         workspace,
-        pool: shared_pool(),
+        pool: shared_pool(workspace),
         index: &Cli,
         installed: &installed,
     };
@@ -1019,6 +1023,75 @@ mod tests {
                 .borrow()
                 .contains(&"names gree find=true".to_string())
         );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_definition_is_answered_by_the_warm_server_a_base_left_running() {
+        let (root, ws) = workspace("warm");
+        // The base's bridge serves the server on its socket in the workspace's plaza directory, for the workspace root.
+        let base_root = ws.weft_root();
+        let warm_dir = ws.plaza_dir().join("lsp");
+        let socket = apz_lsp::bridge::socket_path(&warm_dir, "rust-analyzer");
+        let script = Script {
+            definition: vec![Location {
+                uri: path_to_uri(&base_root.join("loose").join("notes.rs")),
+                range: Range {
+                    start: Position {
+                        line: 0,
+                        character: 3,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 6,
+                    },
+                },
+            }],
+            ..Script::default()
+        };
+        let (transport, _seen) = fake::transport(script);
+        let (serve_socket, serve_root) = (socket.clone(), base_root.clone());
+        std::thread::spawn(move || {
+            let _ = apz_lsp::bridge::serve(
+                &serve_socket,
+                transport,
+                &apz_lsp::servers::RUST_ANALYZER,
+                &serve_root,
+                std::time::Duration::from_secs(5),
+            );
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !socket.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the bridge never listened"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // The harness's pool, as the process builds it: a server it is not told about is launched, and must not be.
+        let pool = Pool::with_launch(Timeouts::default(), |_, _| {
+            Err(LspError::Protocol("launched".into()))
+        })
+        .with_warm(&warm_dir, &base_root);
+        let index = index_answers();
+        let installed = |_: Language| true;
+        let cx = Ctx {
+            workspace: &ws,
+            pool: &pool,
+            index: &index,
+            installed: &installed,
+        };
+        let def = run_tool(
+            &cx,
+            "definition",
+            json!({"path": "loose/notes.rs", "line": 1, "column": 4}),
+        )
+        .unwrap();
+        assert_eq!(def["via"], "language server (rust-analyzer)");
+        assert_eq!(def["locations"][0]["line"], 1);
+        assert_eq!(pool.warmed(), 1);
+        assert!(index.asked.borrow().is_empty());
         fs::remove_dir_all(&root).ok();
     }
 }

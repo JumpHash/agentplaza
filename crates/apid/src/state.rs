@@ -105,7 +105,7 @@ impl Config {
 pub struct App {
     pub config: Config,
     /// The event bus every module publishes on (the sockets at `/v1/ws` subscribe to it).
-    pub bus: events::Bus,
+    pub bus: Arc<events::Bus>,
     /// The plaza's laws (JHRL), enforced on every tool call.
     pub laws: &'static crate::laws::Laws,
     /// External-tool connectors (AP-063): settings and vaulted keys.
@@ -181,7 +181,9 @@ pub struct App {
     /// The projects' verifiers: when each last started (verifier.rs).
     pub verifier: crate::verifier::Store,
     /// The hub's nodes, join codes and command queues.
-    pub nodes: crate::nodes::Store,
+    pub nodes: Arc<crate::nodes::Store>,
+    /// The routes the server dispatches to (set at start). A node's requests over its tunnel go through them too.
+    pub routes: std::sync::OnceLock<Arc<apz_http::Router<App>>>,
     /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
     pub stations: crate::stations::Store,
     /// Model prices (OpenRouter, LiteLLM and the owner's own), for usage costs.
@@ -279,9 +281,10 @@ impl App {
         crate::vendor_relay::register(&vault);
         // The Library of deliverables, over the object store.
         let library = Arc::new(crate::deliverables::Store::open(Arc::clone(&blobs)));
+        let bus = Arc::new(events::Bus::default());
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
-            bus: events::Bus::default(),
+            bus: Arc::clone(&bus),
             laws: crate::laws::global(),
             connectors: crate::connectors::Store::new(Arc::clone(&vault))
                 .with_generations(Arc::clone(&generations)),
@@ -309,7 +312,7 @@ impl App {
             sessions: Default::default(),
             seats: Default::default(),
             recipe_runs: Default::default(),
-            budgets: Default::default(),
+            budgets: crate::budgets::Budgets::announcing(Arc::clone(&bus)),
             cards: Default::default(),
             disk: Default::default(),
             chats: Default::default(),
@@ -324,7 +327,8 @@ impl App {
             project_memory: crate::project_memory::Store::default(),
             curator: crate::curator::Store::default(),
             verifier: crate::verifier::Store::default(),
-            nodes: crate::nodes::Store::default(),
+            nodes: Arc::default(),
+            routes: std::sync::OnceLock::new(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
@@ -529,7 +533,8 @@ impl App {
             Ok(handle) => std::mem::forget(handle),
             Err(e) => eprintln!("apid: the content origin did not start: {e}"),
         }
-        let router = api::router();
+        let router = Arc::new(api::router());
+        let _ = app.routes.set(Arc::clone(&router));
         // Who may send a body, and how much, is decided from the request's headers before the body is
         // read: a caller the gate refuses gets its answer without one (`hub_auth::body_allowance`).
         let admitting = Arc::clone(&app);

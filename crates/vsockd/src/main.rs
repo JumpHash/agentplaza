@@ -20,6 +20,8 @@ mod http;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod hub;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod inbound;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod metrics;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod serve;
@@ -66,6 +68,11 @@ use serve::{HostError, SessionLimits, StdoutLog, SystemClock, handle_session};
 const DEFAULT_PORT: u32 = 5000;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const DEFAULT_HTTP_PORT: u16 = 19080;
+/// noded's loopback port, and vsockd's inbound listener's (`apz-link`'s defaults).
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+const DEFAULT_NODED_PORT: u16 = 8899;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+const DEFAULT_INBOUND_PORT: u16 = 19095;
 /// How often the daemon's main thread checks for a stop request.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const ACCEPT_POLL_MS: i32 = 200;
@@ -141,7 +148,7 @@ impl Drop for SessionGuard {
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid URL]
               [--internal-token-file PATH] [--egress on|off] [--egress-ports LIST]
-              [--e2b-port P] [--max-sessions N]
+              [--e2b-port P] [--max-sessions N] [--noded PORT] [--inbound-port P]
 
   --uds-dir DIR     directory for the per-VM vsock Unix sockets (default /tmp/plaza-vsock;
                     %LOCALAPPDATA%\\AgentPlaza\\state\\vsock on Windows)
@@ -248,6 +255,10 @@ struct Config {
     egress_ports: Vec<u16>,
     e2b_port: Option<u16>,
     max_sessions: usize,
+    /// The noded whose runs say which inbound ports are served (`--noded`).
+    noded: u16,
+    /// The loopback port the inbound listener serves on (`--inbound-port`).
+    inbound_port: u16,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -264,6 +275,8 @@ impl Default for Config {
             egress_ports: Vec::new(),
             e2b_port: None,
             max_sessions: DEFAULT_MAX_SESSIONS,
+            noded: DEFAULT_NODED_PORT,
+            inbound_port: DEFAULT_INBOUND_PORT,
         }
     }
 }
@@ -331,6 +344,12 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 config.http_port = value?
                     .parse()
                     .map_err(|err| format!("--http-port: {err}"))?
+            }
+            "--noded" => config.noded = value?.parse().map_err(|err| format!("--noded: {err}"))?,
+            "--inbound-port" => {
+                config.inbound_port = value?
+                    .parse()
+                    .map_err(|err| format!("--inbound-port: {err}"))?
             }
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -445,6 +464,25 @@ fn run(config: Config) -> Result<(), String> {
         )
     })?;
     println!("vsockd: http on http://127.0.0.1:{}", http.port());
+    // The inbound listener: the hub's port streams reach guests only through it, and only for ports noded has
+    // registered for a live run (`inbound.rs`).
+    let inbound_token = config
+        .internal_token_file
+        .as_ref()
+        .map_or_else(InternalToken::none, InternalToken::file);
+    inbound::start(
+        config.inbound_port,
+        inbound::NodedCheck {
+            noded: config.noded,
+            token: inbound_token,
+        },
+    )
+    .map_err(|err| {
+        format!(
+            "cannot listen on 127.0.0.1:{} for inbound streams: {err}",
+            config.inbound_port
+        )
+    })?;
 
     // The E2B listener is bound with the others, so a taken port fails the daemon before anything
     // is served.
@@ -931,6 +969,10 @@ mod tests {
             "8080,8443",
             "--e2b-port",
             "49990",
+            "--noded",
+            "9001",
+            "--inbound-port",
+            "9002",
         ])
         .unwrap();
         let expected = Config {
@@ -944,6 +986,8 @@ mod tests {
             egress_ports: vec![8080, 8443],
             e2b_port: Some(49990),
             max_sessions: DEFAULT_MAX_SESSIONS,
+            noded: 9001,
+            inbound_port: 9002,
         };
         assert_eq!(config, expected);
         assert!(

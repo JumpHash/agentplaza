@@ -118,6 +118,7 @@ mod toolbox;
 mod toolbox_survey;
 mod tools;
 mod transcript;
+mod tunnel;
 mod unfurl;
 mod upstream;
 mod usage;

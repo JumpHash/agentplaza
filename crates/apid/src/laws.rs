@@ -1281,8 +1281,8 @@ fn reads_input(expr: &Expr) -> bool {
     }
 }
 
-/// The plaza, as the one `Town` entity the laws name for an operation on the plaza as a whole.
-const TOWN: &str = "plaza";
+/// The plaza, as the one `Plaza` entity the laws name for an operation on the plaza as a whole.
+const PLAZA: &str = "plaza";
 
 /// The operations a plaza tool performs beyond its `tool.call`, each with the resource and the
 /// context its laws read. A forbid whose condition reads a missing attribute applies (fail closed),
@@ -1305,15 +1305,15 @@ fn plaza_operations(
         // The plaza is named by its `name` attribute (a bare resource is its `$type`/`$id` record).
         // Posting a plan's whole list creates tasks as posting one does.
         "plaza_post_task" | "plaza_tasks_post" => {
-            let town = Entity {
-                ty: "Town".into(),
-                id: TOWN.into(),
+            let plaza = Entity {
+                ty: "Plaza".into(),
+                id: PLAZA.into(),
             };
             store.insert(
-                &town,
-                BTreeMap::from([("name".to_string(), Value::str(TOWN))]),
+                &plaza,
+                BTreeMap::from([("name".to_string(), Value::str(PLAZA))]),
             );
-            vec![("task.create", town, Context::new())]
+            vec![("task.create", plaza, Context::new())]
         }
         "plaza_assign" => {
             let cid = input
@@ -1365,8 +1365,8 @@ fn plaza_operations(
         "foundry_submit_job" => vec![(
             "training.submit",
             Entity {
-                ty: "Town".into(),
-                id: TOWN.into(),
+                ty: "Plaza".into(),
+                id: PLAZA.into(),
             },
             Context::from([(
                 "gpu_hours".to_string(),

@@ -347,3 +347,16 @@ pub fn vsock_connect(cid: u32, port: u32) -> io::Result<std::os::fd::OwnedFd> {
     }
     Ok(sock)
 }
+
+/// Ends a socket's sending (`shutdown(SHUT_WR)`): the peer reads end of stream.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn shutdown_write(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `shutdown` takes a descriptor and a flag and no pointers; the borrowed descriptor is open.
+    if unsafe { libc::shutdown(fd.as_raw_fd(), libc::SHUT_WR) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}

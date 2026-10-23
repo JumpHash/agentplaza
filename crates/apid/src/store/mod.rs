@@ -18,6 +18,7 @@ use apz_store::{Durability, FileSpec, Migration, Store, StoreError};
 
 pub mod components;
 pub mod saver;
+pub mod search;
 pub mod sql;
 #[cfg(test)]
 mod tests;

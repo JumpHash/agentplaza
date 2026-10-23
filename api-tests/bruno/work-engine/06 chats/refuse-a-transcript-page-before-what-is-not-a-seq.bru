@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a transcript page before what is not a seq
+  type: http
+  seq: 20
+}
+
+get {
+  url: {{baseUrl}}/v1/chats/main/transcript?before=last&limit=10
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}
