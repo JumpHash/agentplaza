@@ -63,6 +63,15 @@ at the arch layout's kernel offset, the device tree from `crate::arch::aarch64::
 PSCI "hvc", X0 = the FDT's address, PC = the kernel entry, PSTATE = EL1h with DAIF masked
 (0x3c5), MPIDR per vCPU. Secondary vCPUs are created stopped; the guest's PSCI CPU_ON starts them.
 
+## Status on this tree
+
+Nothing of the arm64 backend is written yet: `whp/arm64/`, the arm64 boot and the `spawner` route do
+not exist, and the arm64 guest is not staged for Windows. The pure half (step 2) could be written and
+tested on any host, but its message layouts come from the arm64 WHP header (`WinHvPlatformDefs.h`),
+which is not on this machine, and the `aarch64-pc-windows-msvc` target is not installed here, so
+none of it is compile-checked for Windows yet. The arm64 build of `windows.yml` is the check, once the
+`APZ_WINDOWS_ARM64` variable is `on`.
+
 ## Pieces
 
 1. `whp/sys.rs` arm64: the register-name constants, the exit-context layout, `WHV_ARM64_IC_PARAMETERS`,

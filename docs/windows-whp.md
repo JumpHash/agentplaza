@@ -129,8 +129,12 @@ connection to `vsockd` → interrupts back through the I/O APIC.
 ### 5. Through the node
 
 `noded` boots the same VMs for the hub (`POST /v1/runs`); the desktop app starts `noded` and
-`vsockd` with the platform's socket directory. On Windows the per-VM process mode
-(`APZ_VMM_SPAWN=process`) is Linux-only and falls back to in-process with a warning.
+`vsockd` with the platform's socket directory. The per-VM process mode (`APZ_VMM_SPAWN=process`)
+runs on Windows too: each VM is an `apz-vmm.exe` child, started through `apz_sandbox` with the
+job object and the AppContainer of `vmm::confine::monitor_spec`, and its control socket is an
+AF_UNIX socket. The mode is compiled and unit-tested on every host (`spawner::boot_route`,
+`spawner::process::sandbox_tests`); a VM booted that way on a Windows x64 machine is not run yet.
+Windows has no `SIGTERM`, so a stop terminates the child at once and the guest does not shut down.
 
 ## Troubleshooting
 
@@ -148,14 +152,16 @@ connection to `vsockd` → interrupts back through the I/O APIC.
 
 - **Memory balloon**: Linux-only. A balloon is ignored with a warning. (The workspace and the
   shared data volumes are attached, in the KVM x86_64 slots.)
-- **Confinement**: on Linux every VMM thread runs under a seccomp allowlist, and the per-VM process
-  mode adds the jailer (namespaces, `pivot_root`, dropped ids). On Windows the VMM runs as threads
-  of `noded` with the user's rights. The spec that would confine a monitor process is built and
-  tested (`vmm::confine::monitor_spec`: the kernel and initrd read-only, the vsock directory the only
-  writable path, no network, one process, a memory cap of the guest RAM plus 256 MiB). It runs
-  through `apz_sandbox::spawn` (an AppContainer and a job object), which compiles for Windows and is
-  tested there only. Nothing spawns a Windows monitor process with it yet: `APZ_VMM_SPAWN=process`
-  still boots in-process, because the monitor child (`apz-vmm`) exists on Linux and macOS only.
+- **Confinement, on hardware**: on Linux every VMM thread runs under a seccomp allowlist, and the
+  per-VM process mode adds the jailer (namespaces, `pivot_root`, dropped ids). On Windows the
+  per-VM process runs under `apz_sandbox` (an AppContainer and a job object, the spec of
+  `vmm::confine::monitor_spec`), and in-process VMs run as threads of `noded` with the user's
+  rights. Written and compile-checked for `x86_64-pc-windows-msvc`; not run. Open on a Windows x64
+  machine: whether WHP creates a partition from inside the AppContainer (the monitor needs no
+  capability beyond the hypervisor, but this is measured, not assumed), and the workspace and
+  snapshot directories' grants.
+- **Multi-vCPU, on hardware**: the APs are created parked and start on INIT/SIPI; a boot with
+  `--vcpus 2` is not run yet.
 - **Windows arm64**: WHP on arm64 has its own register set and an in-hypervisor GICv3; the guest
   path for it (the HVF backend's device tree and memory map on WHP) is not written. The platform
   layer (`whp::sys`, `whp::vm`) builds there already.

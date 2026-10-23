@@ -53,9 +53,10 @@
 // crate's library keeps the same posture with the allowlist in `lib.rs`.
 #![allow(unsafe_code)]
 
+use apz_uds::{UnixListener, UnixStream};
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -175,6 +176,7 @@ pub(crate) fn main() -> ExitCode {
 /// `SIGTERM` *first* (`vmm::spawner::process`), so a `SIGKILL` here means the
 /// parent had no chance to ask — and there is nothing left to negotiate with
 /// on the other end of the pipes.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const PARENT_DEATH_SIGNAL: libc::c_int = libc::SIGKILL;
 
 /// macOS: the same backstop, through kqueue. The filter `EVFILT_PROC` with `NOTE_EXIT` on the parent's
@@ -182,6 +184,13 @@ const PARENT_DEATH_SIGNAL: libc::c_int = libc::SIGKILL;
 /// skipped the stop path). A watch thread takes the event and sends this process
 /// [`PARENT_DEATH_SIGNAL`]. macOS has no parent-death signal that follows a thread, so the watch is
 /// per process: the supervisor-thread rule of `vmm::spawner::process` is Linux's alone.
+#[cfg(windows)]
+fn arm_parent_death_signal() -> std::io::Result<()> {
+    // On Windows the parent holds this process in a job object with kill-on-close (`apz_sandbox`): the job
+    // ends with the parent's last handle to it, so there is no signal to arm.
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn arm_parent_death_signal() -> std::io::Result<()> {
     // SAFETY: `getppid` takes no arguments and reads no memory.
@@ -590,12 +599,7 @@ fn serve_control(path: PathBuf, controls: Controls) -> Result<(), String> {
     }
     let listener = UnixListener::bind(&path)
         .map_err(|err| format!("cannot bind the control socket {}: {err}", path.display()))?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
-        format!(
-            "cannot restrict the control socket {}: {err}",
-            path.display()
-        )
-    })?;
+    restrict_control_socket(&path)?;
     thread::Builder::new()
         .name("apz_vmm_control".to_string())
         .spawn(move || {
@@ -611,6 +615,23 @@ fn serve_control(path: PathBuf, controls: Controls) -> Result<(), String> {
         })
         .map(|_| ())
         .map_err(|err| format!("cannot start the control thread: {err}"))
+}
+
+/// Mode `0600` on Unix. Windows has no mode bits: the socket sits in the profile's directory, whose inherited
+/// ACL keeps it to that user, and the monitor's AppContainer is granted that directory and no other.
+#[cfg(unix)]
+fn restrict_control_socket(path: &Path) -> Result<(), String> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
+        format!(
+            "cannot restrict the control socket {}: {err}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn restrict_control_socket(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 /// What the control socket answers from: the VM's balloon, its pause and

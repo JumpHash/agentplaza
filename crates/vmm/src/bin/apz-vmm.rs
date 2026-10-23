@@ -17,8 +17,8 @@
 // This file is the dispatcher: the body is `apz-vmm/child.rs`, which is the
 // same on Linux and macOS (the VM is built by `vmm::spawner::spawn`, whose
 // backend is KVM or Hypervisor.framework); only its jail and its parent-death
-// watch are per platform. Windows has no `apz-vmm` VM to boot (its WHP VMs are
-// in-process), so the binary there only says so.
+// watch are per platform: on Windows the parent's job object ends the child, and the
+// control socket is an AF_UNIX socket (`apz_uds`).
 //
 // Safe Rust, with one stated exception. The crate's library is
 // `deny(unsafe_code)` with an enumerated module allowlist (`lib.rs`); this
@@ -31,11 +31,11 @@
 // notes, exactly as the library's syscall modules do.
 #![deny(unsafe_code)]
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "apz-vmm/child.rs"]
 mod child;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn main() -> std::process::ExitCode {
     if std::env::args()
         .skip(1)
@@ -47,7 +47,7 @@ fn main() -> std::process::ExitCode {
     child::main()
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn main() -> std::process::ExitCode {
     if std::env::args()
         .skip(1)

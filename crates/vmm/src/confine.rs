@@ -21,17 +21,18 @@ pub const MONITOR_OVERHEAD_BYTES: u64 = 256 << 20;
 /// The confinement spec of one VMM process.
 ///
 /// * `program`, `args`, `env`: the monitor binary and its whole environment (nothing is inherited).
-/// * `workdir`: the VM's own directory, the child's cwd; created if missing and read-write.
-/// * `images`: the kernel and initrd the monitor reads; read-only.
-/// * `state_dir`: the directory holding the vsock sockets (`vm{cid}_{port}`); read-write.
+/// * `workdir`: the monitor's cwd (created if missing); the caller passes its state directory.
+/// * `read_only`: what it reads: the kernel, the initrd, data volumes, a restore directory.
+/// * `read_write`: what it writes: the state directory with the vsock and control sockets, the
+///   workspace image, a snapshot root.
 /// * `guest_memory_bytes`: the guest's RAM; the memory cap is this plus [`MONITOR_OVERHEAD_BYTES`].
 pub fn monitor_spec(
     program: &Path,
     args: Vec<String>,
     env: Vec<(String, String)>,
     workdir: &Path,
-    images: &[PathBuf],
-    state_dir: &Path,
+    read_only: &[PathBuf],
+    read_write: &[PathBuf],
     guest_memory_bytes: u64,
 ) -> Spec {
     Spec {
@@ -39,8 +40,8 @@ pub fn monitor_spec(
         args,
         env,
         workdir: workdir.to_path_buf(),
-        read_only: images.to_vec(),
-        read_write: vec![state_dir.to_path_buf()],
+        read_only: read_only.to_vec(),
+        read_write: read_write.to_vec(),
         network: Network::None,
         limits: Limits {
             memory_bytes: Some(guest_memory_bytes.saturating_add(MONITOR_OVERHEAD_BYTES)),
@@ -66,7 +67,7 @@ mod tests {
                 PathBuf::from("/agentplaza/guest/x86_64/vmlinux"),
                 PathBuf::from("/agentplaza/guest/x86_64/initrd.gz"),
             ],
-            Path::new("/agentplaza/state/vsock"),
+            &[PathBuf::from("/agentplaza/state/vsock")],
             RAM,
         )
     }
@@ -106,7 +107,7 @@ mod tests {
             vec![],
             Path::new("/w"),
             &[],
-            Path::new("/s"),
+            &[PathBuf::from("/s")],
             u64::MAX,
         );
         assert_eq!(
