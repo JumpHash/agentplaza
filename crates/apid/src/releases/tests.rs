@@ -1056,3 +1056,102 @@ fn a_draft_without_a_version_is_numbered_from_its_changes_and_a_line_takes_patch
         "{unknown_base}"
     );
 }
+
+#[test]
+fn an_adopted_lane_is_reviewed_through_the_chain_and_lands_once_the_review_passes() {
+    let (client, _handle, _dir, _change, agent) = lab("adoption");
+    let agents = TestAgents {
+        client: client.clone(),
+        key: KeyPair::from_hex(&agent).unwrap(),
+    };
+    let world = World::new(client, "an_adopted_lane_is_reviewed_through_the_chain");
+    let d = world.deps();
+
+    // The planner's adoption of a remote's commit: a lane sealed with the adopted file, not yet queued.
+    let opened = world
+        .ledger
+        .post(
+            "/lanes",
+            &json!({ "repo": "app", "ref": "main", "title": "Adopt 1 commit from the remote", "author": { "kind": "agent", "cid": 107 } }),
+        )
+        .unwrap();
+    let change = opened["change"].as_str().unwrap().to_string();
+    let deltas = vec![Delta {
+        path: "docs/adopted.md".into(),
+        after: Some(world.ledger.upload(b"# adopted\n").unwrap()),
+        mode: 0o100644,
+    }];
+    agents
+        .sign(107, "revision.draft", json!({ "change": change, "n": 1, "deltas": deltas, "tool_calls": ["adopt#1"], "turn": 1, "model": "claude-opus-5-5" }))
+        .unwrap();
+    agents
+        .sign(
+            107,
+            "revision.seal",
+            json!({ "change": change, "n": 1, "deltas": deltas, "model": "claude-opus-5-5" }),
+        )
+        .unwrap();
+    let before = head_of(&world, "main");
+
+    // Its review opens through the chain, bound to the change; it does not land while the review runs.
+    let chain = FakeChain::new(&world.reviews);
+    let run = lanes::review_adoption(
+        &chain,
+        "app",
+        &change,
+        107,
+        "Adopt 1 commit from the remote",
+    )
+    .unwrap();
+    assert_eq!(d.reviews.run(&run).unwrap().state, ReviewState::Running);
+    assert_eq!(
+        d.reviews.run(&run).unwrap().change,
+        change,
+        "the review is the adoption's"
+    );
+    let early = lanes::land_backport(&d, &change).unwrap_err();
+    assert!(early.contains("has not passed yet"), "{early}");
+    assert_eq!(
+        head_of(&world, "main"),
+        before,
+        "nothing lands before the review passes"
+    );
+
+    // The review passes, and the adoption lands on main.
+    d.reviews.settle_run(&run, ReviewState::Passed);
+    let landing = lanes::land_backport(&d, &change).unwrap();
+    assert_eq!(landing.line, "main");
+    assert_eq!(head_of(&world, "main"), landing.head);
+    assert_ne!(landing.head, before);
+}
+
+#[test]
+fn a_release_notes_edit_is_a_weft_statement_and_survives_a_refresh() {
+    let (client, _handle, _dir, change, _agent) = lab("notes");
+    let world = World::new(client, "a_release_notes_edit_is_a_weft_statement");
+    let d = world.deps();
+    let released = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            version: Some("1.0.0".into()),
+            changes: vec![change],
+            ..Cut::default()
+        },
+    )
+    .unwrap();
+    let edited = flow::notes(&d, &released.id, "Edited by the owner.\n").unwrap();
+    assert_eq!(edited.notes, "Edited by the owner.\n");
+    let refreshed = flow::refresh(&d, &released.id).unwrap();
+    assert_eq!(
+        refreshed.notes, "Edited by the owner.\n",
+        "the owner's notes stay across a refresh"
+    );
+    let in_weft = world.ledger.read("/repos/app/releases/1.0.0").unwrap();
+    assert_eq!(
+        in_weft["notes"], "Edited by the owner.\n",
+        "Weft holds the edit too"
+    );
+    assert_eq!(in_weft["notes_edited"], true);
+}

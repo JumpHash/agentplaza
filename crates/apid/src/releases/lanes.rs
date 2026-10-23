@@ -34,6 +34,23 @@ pub trait Chain {
     fn review(&self, task: &str) -> Option<String>;
 }
 
+/// Opens the review of an adopted change (21.6): a remote's own commits, adopted by Weft as a lane. The planner's task is
+/// bound to the change and its review starts through the chain, as a backport's does; [`land_backport`] lands the change
+/// once that review passed. Returns the review run's id.
+pub fn review_adoption(
+    chain: &dyn Chain,
+    project: &str,
+    change: &str,
+    planner: u64,
+    title: &str,
+) -> Result<String, String> {
+    let task = chain.task(project, &format!("Review the adoption: {title}"), planner)?;
+    chain.bind(&task, change);
+    chain
+        .review(&task)
+        .ok_or_else(|| format!("the review of {change} did not start"))
+}
+
 /// A backport, from the fix to the line's queue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Backport {

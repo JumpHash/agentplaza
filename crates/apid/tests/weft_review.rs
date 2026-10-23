@@ -738,10 +738,10 @@ fn a_code_change_through_the_adversarial_chain_finds_a_seeded_bug_proves_it_fixe
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        assert_eq!(commits.len(), 2, "{commits:?}");
-        assert!(commits[1].starts_with("Irfan Saric <owner@example.com>|The queue hands out its oldest item first|next() takes from the front, with a test."), "{commits:?}");
+        // One commit per landing (21.6): its title, then each intent with its summary.
+        assert_eq!(commits.len(), 1, "{commits:?}");
         assert!(
-            commits[0].starts_with("Irfan Saric <owner@example.com>|Say how the queue orders work"),
+            commits[0].starts_with("Irfan Saric <owner@example.com>|Give the queue a fair next()|- The queue hands out its oldest item first\n  next() takes from the front, with a test.\n- Say how the queue orders work"),
             "{commits:?}"
         );
         assert!(

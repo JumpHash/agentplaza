@@ -1,6 +1,6 @@
-//! Git, one way: import a repository's history once, then export landed work as one signed commit per intent,
+//! Git, one way: import a repository's history once, then export landed work as one signed commit per landing,
 //! authored by the owner with no AI credits, checked by git itself. Path rules, a remote that moved on its own,
-//! adopting its commits, and a signed release tag with a GitHub Release (against a stand-in API).
+//! adopting its commits, and a signed release tag (against a stand-in API for the account).
 
 mod common;
 
@@ -61,7 +61,7 @@ fn queue(p: &Plaza, repo: &str, change: &str) {
     .unwrap();
 }
 
-/// A stand-in for GitHub's API: the user, their emails, releases and asset uploads.
+/// A stand-in for GitHub's API: the user and their emails (releases are apid's, `releases/sync.rs`).
 fn fake_github() -> (apz_http::Handle, Arc<Mutex<Vec<(String, String, usize)>>>) {
     let seen: Arc<Mutex<Vec<(String, String, usize)>>> = Arc::default();
     let log = seen.clone();
@@ -72,14 +72,11 @@ fn fake_github() -> (apz_http::Handle, Arc<Mutex<Vec<(String, String, usize)>>>)
     let handle = server
         .spawn(move |req: &apz_http::Request| {
             log.lock().unwrap().push((req.method.clone(), format!("{}{}", req.path, if req.query.is_empty() { String::new() } else { format!("?{}", req.query) }), req.body.len()));
-            let port = req.header("host").and_then(|h| h.rsplit(':').next()).unwrap_or("0").to_string();
             match (req.method.as_str(), req.path.as_str()) {
                 ("GET", "/user") => apz_http::Response::json(200, &json!({ "login": "irfan", "id": 4242, "name": "Irfan Saric" })),
                 ("GET", "/user/emails") => apz_http::Response::json(200, &json!([{ "email": "old@example.com", "primary": false, "verified": true }, { "email": "owner@example.com", "primary": true, "verified": true }])),
                 ("GET", "/user/ssh_signing_keys") => apz_http::Response::json(200, &json!([])),
                 ("POST", "/user/ssh_signing_keys") => apz_http::Response::json(201, &json!({ "id": 1 })),
-                ("POST", p) if p.ends_with("/releases") => apz_http::Response::json(201, &json!({ "id": 7, "html_url": "https://github.com/irfan/app/releases/tag/v0.2.0", "upload_url": format!("http://127.0.0.1:{port}/uploads/7/assets{{?name,label}}") })),
-                ("POST", p) if p.starts_with("/uploads/") => apz_http::Response::json(201, &json!({ "state": "uploaded" })),
                 _ => apz_http::Response::error(404, "no such endpoint"),
             }
         })
@@ -88,7 +85,7 @@ fn fake_github() -> (apz_http::Handle, Arc<Mutex<Vec<(String, String, usize)>>>)
 }
 
 #[test]
-fn import_once_then_export_signed_commits_per_intent() {
+fn import_once_then_export_signed_commits_per_landing() {
     if !have("git") {
         eprintln!("git is not installed: skipped");
         return;
@@ -237,7 +234,7 @@ fn import_once_then_export_signed_commits_per_intent() {
         signing: Some(&signing),
     };
     let r = exporter
-        .export(&p.store, &derived, "app", "origin", keys(), false)
+        .export(&p.store, "app", "origin", keys(), false)
         .unwrap();
     assert_eq!(r.state, "in-step", "{r:?}");
 
@@ -261,34 +258,42 @@ fn import_once_then_export_signed_commits_per_intent() {
     queue(&p, "app", &change);
     land_all(&p, &derived, &lander, "app");
     let r = exporter
-        .export(&p.store, &derived, "app", "origin", keys(), false)
+        .export(&p.store, "app", "origin", keys(), false)
         .unwrap();
     assert_eq!(r.state, "pushed", "{r:?}");
-    assert_eq!(r.changes[0].commits.len(), 2);
+    assert_eq!(r.changes[0].commits.len(), 1, "one commit per landing");
 
-    // Git agrees: two commits by the owner, one per intent, no credits; the objects are sound; the tree is Weft's.
+    // Git agrees: one commit by the owner per landing, its message the title and the intents, no credits; the
+    // objects are sound; the tree is Weft's.
     let log = git(
         &remote,
-        &["log", "-n", "2", "--format=%an <%ae>|%cn <%ce>|%s|%b%x00"],
+        &["log", "-n", "1", "--format=%an <%ae>|%cn <%ce>|%s|%b%x00"],
     );
-    let entries: Vec<&str> = log
+    let entry = log
         .split('\0')
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-    assert_eq!(entries.len(), 2);
-    assert!(entries[0].starts_with("Irfan Saric <owner@example.com>|Irfan Saric <owner@example.com>|Document greeting by name|"), "{}", entries[0]);
-    assert!(entries[1].starts_with("Irfan Saric <owner@example.com>|Irfan Saric <owner@example.com>|Greet people by name|The first argument names who to greet."), "{}", entries[1]);
-    for e in &entries {
-        let lower = e.to_lowercase();
-        assert!(
-            !lower.contains("co-authored")
-                && !lower.contains("claude")
-                && !lower.contains("agent")
-                && !lower.contains("priya"),
-            "{e}"
-        );
-    }
+        .find(|s| !s.is_empty())
+        .unwrap();
+    assert!(
+        entry.starts_with(
+            "Irfan Saric <owner@example.com>|Irfan Saric <owner@example.com>|Greet by name|"
+        ),
+        "{entry}"
+    );
+    assert!(
+        entry.contains("- Greet people by name")
+            && entry.contains("  The first argument names who to greet.")
+            && entry.contains("- Document greeting by name"),
+        "{entry}"
+    );
+    let lower = entry.to_lowercase();
+    assert!(
+        !lower.contains("co-authored")
+            && !lower.contains("claude")
+            && !lower.contains("agent")
+            && !lower.contains("priya"),
+        "{entry}"
+    );
     git(&remote, &["fsck", "--strict", "--no-dangling"]);
     let weft_head = p.store.state().repos["app"].head("main");
     weft::import::check_tree(
@@ -297,10 +302,9 @@ fn import_once_then_export_signed_commits_per_intent() {
         &weft::git::parse_oid(&git(&remote, &["rev-parse", "main^{tree}"])).unwrap(),
     )
     .unwrap();
-    // README went with the last intent; the first commit has only src/main.rs.
     assert_eq!(
-        git(&remote, &["show", "--name-only", "--format=", "main~1"]),
-        "src/main.rs"
+        git(&remote, &["show", "--name-only", "--format=", "main"]),
+        "README.md\ndocs/guide.md\nsrc/main.rs"
     );
 
     // The SSH signatures verify with git and ssh-keygen.
@@ -353,7 +357,7 @@ fn import_once_then_export_signed_commits_per_intent() {
     land_all(&p, &derived, &lander, "app");
     assert_eq!(
         exporter
-            .export(&p.store, &derived, "app", "origin", keys(), false)
+            .export(&p.store, "app", "origin", keys(), false)
             .unwrap()
             .state,
         "pushed"
@@ -392,7 +396,7 @@ fn import_once_then_export_signed_commits_per_intent() {
     queue(&p, "app", &docs);
     land_all(&p, &derived, &lander, "app");
     let r = exporter
-        .export(&p.store, &derived, "app", "origin", keys(), false)
+        .export(&p.store, "app", "origin", keys(), false)
         .unwrap();
     assert_eq!(r.state, "moved", "{r:?}");
     assert_eq!(
@@ -410,7 +414,7 @@ fn import_once_then_export_signed_commits_per_intent() {
     assert_eq!(adopted.commits, vec!["Hotfix on the platform".to_string()]);
     assert_eq!(
         exporter
-            .export(&p.store, &derived, "app", "origin", keys(), false)
+            .export(&p.store, "app", "origin", keys(), false)
             .unwrap()
             .state,
         "adopting",
@@ -419,7 +423,7 @@ fn import_once_then_export_signed_commits_per_intent() {
     queue(&p, "app", &adopted.change);
     land_all(&p, &derived, &lander, "app");
     let r = exporter
-        .export(&p.store, &derived, "app", "origin", keys(), false)
+        .export(&p.store, "app", "origin", keys(), false)
         .unwrap();
     assert_eq!(r.state, "pushed", "{r:?}");
     let merge_parents = git(&remote, &["log", "--merges", "-n", "1", "--format=%P"]);
@@ -501,7 +505,6 @@ fn import_once_then_export_signed_commits_per_intent() {
         json!({ "repo": "app", "version": "v0.2.0", "artifacts": [artifact], "digest": digest }),
     )
     .unwrap();
-    let hub_key = KeyPair::from_hex(&p.hub_seed).unwrap();
     let rel = weft::release::export_release(
         &p.store,
         "app",
@@ -509,21 +512,8 @@ fn import_once_then_export_signed_commits_per_intent() {
         "origin",
         Some("token".into()),
         Some(&signing),
-        Some(&hub_key),
     )
     .unwrap();
-    assert_eq!(
-        rel.url.as_deref(),
-        Some("https://github.com/irfan/app/releases/tag/v0.2.0")
-    );
-    assert_eq!(
-        rel.assets,
-        vec![
-            "app-linux-x86_64".to_string(),
-            "app-linux-x86_64.intoto.jsonl".into(),
-            "SHA256SUMS".into()
-        ]
-    );
     assert_eq!(
         git(&remote, &["rev-parse", "v0.2.0^{commit}"]),
         git(&remote, &["rev-parse", "main"])
@@ -549,17 +539,12 @@ fn import_once_then_export_signed_commits_per_intent() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    let calls: Vec<(String, String, usize)> = seen.lock().unwrap().clone();
+    assert_eq!(rel.commit, git(&remote, &["rev-parse", "main"]));
     assert!(
-        calls
+        seen.lock()
+            .unwrap()
             .iter()
-            .any(|(m, path, _)| m == "POST" && path == "/repos/irfan/app/releases"),
-        "{calls:?}"
-    );
-    assert!(
-        calls
-            .iter()
-            .any(|(m, path, n)| m == "POST" && path.contains("name=SHA256SUMS") && *n > 64)
+            .any(|(m, path, _)| m == "GET" && path == "/user")
     );
     let st = p.store.state();
     assert_eq!(st.repos["app"].releases["v0.2.0"].exports.len(), 1);

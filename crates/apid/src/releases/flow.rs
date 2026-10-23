@@ -644,6 +644,17 @@ pub fn yank(d: &Deps, id: &str, reason: &str) -> Result<Release, String> {
     move_with(d, id, "release.yank", json!({ "reason": reason }))
 }
 
+/// The owner's edit of a release's notes: a `release.notes` statement in Weft, read back into the entity, so the notes
+/// stay the owner's across a refresh (22.2).
+pub fn notes(d: &Deps, id: &str, notes: &str) -> Result<Release, String> {
+    let rel = get(d, id)?;
+    d.weft.statement(
+        "release.notes",
+        json!({ "repo": rel.repo, "version": rel.version, "notes": notes }),
+    )?;
+    refresh(d, id)
+}
+
 /// Writes one statement about the release and reads its life back.
 fn move_with(d: &Deps, id: &str, kind: &str, extra: Value) -> Result<Release, String> {
     let rel = get(d, id)?;
@@ -690,9 +701,14 @@ pub fn refresh(d: &Deps, id: &str) -> Result<Release, String> {
         })
         .collect();
     let number = life["candidate"][0]["number"].as_u64().map(|n| n as u32);
+    // Notes the owner edited are Weft's text; the drafted ones stay as the review graphs wrote them.
+    let edited = (view["notes_edited"] == true).then(|| text(&view["notes"]));
     let stamp = now();
     d.releases
         .update(id, |r| {
+            if let Some(notes) = &edited {
+                r.notes = notes.clone();
+            }
             r.state = state;
             r.verdicts = verdicts;
             r.promotions = promotions;

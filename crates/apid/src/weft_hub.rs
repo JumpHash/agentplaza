@@ -513,19 +513,182 @@ pub fn export_all(app: &App, repo: &str) {
             &format!("/repos/{repo}/export"),
             &json!({ "connection": id, "token": token }),
         ) {
-            Ok(r) if r["state"] == "moved" => app.bus.publish(
-                "weft_export",
-                &json!({ "repo": repo, "connection": id, "state": "moved", "detail": r["detail"] }),
-            ),
+            Ok(r) if r["state"] == "moved" => {
+                app.bus.publish(
+                    "weft_export",
+                    &json!({ "repo": repo, "connection": id, "state": "moved", "detail": r["detail"] }),
+                );
+                // A mirror's remote that moved on its own: its commits become an adoption lane (21.6).
+                if crate::github_modes::mode_of(app, repo) == "mirror" {
+                    adopt_remote(app, repo, id, token.clone());
+                }
+            }
             Ok(_) => {}
             Err(e) => eprintln!("apid: exporting {repo} to {id}: {e}"),
         }
     }
 }
 
+/// An adoption on its way (21.6): the change Weft made of a remote's own commits, its project and title, and whether its
+/// review has opened.
+#[derive(Clone)]
+struct Adoption {
+    repo: String,
+    change: String,
+    project: String,
+    title: String,
+    opened: bool,
+}
+
+/// The adoptions not landed yet.
+static ADOPTIONS: std::sync::Mutex<Vec<Adoption>> = std::sync::Mutex::new(Vec::new());
+
+/// The commits a mirror's remote received on its own become a lane (Weft's adopt, 22.4). The lane goes through the review
+/// chain like any lane (`adoptions_tick` opens its review and lands it once the review passed), and the project's chat
+/// is told.
+fn adopt_remote(app: &App, repo: &str, connection: &str, token: Option<String>) {
+    let report = match app.weft.post(
+        &format!("/repos/{repo}/adopt"),
+        &json!({ "connection": connection, "token": token }),
+    ) {
+        Ok(r) => r,
+        Err(e) => return eprintln!("apid: adopting {repo}'s remote commits: {e}"),
+    };
+    let Some(change) = report["change"].as_str().map(str::to_string) else {
+        return;
+    };
+    let Some(project) = crate::github_modes::project_of(app, repo) else {
+        return eprintln!("apid: {repo} has no project to review its adoption {change}");
+    };
+    let commits = report["commits"].as_array().map(Vec::len).unwrap_or(0);
+    ADOPTIONS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(Adoption {
+            repo: repo.to_string(),
+            change: change.clone(),
+            project: project.id.clone(),
+            title: format!("Adopt {commits} commit(s) from the remote"),
+            opened: false,
+        });
+    let now = apz_plaza::now_ms();
+    let chat = match app.chats.list(Some(&project.id), false).first() {
+        Some(c) => c.id.clone(),
+        None => app.chats.open_project(&project.id, "Adoption", now).id,
+    };
+    let text = format!(
+        "The remote received {commits} commit(s) on its own. They are adopted as {change}: reviewed through the review chain, and they land when the review passes."
+    );
+    app.chats.post(
+        &chat,
+        crate::chats::Post {
+            author: crate::chats::Author::System,
+            session: None,
+            seat: None,
+            kind: crate::chats::MessageKind::Notice,
+            text,
+            card: None,
+            attachments: vec![],
+        },
+        now,
+    );
+    adoptions_tick(app);
+}
+
+/// Moves the adoptions along (21.6). An adoption's review opens through the chain once the planner runs (its task is
+/// bound to the change, as a backport's is), and the change lands once that review passed. An adoption that landed, or
+/// whose review did not pass, leaves the list. The scheduler calls it on each pass.
+pub fn adoptions_tick(app: &App) {
+    let pending: Vec<Adoption> = ADOPTIONS.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    for a in pending {
+        let finished = if !a.opened {
+            match crate::work_loop::planner_cid(app, &a.project) {
+                Some(planner) => {
+                    let chain = crate::releases::routes::AppChain(app);
+                    match crate::releases::lanes::review_adoption(
+                        &chain, &a.project, &a.change, planner, &a.title,
+                    ) {
+                        Ok(_) => {
+                            let mut list = ADOPTIONS.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(x) = list.iter_mut().find(|x| x.change == a.change) {
+                                x.opened = true;
+                            }
+                            false
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "apid: {}: the review of {} did not open: {e}",
+                                a.repo, a.change
+                            );
+                            false
+                        }
+                    }
+                }
+                None => false,
+            }
+        } else {
+            match crate::releases::lanes::land_backport(
+                &crate::releases::routes::deps(app),
+                &a.change,
+            ) {
+                Ok(_) => true,
+                Err(e) if e.contains("not passed yet") || e.contains("waits for the owner") => {
+                    false
+                }
+                Err(e) => {
+                    eprintln!("apid: {}: adopted {} did not land: {e}", a.repo, a.change);
+                    true
+                }
+            }
+        };
+        if finished {
+            ADOPTIONS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|x| x.change != a.change);
+        }
+    }
+}
+
+/// How often the history keeps in step with the git platforms (21.6): a missed export is retried in order, and a
+/// `ci` repo's main is imported again (polling; GitHub's webhooks would bring the same commits sooner).
+const CATCH_UP_MS: u64 = 60_000;
+static LAST_CATCH_UP: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+
+/// The catch-up pass: every repo's connections are exported again (what landed since their last export, in order),
+/// and a `ci` repo's GitHub main is imported. Throttled to one pass a minute.
+pub fn catch_up(app: &App) {
+    if !app.weft.running() || app.control.paused() {
+        return;
+    }
+    let now = apz_plaza::now_ms();
+    {
+        let mut last = LAST_CATCH_UP.lock().unwrap_or_else(|p| p.into_inner());
+        if now.saturating_sub(*last) < CATCH_UP_MS {
+            return;
+        }
+        *last = now;
+    }
+    let Ok(repos) = app.weft.get("/repos") else {
+        return;
+    };
+    for r in repos["repos"].as_array().into_iter().flatten() {
+        let Some(name) = r["name"].as_str() else {
+            continue;
+        };
+        if crate::github_modes::mode_of(app, name) == crate::github_modes::CI {
+            if let Err(e) = crate::github_modes::poll(app, name) {
+                eprintln!("apid: importing {name}'s GitHub main: {e}");
+            }
+        } else {
+            export_all(app, name);
+        }
+    }
+}
+
 /// A connection's credential, by its vault name (the GitHub connector's token when it names none); `platform:<id>`
 /// is an authorization of a git platform (platforms.rs), whose token is minted or renewed here.
-fn credential(app: &App, name: Option<&str>) -> Option<String> {
+pub fn credential(app: &App, name: Option<&str>) -> Option<String> {
     let name = name.unwrap_or("GITHUB_TOKEN");
     if let Some(found) = crate::platforms::credential(app, name) {
         return found

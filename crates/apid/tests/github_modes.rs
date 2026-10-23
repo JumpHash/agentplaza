@@ -473,3 +473,107 @@ fn a_ci_project_lands_a_lane_only_once_github_merges_its_pull_request_after_its_
     );
     assert_eq!(state_of(&hub, &second), "queued");
 }
+
+/// GitHub's `X-Hub-Signature-256` of a body: `sha256=` and the HMAC-SHA256 under the webhook's secret.
+fn sign_push(secret: &str, body: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("any key length");
+    mac.update(body);
+    let hex: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("sha256={hex}")
+}
+
+#[test]
+fn a_signed_push_imports_github_main_now_and_an_unsigned_one_is_refused() {
+    const SECRET: &str = "push-secret-94";
+    let (scratch, hub) = hub_with_weft("github-push");
+    let root = scratch.0.join("remotes");
+    std::fs::create_dir_all(&root).unwrap();
+    let (site, site_url) = remote(&root, "ci-site");
+    let (daemon, _state) = github(BTreeMap::from([("ci-site".to_string(), site_url)]));
+    let gh_host = format!("http://127.0.0.1:{}", daemon.port);
+
+    let pid = project(&hub, "CI", "ci");
+    let integ = token_for(&hub, &gh_host, "ci-site");
+    let weft_repo = connect(&hub, &integ, "ci-site", &pid);
+    // The owner makes the connector's webhook (its path carries the token) and stores its signing secret.
+    let (status, made) = hub.call(
+        "POST",
+        "/v1/connectors/github/webhook",
+        Some(json!({ "secret": SECRET })),
+    );
+    assert_eq!(status, 201, "{made}\n{}", hub.log());
+    let hook_path = made["path"].as_str().unwrap().to_string();
+
+    // GitHub's main moves on its own; the push says so.
+    let work = root.join("push-site-outside");
+    git(
+        &root,
+        &[
+            "clone",
+            "-q",
+            site.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(work.join("pushed.md"), "Pushed to GitHub.\n").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "Pushed to GitHub"]);
+    git(&work, &["push", "-q", "origin", "main"]);
+    let outside = git(&site, &["rev-parse", "main"]);
+    let (_, repo) = hub.call("GET", &format!("/v1/weft/repos/{weft_repo}"), None);
+    let before = repo["connections"][0]["head"].clone();
+    assert_ne!(
+        before,
+        outside.as_str(),
+        "the import has not seen the push yet"
+    );
+
+    // The repository's full name is its remote's last two segments.
+    let remote = repo["connections"][0]["remote"]
+        .as_str()
+        .unwrap()
+        .trim_end_matches(".git");
+    let parts: Vec<&str> = remote.split('/').collect();
+    let full_name = format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+    let body =
+        json!({ "ref": "refs/heads/main", "repository": { "full_name": full_name } }).to_string();
+
+    // A delivery that is not signed right is refused, and imports nothing.
+    let (status, _) = hub.send_with_headers(
+        "POST",
+        &hook_path,
+        &[
+            ("x-hub-signature-256", "sha256=00"),
+            ("x-github-event", "push"),
+        ],
+        body.as_bytes(),
+    );
+    assert_eq!(status, 401, "{}", hub.log());
+    let (_, repo) = hub.call("GET", &format!("/v1/weft/repos/{weft_repo}"), None);
+    assert_eq!(
+        repo["connections"][0]["head"], before,
+        "nothing was imported"
+    );
+
+    // A signed push imports GitHub's main at once: the answer names the repo, and its head is GitHub's.
+    let signature = sign_push(SECRET, body.as_bytes());
+    let (status, reply) = hub.send_with_headers(
+        "POST",
+        &hook_path,
+        &[
+            ("x-hub-signature-256", &signature),
+            ("x-github-event", "push"),
+        ],
+        body.as_bytes(),
+    );
+    assert_eq!(status, 202, "{reply}\n{}", hub.log());
+    assert_eq!(reply["imported"], json!([weft_repo.clone()]), "{reply}");
+    let (_, repo) = hub.call("GET", &format!("/v1/weft/repos/{weft_repo}"), None);
+    assert_eq!(repo["connections"][0]["head"], outside.as_str(), "{repo}");
+}

@@ -1,7 +1,8 @@
 //! The one-way export to git: after a landing, one commit per intent, on top of what the connection received last.
 //!
-//! - The author (and committer) is the owner, as the git platform's authorization knows them (W19). The message is
-//!   the intent's title and summary. No agent names, no credit lines, no notes (W13).
+//! - One commit per landing (21.6): its tree is the landing's tree, its parent the previous landing's commit, its
+//!   message the change's title and its intents. The author (and committer) is the owner, as the git platform's
+//!   authorization knows them (W19). No agent names, no credit lines, no notes (W13).
 //! - Commits are signed with the hub's SSH signing key, so a platform that has it registered shows them verified.
 //! - Fast-forward only: a remote that moved on its own stops the export and marks the connection `moved`; nothing is
 //!   forced. Paths whose rule says "not exported" are left out.
@@ -12,7 +13,6 @@ use std::sync::Mutex;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::derived::{Derived, covers};
 use crate::git::{self, Commit, Kind, Oid, Person, TreeEntry};
 use crate::gitwire::{self, Remote, Update};
 use crate::hash::Hash;
@@ -195,7 +195,6 @@ impl Exporter {
     pub fn export(
         &self,
         store: &Store,
-        derived: &Derived,
         repo: &str,
         connection: &str,
         keys: Keys,
@@ -299,19 +298,26 @@ impl Exporter {
             }
         };
         let mut parent = remote_head;
-        let mut cur: Tree = match start {
-            0 => Tree::new(),
-            i => (*store.tree(&chain[i - 1])?).clone(),
-        };
-        let mut known = if start == 0 {
-            HashSet::new()
-        } else {
-            self.known_ids(store, &cur, &keep)?
-        };
+        // The git tree of the last landing that reached the remote (the landing before the export starts, or the
+        // one just made): a landing that changes nothing git would see makes no commit.
+        let mut last_tree: Option<Oid> = None;
+        let mut known = HashSet::new();
+        if start > 0 {
+            let before = (*store.tree(&chain[start - 1])?).clone();
+            known = self.known_ids(store, &before, &keep)?;
+            last_tree = Some(self.git_tree(
+                store,
+                &before,
+                &keep,
+                &HashSet::new(),
+                &mut Vec::new(),
+                &mut HashSet::new(),
+            )?);
+        }
         let mut objects: Vec<(Oid, Kind, Vec<u8>)> = Vec::new();
         let mut per_change: Vec<(String, Vec<ExportedCommit>)> = Vec::new();
         for l in &chain[start..] {
-            let (change, rev) = {
+            let (change, rev, intents, review) = {
                 let st = store.state();
                 let rev = st
                     .revisions
@@ -323,88 +329,80 @@ impl Exporter {
                     .get(&rev.change)
                     .cloned()
                     .ok_or("revision without a change")?;
-                (c, rev)
+                let intents = c
+                    .intents
+                    .get(&rev.n)
+                    .cloned()
+                    .or_else(|| c.intents.values().last().cloned())
+                    .unwrap_or_default();
+                let review = crate::history::review_run_of(&st, &c);
+                (c, rev, intents, review)
             };
             if change.import.is_some() {
                 return self.moved(store, &mut report, &format!("{} is an imported commit the remote does not have; push the imported history first", change.name));
             }
-            let intents = change
-                .intents
-                .get(&rev.n)
-                .cloned()
-                .or_else(|| change.intents.values().last().cloned())
-                .unwrap_or_default();
-            let groups = group(derived, store, &rev, &intents)?;
-            let mut commits = Vec::new();
-            let mut views = Vec::new();
-            for (title, summary, deltas) in groups {
-                let before = cur.clone();
-                apply_deltas(&mut cur, &deltas);
-                if deltas.iter().all(|d| !keep(&d.path)) || before == cur {
-                    continue; // nothing git would see
-                }
-                let mut all = HashSet::new();
-                let tree = self.git_tree(store, &cur, &keep, &known, &mut objects, &mut all)?;
-                let who = Person {
-                    name: conn.conn.author_name.clone(),
-                    email: conn.conn.author_email.clone(),
-                    time: (rev.at_ms / 1000) as i64,
-                    tz: "+0000".into(),
-                };
-                let message = if summary.trim().is_empty() {
-                    format!("{}\n", title.trim())
-                } else {
-                    format!("{}\n\n{}\n", title.trim(), summary.trim())
-                };
-                let mut parents: Vec<Oid> = parent.into_iter().collect();
-                // The adopting change's first commit joins the remote's head.
-                if let Some(r) = join
-                    .as_ref()
-                    .filter(|(_, adopt)| *adopt == change.name)
-                    .map(|(r, _)| *r)
-                {
-                    if !parents.contains(&r) {
-                        parents.push(r);
-                    }
-                    join = None;
-                }
-                let commit = Commit {
-                    tree,
-                    parents,
-                    author: who.clone(),
-                    committer: who,
-                    extra: vec![],
-                    message,
-                };
-                let unsigned = git::write_commit(&commit, None);
-                let bytes = match keys.signing {
-                    Some(k) => {
-                        git::write_commit(&commit, Some(&crate::sshsig::sign(k, "git", &unsigned)))
-                    }
-                    None => unsigned,
-                };
-                let id = git::oid(Kind::Commit, &bytes);
-                objects.push((id, Kind::Commit, bytes));
-                known.extend(all);
-                known.insert(id);
-                parent = Some(id);
-                commits.push(ExportedCommit {
-                    intent: title.clone(),
-                    git: git::hex(&id),
-                });
-                views.push(CommitView {
-                    intent: title,
-                    git: git::hex(&id),
-                    files: deltas.len(),
-                });
+            // The landing's whole tree (Weft's), less what the path rules keep out of git.
+            let landed = (*store.tree(l)?).clone();
+            let mut fresh = Vec::new();
+            let mut all = HashSet::new();
+            let tree = self.git_tree(store, &landed, &keep, &known, &mut fresh, &mut all)?;
+            let empty = git::oid(Kind::Tree, &git::write_tree(&[]));
+            if last_tree == Some(tree) || (last_tree.is_none() && tree == empty) {
+                continue;
             }
-            if !commits.is_empty() {
-                per_change.push((change.name.clone(), commits));
-                report.changes.push(ExportedChange {
-                    change: change.name.clone(),
-                    commits: views,
-                });
+            let who = Person {
+                name: conn.conn.author_name.clone(),
+                email: conn.conn.author_email.clone(),
+                time: (rev.at_ms / 1000) as i64,
+                tz: "+0000".into(),
+            };
+            let mut parents: Vec<Oid> = parent.into_iter().collect();
+            // The adopting change's commit joins the remote's head.
+            if let Some(r) = join
+                .as_ref()
+                .filter(|(_, adopt)| *adopt == change.name)
+                .map(|(r, _)| *r)
+            {
+                if !parents.contains(&r) {
+                    parents.push(r);
+                }
+                join = None;
             }
+            let commit = Commit {
+                tree,
+                parents,
+                author: who.clone(),
+                committer: who,
+                extra: vec![],
+                message: landing_message(&change.title, &intents, review.as_deref()),
+            };
+            let unsigned = git::write_commit(&commit, None);
+            let bytes = match keys.signing {
+                Some(k) => {
+                    git::write_commit(&commit, Some(&crate::sshsig::sign(k, "git", &unsigned)))
+                }
+                None => unsigned,
+            };
+            let id = git::oid(Kind::Commit, &bytes);
+            objects.append(&mut fresh);
+            objects.push((id, Kind::Commit, bytes));
+            known.extend(all);
+            known.insert(id);
+            parent = Some(id);
+            last_tree = Some(tree);
+            let commits = vec![ExportedCommit {
+                intent: change.title.clone(),
+                git: git::hex(&id),
+            }];
+            report.changes.push(ExportedChange {
+                change: change.name.clone(),
+                commits: vec![CommitView {
+                    intent: change.title.clone(),
+                    git: git::hex(&id),
+                    files: rev.deltas.len(),
+                }],
+            });
+            per_change.push((change.name.clone(), commits));
         }
         report.objects = objects.len();
         report.head = parent.map(|p| git::hex(&p));
@@ -648,44 +646,24 @@ fn landed_change(st: &State, rev: &str) -> Option<u64> {
     })
 }
 
-/// A landed revision's deltas, grouped by intent in the intents' order: each file goes to the first intent that
-/// covers it (or one of its changed definitions); what no intent covers joins the last one. A change without
-/// intents is one commit, titled by the change.
-fn group(
-    derived: &Derived,
-    store: &Store,
-    rev: &crate::state::Revision,
-    intents: &[IntentDef],
-) -> Result<Vec<(String, String, Vec<Delta>)>, String> {
-    if intents.is_empty() {
-        let title = store
-            .state()
-            .changes
-            .get(&rev.change)
-            .map(|c| c.title.clone())
-            .unwrap_or_default();
-        return Ok(vec![(title, String::new(), rev.deltas.clone())]);
+/// A landing's commit message (22.4): its summary line is the change's title, then each intent with its summary.
+/// No agent names and no credit lines (W13).
+pub fn landing_message(title: &str, intents: &[IntentDef], review: Option<&str>) -> String {
+    let mut out = format!("{}\n", title.trim());
+    if !intents.is_empty() {
+        out.push('\n');
+        for i in intents {
+            out.push_str(&format!("- {}\n", i.title.trim()));
+            for line in i.summary.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                out.push_str(&format!("  {line}\n"));
+            }
+        }
     }
-    let tree = derived.cached_tree(store, &rev.id).ok();
-    let mut groups: Vec<(String, String, Vec<Delta>)> = intents
-        .iter()
-        .map(|i| (i.title.clone(), i.summary.clone(), vec![]))
-        .collect();
-    for d in &rev.deltas {
-        let items: Vec<String> = tree
-            .as_ref()
-            .and_then(|t| t.files.iter().find(|f| f.path == d.path))
-            .map(|f| f.symbols.iter().map(|s| s.id.clone()).collect())
-            .unwrap_or_default();
-        let at = intents
-            .iter()
-            .position(|i| {
-                covers(i, &d.path, &d.path) || items.iter().any(|item| covers(i, &d.path, item))
-            })
-            .unwrap_or(intents.len() - 1);
-        groups[at].2.push(d.clone());
+    // The review that checked the landing (its gate, signed by the hub), as a trailer.
+    if let Some(run) = review {
+        out.push_str(&format!("\nReview-Run: {run}\n"));
     }
-    Ok(groups.into_iter().filter(|g| !g.2.is_empty()).collect())
+    out
 }
 
 /// The git commit a landed revision was exported as, on a connection.

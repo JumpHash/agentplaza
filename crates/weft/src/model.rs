@@ -467,6 +467,15 @@ pub struct ReleaseLaneCut {
     pub version: String,
 }
 
+/// `release.notes` (hub-signed): the owner's edit of a release's notes. It replaces the notes the release was drafted
+/// with, so the edit is in the log and survives a replay or a refresh.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseNotes {
+    pub repo: String,
+    pub version: String,
+    pub notes: String,
+}
+
 /// `release.verdict` (hub-signed): a verdict on a release from its source, `ci` (the checks of its commit) or
 /// `qualification`. `verdict` is `passed`, `failed` or `abandoned`.
 #[derive(Clone, Debug, Serialize, Deserialize)]

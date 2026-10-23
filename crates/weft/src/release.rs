@@ -2,8 +2,7 @@
 //!
 //! A release is a version of a repo cut from a landed revision, with notes written from the intents landed since
 //! the last release, the targets its build files declare (W20: every one), artifacts with build provenance, and the
-//! owner's signature. Exported, it is a signed annotated tag and, on GitHub, a Release with the artifacts, their
-//! `SHA256SUMS` and each one's provenance.
+//! owner's signature. Exported, it is a signed annotated tag; the platforms get their releases from apid (22.4).
 
 use std::collections::BTreeMap;
 
@@ -16,7 +15,6 @@ use crate::git::{self, Kind, Person};
 use crate::gitwire::{self, Remote, Update};
 use crate::hash::Hash;
 use crate::keys::{KeyPair, PublicKey};
-use crate::model::*;
 use crate::state::{ChangeState, State};
 use crate::store::Store;
 
@@ -464,12 +462,10 @@ pub struct ReleaseExportReport {
     pub tag: String,
     pub tag_id: String,
     pub commit: String,
-    pub url: Option<String>,
-    pub assets: Vec<String>,
 }
 
-/// Exports a signed release: a signed annotated tag on the release's commit and, on GitHub, a Release with the
-/// artifacts, `SHA256SUMS` and the provenance files.
+/// Exports a signed release: a signed annotated tag on the release's commit. The platforms' releases (their notes,
+/// assets, SBOMs, provenance and checks) are synced by apid (`releases/sync.rs`, 22.4) from this report.
 pub fn export_release(
     store: &Store,
     repo: &str,
@@ -477,9 +473,8 @@ pub fn export_release(
     connection: &str,
     token: Option<String>,
     signing: Option<&KeyPair>,
-    provenance_key: Option<&KeyPair>,
 ) -> Result<ReleaseExportReport, String> {
-    let (rel, conn, artifacts) = {
+    let (rel, conn) = {
         let st = store.state();
         let r = st.repo(repo)?;
         let rel = r
@@ -492,17 +487,10 @@ pub fn export_release(
             .get(connection)
             .cloned()
             .ok_or_else(|| format!("no connection {connection}"))?;
-        let signed = rel
-            .signed
-            .clone()
-            .ok_or("only a signed release is exported")?;
-        let artifacts: Vec<ArtifactPut> = signed
-            .0
-            .artifacts
-            .iter()
-            .filter_map(|a| st.artifacts.get(a).map(|i| i.artifact.clone()))
-            .collect();
-        (rel, conn, artifacts)
+        if rel.signed.is_none() {
+            return Err("only a signed release is exported".into());
+        }
+        (rel, conn)
     };
     let commit_hex = crate::export::commit_of(&store.state(), repo, connection, &rel.propose.from)
         .ok_or("the release's revision has not been exported to this connection yet")?;
@@ -546,71 +534,14 @@ pub fn export_release(
             &[(Kind::Tag, bytes)],
         )?;
     }
-    let mut report = ReleaseExportReport {
+    let report = ReleaseExportReport {
         tag: version.into(),
         tag_id: git::hex(&tag_id),
         commit: commit_hex,
-        url: None,
-        assets: vec![],
     };
-    // A GitHub Release with the artifacts.
-    if conn.conn.platform == "github"
-        && let (Some(token), Some(slug)) = (
-            token.as_deref(),
-            crate::connect::github_slug(&conn.conn.remote),
-        )
-    {
-        let api = crate::connect::github_api();
-        let created = crate::connect::api_post(
-            &api,
-            token,
-            &format!("/repos/{slug}/releases"),
-            &json!({ "tag_name": version, "name": version, "body": rel.propose.notes, "draft": false, "prerelease": version.contains('-') }),
-        )?;
-        let upload = created["upload_url"]
-            .as_str()
-            .ok_or("GitHub did not answer with an upload URL")?
-            .split('{')
-            .next()
-            .unwrap_or("")
-            .to_string();
-        let mut sums = String::new();
-        for a in &artifacts {
-            let data = store.blobs.get(&a.digest)?;
-            let file = format!("{}-{}", a.name, a.target);
-            sums.push_str(&format!(
-                "{}  {file}\n",
-                crate::hash::hex(&Sha256::digest(&data))
-            ));
-            crate::connect::api_upload(
-                token,
-                &format!("{upload}?name={file}"),
-                "application/octet-stream",
-                &data,
-            )?;
-            report.assets.push(file.clone());
-            if let Some(k) = provenance_key {
-                let env = serde_json::to_vec_pretty(&dsse(&a.provenance, k)).unwrap_or_default();
-                crate::connect::api_upload(
-                    token,
-                    &format!("{upload}?name={file}.intoto.jsonl"),
-                    "application/json",
-                    &env,
-                )?;
-                report.assets.push(format!("{file}.intoto.jsonl"));
-            }
-        }
-        if !artifacts.is_empty() {
-            crate::connect::api_upload(
-                token,
-                &format!("{upload}?name=SHA256SUMS"),
-                "text/plain",
-                sums.as_bytes(),
-            )?;
-            report.assets.push("SHA256SUMS".into());
-        }
-        report.url = created["html_url"].as_str().map(str::to_string);
-    }
-    store.hub_append("release.export", json!({ "repo": repo, "version": version, "connection": connection, "tag": version, "url": report.url }))?;
+    store.hub_append(
+        "release.export",
+        json!({ "repo": repo, "version": version, "connection": connection, "tag": version }),
+    )?;
     Ok(report)
 }

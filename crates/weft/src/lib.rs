@@ -26,6 +26,7 @@ pub mod export;
 pub mod git;
 pub mod gitwire;
 pub mod hash;
+pub mod history;
 pub mod import;
 pub mod keys;
 pub mod landing;

@@ -1135,6 +1135,10 @@ pub fn spawn(app: Arc<App>) {
                     app.work.assign_reviews(&app);
                     crate::review_graph::tick(&app);
                     crate::weft_hub::land_queues(&app);
+                    crate::weft_hub::adoptions_tick(&app);
+                    // The history keeps in step with the git platforms (21.6) and the releases on them (22.4).
+                    crate::weft_hub::catch_up(&app);
+                    crate::releases::sync::tick(&app);
                     withdraw_stale_reviews(&app);
                 }
                 crate::llm_proxy::drain_usage(&app);
