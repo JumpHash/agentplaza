@@ -40,6 +40,7 @@ mod control;
 mod curator;
 mod decisions;
 mod deliverables;
+mod deploy;
 mod disk;
 mod drafts;
 mod e2b;

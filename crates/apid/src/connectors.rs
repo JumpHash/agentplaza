@@ -746,6 +746,17 @@ struct Patch {
 
 /// Whether `setting`'s project list lets in an agent on `project` (`None`: on none).
 /// The connectors a project's agents may use: `(id, label, category)` of each enabled, configured one that admits it.
+/// A connector's credential fields as the hub itself uses them (a deploy's calls, PLAN 23): the connector must be enabled,
+/// and its values are read under the hub's own consumer. They are for the hub's one request and never go into a prompt,
+/// a fork, an error or a log.
+pub fn hub_values(app: &App, connector: &str) -> Result<BTreeMap<String, String>, String> {
+    let c = find(connector).ok_or_else(|| format!("no connector `{connector}`"))?;
+    if !app.connectors.setting(c.id).enabled {
+        return Err(format!("connector `{}` is disabled", c.id));
+    }
+    Ok(app.connectors.values(c, &OnBehalf::Hub))
+}
+
 pub fn for_project(app: &App, project: &str) -> Vec<(&'static str, &'static str, &'static str)> {
     let store = &app.connectors;
     catalog()
