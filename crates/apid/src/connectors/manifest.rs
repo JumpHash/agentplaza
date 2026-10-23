@@ -242,7 +242,6 @@ pub fn from_spec(spec: &super::Spec) -> Manifest {
 }
 
 /// The risk class a catalog action carries, as a scope's name.
-#[cfg_attr(not(test), allow(dead_code))] // checked against the catalog by the tests; the glue tier reads scopes next.
 pub fn scope_of(risk: super::Risk) -> &'static str {
     match risk {
         super::Risk::Read => "read",

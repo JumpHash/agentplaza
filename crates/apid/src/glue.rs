@@ -272,6 +272,17 @@ pub fn run(component: &[u8], export: &str, input: &str, host: Host) -> Result<Ou
     })
 }
 
+/// Checks that `component` is a WebAssembly component that exports `run`, without running it: a proposal's check.
+pub fn check_component(component: &[u8]) -> Result<(), String> {
+    let engine = engine()?;
+    let parsed =
+        Component::new(engine, component).map_err(|e| format!("not a component: {e:?}"))?;
+    if parsed.get_export_index(None, "run").is_none() {
+        return Err("the component exports no `run`".to_string());
+    }
+    Ok(())
+}
+
 /// The epoch ticks a time limit allows.
 fn ticks(limit: Duration) -> u64 {
     (limit.as_millis() / TICK.as_millis()).max(1) as u64

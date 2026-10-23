@@ -1038,7 +1038,12 @@ impl Store {
 
     /// Stores one field write-only, as the vault entry `Field.env` that `connector:<id>` reads. No field names the
     /// main key. A new value for a name another consumer already reads is a new version of that entry.
-    fn set_secret(&self, id: &str, field: Option<&str>, value: &str) -> Result<Value, Failure> {
+    pub(crate) fn set_secret(
+        &self,
+        id: &str,
+        field: Option<&str>,
+        value: &str,
+    ) -> Result<Value, Failure> {
         let c = find(id).ok_or_else(|| (404, format!("no connector `{id}`")))?;
         let field = pick_field(c, field)?;
         let _guard = lock(&self.write);
@@ -2420,7 +2425,7 @@ impl Store {
     }
 
     /// The approved manifest of connector `id`: its latest approved version.
-    fn approved_manifest(&self, id: &str) -> Option<Manifest> {
+    pub(crate) fn approved_manifest(&self, id: &str) -> Option<Manifest> {
         lock(&self.manifests)
             .iter()
             .rev()
@@ -2509,7 +2514,6 @@ impl Store {
     }
 
     /// The glue tier's key-value state of connector `id`.
-    #[cfg_attr(not(test), allow(dead_code))] // called by run_glue, which the glue tier's callers (5.5) use.
     fn kv_of(&self, id: &str) -> BTreeMap<String, String> {
         lock(&self.kv)
             .iter()
@@ -2518,8 +2522,7 @@ impl Store {
             .collect()
     }
 
-    /// Runs connector `id`'s component (glue.rs) on `input`.
-    #[cfg_attr(not(test), allow(dead_code))] // the glue tier's callers come with 5.5. Its requests go to the approved manifest's egress and
+    /// Runs connector `id`'s component (glue.rs) on `input`. Its requests go to the approved manifest's egress and
     /// carry the key the vault holds for the connector, formatted by the manifest; the component never reads that
     /// key. The state the call writes is kept.
     pub fn run_glue(
@@ -2554,6 +2557,21 @@ impl Store {
         }
         Ok(outcome)
     }
+}
+
+/// The scopes connector `id`'s actions carry, by their risk classes: what the card of a tool that uses its secret shows.
+pub fn scopes_of(id: &str) -> Vec<String> {
+    let mut out: Vec<String> = find(id)
+        .map(|c| {
+            c.actions
+                .iter()
+                .map(|a| manifest::scope_of(a.risk).to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The manifest a connector proposal becomes on approval, with its time.
