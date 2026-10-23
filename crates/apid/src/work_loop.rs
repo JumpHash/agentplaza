@@ -33,7 +33,8 @@ use crate::journal;
 use crate::placement;
 use crate::project_settings;
 use crate::recipes::model::Model;
-use crate::recipes::{self, Report};
+use crate::recipes::{self, Move, Report};
+use crate::review_graph;
 use crate::scheduler::Origin;
 use crate::seats::{self, Next, Seat};
 use crate::sessions::{Filter, Kind, NewSession, PausedBy, Session, State};
@@ -117,15 +118,24 @@ fn step_ended(
     said: &str,
     now: u64,
 ) -> Option<Next> {
-    let moves = if crashed {
-        Vec::new()
+    if crashed {
+        return app.seats.ended(task, seat, passed, crashed, said, now, &[]);
+    }
+    let step = app.seats.get(task, seat)?.step;
+    let report = Report {
+        findings: (step == "verify").then(|| review_graph::seat_findings(app, task)),
+        ..Report::verdict(passed)
+    };
+    let moves = app.recipe_runs.settle_task(task, &step, &report, now);
+    review_graph::seat_settled(app, task, &moves);
+    // A rewind sends the builder the findings the verifier confirmed (the review's own record), not the verifier's words.
+    let said = if moves.iter().any(|m| matches!(m, Move::Rewind(_))) {
+        review_graph::seat_said(app, task)
     } else {
-        let step = app.seats.get(task, seat)?.step;
-        app.recipe_runs
-            .settle_task(task, &step, &Report::verdict(passed), now)
+        said.to_string()
     };
     app.seats
-        .ended(task, seat, passed, crashed, said, now, &moves)
+        .ended(task, seat, passed, crashed, &said, now, &moves)
 }
 
 /// The tasks of project `project` that run now: those that hold seats, from their seats' opening until they end (a
@@ -351,7 +361,16 @@ pub fn pick_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
     if seat.model_policy == seats::ModelPolicy::Any {
         return all.into_iter().next();
     }
-    let avoid: HashSet<String> = app
+    // A differ seat never runs on the builder's model (the cross-model rule, 8.2); the other seats' models are avoided
+    // where another is allowed, so a sceptic and the verifier take other models where the project has them.
+    let author: HashSet<String> = app
+        .seats
+        .of_task(&seat.task)
+        .into_iter()
+        .filter(|s| s.role == "builder")
+        .filter_map(|s| s.last_model)
+        .collect();
+    let others: HashSet<String> = app
         .seats
         .models_to_avoid(&seat.task, &seat.name)
         .into_iter()
@@ -361,16 +380,60 @@ pub fn pick_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
         .get(project)
         .role_models
         .get(&seat.role)
-        .filter(|m| !m.is_empty() && !avoid.contains(*m))
+        .filter(|m| !m.is_empty() && !author.contains(*m) && !others.contains(*m))
     {
         return Some(chosen.clone());
     }
-    let avoid_providers: HashSet<&str> = avoid.iter().map(|m| provider_of(m)).collect();
-    let free: Vec<&String> = all.iter().filter(|m| !avoid.contains(*m)).collect();
-    free.iter()
-        .find(|m| !avoid_providers.contains(provider_of(m)))
-        .or_else(|| free.first())
+    let usable: Vec<&String> = all.iter().filter(|m| !author.contains(*m)).collect();
+    let other_providers: HashSet<&str> = others.iter().map(|m| provider_of(m)).collect();
+    usable
+        .iter()
+        .find(|m| !others.contains(**m) && !other_providers.contains(provider_of(m)))
+        .or_else(|| usable.iter().find(|m| !others.contains(**m)))
+        .or_else(|| usable.first())
         .map(|m| (*m).clone())
+}
+
+/// A builder's change is sealed: a large or risky change (the review step's `risk`) gets its extra sceptics before the
+/// round's reviews start (8.2). The walk's items and the seats grow together.
+fn size_review(app: &App, task: &str, now: u64) {
+    let Some((base, Some(risk))) = app.recipe_runs.sizing_of_task(task, "review") else {
+        return;
+    };
+    let Some(change) = app.weft.lane_of(task) else {
+        return;
+    };
+    let rev = review_graph::latest_revision(app, &change);
+    let Ok(diff) = app.weft.get(&format!("/revisions/{rev}/diff")) else {
+        return;
+    };
+    let mut lines = 0u32;
+    let mut risky = false;
+    for file in diff["files"].as_array().into_iter().flatten() {
+        let path = file["path"].as_str().unwrap_or("");
+        if risk.paths.iter().any(|g| weft::derived::glob(g, path)) {
+            risky = true;
+        }
+        for line in file["unified"].as_str().unwrap_or("").lines() {
+            if (line.starts_with('+') && !line.starts_with("+++"))
+                || (line.starts_with('-') && !line.starts_with("---"))
+            {
+                lines += 1;
+            }
+        }
+    }
+    let count = if risky || lines > risk.lines {
+        base + risk.extra
+    } else {
+        base
+    };
+    app.recipe_runs.set_items_task(task, "review", count, now);
+    app.seats.grow(task, "review", count, now);
+}
+
+/// The seat roles that review a change: the reviewers (the sceptics) and the verifier.
+pub fn review_role(role: &str) -> bool {
+    role == "reviewer" || role == "verifier"
 }
 
 /// The model for a seat's session, as its step's recipe says it. `any` and `differ` take the seat's own choice
@@ -438,6 +501,9 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
         ask_seat(app, seat, &project, now);
         return;
     };
+    if review_role(&seat.role) {
+        review_graph::open_round(app, &seat.task);
+    }
     let session = app.sessions.create(
         NewSession {
             project: project.clone(),
@@ -471,6 +537,9 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
                 s.cid = Some(cid);
                 s.node = node;
             });
+            if review_role(&seat.role) {
+                review_graph::seat_started(app, &seat.task, &seat.name, cid, &model, &session.id);
+            }
             let _ = app.sessions.set_state(&session.id, State::Forking, now);
             app.bus.publish("session", &app.sessions.get(&session.id));
         }
@@ -528,7 +597,11 @@ fn step_prompt(app: &App, session: &Session) -> String {
         ));
     }
     // The newest handover of the seat this one starts from (the builder's for a reviewer), by an earlier session.
-    let source = if seat == "reviewer" { "builder" } else { seat };
+    let source = if review_role(&session.role) {
+        "builder"
+    } else {
+        seat
+    };
     let handover = app
         .sessions
         .list(&crate::sessions::Filter {
@@ -541,15 +614,24 @@ fn step_prompt(app: &App, session: &Session) -> String {
         .max_by_key(|(created, _)| *created)
         .map(|(_, handover)| handover);
     match seat {
-        "reviewer" => {
+        _ if review_role(&session.role) => {
             if let Some(handover) = handover {
                 prompt.push_str(&format!("\nThe builder's handover:\n{handover}\n"));
             }
-            prompt.push_str(
-                "\nYou are this task's reviewer, on a model other than the builder's. Try to break the change: check \
-                 it against the acceptance, run what proves it, and look for what the builder missed. Then call \
-                 plaza_verdict with pass true or false; when false, say exactly what must change.\n",
-            );
+            if session.role == "verifier" {
+                prompt.push_str(
+                    "\nYou are this task's verifier, on a model the builder and the reviewers did not use where one is \
+                     free. Prove each finding below with a test, a run or the exact lines, or drop it with its reason \
+                     (finding_verify), then call plaza_verdict with pass true.\n",
+                );
+            } else {
+                prompt.push_str(
+                    "\nYou are one of this task's sceptic reviewers, on a model other than the builder's. Try to break \
+                     the change: check it against the acceptance, run what proves it, and look for what the builder \
+                     missed.\n",
+                );
+            }
+            prompt.push_str(&review_graph::seat_brief(app, task_id, &session.role));
         }
         _ => {
             if let Some(handover) = handover {
@@ -619,7 +701,7 @@ pub fn on_hello(app: &App, cid: u64) -> bool {
     // A code task's work is a lane in Weft: the builder writes it (task_work opens it, or takes it over from the
     // seat's last session), the reviewer reads its sealed revision (review_work).
     let (prompt, origin) = match app.plaza.tasks.find(&task_id) {
-        Some(task) if session.seat.as_deref() == Some("reviewer") => {
+        Some(task) if review_role(&session.role) => {
             crate::weft_hub::review_work(app, &task, cid, prompt)
         }
         Some(task) => crate::weft_hub::task_work(app, &task, cid, prompt),
@@ -676,8 +758,8 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
     let (Some(task), Some(seat)) = (session.task.clone(), session.seat.clone()) else {
         return false;
     };
-    let next = if seat == "reviewer" {
-        // The reviewer's step ends with its verdict ([`on_verdict`]); one that ends without one goes again.
+    let next = if review_role(&session.role) {
+        // A review seat's step ends with its verdict ([`on_verdict`]); one that ends without one goes again.
         if session.verdict.is_some() {
             None
         } else {
@@ -697,6 +779,7 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
         if passed && let Some(t) = app.plaza.tasks.find(&task) {
             // The builder's lane is sealed while its VM still holds the key: the reviewer reviews that revision.
             crate::weft_hub::seal(app, &task, cid, summary);
+            size_review(app, &task, now);
             let _ = t.await_review(Some(summary.to_string()));
         }
         step_ended(app, &task, &seat, passed, crashed, summary, now)
@@ -713,19 +796,31 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
 /// session's reviewer.
 pub fn on_verdict(app: &App, cid: u64, task: &str, pass: bool, notes: &str) -> Option<String> {
     let session = app.sessions.by_cid(cid)?;
-    if session.seat.as_deref() != Some("reviewer") || session.task.as_deref() != Some(task) {
+    if !review_role(&session.role) || session.task.as_deref() != Some(task) {
         return None;
+    }
+    let seat = session.seat.clone()?;
+    if session.role == "verifier" && pass {
+        let open = review_graph::pending_findings(app, task);
+        if !open.is_empty() {
+            return Some(format!(
+                "Not recorded: rule on every finding first (finding_verify): {}.",
+                open.join(", ")
+            ));
+        }
     }
     let now = now();
     let _ = app.sessions.update(&session.id, |s| s.verdict = Some(pass));
-    let next = step_ended(app, task, "reviewer", pass, false, notes, now)?;
-    apply(app, task, next, now);
-    Some(if pass {
-        format!("Recorded: task {task} passes. End your turn now.")
-    } else {
-        format!(
-            "Recorded: task {task} goes back to its builder with your findings. End your turn now."
-        )
+    let next = step_ended(app, task, &seat, pass, false, notes, now);
+    if let Some(next) = next.clone() {
+        apply(app, task, next, now);
+    }
+    Some(match next {
+        Some(Next::Back(_)) => format!(
+            "Recorded: task {task} goes back to its builder with the confirmed findings. End your turn now."
+        ),
+        Some(Next::Done) => format!("Recorded: task {task} passes. End your turn now."),
+        _ => format!("Recorded: seat {seat} reported. End your turn now."),
     })
 }
 
@@ -775,8 +870,8 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
                 );
                 return;
             }
-            // The reviewer ran on another model than the builder (8.2): with the same one, the owner rules.
-            if let Some(gap) = seat_gap(app, task_id) {
+            // The reviewers and the verifier ran on models other than the builder's (8.2): with one the same, the owner rules.
+            if let Some(gap) = review_graph::seat_gap(app, task_id) {
                 ask_cross_model(app, task_id, &gap, now);
                 return;
             }
@@ -838,14 +933,6 @@ fn landing_refusals(app: &App, task: &str, project: &str) -> Vec<String> {
         .filter_map(|file| file["unified"].as_str())
         .collect();
     crate::project_settings::land_refusals(&hooks, &unified.join("\n"))
-}
-
-/// The reviewer seat's model is the builder seat's: the gap, named. None when they differ, or a seat has no model yet.
-fn seat_gap(app: &App, task: &str) -> Option<String> {
-    let builder = app.seats.get(task, "builder")?.last_model?;
-    let reviewer = app.seats.get(task, "reviewer")?.last_model?;
-    (builder == reviewer)
-        .then(|| format!("the reviewer ran on {reviewer}, the builder's own model"))
 }
 
 /// The review passed and the change is admitted: it joins its project's landing queue, or the task is done at once

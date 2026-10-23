@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::graph::{EdgeRec, EdgeState, Move, Outcome, Report, StepRec, StepState, Walk};
 
-use super::model::{Model, Recipe, builtin};
+use super::model::{Fan, Model, Recipe, Risk, builtin};
 
 /// Where a run is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -242,6 +242,28 @@ impl Runs {
         if let Some(run) = self.active_of_task(task) {
             self.started(&run, step, now);
         }
+    }
+
+    /// Sets the items of a step of the task's active run (see [`Walk::set_items`]).
+    pub fn set_items_task(&self, task: &str, step: &str, items: u32, now: u64) {
+        if let Some(run) = self.active_of_task(task) {
+            self.update(&run, now, |e| e.walk.set_items(step, items));
+        }
+    }
+
+    /// A step's fixed fan-out count and its risk, in the task's active run's recipe.
+    pub fn sizing_of_task(&self, task: &str, step: &str) -> Option<(u32, Option<Risk>)> {
+        let inner = self.lock();
+        let entry = inner
+            .runs
+            .values()
+            .find(|e| e.run.task.as_deref() == Some(task) && e.walk.outcome.is_none())?;
+        let s = entry.recipe.step(step)?;
+        let count = match s.fan_out {
+            Fan::Count(n) => n,
+            Fan::Named(_) => 1,
+        };
+        Some((count, s.risk.clone()))
     }
 
     /// The model a step of the task's active run is to use, as its recipe file says.
@@ -668,7 +690,7 @@ max = 2
         runs.task_step_started("t1", "build", 2);
         runs.settle_task("t1", "build", &Report::verdict(true), 3);
         let mut v2 = recipe.clone();
-        v2.version = 2;
+        v2.version = 3;
         runs.put_version(v2, 4).unwrap();
 
         let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
@@ -683,7 +705,7 @@ max = 2
         let view = loaded.view(&id).unwrap();
         assert_eq!(view.walk.steps["review"].state, StepState::Ready);
         assert_eq!(view.walk.steps["build"].state, StepState::Passed);
-        assert_eq!(loaded.recipe("change", None).unwrap().version, 2);
+        assert_eq!(loaded.recipe("change", None).unwrap().version, 3);
         // The next run takes a new id, after the stored ones.
         let (next, _) = loaded.start(&recipe, "built_in", "task", Some("t2"), None, None, 9);
         assert_eq!(next, "rr-2");

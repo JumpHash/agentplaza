@@ -134,6 +134,7 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         "orchestrator": role("orchestrator", "Orchestrator"),
         "builder": role("builder", "Builder"),
         "reviewer": role("reviewer", "Reviewer"),
+        "verifier": role("verifier", "Verifier"),
     } });
     let scratch = Scratch::new("work-engine");
     let no_weft = scratch.0.join("no-weft");
@@ -189,8 +190,8 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         })
     });
     assert!(
-        seats.as_array().is_some_and(|s| s.len() == 2),
-        "a builder and a reviewer: {seats}\n{}",
+        seats.as_array().is_some_and(|s| s.len() == 4),
+        "a builder, two reviewers and a verifier: {seats}\n{}",
         hub.log()
     );
     // The seat is filled when its session is made; the session has its VM once noded's start returns.
@@ -303,7 +304,7 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         builder_cid,
         work,
         "plaza_message_seat",
-        json!({ "to": "reviewer", "text": "Check the upgrade section first." }),
+        json!({ "to": "reviewer#1", "text": "Check the upgrade section first." }),
     );
     assert!(
         text(&note["output"]).contains("waits for the next session"),
@@ -361,23 +362,30 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         "the hub keeps the tool's duration"
     );
 
-    // The builder finishes: the reviewer's session starts on the other model and reads the note first.
+    // The builder finishes: the chain's two sceptic reviewers start on the other model, and the first reads the note
+    // first.
     hub.work_done(
         builder_cid,
         work,
         "done",
         "Drafted the notes; the upgrade section is new.",
     );
-    let reviewer = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+    let reviewers = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
         s.as_array().is_some_and(|s| {
             s.iter()
-                .any(|s| s["seat"] == "reviewer" && s["cid"].is_u64())
+                .filter(|s| s["seat"] == "reviewer#1" || s["seat"] == "reviewer#2")
+                .filter(|s| s["cid"].is_u64())
+                .count()
+                == 2
         })
     });
-    let reviewer = reviewer
-        .as_array()
-        .and_then(|s| s.iter().find(|s| s["seat"] == "reviewer").cloned())
-        .unwrap_or_else(|| panic!("a reviewer session: {reviewer}\n{}", hub.log()));
+    let session_of = |seat: &str| -> Value {
+        reviewers
+            .as_array()
+            .and_then(|s| s.iter().find(|s| s["seat"] == seat).cloned())
+            .unwrap_or_else(|| panic!("a {seat} session: {reviewers}\n{}", hub.log()))
+    };
+    let reviewer = session_of("reviewer#1");
     assert_eq!(
         reviewer["model"], "mock/echo",
         "a model other than the builder's: {reviewer}"
@@ -409,14 +417,52 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         review_prompt.contains("The builder's handover"),
         "{review_prompt}"
     );
-
-    // The verdict: the task is done, its seats close, and its unspent reservation goes back to the project.
-    let verdict = tool(
+    // The first reviewer reports; the second completes the review step.
+    let reported = tool(
         &hub,
         reviewer_cid,
         review_work,
         "plaza_verdict",
         json!({ "task": tid, "pass": true, "notes": "Accurate and complete." }),
+    );
+    assert!(text(&reported["output"]).contains("reported"), "{reported}");
+    let second_cid = session_of("reviewer#2")["cid"].as_u64().expect("its VM");
+    let (status, _) = hub.guest(second_cid, "hello", json!({ "role": "reviewer", "vm": 2 }));
+    assert_eq!(status, 200);
+    let (second_work, _) = first_work(&gateway, second_cid);
+    let reported = tool(
+        &hub,
+        second_cid,
+        second_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "Agreed." }),
+    );
+    assert!(text(&reported["output"]).contains("reported"), "{reported}");
+    // The verifier has nothing to prove: the change passes the chain, and the task is done.
+    let verifier = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["seat"] == "verifier" && s["cid"].is_u64())
+        })
+    });
+    let verifier = verifier
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["seat"] == "verifier").cloned())
+        .unwrap_or_else(|| panic!("a verifier session: {verifier}\n{}", hub.log()));
+    let verifier_cid = verifier["cid"].as_u64().expect("its VM");
+    let (status, _) = hub.guest(
+        verifier_cid,
+        "hello",
+        json!({ "role": "verifier", "vm": 3 }),
+    );
+    assert_eq!(status, 200);
+    let (verify_work, _) = first_work(&gateway, verifier_cid);
+    let verdict = tool(
+        &hub,
+        verifier_cid,
+        verify_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "Nothing to prove." }),
     );
     assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
     let task = hub.wait_for(&format!("/v1/tasks/{tid}"), WAIT, |t| t["state"] == "done");
@@ -448,7 +494,7 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
     );
     // Each step session left its eval record: the reviewer's with its verdict, the builder's on its model.
     let runs = hub.wait_for(&format!("/v1/evals/runs?project={pid}"), WAIT, |r| {
-        r.as_array().is_some_and(|r| r.len() == 2)
+        r.as_array().is_some_and(|r| r.len() == 4)
     });
     let runs = runs.as_array().cloned().unwrap_or_default();
     let run_of = |seat: &str| {
@@ -457,7 +503,7 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
             .cloned()
             .unwrap_or_default()
     };
-    let (builder_run, reviewer_run) = (run_of("builder"), run_of("reviewer"));
+    let (builder_run, reviewer_run) = (run_of("builder"), run_of("reviewer#1"));
     assert_eq!(
         (builder_run["model"].as_str(), builder_run["ok"].as_bool()),
         (Some("mock/agent"), Some(true)),
@@ -619,12 +665,12 @@ fn a_second_session_on_a_task_starts_from_the_journal_and_the_handover_its_build
     let reviewer = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
         s.as_array().is_some_and(|s| {
             s.iter()
-                .any(|s| s["seat"] == "reviewer" && s["cid"].is_u64())
+                .any(|s| s["seat"] == "reviewer#1" && s["cid"].is_u64())
         })
     });
     let reviewer_cid = reviewer
         .as_array()
-        .and_then(|s| s.iter().find(|s| s["seat"] == "reviewer"))
+        .and_then(|s| s.iter().find(|s| s["seat"] == "reviewer#1"))
         .and_then(|s| s["cid"].as_u64())
         .unwrap_or_else(|| panic!("a reviewer session: {reviewer}\n{}", hub.log()));
     let (status, _) = hub.guest(

@@ -432,6 +432,7 @@ pub fn rule_finding(
     reason: &str,
     by: By,
 ) -> Result<(), String> {
+    let round = run.round;
     let f = run
         .finding_mut(id)
         .ok_or_else(|| format!("no finding {id} in this review"))?;
@@ -448,6 +449,7 @@ pub fn rule_finding(
         Verdict::Pending => Err("a ruling is confirmed or dropped".into()),
         Verdict::Confirmed => {
             f.verdict = Verdict::Confirmed;
+            f.round = round;
             f.proof = proof.trim().into();
             f.verified_by = Some(by);
             Ok(())
@@ -480,6 +482,12 @@ pub fn contest_finding(run: &mut Run, id: &str, reason: &str) -> Result<(), Stri
     }
     f.contest = reason.trim().into();
     f.verdict = Verdict::Pending;
+    Ok(())
+}
+
+/// Reopens a review-graph run for the verifier's second look at a contested finding: the run runs again and its
+/// verifier and gate wait.
+pub fn reopen_review(run: &mut Run) {
     run.state = RunState::Running;
     for n in run.nodes.iter_mut() {
         if n.def.role.as_deref() == Some("verifier") || n.def.kind == "gate" {
@@ -487,7 +495,6 @@ pub fn contest_finding(run: &mut Run, id: &str, reason: &str) -> Result<(), Stri
             n.ended_ms = 0;
         }
     }
-    Ok(())
 }
 
 /// The planner's ruling on a contested finding the verifier held (8.5): `fix` keeps it confirmed for the author,
@@ -669,6 +676,11 @@ impl Reviews {
             .into_iter()
             .next()
             .filter(|r| r.state == RunState::Rework)
+    }
+
+    /// The task's review run on the work loop's seats (purpose `seat`): one run for the task, reopened per round.
+    pub fn seat_run(&self, task: &str) -> Option<Run> {
+        self.runs_of(task).into_iter().find(|r| r.purpose == "seat")
     }
 
     pub fn active(&self, task: &str) -> Option<Run> {
@@ -1122,7 +1134,7 @@ pub fn tick(app: &App) {
         .map(|b| {
             b.runs
                 .values()
-                .filter(|r| r.state == RunState::Running)
+                .filter(|r| r.state == RunState::Running && r.purpose != "seat")
                 .cloned()
                 .collect()
         })
@@ -1364,6 +1376,71 @@ fn assign(app: &App, run: &Run, node: &str, cid: u64) {
     );
 }
 
+/// A reviewer's standing instructions: the change is for breaking, every finding names its scenario, and the project's
+/// pitfalls (8.2, 8.6). The review graph's nodes and the work loop's review seats both read it.
+pub fn sceptic_text(app: &App, project: &str) -> String {
+    let mut p = String::from(
+        "Your posture is a sceptic's: look for how this change breaks, not for reasons to pass it. Every finding names its scenario: the inputs or the state, and the wrong outcome they cause. A finding without one is refused.\n",
+    );
+    let pitfalls: Vec<String> = crate::project_memory::entries(app, project)
+        .into_iter()
+        .filter(|e| e.kind == "pitfall" && (e.status == "active" || e.status == "flagged"))
+        .take(20)
+        .map(|e| format!("- {}: {}", e.title, e.body))
+        .collect();
+    if !pitfalls.is_empty() {
+        p.push_str(&format!(
+            "This project's pitfalls (confirmed before; check the change against them):\n{}\n",
+            pitfalls.join("\n")
+        ));
+    }
+    p
+}
+
+/// A verifier's instructions, and the findings it rules on now (pending), with the contests the author made.
+pub fn verifier_text(run: &Run) -> String {
+    let mut p = String::from(
+        "You verify; you do not review. For each finding below, prove it or drop it with finding_verify: confirmed (with the proof: a failing test you wrote, a reproduction you ran, or the exact lines and the reasoning you checked) or dropped (with the reason it is not a defect). Read the change with review_tree first. Finish with your verdict, pass, once every finding is ruled on.\n",
+    );
+    for f in run.findings().filter(|f| f.verdict == Verdict::Pending) {
+        p.push_str(&format!(
+            "- {} {} ({}, {}): {}\n  Scenario: {}\n",
+            f.id, f.symbol, f.node, f.severity, f.text, f.scenario
+        ));
+    }
+    for f in run
+        .findings()
+        .filter(|f| !f.contest.is_empty() && f.verdict == Verdict::Pending)
+    {
+        p.push_str(&format!(
+            "The author contests {}: {}. Look again at it: the verdict stands or falls on your proof.\n",
+            f.id, f.contest
+        ));
+    }
+    p
+}
+
+/// The findings of a run's current round as its author reads them: the confirmed ones with their scenario and proof,
+/// and the dropped ones with their reason (nothing to change for those).
+fn findings_text(run: &Run) -> (Vec<String>, Vec<String>) {
+    let confirmed = run
+        .findings()
+        .filter(|f| f.verdict == Verdict::Confirmed && f.round == run.round)
+        .map(|f| {
+            format!(
+                "- {} {} ({}, {}): {} Scenario: {} Proof: {}",
+                f.id, f.symbol, f.node, f.severity, f.text, f.scenario, f.proof
+            )
+        })
+        .collect();
+    let dropped = run
+        .findings()
+        .filter(|f| f.verdict == Verdict::Dropped && f.round == run.round)
+        .map(|f| format!("- {} {}: not a defect: {}", f.id, f.symbol, f.reason))
+        .collect();
+    (confirmed, dropped)
+}
+
 fn node_prompt(app: &App, run: &Run, n: &NodeRun) -> String {
     let record = app.plaza.tasks.find(&run.task);
     let goal = record
@@ -1413,37 +1490,9 @@ fn node_prompt(app: &App, run: &Run, n: &NodeRun) -> String {
             if axes.is_empty() { "tst".into() } else { axes.join(", ") }
         ));
     } else if n.def.role.as_deref() == Some("verifier") {
-        p.push_str("You verify; you do not review. For each finding below, prove it or drop it with finding_verify: confirmed (with the proof: a failing test you wrote, a reproduction you ran, or the exact lines and the reasoning you checked) or dropped (with the reason it is not a defect). Read the change with review_tree first. Finish with review_verdict, pass, once every finding is ruled on.\n");
-        for f in run.findings().filter(|f| f.verdict == Verdict::Pending) {
-            p.push_str(&format!(
-                "- {} {} ({}, {}): {}\n  Scenario: {}\n",
-                f.id, f.symbol, f.node, f.severity, f.text, f.scenario
-            ));
-        }
-        for f in run
-            .findings()
-            .filter(|f| !f.contest.is_empty() && f.verdict == Verdict::Pending)
-        {
-            p.push_str(&format!(
-                "The author contests {}: {}. Look again at it: the verdict stands or falls on your proof.\n",
-                f.id, f.contest
-            ));
-        }
+        p.push_str(&verifier_text(run));
     } else {
-        // The sceptic's posture: the change is for breaking, not for approving (8.2).
-        p.push_str("Your posture is a sceptic's: look for how this change breaks, not for reasons to pass it. Every finding names its scenario: the inputs or the state, and the wrong outcome they cause. A finding without one is refused.\n");
-        let pitfalls: Vec<String> = crate::project_memory::entries(app, &run.project)
-            .into_iter()
-            .filter(|e| e.kind == "pitfall" && (e.status == "active" || e.status == "flagged"))
-            .take(20)
-            .map(|e| format!("- {}: {}", e.title, e.body))
-            .collect();
-        if !pitfalls.is_empty() {
-            p.push_str(&format!(
-                "This project's pitfalls (confirmed before; check the change against them):\n{}\n",
-                pitfalls.join("\n")
-            ));
-        }
+        p.push_str(&sceptic_text(app, &run.project));
         if n.def.constraints {
             p.push_str("Read the project's invariants (its brief and its design documents: plaza_projects, then the files) and fail this step if the change breaks one; name which and where.\n");
         }
@@ -1558,7 +1607,7 @@ pub fn report(
         model: used.model,
         session: used.session,
     };
-    let default_kind = axes.first().cloned().unwrap_or_else(|| node.clone());
+    let default_kind = axes.first().cloned().unwrap_or_else(|| "review".into());
     for s in &scores {
         if !(-5..=5).contains(&s.level) {
             return Err(format!("{}: a level is between -5 and 5", s.symbol));
@@ -1798,6 +1847,26 @@ fn request_ruling(app: &App, run: &Run, f: &Finding) {
         f.id, run.id, run.task, f.contest, f.proof, run.id, f.id
     );
     let now = apz_plaza::now_ms();
+    if run.purpose == "seat" {
+        if on_other {
+            crate::work_loop::to_planner(app, &run.project, &text);
+        }
+        crate::work_loop::notice(
+            app,
+            &crate::work_loop::task_chat(app, &run.task, &run.project, now),
+            &format!(
+                "Task {} has a contested finding: {}.",
+                run.task,
+                if on_other {
+                    "the planner rules on it"
+                } else {
+                    "the owner rules on it"
+                }
+            ),
+            now,
+        );
+        return;
+    }
     match planner {
         Some(_) if on_other => {
             crate::work_loop::to_planner(app, &run.project, &text);
@@ -1835,25 +1904,38 @@ pub fn contest(app: &App, cid: u64, finding: &str, reason: &str) -> Result<Strin
         .reviews
         .reworked_run_of(&task)
         .ok_or("the task has no review in rework to contest")?;
-    if run.worker != cid {
+    let seat_path = run.purpose == "seat";
+    let author = if seat_path {
+        app.sessions.by_cid(cid).and_then(|s| s.seat).as_deref() == Some("builder")
+    } else {
+        run.worker == cid
+    };
+    if !author {
         return Err("only the author of the change contests a finding".into());
     }
-    // A newer seal is reviewed as its own round: a contest comes before it.
-    let latest = app
-        .weft
-        .get(&format!("/changes/{}", run.change))
-        .ok()
-        .and_then(|d| {
-            d["rounds"]
-                .as_array()
-                .and_then(|r| r.last().cloned())
-                .and_then(|r| r.as_str().map(str::to_string))
-        });
-    if latest.as_deref() != Some(run.revision.as_str()) {
+    // A newer seal is reviewed as its own round: a contest comes before it (a review-graph run only; a seat's round
+    // goes on from its rework and its verifier re-rules at the next round).
+    let latest = if seat_path {
+        None
+    } else {
+        app.weft
+            .get(&format!("/changes/{}", run.change))
+            .ok()
+            .and_then(|d| {
+                d["rounds"]
+                    .as_array()
+                    .and_then(|r| r.last().cloned())
+                    .and_then(|r| r.as_str().map(str::to_string))
+            })
+    };
+    if !seat_path && latest.as_deref() != Some(run.revision.as_str()) {
         return Err("the lane has a newer revision: contest before you seal it".into());
     }
     app.reviews
         .edit(&run.id, |r| contest_finding(r, finding, reason))?;
+    if !seat_path {
+        app.reviews.update(&run.id, reopen_review);
+    }
     tick(app);
     Ok(format!("{finding} is contested: the verifier looks again"))
 }
@@ -1903,6 +1985,277 @@ pub fn arbitrate(
     );
     tick(app);
     Ok(format!("{finding}: {ruling}"))
+}
+
+// ── the seat path: a task's review round on the work loop's seats (8.2) ─────────────────────────────────────────────
+
+/// The latest revision of `change` Weft has sealed.
+pub fn latest_revision(app: &App, change: &str) -> String {
+    app.weft
+        .get(&format!("/changes/{change}"))
+        .ok()
+        .and_then(|d| {
+            d["rounds"]
+                .as_array()
+                .and_then(|r| r.last().cloned())
+                .and_then(|r| r.as_str().map(str::to_string))
+        })
+        .unwrap_or_default()
+}
+
+/// A review round on the seats starts (a reviewer seat is about to run): the task's review run is made for it, or,
+/// after a rework, reopened for the next round. Its findings stay; its review nodes wait again. Idempotent within a
+/// round: the first reviewer to start opens it, the others find it open.
+pub fn open_round(app: &App, task: &str) {
+    let Some(record) = app.plaza.tasks.find(task) else {
+        return;
+    };
+    let Some(project) = record.project().map(str::to_string) else {
+        return;
+    };
+    let worker = record.view().agent_cid.unwrap_or(0);
+    let Some(change) = app.weft.lane_of(task) else {
+        return;
+    };
+    let revision = latest_revision(app, &change);
+    let seats = app.seats.of_task(task);
+    let author = seats
+        .iter()
+        .find(|s| s.role == "builder")
+        .and_then(|s| s.last_model.clone())
+        .unwrap_or_default();
+    let defs: Vec<NodeDef> = seats
+        .iter()
+        .filter(|s| s.role == "reviewer" || s.role == "verifier")
+        .map(|s| NodeDef {
+            id: s.name.clone(),
+            kind: "agent".into(),
+            role: Some(s.role.clone()),
+            ..Default::default()
+        })
+        .collect();
+    if defs.is_empty() {
+        return;
+    }
+    let author_use = ModelUse {
+        node: "author".into(),
+        cid: worker,
+        model: author,
+        session: String::new(),
+    };
+    let now = apz_plaza::now_ms();
+    app.reviews.with(|b| {
+        let open = b
+            .runs
+            .values()
+            .filter(|r| r.task == task && r.purpose == "seat")
+            .max_by_key(|r| r.created_ms)
+            .map(|r| r.id.clone());
+        match open {
+            Some(id) => {
+                let Some(r) = b.runs.get_mut(&id) else {
+                    return;
+                };
+                if r.state != RunState::Rework {
+                    return;
+                }
+                r.state = RunState::Running;
+                r.round += 1;
+                r.revision = revision;
+                r.worker = worker;
+                for def in defs {
+                    if r.node(&def.id).is_none() {
+                        r.nodes.push(NodeRun {
+                            def,
+                            parent: None,
+                            state: NodeState::Waiting,
+                            assignee: None,
+                            work: None,
+                            tries: 0,
+                            scores: vec![],
+                            findings: vec![],
+                            touches: vec![],
+                            notes: String::new(),
+                            record: None,
+                            started_ms: 0,
+                            ended_ms: 0,
+                            spawned: 0,
+                        });
+                    } else if let Some(n) = r.node_mut(&def.id) {
+                        n.state = NodeState::Waiting;
+                        n.assignee = None;
+                        n.work = None;
+                        n.tries = 0;
+                        n.notes.clear();
+                        n.ended_ms = 0;
+                    }
+                }
+                r.models.retain(|m| m.node != "author");
+                r.models.push(author_use);
+                r.updated_ms = now;
+            }
+            None => {
+                b.next += 1;
+                let id = format!("rv{}", b.next);
+                let nodes = defs
+                    .into_iter()
+                    .map(|def| NodeRun {
+                        def,
+                        parent: None,
+                        state: NodeState::Waiting,
+                        assignee: None,
+                        work: None,
+                        tries: 0,
+                        scores: vec![],
+                        findings: vec![],
+                        touches: vec![],
+                        notes: String::new(),
+                        record: None,
+                        started_ms: 0,
+                        ended_ms: 0,
+                        spawned: 0,
+                    })
+                    .collect();
+                b.runs.insert(
+                    id.clone(),
+                    Run {
+                        id,
+                        task: task.into(),
+                        project,
+                        worker,
+                        change,
+                        revision,
+                        recipe: "change@2".into(),
+                        round: 1,
+                        rounds: 3,
+                        kind: "code".into(),
+                        state: RunState::Running,
+                        nodes,
+                        rules: vec![],
+                        owner_asked: false,
+                        outcome: None,
+                        tree_blob: None,
+                        summary: String::new(),
+                        purpose: "seat".into(),
+                        repo: String::new(),
+                        models: vec![author_use],
+                        created_ms: now,
+                        updated_ms: now,
+                    },
+                );
+            }
+        }
+    });
+}
+
+/// A review seat's session started on `cid` with `model`: its node is its (the review's reviewer or verifier).
+pub fn seat_started(app: &App, task: &str, seat: &str, cid: u64, model: &str, session: &str) {
+    let Some(run) = app.reviews.seat_run(task) else {
+        return;
+    };
+    app.reviews.update(&run.id, |r| {
+        if let Some(n) = r.node_mut(seat) {
+            n.state = NodeState::Running;
+            n.assignee = Some(cid);
+            n.started_ms = apz_plaza::now_ms();
+            n.tries += 1;
+        }
+        r.models.retain(|m| m.node != seat);
+        r.models.push(ModelUse {
+            node: seat.into(),
+            cid,
+            model: model.into(),
+            session: session.into(),
+        });
+    });
+}
+
+/// Whether the seat path's round is on a model other than its author's, every reviewer's and the verifier's: the gap,
+/// named (the same rule as the review graph's gate, see [`cross_model_gap`]).
+pub fn seat_gap(app: &App, task: &str) -> Option<String> {
+    cross_model_gap(&app.reviews.seat_run(task)?)
+}
+
+/// The walk moved on: a rewind reopens the round for rework, and the walk's end closes the review run.
+pub fn seat_settled(app: &App, task: &str, moves: &[crate::recipes::Move]) {
+    use crate::recipes::Move;
+    let state = moves.iter().find_map(|m| match m {
+        Move::Rewind(_) => Some(RunState::Rework),
+        Move::Done => Some(RunState::Passed),
+        Move::Failed(_) => Some(RunState::Failed),
+        _ => None,
+    });
+    let (Some(state), Some(run)) = (state, app.reviews.seat_run(task)) else {
+        return;
+    };
+    app.reviews.update(&run.id, |r| r.state = state);
+}
+
+/// The confirmed findings of the seat round's current round: the count the verifier's step reports to the walk.
+pub fn seat_findings(app: &App, task: &str) -> u32 {
+    app.reviews
+        .seat_run(task)
+        .map(|r| {
+            r.findings()
+                .filter(|f| {
+                    f.verdict == Verdict::Confirmed && f.severity != "info" && f.round == r.round
+                })
+                .count() as u32
+        })
+        .unwrap_or(0)
+}
+
+/// What the builder is sent back with: the round's confirmed findings, and the dropped ones with their reasons.
+pub fn seat_said(app: &App, task: &str) -> String {
+    let Some(run) = app.reviews.seat_run(task) else {
+        return String::new();
+    };
+    let (confirmed, dropped) = findings_text(&run);
+    let mut out = format!(
+        "The verifier confirmed these findings (fix them, each with its scenario in mind):\n{}",
+        confirmed.join("\n")
+    );
+    if !dropped.is_empty() {
+        out.push_str(&format!(
+            "\nDropped (not defects, nothing to change):\n{}",
+            dropped.join("\n")
+        ));
+    }
+    out
+}
+
+/// The findings a verifier has yet to rule on (its verdict is refused while any is open).
+pub fn pending_findings(app: &App, task: &str) -> Vec<String> {
+    app.reviews
+        .seat_run(task)
+        .map(|r| {
+            r.findings()
+                .filter(|f| f.verdict == Verdict::Pending)
+                .map(|f| f.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A review seat's standing instructions in its prompt: a reviewer's posture and the project's pitfalls, or a
+/// verifier's findings to rule on.
+pub fn seat_brief(app: &App, task: &str, role: &str) -> String {
+    if role == "verifier" {
+        return app
+            .reviews
+            .seat_run(task)
+            .map(|r| verifier_text(&r))
+            .unwrap_or_default();
+    }
+    let project = app
+        .plaza
+        .tasks
+        .find(task)
+        .and_then(|t| t.project().map(str::to_string))
+        .unwrap_or_default();
+    let mut p = sceptic_text(app, &project);
+    p.push_str("Record each finding with review_score: its findings (symbol, text, severity, and the scenario). Then plaza_verdict with pass true once you have reviewed the change, or false when you cannot review it.\n");
+    p
 }
 
 /// A sub-review the agent on a node adds, within its node's limit.
@@ -2230,21 +2583,7 @@ fn send_back(app: &App, run: &Run, reasons: &[String]) {
     let Some(task) = app.plaza.tasks.find(&run.task) else {
         return;
     };
-    let findings: Vec<String> = run
-        .findings()
-        .filter(|f| f.verdict == Verdict::Confirmed)
-        .map(|f| {
-            format!(
-                "- {} {} ({}, {}): {} Scenario: {} Proof: {}",
-                f.id, f.symbol, f.node, f.severity, f.text, f.scenario, f.proof
-            )
-        })
-        .collect();
-    let dropped: Vec<String> = run
-        .findings()
-        .filter(|f| f.verdict == Verdict::Dropped)
-        .map(|f| format!("- {} {}: not a defect: {}", f.id, f.symbol, f.reason))
-        .collect();
+    let (findings, dropped) = findings_text(run);
     let note = format!(
         "Sent back by review {} (round {}): {}",
         run.id,
@@ -3020,6 +3359,7 @@ mod tests {
 
         // The author contests the confirmed bug: the review reopens for the verifier's second look.
         contest_finding(&mut run, "f1", "the queue is never empty at this call").unwrap();
+        reopen_review(&mut run);
         assert_eq!(run.state, RunState::Running);
         assert!(run.node("verify").unwrap().state == NodeState::Waiting);
         assert!(contest_finding(&mut run, "f1", "again").is_err(), "once");

@@ -47,12 +47,12 @@ law "T-006" "The reviewer rules on work" {
   tier statute
   enforcement preventive
   severity info
-  statement "Only the reviewer may give a verdict on a piece of work."
-  rationale "A verdict decides whether the work is accepted, so one role holds it, and no builder judges its own work."
+  statement "Only a reviewer or a verifier may give a verdict on a piece of work."
+  rationale "A verdict decides whether the work is accepted, so the review roles hold it, and no builder judges its own work."
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name == "plaza_verdict" and principal.role == "reviewer"
+  when resource.name == "plaza_verdict" and (principal.role == "reviewer" or principal.role == "verifier")
 }
 
 law "T-007" "Projects move by their lead and planner" {
