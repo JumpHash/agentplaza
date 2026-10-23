@@ -6,8 +6,15 @@
 //!   build the VM's bridge (pure).
 //! - [`resolver`]: a service name's addresses: the DNS answers the runner serves, and the client that asks.
 //! - [`run`]: starts a plan's containers as processes, with their names resolving through the runner's resolver.
+//! - [`compose`] and [`manifests`]: a Compose file and rendered Kubernetes manifests converted into a topology, with a
+//!   [`report`] of what did not carry over.
+//! - [`k3s`]: the guest config of a k3s topology (a Kubernetes cluster in the lab VM).
 
+pub mod compose;
+pub mod k3s;
+pub mod manifests;
 pub mod plan;
+pub mod report;
 pub mod resolver;
 pub mod run;
 pub mod spec;

@@ -38,13 +38,19 @@ pub const DIR: &str = ".plaza/topologies";
 /// The most replicas one service may declare (a lab VM is sized for its topology).
 pub const MAX_REPLICAS: u32 = 16;
 
-/// A topology: its name, its services, what it observes, its traffic and its egress allowlist.
+/// A topology: its name, what it runs, its services (or its k3s cluster), what it observes, its traffic and its egress
+/// allowlist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Topology {
     pub name: String,
+    /// `services` (the default: containers on the VM's bridge) or `k3s` (a Kubernetes cluster in the VM, with `[k3s]`).
+    #[serde(default)]
+    pub kind: Kind,
     #[serde(rename = "service", default)]
     pub services: Vec<Service>,
+    #[serde(default)]
+    pub k3s: Option<K3s>,
     #[serde(default)]
     pub observe: Observe,
     #[serde(default)]
@@ -53,7 +59,30 @@ pub struct Topology {
     pub egress: Egress,
 }
 
-/// One service: its program (an artifact of the release or a pinned image), its replicas, ports, environment and data.
+/// What a topology runs: its services as containers on the lab VM's bridge, or a Kubernetes cluster (k3s) in the VM.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    #[default]
+    Services,
+    K3s,
+}
+
+/// A k3s topology's cluster: a pinned k3s release, the manifests applied when it starts (repo paths), and the images the
+/// lab base preloads into the cluster's containerd.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct K3s {
+    /// A k3s release, as k3s names it: `v1.31.4+k3s1`.
+    pub version: String,
+    #[serde(default)]
+    pub manifests: Vec<String>,
+    #[serde(default)]
+    pub images: Vec<String>,
+}
+
+/// One service: its program (an artifact of the release or a pinned image), its replicas, ports, environment, data,
+/// the services it waits for, its volumes and its health check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Service {
@@ -72,6 +101,35 @@ pub struct Service {
     pub data: Option<Data>,
     #[serde(default)]
     pub serve: Option<Serve>,
+    /// Services that start first, and whose ports must accept connections before this one starts.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub volumes: Vec<Volume>,
+    #[serde(default)]
+    pub health: Option<Health>,
+}
+
+/// A named volume mounted at `target`. Every service that names the volume shares its directory. The lab VM has no host
+/// paths, so a bind mount is not a topology's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Volume {
+    pub name: String,
+    pub target: String,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+/// A service's health check: the command that runs inside its container, and the timing Compose gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Health {
+    pub test: Vec<String>,
+    pub interval_secs: Option<u32>,
+    pub timeout_secs: Option<u32>,
+    pub retries: Option<u32>,
+    pub start_period_secs: Option<u32>,
 }
 
 fn one() -> u32 {
@@ -200,11 +258,40 @@ pub fn parse(text: &str) -> Result<Topology, String> {
     Ok(topology)
 }
 
+/// The topology as its file's text: the TOML that [`parse`] reads back to the same topology.
+pub fn to_toml(topology: &Topology) -> Result<String, String> {
+    toml::to_string(topology).map_err(|e| format!("topology {}: {e}", topology.name))
+}
+
 impl Topology {
     /// What TOML cannot say: the names, the sources, the replicas, the ports, the URLs and the references.
     pub fn check(&self) -> Result<(), String> {
         if !is_label(&self.name) {
             return Err(format!("topology name {:?} is not a DNS label", self.name));
+        }
+        match (self.kind, &self.k3s) {
+            (Kind::Services, Some(_)) => {
+                return Err(format!(
+                    "topology {} sets [k3s] but is not kind = \"k3s\"",
+                    self.name
+                ));
+            }
+            (Kind::K3s, None) => {
+                return Err(format!(
+                    "topology {} is kind = \"k3s\" and has no [k3s]",
+                    self.name
+                ));
+            }
+            (Kind::K3s, Some(k3s)) => {
+                if !self.services.is_empty() {
+                    return Err(format!(
+                        "topology {} is a k3s cluster: its manifests are its services, so it declares no [[service]]",
+                        self.name
+                    ));
+                }
+                return k3s.check();
+            }
+            (Kind::Services, None) => {}
         }
         if self.services.is_empty() {
             return Err(format!("topology {} declares no service", self.name));
@@ -216,6 +303,7 @@ impl Topology {
                 return Err(format!("service {} is declared twice", service.name));
             }
         }
+        check_order(&self.services)?;
         for service in &self.services {
             for (key, value) in &service.env {
                 if key.is_empty() || key.contains('=') || key.chars().any(char::is_whitespace) {
@@ -306,8 +394,177 @@ impl Service {
                 self.name
             ));
         }
+        if self.depends_on.contains(&self.name) {
+            return Err(format!("service {} depends on itself", self.name));
+        }
+        let mut waits = BTreeSet::new();
+        for dependency in &self.depends_on {
+            if !waits.insert(dependency.as_str()) {
+                return Err(format!(
+                    "service {} lists {dependency} in depends_on twice",
+                    self.name
+                ));
+            }
+        }
+        let mut targets = BTreeSet::new();
+        for volume in &self.volumes {
+            if !is_label(&volume.name) {
+                return Err(format!(
+                    "service {} mounts volume {:?}, which is not a DNS label",
+                    self.name, volume.name
+                ));
+            }
+            if !volume.target.starts_with('/')
+                || volume.target.split('/').any(|part| part == "..")
+                || volume.target.contains('\n')
+            {
+                return Err(format!(
+                    "service {} mounts {} at {:?}: a target is an absolute path",
+                    self.name, volume.name, volume.target
+                ));
+            }
+            if !targets.insert(volume.target.as_str()) {
+                return Err(format!(
+                    "service {} mounts two volumes at {}",
+                    self.name, volume.target
+                ));
+            }
+        }
+        if let Some(health) = &self.health {
+            if health.test.first().is_none_or(|program| program.is_empty()) {
+                return Err(format!(
+                    "service {} has a health check with no command",
+                    self.name
+                ));
+            }
+            for seconds in [
+                health.interval_secs,
+                health.timeout_secs,
+                health.start_period_secs,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if seconds == 0 {
+                    return Err(format!(
+                        "service {} has a health check timing of 0",
+                        self.name
+                    ));
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// The services a `depends_on` names exist, and no service waits for itself through others (a cycle).
+fn check_order(services: &[Service]) -> Result<(), String> {
+    let names: BTreeSet<&str> = services.iter().map(|s| s.name.as_str()).collect();
+    for service in services {
+        for dependency in &service.depends_on {
+            if !names.contains(dependency.as_str()) {
+                return Err(format!(
+                    "service {} depends on {dependency}, which is no service of the topology",
+                    service.name
+                ));
+            }
+        }
+    }
+    // Depth-first from each service: a service still on the path when reached again is a cycle.
+    let edges: BTreeMap<&str, Vec<&str>> = services
+        .iter()
+        .map(|s| {
+            (
+                s.name.as_str(),
+                s.depends_on.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    let mut done: BTreeSet<&str> = BTreeSet::new();
+    for service in services {
+        let mut path: Vec<&str> = Vec::new();
+        visit(service.name.as_str(), &edges, &mut path, &mut done)?;
+    }
+    Ok(())
+}
+
+fn visit<'a>(
+    name: &'a str,
+    edges: &BTreeMap<&'a str, Vec<&'a str>>,
+    path: &mut Vec<&'a str>,
+    done: &mut BTreeSet<&'a str>,
+) -> Result<(), String> {
+    if done.contains(name) {
+        return Ok(());
+    }
+    if let Some(at) = path.iter().position(|step| *step == name) {
+        let cycle: Vec<&str> = path[at..]
+            .iter()
+            .copied()
+            .chain(std::iter::once(name))
+            .collect();
+        return Err(format!("depends_on has a cycle: {}", cycle.join(" -> ")));
+    }
+    path.push(name);
+    for next in edges.get(name).into_iter().flatten() {
+        visit(next, edges, path, done)?;
+    }
+    path.pop();
+    done.insert(name);
+    Ok(())
+}
+
+impl K3s {
+    /// The version is a k3s release name, and the manifests and images are repo paths and image names.
+    pub fn check(&self) -> Result<(), String> {
+        if !is_k3s_version(&self.version) {
+            return Err(format!(
+                "k3s version {:?} is not a k3s release (v1.31.4+k3s1)",
+                self.version
+            ));
+        }
+        for path in &self.manifests {
+            let yaml = path.ends_with(".yaml") || path.ends_with(".yml");
+            if !yaml || !is_repo_path(path) {
+                return Err(format!(
+                    "k3s manifest {path:?} is not a repo path to a .yaml file"
+                ));
+            }
+        }
+        for image in &self.images {
+            if !is_name(image) {
+                return Err(format!("k3s image {image:?} is not an image name"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A k3s release: `v<major>.<minor>.<patch>+k3s<n>`.
+fn is_k3s_version(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('v') else {
+        return false;
+    };
+    let Some((semver, k3s)) = rest.split_once("+k3s") else {
+        return false;
+    };
+    let parts: Vec<&str> = semver.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && !k3s.is_empty()
+        && k3s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A path inside the repository: relative, `/`-separated, no `..`, no leading or trailing separator.
+fn is_repo_path(text: &str) -> bool {
+    !text.is_empty()
+        && !text.starts_with('/')
+        && !text.ends_with('/')
+        && !text.contains('\\')
+        && text.split('/').all(|part| !part.is_empty() && part != "..")
+        && !text.chars().any(char::is_control)
 }
 
 /// The host of a URL in an environment value (`postgres://app@db/app` names `db`); None when the value is no URL, or
@@ -326,7 +583,7 @@ pub fn url_host(value: &str) -> Option<&str> {
 }
 
 /// A DNS label: lowercase letters, digits and dashes, 1 to 63 characters, not starting or ending with a dash.
-fn is_label(text: &str) -> bool {
+pub(crate) fn is_label(text: &str) -> bool {
     !text.is_empty()
         && text.len() <= 63
         && !text.starts_with('-')
@@ -434,5 +691,77 @@ mod tests {
         assert_eq!(url_host("redis://cache:6379"), Some("cache"));
         assert_eq!(url_host("http://[::1]:80/"), None);
         assert_eq!(url_host("plain text"), None);
+    }
+
+    const K3S: &str = "name = \"cluster\"\nkind = \"k3s\"\n[k3s]\nversion = \"v1.31.4+k3s1\"\nmanifests = [\".plaza/topologies/cluster/app.yaml\"]\nimages = [\"postgres:17\"]\n";
+
+    #[test]
+    fn a_k3s_topology_names_a_release_manifests_and_images() {
+        let topology = parse(K3S).unwrap();
+        assert_eq!(topology.kind, Kind::K3s);
+        assert!(topology.services.is_empty());
+        let k3s = topology.k3s.unwrap();
+        assert_eq!(k3s.version, "v1.31.4+k3s1");
+        assert_eq!(k3s.images, ["postgres:17"]);
+    }
+
+    #[test]
+    fn a_k3s_topology_is_refused_with_services_a_bad_release_or_a_bad_manifest() {
+        let services = format!("{K3S}[[service]]\nname = \"api\"\nimage = \"y\"\n");
+        assert!(
+            parse(&services)
+                .unwrap_err()
+                .contains("manifests are its services")
+        );
+        let release = K3S.replace("v1.31.4+k3s1", "1.31");
+        assert!(parse(&release).unwrap_err().contains("not a k3s release"));
+        let manifest = K3S.replace("app.yaml", "../app.yaml");
+        assert!(parse(&manifest).unwrap_err().contains("manifest"));
+        let no_section = "name = \"c\"\nkind = \"k3s\"\n";
+        assert!(parse(no_section).unwrap_err().contains("no [k3s]"));
+        let stray = "name = \"c\"\n[k3s]\nversion = \"v1.31.4+k3s1\"\n[[service]]\nname = \"a\"\nimage = \"y\"\n";
+        assert!(parse(stray).unwrap_err().contains("not kind"));
+    }
+
+    #[test]
+    fn depends_on_names_services_and_has_no_cycle() {
+        let ok = "name = \"t\"\n[[service]]\nname = \"web\"\nimage = \"y\"\ndepends_on = [\"api\"]\n[[service]]\nname = \"api\"\nimage = \"y\"\ndepends_on = [\"db\"]\n[[service]]\nname = \"db\"\nimage = \"y\"\n";
+        let topology = parse(ok).unwrap();
+        assert_eq!(topology.services[0].depends_on, ["api"]);
+        let ghost =
+            "name = \"t\"\n[[service]]\nname = \"web\"\nimage = \"y\"\ndepends_on = [\"cache\"]\n";
+        assert!(parse(ghost).unwrap_err().contains("cache"));
+        let cycle = "name = \"t\"\n[[service]]\nname = \"a\"\nimage = \"y\"\ndepends_on = [\"b\"]\n[[service]]\nname = \"b\"\nimage = \"y\"\ndepends_on = [\"a\"]\n";
+        let why = parse(cycle).unwrap_err();
+        assert!(
+            why.contains("cycle") && why.contains("a -> b -> a"),
+            "{why}"
+        );
+        let itself =
+            "name = \"t\"\n[[service]]\nname = \"a\"\nimage = \"y\"\ndepends_on = [\"a\"]\n";
+        assert!(parse(itself).unwrap_err().contains("itself"));
+    }
+
+    #[test]
+    fn volumes_and_health_are_typed_and_checked() {
+        let text = "name = \"t\"\n[[service]]\nname = \"db\"\nimage = \"postgres:17\"\nvolumes = [{ name = \"db-data\", target = \"/var/lib/postgresql/data\" }]\n[service.health]\ntest = [\"sh\", \"-c\", \"pg_isready\"]\ninterval_secs = 5\nretries = 5\n";
+        let topology = parse(text).unwrap();
+        let db = &topology.services[0];
+        assert_eq!(db.volumes[0].name, "db-data");
+        assert!(!db.volumes[0].read_only);
+        assert_eq!(db.health.as_ref().unwrap().interval_secs, Some(5));
+        let relative = "name = \"t\"\n[[service]]\nname = \"db\"\nimage = \"y\"\nvolumes = [{ name = \"d\", target = \"data\" }]\n";
+        assert!(parse(relative).unwrap_err().contains("absolute path"));
+        let twice = "name = \"t\"\n[[service]]\nname = \"db\"\nimage = \"y\"\nvolumes = [{ name = \"d\", target = \"/d\" }, { name = \"e\", target = \"/d\" }]\n";
+        assert!(parse(twice).unwrap_err().contains("two volumes"));
+    }
+
+    #[test]
+    fn a_topology_survives_its_own_toml() {
+        for text in [WEB_STACK, K3S] {
+            let topology = parse(text).unwrap();
+            let again = to_toml(&topology).unwrap();
+            assert_eq!(parse(&again).unwrap(), topology, "{again}");
+        }
     }
 }
