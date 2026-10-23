@@ -2,7 +2,7 @@
 //! handle; the tick thread does the rest.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use apz_metrics::trace::{Span, SpanKind};
@@ -22,9 +22,6 @@ const BYTES_PER_SERIES: f64 = 200.0;
 /// The metrics system may use this much of one CPU, in percent, before the governor steps down.
 const CPU_BUDGET_PCT: f64 = 1.0;
 const HOUR_MS: u64 = 3_600_000;
-
-/// The database timer, set by [`spawn`] once the registry exists.
-static PG: OnceLock<Hist> = OnceLock::new();
 
 /// The handles of each route family: (latency, requests, errors).
 static ROUTES: LazyLock<Mutex<HashMap<String, (Hist, Counter, Counter)>>> =
@@ -49,11 +46,6 @@ pub fn spawn(app: Arc<App>) {
     crate::hub_mcp::observe_calls(Box::new(move |tool, ms, ok| {
         hub_tool_call(&observed, tool, ms, ok)
     }));
-    let _ = PG.set(app.metrics.registry.hist(SeriesKey::new(
-        "hub.pg_ms",
-        EntityKind::Hub,
-        HUB_ENTITY,
-    )));
     std::thread::Builder::new()
         .name("metrics".into())
         .spawn(move || {
@@ -264,14 +256,6 @@ pub fn request(app: &App, method: &str, path: &str, status: u16, ms: f64) {
     requests.inc();
     if status >= 500 {
         errors.inc();
-    }
-}
-
-/// Records one database round trip (called from `db::Db::run`; a global handle, since the database layer has no
-/// `App`).
-pub fn database(ms: f64) {
-    if let Some(hist) = PG.get() {
-        hist.record(ms);
     }
 }
 

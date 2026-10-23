@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn a_store_label_names_the_retention_of_its_metrics_table() {
-        assert_eq!(retention_note("postgres · metrics 1m"), "14 d kept");
+        assert_eq!(retention_note("sqlite · metrics 1m"), "14 d kept");
         assert_eq!(retention_note("blobs (objects)"), "");
     }
 }

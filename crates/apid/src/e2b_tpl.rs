@@ -32,16 +32,21 @@
 //! When a build is ready the tags it asked for (`default` when it named none) move to it, and an
 //! older ready build that holds no tag any more is deleted with its snapshot. A template's name
 //! without a tag is its `default` build, or its newest ready build when no build has that tag.
+//!
+//! The templates are kept in plaza.db (table `e2b_template`; its builds, their tags and reasons are child
+//! tables). The template files stay in `<state>/e2b-template-files`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apz_http::{Request, Response, RouteDoc, Router};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -49,7 +54,8 @@ use serde_json::{Value, json};
 use crate::e2b::{self, Refused, Sandbox, Spec};
 use crate::state::App;
 
-const TEMPLATES_FILE: &str = "e2b-templates.json";
+/// The saver's name for this component (`store::components`).
+const COMPONENT: &str = "e2b_templates";
 /// The uploaded archives, by their files hash (`<state>/e2b-template-files/<hash>`).
 const FILES_DIR: &str = "e2b-template-files";
 /// The images a build may start from: the plaza's own base image, by E2B's name for it.
@@ -89,7 +95,7 @@ const START_LOG: &str = "/tmp/e2b-start-cmd.log";
 const MAX_ANSWER: usize = 64 << 10;
 const MAX_ENVELOPE: usize = 16 << 20;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Waiting,
@@ -110,19 +116,19 @@ impl Status {
 }
 
 /// Why a build failed, and the step it failed in (`base`, a step's number from 1, or `finalize`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Reason {
     pub message: String,
     pub step: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Tag {
     pub tag: String,
     pub assigned_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Build {
     /// A UUID, as E2B's build ids are.
     pub id: String,
@@ -133,13 +139,16 @@ pub struct Build {
     pub vcpus: u32,
     pub memory_mib: u32,
     /// The tags the request named; they move to the build when it is ready.
+    #[table(list = "e2b_template_build_wanted_tag")]
     pub wanted_tags: Vec<String>,
     #[serde(default)]
+    #[table(child = "e2b_template_build_tag")]
     pub tags: Vec<Tag>,
     /// The snapshot (`<sandbox>:<checkpoint>`) sandboxes of this build fork.
     #[serde(default)]
     pub snapshot: Option<String>,
     #[serde(default)]
+    #[table(child = "e2b_template_build_reason")]
     pub reason: Option<Reason>,
     /// The user and working directory the build ended with: a build from this template starts there.
     #[serde(default = "build_user")]
@@ -160,14 +169,22 @@ fn build_home() -> String {
     BUILD_HOME.to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "e2b_template")]
 pub struct Template {
     /// Twenty hex digits.
+    #[table(key)]
     pub id: String,
     pub name: String,
     pub created_ms: u64,
     pub updated_ms: u64,
+    #[table(child = "e2b_template_build")]
     pub builds: Vec<Build>,
+}
+
+/// The template tables: `e2b_template`, and its builds, their tags and reasons as child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Template)
 }
 
 impl Template {
@@ -190,20 +207,21 @@ impl Template {
     }
 }
 
-/// The templates, saved to `<state>/e2b-templates.json` on every change.
+/// The templates, kept in plaza.db (see [`def`]). The saver writes a change within a few seconds; a change
+/// the owner must find saved when it answers goes through `Templates::edit_now`.
+#[derive(Default)]
 pub struct Templates {
-    path: PathBuf,
-    unreadable: Option<String>,
     set: Mutex<Vec<Template>>,
+    /// The builds the hub stopped during (now errors), until [`recover`] has ended their sandboxes.
+    interrupted: Mutex<Vec<String>>,
+    /// Held across a change and its save, so a change that is not saved is undone before another one runs.
+    writes: Mutex<()>,
 }
 
 impl Templates {
-    fn load(state_dir: &Path) -> (Templates, Vec<String>) {
-        let path = state_dir.join(TEMPLATES_FILE);
-        let (mut templates, unreadable) = e2b::read_list::<Template>(&path);
-        if let Some(why) = &unreadable {
-            eprintln!("apid: the E2B templates are unreadable ({why})");
-        }
+    /// Replaces the templates with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let mut templates: Vec<Template> = apz_store::table::load_list(conn, def())?;
         // A build the hub was running when it stopped did not finish.
         let mut interrupted = Vec::new();
         for build in templates.iter_mut().flat_map(|t| t.builds.iter_mut()) {
@@ -216,38 +234,61 @@ impl Templates {
                 interrupted.push(build.id.clone());
             }
         }
-        let store = Templates {
-            path,
-            unreadable,
-            set: Mutex::new(templates),
-        };
-        if !interrupted.is_empty() {
-            let set = e2b::lock(&store.set).clone();
-            if let Err(refused) = e2b::persist(&store.path, store.unreadable.as_deref(), &set) {
-                eprintln!(
-                    "apid: the E2B templates were not saved: {}",
-                    refused.message()
-                );
-            }
-        }
-        (store, interrupted)
+        *e2b::lock(&self.set) = templates;
+        *e2b::lock(&self.interrupted) = interrupted;
+        Ok(())
+    }
+
+    /// The templates, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let set = e2b::lock(&self.set);
+        RowSet::list(def(), set.iter())
     }
 
     fn list(&self) -> Vec<Template> {
         e2b::lock(&self.set).clone()
     }
 
-    /// Changes the templates and saves them; nothing changes when `change` refuses.
+    /// Changes the templates in memory; the saver writes the change. Nothing changes when `change` refuses.
     fn edit<R>(
         &self,
         change: impl FnOnce(&mut Vec<Template>) -> Result<R, Refused>,
     ) -> Result<R, Refused> {
+        let _writes = e2b::lock(&self.writes);
+        self.apply(change).map(|(result, _)| result)
+    }
+
+    /// Changes the templates and has the saver write them before this returns. A change that is not
+    /// written is undone and refused, as a failed file write refused it.
+    fn edit_now<R>(
+        &self,
+        app: &App,
+        change: impl FnOnce(&mut Vec<Template>) -> Result<R, Refused>,
+    ) -> Result<R, Refused> {
+        let _writes = e2b::lock(&self.writes);
+        let (result, before) = self.apply(change)?;
+        if crate::store::saver::save_now(app, COMPONENT) {
+            return Ok(result);
+        }
+        *e2b::lock(&self.set) = before;
+        Err(Refused::new(
+            500,
+            "internal_server_error",
+            "the E2B templates could not be saved; try again",
+        ))
+    }
+
+    /// Runs `change` on a copy of the templates and keeps the copy; returns the result and the templates
+    /// as they were before. Called with `writes` held.
+    fn apply<R>(
+        &self,
+        change: impl FnOnce(&mut Vec<Template>) -> Result<R, Refused>,
+    ) -> Result<(R, Vec<Template>), Refused> {
         let mut set = e2b::lock(&self.set);
         let mut next = set.clone();
         let result = change(&mut next)?;
-        e2b::persist(&self.path, self.unreadable.as_deref(), &next)?;
-        *set = next;
-        Ok(result)
+        let before = std::mem::replace(&mut *set, next);
+        Ok((result, before))
     }
 
     fn edit_build(
@@ -271,7 +312,6 @@ impl Templates {
     }
 }
 
-static TEMPLATES: OnceLock<Templates> = OnceLock::new();
 /// Each build's log, kept in memory (a hub restart forgets it).
 static LOGS: Mutex<BTreeMap<String, Vec<LogLine>>> = Mutex::new(BTreeMap::new());
 /// The upload links handed out and not used yet, by token.
@@ -329,21 +369,24 @@ struct LogLine {
     message: String,
 }
 
-/// The hub's templates, loaded on first use. Build sandboxes an interrupted build left are ended then.
-fn templates(app: &App) -> &'static Templates {
-    TEMPLATES.get_or_init(|| {
-        let (store, interrupted) = Templates::load(&app.config.state_dir);
-        for sandbox in e2b::sandboxes(app).list() {
-            let leftover = sandbox
-                .metadata
-                .get(BUILD_METADATA)
-                .is_some_and(|build| interrupted.contains(build));
-            if leftover && !sandbox.retired {
-                let _ = e2b::destroy(app, &sandbox, "its template build was interrupted", "hub");
-            }
+/// The hub's templates (the saver keeps them in plaza.db).
+fn templates(app: &App) -> &Templates {
+    &app.e2b_templates
+}
+
+/// Ends the build sandboxes of the builds the hub was running when it stopped. Called at start, after the
+/// store has loaded.
+pub(crate) fn recover(app: &App) {
+    let interrupted = std::mem::take(&mut *e2b::lock(&templates(app).interrupted));
+    for sandbox in e2b::sandboxes(app).list() {
+        let leftover = sandbox
+            .metadata
+            .get(BUILD_METADATA)
+            .is_some_and(|build| interrupted.contains(build));
+        if leftover && !sandbox.retired {
+            let _ = e2b::destroy(app, &sandbox, "its template build was interrupted", "hub");
         }
-        store
-    })
+    }
 }
 
 /// The metadata key that marks a build's sandbox (its value is the build's id).
@@ -532,7 +575,7 @@ fn request_build(app: &App, req: &Request) -> Result<Response, Refused> {
         plan_hash: None,
     };
     let build_id = build.id.clone();
-    let template_id = templates(app).edit(|set| {
+    let template_id = templates(app).edit_now(app, |set| {
         let template = match set.iter_mut().find(|t| t.name == name) {
             Some(template) => template,
             None => {
@@ -1129,7 +1172,7 @@ fn trigger(
         Base::Image(_) => None,
     };
     let pinned_here = std::cell::Cell::new(false);
-    let edited = templates(app).edit(|set| {
+    let edited = templates(app).edit_now(app, |set| {
         let source = reuse.as_deref().and_then(|other| {
             let owner = set.iter().find(|t| t.id == template_id)?;
             let found = owner.build(other)?;
@@ -1280,7 +1323,7 @@ fn run_build(app: &App, template_id: &str, build_id: &str, plan: &Plan, key: &st
                 "info",
                 format!("Build finished: snapshot {snapshot}"),
             );
-            let finished = templates(app).edit(|set| {
+            let finished = templates(app).edit_now(app, |set| {
                 make_ready(
                     set,
                     template_id,
@@ -2250,7 +2293,7 @@ fn assign_tags(app: &App, req: &Request) -> Result<Response, Refused> {
     }
     let (name, tag) = split_reference(&body.target);
     let now = apz_plaza::now_ms();
-    let build_id = templates(app).edit(|set| {
+    let build_id = templates(app).edit_now(app, |set| {
         let template = set
             .iter_mut()
             .find(|t| t.id == name || t.name == name)
@@ -2285,7 +2328,7 @@ fn remove_tags(app: &App, req: &Request) -> Result<Response, Refused> {
     let body: RemoveBody = e2b::json_body(req)?;
     let (name, _) = split_reference(&body.name);
     let wanted: BTreeSet<&str> = body.tags.iter().map(String::as_str).collect();
-    templates(app).edit(|set| {
+    templates(app).edit_now(app, |set| {
         let template = set
             .iter_mut()
             .find(|t| t.id == name || t.name == name)
@@ -2309,7 +2352,7 @@ pub(crate) fn delete(app: &App, id: &str, key: &str) -> Option<Result<Response, 
         return None;
     }
     // The checks and the removal are one edit, so no build can start between them.
-    let removed = templates(app).edit(|set| {
+    let removed = templates(app).edit_now(app, |set| {
         let at = set
             .iter()
             .position(|t| t.id == id || t.name == id)
@@ -2738,5 +2781,67 @@ mod tests {
         output.push("stdout", &[0xAC], &mut line);
         output.flush(&mut line);
         assert_eq!(lines, vec!["a".repeat(MAX_LOG_LINE - 1), "€".to_string()]);
+    }
+
+    fn in_memory() -> apz_store::rusqlite::Connection {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        conn
+    }
+
+    #[test]
+    fn templates_load_back_from_their_tables_as_they_were_saved() {
+        let mut ready = build("ready", Status::Ready, &["default"], 1);
+        ready.wanted_tags = vec!["default".into(), "v1".into()];
+        ready.reason = Some(Reason {
+            message: "a note".into(),
+            step: "2".into(),
+        });
+        let set = vec![Template {
+            id: "t".into(),
+            name: "env".into(),
+            created_ms: 0,
+            updated_ms: 5,
+            builds: vec![ready, build("err", Status::Error, &[], 2)],
+        }];
+        let conn = in_memory();
+        apz_store::table::replace(&conn, def(), &RowSet::list(def(), set.iter()).unwrap()).unwrap();
+        let loaded = Templates::default();
+        loaded.load(&conn).unwrap();
+        assert_eq!(loaded.list(), set);
+    }
+
+    #[test]
+    fn a_build_the_hub_stopped_during_is_an_error_and_is_listed_for_recovery() {
+        let set = [Template {
+            id: "t".into(),
+            name: "env".into(),
+            created_ms: 0,
+            updated_ms: 0,
+            builds: vec![
+                build("run", Status::Building, &[], 1),
+                build("wait", Status::Waiting, &[], 2),
+                build("done", Status::Ready, &["default"], 3),
+            ],
+        }];
+        let conn = in_memory();
+        apz_store::table::replace(&conn, def(), &RowSet::list(def(), set.iter()).unwrap()).unwrap();
+        let loaded = Templates::default();
+        loaded.load(&conn).unwrap();
+        let listed = loaded.list();
+        assert_eq!(listed[0].builds[0].status, Status::Error);
+        assert_eq!(listed[0].builds[1].status, Status::Error);
+        assert_eq!(listed[0].builds[2].status, Status::Ready);
+        assert_eq!(
+            listed[0].builds[0]
+                .reason
+                .as_ref()
+                .map(|r| r.message.as_str()),
+            Some("the hub stopped during the build")
+        );
+        assert_eq!(
+            *e2b::lock(&loaded.interrupted),
+            vec!["run".to_string(), "wait".to_string()]
+        );
     }
 }

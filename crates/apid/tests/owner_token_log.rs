@@ -276,9 +276,16 @@ fn owner_token_is_never_logged() {
         "the line does not name a command that uses the token"
     );
 
-    let hub_record = std::fs::read_to_string(state.join("hub.json")).expect("hub.json exists");
+    // The hub's record is plaza.db's `hub_config` row: the digest of the token is there, the token never is.
+    let mut record = Vec::new();
+    for name in ["plaza.db", "plaza.db-wal"] {
+        if let Ok(bytes) = std::fs::read(state.join(name)) {
+            record.extend(bytes);
+        }
+    }
+    assert!(!record.is_empty(), "plaza.db exists");
     assert!(
-        !hub_record.contains(&token),
-        "hub.json holds the owner token itself"
+        !record.windows(token.len()).any(|w| w == token.as_bytes()),
+        "plaza.db holds the owner token itself"
     );
 }

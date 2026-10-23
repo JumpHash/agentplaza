@@ -5,26 +5,32 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Recipe {
     pub id: String,
     pub version: u32,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
+    #[table(child)]
     pub applies: Applies,
     #[serde(default)]
+    #[table(list)]
     pub axes: Vec<String>,
     #[serde(default = "two")]
     pub rounds: u32,
     #[serde(default, rename = "first")]
+    #[table(child)]
     pub first: Vec<FirstRule>,
     #[serde(default, rename = "node")]
+    #[table(child)]
     pub nodes: Vec<NodeDef>,
     #[serde(default, rename = "rule")]
+    #[table(child)]
     pub rules: Vec<Rule>,
     /// The slow checks that run on main after a change lands; a failure lands a revert at once.
     #[serde(default)]
+    #[table(list)]
     pub post_land: Vec<String>,
 }
 
@@ -33,29 +39,33 @@ fn two() -> u32 {
 }
 
 /// What a recipe is for: kinds of change (`code`, `docs`, `research`) and task roles.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Applies {
     #[serde(default)]
+    #[table(list)]
     pub kinds: Vec<String>,
     #[serde(default)]
+    #[table(list)]
     pub roles: Vec<String>,
 }
 
 /// A rule applied before the run: for a kind of change, keep only some nodes, or add reviewers.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct FirstRule {
     /// `comment-only`, `test-only`, `docs-only`, or `touches:<glob>,<glob>`.
     pub when: String,
     /// Only these nodes run (the gate always does).
     #[serde(default)]
+    #[table(list)]
     pub only: Vec<String>,
     /// More nodes: `role:<role>` adds an agent node of that role on the recipe's axes it names after `:`
     /// (`role:security-reviewer:sec,cmp`); `owner` sends the outcome to the owner.
     #[serde(default)]
+    #[table(list)]
     pub add: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct NodeDef {
     pub id: String,
     /// `tool`, `check`, `agent`, `gate`, `owner`.
@@ -67,12 +77,15 @@ pub struct NodeDef {
     #[serde(default)]
     pub role: Option<String>,
     #[serde(default)]
+    #[table(list)]
     pub axes: Vec<String>,
     /// For a check node: the commands to run in a fresh checkout.
     #[serde(default)]
+    #[table(list)]
     pub commands: Vec<String>,
     /// Nodes that must be done before this one starts.
     #[serde(default)]
+    #[table(list)]
     pub after: Vec<String>,
     /// How many sub-reviews an agent node may add.
     #[serde(default)]
@@ -87,7 +100,7 @@ pub struct NodeDef {
 
 /// `when` → `then`. Conditions: `failed` (any node), `<node> failed`, `<axis> <= <level>` (any symbol's lowest
 /// score), `measured <axis> <= <level>` (measured scores only). Actions: `rework`, `owner`, `replan`, `fail`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Rule {
     pub when: String,
     pub then: String,

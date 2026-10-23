@@ -77,7 +77,6 @@ State count for the `three tasks, two agents` model (2 agents, up to 2 attempts,
 | No run on a dead task | A live run belongs only to a running or blocked task |
 | Paid only if accepted | Payment happens only for accepted work |
 | Paid at most once | No task is paid more than once |
-| Escrow is released exactly once | A task's escrow is released once, when it closes, and never before |
 | Accepted work is paid at close | A task closed as accepted has been paid |
 | Attempts are bounded | Rework attempts never exceed `MaxAttempts` |
 | Nobody waits on superseded work | No open task waits on a superseded task |
