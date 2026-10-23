@@ -528,7 +528,10 @@ mod tests {
             (ex.tiers[0].tier, ex.tiers[0].value),
             (Tier::System, int(150))
         );
-        assert_eq!((ex.tiers[1].tier, ex.tiers[1].value), (Tier::Plaza, int(60)));
+        assert_eq!(
+            (ex.tiers[1].tier, ex.tiers[1].value),
+            (Tier::Plaza, int(60))
+        );
         assert!(ex
             .render()
             .contains("decided by Research projects keep fewer contacts"));
