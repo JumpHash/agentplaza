@@ -953,6 +953,8 @@ fn relay(
         check_model(&mut body, provider, &own, &list)
             .map_err(|message| Response::json(403, &json!({ "error": message })))?;
     }
+    crate::allowances::route_body(app, cid, provider, &mut body)
+        .map_err(|message| paused_answer(provider, &message))?;
     let model = body
         .get("model")
         .and_then(Value::as_str)
@@ -1285,6 +1287,7 @@ fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<Admitted, St
             &list,
         )?;
     }
+    crate::allowances::route_body(&app, grant.cid, provider, body)?;
     let model = body
         .get("model")
         .and_then(Value::as_str)

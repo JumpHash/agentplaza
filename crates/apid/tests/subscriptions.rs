@@ -184,7 +184,25 @@ fn open_cards(hub: &Hub) -> Vec<Value> {
     cards.as_array().cloned().unwrap_or_default()
 }
 
-/// A hub with the roles a builder, a reviewer and a verifier need, and the work engine's stand-ins.
+/// A hub on `scratch`, with the roles a builder, a reviewer and a verifier need and the work engine's stand-ins.
+fn start_hub(scratch: &Scratch, gateway: &FakeDaemon, noded: &FakeDaemon) -> Hub {
+    let roles = json!({ "roles": {
+        "orchestrator": { "role": "orchestrator", "title": "Orchestrator", "tools": ["run", "read"] },
+        "builder": { "role": "builder", "title": "Builder", "tools": ["run", "run_tests", "read"] },
+        "reviewer": { "role": "reviewer", "title": "Reviewer", "tools": ["run", "read"] },
+        "verifier": { "role": "verifier", "title": "Verifier", "tools": ["run", "read"] },
+    } });
+    let no_weft = scratch.0.join("no-weft");
+    Hub::start_with_env(
+        scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    )
+}
+
+/// A hub with its stand-ins, on a scratch directory of its own.
 struct Rig {
     hub: Hub,
     gateway: FakeDaemon,
@@ -196,21 +214,8 @@ struct Rig {
 fn rig(name: &str, reset_in_ms: u64) -> Rig {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
-    let roles = json!({ "roles": {
-        "orchestrator": { "role": "orchestrator", "title": "Orchestrator", "tools": ["run", "read"] },
-        "builder": { "role": "builder", "title": "Builder", "tools": ["run", "run_tests", "read"] },
-        "reviewer": { "role": "reviewer", "title": "Reviewer", "tools": ["run", "read"] },
-        "verifier": { "role": "verifier", "title": "Verifier", "tools": ["run", "read"] },
-    } });
     let scratch = Scratch::new(name);
-    let no_weft = scratch.0.join("no-weft");
-    let hub = Hub::start_with_env(
-        &scratch,
-        Some(gateway.port),
-        Some(noded.port),
-        Some(&roles),
-        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
-    );
+    let hub = start_hub(&scratch, &gateway, &noded);
     Rig {
         hub,
         gateway,
@@ -218,6 +223,44 @@ fn rig(name: &str, reset_in_ms: u64) -> Rig {
         _noded: noded,
         _scratch: scratch,
     }
+}
+
+/// The same hub stopped and started again on the same state (its scratch directory and its stand-ins).
+fn restart(rig: Rig) -> Rig {
+    let Rig {
+        hub,
+        gateway,
+        usage,
+        _noded,
+        _scratch,
+    } = rig;
+    drop(hub);
+    let hub = start_hub(&_scratch, &gateway, &_noded);
+    Rig {
+        hub,
+        gateway,
+        usage,
+        _noded,
+        _scratch,
+    }
+}
+
+/// The session id and VM of `task`'s builder.
+fn builder_of(hub: &Hub, task: &str) -> (String, u64) {
+    let session = hub.wait_for(&format!("/v1/sessions?task={task}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["seat"] == "builder" && s["cid"].as_u64().is_some())
+        })
+    });
+    let builder = session
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["seat"] == "builder").cloned())
+        .unwrap_or_else(|| panic!("a builder session: {session}\n{}", hub.log()));
+    (
+        text(&builder["id"]),
+        builder["cid"].as_u64().expect("its VM"),
+    )
 }
 
 /// A builder whose first call waited on its subscription's allowance.
@@ -369,11 +412,11 @@ fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_th
 }
 
 #[test]
-fn the_api_key_choice_moves_the_project_to_the_policys_fallback_and_resumes_its_session_at_once() {
-    // The window stays used up for ten minutes: only the API-key route can get the call through.
+fn the_api_key_choice_moves_the_project_to_the_policys_fallback_kept_across_a_restart() {
+    // The window stays used up for ten minutes: only the API-key route can get a call through.
     let rig = rig("subscriptions-api-key", 600_000);
-    let hub = &rig.hub;
     let waiting = waiting_builder(&rig);
+    let hub = &rig.hub;
 
     let (_, cards) = hub.call("GET", "/v1/cards?open=true", None);
     let card = cards
@@ -426,6 +469,42 @@ fn the_api_key_choice_moves_the_project_to_the_policys_fallback_and_resumes_its_
             .any(|c| c["subject"] == format!("allowance:mock:{}", waiting.pid)),
         "the card is answered: {open}"
     );
+
+    // The choice is the project's setting, kept in plaza.db: the hub restarts, and a new task's builder in that project
+    // goes by the API-key route. Its window is still used up, so only the route gets its call through.
+    let rig = restart(rig);
+    let hub = &rig.hub;
+    let (status, task) = hub.call(
+        "POST",
+        "/v1/tasks",
+        Some(json!({ "goal": "Update the changelog again", "project": waiting.pid })),
+    );
+    assert_eq!(status, 201, "{task}");
+    let (session_id, cid) = builder_of(hub, &text(&task["id"]));
+    let (status, hello) = hub.guest(cid, "hello", json!({ "role": "builder", "vm": 0 }));
+    assert_eq!(status, 200, "{hello}");
+    let work = {
+        let deadline = std::time::Instant::now() + WAIT;
+        loop {
+            if let Some((work, _)) = pushed(&rig.gateway, cid).into_iter().next() {
+                break work;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no work reached {cid}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let reply = model_call(hub, cid, work, 4);
+    assert_eq!(
+        reply["ok"],
+        true,
+        "after the restart the project's new session goes by the API-key route: {reply}\n{}",
+        hub.log()
+    );
+    let (_, session) = hub.call("GET", &format!("/v1/sessions/{session_id}"), None);
+    assert_ne!(session["paused_by"], "allowance", "{session}");
 }
 
 #[test]

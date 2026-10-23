@@ -5,10 +5,16 @@
 //! ticker every second) resumes it, and the next call it makes is sent.
 //!
 //! The readings come from the usage providers (`usage_providers.rs`): each provider's usage answer carries an
-//! `allowances` list, one entry per window (see [`parse`]). The ticker reads every provider again every five minutes.
+//! `allowances` list, one entry per window. ASSUMED field names, read only in [`parse`] (the one place to change them):
+//! the list `allowances` in the `usage` object, and per entry `provider` (or `vendor`), `window`, `limit`, `used`,
+//! `account` and `resets_at`. The ticker reads every provider again every five minutes.
+//!
+//! The owner's "use an API key for this project" choice is the project's setting `subscription_fallback`
+//! (`project_settings.rs`): the project's subscription calls then take the policy's fallback model ([`route`]), on the
+//! harness path and on the gateway's ([`route_body`]).
 //! Every rule takes the time as an argument, so a test runs them on a fake clock.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -161,22 +167,15 @@ pub fn is_subscription(policy: &ModelPolicy, model: &str) -> bool {
     policy.subscription.iter().any(|m| bare(m) == model)
 }
 
-/// What the allowances hold in memory: the sessions an allowance paused, each with the vendor it waits on (a session
-/// paused before a restart waits on no vendor and resumes once no allowance blocks at all), and the projects whose
-/// owner chose the API-key route for their subscription calls.
+/// The sessions an allowance paused, each with the vendor it waits on. Held in memory: a session paused before a restart
+/// waits on no vendor and resumes once no allowance blocks at all. (The API-key choice is the project's setting, kept
+/// in plaza.db: `project_settings.rs`.)
 #[derive(Default)]
-pub struct Waits {
-    waiting: Mutex<BTreeMap<String, String>>,
-    api_key: Mutex<BTreeSet<String>>,
-}
+pub struct Waits(Mutex<BTreeMap<String, String>>);
 
 impl Waits {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<String, String>> {
-        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn api_key(&self) -> MutexGuard<'_, BTreeSet<String>> {
-        self.api_key.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -211,10 +210,45 @@ pub fn route(app: &App, cid: u64, model: &str) -> String {
     let Some(session) = app.sessions.by_cid(cid) else {
         return model.to_string();
     };
-    if !app.allowance_waits.api_key().contains(&session.project) {
+    if !app
+        .project_settings
+        .get(&session.project)
+        .subscription_fallback
+    {
         return model.to_string();
     }
     fallback(&policy).unwrap_or_else(|| model.to_string())
+}
+
+/// [`route`] for a model call's body (the gateway's engines name their model there): the body's model is replaced by
+/// the routed one. A route to another provider than the call's own (the engine's route) cannot be made, and the call
+/// waits with the paused answer.
+pub fn route_body(app: &App, cid: u64, provider: &str, body: &mut Value) -> Result<(), String> {
+    let asked = body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let canonical = if asked.contains('/') {
+        asked.clone()
+    } else {
+        format!("{provider}/{asked}")
+    };
+    let routed = route(app, cid, &canonical);
+    if routed == canonical {
+        return Ok(());
+    }
+    let Some((routed_provider, routed_model)) = routed.split_once('/') else {
+        return Ok(());
+    };
+    if routed_provider != provider {
+        return Err(format!(
+            "{}this project uses its API-key route ({routed}), which this engine's route ({provider}) does not reach",
+            apz_proto::wire::MODEL_PAUSED
+        ));
+    }
+    body["model"] = json!(routed_model);
+    Ok(())
 }
 
 /// Before a model call of agent `cid` is held or sent: a call of a subscription model waits while its vendor's
@@ -429,7 +463,9 @@ pub fn card_answered(app: &App, card: &Card) -> String {
     };
     match card.answer.as_deref().unwrap_or("") {
         "api_key" => {
-            app.allowance_waits.api_key().insert(project.to_string());
+            let mut settings = app.project_settings.get(project);
+            settings.subscription_fallback = true;
+            let _ = app.project_settings.set(project, settings);
             let waiting = waiting_on(app, vendor, project);
             for id in &waiting {
                 resume(app, id, now);
