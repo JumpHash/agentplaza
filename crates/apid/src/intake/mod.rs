@@ -1,10 +1,10 @@
 //! Intake (PLAN 14.5, Engine 5.3): outside items become a project's tasks, and the plaza writes back to their source.
 //!
 //! Three sources:
-//! - **GitHub**: an issue's webhook, `POST /v1/intake/github`, signed (`X-Hub-Signature-256`) with the webhook secret the
-//!   owner sets. Write-back uses the platform authorization the connection names (`platforms::access`): a label, a
-//!   comment, the close.
-//! - **Linear**: an issue's webhook, `POST /v1/intake/linear`, signed (`Linear-Signature`) with the signing secret. The
+//! - **GitHub**: an issue's webhook, `POST /v1/hooks/github/{token}` (the connector's one URL, `triggers::hooks`), signed
+//!   (`X-Hub-Signature-256`) with the connector's signing secret. Write-back goes through the mediator with the platform
+//!   authorization's token (`platforms::access`): a label, a comment, the close.
+//! - **Linear**: an issue's webhook, `POST /v1/hooks/linear/{token}`, signed (`Linear-Signature`) with the signing secret. The
 //!   issue's text is then read through Linear's GraphQL API, never taken from the webhook's body.
 //! - **Notion**: a database query, polled by [`tick`] every five minutes and by `POST /v1/intake/notion/poll`, from the
 //!   last edit it saw.
@@ -33,8 +33,7 @@
 //! | `PUT /v1/intake/connections/{source}` | enable a source, set its base address or GitHub authorization, set its secrets |
 //! | `POST /v1/intake/{id}/start` | the owner starts a held or unmapped item (public items included) |
 //! | `POST /v1/intake/notion/poll` | polls Notion now |
-//! | `POST /v1/intake/github` (public) | GitHub's issue webhook |
-//! | `POST /v1/intake/linear` (public) | Linear's issue webhook |
+//! | `POST /v1/hooks/{connector}/{token}` (public) | GitHub's and Linear's issue deliveries |
 
 pub mod github;
 pub mod linear;
@@ -53,6 +52,7 @@ use crate::connectors::manifest::{self, Manifest};
 use crate::glue::{self, Mediator, Outbound, Secret};
 use crate::project_settings::IntakeRule;
 use crate::state::App;
+use crate::triggers::{Action, Event, TriggerRow};
 use crate::vault::OnBehalf;
 
 pub const GITHUB: &str = "github";
@@ -281,8 +281,8 @@ impl Store {
 /// The owner's secret names a source takes, by vault name. Each is kept under the binding `hub:intake-<source>`.
 pub fn secret_names(source: &str) -> &'static [&'static str] {
     match source {
-        GITHUB => &["GITHUB_WEBHOOK_SECRET"],
-        LINEAR => &["LINEAR_API_KEY", "LINEAR_WEBHOOK_SECRET"],
+        GITHUB => &[],
+        LINEAR => &["LINEAR_API_KEY"],
         _ => &["NOTION_TOKEN"],
     }
 }
@@ -502,12 +502,10 @@ pub fn ingest(app: &App, incoming: Incoming, now: u64) -> Item {
                                 .into();
                     } else {
                         start_now = true;
+                        launch(app, &mut item, &rule, now);
                     }
                 }
             }
-        }
-        if start_now {
-            start(app, &mut item);
         }
         app.intake.put(item.clone());
         (item, start_now)
@@ -516,6 +514,71 @@ pub fn ingest(app: &App, incoming: Incoming, now: u64) -> Item {
         write_back(app, &item.id, Phase::Started);
     }
     item
+}
+
+/// The event an intake item is delivered to the triggers as: the one the `intake` recipe declares.
+pub const RECIPE_EVENT: &str = "item.received";
+
+/// The routing key of a rule (`repository=acme/widgets`): an item's delivery carries it as its label, and the rule's
+/// trigger filters on it, so only the rule's own trigger takes the item.
+fn routing_key(rule: &IntakeRule) -> String {
+    format!("{}={}", rule.field, rule.value.trim())
+}
+
+/// Starts an item on its rule's recipe: the change recipe makes the item's task (`start`); any other recipe starts
+/// through the triggers (`start_recipe`).
+fn launch(app: &App, item: &mut Item, rule: &IntakeRule, now: u64) {
+    if recipe_of(rule) == DEFAULT_RECIPE {
+        start(app, item);
+    } else {
+        start_recipe(app, item, rule, now);
+    }
+}
+
+/// Starts an item's run of its rule's recipe. The rule's trigger (a plaza-made record, one per project, source, rule
+/// and recipe) takes the item's delivery with the item's own identity, so a redelivery of the same item takes nothing
+/// new and starts no second run; the triggers' scheduler then starts the run.
+fn start_recipe(app: &App, item: &mut Item, rule: &IntakeRule, now: u64) {
+    let source = format!("connector:{}", item.source);
+    let key = routing_key(rule);
+    let recipe = recipe_of(rule);
+    let id = format!(
+        "intake-{}",
+        format!("{}:{}:{}:{}", item.project, item.source, key, recipe)
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+    );
+    app.triggers.ensure(TriggerRow {
+        id,
+        recipe: recipe.clone(),
+        project: Some(item.project.clone()),
+        action: Action::Run,
+        source: source.clone(),
+        event: RECIPE_EVENT.into(),
+        label: key.clone(),
+        cron: String::new(),
+        every_minutes: 0,
+        window_ms: 0,
+        enabled: true,
+        next_ms: None,
+        last_ms: None,
+        created_ms: now,
+    });
+    // Taken or not, the item's run of this recipe has started: a taken identity means an earlier delivery started it.
+    app.triggers.deliver(
+        &Event {
+            source,
+            event: RECIPE_EVENT.into(),
+            item: item.key.clone(),
+            label: key,
+            dedup: Some(format!("intake:{}:{}", item.source, item.external_id)),
+        },
+        now,
+    );
+    item.task.clear();
+    item.status = "started".into();
+    item.error.clear();
 }
 
 /// Starts an item's task on its project: the project must be open for tasks (not archived; at implementation or
@@ -686,6 +749,10 @@ pub fn has(done: &[String], kind: &str) -> bool {
 /// name the task and the change, so the source's readers can follow them.
 pub fn comment_of(item: &Item, phase: Phase) -> String {
     match phase {
+        Phase::Started if item.task.is_empty() => format!(
+            "Plaza started recipe {} for this item in project {}.",
+            item.recipe, item.project
+        ),
         Phase::Started => format!(
             "Plaza started task {} for this item in project {} (recipe {}).",
             item.task, item.project, item.recipe
@@ -800,6 +867,21 @@ pub fn api<'a>(app: &'a App, source: &str) -> Result<Api<'a>, String> {
         headers,
         outbound: &*app.intake.outbound,
     })
+}
+
+/// A GitHub API client for a platform authorization: the host's API, the authorization's token as the bearer the
+/// mediator adds (the token is held here only to be sent that way), and the manifest's egress.
+pub fn github_api<'a>(app: &'a App, host: &str, token: &str) -> Api<'a> {
+    Api {
+        base: crate::platforms::Kind::Github.api_base(host),
+        egress: manifest_of(GITHUB).egress,
+        secret: Some(Secret {
+            header: "Authorization".into(),
+            value: format!("Bearer {token}"),
+        }),
+        headers: vec![("accept", "application/vnd.github+json")],
+        outbound: &*app.intake.outbound,
+    }
 }
 
 /// A secret of a source, read from the vault for the hub (never shown).
@@ -976,10 +1058,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("Start a held or unmapped item now (the owner's call)").errors(&[404, 409]))
         .post("/v1/intake/notion/poll", poll_route)
         .doc(RouteDoc::new("Poll Notion now").errors(&[409, 502]))
-        .post("/v1/intake/github", github_route)
-        .doc(RouteDoc::new("GitHub's issue webhook (signed; public)").errors(&[401, 404]))
-        .post("/v1/intake/linear", linear_route)
-        .doc(RouteDoc::new("Linear's issue webhook (signed; public)").errors(&[401, 404]))
 }
 
 fn list_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
@@ -1118,7 +1196,7 @@ fn start_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
         item.project = project;
         item.recipe = recipe_of(&rule);
         item.error.clear();
-        start(app, &mut item);
+        launch(app, &mut item, &rule, apz_plaza::now_ms());
         app.intake.put(item.clone());
         item
     };
@@ -1137,76 +1215,31 @@ fn poll_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
     }
 }
 
-/// `POST /v1/intake/github`: a repository's issue webhook, signed with the GitHub webhook secret.
-fn github_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
-    let Some(secret) = secret_value(app, GITHUB, "GITHUB_WEBHOOK_SECRET") else {
-        return Response::error(404, "GitHub intake has no webhook secret");
-    };
-    let signature = req.header("x-hub-signature-256").unwrap_or("");
-    if !github::signature_ok(&secret, &req.body, signature) {
-        return Response::error(401, "the signature does not match");
+/// What a connector's webhook delivery does to intake: the hook route (`triggers::hooks`) has checked the delivery's
+/// signature, and calls this for every delivery. GitHub's issue deliveries and Linear's issue deliveries keep their
+/// item (`ingest`), which may start its recipe; any other delivery is ignored here. A connection that is off ignores
+/// its deliveries.
+pub fn delivery(
+    app: &App,
+    connector: &str,
+    header: &dyn Fn(&str) -> Option<String>,
+    body: &[u8],
+    now: u64,
+) -> Result<Value, String> {
+    if !matches!(connector, GITHUB | LINEAR) {
+        return Ok(json!({ "ignored": "not an intake source" }));
     }
-    let event = req.header("x-github-event").unwrap_or("");
-    if event == "ping" {
-        return Response::json(200, &json!({ "ok": true }));
+    if !app.intake.connection(connector).enabled {
+        return Ok(json!({ "ignored": "the connection is off" }));
     }
-    let payload: Value = match serde_json::from_slice(&req.body) {
-        Ok(payload) => payload,
-        Err(_) => return Response::error(400, "the body is not JSON"),
+    let item = match connector {
+        GITHUB => github::delivery(app, header, body, now)?,
+        _ => linear::delivery(app, body, now)?,
     };
-    if event != "issues" {
-        return Response::json(202, &json!({ "ignored": event }));
-    }
-    let action = payload["action"].as_str().unwrap_or("");
-    if !matches!(action, "opened" | "edited" | "reopened" | "labeled") {
-        return Response::json(202, &json!({ "ignored": action }));
-    }
-    let incoming = match github::incoming(&payload) {
-        Ok(incoming) => incoming,
-        Err(why) => return Response::error(400, &why),
-    };
-    let item = ingest(app, incoming, apz_plaza::now_ms());
-    Response::json(202, &json!({ "id": item.id, "status": item.status }))
-}
-
-/// `POST /v1/intake/linear`: an issue webhook, signed with the Linear signing secret; the issue's text is then read
-/// from Linear's API.
-fn linear_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
-    let Some(secret) = secret_value(app, LINEAR, "LINEAR_WEBHOOK_SECRET") else {
-        return Response::error(404, "Linear intake has no webhook secret");
-    };
-    let signature = req.header("linear-signature").unwrap_or("");
-    if !linear::signature_ok(&secret, &req.body, signature) {
-        return Response::error(401, "the signature does not match");
-    }
-    let payload: Value = match serde_json::from_slice(&req.body) {
-        Ok(payload) => payload,
-        Err(_) => return Response::error(400, "the body is not JSON"),
-    };
-    let now = apz_plaza::now_ms();
-    if !fresh(payload["webhookTimestamp"].as_u64(), now) {
-        return Response::error(401, "the webhook is stale");
-    }
-    if payload["type"] != "Issue" {
-        return Response::json(202, &json!({ "ignored": payload["type"] }));
-    }
-    let action = payload["action"].as_str().unwrap_or("");
-    if !matches!(action, "create" | "update") {
-        return Response::json(202, &json!({ "ignored": action }));
-    }
-    let Some(id) = payload["data"]["id"].as_str() else {
-        return Response::error(400, "the issue has no id");
-    };
-    let api = match api(app, LINEAR) {
-        Ok(api) => api,
-        Err(why) => return Response::error(404, &why),
-    };
-    let issue = match linear::fetch_issue(&api, id) {
-        Ok(issue) => issue,
-        Err(why) => return Response::error(502, &why),
-    };
-    let item = ingest(app, linear::incoming(&issue), now);
-    Response::json(202, &json!({ "id": item.id, "status": item.status }))
+    Ok(match item {
+        Some(item) => json!({ "id": item.id, "status": item.status }),
+        None => json!({ "ignored": "not an item the plaza keeps" }),
+    })
 }
 
 #[cfg(test)]

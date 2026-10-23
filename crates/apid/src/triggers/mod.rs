@@ -272,6 +272,12 @@ impl Triggers {
         self.lock().rows.remove(id).is_some()
     }
 
+    /// Keeps a trigger a plaza component makes for itself under its own id (intake's rule triggers): it is added when
+    /// there is none under that id, and left as it is when there is.
+    pub fn ensure(&self, row: TriggerRow) {
+        self.lock().rows.entry(row.id.clone()).or_insert(row);
+    }
+
     /// Takes an event: every enabled trigger that matches it (its source, its event, and its label when it names one)
     /// takes it, unless the trigger has taken its identity already, and opens its window for the item or joins the
     /// window already open. Returns how many triggers took it.
