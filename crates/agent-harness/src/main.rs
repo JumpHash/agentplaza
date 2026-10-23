@@ -71,6 +71,8 @@ mod envd;
 #[cfg(target_os = "linux")]
 mod files;
 #[cfg(target_os = "linux")]
+mod helpers;
+#[cfg(target_os = "linux")]
 mod ide;
 #[cfg(target_os = "linux")]
 mod keepalive;

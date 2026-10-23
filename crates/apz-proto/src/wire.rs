@@ -94,11 +94,14 @@ pub enum GuestMessage {
     Bye {
         calls: u64,
     },
-    /// v3: one model call for work item `work`.
+    /// v3: one model call for work item `work`. v9: a helper's call carries the helper's id (`helper`); the hub holds
+    /// it on the budget of the session the VM runs and records it on a helper session. None for the agent's own call.
     ModelCall {
         req: u64,
         work: u64,
         request: ChatRequest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        helper: Option<u64>,
     },
     /// v3: the model asked for tool `name`; `call` is its tool_use id.
     ToolRequest {

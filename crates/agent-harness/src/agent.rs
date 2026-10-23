@@ -39,6 +39,7 @@ use serde_json::{Value, json};
 use crate::acp::hub::HubLink;
 use crate::bash;
 use crate::files::{self, Workspace};
+use crate::helpers::{self, Board};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
 use crate::script;
 use crate::session::{SessionError, escape_for_transcript, kind_of};
@@ -163,7 +164,7 @@ struct Running<'scope> {
 
 /// The report a guest sends once it has run a call. A call the policy decided carries its record: its tool, its
 /// input and the policy it was decided under. It carries how long the call ran.
-fn tool_report(
+pub(crate) fn tool_report(
     work: u64,
     call: &str,
     ok: bool,
@@ -283,6 +284,8 @@ struct Agent<'a, 'l, S, W> {
     /// A stop that arrived while a local tool ran. The loop takes it at its next wait, as it
     /// would have taken the line had it arrived then.
     stopping: Option<String>,
+    /// The helpers this connection runs (see `helpers`): started and awaited through the agent's own tools.
+    helpers: Arc<Board>,
     /// When the next stats report is due.
     next_stats: Instant,
     /// Each process's CPU ticks at the last stats report, by pid, and when that report was taken.
@@ -403,6 +406,20 @@ pub fn serve<S: Duplex, W: Write + Send>(
     profile: Option<AgentProfile>,
     heartbeat: Duration,
 ) -> Result<u64, SessionError> {
+    let cap = helpers::cap_for(thread::available_parallelism().map_or(1, NonZeroUsize::get));
+    serve_capped(lines, log, workspace, profile, heartbeat, cap)
+}
+
+/// [`serve`], with the most helpers that run at once given (see `helpers::cap_for`).
+pub(crate) fn serve_capped<S: Duplex, W: Write + Send>(
+    lines: &mut Lines<S>,
+    log: &mut W,
+    workspace: &Workspace,
+    profile: Option<AgentProfile>,
+    heartbeat: Duration,
+    cap: usize,
+) -> Result<u64, SessionError> {
+    let (board, helper_events) = Board::new(cap);
     let writer = Lines::new(lines.get_ref().duplicate()?);
     let shared = Shared::new(writer, log);
     // The first stats report measures CPU from here, so the baseline is taken now.
@@ -412,6 +429,10 @@ pub fn serve<S: Duplex, W: Write + Send>(
     let shared_ref = &shared;
     let outcome = thread::scope(|scope| {
         scope.spawn(move || read_host(lines, shared_ref, inbox_tx, operator_tx));
+        let dispatch_board = Arc::clone(&board);
+        scope.spawn(move || {
+            helpers::dispatch(scope, helper_events, dispatch_board, shared_ref, workspace)
+        });
         scope.spawn(move || {
             let exec = |name: &str, args: &Value| match name {
                 "read" | "edit" | "find" | "search" | "run" | "run_tests" => {
@@ -445,6 +466,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
             extra_turns: 0,
             tool_cancel: Arc::new(AtomicBool::new(false)),
             stopping: None,
+            helpers: Arc::clone(&board),
             next_stats: Instant::now() + STATS_EVERY,
             ticks: baseline.iter().map(|p| (p.pid, p.ticks)).collect(),
             ticked_at: Instant::now(),
@@ -456,6 +478,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
             .max()
             .unwrap_or(0);
         let outcome = agent.run();
+        board.close();
         shared_ref.stop();
         outcome
     });
@@ -871,6 +894,8 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         self.extra_turns = 0;
         self.deferred = Deferred::new(&profile.tools);
         let result = self.drive(job.work, &profile, &mut messages);
+        // A helper ends with its work item: one still running is stopped.
+        self.helpers.cancel_work(job.work);
         // The last state, so the seal has it.
         if let Some(lane) = self.lane.take()
             && let Err(err) = crate::weft_lane::snapshot(
@@ -1211,7 +1236,12 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             temperature: None,
             effort: None,
         };
-        self.say(&GuestMessage::ModelCall { req, work, request })?;
+        self.say(&GuestMessage::ModelCall {
+            req,
+            work,
+            request,
+            helper: None,
+        })?;
         // The calls that ran ahead of an earlier answer are not this answer's.
         self.early.clear();
         let workspace = self.workspace;
@@ -1696,6 +1726,20 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                     crate::acp::run::run(workspace, &input, &link, protocol, engine.as_ref())
                 })
             }
+            // A helper is started and awaited here: the board runs it on a thread of the agent's scope.
+            None if name == "spawn_helper" => {
+                let board = Arc::clone(&self.helpers);
+                let profile = self.profile.clone();
+                let policy = self.policy.clone();
+                Box::new(move || match profile {
+                    Some(profile) => board.spawn(work, &profile, policy, &input),
+                    None => Err("this agent has no model".to_string()),
+                })
+            }
+            None if name == "await_helper" => {
+                let board = Arc::clone(&self.helpers);
+                Box::new(move || board.await_report(&input))
+            }
             None => {
                 let shared = self.shared;
                 let call = run.id.clone();
@@ -1779,7 +1823,7 @@ fn decided_step(
 
 /// Why a tool call's input cannot run, found without asking the host: the
 /// gateway could not parse the model's arguments, or they are not an object.
-fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
+pub(crate) fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
     if meta.is_some_and(|meta| {
         meta.get("kind").and_then(Value::as_str) == Some("gateway")
             && meta.get("error").and_then(Value::as_str) == Some("INVALID_JSON")
@@ -1832,7 +1876,12 @@ pub(crate) fn is_guest_tool(name: &str) -> bool {
 }
 
 /// Runs a tool the host allowed, under the names the model knows.
-fn run_guest_tool(workspace: &Workspace, work: u64, name: &str, input: &Value) -> Outcome {
+pub(crate) fn run_guest_tool(
+    workspace: &Workspace,
+    work: u64,
+    name: &str,
+    input: &Value,
+) -> Outcome {
     match name {
         "read" | "edit" | "find" | "search" | "run" | "run_tests" => {
             v2::serve(workspace, work, name, input).map_err(|err| err.to_string())
@@ -2027,7 +2076,7 @@ mod thread_store_tests {
 pub const PAUSED: &str = apz_proto::wire::MODEL_PAUSED;
 
 /// How long to wait before asking again after the `n`-th "paused" answer in a row: 2, 4, 8, 15, then 30 seconds.
-fn paused_wait(n: u32) -> Duration {
+pub(crate) fn paused_wait(n: u32) -> Duration {
     Duration::from_secs(match n {
         0 => 2,
         1 => 4,

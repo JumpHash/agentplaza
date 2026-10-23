@@ -99,6 +99,10 @@ impl Nested {
         let call = match &message {
             HostMessage::ToolDecision { call, .. }
             | HostMessage::PermissionDecision { call, .. } => call.clone(),
+            // A helper's model call waits on its own request id (see `model_key`); the agent loop's calls do not.
+            HostMessage::ModelDelta { req, .. } | HostMessage::ModelResult { req, .. } => {
+                model_key(*req)
+            }
             _ => return Some(message),
         };
         let mut waiters = locked(&self.waiters);
@@ -112,6 +116,11 @@ impl Nested {
         }
         None
     }
+}
+
+/// The key a helper's model call registers under in [`Nested`]: the call's request id.
+pub fn model_key(req: u64) -> String {
+    format!("model:{req}")
 }
 
 /// The state both lanes share: the one writer, the transcript log, the nested calls, and the
@@ -169,7 +178,7 @@ impl<'log, S: Write, W: Write> Shared<'log, S, W> {
         self.stop.store(true, Ordering::Release);
     }
 
-    fn stopping(&self) -> bool {
+    pub fn stopping(&self) -> bool {
         self.stop.load(Ordering::Acquire)
     }
 }
