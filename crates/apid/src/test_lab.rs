@@ -84,6 +84,10 @@ pub struct LabRun {
     /// The topology the run observes (its name in the project's `.plaza/topologies`), whose assertions assess checks.
     #[serde(default)]
     pub topology: String,
+    /// The release the run qualifies (empty when none): its performance is compared with the last qualified stable
+    /// release's (PLAN 22.8, `lab_performance`).
+    #[serde(default)]
+    pub release: String,
     /// The SHA-256 (hex) of the ingest token its collector posts with; the token itself is given once, when queued.
     #[serde(default)]
     pub token_sha: String,
@@ -346,9 +350,19 @@ pub fn enqueue(
     memory_mib: u64,
     needs: Vec<String>,
     (change, topology): (&str, &str),
+    release: &str,
 ) -> Result<(LabRun, String), String> {
     if project.trim().is_empty() {
         return Err("a run needs its project".into());
+    }
+    let release = release.trim();
+    if !release.is_empty()
+        && app
+            .releases
+            .get(release)
+            .is_none_or(|r| r.project != project)
+    {
+        return Err(format!("{release} is not a release of this project"));
     }
     if rank(channel).is_none() {
         return Err(format!(
@@ -380,6 +394,7 @@ pub fn enqueue(
         outcome: None,
         change: change.trim().to_string(),
         topology: topology.trim().to_string(),
+        release: release.to_string(),
         token_sha: crate::lab_observe::token_hash(&token),
         observed: 0,
         dropped: 0,
@@ -542,6 +557,8 @@ struct EnqueueBody {
     change: String,
     #[serde(default)]
     topology: String,
+    #[serde(default)]
+    release: String,
 }
 
 fn enqueue_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
@@ -557,6 +574,7 @@ fn enqueue_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         body.memory_mib,
         body.needs,
         (&body.change, &body.topology),
+        &body.release,
     ) {
         Ok((run, token)) => {
             // The run's collector posts with this token (`X-Apz-Lab-Token`); it is not given again.
@@ -619,6 +637,7 @@ mod tests {
             outcome: None,
             change: String::new(),
             topology: String::new(),
+            release: String::new(),
             token_sha: String::new(),
             observed: 0,
             dropped: 0,

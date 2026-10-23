@@ -860,6 +860,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "tempfile",
  "toml 1.1.8+spec-1.1.0",
  "ureq",
 ]

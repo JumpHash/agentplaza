@@ -19,6 +19,7 @@ use apz_metrics::agg::{Agg, Tier};
 use apz_metrics::{EntityKind, Sample, SeriesKey};
 use apz_topology::assert::{self, Evidence, REQUESTS, Verdict as Check};
 use apz_topology::collector::TOKEN_HEADER;
+use apz_topology::compare::Limit;
 use apz_topology::observe::{self, LogLine, PointKind, SpanRec};
 use apz_topology::spec::{self, Assertion, Topology};
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,9 @@ use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 
 use crate::agents::Agent;
+use crate::lab_performance;
 use crate::metrics::Metrics;
+use crate::releases::entity::Release;
 use crate::review_graph::{By, Finding, Reviews, Verdict as FindingVerdict};
 use crate::state::App;
 use crate::test_lab::{LabRun, Store};
@@ -304,7 +307,7 @@ fn span_of(span: &LabSpan) -> SpanRec {
 
 /// The windows of a metric's series of a run, from the store (the closed ones) and the rollup (the open ones), each
 /// series with its windows in time order.
-fn windows(
+pub(crate) fn windows(
     metrics: &Metrics,
     run: &str,
     metric: &str,
@@ -432,14 +435,47 @@ fn file_finding(reviews: &Reviews, run: &LabRun, topology: &Topology, check: &Ch
         .map_or_else(String::new, |(review, id)| format!("{review}/{id}"))
 }
 
-/// Checks the topology's assertions over a done run (PLAN 22.7). Each verdict is stored with the run (a re-assessment
-/// replaces it), and a failing one is filed once as a finding on the run's change.
+/// Stores one verdict with its run (a re-assessment replaces it). A failing one is filed once as a finding: `file`
+/// files it, and a finding that an earlier assessment filed is kept.
+fn record(lab: &Store, run: &LabRun, check: &Check, file: impl FnOnce() -> String) -> LabVerdict {
+    let prior = lock(&lab.inner)
+        .verdicts
+        .iter()
+        .find(|v| v.run == run.id && v.id == check.id)
+        .cloned();
+    let finding = match &prior {
+        Some(prior) if !prior.finding.is_empty() => prior.finding.clone(),
+        _ if check.passed => String::new(),
+        _ => file(),
+    };
+    let row = LabVerdict {
+        run: run.id.clone(),
+        id: check.id.clone(),
+        kind: check.kind.clone(),
+        passed: check.passed,
+        detail: check.detail.clone(),
+        finding,
+        cites: check.cites.clone(),
+    };
+    {
+        let mut p = lock(&lab.inner);
+        p.verdicts.retain(|v| !(v.run == run.id && v.id == row.id));
+        p.verdicts.push(row.clone());
+    }
+    row
+}
+
+/// Checks the topology's assertions over a done run (PLAN 22.7), and its performance against its release's baseline
+/// under the project's `limits` (PLAN 22.8; `releases` are the project's, newest first). Each verdict is stored with the
+/// run, and a failing one is filed once as a finding on the run's change.
 pub fn assess(
     lab: &Store,
     metrics: &Metrics,
     reviews: &Reviews,
     run_id: &str,
     topology: &Topology,
+    releases: &[Release],
+    limits: &[Limit],
 ) -> Result<Vec<LabVerdict>, (u16, String)> {
     let run = lab
         .runs()
@@ -455,31 +491,26 @@ pub fn assess(
     let evidence = evidence(lab, metrics, &run, &metric_names(&topology.assertions));
     let mut out = Vec::new();
     for check in assert::check(&topology.assertions, &evidence) {
-        let prior = lock(&lab.inner)
-            .verdicts
-            .iter()
-            .find(|v| v.run == run.id && v.id == check.id)
-            .cloned();
-        let finding = match &prior {
-            Some(prior) if !prior.finding.is_empty() => prior.finding.clone(),
-            _ if check.passed => String::new(),
-            _ => file_finding(reviews, &run, topology, &check),
-        };
-        let row = LabVerdict {
-            run: run.id.clone(),
-            id: check.id.clone(),
-            kind: check.kind.clone(),
-            passed: check.passed,
-            detail: check.detail.clone(),
-            finding,
-            cites: check.cites.clone(),
-        };
-        {
-            let mut p = lock(&lab.inner);
-            p.verdicts.retain(|v| !(v.run == run.id && v.id == row.id));
-            p.verdicts.push(row.clone());
+        out.push(record(lab, &run, &check, || {
+            file_finding(reviews, &run, topology, &check)
+        }));
+    }
+    if let Some(outcome) = lab_performance::compare_run(lab, metrics, releases, &run, limits) {
+        for comparison in &outcome.comparisons {
+            let check = Check {
+                id: format!("perf:{}", comparison.metric),
+                kind: lab_performance::KIND.into(),
+                passed: comparison.passed,
+                detail: lab_performance::describe(comparison),
+                cites: vec![format!(
+                    "baseline {} run {}",
+                    outcome.baseline.release, outcome.baseline.run
+                )],
+            };
+            out.push(record(lab, &run, &check, || {
+                lab_performance::file_finding(reviews, &run, &outcome, comparison)
+            }));
         }
-        out.push(row);
     }
     Ok(out)
 }
@@ -667,13 +698,14 @@ fn traces_query(lab: &Store, run: &LabRun, input: &Json) -> Result<Json, String>
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
-    router
+    let router = router
         .post("/v1/test-lab/runs/{id}/otlp/{signal}", otlp_route)
         .doc(RouteDoc::new("A lab run's collector posts its observations: OTLP as JSON (logs, traces or metrics), with the run's ingest token in X-Apz-Lab-Token").errors(&[400, 401, 404, 409]))
         .get("/v1/test-lab/runs/{id}/observations", observations_route)
         .doc(RouteDoc::new("What a lab run observed: its counts of logs, errors and spans, and the verdicts its assessment gave").errors(&[404]))
         .post("/v1/test-lab/runs/{id}/assess", assess_route)
-        .doc(RouteDoc::new("Checks a done run's topology assertions over what it observed; each failing step is filed as a finding on the run's change").errors(&[400, 404, 409]))
+        .doc(RouteDoc::new("Checks a done run's topology assertions over what it observed, and its performance against its release's baseline; each failing step is filed as a finding on the run's change").errors(&[400, 404, 409]));
+    lab_performance::routes(router)
 }
 
 fn otlp_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -751,20 +783,29 @@ fn assess_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
             }
         }
     };
-    match assess(&app.test_lab, &app.metrics, &app.reviews, id, &topology) {
+    let (releases, limits) = lab_performance::context(app, &run.project);
+    match assess(
+        &app.test_lab,
+        &app.metrics,
+        &app.reviews,
+        id,
+        &topology,
+        &releases,
+        &limits,
+    ) {
         Ok(verdicts) => Response::json(200, &json!({"run": id, "verdicts": verdicts})),
         Err((status, message)) => Response::error(status, &message),
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::review_graph::{NodeDef, NodeRun, NodeState, Run, RunState};
     use std::sync::Arc;
 
     /// Metrics over a fresh metrics file; the store is returned too, so it stays open while the test runs.
-    fn metrics_in(name: &str) -> (apz_store::Store, Metrics) {
+    pub(crate) fn metrics_in(name: &str) -> (apz_store::Store, Metrics) {
         let files = crate::metrics::sqlite::scratch_store(name);
         let m = Metrics::open(
             Arc::clone(files.db(crate::store::METRICS)),
@@ -791,6 +832,7 @@ mod tests {
             outcome: None,
             change: "c1".into(),
             topology: "fake-run".into(),
+            release: String::new(),
             token_sha: token_hash(token),
             observed: 0,
             dropped: 0,
@@ -807,7 +849,7 @@ mod tests {
     }
 
     /// The change's review run: one sceptic node, so a finding has a place to go.
-    fn review_of(change: &str) -> Run {
+    pub(crate) fn review_of(change: &str) -> Run {
         let node = NodeRun {
             def: NodeDef {
                 id: "sceptic".into(),
@@ -854,14 +896,14 @@ mod tests {
         }
     }
 
-    fn reviews_in(dir: &tempfile::TempDir) -> Reviews {
+    pub(crate) fn reviews_in(dir: &tempfile::TempDir) -> Reviews {
         let blobs =
             apz_blobs::Blobs::open(&dir.path().join("blobs")).expect("the object store opens");
         Reviews::new(Arc::new(blobs))
     }
 
     /// The time the tests' runs observe at: long after their points, so their windows are closed.
-    const NOW: u64 = 1_700_000_900_000;
+    pub(crate) const NOW: u64 = 1_700_000_900_000;
     /// A topology with one service and the no-errors step.
     const NO_ERRORS: &str = "name = \"fake-run\"\n[[service]]\nname = \"api\"\nimage = \"api:1\"\n[[assert]]\nkind = \"no_errors\"\n";
 
@@ -909,7 +951,7 @@ mod tests {
         set_state(&lab, "q1", "done");
 
         let topology = spec::parse(NO_ERRORS).unwrap();
-        let verdicts = assess(&lab, &metrics, &reviews, "q1", &topology).unwrap();
+        let verdicts = assess(&lab, &metrics, &reviews, "q1", &topology, &[], &[]).unwrap();
         assert_eq!(verdicts.len(), 1);
         assert!(!verdicts[0].passed);
         assert_eq!(
@@ -937,7 +979,7 @@ mod tests {
         assert!(!finding.scenario.is_empty());
 
         // Assessing again replaces the verdict and does not file the finding twice.
-        assess(&lab, &metrics, &reviews, "q1", &topology).unwrap();
+        assess(&lab, &metrics, &reviews, "q1", &topology, &[], &[]).unwrap();
         assert_eq!(reviews.run(review).unwrap().findings().count(), 1);
         let shown = observations(&lab, "q1").unwrap();
         assert_eq!(shown["errors"], json!(1));
@@ -955,7 +997,7 @@ mod tests {
         ingest_json(&lab, &metrics, "run-token", "logs", &logs).unwrap();
         set_state(&lab, "q1", "done");
         let topology = spec::parse(NO_ERRORS).unwrap();
-        let verdicts = assess(&lab, &metrics, &reviews, "q1", &topology).unwrap();
+        let verdicts = assess(&lab, &metrics, &reviews, "q1", &topology, &[], &[]).unwrap();
         assert!(!verdicts[0].passed);
         assert!(verdicts[0].finding.is_empty());
     }
