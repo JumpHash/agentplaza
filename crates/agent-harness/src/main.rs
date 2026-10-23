@@ -75,6 +75,7 @@ mod exec;
 mod files;
 #[cfg(target_os = "linux")]
 mod helpers;
+#[cfg(target_os = "linux")]
 mod hooks;
 #[cfg(target_os = "linux")]
 mod ide;
