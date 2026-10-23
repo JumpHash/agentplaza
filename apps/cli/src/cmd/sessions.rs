@@ -316,14 +316,15 @@ fn stop(ctx: &Ctx, id: &str, yes: bool) -> Result<(), String> {
 
 /// A session's transcript, oldest first, a page of a thousand at a time; with `follow`, new entries as they come.
 fn transcript(ctx: &Ctx, id: &str, follow: bool) -> Result<(), String> {
-    const PAGE: usize = 1000;
+    const PAGE: usize = 500;
     let mut after = 0u64;
     let rich_ctx = rich::context_for(ctx);
     loop {
-        let page = items(&ctx.client.get(&format!(
+        let reply = ctx.client.get(&format!(
             "/v1/sessions/{}/transcript?after={after}&limit={PAGE}",
             ctx::seg(id)
-        ))?);
+        ))?;
+        let page = items(&reply["entries"]);
         for e in &page {
             if let Some(seq) = e.get("seq").and_then(Value::as_u64) {
                 after = after.max(seq);

@@ -790,9 +790,18 @@ pub fn open_card(app: &App, new: NewCard, now: u64) {
     app.bus.publish("card", &card);
 }
 
-/// A budget limit reached: one card per subject, in the task's chat (or the project's when it is the project's).
-pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, now: u64) {
-    let (subject, title, body) = match short {
+/// The unit a budget card's amounts are in: the short budget's own; a monthly or paused limit is the planner's dollars.
+fn card_unit(short: &Short) -> Unit {
+    match short {
+        Short::Cap { unit, .. } => *unit,
+        Short::Monthly { .. } | Short::Paused { .. } => Unit::Usd,
+    }
+}
+
+/// The subject, title and body of the card a budget limit asks the owner about. Every amount is in the unit the
+/// budget counts in: dollars for `usd`, tokens for `tokens` (never micro-dollars).
+pub fn budget_words(short: &Short) -> (String, String, String) {
+    match short {
         Short::Cap {
             owner_kind,
             owner,
@@ -809,7 +818,7 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
                 OwnerKind::Project => format!("Project {owner} cannot fund more work"),
             },
             format!(
-                "It needs {} and has {} left ({unit:?}).",
+                "It needs {} and has {} left.",
                 amount(*needed, *unit),
                 amount(*left, *unit)
             ),
@@ -832,7 +841,12 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
             format!("{owner_kind:?} {owner} is paused at its budget"),
             "Raise its budget to resume it, or stop it.".to_string(),
         ),
-    };
+    }
+}
+
+/// A budget limit reached: one card per subject, in the task's chat (or the project's when it is the project's).
+pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, now: u64) {
+    let (subject, title, body) = budget_words(short);
     let chat = match task {
         Some(task) => task_chat(app, task, project, now),
         None => app.chats.main(now).id,
@@ -847,7 +861,7 @@ pub fn ask_budget(app: &App, short: &Short, task: Option<&str>, project: &str, n
             subject,
             title: title.clone(),
             body: Some(body.clone()),
-            choices: cards::budget_choices(None, "µ$"),
+            choices: cards::budget_choices(None, card_unit(short)),
         },
         now,
     );
@@ -944,11 +958,25 @@ pub fn budget_of_subject(subject: &str) -> Option<(OwnerKind, &str)> {
     }
 }
 
+/// An amount in its budget's unit, for a person: `$1.25` from micro-dollars, `12,400 tokens` for tokens.
 pub fn amount(value: u64, unit: Unit) -> String {
     match unit {
         Unit::Usd => format!("${:.2}", value as f64 / 1_000_000.0),
-        Unit::Tokens => format!("{value} tokens"),
+        Unit::Tokens => format!("{} tokens", thousands(value)),
     }
+}
+
+/// A whole number with a comma every three digits: `12400` is `12,400`.
+fn thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Sessions paused at a budget that `kind`/`owner` covers run again (it was raised or set).
@@ -1849,5 +1877,37 @@ mod tests {
         // About three bytes a token, rounded up; a call that names no cap holds the largest default answer.
         assert_eq!(worst_case(301, 0).input, 101);
         assert_eq!(worst_case(0, 0).output, UNCAPPED_ANSWER_TOKENS);
+    }
+
+    #[test]
+    fn a_budget_card_names_its_amounts_in_the_budgets_unit() {
+        let tokens = Short::Cap {
+            owner_kind: OwnerKind::Task,
+            owner: "t1".into(),
+            unit: Unit::Tokens,
+            needed: 12_400,
+            left: 300,
+        };
+        let (subject, _, body) = budget_words(&tokens);
+        assert_eq!(subject, "task:t1");
+        assert_eq!(body, "It needs 12,400 tokens and has 300 tokens left.");
+        let dollars = Short::Cap {
+            owner_kind: OwnerKind::Project,
+            owner: "pr1".into(),
+            unit: Unit::Usd,
+            needed: 1_250_000,
+            left: 0,
+        };
+        assert_eq!(
+            budget_words(&dollars).2,
+            "It needs $1.25 and has $0.00 left."
+        );
+        assert_eq!(card_unit(&tokens), Unit::Tokens);
+        let choices = cards::budget_choices(Some(2_000_000), Unit::Tokens);
+        assert_eq!(choices[0].label, "Raise by the estimate (2,000,000 tokens)");
+        assert!(
+            !format!("{body}{}", choices[0].label).contains("µ$"),
+            "no card says micro-dollars for a token budget"
+        );
     }
 }

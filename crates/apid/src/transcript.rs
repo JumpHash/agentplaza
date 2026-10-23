@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::events::Bus;
-use crate::store::sql::{TRANSCRIPT_CIDS, TRANSCRIPT_DELETE, TRANSCRIPT_PAGE};
+use crate::store::sql::{
+    TRANSCRIPT_BEFORE_SESSION, TRANSCRIPT_BEFORE_THREAD, TRANSCRIPT_CIDS, TRANSCRIPT_DELETE,
+    TRANSCRIPT_PAGE,
+};
 
 /// Entries kept per agent; older ones are dropped.
 const KEEP: usize = 5_000;
@@ -425,6 +428,22 @@ fn data_of(entry: &Entry) -> Value {
     serde_json::to_value(entry).map_or(Value::Null, |mut value| value["data"].take())
 }
 
+/// Which entries a page is of: a session's (the entries it wrote), or a chat's thread's (the work items the thread
+/// started, whose `work_start` names it).
+#[derive(Debug, Clone, Copy)]
+pub enum Scope<'a> {
+    Session(&'a str),
+    Thread(&'a str),
+}
+
+/// One page of a transcript: its entries, oldest first, and whether more lie beyond it in the direction it was paged
+/// (older entries for a page before a seq, newer ones for a page after).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Page {
+    pub entries: Vec<StoredEntry>,
+    pub more: bool,
+}
+
 /// The session a VM works in, by its CID (`crate::sessions`), for keying entries by session.
 pub type SessionOf = Box<dyn Fn(u64) -> Option<String> + Send + Sync>;
 
@@ -559,6 +578,84 @@ impl Store {
             .collect()
     }
 
+    /// The entries of `scope` on agent `cid` with `seq < before`: the newest `limit` of them, oldest first, and whether
+    /// older ones exist. Read from the store when it is attached (it keeps every entry; the window keeps only the
+    /// newest), else from the window.
+    pub fn before(
+        &self,
+        cid: u64,
+        scope: Scope<'_>,
+        before: u64,
+        limit: usize,
+    ) -> Result<Page, String> {
+        let mut entries = match self.db.get() {
+            Some(db) => {
+                // A record still queued is written first, so the page sees it.
+                let _ = db.flush();
+                let (sql, key) = match scope {
+                    Scope::Session(s) => (TRANSCRIPT_BEFORE_SESSION, s),
+                    Scope::Thread(t) => (TRANSCRIPT_BEFORE_THREAD, t),
+                };
+                let key = key.to_string();
+                db.read(|conn| {
+                    let mut stmt = conn.prepare_cached(sql)?;
+                    read_entries(
+                        &mut stmt,
+                        apz_store::rusqlite::params![
+                            to_i64(cid),
+                            to_i64(before),
+                            key,
+                            to_i64(limit.saturating_add(1))
+                        ],
+                    )
+                })
+                .map_err(|e| e.to_string())?
+            }
+            None => self.window_before(cid, scope, before, limit),
+        };
+        // Both read the newest first; here they are put oldest first, so the one entry past the page is at the front.
+        entries.sort_by_key(|e| e.seq);
+        let more = entries.len() > limit;
+        if more {
+            entries.remove(0);
+        }
+        Ok(Page { entries, more })
+    }
+
+    /// The window's entries of `scope` with `seq < before`, the newest `limit + 1` of them (newest first).
+    fn window_before(
+        &self,
+        cid: u64,
+        scope: Scope<'_>,
+        before: u64,
+        limit: usize,
+    ) -> Vec<StoredEntry> {
+        let windows = self.windows();
+        let Some(log) = windows.get(&cid) else {
+            return Vec::new();
+        };
+        let works: HashSet<u64> = match scope {
+            Scope::Thread(thread) => log
+                .iter()
+                .filter(|e| matches!(&e.entry, Entry::WorkStart { thread: t, .. } if t == thread))
+                .map(|e| e.work)
+                .collect(),
+            Scope::Session(_) => HashSet::new(),
+        };
+        log.iter()
+            .rev()
+            .filter(|e| {
+                e.seq < before
+                    && match scope {
+                        Scope::Session(session) => e.session.as_deref() == Some(session),
+                        Scope::Thread(_) => works.contains(&e.work),
+                    }
+            })
+            .take(limit.saturating_add(1))
+            .cloned()
+            .collect()
+    }
+
     /// The agent's newest `n` entries, oldest first (fewer when the log is shorter).
     pub fn last(&self, cid: u64, n: usize) -> Vec<StoredEntry> {
         self.windows()
@@ -626,26 +723,36 @@ pub fn cids(db: &Db) -> Result<Vec<u64>, StoreError> {
 /// The newest `limit` stored entries of agent `cid`, oldest first.
 pub fn page(db: &Db, cid: u64, limit: usize) -> Result<Vec<StoredEntry>, StoreError> {
     db.read(|conn| {
-        let def = def();
-        let width = def.key.len() + def.columns.len();
         let mut stmt = conn.prepare_cached(TRANSCRIPT_PAGE)?;
-        let mut rows = stmt.query([to_i64(cid), to_i64(limit)])?;
-        let mut out = Vec::new();
-        while let Some(r) = rows.next()? {
-            let mut values = Vec::with_capacity(width);
-            for i in 0..width {
-                values.push(r.get::<_, SqlValue>(i)?);
-            }
-            let columns = values.split_off(def.key.len());
-            let row = Row {
-                key: values,
-                columns,
-            };
-            out.push(StoredEntry::take(def, &row, &Loaded::default())?);
-        }
+        let mut out = read_entries(&mut stmt, [to_i64(cid), to_i64(limit)])?;
         out.reverse();
         Ok(out)
     })
+}
+
+/// The entries `stmt` selects with `params`, in the order it selects them (its `SELECT *` reads every column of `entry`,
+/// in the table's order).
+fn read_entries(
+    stmt: &mut apz_store::rusqlite::Statement<'_>,
+    params: impl apz_store::rusqlite::Params,
+) -> Result<Vec<StoredEntry>, StoreError> {
+    let def = def();
+    let width = def.key.len() + def.columns.len();
+    let mut rows = stmt.query(params)?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next()? {
+        let mut values = Vec::with_capacity(width);
+        for i in 0..width {
+            values.push(r.get::<_, SqlValue>(i)?);
+        }
+        let columns = values.split_off(def.key.len());
+        let row = Row {
+            key: values,
+            columns,
+        };
+        out.push(StoredEntry::take(def, &row, &Loaded::default())?);
+    }
+    Ok(out)
 }
 
 /// Loads every agent's newest [`RESTORE_PER_AGENT`] stored entries into `store`, and attaches `db` so what is recorded
@@ -1294,5 +1401,155 @@ mod tests {
         }
         assert_eq!(seqs(2), vec![3, 4, 5]);
         assert!(seqs(5).is_empty());
+    }
+
+    /// Work item 1 starts on `chat:c1` (its start, then four entries); work item 2 on `chat:c2`, its entries interleaved.
+    /// Returns the seqs of work 1's entries and of work 2's, in order.
+    fn two_threads(store: &Store, bus: &Bus) -> (Vec<u64>, Vec<u64>) {
+        let start = |thread: &str| Entry::WorkStart {
+            kind: WorkKind::Chat,
+            thread: thread.into(),
+            prompt: "p".into(),
+            origin: json!({}),
+        };
+        let mut one = vec![store.record(bus, 7, 1, start("chat:c1"))];
+        let mut two = vec![store.record(bus, 7, 2, start("chat:c2"))];
+        for i in 0..4 {
+            one.push(store.record(
+                bus,
+                7,
+                1,
+                Entry::Error {
+                    message: format!("one {i}"),
+                },
+            ));
+            two.push(store.record(
+                bus,
+                7,
+                2,
+                Entry::Error {
+                    message: format!("two {i}"),
+                },
+            ));
+        }
+        (one, two)
+    }
+
+    fn seqs_of(page: &Page) -> Vec<u64> {
+        page.entries.iter().map(|e| e.seq).collect()
+    }
+
+    #[test]
+    fn a_page_before_a_seq_is_the_newest_entries_of_its_thread_and_says_whether_older_ones_exist() {
+        let (store, bus) = (Store::default(), Bus::default());
+        let (one, two) = two_threads(&store, &bus);
+        let c1 = Scope::Thread("chat:c1");
+        // Before the fourth entry of thread 1: its start and two more; the newest two of those, and older ones exist.
+        let page = store.before(7, c1, one[4], 2).unwrap();
+        assert_eq!(seqs_of(&page), vec![one[2], one[3]]);
+        assert!(page.more);
+        let all = store.before(7, c1, one[4], 10).unwrap();
+        assert_eq!(seqs_of(&all), one[..4].to_vec());
+        assert!(!all.more, "the start is the thread's first entry");
+        assert_eq!(store.before(7, c1, one[0], 10).unwrap(), Page::default());
+        // Thread 2's entries are its own: none of thread 1's come back.
+        let c2 = store
+            .before(7, Scope::Thread("chat:c2"), u64::MAX, 2)
+            .unwrap();
+        assert_eq!(seqs_of(&c2), vec![two[3], two[4]]);
+        assert!(c2.more);
+        assert_eq!(
+            store
+                .before(7, Scope::Thread("chat:none"), u64::MAX, 2)
+                .unwrap(),
+            Page::default()
+        );
+    }
+
+    #[test]
+    fn a_page_is_read_from_the_store_and_a_thread_pages_back_to_its_first_entry() {
+        let (_dir, files) = hub_store("transcript-before");
+        let db = files.db(crate::store::TRANSCRIPTS);
+        let store = Store::default();
+        let bus = Bus::default();
+        store.attach(Arc::clone(db));
+        store.key_by_session(Box::new(|cid| Some(format!("s{cid}"))));
+        let (one, _two) = two_threads(&store, &bus);
+        // A store that holds nothing in memory reads the same page from the file.
+        let fresh = Store::default();
+        fresh.attach(Arc::clone(db));
+        let page = fresh
+            .before(7, Scope::Thread("chat:c1"), one[4], 2)
+            .unwrap();
+        assert_eq!(seqs_of(&page), vec![one[2], one[3]]);
+        assert!(page.more);
+        let by_session = fresh.before(7, Scope::Session("s7"), u64::MAX, 3).unwrap();
+        assert_eq!(by_session.entries.len(), 3);
+        assert!(by_session.more);
+        assert!(
+            by_session
+                .entries
+                .iter()
+                .all(|e| e.session.as_deref() == Some("s7"))
+        );
+        assert_eq!(
+            fresh.before(7, Scope::Session("s8"), u64::MAX, 3).unwrap(),
+            Page::default()
+        );
+    }
+
+    #[test]
+    fn pages_walked_back_from_the_newest_cover_a_long_thread_once_each_in_order() {
+        let (_dir, files) = hub_store("transcript-walk");
+        let db = files.db(crate::store::TRANSCRIPTS);
+        let store = Store::default();
+        let bus = Bus::default();
+        store.attach(Arc::clone(db));
+        let start = store.record(
+            &bus,
+            7,
+            1,
+            Entry::WorkStart {
+                kind: WorkKind::Chat,
+                thread: "chat:long".into(),
+                prompt: "p".into(),
+                origin: json!({}),
+            },
+        );
+        let mut want = vec![start];
+        for i in 0..250 {
+            want.push(store.record(
+                &bus,
+                7,
+                1,
+                Entry::Error {
+                    message: format!("entry {i}"),
+                },
+            ));
+        }
+        store.record(
+            &bus,
+            7,
+            2,
+            Entry::Error {
+                message: "another thread".into(),
+            },
+        );
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before = u64::MAX;
+        let mut pages = 0;
+        loop {
+            let page = store
+                .before(7, Scope::Thread("chat:long"), before, 100)
+                .unwrap();
+            pages += 1;
+            walked.splice(0..0, seqs_of(&page));
+            if !page.more {
+                break;
+            }
+            before = page.entries[0].seq;
+        }
+        assert_eq!(pages, 3, "251 entries in pages of 100");
+        assert_eq!(walked, want);
     }
 }
