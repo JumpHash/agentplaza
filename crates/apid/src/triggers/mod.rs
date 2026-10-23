@@ -1,17 +1,19 @@
 //! Triggers (PLAN 14.6, 5.2): what starts a recipe run. A trigger is a typed record per recipe (`recipe_trigger`): an
-//! event from a source (a connector's webhook delivery; Weft, CI and maintenance events come through [`Triggers::deliver`]
-//! the same way), or a schedule (a cron expression, or an interval in minutes), or the owner's hand (`routes.rs`).
+//! event from a source, or a schedule (a cron expression, or an interval in minutes), or the owner's hand (`routes.rs`).
+//!
+//! The sources: a connector's webhook delivery (`hooks.rs`); Weft's event feed (`weft_event`: a lane opened, a change
+//! landed, a release proposed); a CI run that ended (`ci_run_ended`); a maintenance signal (`maintenance_signal`). Each
+//! takes its event with [`Triggers::deliver`], and an event with an identity of its own (Weft's sequence number, a run's
+//! id, a signal's id) is taken once per trigger, so the same landing or run never starts a trigger twice.
 //!
 //! One scheduler owns the schedules: [`tick`] runs on the scheduler's pass and fires the schedules that are due. The
-//! full suite of a project (`full_run.rs`) and the engine watch (`engine_watch.rs`) are schedule triggers too, so their
-//! times live here, not in their own loops.
+//! full suite of a project (`full_run.rs`) and the engine watch (`engine_watch.rs`) are schedule triggers too.
 //!
 //! Deliveries are debounced: a delivery opens a window of the trigger's `window_ms`, and every delivery of the same item
-//! inside it is absorbed, so a burst is one run. A run is deduplicated: one run per item and recipe at a time. A
-//! delivery that comes while the item's run is still going waits and starts a run when that one ends.
-//!
-//! The windows and the item's pending deliveries are kept in memory (they are a few seconds long); the triggers and the
-//! schedules' times are rows in plaza.db.
+//! inside it is absorbed, so a burst is one run. A run is deduplicated: one run per item and recipe at a time; a
+//! delivery that comes while the item's run is still going waits and starts a run when that one ends. The windows and
+//! the taken identities are rows in plaza.db (`recipe_trigger_pending`, `recipe_trigger_fired`), so a restart keeps
+//! both: a window that was open is still open, and a replayed event is still taken.
 
 pub mod cron;
 pub mod hooks;
@@ -23,6 +25,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use apz_store::rusqlite::Connection;
 use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::recipes::runs::{RunState, Runs};
 use crate::state::App;
@@ -33,6 +36,8 @@ pub const BINDING: &str = "hub:triggers";
 pub const DEFAULT_WINDOW_MS: u64 = 60_000;
 /// The engine watch's record id and recipe.
 pub const ENGINE_WATCH: &str = "engine-watch";
+/// How long a taken identity is kept: a replay of an event older than this would take its trigger again.
+const FIRED_KEEP_MS: u64 = 30 * 24 * 3600 * 1000;
 
 /// What a trigger does when it fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -56,9 +61,9 @@ pub struct TriggerRow {
     /// The project the run is for (the full suite's project; a recipe's run for a project).
     pub project: Option<String>,
     pub action: Action,
-    /// Where the event comes from: `connector:<id>`, or `schedule`, `owner` for the owner's hand.
+    /// Where the event comes from: `connector:<id>`, `weft`, `ci`, `maintenance`, or `schedule` / `owner`.
     pub source: String,
-    /// The event's name (`issue.labelled`); empty for a schedule.
+    /// The event's name (`change.landed`); empty for a schedule.
     pub event: String,
     /// A filter on the event's label; empty takes any.
     pub label: String,
@@ -91,36 +96,53 @@ impl TriggerRow {
     }
 }
 
-/// One event from a source: a connector's delivery (or a Weft, CI or maintenance event).
+/// One event from a source: a connector's delivery, a Weft event, a CI run, a maintenance signal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     pub source: String,
     pub event: String,
-    /// The item the event is about (an issue, a lane, a change): the key of the deduplication and the debounce.
+    /// The item the event is about (an issue, a change, a project): the key of the debounce and of the run's subject.
     pub item: String,
     pub label: String,
+    /// The event's own identity: a trigger takes each identity once. None for a delivery with none of its own.
+    pub dedup: Option<String>,
 }
 
-/// A delivery waiting out its window, by (trigger, item).
-#[derive(Debug, Clone)]
-struct Pending {
-    recipe: String,
-    project: Option<String>,
-    source: String,
-    fire_at: u64,
-    deliveries: u32,
+/// A delivery waiting out its window, by (trigger, item). Kept in plaza.db (`recipe_trigger_pending`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "recipe_trigger_pending")]
+pub struct PendingRow {
+    #[table(key)]
+    pub trigger: String,
+    #[table(key)]
+    pub item: String,
+    pub recipe: String,
+    pub project: Option<String>,
+    pub source: String,
+    pub fire_at: u64,
+    pub deliveries: u32,
+}
+
+/// An identity a trigger has taken (`recipe_trigger_fired`): a replay of the event starts nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "recipe_trigger_fired")]
+pub struct FiredRow {
+    #[table(key)]
+    pub trigger: String,
+    #[table(key)]
+    pub identity: String,
+    pub fired_ms: u64,
 }
 
 #[derive(Default)]
 struct Inner {
     rows: BTreeMap<String, TriggerRow>,
-    pending: BTreeMap<(String, String), Pending>,
-    /// The run each (recipe, item) started last: while it runs, the item waits.
-    active: BTreeMap<(String, String), String>,
+    pending: BTreeMap<(String, String), PendingRow>,
+    fired: BTreeMap<(String, String), FiredRow>,
     next: u64,
 }
 
-/// The triggers, and the deliveries waiting on their windows.
+/// The triggers, the deliveries waiting on their windows, and the identities taken.
 #[derive(Default)]
 pub struct Triggers {
     inner: Mutex<Inner>,
@@ -129,6 +151,31 @@ pub struct Triggers {
 /// The table of the triggers: `recipe_trigger`, one row per trigger.
 pub fn def() -> &'static TableDef {
     apz_store::root_def!(TriggerRow)
+}
+
+/// The table of the open windows.
+pub fn pending_def() -> &'static TableDef {
+    apz_store::root_def!(PendingRow)
+}
+
+/// The table of the identities taken.
+pub fn fired_def() -> &'static TableDef {
+    apz_store::root_def!(FiredRow)
+}
+
+/// Whether a recipe's steps all run on an engine, so a trigger can start it (the others wait for a task's seats).
+pub fn engine_only(runs: &Runs, recipe: &str) -> bool {
+    runs.recipe(recipe, None)
+        .is_some_and(|r| !r.steps.is_empty() && r.steps.iter().all(|s| s.engine.is_some()))
+}
+
+/// Whether a run of `recipe` for `item` is still going (one run per item and recipe at a time).
+fn running_for(runs: &Runs, recipe: &str, item: &str) -> bool {
+    runs.list(None, None).iter().any(|v| {
+        v.run.recipe == recipe
+            && v.run.subject.as_deref().unwrap_or("") == item
+            && matches!(v.run.state, RunState::Running | RunState::Owner)
+    })
 }
 
 impl Triggers {
@@ -153,6 +200,40 @@ impl Triggers {
             .max()
             .unwrap_or(0);
         inner.rows = stored.into_iter().map(|t| (t.id.clone(), t)).collect();
+        Ok(())
+    }
+
+    /// The open windows, for the hub's store.
+    pub fn pending_rows(&self) -> Result<RowSet, StoreError> {
+        let inner = self.lock();
+        let rows: Vec<PendingRow> = inner.pending.values().cloned().collect();
+        RowSet::list(pending_def(), rows.iter())
+    }
+
+    /// Replaces the open windows with what plaza.db holds (at start): a restart keeps each window's fire time.
+    pub fn load_pending(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<PendingRow> = apz_store::table::load_list(conn, pending_def())?;
+        self.lock().pending = stored
+            .into_iter()
+            .map(|p| ((p.trigger.clone(), p.item.clone()), p))
+            .collect();
+        Ok(())
+    }
+
+    /// The identities taken, for the hub's store.
+    pub fn fired_rows(&self) -> Result<RowSet, StoreError> {
+        let inner = self.lock();
+        let rows: Vec<FiredRow> = inner.fired.values().cloned().collect();
+        RowSet::list(fired_def(), rows.iter())
+    }
+
+    /// Replaces the identities taken with what plaza.db holds (at start).
+    pub fn load_fired(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<FiredRow> = apz_store::table::load_list(conn, fired_def())?;
+        self.lock().fired = stored
+            .into_iter()
+            .map(|f| ((f.trigger.clone(), f.identity.clone()), f))
+            .collect();
         Ok(())
     }
 
@@ -192,7 +273,8 @@ impl Triggers {
     }
 
     /// Takes an event: every enabled trigger that matches it (its source, its event, and its label when it names one)
-    /// opens its window for the item, or joins the window already open. Returns how many triggers matched.
+    /// takes it, unless the trigger has taken its identity already, and opens its window for the item or joins the
+    /// window already open. Returns how many triggers took it.
     pub fn deliver(&self, event: &Event, now: u64) -> usize {
         let mut inner = self.lock();
         let matched: Vec<TriggerRow> = inner
@@ -207,12 +289,30 @@ impl Triggers {
             })
             .cloned()
             .collect();
+        let mut taken = 0;
         for t in &matched {
+            if let Some(identity) = &event.dedup {
+                let key = (t.id.clone(), identity.clone());
+                if inner.fired.contains_key(&key) {
+                    continue;
+                }
+                inner.fired.insert(
+                    key,
+                    FiredRow {
+                        trigger: t.id.clone(),
+                        identity: identity.clone(),
+                        fired_ms: now,
+                    },
+                );
+            }
+            taken += 1;
             inner
                 .pending
                 .entry((t.id.clone(), event.item.clone()))
                 .and_modify(|p| p.deliveries += 1)
-                .or_insert_with(|| Pending {
+                .or_insert_with(|| PendingRow {
+                    trigger: t.id.clone(),
+                    item: event.item.clone(),
                     recipe: t.recipe.clone(),
                     project: t.project.clone(),
                     source: t.source.clone(),
@@ -220,7 +320,7 @@ impl Triggers {
                     deliveries: 1,
                 });
         }
-        matched.len()
+        taken
     }
 
     /// The enabled schedules due at `now`.
@@ -242,13 +342,14 @@ impl Triggers {
         }
     }
 
-    /// A schedule of the scheduler's own (the engine watch, a project's full suite) fires at `now`: it waits for no
-    /// window. Its item is empty.
+    /// A schedule of the scheduler's own fires at `now`: it waits for no window. Its item is empty.
     pub fn queue_schedule(&self, row: &TriggerRow, now: u64) {
         self.lock()
             .pending
             .entry((row.id.clone(), String::new()))
-            .or_insert_with(|| Pending {
+            .or_insert_with(|| PendingRow {
+                trigger: row.id.clone(),
+                item: String::new(),
                 recipe: row.recipe.clone(),
                 project: row.project.clone(),
                 source: row.source.clone(),
@@ -257,10 +358,11 @@ impl Triggers {
             });
     }
 
-    /// Starts the runs of the deliveries whose windows have closed, one per item and recipe at a time. Returns the
-    /// runs started.
+    /// Starts the runs of the deliveries whose windows have closed, one per item and recipe at a time, and forgets the
+    /// identities taken long ago. Returns the runs started.
     pub fn start_due(&self, runs: &Runs, now: u64) -> Vec<String> {
         let mut inner = self.lock();
+        inner.fired.retain(|_, f| f.fired_ms + FIRED_KEEP_MS >= now);
         let due: Vec<(String, String)> = inner
             .pending
             .iter()
@@ -273,28 +375,20 @@ impl Triggers {
                 continue;
             };
             let item = key.1.clone();
-            let active = (pending.recipe.clone(), item.clone());
-            if let Some(run) = inner.active.get(&active).cloned() {
-                if runs
-                    .view(&run)
-                    .is_some_and(|v| matches!(v.run.state, RunState::Running | RunState::Owner))
-                {
-                    continue;
-                }
-                inner.active.remove(&active);
+            if running_for(runs, &pending.recipe, &item) {
+                continue;
             }
-            let subject = (!item.is_empty()).then_some(item.as_str());
+            inner.pending.remove(&key);
             // Only a recipe whose steps all run on an engine can be started here: a role's step waits for a task's seat,
             // and nothing fills it from a trigger.
             if !engine_only(runs, &pending.recipe) {
-                inner.pending.remove(&key);
                 eprintln!(
                     "apid: trigger {} starts no run: recipe {} has steps that wait for a task",
                     key.0, pending.recipe
                 );
                 continue;
             }
-            inner.pending.remove(&key);
+            let subject = (!item.is_empty()).then_some(item.as_str());
             match runs.start_engine(
                 &pending.recipe,
                 &pending.source,
@@ -303,10 +397,7 @@ impl Triggers {
                 subject,
                 now,
             ) {
-                Some(run) => {
-                    inner.active.insert(active, run.clone());
-                    started.push(run);
-                }
+                Some(run) => started.push(run),
                 None => eprintln!(
                     "apid: trigger {} starts no run: no recipe {}",
                     key.0, pending.recipe
@@ -382,10 +473,71 @@ impl Triggers {
     }
 }
 
-/// Whether a recipe's steps all run on an engine, so a trigger can start it (the others wait for a task's seats).
-pub fn engine_only(runs: &Runs, recipe: &str) -> bool {
-    runs.recipe(recipe, None)
-        .is_some_and(|r| !r.steps.is_empty() && r.steps.iter().all(|s| s.engine.is_some()))
+/// Takes an event from one of the plaza's sources, at the wall clock.
+pub fn emit(app: &App, event: &Event) -> usize {
+    app.triggers.deliver(event, apz_plaza::now_ms())
+}
+
+/// A Weft event from the feed `weft_hub.rs` reads (`/v1/events`): a lane opened (`lane.opened`), a change landed
+/// (`change.landed`), a release proposed (`release.proposed`). Its identity is the feed's sequence number.
+pub fn weft_event(app: &App, seq: u64, kind: &str, body: &Value) -> usize {
+    let repo = body["repo"].as_str().unwrap_or("");
+    let (event, item) = match kind {
+        "lane.open" => (
+            "lane.opened",
+            body["change"].as_str().map(|c| format!("{repo}#{c}")),
+        ),
+        "land" => (
+            "change.landed",
+            body["change"].as_str().map(|c| format!("{repo}#{c}")),
+        ),
+        "release.propose" => (
+            "release.proposed",
+            body["version"].as_str().map(|v| format!("{repo}@{v}")),
+        ),
+        _ => return 0,
+    };
+    let Some(item) = item.filter(|_| !repo.is_empty()) else {
+        return 0;
+    };
+    emit(
+        app,
+        &Event {
+            source: "weft".into(),
+            event: event.into(),
+            item,
+            label: String::new(),
+            dedup: Some(format!("weft:{seq}")),
+        },
+    )
+}
+
+/// A CI run ended (4.5) for a change of a project: the run's identity is taken once.
+pub fn ci_run_ended(app: &App, project: &str, change: &str, run: &str) -> usize {
+    emit(
+        app,
+        &Event {
+            source: "ci".into(),
+            event: "run.ended".into(),
+            item: format!("{project}#{change}"),
+            label: String::new(),
+            dedup: Some(format!("ci:{run}")),
+        },
+    )
+}
+
+/// A maintenance signal arrived for a project (`maintenance.rs`): debounced per project, taken once per signal.
+pub fn maintenance_signal(app: &App, project: &str, signal_id: &str, kind: &str) -> usize {
+    emit(
+        app,
+        &Event {
+            source: "maintenance".into(),
+            event: "signal.received".into(),
+            item: project.to_string(),
+            label: kind.to_string(),
+            dedup: Some(format!("maintenance:{project}:{signal_id}")),
+        },
+    )
 }
 
 /// The scheduler's pass (every 2 s, while the plaza runs): fires the schedules that are due, then starts the runs of the
@@ -435,6 +587,7 @@ mod tests {
             event: "issue.labelled".into(),
             item: item.into(),
             label: label.into(),
+            dedup: None,
         }
     }
 
@@ -616,5 +769,138 @@ mod tests {
             triggers.start_due(&runs, day(9, 0)).is_empty(),
             "the delivery was dropped, not kept"
         );
+    }
+
+    /// A Weft-style event of `kind` for change `change` of `repo`, identified by `seq`.
+    fn weft(seq: u64, change: &str) -> Event {
+        Event {
+            source: "weft".into(),
+            event: "change.landed".into(),
+            item: format!("acme/app#{change}"),
+            label: String::new(),
+            dedup: Some(format!("weft:{seq}")),
+        }
+    }
+
+    fn weft_trigger(t: &Triggers, window_ms: u64) -> TriggerRow {
+        t.add(
+            TriggerRow {
+                id: String::new(),
+                recipe: "intake".into(),
+                project: Some("acme".into()),
+                action: Action::Run,
+                source: "weft".into(),
+                event: "change.landed".into(),
+                label: String::new(),
+                cron: String::new(),
+                every_minutes: 0,
+                window_ms,
+                enabled: true,
+                next_ms: None,
+                last_ms: None,
+                created_ms: 0,
+            },
+            day(0, 0),
+        )
+    }
+
+    /// The triggers' rows, windows and taken identities written to an in-memory plaza.db and loaded into fresh ones,
+    /// as a restart does.
+    fn restarted(t: &Triggers) -> Triggers {
+        let conn = Connection::open_in_memory().unwrap();
+        for (def, rows) in [
+            (def(), t.rows().unwrap()),
+            (pending_def(), t.pending_rows().unwrap()),
+            (fired_def(), t.fired_rows().unwrap()),
+        ] {
+            conn.execute_batch(&def.ddl()).unwrap();
+            apz_store::table::replace(&conn, def, &rows).unwrap();
+        }
+        let loaded = Triggers::default();
+        loaded.load(&conn).unwrap();
+        loaded.load_pending(&conn).unwrap();
+        loaded.load_fired(&conn).unwrap();
+        loaded
+    }
+
+    #[test]
+    fn a_landing_starts_one_run_and_a_replay_of_it_starts_none() {
+        let triggers = Triggers::default();
+        let runs = Runs::default();
+        weft_trigger(&triggers, 0);
+        let at = day(9, 0);
+        assert_eq!(triggers.deliver(&weft(41, "7"), at), 1);
+        assert_eq!(
+            triggers.deliver(&weft(41, "7"), at + 10),
+            0,
+            "the same landing is taken once"
+        );
+        assert_eq!(triggers.start_due(&runs, at + 10).len(), 1);
+        assert_eq!(
+            triggers.deliver(&weft(41, "7"), at + 20),
+            0,
+            "and a replay after the run started"
+        );
+        assert!(triggers.start_due(&runs, at + 20).is_empty());
+        assert_eq!(runs.list(None, None).len(), 1);
+        // another landing is another event
+        assert_eq!(triggers.deliver(&weft(42, "8"), at + 30), 1);
+        assert_eq!(triggers.start_due(&runs, at + 30).len(), 1);
+        assert_eq!(runs.list(None, None)[0].run.trigger, "weft");
+    }
+
+    #[test]
+    fn a_window_and_a_taken_landing_survive_a_restart() {
+        let triggers = Triggers::default();
+        let runs = Runs::default();
+        weft_trigger(&triggers, 2_000);
+        let at = day(9, 0);
+        assert_eq!(triggers.deliver(&weft(7, "3"), at), 1);
+        // the restart comes inside the window: the window is still open, and the second delivery joins it
+        let triggers = restarted(&triggers);
+        assert_eq!(
+            triggers.deliver(&weft(7, "3"), at + 1_000),
+            0,
+            "the landing was taken before the restart"
+        );
+        assert!(
+            triggers.start_due(&runs, at + 1_999).is_empty(),
+            "the window is not over"
+        );
+        assert_eq!(triggers.start_due(&runs, at + 2_000).len(), 1);
+        // a restart after the run does not take the landing again
+        let triggers = restarted(&triggers);
+        assert_eq!(triggers.deliver(&weft(7, "3"), at + 5_000), 0);
+        assert!(triggers.start_due(&runs, at + 60_000).is_empty());
+        assert_eq!(runs.list(None, None).len(), 1, "one run in all");
+    }
+
+    #[test]
+    fn a_burst_inside_a_window_that_a_restart_splits_is_still_one_run() {
+        let triggers = Triggers::default();
+        let runs = Runs::default();
+        labelled_trigger(&triggers, "", 2_000);
+        let at = day(9, 0);
+        assert_eq!(triggers.deliver(&event("acme/app#7", ""), at), 1);
+        let triggers = restarted(&triggers);
+        assert_eq!(
+            triggers.deliver(&event("acme/app#7", ""), at + 500),
+            1,
+            "a delivery with no identity joins the window"
+        );
+        assert_eq!(triggers.start_due(&runs, at + 2_000).len(), 1);
+        assert_eq!(runs.list(None, None).len(), 1);
+    }
+
+    #[test]
+    fn a_taken_identity_is_forgotten_after_its_keep_time() {
+        let triggers = Triggers::default();
+        let runs = Runs::default();
+        weft_trigger(&triggers, 0);
+        let at = day(9, 0);
+        assert_eq!(triggers.deliver(&weft(9, "1"), at), 1);
+        triggers.start_due(&runs, at);
+        triggers.start_due(&runs, at + FIRED_KEEP_MS + 1);
+        assert_eq!(triggers.deliver(&weft(9, "1"), at + FIRED_KEEP_MS + 1), 1);
     }
 }

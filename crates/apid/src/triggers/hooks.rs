@@ -100,6 +100,7 @@ pub fn parse(
             event: "issue.labelled".into(),
             item: format!("{repo}#{number}"),
             label: json["label"]["name"].as_str().unwrap_or("").into(),
+            dedup: None,
         }));
     }
     let event = json["event"].as_str().ok_or("a delivery names its event")?;
@@ -109,6 +110,7 @@ pub fn parse(
         event: event.into(),
         item: item.into(),
         label: json["label"].as_str().unwrap_or("").into(),
+        dedup: None,
     }))
 }
 
@@ -277,6 +279,7 @@ mod tests {
                 event: "issue.labelled".into(),
                 item: "acme/app#7".into(),
                 label: "agent".into(),
+                dedup: None,
             })
         );
     }

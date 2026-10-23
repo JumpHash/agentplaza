@@ -232,3 +232,102 @@ fn a_schedule_is_a_cron_expression_or_an_interval_and_a_bad_one_is_refused() {
     assert_eq!(watch[0]["every_minutes"], 1440);
     assert_eq!(watch[0]["action"], "engine_watch");
 }
+
+/// A code project and its repo on the hub's own Weft (the hub starts it), once Weft answers.
+fn code_project(hub: &Hub) -> (String, String) {
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Landings", "goal": "A repo to land changes on", "kind": "code" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = project["id"]
+        .as_str()
+        .expect("the project's id")
+        .to_string();
+    let project = hub.wait_for(
+        &format!("/v1/projects/{pid}"),
+        Duration::from_secs(30),
+        |p| p["repo"].is_string(),
+    );
+    let repo = project["repo"]
+        .as_str()
+        .expect("the project's repo")
+        .to_string();
+    (pid, repo)
+}
+
+/// The owner's edit of one file, which lands at once on the repo's main: the change's id.
+fn land_edit(hub: &Hub, repo: &str, title: &str, path: &str) -> String {
+    let (status, body) = hub.call(
+        "POST",
+        &format!("/v1/weft/repos/{repo}/edits"),
+        Some(json!({ "title": title, "files": [{ "path": path, "text": "hello\n" }] })),
+    );
+    assert!(
+        status == 200 || status == 201,
+        "{status} {body}\n{}",
+        hub.log()
+    );
+    body["change"]
+        .as_str()
+        .expect("the landed change")
+        .to_string()
+}
+
+#[test]
+fn a_landing_on_the_hubs_weft_starts_one_run_of_the_recipe_whose_trigger_names_it() {
+    let scratch = Scratch::new("triggers-landing");
+    let hub = Hub::start(&scratch, None, None);
+    let (pid, repo) = code_project(&hub);
+    let (code, trigger) = hub.call(
+        "POST",
+        "/v1/recipes/intake/triggers",
+        Some(json!({
+            "source": "weft",
+            "event": "change.landed",
+            "project": pid,
+            "window_ms": 0,
+        })),
+    );
+    assert_eq!(code, 201, "{trigger}");
+    // The hub reads Weft's event feed from the moment Weft runs: let the feed connect before the landing.
+    std::thread::sleep(Duration::from_secs(3));
+
+    let first = land_edit(&hub, &repo, "Land the readme", "README.md");
+    let listed = hub.wait_for("/v1/recipe-runs", Duration::from_secs(30), |v| {
+        v["runs"].as_array().is_some_and(|r| !r.is_empty())
+    });
+    let started = listed["runs"].as_array().cloned().unwrap_or_default();
+    assert_eq!(
+        started.len(),
+        1,
+        "one landing, one run: {listed}\n{}",
+        hub.log()
+    );
+    assert_eq!(started[0]["trigger"], "weft");
+    assert_eq!(started[0]["project"], pid.as_str());
+    assert_eq!(started[0]["subject"], format!("{repo}#{first}").as_str());
+
+    // The same landing is taken once: after the window and the feed's next passes, still one run.
+    std::thread::sleep(Duration::from_secs(5));
+    assert_eq!(runs(&hub).len(), 1, "{}", hub.log());
+
+    // A second landing is a second event: one more run, for its own change.
+    let second = land_edit(&hub, &repo, "Land the licence", "LICENSE");
+    let listed = hub.wait_for("/v1/recipe-runs", Duration::from_secs(30), |v| {
+        v["runs"].as_array().is_some_and(|r| r.len() >= 2)
+    });
+    let started = listed["runs"].as_array().cloned().unwrap_or_default();
+    assert_eq!(started.len(), 2, "{listed}\n{}", hub.log());
+    assert!(
+        started
+            .iter()
+            .any(|r| r["subject"] == format!("{repo}#{second}").as_str()),
+        "{listed}"
+    );
+}
