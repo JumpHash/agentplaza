@@ -643,6 +643,9 @@ fn stand_in_node(key: &NodeKey) -> Node {
         draining: false,
         revoked: false,
         address: String::new(),
+        path: crate::nodes::TUNNEL.to_string(),
+        mesh_address: String::new(),
+        mesh_token: String::new(),
     }
 }
 
@@ -651,7 +654,7 @@ fn stand_in_node(key: &NodeKey) -> Node {
 #[test]
 fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
     let store = Arc::new(Store::for_tests());
-    let node_key = NodeKey::generate();
+    let node_key = Arc::new(NodeKey::generate());
     let nodes = Arc::new(nodes::Store::holding(vec![stand_in_node(&node_key)]));
     let standin = Arc::new(NodedStandIn {
         announce: true,
@@ -782,6 +785,7 @@ fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
         cid_base: REMOTE_CID_BASE,
         cid_count: CIDS_PER_NODE,
         hub_name: "test".into(),
+        mesh: None,
     };
     let local = Local {
         noded: 0,
@@ -789,9 +793,11 @@ fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
         forward: 0,
         token: InternalToken::none(),
         inbound: inbound_port,
+        transfer: 0,
     };
     let mux = node_tunnel::connect(&identity, &node_key).expect("the tunnel opens over TLS");
-    let _serving = thread::spawn(move || node_tunnel::serve(mux, local));
+    let who = node_tunnel::Who::new(&identity, &node_key);
+    let _serving = thread::spawn(move || node_tunnel::serve(mux, local, who, false));
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while nodes.tunnel(NODE).is_none() {
         assert!(
