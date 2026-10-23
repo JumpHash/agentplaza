@@ -218,6 +218,31 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
     }
 }
 
+/// Writes a compaction's summary (the conversation's decisions, dead ends, open questions and where it stood) into the
+/// journal of the task session `cid` works on, as a handover of that session. A session with no task has no journal,
+/// so nothing is written for it; the summary stays in its transcript.
+pub fn record_compaction(app: &App, cid: u64, summary: &str) -> Option<u64> {
+    let session = app.sessions.by_cid(cid)?;
+    let task = session.task.clone()?;
+    Some(app.journal.add_handover(
+        &task,
+        compaction_handover(&session.id, summary, apz_plaza::now_ms()),
+    ))
+}
+
+/// The handover a compaction leaves: the summary is where things stand, and the session goes on from it.
+pub fn compaction_handover(session: &str, summary: &str, at_ms: u64) -> Handover {
+    Handover {
+        seq: 0,
+        session: session.to_string(),
+        stands: summary.trim().to_string(),
+        done: String::new(),
+        next: "The conversation before this summary was compacted: continue from it.".to_string(),
+        check_first: String::new(),
+        at_ms,
+    }
+}
+
 /// The session a write comes from and its task: only a task's session writes its journal.
 fn writing(app: &App, agent: &Agent) -> Result<(crate::sessions::Session, String), String> {
     let session = app
@@ -549,6 +574,27 @@ mod tests {
             read_text("t1", journal.as_ref(), Some("nothing")).starts_with("No notes on t1 match.")
         );
         assert_eq!(read_text("t9", None, None), "The journal of t9 is empty.");
+    }
+
+    #[test]
+    fn a_compaction_leaves_its_summary_as_the_latest_handover_of_the_task() {
+        let journals = Journals::default();
+        journals.add_handover("t1", handover("parser done", "wire it"));
+        let summary = "Decisions: sessions, not agents (reason: a seat is a session).\nWhere it stands: parser done.";
+        journals.add_handover("t1", compaction_handover("s7", summary, 9));
+        let journal = journals.get("t1").expect("t1's journal");
+        let latest = journal.handovers.last().expect("a handover");
+        assert_eq!(
+            (latest.seq, latest.session.as_str()),
+            (2, "s7"),
+            "{latest:?}"
+        );
+        assert_eq!(latest.stands, summary, "{latest:?}");
+        assert!(
+            read_text("t1", Some(&journal), None).contains("Latest handover (from session s7):\nWhere things stand: Decisions: sessions, not agents"),
+            "{}",
+            read_text("t1", Some(&journal), None)
+        );
     }
 
     #[test]

@@ -61,6 +61,25 @@ const HANDOVER_ASKS: u32 = 2;
 const TASK_DONE: &str = "TASK DONE";
 /// What the harness asks a step session that ended its turn without a handover (journal.rs, 9.2).
 const HANDOVER_ASK: &str = "Write your handover with handover_write first: what stands, what is done, what is next, what to check first. Then end your turn. If the task is finished and nothing is left for another session, end with the line TASK DONE instead.";
+
+/// The most a kept tail of the conversation may weigh when compressing: half of `compress_at`, or no limit when it is 0.
+fn compress_budget(profile: &AgentProfile) -> usize {
+    if profile.compress_at > 0 {
+        (profile.compress_at / 2) as usize
+    } else {
+        usize::MAX
+    }
+}
+
+/// Asks a step session for its handover: the ask joins the conversation's latest message when that is the user's.
+fn ask_for_handover(messages: &mut Vec<Message>) {
+    match messages.last_mut() {
+        Some(last) if last.role == Role::User => last.content.push(Block::Text {
+            text: HANDOVER_ASK.to_string(),
+        }),
+        _ => messages.push(Message::user_text(HANDOVER_ASK)),
+    }
+}
 /// How often a local tool's thread is checked while the beat runs beside it.
 const LOCAL_POLL: Duration = Duration::from_millis(20);
 /// How long a script's calls that arrive together wait to be decided as one batch.
@@ -958,15 +977,28 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                     && size > self.compressed_size.saturating_add(profile.compress_at / 4)
             };
             if self.compress_requested || auto {
-                let reason = if self.compress_requested {
-                    "asked"
+                let foldable = compress_cut(
+                    messages.as_slice(),
+                    profile.keep_recent,
+                    compress_budget(profile),
+                )
+                .is_some_and(|cut| cut > 1);
+                if foldable && profile.handover && !handed_over && handover_asks < HANDOVER_ASKS {
+                    // A step session writes its handover before its conversation is folded, as it does before it ends:
+                    // the compaction waits for the call that answers the ask.
+                    handover_asks += 1;
+                    ask_for_handover(messages);
                 } else {
-                    "auto"
-                };
-                self.compress_requested = false;
-                // The next call's count measures the compressed conversation.
-                self.context_used = 0;
-                self.compress(work, profile, messages, reason)?;
+                    let reason = if self.compress_requested {
+                        "asked"
+                    } else {
+                        "auto"
+                    };
+                    self.compress_requested = false;
+                    // The next call's count measures the compressed conversation.
+                    self.context_used = 0;
+                    self.compress(work, profile, messages, reason)?;
+                }
             }
             if turns >= profile.max_turns.saturating_add(self.extra_turns) {
                 return Ok((WorkStatus::Stopped, "turn budget reached".to_string()));
@@ -1078,14 +1110,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                     if profile.handover && !handed_over && !said.contains(TASK_DONE) {
                         if handover_asks < HANDOVER_ASKS {
                             handover_asks += 1;
-                            match messages.last_mut() {
-                                Some(last) if last.role == Role::User => {
-                                    last.content.push(Block::Text {
-                                        text: HANDOVER_ASK.to_string(),
-                                    })
-                                }
-                                _ => messages.push(Message::user_text(HANDOVER_ASK)),
-                            }
+                            ask_for_handover(messages);
                             continue;
                         }
                         self.shared.note(&format!(
@@ -1131,12 +1156,11 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         messages: &mut Vec<Message>,
         reason: &str,
     ) -> Result<(), Halt> {
-        let budget = if profile.compress_at > 0 {
-            (profile.compress_at / 2) as usize
-        } else {
-            usize::MAX
-        };
-        let Some(cut) = compress_cut(messages.as_slice(), profile.keep_recent, budget) else {
+        let Some(cut) = compress_cut(
+            messages.as_slice(),
+            profile.keep_recent,
+            compress_budget(profile),
+        ) else {
             return Ok(());
         };
         if cut <= 1 {
@@ -2993,6 +3017,71 @@ mod tests {
                 1,
             ))
             .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    /// The windowed profile of a step session: it writes its handover (`handover_write`) before its conversation compacts.
+    fn windowed_step_welcome() -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system_parts": [{"text": "be brief", "cache": true}],
+                "tools": [
+                    {"name": "search", "description": "find", "input_schema": {"type": "object"}},
+                    {"name": "handover_write", "description": "hand over", "input_schema": {"type": "object"}},
+                ],
+                "max_turns": 20, "compress_at": 0, "keep_recent": 1, "handover": true,
+                "compact_at_pct": 70, "context_window": 1000,
+            },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_step_session_writes_its_handover_before_its_conversation_is_compacted() {
+        let workspace = scratch("handover-compaction");
+        run_hub(&workspace, |host| {
+            host.send(&windowed_step_welcome()).unwrap();
+            host.send(&work(1, "task", "t", "build it")).unwrap();
+            // The first turn has nothing older to fold, so no ask yet.
+            windowed_turn(host, 1, "s1");
+            windowed_turn(host, 2, "s2");
+            // The second turn leaves something to fold: the next call is asked for the handover first.
+            let asking = expect_type(host, "model_call");
+            let messages = &asking["request"]["messages"];
+            assert_eq!(messages.as_array().map(Vec::len), Some(5), "{messages}");
+            assert!(
+                messages
+                    .to_string()
+                    .contains("Write your handover with handover_write first"),
+                "{messages}"
+            );
+            host.send(&answer_using(
+                3,
+                json!([tool_use(
+                    "h1",
+                    "handover_write",
+                    json!({"stands": "parser done", "next": "wire it"})
+                )]),
+                "tool_use",
+                800,
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&decision("h1", "done", "handover recorded", false))
+                .unwrap();
+            // With the handover written, the older turns fold into the summary.
+            let (_, compressed) = compaction(
+                host,
+                4,
+                "Decisions: none yet.\nDead ends: none.\nOpen questions: none.\nWhere it stands: parser done.",
+            );
+            assert_eq!(compressed["folded"], json!(4), "{compressed}");
+            expect_type(host, "model_call");
+            host.send(&answer_using(5, json!([text("done")]), "end_turn", 1))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });

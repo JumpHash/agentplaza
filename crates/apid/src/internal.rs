@@ -731,6 +731,10 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             reason,
             summary,
         } => {
+            // The summary also goes into the task's journal, where the next session and the curator read it.
+            if !summary.is_empty() {
+                crate::journal::record_compaction(app, cid, &summary);
+            }
             app.transcripts.record(
                 &app.bus,
                 cid,
