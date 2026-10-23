@@ -208,6 +208,18 @@ pub fn fork_node(candidates: Vec<Candidate>, declared: &[project_stack::Pool]) -
     pick(&in_pools(candidates, declared))
 }
 
+/// Whether every node that reports is full for a new agent of `role`: no candidate has [`ADMIT_MIB`] free (see
+/// [`pick`]). The work loop waits to start a task while this holds (PLAN 7.1). False when no node reports, since
+/// [`choose`] then falls back to n0 and noded decides, as it always has.
+pub fn fleet_full(app: &App, role: &str) -> bool {
+    full_of(&candidates(app, role, &[], None))
+}
+
+/// [`fleet_full`] over the candidates (pure).
+fn full_of(candidates: &[Candidate]) -> bool {
+    !candidates.is_empty() && pick(candidates).is_none()
+}
+
 /// The node an agent of `role` leaving `from` moves to: the best of the other nodes in service in `from`'s
 /// pool by [`pick`] that hold the `needs` volumes (see [`lacking_volumes`]), reserved for it as a new agent's
 /// would be. None when none in the pool has room.
@@ -1332,6 +1344,21 @@ mod tests {
             Some("n2".to_string())
         );
         assert_eq!(choose(&[]), "n0", "a new agent still has n0 to go to");
+    }
+
+    #[test]
+    fn the_fleet_is_full_only_when_every_node_that_reports_is_full() {
+        assert!(!full_of(&[]), "no node reports: noded decides, as before");
+        let full = [
+            candidate("n0", ADMIT_MIB - 1, 3, false),
+            candidate("n1", 10, 0, false),
+        ];
+        assert!(full_of(&full));
+        let room = [
+            candidate("n0", ADMIT_MIB - 1, 3, false),
+            candidate("n1", ADMIT_MIB, 0, false),
+        ];
+        assert!(!full_of(&room), "one node with ADMIT_MIB free has room");
     }
 
     #[test]

@@ -2,8 +2,9 @@
 //!
 //! Every tick (the scheduler's, every 2 s):
 //! 1. a task that is ready to run (open, every `after` link done, its project active, no seats yet) gets its recipe's
-//!    seats (`seats.rs`: the built-in change recipe) and reserves its budget from its project (`budgets.rs`); a project
-//!    that cannot reserve it asks the owner with a `budget` card and the task waits;
+//!    seats (`seats.rs`: the built-in change recipe) and reserves its budget from its project (`budgets.rs`), when its
+//!    project's team has room (its maximum, PLAN 7.1), the fleet has room and its budget rate does; a project that
+//!    cannot reserve it with nothing else running asks the owner with a `budget` card and the task waits;
 //! 2. every ready seat gets a fresh session: a model (a reviewer's differs from the builder's, W27), a node, a VM
 //!    started for it ("a fork from today's templates until phase 3");
 //! 3. a session whose VM did not say hello in time fails, and its seat tries again.
@@ -21,11 +22,15 @@ use std::sync::{Mutex, PoisonError};
 
 use apz_plaza::tasks::FinishOutcome;
 use apz_proto::wire::{WorkKind, WorkStatus};
+use serde_json::Value;
 
+use crate::agents::Agent;
 use crate::budgets::{Amount, Notice, OwnerKind, Short, Unit};
 use crate::cards::{self, NewCard};
 use crate::chats::{Author, MessageKind, Post};
 use crate::journal;
+use crate::placement;
+use crate::project_settings;
 use crate::scheduler::Origin;
 use crate::seats::{self, Next, Seat};
 use crate::sessions::{Kind, NewSession, PausedBy, Session, State};
@@ -98,8 +103,53 @@ fn reserve_for(app: &App, task: &str, project: &str) -> u64 {
     }
 }
 
-/// Fills the seats of every ready task (PLAN 0.4: `assign_tasks` fills seats): a task that is ready to run gets its
-/// recipe's seats and reserves its budget; its seats get sessions on the loop's next steps.
+/// The tasks of project `project` that run now: those that hold seats, from their seats' opening until they end (a
+/// task that a session has claimed is no longer open, and still runs). They are the project's team (PLAN 7.1).
+fn running_tasks(app: &App, project: &str) -> Vec<String> {
+    app.plaza
+        .tasks
+        .list()
+        .iter()
+        .filter(|t| t.project() == Some(project) && !app.seats.of_task(t.id()).is_empty())
+        .map(|t| t.id().to_string())
+        .collect()
+}
+
+/// Reserves `reserve` for `task` from its project as the budget rate allows (PLAN 7.1): the expected spend of the
+/// project's running tasks, kept under what is left. A running task expects its reserve, which it holds from the
+/// project when it has a budget of its own; one without holds nothing, so its default reserve is counted here.
+/// Refused with the project's `Short` when the rest does not fit.
+fn reserve_budget(
+    app: &App,
+    task: &str,
+    project: &str,
+    reserve: u64,
+    now: u64,
+) -> Result<(), Short> {
+    let unreserved: u64 = running_tasks(app, project)
+        .iter()
+        .filter(|running| app.budgets.get(OwnerKind::Task, running).is_none())
+        .map(|running| reserve_for(app, running, project))
+        .sum();
+    if let Some(budget) = app.budgets.get(OwnerKind::Project, project)
+        && let Some(left) = budget.left()
+        && left.saturating_sub(unreserved) < reserve
+    {
+        return Err(Short::Cap {
+            owner_kind: OwnerKind::Project,
+            owner: budget.owner.clone(),
+            unit: budget.unit,
+            needed: reserve,
+            left: left.saturating_sub(unreserved),
+        });
+    }
+    app.budgets.start_task(task, reserve, now)
+}
+
+/// Fills the seats of every ready task (PLAN 0.4: `assign_tasks` fills seats) up to its project's team (PLAN 7.1): a
+/// task that is ready to run gets its recipe's seats and reserves its budget; its seats get sessions on the loop's next
+/// steps. A task waits while its project runs its maximum of tasks, while every node that reports is full, and while its
+/// reserve does not fit the budget's rate ([`reserve_budget`]).
 fn assign_tasks(app: &App, now: u64) {
     for task in app.plaza.tasks.list() {
         if !task.is_open() || !task.is_ready() {
@@ -111,8 +161,20 @@ fn assign_tasks(app: &App, now: u64) {
         if !project_active(app, &project) || !app.seats.of_task(task.id()).is_empty() {
             continue;
         }
+        let running = running_tasks(app, &project).len();
+        if running >= project_settings::team_max(app, &project) {
+            continue;
+        }
+        // The seat a task opens with is the builder's, so the fleet is asked for a builder's room.
+        if placement::fleet_full(app, "builder") {
+            continue;
+        }
         let reserve = reserve_for(app, task.id(), &project);
-        if let Err(short) = app.budgets.start_task(task.id(), reserve, now) {
+        if let Err(short) = reserve_budget(app, task.id(), &project, reserve, now) {
+            // The running tasks hand their spend back as they end, so a task that waits for them is not short.
+            if running > 0 && matches!(short, Short::Cap { .. }) {
+                continue;
+            }
             ask_budget(app, &short, Some(task.id()), &project, now);
             continue;
         }
@@ -126,6 +188,50 @@ fn assign_tasks(app: &App, now: u64) {
             ),
             now,
         );
+    }
+}
+
+/// The planner's `team_set {max?, target?}` (PLAN 7.1): sets the team of the planner's project, the most of its tasks
+/// that run at once and the team it aims for. Only a planner is offered it (tools.jhrl). A lower maximum starts no new
+/// task until the team is back under it; the tasks running go on.
+pub fn team_set(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
+    let project = crate::projects::project_of(app, agent.cid)
+        .ok_or("team_set sets the team of a project, and you work on none")?;
+    let max = team_number(input, "max")?;
+    let target = team_number(input, "target")?;
+    if max.is_none() && target.is_none() {
+        return Err("invalid input: give max, target or both".into());
+    }
+    let mut settings = app.project_settings.get(&project);
+    if max.is_some() {
+        settings.team_max = max;
+    }
+    if target.is_some() {
+        settings.team_target = target;
+    }
+    project_settings::check(app, &settings)?;
+    app.project_settings
+        .set(&project, settings)
+        .map_err(|e| format!("the team was not saved: {e}"))?;
+    if let Some(record) = app.projects.get(&project) {
+        app.bus.publish("project", &record);
+    }
+    Ok(format!(
+        "team of {project}: at most {} tasks at once, aiming for {}",
+        project_settings::team_max(app, &project),
+        project_settings::team_target(app, &project)
+    ))
+}
+
+/// A team size from a tool's input: a whole number, or none when the key is absent.
+fn team_number(input: &Value, key: &str) -> Result<Option<u32>, String> {
+    match input.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Some)
+            .ok_or_else(|| format!("invalid input: {key:?} must be a whole number")),
     }
 }
 
@@ -1903,6 +2009,16 @@ fn start_planner(app: &App, project: &str, now: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_team_size_is_a_whole_number_and_an_absent_one_is_none() {
+        let input = serde_json::json!({"max": 8, "target": null, "bad": "many", "neg": -1});
+        assert_eq!(team_number(&input, "max"), Ok(Some(8)));
+        assert_eq!(team_number(&input, "target"), Ok(None));
+        assert_eq!(team_number(&input, "missing"), Ok(None));
+        assert!(team_number(&input, "bad").is_err());
+        assert!(team_number(&input, "neg").is_err());
+    }
 
     #[test]
     fn a_step_in_flight_hands_over_when_its_pool_has_no_room() {

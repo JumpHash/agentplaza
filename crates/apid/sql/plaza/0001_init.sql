@@ -117,6 +117,8 @@ CREATE TABLE "project_setting" (
     "task_budget" INTEGER CHECK ("task_budget" >= 0),
     "permission_mode" TEXT CHECK ("permission_mode" IN ('autonomous', 'ask', 'read_only')),
     "review_timeout_minutes" INTEGER CHECK ("review_timeout_minutes" >= 0),
+    "team_max" INTEGER CHECK ("team_max" >= 0),
+    "team_target" INTEGER CHECK ("team_target" >= 0),
     PRIMARY KEY ("project")
 ) STRICT;
 CREATE TABLE "project_setting_role_models" (
@@ -2321,6 +2323,8 @@ CREATE TABLE "chat_draft_settings" (
     "task_budget" INTEGER CHECK ("task_budget" >= 0),
     "permission_mode" TEXT CHECK ("permission_mode" IN ('autonomous', 'ask', 'read_only')),
     "review_timeout_minutes" INTEGER CHECK ("review_timeout_minutes" >= 0),
+    "team_max" INTEGER CHECK ("team_max" >= 0),
+    "team_target" INTEGER CHECK ("team_target" >= 0),
     PRIMARY KEY ("chat_id"),
     FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
