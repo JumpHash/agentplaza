@@ -15,7 +15,7 @@ use crate::fleet::LOCAL;
 use crate::nodes;
 
 /// vsockd's inbound listener on the hub's own machine (apz-link's default): the port the local node's streams go to.
-const LOCAL_INBOUND: u16 = 19095;
+pub const LOCAL_INBOUND: u16 = 19095;
 /// How long the app may stay silent (before its head, or between pieces of its body) before the answer fails.
 const SILENCE: Duration = Duration::from_secs(300);
 /// The most of an answer's head the hub reads before it refuses it.

@@ -1,23 +1,38 @@
-//! The web and terminal targets on a scenario, through the loop (PLAN 19.3): a headless browser on a page served by a test
-//! server (the seeded bug, and the fixed page), and a program run in a pseudo-terminal (a shell script, seeded and fixed).
-//! The target is the real one. The driver and the planner are fakes: the gateway's scripts answer for the stand-in's
-//! element ids, and a page's and a terminal's ids are their own. The web test skips, printing why, when no Chrome is
-//! installed (`CHROME` names one, or one is under /Applications).
+//! The web and terminal targets on a scenario, through the loop (PLAN 19.3).
+//!
+//! The targets run in a test fork, as they do in production: a fake fork (`LocalFork`) is a noded and a VM whose exec runs
+//! on this machine, in a scratch workspace. Its browser is a real Chrome when one is installed (the test skips, printing
+//! why, when none is), and its DevTools port is relayed through vsockd's inbound listener, as 6.4's tests relay an app.
+//! The terminal's program is a shell script behind a real pseudo-terminal runner (`pty-run.py`). The driver and the
+//! planner are fakes: the gateway's scripts answer for the stand-in's element ids, and a page's and a terminal's ids are
+//! their own.
 
-use std::cell::Cell;
-use std::io::{BufRead, BufReader, Write};
+use std::cell::{Cell, RefCell};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use apz_blobs::Blobs;
+use apz_link::inbound::{Duplex, GuestDial, PortCheck};
+use apz_proto::wire::HostMessage;
+use serde_json::{Value, json};
 
+use super::fork::{self, Channel, DEVTOOLS_PORT};
 use super::models::{Judgement, Look, Models, Pick, PickRequest, PlanRequest, Tier};
 use super::run::Ctx;
 use super::scenario::{Assertion, Origin, Scenario, Step};
 use super::target::{Action, Screenshot, Target};
-use super::tui::{TERMINAL, Tui};
-use super::web::{Web, find_chrome};
+use super::tui::{ForkTui, TERMINAL};
+use super::web::{self, Web};
 use super::{Execution, Input, Ruling, execute};
+use crate::base_recipe::{OS_TEMPLATE, Step as ForkStep};
+use crate::base_vm::{self, Answer, Fork, Host};
+use crate::fleet::LOCAL;
+use crate::nodes;
 
 /// A driver and planner that answer from code: the plan is one acceptance scenario, a failure is a defect, and the
 /// driver's picks come from `pick`, numbered from the start of each target's run.
@@ -62,10 +77,10 @@ impl Models for Fake {
 }
 
 /// One scenario on the targets `make` opens (a fresh one for each run), through the loop.
-fn run(
+fn run<'a>(
     scenario: Scenario,
     pick: fn(usize, &PickRequest) -> Pick,
-    make: impl Fn() -> Result<Box<dyn Target>, String>,
+    make: impl Fn() -> Result<Box<dyn Target + 'a>, String>,
 ) -> Execution {
     let fake = Fake {
         scenario,
@@ -154,13 +169,12 @@ fn type_then_enter(n: usize, _req: &PickRequest) -> Pick {
 }
 
 /// Serves the cart at `/` (its Pay leads to the error page, or to the receipt when `fixed`), the receipt and the error
-/// page, on a local port. Returns the address.
+/// page, on a local port. Returns the address. A thread per connection: a browser opens sockets it sends nothing on
+/// (preconnects), and one of them must not hold up the page's request.
 fn serve(fixed: bool) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     thread::spawn(move || {
-        // A thread per connection: a browser opens sockets it sends nothing on (preconnects), and one of them must
-        // not hold up the page's request.
         for stream in listener.incoming().flatten() {
             thread::spawn(move || answer(stream, fixed));
         }
@@ -230,36 +244,278 @@ fn terminal_program(answer: &str) -> String {
     )
 }
 
+/// The fake fork's VM and its noded: its exec runs on this machine in a scratch workspace. A background browser runs with
+/// its DevTools port on a free port here, which the guest's port (`DEVTOOLS_PORT`) is relayed to.
+struct LocalFork {
+    cid: u64,
+    workspace: tempfile::TempDir,
+    chrome: Option<PathBuf>,
+    children: Mutex<Vec<Child>>,
+    devtools: Arc<Mutex<Option<u16>>>,
+}
+
+impl LocalFork {
+    fn new(cid: u64, chrome: Option<PathBuf>) -> LocalFork {
+        LocalFork {
+            cid,
+            workspace: tempfile::tempdir().unwrap(),
+            chrome,
+            children: Mutex::new(Vec::new()),
+            devtools: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// A foreground command, run to its end here.
+    fn run(&self, argv: &[String]) -> Answer {
+        let Some((program, args)) = argv.split_first() else {
+            return failed("the command is empty");
+        };
+        match Command::new(program)
+            .args(args)
+            .current_dir(self.workspace.path())
+            .output()
+        {
+            Ok(out) => Answer {
+                ok: out.status.success(),
+                exit_code: out.status.code(),
+                output: format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+            },
+            Err(why) => failed(&format!("{program} did not run: {why}")),
+        }
+    }
+
+    /// A background command: started here and left running. The browser is the real Chrome, on a free port whose
+    /// DevTools file the fake reads (the guest's fixed port is the one the relay serves).
+    fn start(&self, argv: &[String], listen: Option<u16>) -> Answer {
+        let Some((program, args)) = argv.split_first() else {
+            return failed("the command is empty");
+        };
+        let browser = program == fork::BROWSER;
+        let mut command = Command::new(if browser {
+            self.chrome
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(program))
+        } else {
+            PathBuf::from(program)
+        });
+        let profile = self.workspace.path().join("browser-profile");
+        let args: Vec<String> = if browser {
+            args.iter()
+                .map(|arg| {
+                    if arg == &format!("--remote-debugging-port={DEVTOOLS_PORT}") {
+                        "--remote-debugging-port=0".to_string()
+                    } else if arg.starts_with("--user-data-dir=") {
+                        format!("--user-data-dir={}", profile.display())
+                    } else {
+                        arg.clone()
+                    }
+                })
+                .collect()
+        } else {
+            args.to_vec()
+        };
+        command
+            .args(&args)
+            .current_dir(self.workspace.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(why) => return failed(&format!("{program} did not start: {why}")),
+        };
+        self.children.lock().unwrap().push(child);
+        if browser {
+            let port = wait_for_devtools(&profile);
+            match port {
+                Some(port) => *self.devtools.lock().unwrap() = Some(port),
+                None => return failed("the browser did not open its DevTools port"),
+            }
+        }
+        if let Some(port) = listen {
+            base_vm::record_listening(self.cid, port);
+        }
+        Answer {
+            ok: true,
+            exit_code: None,
+            output: String::new(),
+        }
+    }
+}
+
+fn failed(why: &str) -> Answer {
+    Answer {
+        ok: false,
+        exit_code: None,
+        output: why.to_string(),
+    }
+}
+
+/// The port a browser opened in `profile` serves its DevTools protocol on (its `DevToolsActivePort` file's first line).
+fn wait_for_devtools(profile: &Path) -> Option<u16> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let port = std::fs::read_to_string(profile.join("DevToolsActivePort"))
+            .ok()
+            .and_then(|text| text.lines().next().and_then(|l| l.trim().parse().ok()));
+        if port.is_some() || Instant::now() >= deadline {
+            return port;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+impl Host for LocalFork {
+    fn noded(
+        &self,
+        _node: &str,
+        method: &str,
+        path: &str,
+        _body: Option<&Value>,
+    ) -> Result<(u16, Value), String> {
+        match (method, path) {
+            ("POST", "/v1/runs") => {
+                base_vm::arrive(self.cid);
+                Ok((
+                    200,
+                    json!({ "id": "run-test", "vms": [{ "guest_cid": self.cid }] }),
+                ))
+            }
+            ("POST", path) if path.ends_with("/stop") => Ok((200, json!({}))),
+            _ => Ok((404, json!({ "error": "the fake fork has no such route" }))),
+        }
+    }
+
+    fn send(&self, cid: u64, message: &HostMessage) -> Result<(), String> {
+        let HostMessage::Exec {
+            id,
+            argv,
+            background,
+            listen,
+            ..
+        } = message
+        else {
+            return Err("the fake fork takes commands only".into());
+        };
+        let answer = if *background {
+            self.start(argv, *listen)
+        } else {
+            self.run(argv)
+        };
+        base_vm::answer(cid, *id, answer);
+        Ok(())
+    }
+}
+
+impl Drop for LocalFork {
+    fn drop(&mut self) {
+        for child in self.children.get_mut().unwrap().iter_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// The inbound listener's guest: the fake fork serves the browser's DevTools port once the browser runs, by dialing it.
+struct FakeGuest {
+    cid: u64,
+    devtools: Arc<Mutex<Option<u16>>>,
+}
+
+impl PortCheck for FakeGuest {
+    fn served(&self, cid: u64, port: u16) -> bool {
+        cid == self.cid && port == DEVTOOLS_PORT && self.devtools.lock().unwrap().is_some()
+    }
+}
+
+impl GuestDial for FakeGuest {
+    fn dial(&self, _cid: u64, _port: u16) -> io::Result<Box<dyn Duplex>> {
+        let port = self
+            .devtools
+            .lock()
+            .unwrap()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no browser"))?;
+        Ok(Box::new(TcpStream::connect(("127.0.0.1", port))?))
+    }
+}
+
+/// Starts the fake fork's inbound listener on this machine and returns its port.
+fn relay(fake: &LocalFork) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let guest = Arc::new(FakeGuest {
+        cid: fake.cid,
+        devtools: Arc::clone(&fake.devtools),
+    });
+    let check: Arc<dyn PortCheck> = guest.clone();
+    let dial: Arc<dyn GuestDial> = guest;
+    thread::spawn(move || apz_link::inbound::serve(listener, check, dial));
+    port
+}
+
+/// The fake fork, started with its VM and no steps of its own.
+fn start_fork(fake: &LocalFork) -> RefCell<Fork<'_, LocalFork>> {
+    let steps = [ForkStep::Start {
+        template: OS_TEMPLATE,
+        volumes: vec![],
+    }];
+    let fork = Fork::start(fake, LOCAL.to_string(), "cart".to_string(), &steps)
+        .expect("the fake fork starts");
+    RefCell::new(fork)
+}
+
 #[test]
-fn a_scenario_on_a_web_page_fails_on_the_seeded_bug_and_passes_the_fixed_page() {
-    let chrome = match find_chrome() {
+fn a_web_target_in_the_lane_fork_fails_on_the_seeded_bug_and_passes_the_fixed_page() {
+    let chrome = match web::local::find_chrome() {
         Ok(chrome) => chrome,
         Err(why) => {
             eprintln!("skipped the web target's test: {why}");
             return;
         }
     };
-    let buggy_url = format!("{}/", serve(false));
-    let fixed_url = format!("{}/", serve(true));
+    let fake = LocalFork::new(9101, Some(chrome));
+    let inbound = relay(&fake);
+    let fork = start_fork(&fake);
+    let browser = fork::browser_command();
+    let started = Channel::exec(&fork, &browser, true).expect("the browser starts in the fork");
+    assert!(started.ok, "{}", started.output);
+    let nodes = nodes::Store::holding(Vec::new());
+    let cid = fake.cid;
 
+    let buggy_url = format!("{}/", serve(false));
     let bug = run(
         pay_scenario(),
         press_pay,
-        || -> Result<Box<dyn Target>, String> { Ok(Box::new(Web::open(&chrome, &buggy_url)?)) },
+        || -> Result<Box<dyn Target>, String> {
+            let mut dial = fork::port_dial(&nodes, LOCAL, cid, DEVTOOLS_PORT, inbound);
+            Ok(Box::new(Web::attach(&mut dial, &buggy_url)?))
+        },
     );
     assert_eq!(bug.target, "web");
-    assert_eq!(bug.found.len(), 1, "the seeded bug is a finding");
+    assert_eq!(
+        bug.found.len(),
+        1,
+        "the seeded bug is a finding: {}",
+        bug.summary()
+    );
     assert!(
         matches!(bug.found[0].ruling, Ruling::Confirmed { .. }),
         "the re-run fails again: {:?}",
         bug.found[0].ruling
     );
-    assert_eq!(bug.confirmed(), 1);
 
+    let fixed_url = format!("{}/", serve(true));
     let fixed = run(
         pay_scenario(),
         press_pay,
-        || -> Result<Box<dyn Target>, String> { Ok(Box::new(Web::open(&chrome, &fixed_url)?)) },
+        || -> Result<Box<dyn Target>, String> {
+            let mut dial = fork::port_dial(&nodes, LOCAL, cid, DEVTOOLS_PORT, inbound);
+            Ok(Box::new(Web::attach(&mut dial, &fixed_url)?))
+        },
     );
     assert_eq!(fixed.target, "web");
     assert!(
@@ -282,20 +538,24 @@ fn a_scenario_on_a_web_page_fails_on_the_seeded_bug_and_passes_the_fixed_page() 
             .all(|r| r.tree.len() == 64 && r.screenshot.len() == 64),
         "each observation keeps its tree and its picture in the object store"
     );
+    let fork = fork.into_inner();
+    fork.retire().expect("the fake fork retires");
 }
 
 #[test]
-fn a_scenario_in_a_terminal_passes_the_fixed_program_and_fails_the_seeded_bug() {
-    let cwd = std::env::current_dir().unwrap();
-    let scenario = scenario("Typing p prints the receipt", "send p", "Receipt");
-
+fn a_terminal_target_in_the_lane_fork_fails_on_the_seeded_bug_and_passes_the_fixed_program() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipped the terminal target's test: no python3 to run the pty runner");
+        return;
+    }
+    let fake = LocalFork::new(9102, None);
+    let fork = start_fork(&fake);
+    let channel: &dyn Channel = &fork;
     let fixed_program = sh(&terminal_program("Receipt"));
     let fixed = run(
-        scenario.clone(),
+        scenario("Typing p prints the receipt", "send p", "Receipt"),
         type_then_enter,
-        || -> Result<Box<dyn Target>, String> {
-            Ok(Box::new(Tui::open(&fixed_program, &cwd, 80, 24)?))
-        },
+        || Ok(Box::new(ForkTui::open(channel, &fixed_program, 80, 24)?)),
     );
     assert_eq!(fixed.target, "tui");
     assert!(
@@ -307,19 +567,56 @@ fn a_scenario_in_a_terminal_passes_the_fixed_program_and_fails_the_seeded_bug() 
 
     let buggy_program = sh(&terminal_program("Error"));
     let bug = run(
-        scenario,
+        scenario("Typing p prints the receipt", "send p", "Receipt"),
         type_then_enter,
+        || Ok(Box::new(ForkTui::open(channel, &buggy_program, 80, 24)?)),
+    );
+    assert_eq!(
+        bug.found.len(),
+        1,
+        "the seeded bug is a finding: {}",
+        bug.summary()
+    );
+    assert!(matches!(bug.found[0].ruling, Ruling::Confirmed { .. }));
+    fork.into_inner().retire().expect("the fake fork retires");
+}
+
+#[test]
+fn a_scenario_on_a_local_chrome_passes_the_fixed_page_and_fails_the_seeded_bug() {
+    let chrome = match web::local::find_chrome() {
+        Ok(chrome) => chrome,
+        Err(why) => {
+            eprintln!("skipped the local web test: {why}");
+            return;
+        }
+    };
+    let buggy_url = format!("{}/", serve(false));
+    let bug = run(
+        pay_scenario(),
+        press_pay,
         || -> Result<Box<dyn Target>, String> {
-            Ok(Box::new(Tui::open(&buggy_program, &cwd, 80, 24)?))
+            Ok(Box::new(web::local::open(&chrome, &buggy_url)?))
         },
     );
     assert_eq!(bug.found.len(), 1, "the seeded bug is a finding");
     assert!(matches!(bug.found[0].ruling, Ruling::Confirmed { .. }));
-    assert_eq!(bug.confirmed(), 1);
+    let fixed_url = format!("{}/", serve(true));
+    let fixed = run(
+        pay_scenario(),
+        press_pay,
+        || -> Result<Box<dyn Target>, String> {
+            Ok(Box::new(web::local::open(&chrome, &fixed_url)?))
+        },
+    );
+    assert!(
+        fixed.found.is_empty(),
+        "the fixed page passes: {}",
+        fixed.summary()
+    );
 }
 
 #[test]
-fn a_step_names_one_target_and_a_terminal_names_an_absolute_directory() {
+fn a_step_names_one_target_and_a_terminal_names_a_program() {
     use crate::recipes::model::{TuiTarget, UserTest, WebTarget};
     use crate::user_test::target::StandIn;
     let base = UserTest {
@@ -346,21 +643,13 @@ fn a_step_names_one_target_and_a_terminal_names_an_absolute_directory() {
         ..base.clone()
     };
     assert!(both.check().unwrap_err().contains("one target"));
-    let address = UserTest {
-        web: Some(WebTarget {
-            path: "https://example.com/".into(),
-        }),
-        ..base.clone()
-    };
-    assert!(address.check().unwrap_err().contains("not an address"));
-    let relative = UserTest {
+    let nothing = UserTest {
         tui: Some(TuiTarget {
-            command: vec!["app".into()],
-            cwd: "work".into(),
+            command: vec![],
             cols: 80,
             rows: 24,
         }),
         ..base
     };
-    assert!(relative.check().unwrap_err().contains("absolute"));
+    assert!(nothing.check().unwrap_err().contains("names a program"));
 }

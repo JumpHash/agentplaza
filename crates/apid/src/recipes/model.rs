@@ -145,8 +145,7 @@ pub struct UserTest {
     /// A web target (PLAN 19.3): a headless browser on the change's lane preview, at `path` under its address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web: Option<WebTarget>,
-    /// A terminal target (PLAN 19.3): a program in a pseudo-terminal, typed into by the scenarios. It runs in the hub's
-    /// process, so the hub must opt in with `APZ_USER_TEST_TERMINAL` (see `user_test`).
+    /// A terminal target (PLAN 19.3): a program in a pseudo-terminal in the lane's test fork, typed into by the scenarios.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tui: Option<TuiTarget>,
     /// The spec's acceptance criteria, as the planner reads them: each becomes acceptance scenarios.
@@ -210,9 +209,6 @@ impl UserTest {
             if tui.command.first().is_none_or(|p| p.trim().is_empty()) {
                 return Err("a terminal target names a program to run".into());
             }
-            if !tui.cwd.starts_with('/') {
-                return Err("a terminal target's cwd is an absolute path".into());
-            }
             if tui.cols == 0 || tui.rows == 0 {
                 return Err("a terminal target has a size of at least 1 by 1".into());
             }
@@ -232,12 +228,11 @@ pub struct WebTarget {
     pub path: String,
 }
 
-/// A terminal target's configuration (PLAN 19.3): the program (argv, its first item the program), its working directory
-/// (absolute) and the terminal's size in cells.
+/// A terminal target's configuration (PLAN 19.3): the program (argv, its first item the program, run in the fork's
+/// workspace) and the terminal's size in cells.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TuiTarget {
     pub command: Vec<String>,
-    pub cwd: String,
     #[serde(default = "columns")]
     pub cols: u16,
     #[serde(default = "rows")]

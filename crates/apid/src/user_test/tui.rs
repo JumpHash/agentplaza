@@ -1,29 +1,25 @@
-//! The terminal target (PLAN 19.3): a program in a pseudo-terminal.
+//! The terminal target (PLAN 19.3): a program in a pseudo-terminal, run in the lane's test fork.
 //!
-//! - The tree is the terminal's text grid (`apz-vt`): each non-blank row is a text element, and the terminal is one
-//!   textbox ([`TERMINAL`]) whose value is the cursor's row.
+//! - The tree is the terminal's text grid (`apz-vt`, [`Grid`]): each non-blank row is a text element, and the terminal is
+//!   one textbox ([`TERMINAL`]) whose value is the cursor's row.
 //! - The input is the keystrokes: a `type` writes its text to the terminal, a `press` writes the key's bytes.
 //! - The picture is the grid rendered to a PNG. Glyphs are drawn as blocks: no font is vendored, so a checker reads the
 //!   tree where there is one.
 //!
-//! The pseudo-terminal is opened here (`openpty`), the program is started as a session leader on its slave (so the
-//! terminal is its controlling one), and a reader thread feeds the program's output to the emulator. The program is
-//! killed when the target drops.
+//! In production the program runs in the fork (`fork.rs`): [`ForkTui`] starts `pty-run.py` in the fork's workspace in the
+//! background. That runner opens a pseudo-terminal, runs the program on its slave, copies the program's output to a file
+//! and the keystrokes in a file to the program. The hub reads the output at its offset and appends keystrokes, both
+//! through the fork's exec channel, and feeds the output to its own grid. A test runs the program on this machine
+//! instead (`Tui`, `cfg(test)`), on a pseudo-terminal the hub opens itself.
 #![allow(unsafe_code)]
 
-use std::fs::File;
-use std::io::{self, ErrorKind, Read, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
-use std::os::unix::process::CommandExt;
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
-use std::ptr;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use apz_vt::{Color, Emulator, Row, Screen};
+use base64::Engine as _;
 
+use super::fork::{self, Channel};
 use super::target::{Action, Element, Screenshot, Target, Tree};
 
 /// The id and the accessible name of the terminal's input: what a driver types into.
@@ -48,131 +44,56 @@ const BASIC: [[u8; 3]; 8] = [
     [17, 168, 205],
     [229, 229, 229],
 ];
+/// The runner that gives a program a pseudo-terminal in the fork. Python's `pty` module does it on Linux and macOS alike.
+/// Arguments: the keystroke file, the output file, the columns, the rows, `--`, then the program and its arguments.
+const PTY_SCRIPT: &str = r#"import fcntl, os, pty, select, struct, sys, termios
+keys, out, cols, rows = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+argv = sys.argv[sys.argv.index("--") + 1:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(argv[0], argv)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+keyfd = os.open(keys, os.O_RDONLY)
+log = os.open(out, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+while True:
+    typed = os.read(keyfd, 65536)
+    if typed:
+        os.write(fd, typed)
+    ready, _, _ = select.select([fd], [], [], 0.02)
+    if ready:
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        os.write(log, chunk)
+os.waitpid(pid, 0)
+"#;
+/// The sessions of the fork's terminals, so each one's files are its own.
+static SESSIONS: AtomicU64 = AtomicU64::new(0);
 
-/// A program running in a pseudo-terminal, with its screen.
-pub struct Tui {
-    emu: Arc<Mutex<Emulator>>,
-    /// When the program last wrote.
-    touched: Arc<Mutex<Instant>>,
-    /// The master side: input goes in here, output comes out of the reader thread's duplicate.
-    master: Arc<File>,
-    child: Child,
-    started: Instant,
+/// The text grid of a terminal: the emulator fed with a program's output, read as a tree and as a picture.
+pub struct Grid {
+    emu: Emulator,
 }
 
-impl Tui {
-    /// Starts `command` (its first item the program, the rest its arguments) in `cwd`, on a terminal of `cols` by `rows`.
-    pub fn open(command: &[String], cwd: &Path, cols: u16, rows: u16) -> Result<Tui, String> {
-        let (program, args) = command
-            .split_first()
-            .ok_or("a terminal target names a program to run")?;
-        let (master, slave) = open_pty(cols, rows)?;
-        let slave_in = slave
-            .try_clone()
-            .map_err(|e| format!("the terminal's slave: {e}"))?;
-        let slave_out = slave
-            .try_clone()
-            .map_err(|e| format!("the terminal's slave: {e}"))?;
-        let mut process = Command::new(program);
-        process
-            .args(args)
-            .current_dir(cwd)
-            .env("TERM", "xterm-256color")
-            .stdin(Stdio::from(slave_in))
-            .stdout(Stdio::from(slave_out))
-            .stderr(Stdio::from(slave));
-        // SAFETY: between fork and exec this makes the child a session leader and takes its stdin (the terminal's
-        // slave) as its controlling terminal. Both calls are async-signal-safe and touch no memory of the parent.
-        unsafe {
-            process.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let child = process
-            .spawn()
-            .map_err(|e| format!("{program} did not start: {e}"))?;
-        drop(process);
-
-        let master = Arc::new(File::from(master));
-        let emu = Arc::new(Mutex::new(Emulator::new(cols as usize, rows as usize)));
-        let touched = Arc::new(Mutex::new(Instant::now()));
-        let mut reader = master
-            .try_clone()
-            .map_err(|e| format!("the terminal's master: {e}"))?;
-        let (emu_r, touched_r, writer) =
-            (Arc::clone(&emu), Arc::clone(&touched), Arc::clone(&master));
-        thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        // The program's queries (cursor reports, device attributes) are answered on the same channel.
-                        let replies = {
-                            let mut emu = lock(&emu_r);
-                            emu.feed(&buf[..n]);
-                            emu.screen_mut().take_replies()
-                        };
-                        *lock(&touched_r) = Instant::now();
-                        if !replies.is_empty() && (&*writer).write_all(&replies).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == ErrorKind::Interrupted => {}
-                    // The program has exited: its slave is closed, and the read fails.
-                    Err(_) => break,
-                }
-            }
-        });
-        Ok(Tui {
-            emu,
-            touched,
-            master,
-            child,
-            started: Instant::now(),
-        })
-    }
-
-    fn write(&self, bytes: &[u8]) -> Result<(), String> {
-        (&*self.master)
-            .write_all(bytes)
-            .map_err(|e| format!("the terminal's input: {e}"))
-    }
-
-    /// Waits for the program to answer the input: until its output has been quiet, or the longest wait has passed.
-    fn settle(&self) {
-        let start = Instant::now();
-        loop {
-            thread::sleep(Duration::from_millis(20));
-            let quiet = lock(&self.touched).elapsed() >= QUIET;
-            if (quiet && start.elapsed() >= QUIET) || start.elapsed() >= MAX_SETTLE {
-                break;
-            }
+impl Grid {
+    pub fn new(cols: u16, rows: u16) -> Grid {
+        Grid {
+            emu: Emulator::new(cols as usize, rows as usize),
         }
     }
-}
 
-impl Drop for Tui {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-impl Target for Tui {
-    fn kind(&self) -> &str {
-        "tui"
+    /// Feeds the program's output. The bytes the program is owed in reply (cursor reports) are returned to be sent back.
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.emu.feed(bytes);
+        self.emu.screen_mut().take_replies()
     }
 
-    fn tree(&mut self) -> Result<Tree, String> {
-        let emu = lock(&self.emu);
-        let screen = emu.screen();
+    /// The grid as the driver reads it.
+    pub fn tree(&self) -> Tree {
+        let screen = self.emu.screen();
         let rows: Vec<String> = (0..screen.rows())
             .map(|y| row_text(screen.view_row(y)))
             .collect();
@@ -205,36 +126,201 @@ impl Target for Tui {
                 .map(|r| r.trim_end().to_string())
                 .unwrap_or_default(),
         });
-        Ok(Tree { title, elements })
+        Tree { title, elements }
+    }
+
+    /// The grid as a picture.
+    pub fn picture(&self) -> Result<Vec<u8>, String> {
+        render(self.emu.screen())
+    }
+}
+
+/// The bytes an action sends to the terminal: `None` for the one pointer action (focusing the terminal, which has one
+/// input and always has the focus).
+pub fn terminal_bytes(action: &Action) -> Result<Option<Vec<u8>>, String> {
+    match action {
+        Action::Click { element } if element == TERMINAL => Ok(None),
+        Action::Click { element } => Err(format!(
+            "no element {element} on the terminal: a terminal takes keys and text"
+        )),
+        Action::Type { element, text } if element == TERMINAL => Ok(Some(text.as_bytes().to_vec())),
+        Action::Type { element, .. } => Err(format!("{element} is not on the terminal")),
+        Action::Press { key } => key_bytes(key).map(Some),
+    }
+}
+
+/// A program running in a pseudo-terminal in the lane's test fork.
+pub struct ForkTui<'a> {
+    channel: &'a dyn Channel,
+    /// The session's directory in the fork: its keystroke file and its output file.
+    dir: String,
+    /// The output read so far, in bytes.
+    offset: u64,
+    grid: Grid,
+    started: Instant,
+}
+
+impl<'a> ForkTui<'a> {
+    /// Starts `command` (the program and its arguments) under a pseudo-terminal of `cols` by `rows` in the fork.
+    pub fn open(
+        channel: &'a dyn Channel,
+        command: &[String],
+        cols: u16,
+        rows: u16,
+    ) -> Result<ForkTui<'a>, String> {
+        if command.is_empty() {
+            return Err("a terminal target names a program to run".into());
+        }
+        let dir = format!("pty/{}", SESSIONS.fetch_add(1, Ordering::Relaxed));
+        let script = base64::engine::general_purpose::STANDARD.encode(PTY_SCRIPT);
+        let setup = fork::command(
+            "the pty runner",
+            [
+                "sh",
+                "-c",
+                "mkdir -p \"$1\" && printf %s \"$0\" | base64 -d > pty-run.py && : > \"$1/in\" && : > \"$1/out\"",
+                script.as_str(),
+                dir.as_str(),
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            60,
+        );
+        let answer = channel.exec(&setup, false)?;
+        if !answer.ok {
+            return Err(format!(
+                "the fork did not take the pty runner: {}",
+                answer.output.trim_end()
+            ));
+        }
+        let mut argv = vec![
+            "python3".to_string(),
+            "pty-run.py".to_string(),
+            format!("{dir}/in"),
+            format!("{dir}/out"),
+            cols.to_string(),
+            rows.to_string(),
+            "--".to_string(),
+        ];
+        argv.extend(command.iter().cloned());
+        let program = fork::command("the program", argv, 0);
+        let answer = channel.exec(&program, true)?;
+        if !answer.ok {
+            return Err(format!(
+                "the program did not start in the fork: {}",
+                answer.output.trim_end()
+            ));
+        }
+        Ok(ForkTui {
+            channel,
+            dir,
+            offset: 0,
+            grid: Grid::new(cols, rows),
+            started: Instant::now(),
+        })
+    }
+
+    /// Reads what the program has written since the last read into the grid.
+    fn pull(&mut self) -> Result<usize, String> {
+        let offset = (self.offset + 1).to_string();
+        let read = fork::command(
+            "read the terminal",
+            [
+                "sh",
+                "-c",
+                "tail -c +\"$1\" \"$0/out\" | base64 | tr -d '\\n'",
+                self.dir.as_str(),
+                offset.as_str(),
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            60,
+        );
+        let answer = self.channel.exec(&read, false)?;
+        if !answer.ok {
+            return Err(format!(
+                "the fork did not read the terminal: {}",
+                answer.output.trim_end()
+            ));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(answer.output.trim())
+            .map_err(|e| format!("the terminal's output: {e}"))?;
+        self.offset += bytes.len() as u64;
+        // A reply the program is owed has no channel back in the fork; the grid takes it out and drops it.
+        let _ = self.grid.feed(&bytes);
+        Ok(bytes.len())
+    }
+
+    /// Sends keystrokes to the program: appended to its keystroke file in the fork.
+    fn send(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let write = fork::command(
+            "send keys",
+            [
+                "sh",
+                "-c",
+                "printf %s \"$0\" | base64 -d >> \"$1/in\"",
+                encoded.as_str(),
+                self.dir.as_str(),
+            ]
+            .map(str::to_string)
+            .to_vec(),
+            60,
+        );
+        let answer = self.channel.exec(&write, false)?;
+        if !answer.ok {
+            return Err(format!(
+                "the fork did not take the keys: {}",
+                answer.output.trim_end()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Waits for the program to answer the input: until its output has been quiet, or the longest wait has passed.
+    fn settle(&mut self) -> Result<(), String> {
+        let start = Instant::now();
+        let mut last = Instant::now();
+        while start.elapsed() < MAX_SETTLE {
+            std::thread::sleep(Duration::from_millis(40));
+            if self.pull()? > 0 {
+                last = Instant::now();
+            }
+            if last.elapsed() >= QUIET && start.elapsed() >= QUIET {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Target for ForkTui<'_> {
+    fn kind(&self) -> &str {
+        "tui"
+    }
+
+    fn tree(&mut self) -> Result<Tree, String> {
+        self.pull()?;
+        Ok(self.grid.tree())
     }
 
     fn screenshot(&mut self) -> Result<Screenshot, String> {
-        let emu = lock(&self.emu);
+        self.pull()?;
         Ok(Screenshot {
             mime: "image/png".into(),
-            bytes: render(emu.screen())?,
+            bytes: self.grid.picture()?,
         })
     }
 
     fn act(&mut self, action: &Action) -> Result<(), String> {
-        match action {
-            // Focusing the terminal is the only pointer action: it has one input, which is always focused.
-            Action::Click { element } if element == TERMINAL => return Ok(()),
-            Action::Click { element } => {
-                return Err(format!(
-                    "no element {element} on the terminal: a terminal takes keys and text"
-                ));
+        match terminal_bytes(action)? {
+            None => Ok(()),
+            Some(bytes) => {
+                self.send(&bytes)?;
+                self.settle()
             }
-            Action::Type { element, text } if element == TERMINAL => {
-                self.write(text.as_bytes())?;
-            }
-            Action::Type { element, .. } => {
-                return Err(format!("{element} is not on the terminal"));
-            }
-            Action::Press { key } => self.write(&key_bytes(key)?)?,
         }
-        self.settle();
-        Ok(())
     }
 
     fn clock_ms(&mut self) -> Option<u64> {
@@ -338,61 +424,255 @@ fn colour(color: Color, default: [u8; 3]) -> [u8; 3] {
     }
 }
 
-/// A pseudo-terminal of `cols` by `rows`: its master and its slave.
-fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), String> {
-    let mut master: libc::c_int = -1;
-    let mut slave: libc::c_int = -1;
-    let mut size = libc::winsize {
-        ws_row: rows,
-        ws_col: cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    // SAFETY: openpty writes one new descriptor through each out-pointer (live locals) and reads the size (a live
-    // local); the name and the attributes are null, which it accepts.
-    let rc = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &mut size,
-        )
-    };
-    if rc != 0 {
-        return Err(format!(
-            "no pseudo-terminal: {}",
-            io::Error::last_os_error()
-        ));
-    }
-    // SAFETY: openpty succeeded, so both descriptors are open and owned by nothing else.
-    Ok(unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) })
-}
+/// A program run on this machine in a pseudo-terminal the hub opens itself, for the tests: the same grid and the same
+/// keystrokes as the fork's, with the program's output read from the terminal's master.
+#[cfg(test)]
+pub mod local {
+    use std::fs::File;
+    use std::io::{self, ErrorKind, Read, Write};
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command, Stdio};
+    use std::ptr;
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+    use super::{Grid, MAX_SETTLE, QUIET, TERMINAL, terminal_bytes};
+    use crate::user_test::target::{Action, Screenshot, Target, Tree};
+
+    /// A program on a local pseudo-terminal, with its screen.
+    pub struct Tui {
+        grid: Arc<Mutex<Grid>>,
+        /// When the program last wrote.
+        touched: Arc<Mutex<Instant>>,
+        /// The master side: input goes in here, output comes out of the reader thread's duplicate.
+        master: Arc<File>,
+        child: Child,
+        started: Instant,
+    }
+
+    impl Tui {
+        /// Starts `command` (its first item the program, the rest its arguments) on a terminal of `cols` by `rows`.
+        pub fn open(command: &[String], cols: u16, rows: u16) -> Result<Tui, String> {
+            let (program, args) = command
+                .split_first()
+                .ok_or("a terminal target names a program to run")?;
+            let (master, slave) = open_pty(cols, rows)?;
+            let slave_in = slave
+                .try_clone()
+                .map_err(|e| format!("the terminal's slave: {e}"))?;
+            let slave_out = slave
+                .try_clone()
+                .map_err(|e| format!("the terminal's slave: {e}"))?;
+            let mut process = Command::new(program);
+            process
+                .args(args)
+                .env("TERM", "xterm-256color")
+                .stdin(Stdio::from(slave_in))
+                .stdout(Stdio::from(slave_out))
+                .stderr(Stdio::from(slave));
+            // SAFETY: between fork and exec this makes the child a session leader and takes its stdin (the terminal's
+            // slave) as its controlling terminal. Both calls are async-signal-safe and touch no memory of the parent.
+            unsafe {
+                process.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = process
+                .spawn()
+                .map_err(|e| format!("{program} did not start: {e}"))?;
+            drop(process);
+
+            let master = Arc::new(File::from(master));
+            let grid = Arc::new(Mutex::new(Grid::new(cols, rows)));
+            let touched = Arc::new(Mutex::new(Instant::now()));
+            let mut reader = master
+                .try_clone()
+                .map_err(|e| format!("the terminal's master: {e}"))?;
+            let (grid_r, touched_r, writer) =
+                (Arc::clone(&grid), Arc::clone(&touched), Arc::clone(&master));
+            thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let replies = lock(&grid_r).feed(&buf[..n]);
+                            *lock(&touched_r) = Instant::now();
+                            if !replies.is_empty() && (&*writer).write_all(&replies).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                        // The program has exited: its slave is closed, and the read fails.
+                        Err(_) => break,
+                    }
+                }
+            });
+            Ok(Tui {
+                grid,
+                touched,
+                master,
+                child,
+                started: Instant::now(),
+            })
+        }
+
+        fn write(&self, bytes: &[u8]) -> Result<(), String> {
+            (&*self.master)
+                .write_all(bytes)
+                .map_err(|e| format!("the terminal's input: {e}"))
+        }
+
+        /// Waits for the program to answer the input: until its output has been quiet, or the longest wait has passed.
+        fn settle(&self) {
+            let start = Instant::now();
+            loop {
+                thread::sleep(Duration::from_millis(20));
+                let quiet = lock(&self.touched).elapsed() >= QUIET;
+                if (quiet && start.elapsed() >= QUIET) || start.elapsed() >= MAX_SETTLE {
+                    break;
+                }
+            }
+        }
+    }
+
+    impl Drop for Tui {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    impl Target for Tui {
+        fn kind(&self) -> &str {
+            "tui"
+        }
+
+        fn tree(&mut self) -> Result<Tree, String> {
+            Ok(lock(&self.grid).tree())
+        }
+
+        fn screenshot(&mut self) -> Result<Screenshot, String> {
+            Ok(Screenshot {
+                mime: "image/png".into(),
+                bytes: lock(&self.grid).picture()?,
+            })
+        }
+
+        fn act(&mut self, action: &Action) -> Result<(), String> {
+            if let Some(bytes) = terminal_bytes(action)? {
+                self.write(&bytes)?;
+                self.settle();
+            }
+            Ok(())
+        }
+
+        fn clock_ms(&mut self) -> Option<u64> {
+            Some(self.started.elapsed().as_millis() as u64)
+        }
+    }
+
+    /// A pseudo-terminal of `cols` by `rows`: its master and its slave.
+    fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), String> {
+        let mut master: libc::c_int = -1;
+        let mut slave: libc::c_int = -1;
+        let mut size = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: openpty writes one new descriptor through each out-pointer (live locals) and reads the size (a live
+        // local); the name and the attributes are null, which it accepts.
+        let rc = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut size,
+            )
+        };
+        if rc != 0 {
+            return Err(format!(
+                "no pseudo-terminal: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: openpty succeeded, so both descriptors are open and owned by nothing else.
+        Ok(unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) })
+    }
+
+    fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+        m.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn sh(script: &str) -> Vec<String> {
+            vec!["/bin/sh".into(), "-c".into(), script.into()]
+        }
+
+        /// Polls the tree until it shows `text`, or gives up after five seconds.
+        fn until_shows(tui: &mut Tui, text: &str) -> Tree {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let tree = tui.tree().unwrap();
+                if tree.shows(text) || Instant::now() >= deadline {
+                    return tree;
+                }
+                thread::sleep(Duration::from_millis(30));
+            }
+        }
+
+        #[test]
+        fn a_program_on_a_pty_shows_its_output_and_takes_its_keys() {
+            let mut tui = Tui::open(
+                &sh("echo hello from the pty; read line; echo got $line"),
+                80,
+                24,
+            )
+            .expect("the program starts on a pty");
+            assert_eq!(tui.kind(), "tui");
+            let shown = until_shows(&mut tui, "hello from the pty");
+            assert_eq!(shown.title, "hello from the pty");
+            assert!(shown.elements.iter().any(|e| e.id == TERMINAL));
+            tui.act(&Action::Type {
+                element: TERMINAL.into(),
+                text: "abc".into(),
+            })
+            .unwrap();
+            tui.act(&Action::Press {
+                key: "Enter".into(),
+            })
+            .unwrap();
+            assert!(until_shows(&mut tui, "got abc").shows("got abc"));
+            let shot = tui.screenshot().unwrap();
+            assert!(shot.bytes.starts_with(&[0x89, b'P', b'N', b'G']));
+            assert!(tui.clock_ms().is_some());
+            assert!(
+                tui.act(&Action::Click {
+                    element: "row-0".into()
+                })
+                .is_err()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-
-    fn sh(script: &str) -> Vec<String> {
-        vec!["/bin/sh".into(), "-c".into(), script.into()]
-    }
-
-    /// Polls the tree until it shows `text`, or gives up after five seconds.
-    fn until_shows(tui: &mut Tui, text: &str) -> Tree {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let tree = tui.tree().unwrap();
-            if tree.shows(text) || Instant::now() >= deadline {
-                return tree;
-            }
-            thread::sleep(Duration::from_millis(30));
-        }
-    }
 
     #[test]
     fn keys_are_the_bytes_a_terminal_reads() {
@@ -404,8 +684,8 @@ mod tests {
 
     #[test]
     fn a_picture_of_the_grid_is_a_png_of_its_size() {
-        let emu = Emulator::new(10, 3);
-        let png = render(emu.screen()).unwrap();
+        let grid = Grid::new(10, 3);
+        let png = grid.picture().unwrap();
         assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
         // The IHDR chunk's width and height follow its tag at byte 16.
         let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
@@ -414,34 +694,31 @@ mod tests {
     }
 
     #[test]
-    fn a_program_in_a_pty_shows_its_output_and_takes_its_keys() {
-        let cwd = std::env::current_dir().unwrap();
-        let mut tui = Tui::open(
-            &sh("echo hello from the pty; read line; echo got $line"),
-            &cwd,
-            80,
-            24,
-        )
-        .expect("the program starts in a pty");
-        assert_eq!(tui.kind(), "tui");
-        let shown = until_shows(&mut tui, "hello from the pty");
-        assert_eq!(shown.title, "hello from the pty");
-        assert!(shown.elements.iter().any(|e| e.id == TERMINAL));
-        tui.act(&Action::Type {
-            element: TERMINAL.into(),
-            text: "abc".into(),
-        })
-        .unwrap();
-        tui.act(&Action::Press {
-            key: "Enter".into(),
-        })
-        .unwrap();
-        assert!(until_shows(&mut tui, "got abc").shows("got abc"));
-        let shot = tui.screenshot().unwrap();
-        assert!(shot.bytes.starts_with(&[0x89, b'P', b'N', b'G']));
-        assert!(tui.clock_ms().is_some());
+    fn the_grid_reads_its_rows_and_the_terminal_takes_text_only() {
+        let mut grid = Grid::new(20, 4);
+        assert!(grid.feed(b"Shop\r\n> p").is_empty());
+        let tree = grid.tree();
+        assert_eq!(tree.title, "Shop");
+        assert!(tree.shows("Shop"));
+        let terminal = tree.elements.iter().find(|e| e.id == TERMINAL).unwrap();
+        assert_eq!(terminal.value, "> p");
+        assert_eq!(
+            terminal_bytes(&Action::Type {
+                element: TERMINAL.into(),
+                text: "p".into()
+            })
+            .unwrap(),
+            Some(b"p".to_vec())
+        );
+        assert_eq!(
+            terminal_bytes(&Action::Click {
+                element: TERMINAL.into()
+            })
+            .unwrap(),
+            None
+        );
         assert!(
-            tui.act(&Action::Click {
+            terminal_bytes(&Action::Click {
                 element: "row-0".into()
             })
             .is_err()
