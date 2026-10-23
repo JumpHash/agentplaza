@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 apz-os = { path = "../apz-os" }
+# The confinement spec of a monitor process (`confine`): the OS sandbox that runs it.
+apz-sandbox = { path = "../apz-sandbox" }
 # Host-side Unix-domain sockets of the vsock muxer (std on Unix, AF_UNIX on Windows).
 apz-uds.workspace = true
 libc.workspace = true

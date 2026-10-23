@@ -96,6 +96,7 @@ mod sys;
 pub mod cgroup;
 /// Copies of disk and memory images that share blocks where the filesystem can (`FICLONE`, APFS, ReFS).
 pub mod clonefile;
+pub mod confine;
 /// Pausing, resuming and snapshotting a running in-process VM (the builder installs it).
 #[cfg(all(
     target_os = "linux",

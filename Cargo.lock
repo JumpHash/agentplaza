@@ -10482,6 +10482,7 @@ version = "0.1.0"
 dependencies = [
  "acpi_tables",
  "apz-os",
+ "apz-sandbox",
  "apz-uds",
  "kvm-bindings",
  "kvm-ioctls",

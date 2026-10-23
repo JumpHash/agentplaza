@@ -35,13 +35,13 @@ use std::time::{Duration, Instant};
 /// `apz-vmm` child protocol. Linux and macOS (the child boots the VM through
 /// [`spawn`], whose backend is KVM or Hypervisor.framework). Read the module
 /// documentation for what is proxied and why.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod process;
 
 /// How long the per-VM process is given to report that its VM is up or to
 /// fail. A boot that is still silently working after this is treated as a
 /// boot failure, so a stuck child cannot hold a [`spawn`] call forever.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const CHILD_BOOT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often [`VmHandle::wait_timeout`] re-checks whether the VM's backend
@@ -633,7 +633,13 @@ fn mode_from_env() -> Result<SpawnMode, SpawnError> {
 /// the running binary (and of its parent directory, which is where cargo puts
 /// it relative to a `deps/` test or example binary). Every candidate is
 /// returned in order when none exists, so the error names what was tried.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// The child binary's file name on this platform: `apz-vmm`, `apz-vmm.exe` on Windows.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn child_binary_file() -> String {
+    format!("{CHILD_BINARY_NAME}{}", std::env::consts::EXE_SUFFIX)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn child_binary() -> Result<PathBuf, SpawnError> {
     if let Some(path) = CHILD_BINARY
         .lock()
@@ -651,9 +657,9 @@ fn child_binary() -> Result<PathBuf, SpawnError> {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        tried.push(dir.join(CHILD_BINARY_NAME));
+        tried.push(dir.join(child_binary_file()));
         if let Some(parent) = dir.parent() {
-            tried.push(parent.join(CHILD_BINARY_NAME));
+            tried.push(parent.join(child_binary_file()));
         }
     }
     match tried.iter().find(|candidate| candidate.is_file()) {
@@ -1614,6 +1620,34 @@ pub fn materialize_workspaces(
         .collect()
 }
 
+/// Whether this platform runs a VM in a child `apz-vmm` process: Linux and macOS (the jailed or the
+/// Hypervisor.framework one) and Windows (confined by a job object and an AppContainer).
+pub(crate) const CHILD_PROCESS_SUPPORTED: bool =
+    cfg!(any(target_os = "linux", target_os = "macos", windows));
+
+/// Where a boot goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BootRoute {
+    /// In the caller's process, as the backend's threads.
+    InProcess,
+    /// In a child `apz-vmm` process.
+    Child,
+}
+
+/// The route of a boot, from the mode and whether this platform has a child process to run it in: the mode
+/// decides, and a platform with no `apz-vmm` refuses the child mode by name rather than booting somewhere
+/// the caller did not ask for.
+pub(crate) fn boot_route(mode: SpawnMode, child_supported: bool) -> Result<BootRoute, SpawnError> {
+    match (mode, child_supported) {
+        (SpawnMode::InProcess, _) => Ok(BootRoute::InProcess),
+        (SpawnMode::Process, true) => Ok(BootRoute::Child),
+        (SpawnMode::Process, false) => Err(SpawnError::SpawnMode {
+            reason: "the per-VM process mode needs an `apz-vmm` binary: this platform has none"
+                .to_string(),
+        }),
+    }
+}
+
 /// Hands the VM to the backend of the current platform.
 ///
 /// Linux/KVM uses the arch-dispatched `crate::builder::boot`; Apple Silicon
@@ -1633,29 +1667,8 @@ pub fn materialize_workspaces(
 /// proxy that satisfies the same six rules from outside — which is what makes
 /// the two modes interchangeable to a caller.
 fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
-    if spawn_mode()? == SpawnMode::Process {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            return process::boot(spec, runtime);
-        }
-        // The per-VM process runs on Linux and macOS (its child is `apz-vmm`).
-        // Windows has no `apz-vmm` binary, so there the request boots in-process
-        // (warned once).
-        #[cfg(windows)]
-        {
-            static WARNED: std::sync::Once = std::sync::Once::new();
-            WARNED.call_once(|| {
-                eprintln!("vmm: APZ_VMM_SPAWN=process needs an `apz-vmm` binary this platform does not have; booting in-process");
-            });
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-        {
-            let _ = (spec, runtime);
-            return Err(SpawnError::SpawnMode {
-                reason: "the per-VM process mode needs an `apz-vmm` binary: this platform has none"
-                    .to_string(),
-            });
-        }
+    if boot_route(spawn_mode()?, CHILD_PROCESS_SUPPORTED)? == BootRoute::Child {
+        return process::boot(spec, runtime);
     }
 
     #[cfg(target_os = "linux")]
@@ -1709,6 +1722,41 @@ pub fn copy_sparse(from: &Path, to: &Path) -> std::io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mode_decides_the_route_and_a_platform_without_a_child_refuses_the_child_mode() {
+        assert_eq!(
+            boot_route(SpawnMode::InProcess, true).unwrap(),
+            BootRoute::InProcess
+        );
+        assert_eq!(
+            boot_route(SpawnMode::InProcess, false).unwrap(),
+            BootRoute::InProcess
+        );
+        assert_eq!(
+            boot_route(SpawnMode::Process, true).unwrap(),
+            BootRoute::Child
+        );
+        let refused = boot_route(SpawnMode::Process, false).unwrap_err();
+        assert!(
+            refused.to_string().contains("apz-vmm"),
+            "the refusal names the missing binary: {refused}"
+        );
+    }
+
+    #[test]
+    fn windows_and_the_unix_hosts_have_a_child_process() {
+        assert_eq!(
+            CHILD_PROCESS_SUPPORTED,
+            cfg!(any(target_os = "linux", target_os = "macos", windows))
+        );
+    }
+
+    #[test]
+    fn the_child_binary_has_the_platform_executable_suffix() {
+        assert!(child_binary_file().starts_with(CHILD_BINARY_NAME));
+        assert_eq!(child_binary_file().ends_with(".exe"), cfg!(windows),);
+    }
 
     /// A scratch directory unique to this process and test.
     fn scratch(name: &str) -> PathBuf {
