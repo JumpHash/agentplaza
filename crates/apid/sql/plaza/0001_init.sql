@@ -3752,6 +3752,7 @@ CREATE TABLE "eval_run" (
     "provider" TEXT,
     "harness" TEXT NOT NULL,
     "node" TEXT,
+    "pool" TEXT,
     "tokens_in" INTEGER NOT NULL CHECK ("tokens_in" >= 0),
     "tokens_out" INTEGER NOT NULL CHECK ("tokens_out" >= 0),
     "tokens_cached" INTEGER NOT NULL CHECK ("tokens_cached" >= 0),
