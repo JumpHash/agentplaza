@@ -81,6 +81,15 @@ pub struct ProjectSettings {
     /// The team the planner aims for when the graph allows, never above the maximum; [`DEFAULT_TEAM_TARGET`] when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_target: Option<u32>,
+    /// How many of the project's lanes the merge queue tests together (a batch, 4.6); [`DEFAULT_QUEUE_BATCH`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_batch: Option<u32>,
+    /// Whether the owner approves each landing (a `land` approval, 4.6). Off by default: the plaza lands what passed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub land_approval: bool,
+    /// Whether the project releases continuously: each landing starts the release recipe (22; a stub until then, 4.6).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub release_continuous: bool,
     /// The project's hooks: checks and formatters that run around its agents' edits and commands (`apz_proto::hooks`).
     /// The JSON names them as a list under `hooks`; `"hooks": "defaults"` sets `hook_defaults` instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -158,6 +167,9 @@ struct SettingsRow {
     full_suite_minutes: Option<u32>,
     team_max: Option<u32>,
     team_target: Option<u32>,
+    queue_batch: Option<u32>,
+    land_approval: bool,
+    release_continuous: bool,
     hook_defaults: bool,
     #[table(map_value)]
     role_models: BTreeMap<String, String>,
@@ -225,6 +237,9 @@ impl SettingsRow {
             full_suite_minutes: settings.full_suite_minutes,
             team_max: settings.team_max,
             team_target: settings.team_target,
+            queue_batch: settings.queue_batch,
+            land_approval: settings.land_approval,
+            release_continuous: settings.release_continuous,
             hook_defaults: settings.hook_defaults,
             role_models: settings.role_models.clone(),
             hooks: settings.hooks.clone(),
@@ -246,6 +261,9 @@ impl SettingsRow {
             full_suite_minutes: self.full_suite_minutes,
             team_max: self.team_max,
             team_target: self.team_target,
+            queue_batch: self.queue_batch,
+            land_approval: self.land_approval,
+            release_continuous: self.release_continuous,
             hooks: self.hooks,
             hook_defaults: self.hook_defaults,
         };
@@ -261,6 +279,11 @@ pub fn def() -> &'static TableDef {
 /// Checks a project's overrides against the plaza: models the roles may run (the plaza's model policy), roles it
 /// has, an effort it knows, and limits within the harness's bounds.
 pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
+    if let Some(batch) = settings.queue_batch
+        && !(1..=16).contains(&batch)
+    {
+        return Err("queue_batch: a batch holds from 1 to 16 lanes".into());
+    }
     if let Some(model) = &settings.default_model {
         app.settings
             .allowed(Tier::Worker, model)
@@ -476,6 +499,8 @@ pub fn task_budget(app: &App, pid: Option<&str>) -> Option<u64> {
 /// The most tasks a project runs at once when it sets no maximum, and the team its planner aims for when it sets no
 /// target (PLAN 7.1, W25). The largest either may be set to is [`TEAM_LIMIT`].
 pub const DEFAULT_TEAM_MAX: u32 = 20;
+/// The lanes the merge queue tests together when the project sets no batch size (4.6).
+pub const DEFAULT_QUEUE_BATCH: u32 = 4;
 pub const DEFAULT_TEAM_TARGET: u32 = 10;
 pub const TEAM_LIMIT: u32 = 100;
 

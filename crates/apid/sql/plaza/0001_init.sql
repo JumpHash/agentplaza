@@ -124,6 +124,9 @@ CREATE TABLE "project_setting" (
     "full_suite_minutes" INTEGER CHECK ("full_suite_minutes" >= 0),
     "team_max" INTEGER CHECK ("team_max" >= 0),
     "team_target" INTEGER CHECK ("team_target" >= 0),
+    "queue_batch" INTEGER CHECK ("queue_batch" >= 0),
+    "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
+    "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     PRIMARY KEY ("project")
 ) STRICT;
@@ -2534,6 +2537,9 @@ CREATE TABLE "chat_draft_settings" (
     "full_suite_minutes" INTEGER CHECK ("full_suite_minutes" >= 0),
     "team_max" INTEGER CHECK ("team_max" >= 0),
     "team_target" INTEGER CHECK ("team_target" >= 0),
+    "queue_batch" INTEGER CHECK ("queue_batch" >= 0),
+    "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
+    "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     PRIMARY KEY ("chat_id"),
     FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED

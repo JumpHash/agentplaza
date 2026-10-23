@@ -697,6 +697,12 @@ fn repo_routes(router: Router<H>) -> Router<H> {
             if let Some(ms) = v["stall_ms"].as_u64() {
                 opts.stall_ms = ms;
             }
+            // The queue's batch size (its project's), the owner's hold on landings, and the change the owner approved.
+            if let Some(batch) = v["batch"].as_u64() {
+                opts.batch = batch.clamp(1, 16) as usize;
+            }
+            opts.hold = v["hold"].as_bool().unwrap_or(false);
+            opts.approved = v["approved"].as_bool().unwrap_or(false);
             match h.lander.step(&h.store, &h.derived, p.get("repo"), &reference, opts) {
                 Ok(step) => ok(json!(step)),
                 Err(e) => refused(e),

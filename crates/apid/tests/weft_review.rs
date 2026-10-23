@@ -1025,3 +1025,456 @@ fn sample(name: &str, v: &Value) {
         );
     }
 }
+
+/// The planner's model in the held-contest tests: a fourth model, which neither the author nor the verifier runs on.
+const PLANNER_MODEL: &str = "mock/fourth";
+
+/// The roles of the held-contest tests: the seats' and a project's planner.
+fn roles_with_planner() -> Value {
+    let mut roles = roles();
+    roles["roles"]["planner"] =
+        json!({ "role": "planner", "title": "Planner", "tools": ["run", "run_tests", "read"] });
+    roles
+}
+
+/// A code task held at the verifier's contest of f1: the author contested it in its rework, and the verifier held it.
+struct Held {
+    pid: String,
+    tid: String,
+    change: String,
+    repo: String,
+    verifier: (u64, u64),
+    known: HashSet<u64>,
+}
+
+/// Plays a code task through the chain to the verifier's held verdict on f1: the seeded bug is found and confirmed, the
+/// false alarm is dropped, the builder fixes the queue and contests f1 in its rework, and the second round's verifier
+/// holds the contest. With `planner`, the project's planner runs on [`PLANNER_MODEL`].
+fn held_contest(hub: &Hub, gateway: &FakeDaemon, home: &Path, token: &Path, planner: bool) -> Held {
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Queues", "goal": "A work queue", "kind": "code" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let mut models =
+        json!({ "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL, "verifier": VERIFIER_MODEL });
+    if planner {
+        models["planner"] = json!(PLANNER_MODEL);
+    }
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "role_models": models })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    let (status, task) = hub.call(
+        "POST",
+        "/v1/tasks",
+        Some(json!({ "goal": "Give the queue a fair next()", "acceptance": "next() takes the oldest item; tested", "project": pid })),
+    );
+    assert_eq!(status, 201, "{task}");
+    let tid = text(&task["id"]);
+
+    // Round 0: the builder writes the queue with the seeded bug, and seals it.
+    let mut known = HashSet::new();
+    let (b1_cid, w1_id, _, w1) = seat_vm(hub, gateway, &tid, "builder", &mut known);
+    let change = text(&w1["lane"]["change"]);
+    let repo = text(&w1["lane"]["repo"]);
+    let b1_vm = vm_of(hub, b1_cid, home, token);
+    let ws1 = b1_vm.checkout(&change, &repo);
+    b1_vm.write(&format!("{repo}/src/queue.rs"), QUEUE);
+    b1_vm.weft(
+        &ws1,
+        &[
+            "snapshot",
+            "--turn",
+            "1",
+            "--tool-call",
+            "toolu_a",
+            "--model",
+            "claude-opus-5-5",
+        ],
+    );
+    b1_vm.tool(
+        w1_id,
+        "weft_describe",
+        code_intents("next() takes from the front."),
+    );
+    hub.work_done(b1_cid, w1_id, "done", "next() takes the oldest item");
+    hub.wait_for(
+        &format!("/v1/weft/changes/{change}"),
+        Duration::from_secs(20),
+        |c| c["rounds"].as_array().is_some_and(|r| r.len() == 1) && has_record(c, "written"),
+    );
+
+    // Round 1: two sceptic reviewers. One finds the seeded bug, the other a false alarm; the verifier confirms the first
+    // with a proof and drops the second with its reason, and the builder goes back.
+    let (r1a_cid, r1a_work, _, _) = seat_vm(hub, gateway, &tid, "reviewer", &mut known);
+    let r1a_vm = vm_of(hub, r1a_cid, home, token);
+    r1a_vm.tool(
+        r1a_work,
+        "review_score",
+        json!({ "scores": [], "findings": [{
+            "symbol": "src/queue.rs::Queue::next",
+            "text": "next() takes the newest item, not the oldest",
+            "severity": "major",
+            "kind": "order",
+            "scenario": "push 1, then push 2: next() returns 2, and the oldest item, 1, waits behind it"
+        }] }),
+    );
+    r1a_vm.tool(
+        r1a_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "one defect: the order" }),
+    );
+    hub.work_done(r1a_cid, r1a_work, "done", "reviewed");
+    let (r1b_cid, r1b_work, _, _) = seat_vm(hub, gateway, &tid, "reviewer", &mut known);
+    let r1b_vm = vm_of(hub, r1b_cid, home, token);
+    r1b_vm.tool(
+        r1b_work,
+        "review_score",
+        json!({ "scores": [], "findings": [{
+            "symbol": "src/queue.rs::Queue::next",
+            "text": "next() panics on an empty queue",
+            "severity": "minor",
+            "kind": "panic",
+            "scenario": "next() on an empty queue calls unwrap() on None and panics"
+        }] }),
+    );
+    r1b_vm.tool(
+        r1b_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "one finding" }),
+    );
+    hub.work_done(r1b_cid, r1b_work, "done", "reviewed");
+    let (v1_cid, v1_work, _, _) = seat_vm(hub, gateway, &tid, "verifier", &mut known);
+    let v1_vm = vm_of(hub, v1_cid, home, token);
+    v1_vm.tool(
+        v1_work,
+        "finding_verify",
+        json!({ "finding": "f1", "verdict": "confirmed", "proof": "a test: push 1, push 2, next() returns 2, so the oldest item does not come out first" }),
+    );
+    v1_vm.tool(
+        v1_work,
+        "finding_verify",
+        json!({ "finding": "f2", "verdict": "dropped", "reason": "pop() on an empty Vec returns None: next() does not panic on an empty queue" }),
+    );
+    v1_vm.tool(
+        v1_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "f1 is real, f2 is not" }),
+    );
+    hub.work_done(v1_cid, v1_work, "done", "f1 confirmed, f2 dropped");
+
+    // Round 2: the builder contests f1 in its rework and fixes the queue; the reviewers pass it, and the verifier holds
+    // its contest of f1.
+    let (b2_cid, w2_id, _, _) = seat_vm(hub, gateway, &tid, "builder", &mut known);
+    let b2_vm = vm_of(hub, b2_cid, home, token);
+    b2_vm.tool(
+        w2_id,
+        "finding_contest",
+        json!({ "finding": "f1", "reason": "the scenario does not hold for this queue" }),
+    );
+    let ws2 = b2_vm.checkout(&change, &repo);
+    b2_vm.write(&format!("{repo}/src/queue.rs"), &tested_queue());
+    b2_vm.write(
+        &format!("{repo}/README.md"),
+        "# Queues\n\nnext() takes the oldest item.\n",
+    );
+    b2_vm.weft(
+        &ws2,
+        &[
+            "snapshot",
+            "--turn",
+            "2",
+            "--tool-call",
+            "toolu_c",
+            "--model",
+            "claude-opus-5-5",
+        ],
+    );
+    b2_vm.tool(
+        w2_id,
+        "weft_describe",
+        code_intents("next() takes from the front, with a test."),
+    );
+    hub.work_done(b2_cid, w2_id, "done", "tested");
+    hub.wait_for(
+        &format!("/v1/weft/changes/{change}"),
+        Duration::from_secs(20),
+        |c| c["rounds"].as_array().is_some_and(|r| r.len() == 2),
+    );
+    for _ in 0..2 {
+        let (cid, work, _, _) = seat_vm(hub, gateway, &tid, "reviewer", &mut known);
+        let vm = vm_of(hub, cid, home, token);
+        vm.tool(
+            work,
+            "plaza_verdict",
+            json!({ "task": tid, "pass": true, "notes": "fine" }),
+        );
+        hub.work_done(cid, work, "done", "passed");
+    }
+    let (v2_cid, v2_work, _, v2) = seat_vm(hub, gateway, &tid, "verifier", &mut known);
+    assert!(
+        text(&v2["prompt"]).contains("The author contests f1"),
+        "{v2}"
+    );
+    let v2_vm = vm_of(hub, v2_cid, home, token);
+    v2_vm.tool(
+        v2_work,
+        "finding_verify",
+        json!({ "finding": "f1", "verdict": "confirmed", "proof": "the same test: next() returns 2, so the oldest item is not first" }),
+    );
+    let held = v2_vm.tool(
+        v2_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "the contest does not hold" }),
+    );
+    assert!(text(&held["output"]).contains("Held"), "{held}");
+    Held {
+        pid,
+        tid,
+        change,
+        repo,
+        verifier: (v2_cid, v2_work),
+        known,
+    }
+}
+
+/// The planner rules `fix` on the held contest: the walk holds for it, the ruling is told to the task's chat, and the
+/// builder goes back to fix the finding it was told of, not the walk on.
+#[test]
+fn a_planner_ruling_fix_on_a_held_contest_rewinds_the_builder() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let scratch = Scratch::new("weft-review-planner");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles_with_planner()),
+    );
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+    add_packs(&hub);
+    let token = scratch.0.join("internal.token");
+    std::fs::write(&token, hub.token()).unwrap();
+    let home = scratch.0.join("vms");
+    let mut held = held_contest(&hub, &gateway, &home, &token, true);
+
+    // No seat rules on the contest: the project's planner, on a fourth model, does.
+    let planners = hub.wait_for(&format!("/v1/sessions?project={}", held.pid), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["role"] == "planner" && s["cid"].is_u64())
+        })
+    });
+    let planner_cid = planners
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["role"] == "planner"))
+        .and_then(|s| s["cid"].as_u64())
+        .unwrap_or_else(|| panic!("a planner session: {planners}\n{}", hub.log()));
+    hello(&hub, planner_cid, "planner");
+    let ask = first_work(&hub, &gateway, planner_cid);
+    let prompt = text(&ask["prompt"]);
+    assert!(
+        prompt.contains("is contested") && prompt.contains("finding_arbitrate"),
+        "{ask}"
+    );
+    let run = prompt
+        .split("(run ")
+        .nth(1)
+        .and_then(|r| r.split(',').next())
+        .expect("the review's run in the ruling request");
+    let planner_vm = vm_of(&hub, planner_cid, &home, &token);
+    let ruled = planner_vm.tool(
+        ask["work"].as_u64().expect("the work item"),
+        "finding_arbitrate",
+        json!({ "run": run, "finding": "f1", "ruling": "fix", "reason": "the scenario holds: the builder fixes the order" }),
+    );
+    assert!(text(&ruled["output"]).contains("f1"), "{ruled}");
+    eventually(&hub, "the task's chat says the planner ruled", || {
+        chat_says(
+            &hub,
+            &format!("task-{}", held.tid),
+            &format!("the planner ruled fix on f1 of task {}", held.tid),
+        )
+    });
+
+    // The walk resumed on the fix: the task is back with its builder, which is told of f1 with its scenario.
+    let rework = hub.wait_for(&format!("/v1/tasks/{}", held.tid), WAIT, |t| {
+        t["state"] == "rework"
+    });
+    assert_eq!(rework["state"], "rework", "{rework}\n{}", hub.log());
+    let (_, _, _, builder) = seat_vm(&hub, &gateway, &held.tid, "builder", &mut held.known);
+    assert!(
+        text(&builder["prompt"]).contains("Scenario: push 1, then push 2"),
+        "{builder}"
+    );
+}
+
+/// The owner drops the contested finding on the card: the walk goes on, the verifier's held verdict settles as a pass,
+/// and the change lands.
+#[test]
+fn a_drop_ruling_on_a_held_contest_lets_the_walk_go_on_to_the_landing() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let scratch = Scratch::new("weft-review-drop");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles()),
+    );
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+    add_packs(&hub);
+    let token = scratch.0.join("internal.token");
+    std::fs::write(&token, hub.token()).unwrap();
+    let home = scratch.0.join("vms");
+    let held = held_contest(&hub, &gateway, &home, &token, false);
+
+    // No planner on another model: the owner's card rules on the contest.
+    let card = hub.wait_for("/v1/approvals", WAIT, |a| {
+        a.as_array().is_some_and(|a| {
+            a.iter()
+                .any(|x| x["detail"]["gate"] == "contest" && x["state"] == "pending")
+        })
+    });
+    let card = card
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["detail"]["gate"] == "contest").cloned())
+        .unwrap_or_else(|| panic!("a contest card: {card}\n{}", hub.log()));
+    let (status, decided) = hub.call(
+        "POST",
+        &format!("/v1/approvals/{}", text(&card["id"])),
+        Some(json!({ "approve": true, "action": "drop", "reason": "the scenario does not hold for this queue" })),
+    );
+    assert_eq!(status, 200, "{decided}\n{}", hub.log());
+    eventually(&hub, "the task's chat says the owner dropped f1", || {
+        chat_says(
+            &hub,
+            &format!("task-{}", held.tid),
+            "the owner ruled drop on f1",
+        )
+    });
+    hub.work_done(
+        held.verifier.0,
+        held.verifier.1,
+        "done",
+        "held, then dropped",
+    );
+
+    // The walk goes on past the held verdict: the change passes the chain and lands, and the task is done.
+    let landed = hub.wait_for(
+        &format!("/v1/weft/changes/{}", held.change),
+        Duration::from_secs(30),
+        |c| c["state"] == "landed" && has_record(c, "landed"),
+    );
+    assert_eq!(landed["state"], "landed", "{landed}\n{}", hub.log());
+    let done = hub.wait_for(
+        &format!("/v1/tasks/{}", held.tid),
+        Duration::from_secs(20),
+        |t| t["state"] == "done",
+    );
+    assert_eq!(done["state"], "done", "{done}\n{}", hub.log());
+    let _ = (&held.pid, &held.repo);
+}
+
+/// A project whose owner approves each landing: the change passes the chain (the owner drops the contested finding), and
+/// it waits in the queue for a `land` approval until the owner answers it; the approval lands it.
+#[test]
+fn a_landing_the_owner_must_approve_waits_for_the_approval_then_lands() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let scratch = Scratch::new("weft-review-land");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles()),
+    );
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+    add_packs(&hub);
+    let token = scratch.0.join("internal.token");
+    std::fs::write(&token, hub.token()).unwrap();
+    let home = scratch.0.join("vms");
+    let held = held_contest(&hub, &gateway, &home, &token, false);
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{}/settings", held.pid),
+        Some(json!({ "land_approval": true })),
+    );
+    assert_eq!(status, 200, "{settings}");
+
+    // The owner drops the contested finding: the walk goes on, and the change is held for its landing approval.
+    let card = hub.wait_for("/v1/approvals", WAIT, |a| {
+        a.as_array().is_some_and(|a| {
+            a.iter()
+                .any(|x| x["detail"]["gate"] == "contest" && x["state"] == "pending")
+        })
+    });
+    let card = card
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["detail"]["gate"] == "contest").cloned())
+        .unwrap_or_else(|| panic!("a contest card: {card}\n{}", hub.log()));
+    let (status, decided) = hub.call(
+        "POST",
+        &format!("/v1/approvals/{}", text(&card["id"])),
+        Some(json!({ "approve": true, "action": "drop", "reason": "the scenario does not hold for this queue" })),
+    );
+    assert_eq!(status, 200, "{decided}\n{}", hub.log());
+    hub.work_done(
+        held.verifier.0,
+        held.verifier.1,
+        "done",
+        "held, then dropped",
+    );
+    let landing = hub.wait_for("/v1/approvals", WAIT, |a| {
+        a.as_array().is_some_and(|a| {
+            a.iter().any(|x| {
+                x["kind"] == "land"
+                    && x["detail"]["change"] == held.change.as_str()
+                    && x["state"] == "pending"
+            })
+        })
+    });
+    let landing = landing
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["kind"] == "land").cloned())
+        .unwrap_or_else(|| panic!("a landing approval: {landing}\n{}", hub.log()));
+    // Held: the change stays in the queue, unlanded, while the approval is pending.
+    std::thread::sleep(Duration::from_secs(3));
+    let waiting = hub
+        .call("GET", &format!("/v1/weft/changes/{}", held.change), None)
+        .1;
+    assert_ne!(waiting["state"], "landed", "{waiting}");
+
+    let (status, approved) = hub.call(
+        "POST",
+        &format!("/v1/approvals/{}", text(&landing["id"])),
+        Some(json!({ "approve": true })),
+    );
+    assert_eq!(status, 200, "{approved}\n{}", hub.log());
+    let landed = hub.wait_for(
+        &format!("/v1/weft/changes/{}", held.change),
+        Duration::from_secs(30),
+        |c| c["state"] == "landed",
+    );
+    assert_eq!(landed["state"], "landed", "{landed}\n{}", hub.log());
+    let done = hub.wait_for(
+        &format!("/v1/tasks/{}", held.tid),
+        Duration::from_secs(20),
+        |t| t["state"] == "done",
+    );
+    assert_eq!(done["state"], "done", "{done}\n{}", hub.log());
+}

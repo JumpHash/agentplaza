@@ -129,6 +129,114 @@ fn two_new_functions_at_the_same_place_merge_by_definition() {
     std::fs::remove_dir_all(&p.dir).ok();
 }
 
+/// A batch of four lanes, the third breaking it: the batch's check fails on every prefix that holds `c.txt`, and the
+/// check reads the candidate's tree, as apid's does. Bisection names `c` and it leaves with the failure; the others
+/// land in order, and the batch that remains passes.
+#[test]
+fn four_lanes_in_a_batch_land_in_order_and_bisection_ejects_the_one_that_breaks_it() {
+    let (p, derived, lander) = setup("land-batch");
+    let lanes: Vec<String> = [
+        ("a", "a.txt"),
+        ("b", "b.txt"),
+        ("c", "c.txt"),
+        ("d", "d.txt"),
+    ]
+    .iter()
+    .map(|(name, file)| {
+        p.lane(
+            "calc",
+            107,
+            &format!("t-{name}"),
+            &format!("Lane {name}"),
+            &[vec![p.put(file, &format!("{name}\n"))]],
+        )
+    })
+    .collect();
+    for lane in &lanes {
+        queue(&p, "calc", lane);
+    }
+    let opts = Options {
+        recheck: true,
+        stall_ms: u64::MAX,
+        batch: 4,
+        ..Default::default()
+    };
+    let (mut landed, mut failed) = (Vec::new(), Vec::new());
+    for _ in 0..40 {
+        match lander
+            .step(&p.store, &derived, "calc", "main", opts)
+            .unwrap()
+        {
+            Step::Landed { change, .. } => landed.push(change),
+            Step::Failed { change, reason } => {
+                assert!(reason.contains("bisect"), "{reason}");
+                failed.push(change);
+            }
+            Step::Recheck { digest, .. } | Step::Waiting { digest, .. } => {
+                let tree = lander.candidate_tree(&p.store, &digest).unwrap();
+                lander.report(&digest, !tree.contains_key("c.txt"));
+            }
+            Step::Empty => break,
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(
+        landed,
+        vec![lanes[0].clone(), lanes[1].clone(), lanes[3].clone()]
+    );
+    assert_eq!(failed, vec![lanes[2].clone()]);
+    let h = head(&p, "calc");
+    for file in ["a.txt", "b.txt", "d.txt"] {
+        assert!(
+            p.store.read(&h, file).unwrap().is_some(),
+            "{file} is on main"
+        );
+    }
+    assert!(p.store.read(&h, "c.txt").unwrap().is_none(), "c.txt is not");
+    std::fs::remove_dir_all(&p.dir).ok();
+}
+
+#[test]
+fn a_held_landing_waits_until_the_owner_approves_it() {
+    let (p, derived, lander) = setup("land-hold");
+    let before = head(&p, "calc");
+    let docs = p.lane(
+        "calc",
+        107,
+        "t2",
+        "Docs",
+        &[vec![p.put("README.md", "# calc\n\nheld\n")]],
+    );
+    queue(&p, "calc", &docs);
+    let hold = Options {
+        hold: true,
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        match lander
+            .step(&p.store, &derived, "calc", "main", hold)
+            .unwrap()
+        {
+            Step::Held { change, .. } => assert_eq!(change, docs),
+            other => panic!("{other:?}"),
+        }
+    }
+    assert_eq!(head(&p, "calc"), before, "nothing landed while held");
+    let approved = Options {
+        approved: true,
+        ..hold
+    };
+    assert_eq!(
+        lander
+            .step(&p.store, &derived, "calc", "main", approved)
+            .unwrap()
+            .outcome(),
+        "landed"
+    );
+    assert!(text(&p, &head(&p, "calc"), "README.md").contains("held"));
+    std::fs::remove_dir_all(&p.dir).ok();
+}
+
 trait Outcome {
     fn outcome(&self) -> &'static str;
 }
@@ -139,6 +247,7 @@ impl Outcome for Step {
             Step::Landed { .. } => "landed",
             Step::Recheck { .. } => "recheck",
             Step::Waiting { .. } => "waiting",
+            Step::Held { .. } => "held",
             Step::Conflict { .. } => "conflict",
             Step::Failed { .. } => "failed",
         }
@@ -243,6 +352,8 @@ fn rechecks_hold_a_merged_head_while_the_next_is_merged_on_top() {
     let opts = Options {
         recheck: true,
         stall_ms: u64::MAX,
+        batch: 2,
+        ..Default::default()
     };
     let docs = p.lane(
         "calc",
@@ -281,13 +392,14 @@ fn rechecks_hold_a_merged_head_while_the_next_is_merged_on_top() {
     );
     queue(&p, "calc", &mul);
     queue(&p, "calc", &neg);
-    // mul started before docs landed: merged, so it waits for its re-check, and neg is merged on top of it.
+    // mul started before docs landed: merged, so it waits for its re-check. The batch is mul and neg (merged on top of
+    // it), and the batch's check is its top's: neg's.
     let digest = match lander
         .step(&p.store, &derived, "calc", "main", opts)
         .unwrap()
     {
         Step::Recheck { change, digest } => {
-            assert_eq!(change, mul);
+            assert_eq!(change, neg);
             digest
         }
         other => panic!("{other:?}"),
@@ -297,7 +409,11 @@ fn rechecks_hold_a_merged_head_while_the_next_is_merged_on_top() {
     assert!(cands[1].speculative && cands[1].change == neg);
     // The checks read the candidate's tree.
     let tree = lander.candidate_tree(&p.store, &digest).unwrap();
-    assert!(tree.contains_key("README.md") && tree.contains_key("src/lib.rs"));
+    assert!(
+        tree.contains_key("README.md")
+            && tree.contains_key("src/lib.rs")
+            && tree.contains_key("NOTES.md")
+    );
     assert_eq!(
         lander
             .step(&p.store, &derived, "calc", "main", opts)
@@ -313,11 +429,10 @@ fn rechecks_hold_a_merged_head_while_the_next_is_merged_on_top() {
             .outcome(),
         "landed"
     );
-    // neg's speculative candidate is now on the head's tree; it was merged, so it waits for its own check.
+    // neg's candidate is now on the head's tree: the batch's check covered it, so it needs no check of its own.
     let next = lander.candidates("calc", "main");
     assert_eq!(next.len(), 1);
-    assert!(!next[0].speculative);
-    lander.report(&next[0].digest, true);
+    assert!(!next[0].speculative && next[0].checked == Some(true));
     assert_eq!(
         lander
             .step(&p.store, &derived, "calc", "main", opts)
@@ -372,6 +487,7 @@ fn a_stalled_head_lets_a_commuting_change_pass() {
     let opts = Options {
         recheck: true,
         stall_ms: 0,
+        ..Default::default()
     };
     let first = lander
         .step(&p.store, &derived, "calc", "main", opts)
@@ -395,7 +511,8 @@ fn a_stalled_head_lets_a_commuting_change_pass() {
                 "main",
                 Options {
                     recheck: true,
-                    stall_ms: u64::MAX
+                    stall_ms: u64::MAX,
+                    ..Default::default()
                 }
             )
             .unwrap()
