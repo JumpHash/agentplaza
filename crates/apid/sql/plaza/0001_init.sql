@@ -1015,6 +1015,22 @@ CREATE TABLE "law_change" (
     FOREIGN KEY ("rules_pos") REFERENCES "rules" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component standing_rules
+CREATE TABLE "standing_rules" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "standing_rule" (
+    "standing_rules_pos" INTEGER NOT NULL CHECK ("standing_rules_pos" >= 0),
+    "versions_pos" INTEGER NOT NULL CHECK ("versions_pos" >= 0),
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "text" TEXT NOT NULL,
+    "author" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("standing_rules_pos", "versions_pos"),
+    FOREIGN KEY ("standing_rules_pos") REFERENCES "standing_rules" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component work
 CREATE TABLE "work" (
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),

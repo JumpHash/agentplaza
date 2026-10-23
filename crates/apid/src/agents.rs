@@ -419,14 +419,10 @@ fn system_parts(app: &App, agent: &Agent, role_prompt: &str) -> Vec<SystemPart> 
     let project = crate::projects::project_of(app, agent.cid);
     // The harness's prompt, and the tools are offered beside it (the tool index).
     let harness = render_vars(&harness_prompt(), agent);
-    // The owner's standing rules, and the skills index.
+    // The owner's standing rules (standing_rules.rs: the same text for every session, so not rendered per agent),
+    // and the skills index.
     let standing = join_sections([
-        section(
-            "House rules (AGENTS.md)",
-            app.prompts
-                .bound_body("plaza")
-                .map(|rules| render_vars(&rules, agent)),
-        ),
+        section("Standing rules", Some(app.standing_rules.text())),
         // The skills index comes from the session's cached tools section (tools.rs).
         crate::tools::section(app, agent).skills.clone(),
     ]);

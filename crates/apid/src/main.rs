@@ -102,6 +102,7 @@ mod skills;
 mod sleep;
 mod sources;
 mod spawned;
+mod standing_rules;
 mod state;
 mod stations;
 mod steps;

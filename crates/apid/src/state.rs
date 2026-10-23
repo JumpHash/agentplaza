@@ -206,6 +206,8 @@ pub struct App {
     pub settings: settings::Store,
     /// The owner's appearance: theme, skin, background and mode, and saved themes (appearance.rs).
     pub appearance: crate::appearance::Store,
+    /// The owner's standing rules, with their versions: part 2 of every session's prompt (standing_rules.rs).
+    pub standing_rules: crate::standing_rules::StandingRules,
     /// Agents' artifacts (artifacts/), their versions and data blobs.
     pub artifacts: Arc<crate::artifacts::Store>,
     /// Share links (shares/).
@@ -361,6 +363,7 @@ impl App {
             settings: settings::Store::new(config.dev_models)
                 .with_generations(Arc::clone(&generations)),
             appearance: crate::appearance::Store::new(),
+            standing_rules: Default::default(),
             artifacts: Arc::new(crate::artifacts::Store::new(
                 Arc::clone(store.db(crate::store::PLAZA)),
                 Arc::clone(&blobs),
@@ -427,6 +430,15 @@ impl App {
         app.budgets
             .attach(Arc::clone(app.store.db(crate::store::PLAZA)));
         restore_transcripts(&app);
+        // The house rules (the prompt library's AGENTS.md for the plaza) become the first standing rules, once: the
+        // standing rules replace them in every prompt (standing_rules.rs).
+        let house = app
+            .prompts
+            .bound_body("plaza")
+            .is_some_and(|house| app.standing_rules.absorb(&house, apz_plaza::now_ms()));
+        if house {
+            crate::store::saver::save_now(&app, "standing_rules");
+        }
         // The built-in skills join the skill library (one the library already holds is left alone).
         if let Err(why) = crate::skills::seed_builtins(&app.skills, "owner", apz_plaza::now_ms()) {
             eprintln!("apid: cannot seed the built-in skills: {why}");

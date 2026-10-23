@@ -36,6 +36,7 @@ import {
   withStrictPermits,
   type TierKey,
 } from './rules-model';
+import { standingCard } from './rules-standing';
 
 const RELOAD_MS = 1000;
 const EFFECTS: [LawFilter['effect'], string][] = [['all', 'All'], ['permit', 'Allows'], ['forbid', 'Forbids']];
@@ -75,6 +76,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let rulesError = '';
   let strict: boolean | null = null;
   let strictBusy = false;
+
+  // The owner's standing rules: the text every session and engine file carries (rules-standing.ts).
+  const standingSec = standingCard(() => alive);
 
   // Strict permits: the switch, its state and its help text.
   const strictInput = h('input', { type: 'checkbox', role: 'switch', 'aria-describedby': 'rules-strict-help' }) as HTMLInputElement;
@@ -635,7 +639,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     h('header.page-head', null, h('div.page-head-row', null, h('h1', null, 'Rules'), h('span.sp'), h('div.page-actions')), h('p.lede', null, 'The laws the plaza ships with, and the owner’s own JHRL rules.')),
     constitutionBanner,
     strip,
-    h('div.rl-main', null, strictSec, builtinSec, ownerSec),
+    h('div.rl-main', null, standingSec, strictSec, builtinSec, ownerSec),
   );
 
   search.addEventListener('input', () => {
