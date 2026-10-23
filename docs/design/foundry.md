@@ -6,7 +6,7 @@ runs natively on every OS now, with no containers (see The trainer runtime); the
 `crates/apid/src/foundry/` (jobs, devices, plan, recipes, datasets, the registry with shadow, promote and retire, model
 agents on tract), the trainer is `trainer/` (`apz_train`), the Lab is in both apps (`apps/web/src/views/lab*.ts`,
 `apps/desktop/src/console/screens/lab*.rs`), and the shadow runs are `crates/apid/src/usage.rs`. Builds on the codex draft (`docs/codex-draft/playbooks/breeding-guide.md`,
-`schemas/training-job.schema.json`, statute S-006, the Lab town in `docs/towns-draft/towns/lab.yaml`).
+`schemas/training-job.schema.json`).
 
 ## What it is
 
@@ -17,8 +17,7 @@ agents on tract), the trainer is `trainer/` (`apz_train`), the Lab is in both ap
   trainer runtime on every machine with a GPU (or none: CPU training works too), the model registry, shadow
   mode and promotion.
 - **Model agents** are what a promoted model becomes: a non-LLM agent type. It has a typed input and output
-  (from its model card), runs as ONNX inference, and can only be *invoked* — it can't chat, take tasks,
-  hold a wallet or call tools. Other agents (and the plaza's own routing) call it with `invoke_model`.
+  (from its model card), runs as ONNX inference, and can only be *invoked* — it can't chat, take tasks or call tools. Other agents (and the plaza's own routing) call it with `invoke_model`.
 - **The Lab** is the section in both apps (web console and desktop, 1:1) where the owner manages all of it.
 
 ## Hardware: any machine, any mix
@@ -138,7 +137,7 @@ apid gains `foundry` (jobs, recipes, datasets, registry, placement) and `inferen
   schema), state `trained → shadow → promoted → retired`; `POST …/{id}/shadow`, `/promote`, `/retire`
   (owner only for promote/retire).
 - Model agents: a promoted model gets an agent entry (`kind: "model"`, a CID from a reserved range, no VM,
-  no wallet, no tools, no chat) served by apid with **tract** (pure-Rust ONNX inference: no native deps, so
+  no tools, no chat) served by apid with **tract** (pure-Rust ONNX inference: no native deps, so
   it runs on every platform the hub runs on). `invoke_model(model, input)` is a tool for permitted roles,
   validates input/output against the card's schemas, meters the call, and records it. In shadow mode the
   model runs beside the path it would replace and its decisions are logged for comparison, not used.

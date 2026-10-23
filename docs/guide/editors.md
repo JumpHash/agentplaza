@@ -156,4 +156,5 @@ credential, and the VM never holds it.
   the same as any other work.
 - Use a coding engine's bypass mode. The harness refuses those modes, whatever the engine offers.
 
-For the design, see [ACP for editors](../architecture.md#acp-for-editors) in the architecture notes.
+For the design, see the module docs of [`crates/apid/src/acp`](../../crates/apid/src/acp) and of
+[`crates/apz-acp`](../../crates/apz-acp).

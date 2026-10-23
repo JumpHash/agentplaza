@@ -183,10 +183,6 @@ through the hub with an owner token.
   owner gives the session back, or the agent's lease is released and its task goes back to the queue, or the agent
   keeps working through APIs, shells and the UI tree while only its pointer is paused.
 - STOP ALL: the daemon freezes input and ends pixel sessions at once; shells and runs are stopped.
-- Treasury: a lease's wall time (from its activation to its release) is charged to its task at the station's
-  `rate_per_hour` (plaza credits, 1 credit is $0.001; 0, the default, is free), rounded up, capped at the task's
-  escrow, as real spend. It shows in Usage as `workstation/<station>`. GPU time is not charged yet: the lease charge
-  is the whole of it (`stations/hooks.rs`).
 
 ## 8. Results
 

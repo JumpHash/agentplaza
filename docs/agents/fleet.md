@@ -89,7 +89,7 @@ The relay is the per-node agent gateway. Its source comments still call it
   budget, and a `fleet` list of the roles that boot. The shipped list is
   `["orchestrator"]`: every role stays defined for its tools and prompt, and an
   agent works on the project its task's seat gives it (the work loop,
-  `crates/apid/src/work_loop.rs`); there is no bench. A manifest without `fleet`
+  `crates/apid/src/work_loop.rs`). A manifest without `fleet`
   boots every role.
 - `noded --agents <manifest>` (default: none; the acceptance suites and the
   demo path are unchanged): at daemon start, the node boots **one

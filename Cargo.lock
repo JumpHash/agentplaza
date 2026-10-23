@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "agent-harness"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-acp",
  "apz-ide",
@@ -88,7 +88,7 @@ dependencies = [
 
 [[package]]
 name = "agentplaza-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-ide",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "agentplaza-desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-engine",
  "apz-graph",
@@ -327,7 +327,7 @@ checksum = "fb5dfbc6d8d2675589ccbe4d0fd61df2419075625f8c1a62325e718e2b0049f9"
 
 [[package]]
 name = "apid"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-acp",
  "apz-artifact",
@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "apz-acp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "agent-client-protocol-schema",
  "serde",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "apz-artifact"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-view",
  "oxc_allocator",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "apz-blobs"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-store",
  "blake3",
@@ -431,14 +431,14 @@ dependencies = [
 
 [[package]]
 name = "apz-cache"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "apz-desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-station",
  "image",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-atspi"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-macos"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-wayland"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-windows"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-x11"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -501,11 +501,11 @@ dependencies = [
 
 [[package]]
 name = "apz-egress-rules"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "apz-engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ab_glyph",
  "apz-os",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "apz-engine-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-engine",
  "js-sys",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "apz-gateway"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-proto",
@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "apz-graph"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -564,7 +564,7 @@ dependencies = [
 
 [[package]]
 name = "apz-graph-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-graph",
  "serde_json",
@@ -573,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "apz-http"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-cache",
  "apz-trust",
@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "apz-ide"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "apz-ide-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-ide",
  "serde",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "apz-kit"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "glam 0.30.10",
  "gltf",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "apz-link"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-os",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "apz-metrics"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-store",
  "base64 0.22.1",
@@ -645,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "apz-metrics-view"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-metrics",
  "apz-store",
@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "apz-ops"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-ide",
  "apz-proto",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "apz-os"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "getrandom 0.3.4",
  "windows 0.58.0",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "apz-pack"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-theme",
  "brotli",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "apz-plaza"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-store",
  "serde",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "apz-prompt"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-store",
  "serde",
@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "apz-proto"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-os",
  "apz-store",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "apz-rich"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "apz-sandbox"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "landlock",
  "libc",
@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "apz-setup"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-os",
  "serde_json",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "apz-skill"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-prompt",
  "apz-store",
@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "apz-station"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-store",
  "serde",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "apz-store"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-store-derive",
  "rusqlite",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "apz-store-derive"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "apz-theme"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-store",
  "serde",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "apz-theme-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-theme",
  "serde_json",
@@ -806,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "apz-trust"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "apz-uds"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "vm-memory",
  "windows-sys 0.61.2",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "apz-view"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ab_glyph",
  "apz-metrics",
@@ -840,14 +840,14 @@ dependencies = [
 
 [[package]]
 name = "apz-vt"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "vte",
 ]
 
 [[package]]
 name = "apz-workstation"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-desktop-atspi",
@@ -3003,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "dispatchd"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "serde",
@@ -4990,7 +4990,7 @@ dependencies = [
 
 [[package]]
 name = "jhrl"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "jiff"
@@ -5888,7 +5888,7 @@ dependencies = [
 
 [[package]]
 name = "noded"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-metrics",
@@ -10350,7 +10350,7 @@ checksum = "503041e3dca68fbd5425c04e4c2ad63c57a31da5b6eb13aaafbcaaf2b9cdc74f"
 
 [[package]]
 name = "vmctl"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-os",
  "vmm",
@@ -10358,7 +10358,7 @@ dependencies = [
 
 [[package]]
 name = "vmm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "acpi_tables",
  "apz-os",
@@ -10396,7 +10396,7 @@ checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
 name = "vsockd"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-egress-rules",
  "apz-http",
@@ -11126,7 +11126,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "weft"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-blobs",
  "apz-http",
