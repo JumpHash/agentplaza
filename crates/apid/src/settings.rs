@@ -50,6 +50,11 @@ pub struct ModelPolicy {
     pub orchestrator: Vec<String>,
     #[table(list)]
     pub worker: Vec<String>,
+    /// The policy models (`provider/model`, no effort) that run on a subscription: their calls draw on the allowances
+    /// of their vendor (`allowances.rs`). Empty: every call is an API call.
+    #[serde(default)]
+    #[table(list)]
+    pub subscription: Vec<String>,
 }
 
 impl Default for ModelPolicy {
@@ -70,6 +75,7 @@ impl Default for ModelPolicy {
                 "openai/gpt-5.6-terra".into(),
                 "xai/grok-4.7@low".into(),
             ],
+            subscription: Vec::new(),
         }
     }
 }
@@ -761,6 +767,29 @@ fn check_favourites(favourites: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// A subscription entry is a policy model named `provider/model`, with no effort: the allowances it draws on are its
+/// vendor's (`allowances.rs`).
+fn check_subscriptions(policy: &ModelPolicy) -> Result<(), String> {
+    for model in &policy.subscription {
+        if model.contains('@') || !model.contains('/') {
+            return Err(format!(
+                "subscription entry {model:?} must be provider/model, with no effort"
+            ));
+        }
+        let named = policy
+            .orchestrator
+            .iter()
+            .chain(policy.worker.iter())
+            .any(|m| m.split('@').next() == Some(model.as_str()));
+        if !named {
+            return Err(format!(
+                "subscription entry {model} is not in the model policy"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
     if new.health_interval_s > MAX_HEALTH_INTERVAL_S {
         return Err(format!(
@@ -791,6 +820,7 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
         Tier::Orchestrator,
         &new.orchestrator_model,
     )?;
+    check_subscriptions(policy)?;
     for (role, model) in &new.role_models {
         allowed_under(policy, dev_models, tier_of(role), model)?;
     }

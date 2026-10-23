@@ -106,6 +106,10 @@ pub struct ProjectSettings {
     /// Whether the project's hooks start from the defaults (`apz_proto::hooks::default_hooks`), before its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hook_defaults: bool,
+    /// Whether the project's subscription calls take the policy's API-key route (`allowances::route`): the owner's
+    /// "use an API key for this project" choice on an allowance card. Off: they wait on their allowance.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subscription_fallback: bool,
     /// The intake rules: which outside items (GitHub, Linear, Notion) become this project's tasks, by repository,
     /// label, team or database, and on which recipe. The JSON names them as a list under `intake`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -214,6 +218,7 @@ struct SettingsRow {
     release_continuous: bool,
     preview_grace_hours: Option<u64>,
     hook_defaults: bool,
+    subscription_fallback: bool,
     #[table(map_value)]
     role_models: BTreeMap<String, String>,
     #[table(child)]
@@ -288,6 +293,7 @@ impl SettingsRow {
             release_continuous: settings.release_continuous,
             preview_grace_hours: settings.preview_grace_hours,
             hook_defaults: settings.hook_defaults,
+            subscription_fallback: settings.subscription_fallback,
             role_models: settings.role_models.clone(),
             hooks: settings.hooks.clone(),
             intake: settings.intake.clone(),
@@ -317,6 +323,7 @@ impl SettingsRow {
             hooks: self.hooks,
             intake: self.intake,
             hook_defaults: self.hook_defaults,
+            subscription_fallback: self.subscription_fallback,
         };
         (self.project, settings)
     }

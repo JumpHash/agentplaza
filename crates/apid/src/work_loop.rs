@@ -1702,6 +1702,7 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
         cards::Kind::Connector => crate::connectors::card_answered(app, card),
         cards::Kind::Promote | cards::Kind::Tool => crate::tool_life::card_answered(app, card),
         cards::Kind::Disk => crate::disk::card_answered(app, card),
+        cards::Kind::Allowance => crate::allowances::card_answered(app, card),
         cards::Kind::Start => crate::drafts::answered(app, card),
         cards::Kind::Memory => crate::curator::card_answered(app, card),
         _ => "recorded".into(),

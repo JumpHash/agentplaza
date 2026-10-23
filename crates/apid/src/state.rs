@@ -242,6 +242,10 @@ pub struct App {
     pub engines: crate::engine_instances::Store,
     /// The usage providers (CLIProxyAPI hubs), `usage_providers.rs`.
     pub usage_providers: crate::usage_providers::Store,
+    /// The login bridge's switches, per vendor (`login_bridge.rs`).
+    pub login_bridges: crate::login_bridge::Store,
+    /// The sessions an allowance paused, and the vendor each waits on (`allowances.rs`).
+    pub allowance_waits: crate::allowances::Waits,
     pub roles: agents::Roles,
     pub agents: agents::Roster,
     /// The model registry: the records on disk and the compiled models in memory.
@@ -414,6 +418,8 @@ impl App {
             engines: crate::engine_instances::Store::new(&config.state_dir)
                 .with_generations(Arc::clone(&generations)),
             usage_providers: crate::usage_providers::Store::default(),
+            login_bridges: crate::login_bridge::Store::default(),
+            allowance_waits: crate::allowances::Waits::default(),
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
             spawned: spawned::Store::default(),
             agents: agents::Roster::default(),
@@ -530,6 +536,7 @@ impl App {
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
         crate::maintenance::spawn_ticker(Arc::clone(&app));
+        crate::allowances::spawn_ticker(Arc::clone(&app));
         // Deliverables (videos, images) arrive as request bodies: allow up to 512 MiB.
         // On loopback the hub serves plain HTTP as before. Bound anywhere else it is a hub other
         // machines reach: always HTTPS, with the certificate made on first start (its SHA-256 is

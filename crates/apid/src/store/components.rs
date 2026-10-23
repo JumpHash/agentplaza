@@ -345,6 +345,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.usage_providers.load(conn),
         },
         Component {
+            name: "login_bridges",
+            def: crate::login_bridge::def,
+            rows: |app| app.login_bridges.rows(),
+            load: |app, conn| app.login_bridges.load(conn),
+        },
+        Component {
             name: "hub_config",
             def: crate::hub_auth::def,
             rows: |app| app.hub_auth.rows(),

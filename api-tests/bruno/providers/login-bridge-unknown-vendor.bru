@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a login bridge for a vendor it is not offered for
+  type: http
+  seq: 92
+}
+
+put {
+  url: {{baseUrl}}/v1/login-bridges/example
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": true
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

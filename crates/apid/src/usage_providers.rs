@@ -17,6 +17,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::allowances::{self, Allowance};
 use crate::providers::{Failure, failure, lock};
 use crate::state::App;
 use crate::store::saver::save_now;
@@ -61,6 +62,8 @@ pub struct Store {
     list: Mutex<Vec<UsageProvider>>,
     /// The last reading of each provider, by id.
     last: Mutex<std::collections::BTreeMap<String, Value>>,
+    /// The allowance windows of each provider's last good reading, by id (`allowances.rs`).
+    windows: Mutex<std::collections::BTreeMap<String, Vec<Allowance>>>,
 }
 
 impl Store {
@@ -79,6 +82,16 @@ impl Store {
 
     fn get(&self, id: &str) -> Option<UsageProvider> {
         lock(&self.list).iter().find(|p| p.id == id).cloned()
+    }
+
+    /// Every provider, as it is now.
+    pub fn providers(&self) -> Vec<UsageProvider> {
+        lock(&self.list).clone()
+    }
+
+    /// Every allowance window the providers' last good readings report.
+    pub fn allowances(&self) -> Vec<Allowance> {
+        lock(&self.windows).values().flatten().cloned().collect()
     }
 }
 
@@ -267,7 +280,7 @@ fn summarise(usage: &Value, auth_files: Option<&Value>) -> Value {
 }
 
 /// Reads provider `p` now, with its key from the vault, and keeps the reading.
-fn read(app: &App, p: &UsageProvider) -> Value {
+pub fn read(app: &App, p: &UsageProvider) -> Value {
     let checked_ms = apz_plaza::now_ms();
     let consumer = Consumer {
         binding: binding(&p.id),
@@ -281,8 +294,17 @@ fn read(app: &App, p: &UsageProvider) -> Value {
             Err(e) => json!({ "status": "crit", "message": e }),
             Ok(usage) => {
                 let files = management_get(&p.url, "/v0/management/auth-files", &key).ok();
+                let windows: Vec<Allowance> = allowances::parse(&usage, checked_ms)
+                    .into_iter()
+                    .map(|mut w| {
+                        w.provider = p.id.clone();
+                        w
+                    })
+                    .collect();
+                lock(&app.usage_providers.windows).insert(p.id.clone(), windows.clone());
                 let mut s = summarise(&usage, files.as_ref());
                 s["status"] = json!("ok");
+                s["allowances"] = json!(windows);
                 let n = s["accounts"].as_array().map_or(0, Vec::len);
                 s["message"] = json!(format!(
                     "{n} {} pooled",
@@ -401,6 +423,7 @@ fn delete_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
         .vault
         .remove_binding(&binding(id), OWNER, apz_plaza::now_ms());
     lock(&app.usage_providers.last).remove(id);
+    lock(&app.usage_providers.windows).remove(id);
     Response::json(200, &json!({ "deleted": id }))
 }
 
