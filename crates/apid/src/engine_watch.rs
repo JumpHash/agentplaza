@@ -34,9 +34,9 @@ const SUBJECT: &str = "engines";
 pub const PIN_FILE: &str = "crates/agent-harness/src/acp/catalog.rs";
 /// The watch's own record (the models each provider listed last, and the bumps awaiting an answer), in the hub's state.
 const STATE_FILE: &str = "engine-watch.json";
-/// How long the loop waits after a start before its first run, then how long between runs.
-const FIRST_RUN: Duration = Duration::from_secs(60);
-const EVERY: Duration = Duration::from_secs(24 * 3600);
+/// The watch's schedule (a trigger, `triggers/mod.rs`): its first run a minute after a start, then one a day.
+pub const FIRST_RUN_MS: u64 = 60_000;
+pub const EVERY_MINUTES: u32 = 24 * 60;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const DOCUMENT_LIMIT: u64 = 16 << 20;
 
@@ -651,22 +651,18 @@ fn adopt(app: &App, pending: &Pending) -> Result<String, String> {
     Ok(change)
 }
 
-/// Starts the watch's loop: a run a minute after the start, then one a day.
-pub fn spawn(app: Arc<App>) {
+/// Starts one watch on its own thread: the engine-watch trigger's fire (`triggers::tick`).
+pub fn start(app: Arc<App>) {
     std::thread::Builder::new()
         .name("engine-watch".into())
         .spawn(move || {
-            std::thread::sleep(FIRST_RUN);
-            loop {
-                run(
-                    &app,
-                    &Net { plain_http: false },
-                    &Bases::default(),
-                    &Unrun,
-                    &Providers(&app),
-                );
-                std::thread::sleep(EVERY);
-            }
+            run(
+                &app,
+                &Net { plain_http: false },
+                &Bases::default(),
+                &Unrun,
+                &Providers(&app),
+            );
         })
         .expect("spawn the engine watch thread");
 }

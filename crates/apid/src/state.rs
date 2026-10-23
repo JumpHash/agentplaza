@@ -158,6 +158,8 @@ pub struct App {
     pub seats: crate::seats::Seats,
     /// The recipe engine's runs and the owner's recipe versions (recipes/runs.rs).
     pub recipe_runs: crate::recipes::runs::Runs,
+    /// The triggers of the recipes (14.6): the schedules and the event records, and the deliveries in their windows.
+    pub triggers: crate::triggers::Triggers,
     pub budgets: crate::budgets::Budgets,
     pub cards: crate::cards::Cards,
     /// The VMs' workspace reports and the disk quotas' check (disk.rs).
@@ -314,6 +316,7 @@ impl App {
             sessions: Default::default(),
             seats: Default::default(),
             recipe_runs: Default::default(),
+            triggers: Default::default(),
             budgets: crate::budgets::Budgets::announcing(Arc::clone(&bus)),
             cards: Default::default(),
             disk: Default::default(),
@@ -494,7 +497,7 @@ impl App {
             crate::weft_hub::stop(&app);
         });
         crate::provider_health::spawn(Arc::clone(&app));
-        crate::engine_watch::spawn(Arc::clone(&app));
+        crate::triggers::ensure_builtins(&app, apz_plaza::now_ms());
         crate::providers::spawn_refresher(Arc::clone(&app));
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));

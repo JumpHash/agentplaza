@@ -1,0 +1,29 @@
+meta {
+  name: Adding a cron schedule to a recipe
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/recipes/intake/triggers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cron": "30 9 * * 1-5"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the schedule has its next fire and no event", function () {
+    expect(res.getBody().source).to.equal("schedule");
+    expect(res.getBody().next_ms).to.be.a("number");
+  });
+}
